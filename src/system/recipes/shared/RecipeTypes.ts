@@ -307,9 +307,21 @@ export interface RecipeDefinition {
   description: string;
   version: number;
 
+  /** URL prefix — verb/noun pattern: /chat, /live, /factory */
+  view: string;
+
+  /** What kind of entity this recipe backs — room, user, activity, or null (singleton) */
+  entityType?: 'room' | 'user' | 'activity' | null;
+
   pipeline: RecipeStep[];
   ragTemplate: RAGTemplate;
   strategy: RecipeStrategy;
+
+  /** AI personas assigned to this recipe's room. null = everyone joins. */
+  team?: string[] | null;
+
+  /** Available view modes (e.g., ["chat", "live", "forge"]) */
+  modes?: string[];
 
   // Tool highlights — which tools are especially relevant for this activity
   tools?: RecipeToolDeclaration[];
@@ -322,6 +334,9 @@ export interface RecipeDefinition {
 
   // UI composition (optional - defaults handled by layout system)
   layout?: ActivityUILayout;
+
+  /** Paths that cannot be modified by users */
+  locked?: string[];
 
   isPublic: boolean;
   tags: string[];

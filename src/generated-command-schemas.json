@@ -4385,6 +4385,17 @@
       "params": {}
     },
     {
+      "name": "grid/setup-check",
+      "description": "Diagnose grid setup: Tailscale install, connectivity, HTTPS certs, peers, Docker grid profile, and actionable fix steps. Run this to see what's needed before enabling distributed compute.",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
       "name": "grid/send",
       "description": "Executes a command on a remote node via the Grid mesh. Routes to Rust GridModule via continuum-core IPC. Usage: ./jtag grid/send --nodeId=\"100.124.122.107\" --remoteCommand=\"ping\" ./jtag grid/send --nodeId=\"100.124.122.107\" --remoteCommand=\"genome/layers\" --params='{\"personaId\":\"abc\"}'",
       "params": {

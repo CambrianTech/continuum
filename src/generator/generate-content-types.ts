@@ -24,13 +24,17 @@ interface RecipeFile {
     name: string;
     displayName?: string;
     description?: string;
+    /** URL prefix — REQUIRED */
+    view: string;
     entityType?: 'room' | 'user' | 'activity' | null;
     layout?: {
         main?: string[];
         right?: any;
         // New format: widgets array with position
-        widgets?: Array<{ widget: string; position: string; order: number }>;
+        widgets?: Array<{ widget: string; position: string; order: number; config?: Record<string, unknown> }>;
     };
+    team?: string[] | null;
+    modes?: string[];
     inputs?: Record<string, any>;
     tags?: string[];
 }
@@ -67,9 +71,15 @@ function main() {
         try {
             const content = fs.readFileSync(path.join(RECIPES_DIR, file), 'utf-8');
             const recipe = JSON.parse(content) as RecipeFile;
-            if (recipe.uniqueId) {
-                recipes.push(recipe);
+            if (!recipe.uniqueId) {
+                console.warn(`  SKIP: ${file} — missing uniqueId`);
+                continue;
             }
+            if (!recipe.view) {
+                console.error(`  FATAL: ${file} — missing required 'view' field. Every recipe must define a URL prefix.`);
+                process.exit(1);
+            }
+            recipes.push(recipe);
         } catch (e) {
             console.warn(`  SKIP: ${file} — ${(e as Error).message}`);
         }
@@ -104,12 +114,13 @@ function main() {
         const entityType = r.entityType || null;
         const requiresEntity = entityType !== null || !!r.inputs;
 
-        const view = (r as any).view || r.uniqueId;
+        const view = r.view;
 
-        // Extract right panel room from recipe layout
+        // Extract right panel widget and room from recipe layout
         const rightWidgets = Array.isArray(r.layout?.widgets)
             ? r.layout.widgets.filter((w: any) => w.position === 'right')
             : [];
+        const rightPanelWidget = rightWidgets[0]?.widget || null;
         const rightPanelRoom = rightWidgets[0]?.config?.room || null;
 
         return `    '${r.uniqueId}': {
@@ -120,6 +131,7 @@ function main() {
         requiresEntity: ${requiresEntity},
         entityType: ${entityType ? `'${entityType}'` : 'null'},
         hasRightPanel: ${hasRightPanel},
+        rightPanelWidget: ${rightPanelWidget ? `'${rightPanelWidget}'` : 'null'},
         rightPanelRoom: ${rightPanelRoom ? `'${rightPanelRoom}'` : 'null'},
     }`;
     }).join(',\n');
@@ -160,6 +172,8 @@ export interface ContentTypeConfig {
     requiresEntity: boolean;
     entityType: EntityType;
     hasRightPanel: boolean;
+    /** Right panel widget tag — from recipe layout. null = no right panel. */
+    rightPanelWidget: string | null;
     /** Room uniqueId for right panel chat — from recipe layout config */
     rightPanelRoom: string | null;
 }

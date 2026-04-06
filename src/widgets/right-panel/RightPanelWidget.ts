@@ -379,7 +379,13 @@ export class RightPanelWidget extends ReactiveWidget {
 
     if (config.sections && config.sections.length > 0) {
       // IDE-style: use declared sections
-      sections = config.sections;
+      // Propagate parent-level room to sections that don't have their own
+      sections = config.sections.map(s => {
+        if (config.room && (!s.props || !s.props.room)) {
+          return { ...s, props: { ...s.props, room: config.room } };
+        }
+        return s;
+      });
     } else {
       // Legacy: single chat-widget section
       sections = [{

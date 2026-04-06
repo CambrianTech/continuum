@@ -44,9 +44,8 @@ export function getWidgetForType(contentType: string): string {
         if (widget) return widget;
     }
 
-    // 3. No match — unknown type
-    console.error(`Unknown content type: '${contentType}'. Add a recipe in system/recipes/${contentType}.json`);
-    return 'chat-widget'; // Graceful degradation to prevent blank screen
+    // 3. No match — unknown type. Fail visibly. No fallbacks.
+    throw new Error(`Unknown content type: '${contentType}'. Add a recipe in system/recipes/${contentType}.json and run the generator.`);
 }
 
 /**
@@ -68,6 +67,7 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
                 requiresEntity: generated?.requiresEntity || false,
                 entityType: generated?.entityType || null,
                 hasRightPanel: rightPanel !== null && rightPanel !== undefined,
+                rightPanelWidget: generated?.rightPanelWidget || (rightPanel?.widget ?? null),
                 rightPanelRoom: generated?.rightPanelRoom || null,
             };
         }
@@ -141,18 +141,15 @@ export function getRightPanelConfig(contentType: string): RightPanelConfig | nul
         if (rightPanel) return rightPanel;     // Recipe provides right panel config
     }
 
-    // 2. Generated config — includes right panel room from recipe
+    // 2. Generated config — includes right panel widget and room from recipe
     const config = CONTENT_TYPE_CONFIGS[contentType as ContentType];
-    if (config && !config.hasRightPanel) return null;
-    if (config?.hasRightPanel) {
-        return {
-            widget: 'chat-widget',
-            room: config.rightPanelRoom || undefined,
-            compact: true,
-        } as RightPanelConfig;
-    }
+    if (!config?.hasRightPanel || !config.rightPanelWidget) return null;
 
-    return null;
+    return {
+        widget: config.rightPanelWidget,
+        room: config.rightPanelRoom || undefined,
+        compact: true,
+    } as RightPanelConfig;
 }
 
 /**

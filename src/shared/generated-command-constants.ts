@@ -219,6 +219,7 @@ export const COMMANDS = {
   GRID_PING: 'grid/ping',
   GRID_ROUTE: 'grid/route',
   GRID_SEND: 'grid/send',
+  GRID_SETUP_CHECK: 'grid/setup-check',
   GRID_STATUS: 'grid/status',
   GRID_TRUST: 'grid/trust',
   HELP: 'help',
