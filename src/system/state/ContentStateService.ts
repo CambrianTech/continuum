@@ -57,18 +57,20 @@ class ContentStateServiceImpl {
    * GUARDED: Skips if already initialized with same data
    */
   initialize(openItems: ContentItem[], currentItemId?: UUID): void {
-    // Guard: Skip if already initialized with same item count
-    // (prevents redundant re-initialization from multiple sources)
-    if (this.initialized && this.state.openItems.length === openItems.length) {
-      return; // Already initialized, skip
+    // Guard: Skip if already initialized with same data
+    if (this.initialized && !this.hasStateChanged(openItems, currentItemId)) {
+      return;
     }
 
+    // Deduplicate input — server may send duplicates from stale persisted state
+    const deduped = this.deduplicateItems(openItems);
+
     this.state = {
-      openItems: [...openItems],
+      openItems: deduped,
       currentItemId
     };
     this.initialized = true;
-    console.log(`📋 ContentState: Initialized with ${openItems.length} items`);
+    console.log(`📋 ContentState: Initialized with ${deduped.length} items${deduped.length < openItems.length ? ` (removed ${openItems.length - deduped.length} duplicates)` : ''}`);
     this.scheduleNotify();
   }
 
@@ -77,17 +79,20 @@ class ContentStateServiceImpl {
    * Only notifies subscribers if state actually changed (prevents render loops).
    */
   update(openItems: ContentItem[], currentItemId?: UUID): void {
+    // Deduplicate input
+    const deduped = this.deduplicateItems(openItems);
+
     // Fast path: check if anything actually changed
-    if (this.initialized && !this.hasStateChanged(openItems, currentItemId)) {
-      return; // No change, skip notification
+    if (this.initialized && !this.hasStateChanged(deduped, currentItemId)) {
+      return;
     }
 
     this.state = {
-      openItems: [...openItems],
+      openItems: deduped,
       currentItemId
     };
     this.initialized = true;
-    console.log(`📋 ContentState: Updated with ${openItems.length} items`);
+    console.log(`📋 ContentState: Updated with ${deduped.length} items`);
     this.scheduleNotify();
   }
 
@@ -95,6 +100,20 @@ class ContentStateServiceImpl {
    * Check if incoming state differs from current state.
    * Compares item count, currentItemId, and item contents (id, title, uniqueId).
    */
+  /**
+   * Remove duplicate items — keeps the first occurrence of each logical content.
+   * Uses contentItemsMatch() so dedup follows the same rules as addItem().
+   */
+  private deduplicateItems(items: ContentItem[]): ContentItem[] {
+    const seen: ContentItem[] = [];
+    for (const item of items) {
+      if (!seen.some(s => contentItemsMatch(s, item))) {
+        seen.push(item);
+      }
+    }
+    return seen;
+  }
+
   private hasStateChanged(openItems: ContentItem[], currentItemId?: UUID): boolean {
     // Different current item
     if (this.state.currentItemId !== currentItemId) return true;
