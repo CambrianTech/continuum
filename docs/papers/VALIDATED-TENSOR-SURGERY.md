@@ -1,6 +1,16 @@
 # Validated Structured Pruning for Consumer Hardware: A Layered Test Harness with Cryptographic Attestation
 
-> **Status**: In progress. Companion paper to [Experiential Plasticity](EXPERIENTIAL-PLASTICITY.md). The harness is being built incrementally — Layers 1, 2, and 3 are complete (40 tests passing, 30 seconds). Layers 4-6 in progress. Two real bugs in production pruning code were caught and fixed during harness construction.
+> **Status**: In progress. Companion paper to [Experiential Plasticity](EXPERIENTIAL-PLASTICITY.md). Layers 1-4 of the harness are complete: 43 tests passing, 90 seconds total runtime, on commodity CPU. **Five real bugs caught during harness construction**, including a research-significant finding that L2-norm-of-Q importance ranking is unreliable for head selection.
+
+## Bugs Caught During Construction
+
+| # | Layer | Bug | Status |
+|---|-------|-----|--------|
+| 1 | Pre-harness | LoRA-on-pruned-hooks corrupts model (forge produced 8x worse PPL than baseline) | Fixed in [sentinel-ai #152](https://github.com/CambrianTech/sentinel-ai/issues/152) |
+| 2 | Layer 3 | Defrag updates tensors but not `model.config.head_dim` — save/load fails | Fixed in `defrag_inline.py` |
+| 3 | Layer 3 | Hybrid attention models (Qwen3.5 linear_attention + full_attention) need different defrag path | Tracked in [sentinel-ai #154](https://github.com/CambrianTech/sentinel-ai/issues/154) |
+| 4 | Layer 4 | L2 norm of Q projection is an unreliable importance metric — removing low-L2 heads catastrophically degrades the model | Tracked in [sentinel-ai #155](https://github.com/CambrianTech/sentinel-ai/issues/155) — **research finding** |
+| 5 | Layer 4 | Pruning without retraining destroys models regardless of head selection — recovery comes entirely from fine-tuning | Documented; reframes the entire experiential plasticity story |
 
 ## Abstract
 
