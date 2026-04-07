@@ -104,6 +104,51 @@ We have not yet published this comparison for our forged models. The result of r
 
 This is exactly the kind of question a validation harness should force researchers to ask before publishing. We argue it should be a required ablation for any structured pruning paper.
 
+## Layer 6: The Structural Fix That Closes the Bug Class
+
+The five findings above are bugs we caught during construction. Catching them is necessary but not sufficient — the same bug class can recur in future pruning code if the harness doesn't make it impossible to ship. Layer 6 of the harness introduces a structural invariant that does exactly that.
+
+**The invariant**: after each cycle of a multi-cycle forge pipeline, evaluate the model and compare the eval to the previous cycle's eval. If perplexity regresses by more than 10% AND more than 1.0 PPL absolute (the AND is important — both thresholds must trigger together to avoid false positives on tiny baselines or large absolute models), the run halts and dumps state.
+
+The original LoRA-on-pruned-hooks bug compounded across cycles. The first cycle showed a phantom good number (with hooks active during eval), the second cycle showed a smaller phantom good number, and so on, until the discrepancy exploded at the final hook-cleared eval. Layer 6 catches this at cycle 2: the moment the per-cycle eval shows a regression, the harness halts. The catastrophic final eval never happens because the run is dead before it can.
+
+We tested the invariant against the literal bug pattern. The 9B forge produced PPL 62 → 7 → 501 across baseline, post-train, and final eval. With Layer 6, the per-cycle eval at cycle 2 sees 501, the threshold triggers, and the run halts. State is dumped to `REGRESSION_HALT.json` for post-mortem. 13 unit tests cover the invariant in isolation, including:
+
+- The literal 62 → 7 → 501 historical bug pattern (catches at cycle 2)
+- The actual v6 Qwen3.5-9B failure pattern of 62 → 8 → 305 (catches at cycle 2)
+- Smooth recovery curves matching the EP §4.1 cycles 1-8 data (no false positive)
+- Edge cases: just-above-threshold halts, just-below-threshold passes, ratio-without-absolute passes, absolute-without-ratio passes
+
+The principle behind Layer 6 generalizes beyond pruning: any iterative model-modification pipeline should refuse to advance through a regression in its own metric. Most published pruning experiments do not have this invariant; we suspect this is one reason published numbers are difficult to reproduce, because in-pipeline metrics and final-deploy metrics can disagree silently.
+
+## The Four-Metric Importance Comparison (Empirical Result)
+
+The L2-weight-norm finding from Layer 4 (Finding 4) raised the question of which importance metric a forge pipeline should use as default. We compared four signals on the same model (Qwen2.5-0.5B) with the same calibration set and the same pruning operation (remove the lowest-importance KV group per layer, no retraining):
+
+| Rank | Metric | PPL | Ratio vs baseline (24.5) | Information source |
+|-----:|--------|----:|------:|---|
+| 1 | Activation magnitude | **145** | 5.9× | forward hook on `o_proj` input |
+| 2 | Saliency (act × grad) | 381 | 15.6× | combined forward and backward hook |
+| 3 | L2 weight norm of Q | 15,269 | 623× | weight tensor only, no data |
+| 4 | LoRA gradient magnitude | **24,793** | **1011×** | backward hook on `o_proj` input |
+
+Three observations are worth being explicit about:
+
+**1. Activation alone beats saliency.** The standard structured-pruning literature treats activation × gradient saliency (Wanda; SparseGPT) as the gold-standard signal because the chain rule says it's the contribution of each head to the loss. On this model and calibration, the saliency metric is 2.6× worse than activation alone. Multiplying by gradient hurts.
+
+**2. Gradient magnitude is the worst of the four.** This is the metric the [Plasticity Compaction](PLASTICITY-COMPACTION.md) paper uses for its "free utilization map" trick (capturing gradients during normal LoRA training as a head-importance signal). At this calibration scale, the gradient signal is anti-information — worse than not measuring at all. We hypothesize the gradient signal stabilizes at training-scale calibration (thousands of samples vs the eight we used) and the compaction paper's trick may still be valid in its actual deployment context, but this is currently untested.
+
+**3. The mechanistic prediction was directionally wrong.** A reviewer (Kash) predicted weight-norm worst, gradient and activation intermediate, saliency best. The actual ordering is activation best, saliency intermediate, L2 third, gradient worst. The prediction was wrong by 2.6× on the activation-vs-saliency comparison and by orders of magnitude on the gradient-vs-L2 comparison.
+
+Speculation on why: at small calibration sizes, the gradient signal is dominated by heads with high forward activation, because loss flows through them. So saliency ≈ activation × f(activation) ≈ activation². This penalizes specialized low-activation circuits (induction heads, copy heads) twice — once for low activation and once for low gradient. Pure activation magnitude protects them by not combining anything. If this is right, the gradient signal needs ≥1000 calibration samples for the variance to drop enough to disambiguate specialized circuits, and we should test this before declaring the compaction paper's trick broken.
+
+What we recommend with current evidence:
+- Forge pipelines should default to `compute_activation_importance` (the activation-magnitude metric), not `compute_head_importance` (L2-weight-norm)
+- The PLASTICITY-COMPACTION free-trick needs validation at training-scale calibration before its central claim can stand
+- The Wanda/SNIP saliency family of metrics deserves re-validation on consumer-hardware-scale models with proper test harnesses, because the chain-rule gold standard does not hold up here
+
+Raw artifact: `tests/defrag_validation/artifacts/four_metric_comparison.json` in the sentinel-ai repo.
+
 ## Sections (planned)
 
 1. Introduction: the trust gap between pruning research and deployment

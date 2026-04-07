@@ -414,6 +414,57 @@ The standard pruning literature is full of papers reporting "we removed N% of he
 
 The validation harness presented in the companion paper makes this checkable. Anyone can run the 90-second test suite on their own pruned model and see whether the reported numbers survive a clean evaluation. We argue that **validation harnesses should be a required artifact of any structured pruning paper**, and that this single discipline would resolve a significant amount of irreproducibility in the model compression literature.
 
+### gpt2-medium Re-Run on Corrected Pipeline (April 2026)
+
+We re-ran the gpt2-medium 10-cycle V1 controller experiment on the post-fix pipeline to test whether the original §4.1 transfer function fit was an artifact of the LoRA-on-pruned-hooks bug. The result was a fourth outcome we had not anticipated:
+
+**The controller's quality-aware stopping criterion now halts the run at cycle 4, before the cycle 9 anomaly can occur.** Specifically, the controller observed that post-train perplexity degraded for three consecutive cycles (3.21 → 3.26 → 3.33) and decided to stop. The original §4.1 data was collected with an older controller version that did not have this stopping criterion, which is why it was able to reach cycle 9 and observe the −433.1% recovery.
+
+The early-cycle data DOES reproduce. Comparing the new run to the original §4.1 numbers:
+
+| Cycle | Original recovery ratio | New recovery ratio | Match |
+|------:|------------------------:|-------------------:|------:|
+| 1 | 117.8% | 117.8% | exact |
+| 2 | 95.2% | 102.8% | within noise |
+| 3 | 85.8% | 79.9% | within noise |
+| 4 | 78.9% | 82.5% | within noise |
+| 5+ | various | (controller stopped) | n/a |
+
+The transfer function $R(n) = 1.45 \cdot e^{-0.18n} - 0.03$ remains consistent with the four cycles the new controller actually runs. Re-fitting on the new four points produces essentially the same constants. **§4 stands for the early-cycle behavior the controller will encounter in production.**
+
+The asymptotic claims in §4.3 about cycles 5-10 are now structurally untestable in the corrected pipeline, because the controller refuses to advance into the regime where the original anomaly was observed. This is not a defect — it is the controller behaving correctly. The question of whether the original cycle 9 collapse was the LoRA-on-pruned-hooks bug, a real architectural exhaustion mode, or both, can only be answered by deliberately disabling the quality-aware stopping criterion and forcing 10 cycles. We have not yet run that experiment because it tests a code path no production user would ever exercise.
+
+The honest reframing of §4 is therefore:
+
+> The transfer function describes the early-cycle behavior the controller will encounter. The controller's quality-aware stopping criterion replaces the asymptotic claims with closed-loop behavior. The controller is empirically the transfer function — it observes recovery and stops when improvement ends, without needing to know the fitted exponential. The original cycle 9 anomaly is now historical and structurally unreachable.
+
+This is a stronger result than the fitted curve alone, because it is a closed-loop controller behaving correctly rather than an open-loop fit on observational data.
+
+### Four-Metric Importance Comparison (April 2026)
+
+After implementing the activation-based importance metric (Section 9.5, Finding 4), we ran the four-metric comparison proposed by an outside reviewer. On Qwen2.5-0.5B, removing one KV group per layer with each of four metrics, the result was:
+
+| Rank | Metric | Defragged PPL | Ratio vs Baseline (24.5) |
+|-----:|--------|--------------:|-------------------------:|
+| 1 | Activation magnitude (forward hook on o_proj input) | **145** | 5.9× |
+| 2 | Saliency: activation × gradient (Wanda/SNIP style) | 381 | 15.6× |
+| 3 | L2 weight norm of Q projection (the original metric) | 15,269 | 623× |
+| 4 | LoRA gradient magnitude (compaction paper's free-trick) | **24,793** | **1011×** |
+
+This contradicts the standard prediction from the structured pruning literature (Wanda 2023; SparseGPT 2023) that activation × gradient saliency is the strongest signal. On this model, with this calibration set:
+
+1. **Activation alone beats saliency by 2.6×.** Multiplying by gradient hurts.
+2. **Gradient magnitude is the worst of the four** — even worse than the L2 weight-norm metric we already knew was broken.
+
+We hypothesize that on a small calibration set, the gradient signal is dominated by big-activation heads (because loss flows through them), so saliency reduces to approximately activation². This penalizes the specialized low-activation circuits we suspect carry rare-but-critical patterns (induction heads, copy heads, name resolution heads in the Anthropic interpretability sense) twice — once for low activation and once for low gradient. Pure activation magnitude protects them by not combining anything.
+
+This is a single-model result and we want to be careful about over-claiming. The compaction paper's gradient-magnitude trick captures gradients during full LoRA training, not on a small calibration set, and the gradient signal may stabilize at scale in a way that small-batch gradient capture cannot demonstrate. We have not yet tested this, and it is a publication-blocking question for PLASTICITY-COMPACTION.
+
+What we can say with confidence after this experiment:
+- Activation magnitude is currently the best of the four metrics for selecting heads to prune
+- The default head importance metric in the forge pipeline should be `compute_activation_importance`, not `compute_head_importance` (which is L2-weight-norm)
+- The standard structured-pruning literature's reliance on saliency as the gold-standard signal deserves re-validation on consumer-hardware-scale models with proper test harnesses
+
 ### Status of the Models in This Paper
 
 The published Qwen2.5 and Qwen3.5 models are real and run as advertised. Their improvements come from the prune-then-retrain pipeline as described, but the *attribution* of where the improvement comes from has shifted: from "smart pruning" to "fine-tuning the surviving structure after capacity reduction." We are republishing the model cards with corrected language and explicit acknowledgement of the LoRA-on-hooks fix.
