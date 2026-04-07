@@ -380,6 +380,48 @@ All experiments run on a single RTX 5090 (32GB) or equivalent. Models ≤3B run 
 
 ---
 
+## 9.5 Validation and a Reframing of the Plasticity Story
+
+While constructing a layered test harness for the defrag and pruning operations described above (see companion paper *[Validated Structured Pruning for Consumer Hardware](VALIDATED-TENSOR-SURGERY.md)*), we discovered five distinct bugs in the production pruning code, two of which materially change how this paper should be interpreted.
+
+### The LoRA-on-Pruned-Hooks Bug
+
+The original pipeline used forward hooks to mask pruned head outputs during retraining. LoRA adapters were attached to all attention projections (Q, K, V, O), including the projections feeding pruned heads. The LoRA updates on pruned head projections were trained against masked-zero outputs — pure noise. When the hooks were cleared at final evaluation, those noise contributions were released into the model output, catastrophically corrupting it.
+
+The empirical signature: in a 3-cycle Qwen3.5-9B forge, post-train perplexity dropped from 62 to 7.5 (apparent +88% improvement). Final eval, with hooks removed, reported perplexity 501 (−706% degradation). The "improvement" was an artifact of the hooks; the deployed model was eight times worse than baseline.
+
+The fix: defrag pruned heads physically into the surviving structure *before* fine-tuning, not after. LoRA only attaches to surviving heads. Each cycle operates on a real, smaller model. Hooks revert to their proper role — temporary masks for analysis, never used during gradient updates. This is the canonical structured pruning approach; the bug was a deviation from it.
+
+### The Importance Metric Finding
+
+Layer 4 of the validation harness tests defrag on a real model (Qwen2.5-0.5B). When we removed the lowest-L2-norm KV groups from each layer (the standard "importance ranking" used throughout this paper and in much of the pruning literature), perplexity went from 24 to **15,269 — an unrecoverable 622× degradation without retraining.** Removing the LAST index group (no importance ranking, just the rightmost heads) produced perplexity 1,739 — also catastrophic, but **nine times better than the supposedly informed metric.**
+
+This means L2 norm of Q projection weights, the importance metric used by `compute_head_importance` and tacitly assumed throughout this paper, is **not just unreliable — it is anti-correlated with importance for this model.** Heads with the smallest Q projection norms are evidently among the most critical, possibly because specialized circuits (induction heads, copy heads, name resolution heads in the Anthropic interpretability literature) perform precise low-magnitude operations on top of the dense semantic stream.
+
+This forces a reframing of the central claim of this paper. The improvements reported in Section 3 — Qwen2.5-7B at +14.6%, Qwen3.5-4B-code at +24% — are real, but we cannot honestly attribute them to "smart pruning that finds redundant heads." A more rigorous interpretation:
+
+> **Pruning attention heads is a capacity loss operation. Recovery happens entirely during fine-tuning, where the surviving heads adapt to fill in for what was removed. The choice of which heads to remove matters less than we assumed; the LoRA adapter on the surviving structure does the actual work.**
+
+This does not invalidate experiential plasticity — the *flywheel* of repeated prune-then-retrain cycles still produces measurably better models than no pruning, because each cycle frees the surviving heads from supporting the removed ones, allowing them to specialize. But it does mean:
+
+1. The "importance map" interpretation in Section 10 (head-level surgical training) needs to use a *behaviorally* validated importance metric, not weight-norm ranking.
+2. The transfer function in Section 4 is measuring fine-tuning recovery, not pruning quality. The 1.45·exp(−0.18·cycle) decay describes how much capacity LoRA can recover per cycle, not how cleverly the importance metric selected the right heads.
+3. Future work should compare against a "no-prune, equal-budget fine-tune" baseline. If our pruned models do not outperform a same-size model that received the same training budget without pruning, the pruning is not adding value beyond the regularization effect of removing parameters.
+
+### Why This Matters
+
+The standard pruning literature is full of papers reporting "we removed N% of heads using metric X and the model is Y% better." If our finding generalizes — that L2-norm importance ranking is unreliable for at least some model families — then a substantial fraction of those reported improvements may also be artifacts of either (a) hook-based evaluation that masks the true post-deployment behavior, or (b) recovery from fine-tuning that would have happened equally with random head selection.
+
+The validation harness presented in the companion paper makes this checkable. Anyone can run the 90-second test suite on their own pruned model and see whether the reported numbers survive a clean evaluation. We argue that **validation harnesses should be a required artifact of any structured pruning paper**, and that this single discipline would resolve a significant amount of irreproducibility in the model compression literature.
+
+### Status of the Models in This Paper
+
+The published Qwen2.5 and Qwen3.5 models are real and run as advertised. Their improvements come from the prune-then-retrain pipeline as described, but the *attribution* of where the improvement comes from has shifted: from "smart pruning" to "fine-tuning the surviving structure after capacity reduction." We are republishing the model cards with corrected language and explicit acknowledgement of the LoRA-on-hooks fix.
+
+The 9B-Qwen3.5 model that produced the catastrophic 501 perplexity in the bug report was never published. The validation harness caught it before publication — exactly the role it is intended to play.
+
+---
+
 ## 10. Future Work
 
 ### Head-Level Surgical Training
@@ -415,5 +457,7 @@ Different hardware tiers forge different model sizes. Continuous defrag enables 
 [3] Teply, J. "Plasticity Compaction: SOTA-to-COTS via MoE Expert Pruning." continuum-ai, 2026.
 
 [4] Michel, P., et al. "Are Sixteen Heads Really Better than One?" NeurIPS 2019.
+
+[5] Teply, J. "Validated Structured Pruning for Consumer Hardware: A Layered Test Harness with Cryptographic Attestation." continuum-ai, 2026. [VALIDATED-TENSOR-SURGERY.md](VALIDATED-TENSOR-SURGERY.md)
 
 [5] Frankle, J. & Carlin, M. "The Lottery Ticket Hypothesis." ICLR 2019.
