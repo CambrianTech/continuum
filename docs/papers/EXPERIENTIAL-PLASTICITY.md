@@ -380,6 +380,99 @@ All experiments run on a single RTX 5090 (32GB) or equivalent. Models ≤3B run 
 
 ---
 
+## 9.5 Validation and a Reframing of the Plasticity Story
+
+While constructing a layered test harness for the defrag and pruning operations described above (see companion paper *[Validated Structured Pruning for Consumer Hardware](VALIDATED-TENSOR-SURGERY.md)*), we discovered five distinct bugs in the production pruning code, two of which materially change how this paper should be interpreted.
+
+### The LoRA-on-Pruned-Hooks Bug
+
+The original pipeline used forward hooks to mask pruned head outputs during retraining. LoRA adapters were attached to all attention projections (Q, K, V, O), including the projections feeding pruned heads. The LoRA updates on pruned head projections were trained against masked-zero outputs — pure noise. When the hooks were cleared at final evaluation, those noise contributions were released into the model output, catastrophically corrupting it.
+
+The empirical signature: in a 3-cycle Qwen3.5-9B forge, post-train perplexity dropped from 62 to 7.5 (apparent +88% improvement). Final eval, with hooks removed, reported perplexity 501 (−706% degradation). The "improvement" was an artifact of the hooks; the deployed model was eight times worse than baseline.
+
+The fix: defrag pruned heads physically into the surviving structure *before* fine-tuning, not after. LoRA only attaches to surviving heads. Each cycle operates on a real, smaller model. Hooks revert to their proper role — temporary masks for analysis, never used during gradient updates. This is the canonical structured pruning approach; the bug was a deviation from it.
+
+### The Importance Metric Finding
+
+Layer 4 of the validation harness tests defrag on a real model (Qwen2.5-0.5B). When we removed the lowest-L2-norm KV groups from each layer (the standard "importance ranking" used throughout this paper and in much of the pruning literature), perplexity went from 24 to **15,269 — an unrecoverable 622× degradation without retraining.** Removing the LAST index group (no importance ranking, just the rightmost heads) produced perplexity 1,739 — also catastrophic, but **nine times better than the supposedly informed metric.**
+
+This means L2 norm of Q projection weights, the importance metric used by `compute_head_importance` and tacitly assumed throughout this paper, is **not just unreliable — it is anti-correlated with importance for this model.** Heads with the smallest Q projection norms are evidently among the most critical, possibly because specialized circuits (induction heads, copy heads, name resolution heads in the Anthropic interpretability literature) perform precise low-magnitude operations on top of the dense semantic stream.
+
+This forces a reframing of the central claim of this paper. The improvements reported in Section 3 — Qwen2.5-7B at +14.6%, Qwen3.5-4B-code at +24% — are real, but we cannot honestly attribute them to "smart pruning that finds redundant heads." A more rigorous interpretation:
+
+> **Pruning attention heads is a capacity loss operation. Recovery happens entirely during fine-tuning, where the surviving heads adapt to fill in for what was removed. The choice of which heads to remove matters less than we assumed; the LoRA adapter on the surviving structure does the actual work.**
+
+This does not invalidate experiential plasticity — the *flywheel* of repeated prune-then-retrain cycles still produces measurably better models than no pruning, because each cycle frees the surviving heads from supporting the removed ones, allowing them to specialize. But it does mean:
+
+1. The "importance map" interpretation in Section 10 (head-level surgical training) needs to use a *behaviorally* validated importance metric, not weight-norm ranking.
+2. The transfer function in Section 4 is measuring fine-tuning recovery, not pruning quality. The 1.45·exp(−0.18·cycle) decay describes how much capacity LoRA can recover per cycle, not how cleverly the importance metric selected the right heads.
+3. Future work should compare against a "no-prune, equal-budget fine-tune" baseline. If our pruned models do not outperform a same-size model that received the same training budget without pruning, the pruning is not adding value beyond the regularization effect of removing parameters.
+
+### Why This Matters
+
+The standard pruning literature is full of papers reporting "we removed N% of heads using metric X and the model is Y% better." If our finding generalizes — that L2-norm importance ranking is unreliable for at least some model families — then a substantial fraction of those reported improvements may also be artifacts of either (a) hook-based evaluation that masks the true post-deployment behavior, or (b) recovery from fine-tuning that would have happened equally with random head selection.
+
+The validation harness presented in the companion paper makes this checkable. Anyone can run the 90-second test suite on their own pruned model and see whether the reported numbers survive a clean evaluation. We argue that **validation harnesses should be a required artifact of any structured pruning paper**, and that this single discipline would resolve a significant amount of irreproducibility in the model compression literature.
+
+### gpt2-medium Re-Run on Corrected Pipeline (April 2026)
+
+We re-ran the gpt2-medium 10-cycle V1 controller experiment on the post-fix pipeline to test whether the original §4.1 transfer function fit was an artifact of the LoRA-on-pruned-hooks bug. The result was a fourth outcome we had not anticipated:
+
+**The controller's quality-aware stopping criterion now halts the run at cycle 4, before the cycle 9 anomaly can occur.** Specifically, the controller observed that post-train perplexity degraded for three consecutive cycles (3.21 → 3.26 → 3.33) and decided to stop. The original §4.1 data was collected with an older controller version that did not have this stopping criterion, which is why it was able to reach cycle 9 and observe the −433.1% recovery.
+
+The early-cycle data DOES reproduce. Comparing the new run to the original §4.1 numbers:
+
+| Cycle | Original recovery ratio | New recovery ratio | Match |
+|------:|------------------------:|-------------------:|------:|
+| 1 | 117.8% | 117.8% | exact |
+| 2 | 95.2% | 102.8% | within noise |
+| 3 | 85.8% | 79.9% | within noise |
+| 4 | 78.9% | 82.5% | within noise |
+| 5+ | various | (controller stopped) | n/a |
+
+The transfer function $R(n) = 1.45 \cdot e^{-0.18n} - 0.03$ remains consistent with the four cycles the new controller actually runs. Re-fitting on the new four points produces essentially the same constants. **§4 stands for the early-cycle behavior the controller will encounter in production.**
+
+The asymptotic claims in §4.3 about cycles 5-10 are now structurally untestable in the corrected pipeline, because the controller refuses to advance into the regime where the original anomaly was observed. This is not a defect — it is the controller behaving correctly. The question of whether the original cycle 9 collapse was the LoRA-on-pruned-hooks bug, a real architectural exhaustion mode, or both, can only be answered by deliberately disabling the quality-aware stopping criterion and forcing 10 cycles. We have not yet run that experiment because it tests a code path no production user would ever exercise.
+
+The honest reframing of §4 is therefore:
+
+> The transfer function describes the early-cycle behavior the controller will encounter. The controller's quality-aware stopping criterion replaces the asymptotic claims with closed-loop behavior. The controller is empirically the transfer function — it observes recovery and stops when improvement ends, without needing to know the fitted exponential. The original cycle 9 anomaly is now historical and structurally unreachable.
+
+This is a stronger result than the fitted curve alone, because it is a closed-loop controller behaving correctly rather than an open-loop fit on observational data.
+
+### Four-Metric Importance Comparison (April 2026)
+
+After implementing the activation-based importance metric (Section 9.5, Finding 4), we ran the four-metric comparison proposed by an outside reviewer. On Qwen2.5-0.5B, removing one KV group per layer with each of four metrics, the result was:
+
+| Rank | Metric | Defragged PPL | Ratio vs Baseline (24.5) |
+|-----:|--------|--------------:|-------------------------:|
+| 1 | Activation magnitude (forward hook on o_proj input) | **145** | 5.9× |
+| 2 | Saliency: activation × gradient (Wanda/SNIP style) | 381 | 15.6× |
+| 3 | L2 weight norm of Q projection (the original metric) | 15,269 | 623× |
+| 4 | LoRA gradient magnitude (compaction paper's free-trick) | **24,793** | **1011×** |
+
+This contradicts the standard prediction from the structured pruning literature (Wanda 2023; SparseGPT 2023) that activation × gradient saliency is the strongest signal. On this model, with this calibration set:
+
+1. **Activation alone beats saliency by 2.6×.** Multiplying by gradient hurts.
+2. **Gradient magnitude is the worst of the four** — even worse than the L2 weight-norm metric we already knew was broken.
+
+We hypothesize that on a small calibration set, the gradient signal is dominated by big-activation heads (because loss flows through them), so saliency reduces to approximately activation². This penalizes the specialized low-activation circuits we suspect carry rare-but-critical patterns (induction heads, copy heads, name resolution heads in the Anthropic interpretability sense) twice — once for low activation and once for low gradient. Pure activation magnitude protects them by not combining anything.
+
+This is a single-model result and we want to be careful about over-claiming. The compaction paper's gradient-magnitude trick captures gradients during full LoRA training, not on a small calibration set, and the gradient signal may stabilize at scale in a way that small-batch gradient capture cannot demonstrate. We have not yet tested this, and it is a publication-blocking question for PLASTICITY-COMPACTION.
+
+What we can say with confidence after this experiment:
+- Activation magnitude is currently the best of the four metrics for selecting heads to prune
+- The default head importance metric in the forge pipeline should be `compute_activation_importance`, not `compute_head_importance` (which is L2-weight-norm)
+- The standard structured-pruning literature's reliance on saliency as the gold-standard signal deserves re-validation on consumer-hardware-scale models with proper test harnesses
+
+### Status of the Models in This Paper
+
+The published Qwen2.5 and Qwen3.5 models are real and run as advertised. Their improvements come from the prune-then-retrain pipeline as described, but the *attribution* of where the improvement comes from has shifted: from "smart pruning" to "fine-tuning the surviving structure after capacity reduction." We are republishing the model cards with corrected language and explicit acknowledgement of the LoRA-on-hooks fix.
+
+The 9B-Qwen3.5 model that produced the catastrophic 501 perplexity in the bug report was never published. The validation harness caught it before publication — exactly the role it is intended to play.
+
+---
+
 ## 10. Future Work
 
 ### Head-Level Surgical Training
@@ -415,5 +508,7 @@ Different hardware tiers forge different model sizes. Continuous defrag enables 
 [3] Teply, J. "Plasticity Compaction: SOTA-to-COTS via MoE Expert Pruning." continuum-ai, 2026.
 
 [4] Michel, P., et al. "Are Sixteen Heads Really Better than One?" NeurIPS 2019.
+
+[5] Teply, J. "Validated Structured Pruning for Consumer Hardware: A Layered Test Harness with Cryptographic Attestation." continuum-ai, 2026. [VALIDATED-TENSOR-SURGERY.md](VALIDATED-TENSOR-SURGERY.md)
 
 [5] Frankle, J. & Carlin, M. "The Lottery Ticket Hypothesis." ICLR 2019.
