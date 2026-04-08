@@ -299,6 +299,47 @@ The two data points form the start of a methodology curve, not a single anomaly.
 
 **The empirical anchor for this section is the v1 publication of `continuum-ai/qwen3-coder-30b-a3b-compacted-19b-256k`** (alloy hash `aa61c4bdf463847c`). The published artifact carries both the calibration-aware result (88.4 / 86.0) as the current prune AND the router-gate-L2 result (78.7 / 73.8) in the alloy's `priorMetricBaselines` array as the negative-baseline empirical control. Both per-problem JSONL outputs are uploaded with sha256 result hashes recorded in the alloy, so any third party can re-score either run against the same base anchor without trusting the producer's claim. Without the negative baseline, the §4.1.3.4 claim is unfalsifiable; with it, the +9.7 / +12.2 swing is independently reproducible from the published artifact alone.
 
+**Cross-architecture validation: the second empirical anchor.** The methodology was independently re-validated on `OlmoeForCausalLM` (Allen AI's OLMoE-1B-7B-0924-Instruct) — a structurally distinct MoE family with a different vendor, different parameter scale (7B vs 30B), different active fraction (1.3B vs 3.3B), and different prune ratio (25% vs 37.5%). The same `expert_activation_profile.py` and `cpu_expert_prune_v2.py --importance-json` scripts ran on OLMoE **without any modification**, confirming the unfused-MoE module-tree pattern is shared between the two families. The artifact is `continuum-ai/olmoe-1b-7b-compacted-5b` (alloy hash `bba0a92ff0c8bebb`):
+
+| OLMoE-1B-7B-0924-Instruct | HumanEval pass@1 | HumanEval+ pass@1 | Δ vs base |
+|---|---|---|---|
+| Base (Q5_K_M, hardware-measured) | 40.9 | 36.6 | (anchor) |
+| Student, broad-corpus calibration (negative baseline) | 28.0 | 26.2 | −12.9 / −10.4 |
+| **Student, code-corpus calibration** | **36.0** | **31.7** | **−4.9 / −4.9** |
+
+**The within-model A/B isolates the calibration-corpus lever from every other variable.** Same architecture, same prune budget (k=48 of 64), same hardware, same eval pipeline, same metric formula. The only thing that changed between the two student runs was the calibration corpus passed to `expert_activation_profile.py`: 300 mixed-domain held-out examples (1/6 code) vs 300 Python code held-out examples (100% code). The +8.0 / +5.5 HumanEval swing is the lever in pure isolation. **The OLMoE artifact's `priorMetricBaselines[]` carries the broad-corpus negative baseline alongside the code-corpus current prune** so the within-model isolation is independently reproducible from the published artifact alone.
+
+**The 13-point ceiling.** Across the two within-architecture A/Bs and the cross-architecture comparison, four data cells now exist:
+
+| Run | Importance metric | Calibration corpus | Δ HumanEval |
+|---|---|---|---|
+| Qwen3-Coder-30B-A3B (37.5% prune) | router-gate-L2 (architectural) | broad heldout | **−13.4** |
+| OLMoE-1B-7B (25% prune) | activation-count (calibration-aware) | broad heldout (1/6 code) | **−12.9** |
+| Qwen3-Coder-30B-A3B (37.5% prune) | activation-count (calibration-aware) | code-heavy heldout | −3.7 |
+| OLMoE-1B-7B (25% prune) | activation-count (calibration-aware) | code-heavy heldout | −4.9 |
+
+The wrong-metric failure (−13.4) and the wrong-corpus failure (−12.9) saturate at near-identical magnitude across different model families, different active fractions, and different prune ratios. **The metric lever and the corpus lever appear to be substitutable failure modes:** getting either wrong is sufficient to ceiling the damage at ~13 HumanEval points; getting them both wrong does not visibly add to the damage. They are not independent additive sources of loss but two access paths to the same structural ceiling. We do not yet have a fourth cell with both wrong on the same model, but the magnitude match across the three observed failure cells is striking enough to record as a hypothesis worth specifically refuting in future work.
+
+**A second observation from the cross-architecture data: smaller models are more sensitive to calibration alignment.** OLMoE at 25% prune lost 4.9 HumanEval points after the calibration-aware fix; Qwen3-Coder-30B-A3B at 37.5% prune lost 3.7. The smaller model with the less aggressive prune produced a larger residual gap. The directional implication is that smaller models have less expert redundancy per active capacity, so any individual code-relevant expert removal cuts deeper. The calibration-corpus-must-reflect-eval-workload rule therefore matters *more* for smaller models, not less — counterintuitive (one would expect larger models to be more sensitive to subtle calibration drift, not the opposite), and worth flagging as a future systematic study.
+
+##### 4.1.3.4.1 Discipline gate: calibration corpus identity must be hash-pinned in the alloy
+
+The §4.1.4.1 anchor-reproduction discipline gate prevents shipping artifacts whose base anchor cannot be reproduced within ±3pt on the publishing pipeline. The §4.1.3.4 within-model isolation surfaces a second hard rule that must clear before any artifact ships under the calibrated-discipline brand:
+
+> **§4.1.3.4 calibration-corpus discipline gate.** The calibration corpus used for importance profiling must be declared in the alloy as a hash-pinned dataset (sha256 of the corpus file, file size in tokens, and a summary of the content distribution). The eval benchmark must be a representative sample of the same distribution. Forge artifacts whose calibration corpus does not reflect the eval workload distribution shall not ship under the calibrated-discipline brand. This gate is a hard precondition on shipping, alongside §4.1.4.1.
+
+The motivation is the within-model isolation above: the +8.0 HumanEval swing on OLMoE between broad-corpus and code-corpus calibration, with no other variable changed, is the lower bound on the damage that can be hidden inside a "calibration-aware" claim that does not specify the calibration distribution. Two artifacts with the same forge methodology and the same prune budget can differ by 8 HumanEval points purely on calibration corpus selection. The consumer of a published artifact has no way to know which calibration distribution was used unless the alloy declares it explicitly with a hash that can be re-computed against the published corpus file.
+
+The discipline gate has three concrete requirements:
+
+1. **Calibration corpus is uploaded to the artifact's HF repo** alongside the model weights and benchmark sample JSONLs, under a `calibration/` subdirectory. The corpus file is the actual ground-truth content used for profiling, not a description of it.
+2. **The alloy's expert-activation-profile stage records the corpus's sha256 hash** in addition to its filename, example count, and token count. The stage's sidecar metadata embeds the same hash for cross-reference.
+3. **The published model card declares both the calibration corpus and the eval benchmark explicitly** with the rationale for the alignment. If the eval is HumanEval, the calibration must be code-heavy; if the eval is GSM8K, the calibration must be math-heavy; if the eval is MMLU, the calibration must be broad. Mismatch is a discipline-gate failure and the artifact does not ship.
+
+Both empirical anchors above (qwen3-coder-30b-a3b v1 and olmoe-1b-7b v1) carry their calibration corpora at `calibration/heldout_code300.jsonl` in the published HF repo and the corpus sha256 in the alloy's expert-activation-profile stage metadata. The discipline gate is satisfied retroactively for both, and is enforced going forward by `publish_model.py` requiring the calibration corpus to be present in the staging directory before the publish step proceeds.
+
+The lab now has two discipline gates derived from empirical failures rather than asserted from first principles: §4.1.4.1 anchor reproduction (catches eval-pipeline drift) and §4.1.3.4.1 calibration-corpus identity (catches importance-metric corpus drift). Both are preconditions on shipping. Neither is theoretical — both exist because the failures they prevent have already happened in this work and been measured.
+
 **Status of the next experimental wave.** With the §4.1.3.4 metric fix landed, row 7 of §4.1.4 carries the v1 calibration-aware artifact (88.4 / 86.0). Row 7 v2 will add KL-distillation compensation LoRA on top of the calibration-aware student to attempt to close the residual −3.7 / −3.0 gap, paralleling the v2-7B §4.1.3.3 closure. The compensation step is currently blocked on a memory-architecture issue: at 30B class with both teacher and student on a single 32 GB GPU, transformers' `caching_allocator_warmup` pre-allocates an fp16 buffer equal to the model size before bnb 4-bit quantization takes effect, exceeding total VRAM even with both models nominally configured for 4-bit. The architecturally correct fix is offline teacher-logit precomputation: phase 1 loads the teacher alone in 4-bit and dumps (input_ids, logits) to disk on the calibration corpus, phase 2 unloads the teacher and frees the GPU, phase 3 loads the student alone in 4-bit and trains against the on-disk logits with the full GPU available. This rewrite is the prerequisite to v2 and is the next sentinel-ai sprint after the v1 publication.
 
 #### 4.1.4 The measurement, calibrated against an external anchor
