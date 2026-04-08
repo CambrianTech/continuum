@@ -1,7 +1,18 @@
 # Forge-Alloy Domain Extensibility — Refactor Proposal
 
-> **Status:** Design proposal. Complements [FORGE-ALLOY-SPEC.md](FORGE-ALLOY-SPEC.md).
-> **Companion docs:** [FACTORY-PIPELINE-UI.md](FACTORY-PIPELINE-UI.md), [FACTORY-UX-VISION.md](FACTORY-UX-VISION.md).
+> **Status:** Design proposal — schema-side architecture proposal for forge-alloy.
+> **Updated 2026-04-08:** the consumer-side adapter architecture in sentinel-ai
+> is mid-sprint and is documented separately at
+> [`sentinel-ai/docs/PLUGIN-SPRINT.md`](../../../sentinel-ai/docs/PLUGIN-SPRINT.md).
+> The schema work in this doc is **roadmap step 5** of the plugin sprint —
+> the consumer-side adapter set is designed to register against the
+> `llm-forge` domain extension once it lands. Read the plugin sprint doc
+> first for the full state across both repos.
+>
+> **Companion docs:** [FORGE-ALLOY-SPEC.md](FORGE-ALLOY-SPEC.md),
+> [FACTORY-PIPELINE-UI.md](FACTORY-PIPELINE-UI.md),
+> [FACTORY-UX-VISION.md](FACTORY-UX-VISION.md),
+> [`sentinel-ai/docs/PLUGIN-SPRINT.md`](../../../sentinel-ai/docs/PLUGIN-SPRINT.md).
 > **Author intent:** lock in the universal-blueprint-with-pluggable-domains architecture so it stops getting forgotten and re-violated by future implementation work.
 
 ---
