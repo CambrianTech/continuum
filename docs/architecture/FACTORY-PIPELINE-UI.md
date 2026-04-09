@@ -99,6 +99,88 @@ Same alloy, every interface. The language is portable. The contract is universal
 - **Terraform** — declarative infrastructure as code, but for model architecture
 - **Dockerfile** — reproducible build spec, but for neural networks
 
+## The Backend: BigMama Factory Loop
+
+The factory UI emits alloys; the forge consumes them. Between the two
+sits the **factory loop** — a disk-backed queue + worker that turns the
+sentinel-ai forge into a 24/7 production line. Drop an alloy in
+`.factory/queue/pending/`, BigMama (or any single-GPU box) picks it up,
+runs it through the family-adapter set, scores it against every
+benchmark it's eligible for, publishes to HuggingFace.
+
+```
+                                       ┌─────────────────────────┐
+                                       │  .factory/queue/        │
+                  drop alloy here  →   │    pending/             │  ← from UI, CLI, generator, recipe
+                                       │    running/  ← worker   │
+                                       │    done/     ← success  │
+                                       │    failed/   ← traceback│
+                                       └────────────┬────────────┘
+                                                    │
+                                                    ▼
+                                       FactoryWorker.process_one()
+                                                    │
+                          ┌─────────────────────────┼─────────────────────────┐
+                          ▼                         ▼                         ▼
+                 alloy_executor               eval_runners              publish_model
+                 .execute_alloy()             (registry dispatch)       .publish()
+                          │                         ▲                         │
+                          │                         │                         │
+                  family-adapter              resolve_runner(name)         HF push
+                  dispatch (16 adapters)            │                         │
+                  → MoEUnfusedExpertsBase           │                    model card
+                  → MixtralAdapter                  │                         │
+                  → PhiMoEAdapter (inherits)        │                         ▼
+                  → DeepSeekV2Adapter               │              published continuum-ai/<model>
+                  → QwenVLAdapter                   │              with cryptographically
+                  → ... 11 more                     │              attested alloy hash
+                          │                         │
+                          ▼                         │
+                  forge output dir  ──── eval ──→  9 real benchmark runners:
+                                                    HumanEval, HumanEval+,
+                                                    LCB v6, IFEval, BBH,
+                                                    MATH-Hard, GPQA,
+                                                    MMLU-Pro, MuSR
+                                                    (Open LLM Leaderboard v2 pack)
+```
+
+**Two-axis dispatch — both axes registry-driven, no shared code branches:**
+
+- **Axis 1 — `source.architecture` → FamilyAdapter.** Each model family
+  is one file in `sentinel-ai/scripts/adapters/` (16 adapters today).
+  Adding a new family is one new file plus one import line. Old families
+  stay frozen forever so older alloys reproduce bit-identically.
+- **Axis 2 — benchmark name → BenchmarkRunner.** Each benchmark is one
+  file in `sentinel-ai/scripts/eval_runners/` (9 real, 12 stubs). Adding
+  a new benchmark is one new file. The §4.1.4.1 anchor-reproduction
+  discipline gate routes through the same registry as production scoring.
+
+**Sending BigMama a task:**
+
+```bash
+cp my-recipe.alloy.json /path/to/.factory/queue/pending/
+python -m factory_queue --root /path/to/.factory --max-iters 1
+```
+
+The worker picks the file off pending/, runs `execute_alloy` (which
+dispatches to the right family adapter), executes each stage including
+`eval` (registry dispatch through the BenchmarkRunner pack), calls
+`publish` on success, writes a `.result.json` next to the alloy in
+`done/`. On any failure: `.error.json` with the full traceback in
+`failed/`. No silent defaults, no retries on broken state, no f-word
+shortcuts.
+
+**The filesystem IS the queue.** No DB, no service, no network
+coordination. Multi-worker safety comes free if you ever need to scale
+beyond a single GPU (atomic `pending → running` rename via `O_EXCL`).
+Single-5090 case (today): one worker, one alloy at a time, one
+publication per cycle, complete coverage of every leaderboard the forged
+model is eligible for.
+
+Code path: `sentinel-ai/scripts/factory_queue.py` (production CLI) +
+`sentinel-ai/scripts/eval_runners/` (the 9 real benchmark runners) +
+`sentinel-ai/scripts/adapters/` (the 16 family adapters).
+
 ## Future: Visual Pipeline Flow
 
 The current composer is a vertical list. The eventual vision is a visual flow graph:
