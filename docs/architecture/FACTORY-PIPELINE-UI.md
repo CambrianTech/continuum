@@ -99,49 +99,63 @@ Same alloy, every interface. The language is portable. The contract is universal
 - **Terraform** — declarative infrastructure as code, but for model architecture
 - **Dockerfile** — reproducible build spec, but for neural networks
 
-## The Backend: BigMama Factory Loop
+## The Backend: BigMama Assembly Line
 
-The factory UI emits alloys; the forge consumes them. Between the two
-sits the **factory loop** — a disk-backed queue + worker that turns the
-sentinel-ai forge into a 24/7 production line. Drop an alloy in
-`.factory/queue/pending/`, BigMama (or any single-GPU box) picks it up,
-runs it through the family-adapter set, scores it against every
-benchmark it's eligible for, publishes to HuggingFace.
+The factory UI emits alloys; sentinel-ai's forge consumes them. Between
+the two sits the **assembly line** — a disk-backed queue + worker that
+turns the forge into a 24/7 production line. Toyota Production System
+over alchemy: parts enter `intake/`, move down the line to `assembly/`,
+get assayed by the eval-runner pack, and end up in `finished/` (or
+`rework/` if QA flags them).
+
+**Continuum is the shipping department.** It reads `finished/`, applies
+release gates (alloy-declared minimum eval scores, security review,
+branding, naming), and pushes to HuggingFace from its own auth scope.
+Sentinel never pushes to HF — that's a deliberate architectural
+boundary. The assembly line builds and assays; the shipping department
+ships.
 
 ```
-                                       ┌─────────────────────────┐
-                                       │  .factory/queue/        │
-                  drop alloy here  →   │    pending/             │  ← from UI, CLI, generator, recipe
-                                       │    running/  ← worker   │
-                                       │    done/     ← success  │
-                                       │    failed/   ← traceback│
-                                       └────────────┬────────────┘
+                                       ┌──────────────────────────┐
+                                       │  .factory/line/          │
+                  drop alloy here  →   │    intake/               │  ← from UI, CLI, generator, recipe
+                                       │    assembly/  ← worker   │
+                                       │    finished/  ← shipping │  ← continuum reads here
+                                       │    rework/    ← QA flag  │
+                                       └────────────┬─────────────┘
                                                     │
                                                     ▼
                                        FactoryWorker.process_one()
                                                     │
-                          ┌─────────────────────────┼─────────────────────────┐
-                          ▼                         ▼                         ▼
-                 alloy_executor               eval_runners              publish_model
-                 .execute_alloy()             (registry dispatch)       .publish()
-                          │                         ▲                         │
-                          │                         │                         │
-                  family-adapter              resolve_runner(name)         HF push
-                  dispatch (16 adapters)            │                         │
-                  → MoEUnfusedExpertsBase           │                    model card
-                  → MixtralAdapter                  │                         │
-                  → PhiMoEAdapter (inherits)        │                         ▼
-                  → DeepSeekV2Adapter               │              published continuum-ai/<model>
-                  → QwenVLAdapter                   │              with cryptographically
-                  → ... 11 more                     │              attested alloy hash
-                          │                         │
-                          ▼                         │
-                  forge output dir  ──── eval ──→  9 real benchmark runners:
-                                                    HumanEval, HumanEval+,
-                                                    LCB v6, IFEval, BBH,
-                                                    MATH-Hard, GPQA,
-                                                    MMLU-Pro, MuSR
-                                                    (Open LLM Leaderboard v2 pack)
+                                   ┌────────────────┴────────────────┐
+                                   ▼                                 ▼
+                          alloy_executor                       eval_runners
+                          .execute_alloy()                   (registry dispatch)
+                                   │                                 ▲
+                                   │                                 │
+                            family-adapter                  resolve_runner(name)
+                            dispatch (16 adapters)                   │
+                            → MoEUnfusedExpertsBase                  │
+                            → MixtralAdapter                         │
+                            → PhiMoEAdapter (inherits)               │
+                            → DeepSeekV2Adapter                      │
+                            → QwenVLAdapter                          │
+                            → ... 11 more                            │
+                                   │                                 │
+                                   ▼                                 │
+                            forged artifact  ──── assay (eval) ──→  9 real benchmark runners:
+                                   │                                 HumanEval, HumanEval+,
+                                   │                                 LCB v6, IFEval, BBH,
+                                   │                                 MATH-Hard, GPQA,
+                                   ▼                                 MMLU-Pro, MuSR
+                            mark_finished()                          (Open LLM Leaderboard v2 pack)
+                                   │
+                                   ▼
+                            .factory/line/finished/  ──→  CONTINUUM (shipping department)
+                                                          • reads result manifest
+                                                          • applies release gates
+                                                          • pushes to HF
+                                                          • posts model card
 ```
 
 **Two-axis dispatch — both axes registry-driven, no shared code branches:**
@@ -155,27 +169,27 @@ benchmark it's eligible for, publishes to HuggingFace.
   a new benchmark is one new file. The §4.1.4.1 anchor-reproduction
   discipline gate routes through the same registry as production scoring.
 
-**Sending BigMama a task:**
+**Sending BigMama a part to build:**
 
 ```bash
-cp my-recipe.alloy.json /path/to/.factory/queue/pending/
+cp my-recipe.alloy.json /path/to/.factory/line/intake/
 python -m factory_queue --root /path/to/.factory --max-iters 1
 ```
 
-The worker picks the file off pending/, runs `execute_alloy` (which
-dispatches to the right family adapter), executes each stage including
-`eval` (registry dispatch through the BenchmarkRunner pack), calls
-`publish` on success, writes a `.result.json` next to the alloy in
-`done/`. On any failure: `.error.json` with the full traceback in
-`failed/`. No silent defaults, no retries on broken state, no f-word
-shortcuts.
+The worker picks the part off `intake/`, moves it onto `assembly/`,
+runs `execute_alloy` (family-adapter dispatch), executes each stage
+including `eval` (registry dispatch through the BenchmarkRunner pack),
+and on success moves the alloy to `finished/` with a `.result.json`
+sidecar pointing at the on-disk forged artifact and the eval results.
+On any failure: `.error.json` with the full traceback in `rework/`. No
+silent defaults, no retries on broken state, no f-word shortcuts.
 
 **The filesystem IS the queue.** No DB, no service, no network
 coordination. Multi-worker safety comes free if you ever need to scale
-beyond a single GPU (atomic `pending → running` rename via `O_EXCL`).
-Single-5090 case (today): one worker, one alloy at a time, one
-publication per cycle, complete coverage of every leaderboard the forged
-model is eligible for.
+beyond a single GPU (atomic `intake → assembly` rename via `O_EXCL`).
+Single-5090 case (today): one worker, one part at a time, complete
+benchmark coverage per finished artifact, continuum decides when to
+ship.
 
 Code path: `sentinel-ai/scripts/factory_queue.py` (production CLI) +
 `sentinel-ai/scripts/eval_runners/` (the 9 real benchmark runners) +
