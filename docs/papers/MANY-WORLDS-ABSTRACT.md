@@ -389,6 +389,16 @@ The meta-claim: **what makes a research direction durable is not the result; it 
 
 This is the deepest reason the lab's infrastructure investment was the right bet. We did not build a model. We did not build a research project. **We built a language, and Many-Worlds is the first nontrivial program we are about to compile in it.**
 
+#### A note on what "language" means here, and the v0/v1/v2 path
+
+The honest distinction worth flagging in the savestate: **today the forge-alloy schema is an IR, not a surface language**. JSON validated against a schema is what compilers consume internally; it is not what humans write. v0 of Many-Worlds ships as a JSON recipe in the existing forge-alloy schema (shown in §V.6.6), and that is the right scope for the empirical-discipline gate — we are not blocking the empirical validation on language design.
+
+**v1 designs the actual surface language.** Joel's framing: *"we should try to build this many worlds with our own language. It'll be so cool to develop a language to define what's needed to create any model, or an API at least."* The right scope for v1 is a real DSL with syntax, composition primitives, type checking, error messages, and an editor experience — the things JSON cannot give you because JSON is a serialization format, not a language. The DSL compiles to the existing forge-alloy IR, which means the runtime stays unchanged and every existing recipe keeps working. **The IR is the contract; the surface language is the ergonomics; the runtime is the executor.** Three layers, three independent design decisions, three different release schedules.
+
+**v2 ships the language as part of the pip/npm/cargo package**, with editor integrations (LSP server, syntax highlighting, completion, recipe linting), and it becomes the thing other labs interact with when they `pip install continuum-forge`. The polyglot endpoint from §V.6.6 applies — same surface language, same compilation to the same IR, same runtime in any host language. The DSL is host-language-independent the way SQL is host-language-independent.
+
+This is the third paper from the lab when it lands — *"forge-alloy: A High-Level Language for AI Architecture Design"* — and it is a deliberate post-v0 contribution because the language design is much easier when there is at least one nontrivial program (Many-Worlds) already written in the IR. Designing a language without programs to compile is how you end up with abstractions that don't survive contact with real use cases. Many-Worlds is the program that proves the IR is general enough to carry real architectural research; the language design then formalizes the patterns that emerged from writing the program. **The order is: write the program first, then design the language around what the program needed.** That is also how every real high-level language was actually designed historically — C emerged from B which emerged from BCPL which emerged from people writing operating systems in assembly and noticing the patterns. **Many-Worlds is the operating system; the language comes later, formalized from what Many-Worlds taught us we needed.**
+
 ### V.7 Why this experiment is the right scale
 
 - **Small enough to run in 1 day on BigMama** — the population fits in VRAM, the substrate is tiny, the adapters train in hours
