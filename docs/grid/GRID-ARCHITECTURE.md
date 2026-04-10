@@ -534,6 +534,116 @@ interface NodeReputation {
 
 ---
 
+## 10.5 Capability/Needs Vector Matchmaking (RANSAC-style)
+
+**The grid scheduler does not pick winners — it lets each request define what winning means.**
+
+Reputation (§10) tells us *which nodes are trustworthy*. It doesn't tell us *which trustworthy node is the right fit for this specific request*. A 3090 node with slow fiber and 99% uptime is the wrong choice for an interactive chat with sub-100ms p99 requirements, but the *perfect* choice for a multi-hour batch training-data-generation job. Fixed node classes (`green`/`yellow`/`red`) collapse this multi-dimensional fit into one axis and lose the nuance.
+
+Instead: every node publishes a **capability vector**, every job carries a **needs vector**, and the matchmaker scores `node × job` pairs as a weighted dot product. The weights come from the user submitting the job. Same shape as RANSAC inlier-scoring: filter on hard thresholds first, then rank surviving nodes by the weighted score. Same intuition as a multi-objective loss landscape where the *user* sets the term weights instead of the system designer.
+
+### Capability vector (per node, advertised in heartbeat)
+
+```typescript
+interface NodeCapability {
+  nodeId: UUID;
+
+  // Measured performance (auto-probed, refreshed periodically)
+  tokensPerSecByModelClass: {
+    '7b': number;
+    '30b-moe': number;
+    '70b': number;
+    '200b-plus': number;
+  };
+  latencyP50Ms: number;          // mesh-wide probe median
+  latencyP99Ms: number;
+  qosScore: number;              // 0..1, rolling 24h: uptime × jitter⁻¹ × loss⁻¹
+  networkMbpsDown: number;
+  networkMbpsUp: number;
+
+  // Hardware (declared, validated by sentinel handshake)
+  vramGb: number;
+  hotTierGb: number;
+  coldTierGb: number;
+
+  // Operator-declared
+  availabilityWindow: string;    // e.g., "00:00-24:00" or "18:00-08:00"
+  costPerToken: number;          // 0 = freely contributed
+  privacyClass: 'public' | 'friend-mesh' | 'private';
+}
+```
+
+### Needs vector (per job, set by the requesting user)
+
+```typescript
+interface JobNeeds {
+  // Hard thresholds — nodes failing any of these are filtered out
+  // before scoring (RANSAC inlier gate)
+  minVramGb?: number;
+  minModelClass?: '7b' | '30b-moe' | '70b' | '200b-plus';
+  maxLatencyP99Ms?: number;
+  maxCostPerToken?: number;
+  privacyFloor?: 'public' | 'friend-mesh' | 'private';
+
+  // Soft weights — surviving nodes are ranked by the weighted dot
+  // product of these weights against their capability vector
+  weightThroughput: number;      // "max tokens/sec, latency be damned"
+  weightLatency: number;         // "interactive — p99 matters most"
+  weightCost: number;            // "I'll wait, just don't bankrupt me"
+  weightReliability: number;     // "multi-hour job, cannot lose mid-run"
+  weightPrivacy: number;         // "route only through trusted peers"
+}
+```
+
+### Score function
+
+```
+score(node, job) =
+  weightThroughput  · normalize(node.tokensPerSec[job.modelClass])
++ weightLatency     · normalize(1 / node.latencyP99Ms)
++ weightCost        · normalize(1 / max(node.costPerToken, ε))
++ weightReliability · node.qosScore · reputationScore(node)
++ weightPrivacy     · privacyMatch(node, job)
+```
+
+Reputation (§10) plugs in here as a *multiplier on the reliability term*, not as a separate gate. A trusted node with the wrong capability profile still loses to an established node with the right one — for the right job. Reputation determines *eligibility*; capability determines *fit*.
+
+### Why this is RANSAC, not classification
+
+Classification ("is this a green node or a yellow node?") forces a global threshold and discards information. RANSAC keeps every sample and lets the *consensus* (the per-job weight vector) decide which samples are inliers for *this specific model fit*. Same node can be an inlier for a throughput-weighted job and an outlier for a latency-weighted job — and that's correct, because it really is the right answer for one and the wrong answer for the other.
+
+The matchmaker can also **learn** weight vectors from observed accept/reject behavior, the same way recommender systems learn user preferences. A user who keeps rejecting cheap-but-slow nodes has their `weightCost` learned downward automatically. The system gets better at routing without anyone tuning a config.
+
+### Three things this unlocks
+
+1. **Per-stage routing inside one job.** A multi-stage forge alloy (profile → prune → quant → eval → publish) can carry a *different* needs vector per stage. The profile stage wants `weightThroughput` (GPU-bound, batch-friendly). The eval stage wants `weightReliability` (multi-hour, can't lose mid-run). The publish stage wants `weightLatency` (HF upload, network-bound). The grid coordinator routes each stage to the node that scores highest **for that stage's vector**, not for the whole job. Stations of the alloy lifecycle become independently scheduled.
+
+2. **Heterogeneous fleet becomes a strength.** A 3090 with slow fiber and 99% uptime is the perfect node for grinding through training-data generation overnight. A 5090 with fiber but flaky availability is the perfect node for short interactive bursts. Fixed-class matchmaking under-utilizes both because it tries to put them in the same bucket. Vector scoring routes the right jobs to each.
+
+3. **Self-pricing.** Operators don't have to set a $/token rate manually. The matchmaker derives it: nodes that consistently win throughput-weighted jobs at $X/token *are worth* $X/token in that lane. Nodes that fail to win at their advertised price drop their price automatically until they clear. Same as ad auctions, same as Uber surge — emergent price discovery, no central rate sheet. Feeds the §11 economic model from the bottom up.
+
+### Latency classes are a special case, not a replacement
+
+The `green`/`yellow`/`red` latency-class framing (from the FACTORY-PROTOCOL.md mesh section) is **one specific scoring profile** — `weightLatency = 1.0`, all other weights = 0 — applied to interactive jobs. It's a useful UX shorthand for the matchmaking experience ("you're green-tier — eligible for SOTA interactive inference"), but the underlying scheduler runs the full vector score. Latency classes are how the operator UI explains the result, not how the math works.
+
+### Connection to the §10 reputation system
+
+Reputation answers "should I trust this node at all?" Capability answers "is this trusted node the right shape for this job?" The two are orthogonal axes, both load-bearing:
+
+- **Untrusted + perfect capability**: filtered out (below trust floor)
+- **Trusted + wrong capability**: ranked low for this job, ranked high for a different job
+- **Trusted + right capability**: wins the slot
+
+Reputation gates entry to the matchmaker; capability/needs vectors decide who wins inside it.
+
+### Connection to Sentinel's FACTORY-PROTOCOL.md
+
+Sentinel's `factory_node.toml` already declares a `[capability]` block with measured + declared fields. The Continuum grid layer reads that block as the node's capability vector — no protocol negotiation needed. When the grid layer ships, today's standalone Python daemon nodes become grid participants automatically because the contract is the same disk file.
+
+The Python daemon ignores the new fields today; the Rust grid layer reads them tomorrow. Same disk-protocol-as-API-contract pattern that lets sentinel-ai stay Python forever while continuum's grid layer is Rust-native.
+
+---
+
 ## 11. Economic Model (Phase 5)
 
 ### Continuum Credits (CC)
