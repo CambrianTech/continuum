@@ -29,8 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.changed_files, 'src/workers/')
+      github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       packages: write
@@ -77,8 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.changed_files, 'src/workers/')
+      github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       packages: write
