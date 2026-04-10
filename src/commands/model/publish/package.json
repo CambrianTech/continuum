@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/model/publish",
+  "version": "1.0.0",
+  "description": "Publish a forged model to HuggingFace — safetensors, config, tokenizer, model card, and alloy provenance. This is the Factory's shipping department: the forge produces the artifact on a grid node, this command pushes it to HuggingFace where anyone can download it. Supports publishing from a local forged directory (bigmama-style) or from a grid node's finished/ station via grid/send.",
+  "main": "server/ModelPublishServerCommand.ts",
+  "types": "shared/ModelPublishTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ModelPublishIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "model/publish"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
