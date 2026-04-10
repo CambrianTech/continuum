@@ -598,6 +598,9 @@ export class FactoryWidget extends ReactiveWidget {
             <button class="job-btn" @click=${() => this.controlGridJob(job.jobId, 'resume')} title="Resume">&#9654;</button>
             <button class="job-btn cancel" @click=${() => this.controlGridJob(job.jobId, 'cancel')} title="Cancel">&#10005;</button>
           ` : nothing}
+          ${job.state === 'completed' ? html`
+            <button class="job-btn publish" @click=${() => this.publishCompletedJob(job)} title="Publish to HuggingFace">&#128640;</button>
+          ` : nothing}
           ${job.state === 'failed' || job.state === 'completed' || job.state === 'cancelled' ? html`
             <button class="job-btn cancel" @click=${() => this.dismissJob(job.jobId)} title="Dismiss">&#10005;</button>
           ` : nothing}
@@ -614,6 +617,48 @@ export class FactoryWidget extends ReactiveWidget {
     this._gridJobs = this._gridJobs.filter(j =>
       j.state === 'running' || j.state === 'queued' || j.state === 'paused'
     );
+  }
+
+  /**
+   * Publish a completed forge job to HuggingFace via model/publish.
+   * Extracts the repo name from the alloy name and the forged dir from
+   * the job's metadata, then calls the model/publish command.
+   */
+  private async publishCompletedJob(job: GridJobEntry): Promise<void> {
+    // Derive repo name from alloy name (strip _seed_ prefix and .alloy.json suffix)
+    const repoName = job.alloyName
+      .replace(/^_seed_/, '')
+      .replace(/\.retry\d+/, '')
+      .replace(/\.alloy\.json$/, '');
+
+    if (!repoName) {
+      console.error('Cannot derive repo name from alloy:', job.alloyName);
+      return;
+    }
+
+    console.log(`🚀 Publishing ${repoName} to HuggingFace...`);
+
+    try {
+      const result = await this.executeCommand<any, any>(COMMANDS.MODEL_PUBLISH, {
+        // The forged dir is on the grid node — use the node's finished/ station
+        // convention: .factory/work/<alloy-stem>/pruned (for MoE) or /model (for dense)
+        forgedDir: `.factory/work/${repoName}/pruned`,
+        repoName,
+        org: 'continuum-ai',
+        nodeId: this._targetNodeId || undefined,
+        evalPending: true,
+      });
+
+      if (result?.success) {
+        console.log(`✅ Published to ${result.repoUrl}`);
+        // Refresh the published models leaderboard
+        await this.loadPublishedModels();
+      } else {
+        console.error('Publish failed:', result?.error);
+      }
+    } catch (err) {
+      console.error('Publish error:', err);
+    }
   }
 
   private formatRelativeTime(iso: string): string {

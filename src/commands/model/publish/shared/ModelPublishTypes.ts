@@ -82,8 +82,6 @@ export const createModelPublishParams = (
  */
 export interface ModelPublishResult extends CommandResult {
   success: boolean;
-  // Whether the publish succeeded
-  success: boolean;
   // Full HuggingFace repo URL (e.g., 'https://huggingface.co/continuum-ai/mixtral-8x7b-instruct-compacted-conservative')
   repoUrl: string;
   // HuggingFace repo ID (e.g., 'continuum-ai/mixtral-8x7b-instruct-compacted-conservative')
@@ -107,8 +105,6 @@ export const createModelPublishResult = (
   sessionId: UUID,
   data: {
     success: boolean;
-    // Whether the publish succeeded
-    success?: boolean;
     // Full HuggingFace repo URL (e.g., 'https://huggingface.co/continuum-ai/mixtral-8x7b-instruct-compacted-conservative')
     repoUrl?: string;
     // HuggingFace repo ID (e.g., 'continuum-ai/mixtral-8x7b-instruct-compacted-conservative')
@@ -124,14 +120,13 @@ export const createModelPublishResult = (
     error?: JTAGError;
   }
 ): ModelPublishResult => createPayload(context, sessionId, {
-  success: data.success ?? false,
   repoUrl: data.repoUrl ?? '',
   repoId: data.repoId ?? '',
   filesUploaded: data.filesUploaded ?? 0,
   totalSizeGb: data.totalSizeGb ?? 0,
   cardIncluded: data.cardIncluded ?? false,
   alloyIncluded: data.alloyIncluded ?? false,
-  ...data
+  ...data,
 });
 
 /**

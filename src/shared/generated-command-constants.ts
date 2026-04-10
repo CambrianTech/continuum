@@ -266,6 +266,7 @@ export const COMMANDS = {
   MODEL_FORGE_STATUS: 'model/forge-status',
   MODEL_INTROSPECT: 'model/introspect',
   MODEL_LIST_PUBLISHED: 'model/list-published',
+  MODEL_PUBLISH: 'model/publish',
   MODEL_SEARCH: 'model/search',
   ONTOLOGY_BRIDGE_TRANSLATE: 'ontology/bridge/translate',
   ONTOLOGY_CONCEPT_LOOKUP_BATCH: 'ontology/concept/lookup-batch',

@@ -13,6 +13,8 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { ModelPublishParams, ModelPublishResult } from '../shared/ModelPublishTypes';
 import { createModelPublishResultFromParams } from '../shared/ModelPublishTypes';
+import { Commands } from '@system/core/shared/Commands';
+import type { GridSendParams, GridSendResult } from '@commands/grid/send/shared/GridSendTypes';
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -314,15 +316,20 @@ print(json.dumps(result))
    * Execute publish on a remote grid node via grid/send.
    */
   private async executeRemote(params: ModelPublishParams): Promise<ModelPublishResult> {
-    // Delegate to grid/send which executes model/publish on the remote node
-    const result = await this.commander.executeCommand('grid/send', {
-      nodeId: params.nodeId,
-      command: 'model/publish',
-      params: { ...params, nodeId: undefined }, // Remove nodeId to prevent infinite recursion
-    });
+    // Delegate to grid/send which executes model/publish on the remote node.
+    const remoteParams = { ...params, nodeId: undefined };
+    const gridResult = await Commands.execute<GridSendParams, GridSendResult>(
+      'grid/send',
+      {
+        ...params, // inherits context, sessionId, userId from the caller
+        nodeId: params.nodeId!,
+        remoteCommand: 'model/publish',
+        params: remoteParams as unknown as Record<string, unknown>,
+      },
+    );
 
-    if (result?.success && result.result) {
-      return result.result as ModelPublishResult;
+    if (gridResult?.success && gridResult?.remoteResult) {
+      return gridResult.remoteResult as ModelPublishResult;
     }
 
     return createModelPublishResultFromParams(params, {
