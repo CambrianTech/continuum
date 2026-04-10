@@ -1,0 +1,124 @@
+{
+  "name": "model/publish",
+  "description": "Publish a forged model to HuggingFace — safetensors, config, tokenizer, model card, and alloy provenance. This is the Factory's shipping department: the forge produces the artifact on a grid node, this command pushes it to HuggingFace where anyone can download it. Supports publishing from a local forged directory (bigmama-style) or from a grid node's finished/ station via grid/send.",
+  "params": [
+    {
+      "name": "forgedDir",
+      "type": "string",
+      "optional": false,
+      "description": "Path to the forged model directory containing safetensors, config.json, tokenizer files, and optionally the .alloy.json recipe"
+    },
+    {
+      "name": "repoName",
+      "type": "string",
+      "optional": false,
+      "description": "HuggingFace repo name (e.g., 'mixtral-8x7b-instruct-compacted-conservative'). Published under the org."
+    },
+    {
+      "name": "org",
+      "type": "string",
+      "optional": true,
+      "description": "HuggingFace organization (default: 'continuum-ai')"
+    },
+    {
+      "name": "cardPath",
+      "type": "string",
+      "optional": true,
+      "description": "Path to a custom README.md model card. If omitted, a card is auto-generated from the alloy's results + metadata."
+    },
+    {
+      "name": "alloyPath",
+      "type": "string",
+      "optional": true,
+      "description": "Path to the .alloy.json recipe file. If omitted, searches forgedDir for *.alloy.json. Included in the published repo as provenance."
+    },
+    {
+      "name": "includeGguf",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include GGUF quantized files if present in the forged dir (default: true)"
+    },
+    {
+      "name": "private",
+      "type": "boolean",
+      "optional": true,
+      "description": "Publish as private repo (default: false)"
+    },
+    {
+      "name": "evalPending",
+      "type": "boolean",
+      "optional": true,
+      "description": "Mark the model card as 'eval in progress' with placeholder benchmark fields. Use when publishing before eval completes. Card will be updated via model/update-card when eval finishes."
+    },
+    {
+      "name": "nodeId",
+      "type": "string",
+      "optional": true,
+      "description": "If forgedDir is on a remote grid node, specify the node ID. The command will use grid/send to execute the publish on the remote node."
+    },
+    {
+      "name": "tags",
+      "type": "string[]",
+      "optional": true,
+      "description": "Additional HuggingFace tags beyond the auto-generated ones"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "Whether the publish succeeded"
+    },
+    {
+      "name": "repoUrl",
+      "type": "string",
+      "description": "Full HuggingFace repo URL (e.g., 'https://huggingface.co/continuum-ai/mixtral-8x7b-instruct-compacted-conservative')"
+    },
+    {
+      "name": "repoId",
+      "type": "string",
+      "description": "HuggingFace repo ID (e.g., 'continuum-ai/mixtral-8x7b-instruct-compacted-conservative')"
+    },
+    {
+      "name": "filesUploaded",
+      "type": "number",
+      "description": "Number of files uploaded"
+    },
+    {
+      "name": "totalSizeGb",
+      "type": "number",
+      "description": "Total size of uploaded files in GB"
+    },
+    {
+      "name": "cardIncluded",
+      "type": "boolean",
+      "description": "Whether a model card was included"
+    },
+    {
+      "name": "alloyIncluded",
+      "type": "boolean",
+      "description": "Whether the alloy recipe was included"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Publish a locally forged Mixtral model",
+      "params": {
+        "forgedDir": "/mnt/cold/factory-work/mixtral-8x7b/pruned",
+        "repoName": "mixtral-8x7b-instruct-compacted-conservative",
+        "evalPending": true
+      }
+    },
+    {
+      "description": "Publish from a remote grid node",
+      "params": {
+        "forgedDir": ".factory/work/mixtral-8x7b/pruned",
+        "repoName": "mixtral-8x7b-instruct-compacted-conservative",
+        "nodeId": "bigmama",
+        "org": "continuum-ai"
+      }
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "tags": ["factory", "huggingface", "publish", "model"]
+}
