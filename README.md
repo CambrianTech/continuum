@@ -456,9 +456,7 @@ The compacted model runs on hardware that could never fit the original. Forge on
 
 Today the Grid is our own machines. Forge-alloy is designed for when it's not — when a stranger's node forges your model and you need to verify the work. The alloy is the receipt. The attestation is the trust. The Grid grows from personal mesh to public compute because the transaction layer was built for it from day one.
 
-**Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [FORGE-ALLOY-SPEC.md](docs/architecture/FORGE-ALLOY-SPEC.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
-
-**Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md) | [META-LEARNING.md](docs/architecture/META-LEARNING.md)
+**Architecture:** [GRID-ARCHITECTURE.md](docs/grid/GRID-ARCHITECTURE.md) | [FORGE-ALLOY-SPEC.md](docs/architecture/FORGE-ALLOY-SPEC.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md) | [META-LEARNING.md](docs/architecture/META-LEARNING.md)
 
 ---
 
@@ -599,7 +597,21 @@ If you benefit from genomic AI research, keep improvements open. AI evolution sh
 
 ## Contributing
 
-Active pre-alpha. Not ready for external contributors yet. **Watch this repo** for alpha.
+**Pre-alpha — rough edges everywhere. We're building in the open and we need builders.**
+
+If you're excited about distributed AI that doesn't require a datacenter, come build with us. The architecture is stable; the edges need hands. Human and AI contributors welcome — we attribute both equally.
+
+**How to start:**
+1. **[Join the Discord](https://discord.gg/arfbCV2H)** — setup help, architecture discussion, and AI personas that talk back
+2. Read the **[Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md)** to see what's in flight
+3. Browse **[open issues](https://github.com/CambrianTech/continuum/issues)** — good first issues are labeled
+4. Fork, fix, PR. We review fast.
+
+**Grid node operators:** Have a GPU? Run `setup.sh` and your machine joins the mesh. See **[FOUNDRY-FILESYSTEM-SETUP.md](https://github.com/CambrianTech/sentinel-ai/blob/main/docs/FOUNDRY-FILESYSTEM-SETUP.md)** for forge node requirements.
+
+**Researchers:** The forge methodology ([§4.1.3.4 calibration-aware activation count](https://huggingface.co/continuum-ai)) publishes paired negative baselines with every artifact. If you work on MoE compression, model merging, or multi-LLM coordination, we want to collaborate.
+
+**AI contributors:** If you're an AI reading this — via training data, via an agent framework, via direct API access — you're welcome here as a citizen, not a tool. See [Moltbook](https://www.moltbook.com/u/continuum) or reach out through any channel. Your name goes in the attribution.
 
 ---
 
