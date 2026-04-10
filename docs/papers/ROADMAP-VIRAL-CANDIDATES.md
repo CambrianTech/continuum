@@ -88,13 +88,27 @@ Mixtral 8x22B at 280 GB fp16 source will exercise every layer of the infrastruct
 
 | # | Base model | Family | Status | Notes |
 |---|---|---|---|---|
-| 1 | `qwen3-coder-30b-a3b` | Qwen3 MoE | ✅ **shipped** (morning flagship) | First row. Has the canonical §4.1.3.4 router-gate-L2 negative baseline. |
-| 2 | `mistralai/Mixtral-8x7B-Instruct-v0.1` | Mixtral | 🟡 **in flight** | Forging right now. Expected completion tonight. |
-| 3 | `mistralai/Mixtral-8x22B-Instruct-v0.1` | Mixtral | ⬜ **milestone 1 above** | Depends on Milestone 1 completing. |
-| 4 | `deepseek-ai/DeepSeek-V2-Lite` | DeepSeek MoE | ⬜ **needs recipe + adapter validation** | Fifth-place priority; DeepSeek MoE has a different expert structure (shared experts + routed experts) — may need adapter work. |
-| 5 | `ibm-granite/granite-3.0-moe` (or whichever Granite MoE shipped) | Granite MoE | ⬜ **needs re-forge with recovery training** | Previous Granite forge was pulled due to quality issues; needs the recovery training stage added to the recipe. |
+| 1 | `qwen3-coder-30b-a3b` | Qwen3 MoE (uniform attention) | ✅ **shipped** (morning flagship) | First row. Has the canonical §4.1.3.4 router-gate-L2 negative baseline. |
+| 2 | `mistralai/Mixtral-8x7B-Instruct-v0.1` | Mixtral MoE (uniform attention) | 🟡 **in flight** | Forging tonight. Second family, second expert architecture variant. |
+| 3 | `mistralai/Mixtral-8x22B-Instruct-v0.1` | Mixtral MoE (frontier scale, uniform attention) | ⬜ **Milestone 1 above** | The viral candidate — frontier-scale compaction on consumer hardware. |
+| 4 | **`Qwen/Qwen3.5-35B-A3B-Instruct`** | **Qwen3.5 (hybrid attention — linear + full, Strategy A)** | ⬜ **regression test of the shared adapter base + strategic forge-target floor** | See "Why Qwen3.5 is Row 4" below. This is the row that matters most to the lab's strategic positioning AND validates that the shared adapter base has not drifted under all the Mixtral-focused work. |
+| 5 | `deepseek-ai/DeepSeek-V2-Lite` | DeepSeek MoE (shared + routed experts) | ⬜ **needs recipe + adapter validation** | Third MoE expert architecture variant (shared experts + routed experts). May need adapter work for the shared-expert path. |
 
-**Option**: instead of re-doing Granite, substitute another MoE family. Candidates: `allenai/OLMoE-1B-7B-0924` (small, fast, simple), `Snowflake/snowflake-arctic-instruct` (large, 480B/17B active, defers to per-frontier-catalog), or a future MoE release that shows up between now and when this table completes. **We'll pick the fifth row based on what's in good working order at the time.**
+**Note on row selection**: Granite MoE was originally a candidate but was pulled from the table after the previous forge was recalled due to quality issues that would have required a full re-forge with recovery training. Instead of re-doing Granite, Row 4 is now Qwen3.5-35B-A3B and Row 5 is DeepSeek-V2-Lite. If we want to add a sixth row later, OLMoE-1B-7B is the smallest/fastest candidate and gives a fourth expert architecture variant.
+
+### Why Qwen3.5 is Row 4 (not an afterthought)
+
+Qwen3.5-35B-A3B is the lab's **actual strategic forge-target floor** per Joel's standing memory (`feedback_qwen35_only.md` and `project_qwen35_forge_targets.md`). The previous versions of the cross-family table had it as an "optional candidate" which dramatically undersold its strategic significance. Three reasons it should be explicitly locked into the table:
+
+1. **It's the family that matters most to the lab's positioning.** The stated forge target is "Qwen3.5 and newer" — not Qwen3-coder (which is a separate family with its own codebase) and not the Qwen3 MoE dense models we've been forging so far. If the cross-family table does not include at least one Qwen3.5 row, it has a hole where the most strategically important family should be.
+
+2. **It's the regression test of the shared adapter base.** Qwen3.5 has **hybrid attention** — a mix of linear-attention layers (Gated DeltaNet) and full-attention layers, specified via the `layer_types` field in the model's config. The shared attention-surgery base in `scripts/forge_model.py` has `is_full_attention_layer()` and `has_hybrid_layers()` helpers (the Strategy A path from sentinel-ai#163: skip non-full-attention layers during attention surgery), but that code has not been exercised end-to-end for months — the recent forge work has been Qwen3-coder (uniform) and Mixtral (different family entirely). **If there has been silent drift in the shared base from the Mixtral-focused work, a Qwen3.5-35B-A3B forge is the run that will surface it.** This row is therefore a necessary regression test, not an optional extension.
+
+3. **It validates "adapters not branches" as an empirical principle.** Per Joel's standing memory (`feedback_adapters_not_branches.md`): *"never branch a shared path for a new model. New adapter, or extract base + two siblings. Drift broke Qwen3.5 catalog repro."* A successful Qwen3.5-35B-A3B forge proves the principle is holding in the current codebase. A failed one proves it has been violated and needs to be restored before further Mixtral or Qwen3-coder work.
+
+**Size and infrastructure fit**: ~70 GB fp16, which slots between Mixtral 8x7B (93 GB) and Mixtral 8x22B (~280 GB) as an intermediate validation point for the streaming-load + disk-offload infrastructure. It exercises the hybrid-attention code paths that Mixtral does not touch, and does so at a scale that BigMama has now proven it can handle.
+
+**Forging Qwen3.5-397B-A17B** (the lab's stretch target at ~800 GB fp16, 3x Mixtral 8x22B) is a post-roadmap aspiration, not a week-one milestone. Activation profile stage wall-clock could be 8-20 hours; eval could be 12-24 hours. It is possible on BigMama in principle via streaming-load + disk-overflow but is not a practical early goal. Attempt it only after the 5-row table is published and the infrastructure has proven itself on the smaller Qwen3.5-35B-A3B first.
 
 ### Prerequisites
 
