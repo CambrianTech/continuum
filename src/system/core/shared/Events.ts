@@ -157,12 +157,19 @@ export class Events {
           });
           document.dispatchEvent(domEvent);
 
+          // Forward to grid peers if GridEventRouter is active
+          this.forwardToGrid(eventName, eventData);
+
           verbose() && console.log(`✅ Events: Emitted DOM-only event ${eventName}`);
           return { success: true };
         } else {
           // Server runtime without router - dispatch to local listeners only
           // This is NOT an error - many events are local-only (no cross-process routing needed)
           this.checkWildcardSubscriptions(eventName, eventData);
+
+          // Forward to grid peers if GridEventRouter is active
+          this.forwardToGrid(eventName, eventData);
+
           verbose() && console.log(`📡 Events: Local-only event ${eventName} (no router for ${context.environment}/${context.uuid.substring(0, 8)}...)`);
           return { success: true };
         }
@@ -437,6 +444,27 @@ export class Events {
    * Check if any pattern subscriptions match the emitted event
    * Made public so EventsDaemonBrowser can trigger subscriptions for EventBridge events
    */
+  /**
+   * Forward an event to grid peers via the GridEventRouter.
+   * No-op if the router isn't initialized or the event originated remotely.
+   * This is the hook that makes Events.emit() transparent across grid nodes.
+   */
+  private static forwardToGrid(eventName: string, eventData: unknown): void {
+    // Skip events that came FROM the grid (prevent echo loops)
+    if (eventData && typeof eventData === 'object' && '_remoteNode' in eventData) return;
+
+    try {
+      // Lazy import to avoid circular deps — GridEventRouter registers itself
+      const { GridEventRouter } = require('../../grid/shared/GridEventRouter');
+      const router = GridEventRouter.instance();
+      if (router) {
+        router.onLocalEvent(eventName, eventData);
+      }
+    } catch {
+      // GridEventRouter not available — local-only mode, no grid peers
+    }
+  }
+
   public static checkWildcardSubscriptions(eventName: string, eventData: unknown): void {
     let totalMatchCount = 0;
 
