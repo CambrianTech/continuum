@@ -928,6 +928,96 @@ GRID-ARCHITECTURE.md (this document)
 
 ---
 
+## 16. Grid Sovereignty & Cross-Grid Peering
+
+*Added 2026-04-10 after building open-eyes (first non-chat grid application), forging Mixtral 8x22B on BigMama, and discovering 20 Chinese spy cameras.*
+
+### 16.1 UUID + Path Addressing
+
+Every entity on the grid has a cryptographic identity (UUID from FIDO2 keypair) and a semantic path:
+
+```
+grid://a1b2c3d4/cameras/front-door/motion
+  │      │         │        │         │
+  │      │         │        │         └─ event type
+  │      │         │        └─ device
+  │      │         └─ resource class
+  │      └─ grid UUID (derived from FIDO2 public key)
+  └─ scheme
+```
+
+The UUID never changes even if hardware moves. The path is hierarchical for routing. Together: globally unique, semantically routable, cryptographically authenticated. Like IPv6 but with meaning and identity built in.
+
+### 16.2 Grid Boundary = Visibility Firewall
+
+Inside your grid: full transparency. Every node, camera, GPU, event visible.
+Outside your grid: capability vector only. Internal topology is hidden.
+
+```
+External view (what peers see):
+  grid://a1b2c3d4
+    capabilities: [forge-moe-140b, inference-70b, cameras-8, zones-3]
+
+Internal view (what you see):
+  BigMama: 5090 32GB, forge worker
+  NUC: 1080Ti 11GB, inference
+  Pi: 4 cameras, triage
+  MacBook: orchestrator, dev
+```
+
+Nodes come and go. Hardware gets upgraded. Cameras get repositioned. The external contract (capabilities + attestation) stays stable. The internal routing is your business.
+
+### 16.3 Cross-Grid Peering
+
+Grids connect to grids. Each peering agreement defines what events cross the boundary:
+
+```
+Your grid ←→ Neighbor's grid
+  Shared: camera:zone:crossing (shared driveway only)
+  Shared: camera:threat:assessed (community safety)
+  Blocked: everything else (your cameras, your business)
+```
+
+Topic-based filtering at the grid boundary. Subscribe to `grid://neighbor/cameras/shared-driveway/*` — get only the events you agreed to receive. Unpeer instantly: remove the peering, their events stop.
+
+### 16.4 Dual-Tier Event Transport
+
+Not all events are equal. Two tiers, same mesh:
+
+- **TCP/WebSocket**: reliable, ordered — alerts, forge results, entity tracks. Loss unacceptable.
+- **UDP**: fast, lossy — sensor data at 30fps, telemetry, audio levels. Freshness > completeness.
+
+Same split as WebRTC (signaling=TCP, media=UDP). Both encrypted via Tailscale/Reticulum. See [GRID-EVENT-STREAMING.md](../design/GRID-EVENT-STREAMING.md) for full design.
+
+### 16.5 Grid Applications
+
+The grid is a platform, not a chatbot. Applications plug in via the same Commands + Events primitives:
+
+| Application | Events it emits | Commands it handles | Status |
+|---|---|---|---|
+| **Chat/Personas** | `data:chat_messages:created` | `collaboration/chat/send` | Working |
+| **Factory/Forge** | `model:forge:step/phase/complete` | `grid/job-queue` | Working (polling) |
+| **open-eyes** | `camera:motion:detected`, `camera:entity:entered` | `open-eyes/camera/list`, `open-eyes/scene/view` | Built (needs grid bridge) |
+| **OpenClaw** | `search:result:found` | `search/query` | Planned |
+| **Hermes** | `agent:decision:made` | `agent/orchestrate` | Planned |
+
+open-eyes is the proof case. If camera events flow through the grid correctly, every other application follows the same pattern.
+
+### 16.6 Compute Marketplace
+
+Any grid can offer compute to other grids:
+
+1. Grid A submits a forge-alloy recipe to Grid B's capability endpoint
+2. Grid B's Foreman accepts the job (or rejects based on capacity)
+3. Grid B runs the forge, emits progress events to Grid A
+4. Grid B returns the result with progressive attestation
+5. Grid A verifies the attestation chain
+6. Grid A never sees Grid B's internal topology
+
+The attestation proves the RESULT is correct. The grid is the trust boundary. The nodes inside are implementation details. Same as AWS doesn't tell you which server your Lambda ran on — but unlike AWS, the attestation is cryptographic, not contractual.
+
+---
+
 ## References
 
 - [ROOMS-AND-ACTIVITIES.md](../activities/ROOMS-AND-ACTIVITIES.md) — the universal experience model
