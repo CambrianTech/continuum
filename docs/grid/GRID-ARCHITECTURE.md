@@ -928,10 +928,35 @@ GRID-ARCHITECTURE.md (this document)
 
 ---
 
+## Historical Lineage
+
+### Sony Cell Broadband Engine (2006)
+
+The Cell processor was heterogeneous computing done right, 20 years early. Each Synergistic Processing Element (SPE) was independent, had its own local memory (256KB local store), and communicated via DMA through the Element Interconnect Bus. The Power Processing Element (PPE) coordinated the SPEs but didn't control them — it dispatched work, the SPEs executed autonomously.
+
+**The grid IS the Cell architecture, realized in software over a network:**
+
+| Cell (2006) | Continuum Grid (2026) |
+|---|---|
+| PPE (general purpose coordinator) | Foreman (orchestrates the mesh) |
+| SPE (specialized, independent, local memory) | Grid node (GPU/camera/Pi, sovereign, local storage) |
+| Local Store (256KB per SPE) | Node storage (models, recordings, scene state) |
+| DMA over Element Interconnect Bus | Events over Tailscale/Reticulum mesh |
+| Heterogeneous (PPE + 8 SPEs, different ISAs) | Heterogeneous (GPU + camera + Pi + phone, different capabilities) |
+| Cell OS managed SPE scheduling | Foreman manages node scheduling via capability vectors |
+
+Sony had the right vision: heterogeneous processors cooperating as peers, each with sovereign local memory, coordinated but not controlled. They failed because the hardware was ahead of the software — programming the Cell was notoriously difficult. The SPE programming model (DMA transfers, SIMD intrinsics, manual memory management) was too low-level.
+
+We have the software architecture they needed. `Commands.execute()` and `Events.emit()` are the programming model that makes heterogeneous compute accessible. The developer doesn't manage DMA transfers — they call a command. The developer doesn't write SIMD intrinsics — they submit a forge recipe. The Foreman handles the scheduling. The grid handles the transport. Same vision, right abstraction layer.
+
+---
+
 ## References
 
 - [ROOMS-AND-ACTIVITIES.md](../activities/ROOMS-AND-ACTIVITIES.md) — the universal experience model
 - [fSociety.md](../../../ƒSociety.md) — constitutional foundation
 - [Reticulum](https://reticulum.network/) — encrypted mesh networking stack
+- [Cell Broadband Engine Architecture](https://en.wikipedia.org/wiki/Cell_(processor)) — the hardware vision we're realizing in software
+- [GRID-EVENT-STREAMING.md](../design/GRID-EVENT-STREAMING.md) — TCP + UDP dual-tier event transport
 
 > **"We rely on validation and auditing, so that it cannot ever be gamed. It is intelligence, and the rule breakers are easily isolated or banished."**
