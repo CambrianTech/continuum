@@ -81,8 +81,10 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#793](https://github.com/CambrianTech/continuum/issues/793) | **IPC reconnection — Node doesn't recover** | TODO | When Rust core restarts, Node.js IPC client stays wedged. Total system death until `npm start`. |
 | [#794](https://github.com/CambrianTech/continuum/issues/794) | **AI messages don't reach browser** | TODO | Messages stored in DB but WebSocket event bridge doesn't forward `data:chat_messages:created` for AI senders. Requires page refresh. |
 | [#795](https://github.com/CambrianTech/continuum/issues/795) | **Duplicate tabs** | TODO | Same room opens multiple tab entries. `contentItemsMatch()` dedup has gaps. |
+| [#855](https://github.com/CambrianTech/continuum/pull/855) | **Multi-arch Docker images** | PR READY | amd64 + arm64 builds. Fixes Mac/Ubuntu install. Verification gate. |
+| [#856](https://github.com/CambrianTech/continuum/issues/856) | **Grid event streaming** ⚠️ CRITICAL | TODO | Persistent WS event channels between nodes. Blocks open-eyes, factory live updates, OpenClaw, Hermes. Polling at 10s is incompatible with real-time. |
 
-**Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes. AI responses appear in real-time without refresh.
+**Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes. AI responses appear in real-time without refresh. Grid events stream between nodes in real time.
 
 ---
 
