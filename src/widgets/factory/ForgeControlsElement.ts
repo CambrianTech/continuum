@@ -105,6 +105,8 @@ export class ForgeControlsElement extends ReactiveWidget {
   @reactive() private _pruneStrategy: 'entropy' | 'gradient' | 'combined' = 'entropy';
   @reactive() private _cycles = 3;
   @reactive() private _learningRate = '2e-4';
+  @reactive() private _searchStrategy: 'manual' | 'binary' | 'ransac' | 'bayesian' | 'adaptive' = 'manual';
+  @reactive() private _qualityGate = 0;  // 0 = no gate, >0 = PPL/pass@1 threshold
   @reactive() private _pipelineStages: Record<string, unknown>[] = [];
   @reactive() private _modelValid: 'unknown' | 'checking' | 'valid' | 'invalid' = 'unknown';
   private _validateTimer: ReturnType<typeof setTimeout> | null = null;
@@ -151,6 +153,18 @@ export class ForgeControlsElement extends ReactiveWidget {
       },
       stages,
       cycles: this._cycles,
+      ...(this._searchStrategy !== 'manual' ? {
+        search: {
+          method: this._searchStrategy,
+          quickEvalChunks: 10,
+          maxCandidates: 5,
+        },
+      } : {}),
+      ...(this._qualityGate > 0 ? {
+        acceptanceCriteria: {
+          perplexity: { max: this._qualityGate },
+        },
+      } : {}),
     };
   }
 
@@ -372,6 +386,30 @@ export class ForgeControlsElement extends ReactiveWidget {
                 @input=${(e: Event) => this._experts = parseInt((e.target as HTMLInputElement).value)}>
               <span class="slider-value">${this._experts || 64}</span>
             </div>
+          </div>
+          ` : nothing}
+          <div class="control-group">
+            <span class="control-label">Search Strategy</span>
+            <select class="control-select"
+              .value=${this._searchStrategy}
+              @change=${(e: Event) => this._searchStrategy = (e.target as HTMLSelectElement).value as any}>
+              <option value="manual">Manual (you set params)</option>
+              <option value="binary">Binary Search (fast, monotonic)</option>
+              <option value="ransac">RANSAC (handles noise)</option>
+              <option value="bayesian">Bayesian (fewest evals)</option>
+              <option value="adaptive">Adaptive (per-layer experts)</option>
+            </select>
+          </div>
+          ${this._searchStrategy !== 'manual' ? html`
+          <div class="control-group">
+            <span class="control-label">Quality Gate (PPL)</span>
+            <div class="slider-row">
+              <input type="range" min="0" max="20" step="0.5"
+                .value=${String(this._qualityGate)}
+                @input=${(e: Event) => this._qualityGate = parseFloat((e.target as HTMLInputElement).value)}>
+              <span class="slider-value">${this._qualityGate > 0 ? `< ${this._qualityGate}` : 'None'}</span>
+            </div>
+            <span class="control-hint">The compiler searches for the best model that passes this gate</span>
           </div>
           ` : nothing}
           <div class="control-group">
