@@ -17,18 +17,18 @@ WORKDIR /app
 
 # Root deps first (cached layer)
 COPY package.json package-lock.json tsconfig*.json ./
-RUN npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
+RUN npm ci --ignore-scripts
 
 # Full source (widgets reach into shared/, daemons/, commands/, scripts/)
 COPY . .
 
-# Build TypeScript
-RUN npx tsc --project tsconfig.json --noEmit false --outDir dist 2>/dev/null || \
-    npm run build:ts 2>/dev/null || \
-    echo "TS build skipped — tsx will handle at runtime"
+# Build TypeScript — no fallbacks, no silent failures.
+# npm run build:ts generates shared/config.ts then compiles.
+# If it fails, the Docker build fails. We don't ship broken images.
+RUN npm run build:ts
 
 # Widget-ui deps + Vite bundle (must build inside Docker to pick up source changes)
-RUN cd examples/widget-ui && npm install 2>/dev/null || true
+RUN cd examples/widget-ui && npm install
 RUN cd examples/widget-ui && npx vite build
 
 EXPOSE 9003

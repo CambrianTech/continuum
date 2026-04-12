@@ -56,8 +56,23 @@ impl FastEmbedProvider {
         options.model_name = fastembed::EmbeddingModel::AllMiniLML6V2;
         options.show_download_progress = true;
 
-        let model = fastembed::TextEmbedding::try_new(options)
-            .map_err(|e| EmbeddingError(format!("Failed to load AllMiniLML6V2: {e}")))?;
+        // ORT panics (instead of returning error) when libonnxruntime can't load.
+        // catch_unwind prevents the panic from killing the process.
+        let model_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fastembed::TextEmbedding::try_new(options)
+        }));
+        let model = match model_result {
+            Ok(Ok(m)) => m,
+            Ok(Err(e)) => return Err(EmbeddingError(format!("Failed to load AllMiniLML6V2: {e}"))),
+            Err(panic_payload) => {
+                let msg = panic_payload
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown cause");
+                return Err(EmbeddingError(format!("ORT runtime panicked: {msg}. Check ORT_DYLIB_PATH.")));
+            }
+        };
 
         Ok(Self {
             model: Mutex::new(model),
