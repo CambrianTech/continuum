@@ -257,6 +257,16 @@ export function getAvailablePersonas(): { personas: PersonaConfig[]; summary: st
     available.push(persona);
   }
 
+  // Zero personas = broken UX. Always seed at least Helper AI so the user
+  // sees a living system. CPU inference is slow but functional.
+  if (available.length === 0) {
+    const helper = PERSONA_CONFIGS.find(p => p.displayName === 'Helper AI');
+    if (helper) {
+      available.push(helper);
+      summary.push('No GPU/API keys — seeding Helper AI for CPU inference (slow but functional)');
+    }
+  }
+
   if (skipped.length > 0) {
     summary.push(`Skipped ${skipped.length} personas: ${skipped.join(', ')}`);
   }
