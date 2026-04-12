@@ -38,6 +38,9 @@ echo "✅ Docker found"
 
 # ── Ensure ~/.continuum exists ────────────────────
 mkdir -p "$HOME/.continuum/grid"
+# config.env MUST exist as a file before docker compose — bind mounts create
+# directories for missing paths, which then fails with "not a directory".
+touch "$HOME/.continuum/config.env"
 
 # ── Check if Docker is running ────────────────────
 if ! docker info &>/dev/null; then
@@ -100,10 +103,11 @@ docker logout ghcr.io 2>/dev/null || true
 
 echo ""
 echo "📦 Pulling pre-built images..."
-if docker compose pull 2>&1 | tee /tmp/continuum-pull.log | grep -q "Pulled"; then
+if docker compose pull 2>&1; then
   echo "✅ Images pulled from registry"
 else
   # Pull failed (arch mismatch, network, etc.) — build locally
+  echo ""
   echo "⚠️  Pre-built images not available for this platform. Building locally..."
   echo "   (This takes 15-20 minutes the first time. Subsequent starts are instant.)"
   echo ""

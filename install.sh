@@ -156,7 +156,7 @@ docker compose $COMPOSE_ARGS up -d
 # ── 8. Wait for health ─────────────────────────────────────
 info "Waiting for services..."
 for i in {1..30}; do
-  if curl -sf http://localhost:9000 &>/dev/null || curl -sf https://localhost:9000 -k &>/dev/null; then
+  if curl -sf http://localhost:9003 &>/dev/null || curl -sf https://localhost:9003 -k &>/dev/null; then
     break
   fi
   [ $i -eq 30 ] && warn "Services still starting — check: docker compose logs"
@@ -165,9 +165,9 @@ done
 
 # ── 9. Determine URL + open browser ────────────────────────
 if [ -n "$TS_HOSTNAME" ] && [ -f "$CONTINUUM_DATA/$TS_HOSTNAME.crt" ]; then
-  URL="https://$TS_HOSTNAME:9000"
+  URL="https://$TS_HOSTNAME:9003"
 else
-  URL="http://localhost:9000"
+  URL="http://localhost:9003"
 fi
 
 case "$OS" in
@@ -198,6 +198,6 @@ if [[ "$HAS_GPU" == "true" ]]; then
   echo "  GPU:     ${GPU_NAME:-detected}"
 fi
 if [ -n "$TS_HOSTNAME" ]; then
-  echo "  Mesh:    https://$TS_HOSTNAME:9000"
+  echo "  Mesh:    https://$TS_HOSTNAME:9003"
 fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
