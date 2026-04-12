@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
@@ -51,6 +52,10 @@ pub fn set_gpu_manager(mgr: Arc<GpuMemoryManager>) {
 fn gpu_manager() -> Option<&'static Arc<GpuMemoryManager>> {
     EMBEDDING_GPU_MANAGER.get()
 }
+
+/// Set once ORT panics during init — all subsequent load attempts fail fast
+/// instead of re-triggering catch_unwind and spamming logs.
+static ORT_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 
 fn get_model_cache() -> &'static Arc<Mutex<HashMap<String, TextEmbedding>>> {
     MODEL_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
@@ -214,8 +219,13 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
 
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("Failed to create cache dir: {e}"))?;
 
+    // Fail fast if ORT already panicked in a previous attempt
+    if ORT_UNAVAILABLE.load(Ordering::Relaxed) {
+        return Err("ORT runtime previously panicked — embeddings unavailable until restart".to_string());
+    }
+
     // ORT crate panics if libonnxruntime can't be loaded (instead of returning error).
-    // catch_unwind prevents the panic from poisoning our mutex and killing the process.
+    // catch_unwind prevents the panic from unwinding out of this call and killing the process.
     let model_result = std::panic::catch_unwind(|| {
         TextEmbedding::try_new(
             InitOptions::new(model_enum)
@@ -226,7 +236,15 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
     let model = match model_result {
         Ok(Ok(m)) => m,
         Ok(Err(e)) => return Err(format!("Failed to load model: {e}")),
-        Err(_) => return Err("ORT runtime panicked — libonnxruntime not found. Set ORT_DYLIB_PATH.".to_string()),
+        Err(panic_payload) => {
+            ORT_UNAVAILABLE.store(true, Ordering::Relaxed);
+            let msg = panic_payload
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown cause");
+            return Err(format!("ORT runtime panicked during model init: {msg}. Check ORT_DYLIB_PATH."));
+        }
     };
 
     let elapsed = start.elapsed();
@@ -606,9 +624,9 @@ impl EmbeddingModule {
 
     /// Pre-load the default model on startup.
     /// Wrapped in catch_unwind because the ORT crate panics (instead of returning
-    /// an error) when libonnxruntime.dylib can't be loaded. The panic poisons the
-    /// model cache mutex and kills every subsequent embedding call. By catching it
-    /// here, we degrade gracefully: embeddings are disabled but the system stays alive.
+    /// an error) when libonnxruntime can't be loaded. The panic would unwind out
+    /// of this call and kill the process. By catching it here, we set ORT_UNAVAILABLE
+    /// so subsequent calls fail fast, and the rest of the system stays alive.
     pub fn preload_default_model() {
         info!("Pre-loading default embedding model (AllMiniLML6V2)...");
         let result = std::panic::catch_unwind(|| {
@@ -616,8 +634,16 @@ impl EmbeddingModule {
         });
         match result {
             Ok(Ok(())) => info!("Default embedding model ready"),
-            Ok(Err(e)) => warn!("Failed to pre-load default model: {e} — embeddings disabled"),
-            Err(_) => warn!("⚠️ ORT runtime panicked during model load — embeddings disabled. Check ORT_DYLIB_PATH."),
+            Ok(Err(e)) => warn!("Failed to pre-load default model: {e} — embeddings unavailable"),
+            Err(panic_payload) => {
+                ORT_UNAVAILABLE.store(true, Ordering::Relaxed);
+                let msg = panic_payload
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown cause");
+                warn!("ORT runtime panicked during model load: {msg} — embeddings unavailable. Check ORT_DYLIB_PATH.");
+            }
         }
     }
 
