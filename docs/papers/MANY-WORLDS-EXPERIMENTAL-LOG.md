@@ -465,14 +465,81 @@ Joel: *"it will also be our FIRST model published to HF that is OURS, an origina
 
 Joel: *"sort of like our lora genome but at the base model level"* — connecting Many-Worlds to the broader Continuum architecture.
 
-## 9. Key Quotes from the Session
+## 9. Avengers v3 — Three-Source Population (2026-04-12)
 
-Joel: *"it's just discernment now"* — after the signal was found but the delivery mechanism needed iteration.
+### Team (selected by divergence search)
+| Source | Params | Specialty |
+|--------|--------|-----------|
+| Qwen2.5-Math-1.5B-Instruct | 1.5B | Math reasoning |
+| Qwen2.5-Coder-1.5B-Instruct | 1.5B | Code generation |
+| Qwen3-4B | 4B | Broad knowledge + multilingual |
+| **Target:** Phi-3-mini-4k-instruct | 3.8B | Strong generalist baseline |
 
-Joel: *"it might actually scale the other way, do better with more"* — predicting that larger populations would improve substrate quality through more diverse projections.
+### Architecture
+- 3 source adapters projecting into shared substrate (per-token, not pooled)
+- Q-Former queries cross-attend to ALL 3 substrate fields simultaneously
+- Confidence gate controls population contribution
+- Vocab-grounded output (soft tokens as combinations of real Phi-3 embeddings)
+- Manual generation loop (bypasses HF generate() inputs_embeds bug)
+- All 4 models frozen. 6.4M trainable params total.
 
-Joel: *"it's the better way to ensemble"* — recognizing that substrate-coordinated transfer is fundamentally different from (and potentially superior to) traditional ensemble methods.
+### Training
+- Corpus: 800 real benchmark examples (GSM8K 300 + ARC 300 + Winogrande 200)
+- 8000 steps, LR 2e-4, cosine schedule
+- VRAM: ~26GB peak (3 sources + target + adapters + Q-Former)
 
-Joel: *"yeah we were degrading the signal, leave it pure"* — the insight that led to soft prompt injection instead of intermediate-layer perturbation.
+### HuggingFace Publish Plan
+Repository: `continuum-ai/avengers-v1`
+```
+substrate.pt           134KB
+adapter_math.pt         5MB
+adapter_coder.pt        5MB
+adapter_qwen3.pt        5MB
+qformer.pt              5MB
+modeling_avengers.py    custom model class
+config.json
+training_metadata.json
+README.md              model card with forge-alloy attestation
+```
 
-Joel: *"the answers are there"* — when individual losses proved the signal exists even though the average hadn't converged yet.
+Usage:
+```python
+from modeling_avengers import AvengersModel
+model = AvengersModel.from_pretrained("continuum-ai/avengers-v1")
+text = model.generate_text("Question: solve x^2 + 3x - 4 = 0")
+```
+
+Source models loaded sequentially at inference (one at a time) to minimize VRAM.
+Users download the ~25MB artifacts; base models installed separately from HF.
+
+### Target: Open LLM Leaderboard v2
+Submit as the first "population" entry. lm-eval-harness compatible via
+`--model hf --model_args pretrained=continuum-ai/avengers-v1,trust_remote_code=True`
+
+## 10. The Thesis — Final Form
+
+**Don't retrain, translate.** The substrate converts between models' internal representations. The Q-Former translates into each model's native vocabulary. The confidence gate knows when to speak and when to be quiet. The models do what they already know how to do.
+
+**The economic argument:** Every new open-weight release from any lab becomes a potential recruit. One adapter (~5MB, 8 minutes on consumer GPU). The knowledge was free. The coordination is cheap. The diversity is the moat.
+
+**The compression argument:** The gate profiling data reveals which sources contribute where. Models that never fire get pruned. Models that fire selectively get quantized for their non-specialty tokens. Same forge pipeline (profile → prune → quantize → deploy) but at the population level instead of the layer level.
+
+**One sentence:** "Assembled from N frozen open-weight specialists, outperforms any individual member, published as 25MB of coordination artifacts on HuggingFace."
+
+## 11. Key Quotes
+
+Joel: *"could we make like an avengers coding model from the contributions of many experts across diverse models?"* — the Avengers framing
+
+Joel: *"don't retrain, translate"* — the core principle (paraphrased from discussion)
+
+Joel: *"it's the better way to ensemble"* — substrate coordination vs naive averaging
+
+Joel: *"the best of many worlds when we compress"* — connecting gate profiling to the forge prune pipeline
+
+Joel: *"frankensteins monster of moe"* — except Voltron, not Frankenstein
+
+Joel: *"only one of these has to work"* — the strategic bet
+
+Joel: *"leaderboards or bust"* — the target
+
+Joel: *"from Kansas"* — the origin story
