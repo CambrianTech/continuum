@@ -970,20 +970,58 @@ pub fn start_server(
     log_info!("ipc", "server", "IPC server ready");
 
     // Periodic memory leak reporter — logs RSS + top leakers every 10s
-    // Also acts as OOM guard: exits gracefully at 4GB so npm start can restart
+    // Also acts as OOM guard: exits gracefully before OOM kills us ungracefully.
+    // Limit is 80% of system RAM (not a fixed 4GB) — scales from an 8GB MacBook
+    // Air to a 192GB workstation without false kills. The old 4GB limit was killing
+    // the process on 48GB machines where 5.6GB RSS is perfectly normal (whisper
+    // 1.6GB + ORT embedding runtime 1.8GB one-time alloc + working set).
     let mem_rt = state.rt_handle.clone();
     mem_rt.spawn(async {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        const MAX_RSS_MB: u64 = 4096; // 4GB — exit before OOM kills us ungracefully
+        let system_ram_mb = {
+            #[cfg(target_os = "macos")]
+            {
+                use std::process::Command;
+                Command::new("sysctl")
+                    .args(["-n", "hw.memsize"])
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .map(|bytes| bytes / (1024 * 1024))
+                    .unwrap_or(8192) // fallback 8GB
+            }
+            #[cfg(target_os = "linux")]
+            {
+                std::fs::read_to_string("/proc/meminfo")
+                    .ok()
+                    .and_then(|s| {
+                        s.lines()
+                            .find(|l| l.starts_with("MemTotal:"))
+                            .and_then(|l| l.split_whitespace().nth(1))
+                            .and_then(|kb| kb.parse::<u64>().ok())
+                            .map(|kb| kb / 1024)
+                    })
+                    .unwrap_or(8192)
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            { 8192u64 }
+        };
+        // 80% of system RAM — aggressive enough to catch real leaks,
+        // generous enough not to false-kill on big machines.
+        let max_rss_mb: u64 = (system_ram_mb * 80) / 100;
+        eprintln!(
+            "[MEMGUARD] Memory guard: system={}MB, limit={}MB (80%)", system_ram_mb, max_rss_mb
+        );
         loop {
             interval.tick().await;
             dump_memory_report();
             let rss = current_rss_mb();
-            if rss > MAX_RSS_MB {
+            if rss > max_rss_mb {
                 eprintln!(
-                    "[MEMLEAK] FATAL: RSS {}MB exceeds {}MB limit — exiting gracefully to avoid OOM. \
-                     Restart with: npm start. Fix tracked in #603.",
-                    rss, MAX_RSS_MB
+                    "[MEMLEAK] FATAL: RSS {}MB exceeds {}MB limit (80% of {}MB system RAM) — \
+                     exiting gracefully to avoid OOM. Restart with: npm start. Fix tracked in #603.",
+                    rss, max_rss_mb, system_ram_mb
                 );
                 // Give time for the message to flush
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
