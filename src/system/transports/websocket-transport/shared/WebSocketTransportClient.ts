@@ -181,18 +181,20 @@ export abstract class WebSocketTransportClient extends TransportBase {
       }
 
       // Attempt automatic reconnection if not manually disconnected AND not already reconnecting
-      if (!this.manualDisconnect && !this.isReconnecting && this.reconnectAttempt < (this.config.reconnectAttempts || 0)) {
-        this.isReconnecting = true; // Mark as reconnecting to queue messages
-        const delay = this.config.reconnectDelay! * Math.pow(2, this.reconnectAttempt); // Exponential backoff
+      if (!this.manualDisconnect && !this.isReconnecting) {
+        this.isReconnecting = true;
+        // Delegate to attemptReconnect which has persistent polling —
+        // after fast retries (1s, 2s, 4s) it polls every 10s until server is back.
+        // This handles both initial connection failures (Docker startup race)
+        // and mid-session disconnects (server restart).
+        const delay = this.reconnectAttempt < (this.config.reconnectAttempts || 0)
+          ? this.config.reconnectDelay! * Math.pow(2, this.reconnectAttempt)
+          : 10000;
         this.reconnectAttempt++;
-
-        // Silent during reconnection - no need to log every attempt
-
         this.reconnectTimeout = setTimeout(async () => {
           await this.attemptReconnect();
         }, delay);
       }
-      // Silent when max attempts reached - user already knows from first disconnect log
     });
 
     // Connection error - consistent addEventListener pattern
