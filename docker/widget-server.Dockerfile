@@ -17,7 +17,7 @@ WORKDIR /app
 
 # Root deps first (cached layer)
 COPY package.json package-lock.json tsconfig*.json ./
-RUN npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
+RUN npm ci --ignore-scripts
 
 # Full source (widgets reach into shared/, daemons/, commands/, scripts/)
 COPY . .
@@ -28,7 +28,7 @@ COPY . .
 RUN npm run build:ts
 
 # Widget-ui deps + Vite bundle (must build inside Docker to pick up source changes)
-RUN cd examples/widget-ui && npm install 2>/dev/null || true
+RUN cd examples/widget-ui && npm install
 RUN cd examples/widget-ui && npx vite build
 
 EXPOSE 9003
