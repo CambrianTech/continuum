@@ -171,8 +171,16 @@ chmod +x bin/continuum
 if echo "$PATH" | grep -q "$INSTALL_DIR"; then
   echo "✅ 'continuum' command installed"
 else
-  echo "✅ 'continuum' command installed at $INSTALL_DIR/continuum"
-  echo "   Add to PATH: export PATH=\"\$INSTALL_DIR:\$PATH\""
+  # Add to PATH for this session and persist for future sessions
+  export PATH="$INSTALL_DIR:$PATH"
+  # Add to shell profile if not already there
+  for profile in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+    if [ -f "$profile" ] && ! grep -q "\.local/bin" "$profile" 2>/dev/null; then
+      echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$profile"
+      echo "✅ 'continuum' command installed (added to $(basename $profile))"
+      break
+    fi
+  done
 fi
 
 # ── Install tray app (macOS) ─────────────────────
@@ -192,7 +200,6 @@ if [[ "$PLATFORM" == "mac" ]] && command -v swiftc &>/dev/null; then
     cp "$TRAY_BIN" "$TRAY_INSTALL"
     chmod +x "$TRAY_INSTALL"
     echo "✅ Tray app installed → $TRAY_INSTALL"
-    echo "   Run: continuum-tray &"
   fi
 fi
 
@@ -318,6 +325,23 @@ echo ""
 echo "  Run 'continuum status' anytime to check health."
 echo "  Run 'continuum doctor' to diagnose issues."
 echo ""
+
+# Launch tray app (macOS) — menubar control for start/stop/status
+TRAY_BIN="$HOME/.local/bin/continuum-tray"
+if [[ "$PLATFORM" == "mac" ]] && [[ -x "$TRAY_BIN" ]]; then
+  # Kill existing tray if running
+  pkill -f continuum-tray 2>/dev/null || true
+  nohup "$TRAY_BIN" &>/dev/null &
+  echo "  🖥️ Tray app running (menubar)"
+fi
+
+# Launch tray app (macOS) — menubar control for start/stop/status
+TRAY_INSTALLED="$HOME/.local/bin/continuum-tray"
+if [[ "$PLATFORM" == "mac" ]] && [[ -x "$TRAY_INSTALLED" ]]; then
+  pkill -f continuum-tray 2>/dev/null || true
+  nohup "$TRAY_INSTALLED" &>/dev/null &
+  echo "  🖥️ Tray app running (menubar)"
+fi
 
 # Open browser (prefer HTTPS grid URL if available)
 OPEN_URL="${REMOTE_URL:-$LOCAL_URL}"
