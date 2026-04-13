@@ -192,10 +192,12 @@ export class MainWidget extends ReactiveWidget {
     // Wait for JTAG client to be connected before resolving routes.
     // On page reload, the WebSocket needs time to reconnect. Without this,
     // RoutingService.resolve() fails silently because Commands can't execute.
+    // Wait for JTAG client — must be long enough for Docker startup race.
+    // WS connect() retries for up to 60s, so this must wait at least that long.
     const waitForClient = async () => {
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < 300; i++) {
         if (jtagGlobal.jtag) return;
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 200));
       }
     };
     setTimeout(async () => {
