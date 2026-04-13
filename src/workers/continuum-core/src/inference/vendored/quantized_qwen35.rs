@@ -27,7 +27,7 @@ use candle_nn::Module;
 
 #[derive(Debug, Clone)]
 struct RmsNorm {
-    weight: Tensor,
+    pub(crate) weight: Tensor,
     eps: f64,
 }
 
@@ -338,12 +338,14 @@ impl DeltaNetLayer {
         // dt = softplus(ssm_dt(normed) + ssm_dt_bias)
         let dt_proj = self.ssm_dt.forward(&normed)?; // [batch, seq, n_head]
         let dt = dt_proj.broadcast_add(&self.ssm_dt_bias)?;
-        // softplus: log(1 + exp(x))
-        let ones = Tensor::ones_like(&dt)?;
-        let dt = (dt.exp()? + ones)?.log()?;
+        // Numerically stable softplus: max(x,0) + log1p(exp(-|x|))
+        // For large x: softplus(x) ≈ x. For small x: softplus(x) ≈ log(1+exp(x)).
+        let dt_abs = dt.abs()?;
+        let dt_pos = dt.maximum(&Tensor::zeros_like(&dt)?)?;
+        let dt = (dt_pos + dt_abs.neg()?.exp()?.affine(1.0, 1.0)?.log()?)?;
 
-        // Decay: a = -exp(ssm_a) per head
-        let decay_base = self.ssm_a.neg()?.exp()?; // [n_head], positive decay rates
+        // Decay: a = -exp(ssm_a) per head (negative so exp(a*dt) ∈ (0,1])
+        let decay_base = self.ssm_a.exp()?.neg()?; // [n_head], negative log-decay
 
         // Alpha/beta gates
         let alpha = self.ssm_alpha.forward(&normed)?; // [batch, seq, n_head]
@@ -369,6 +371,7 @@ impl DeltaNetLayer {
 
             // Per-head decay for this timestep
             let dt_scalar = dt_t.squeeze(3)?.squeeze(2)?; // [batch, n_head]
+            // decay_base is negative, dt is positive → product is negative → exp ∈ (0,1]
             let decay_raw = decay_base.broadcast_mul(&dt_scalar)?; // [batch, n_head]
             let decay = decay_raw.exp()?.unsqueeze(2)?.unsqueeze(3)?; // [batch, n_head, 1, 1]
 
@@ -398,14 +401,22 @@ impl DeltaNetLayer {
         // Stack outputs: [batch, n_head, seq, head_dim]
         let deltanet_out = Tensor::stack(&outputs, 2)?;
 
-        // SSM norm on the output
+        // SSM norm: weight may be smaller than head_dim (e.g. 128 vs 256).
+        // Apply norm to the prefix matching the weight size, pass rest through.
         let deltanet_out = {
             let (b, nh, s, hd) = deltanet_out.dims4()?;
+            let norm_dim = self.ssm_norm.weight.dims()[0];
             let flat = deltanet_out.reshape((b * nh, s, hd))?;
-            // ssm_norm weight might be smaller than head_dim (128 vs 256)
-            // Apply it to the appropriate dimension
-            let normed = self.ssm_norm.forward(&flat)?;
-            normed.reshape((b, nh, s, hd))?
+            if norm_dim < hd {
+                let to_norm = flat.narrow(2, 0, norm_dim)?;
+                let pass = flat.narrow(2, norm_dim, hd - norm_dim)?;
+                let normed = self.ssm_norm.forward(&to_norm)?;
+                let combined = Tensor::cat(&[&normed, &pass], 2)?;
+                combined.reshape((b, nh, s, hd))?
+            } else {
+                let normed = self.ssm_norm.forward(&flat)?;
+                normed.reshape((b, nh, s, hd))?
+            }
         };
 
         // Reshape to [batch, seq, n_head * head_dim]
