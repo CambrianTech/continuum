@@ -420,7 +420,6 @@ fn build_where_clause(
 fn build_select_clause(select: &Option<Vec<String>>) -> String {
     match select {
         Some(cols) if !cols.is_empty() => {
-            // Always include metadata columns — adapters need them for DataRecord
             let mut selected: Vec<String> = vec![
                 "id".to_string(),
                 "created_at".to_string(),
@@ -429,7 +428,6 @@ fn build_select_clause(select: &Option<Vec<String>>) -> String {
             ];
             for col in cols {
                 let snake = naming::to_snake_case(col);
-                // Don't duplicate metadata columns
                 if snake != "id" && snake != "created_at" && snake != "updated_at" && snake != "version" {
                     selected.push(snake);
                 }
@@ -819,6 +817,24 @@ impl StorageAdapter for PostgresAdapter {
 
         let bare_table = naming::to_table_name(&query.collection);
         let table = self.table_ref(&query.collection);
+
+        // Schema evolution: ensure table + columns exist before SELECT.
+        // Without this, querying a stale table with new entity fields fails with
+        // "column X does not exist". Build a dummy data object from the SELECT
+        // projection so ensure_table_exists_pg can ALTER TABLE ADD COLUMN.
+        if let Some(ref cols) = query.select {
+            let mut dummy = serde_json::Map::new();
+            for col in cols {
+                dummy.insert(col.clone(), Value::Null);
+            }
+            if let Err(e) = ensure_table_exists_pg(
+                &client, &table, &bare_table, &self.schema, &Value::Object(dummy),
+            ).await {
+                return StorageResult::err(e);
+            }
+            self.invalidate_column_cache(&bare_table).await;
+        }
+
         let col_types = self.cached_column_types(&client, &bare_table).await;
         let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
         let order_clause = build_order_clause(&query.sort);
