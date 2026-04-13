@@ -110,6 +110,37 @@ impl Module for Mlp {
     }
 }
 
+/// Cumulative sum along the last dimension.
+/// For tensor of shape [..., N], output[..., i] = sum(input[..., 0..=i]).
+/// Implemented by pulling to CPU, computing, pushing back to device.
+/// For small last-dim (e.g., chunk_size=64) this is fast enough.
+fn cumsum_last_dim(x: &Tensor) -> Result<Tensor> {
+    let device = x.device().clone();
+    let shape = x.shape().clone();
+    let last = shape.dims().len() - 1;
+    let n = shape.dims()[last];
+
+    // Flatten to 2D: [batch, n]
+    let flat_size: usize = shape.dims()[..last].iter().product();
+    let flat = x.reshape((flat_size, n))?;
+
+    // Pull to CPU for sequential scan
+    let data = flat.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+    let mut result = vec![vec![0f32; n]; flat_size];
+    for i in 0..flat_size {
+        let mut acc = 0f32;
+        for j in 0..n {
+            acc += data[i][j];
+            result[i][j] = acc;
+        }
+    }
+
+    // Build tensor and reshape back
+    let flat_result: Vec<f32> = result.into_iter().flatten().collect();
+    let tensor = Tensor::from_slice(&flat_result, (flat_size, n), &device)?;
+    tensor.reshape(shape)
+}
+
 fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: &Tensor) -> Result<Tensor> {
     let shape = mask.shape();
     let m = mask.where_cond(&on_true.broadcast_as(shape.dims())?, on_false)?;
@@ -253,7 +284,8 @@ impl AttentionLayer {
         } else {
             let k = candle_transformers::utils::repeat_kv(k, self.n_head / self.n_kv_head)?;
             let v = candle_transformers::utils::repeat_kv(v, self.n_head / self.n_kv_head)?;
-            let att = (q.matmul(&k.t()?)? / (self.head_dim as f64).sqrt())?;
+            // Metal: Q after QK-norm chunk reshape may be non-contiguous
+            let att = (q.contiguous()?.matmul(&k.contiguous()?.t()?)? / (self.head_dim as f64).sqrt())?;
             let att = match mask {
                 None => att,
                 Some(mask) => {
@@ -421,19 +453,11 @@ impl DeltaNetLayer {
         let q = candle_transformers::utils::repeat_kv(q, repeat_factor)?; // [B, num_v_heads, T, head_k_dim]
         let k = candle_transformers::utils::repeat_kv(k, repeat_factor)?;
 
-        // Step 7: DeltaNet recurrence — sequential per-token with Metal sync.
-        //
-        // The DeltaNet recurrence is inherently sequential: each token's state depends
-        // on the previous. A proper chunked algorithm (torch_chunk_gated_delta_rule)
-        // requires cumsum which candle lacks. Until we add cumsum + the full chunked
-        // algorithm, we use per-token recurrence with periodic Metal command buffer flush.
-        //
-        // Performance: ~0.4s/token on M1 Pro Metal for prefill. Single-token generation
-        // is fast (one step). Prefill is the bottleneck.
-        //
-        // TODO: Implement cumsum in candle fork, then port torch_chunk_gated_delta_rule
-        // for 64x fewer Metal dispatches during prefill.
+        // Step 7: Chunked DeltaNet recurrence (torch_chunk_gated_delta_rule).
+        // Chunks of 64 → N/64 sequential steps with chunk-size matrix ops.
+        // Requires cumsum (implemented above as cumsum_last_dim).
 
+        const CS: usize = 64;
         let scale = 1.0 / (self.head_k_dim as f64).sqrt();
         let device = x.device();
 
@@ -441,38 +465,91 @@ impl DeltaNetLayer {
             Some(s) => s.clone(),
             None => Tensor::zeros(
                 (b_sz, self.num_v_heads, self.head_k_dim, self.head_v_dim),
-                DType::F32,
-                device,
+                DType::F32, device,
             )?,
         };
 
-        let q = (q * scale)?;
-        let mut outputs = Vec::with_capacity(seq_len);
-        for t in 0..seq_len {
-            let q_t = q.i((.., .., t, ..))?;
-            let k_t = k.i((.., .., t, ..))?;
-            let v_t = v.i((.., .., t, ..))?;
-            let g_t = g.i((.., t, ..))?;
-            let beta_t = beta.i((.., t, ..))?;
-
-            // Decay
-            state = state.broadcast_mul(&g_t.exp()?.unsqueeze(2)?.unsqueeze(3)?)?;
-            // Retrieve
+        let attn_out = if seq_len == 1 {
+            // Single-token generation: one recurrence step
+            let q_t = (q.squeeze(2)?.contiguous()? * scale)?;
+            let k_t = k.squeeze(2)?.contiguous()?;
+            let v_t = v.squeeze(2)?.contiguous()?;
+            let g_t = g.i((.., 0, ..))?.exp()?;
+            let beta_t = beta.i((.., 0, ..))?;
+            state = state.broadcast_mul(&g_t.unsqueeze(2)?.unsqueeze(3)?)?;
             let kv_mem = k_t.unsqueeze(2)?.matmul(&state)?.squeeze(2)?;
-            // Delta write
             let delta = beta_t.unsqueeze(2)?.broadcast_mul(&(&v_t - &kv_mem)?)?;
             state = (state + k_t.unsqueeze(3)?.matmul(&delta.unsqueeze(2)?)?)?;
-            // Read
-            outputs.push(q_t.unsqueeze(2)?.matmul(&state)?.squeeze(2)?);
+            q_t.unsqueeze(2)?.matmul(&state)?.squeeze(2)?.unsqueeze(2)?
+        } else {
+            // Chunked prefill
+            let q = (q.contiguous()? * scale)?;
+            let k = k.contiguous()?;
+            let v = v.contiguous()?;
+            // g, beta: [B, T, nh] → [B, nh, T]
+            let g = g.transpose(1, 2)?.contiguous()?;
+            let beta = beta.transpose(1, 2)?.contiguous()?;
 
-            // Metal: flush GPU every 128 steps during prefill
-            if seq_len > 1 && t > 0 && t % 128 == 0 {
+            // Pad to multiple of CS
+            let pad = (CS - seq_len % CS) % CS;
+            let tlen = seq_len + pad;
+            let nc = tlen / CS;
+            let (q, k, v, g, beta) = if pad > 0 {
+                let pq = Tensor::zeros((b_sz, self.num_v_heads, pad, self.head_k_dim), DType::F32, device)?;
+                let pv = Tensor::zeros((b_sz, self.num_v_heads, pad, self.head_v_dim), DType::F32, device)?;
+                let ps = Tensor::zeros((b_sz, self.num_v_heads, pad), DType::F32, device)?;
+                (Tensor::cat(&[&q, &pq], 2)?, Tensor::cat(&[&k, &pq], 2)?,
+                 Tensor::cat(&[&v, &pv], 2)?, Tensor::cat(&[&g, &ps], 2)?,
+                 Tensor::cat(&[&beta, &ps], 2)?)
+            } else { (q, k, v, g, beta) };
+
+            // v_beta, k_beta
+            let bu = beta.unsqueeze(3)?;
+            let v_beta = v.broadcast_mul(&bu)?;
+            let k_beta = k.broadcast_mul(&bu)?;
+
+            // Reshape to [B, nh, nc, CS, dim]
+            let q = q.reshape((b_sz, self.num_v_heads, nc, CS, self.head_k_dim))?;
+            let k = k.reshape((b_sz, self.num_v_heads, nc, CS, self.head_k_dim))?;
+            let v_beta = v_beta.reshape((b_sz, self.num_v_heads, nc, CS, self.head_v_dim))?;
+            let k_beta = k_beta.reshape((b_sz, self.num_v_heads, nc, CS, self.head_k_dim))?;
+            let g = g.reshape((b_sz, self.num_v_heads, nc, CS))?;
+
+            let mut outs = Vec::with_capacity(nc);
+            for c in 0..nc {
+                let qc = q.i((.., .., c, .., ..))?.contiguous()?;
+                let kc = k.i((.., .., c, .., ..))?.contiguous()?;
+                let vbc = v_beta.i((.., .., c, .., ..))?.contiguous()?;
+                let kbc = k_beta.i((.., .., c, .., ..))?.contiguous()?;
+                let gc = g.i((.., .., c, ..))?.contiguous()?;
+
+                // Cumulative decay within chunk
+                let g_cum = cumsum_last_dim(&gc)?; // [B, nh, CS]
+                let g_last = g_cum.i((.., .., CS - 1))?; // [B, nh]
+                let chunk_decay = g_last.exp()?.unsqueeze(2)?.unsqueeze(3)?;
+
+                // Inter-chunk: query state with per-token decay
+                let q_decayed = qc.broadcast_mul(&g_cum.unsqueeze(3)?.exp()?)?;
+                let sc = state.contiguous()?;
+                let inter = q_decayed.matmul(&sc)?;
+
+                // Intra-chunk: causal attention
+                let intra_scores = qc.matmul(&kc.t()?)?; // [B, nh, CS, CS]
+                // Causal mask
+                let m: Vec<f32> = (0..CS).flat_map(|i| (0..CS).map(move |j| if j <= i { 1.0 } else { 0.0 })).collect();
+                let mask = Tensor::from_slice(&m, (CS, CS), device)?;
+                let intra = intra_scores.broadcast_mul(&mask)?.matmul(&vbc)?;
+
+                outs.push((inter + intra)?);
+
+                // Update state
+                state = (chunk_decay.broadcast_mul(&sc)? + kbc.t()?.matmul(&vbc)?)?;
                 device.synchronize()?;
             }
-        }
-        if seq_len > 1 { device.synchronize()?; }
 
-        let attn_out = Tensor::stack(&outputs, 2)?;
+            let full = Tensor::cat(&outs, 2)?;
+            if pad > 0 { full.narrow(2, 0, seq_len)? } else { full }
+        };
 
         self.recurrence_state = Some(state);
 
@@ -785,10 +862,16 @@ impl ModelWeights {
         let _enter = self.span.enter();
 
         let mut layer_in = x.clone();
-        for layer in self.layers.iter_mut() {
+        for (i, layer) in self.layers.iter_mut().enumerate() {
+            let layer_type = match layer {
+                LayerKind::Attention(_) => "attn",
+                LayerKind::DeltaNet(_) => "delta",
+            };
             let layer_out = match layer {
-                LayerKind::Attention(attn) => attn.forward(&layer_in, mask.as_ref(), index_pos)?,
-                LayerKind::DeltaNet(delta) => delta.forward(&layer_in, index_pos)?,
+                LayerKind::Attention(attn) => attn.forward(&layer_in, mask.as_ref(), index_pos)
+                    .map_err(|e| candle_core::Error::Msg(format!("Layer {i} ({layer_type}): {e}")))?,
+                LayerKind::DeltaNet(delta) => delta.forward(&layer_in, index_pos)
+                    .map_err(|e| candle_core::Error::Msg(format!("Layer {i} ({layer_type}): {e}")))?,
             };
             layer_in = layer_out;
         }

@@ -33,33 +33,42 @@ use crate::modules::plasticity::topology;
 use crate::runtime;
 
 /// Select best available compute device.
-/// Set CANDLE_FORCE_CPU=1 to bypass GPU for A/B testing.
+/// PANICS if no GPU is available — CPU inference is not supported.
+/// Set CANDLE_FORCE_CPU=1 ONLY for automated testing (not production).
 pub fn select_best_device() -> Device {
     if std::env::var("CANDLE_FORCE_CPU").is_ok() {
-        runtime::logger("candle").info("  CANDLE_FORCE_CPU set — using CPU (for A/B testing)");
+        runtime::logger("candle").info("  CANDLE_FORCE_CPU set — using CPU (testing only)");
         return Device::Cpu;
     }
 
     #[cfg(feature = "cuda")]
     {
-        if let Ok(device) = Device::new_cuda(0) {
-            runtime::logger("candle").info("  Using CUDA device");
-            return device;
+        match Device::new_cuda(0) {
+            Ok(device) => {
+                runtime::logger("candle").info("  Using CUDA device");
+                return device;
+            }
+            Err(e) => runtime::logger("candle").warn(&format!("  CUDA init failed: {e}")),
         }
-        runtime::logger("candle").info("  CUDA not available");
     }
 
     #[cfg(feature = "metal")]
     {
-        if let Ok(device) = Device::new_metal(0) {
-            runtime::logger("candle").info("  Using Metal device");
-            return device;
+        match Device::new_metal(0) {
+            Ok(device) => {
+                runtime::logger("candle").info("  Using Metal device");
+                return device;
+            }
+            Err(e) => runtime::logger("candle").warn(&format!("  Metal init failed: {e}")),
         }
-        runtime::logger("candle").info("  Metal not available");
     }
 
-    runtime::logger("candle").info("  Using CPU (no GPU acceleration)");
-    Device::Cpu
+    // NO CPU FALLBACK. Inference on CPU is unusable for production models.
+    // If you need CPU for testing, set CANDLE_FORCE_CPU=1.
+    panic!(
+        "No GPU available for inference. Metal (macOS) or CUDA (Linux/Windows) required. \
+         Set CANDLE_FORCE_CPU=1 to force CPU (testing only, not usable for real inference)."
+    );
 }
 
 /// Download model weights, handling both single file and sharded models.
@@ -754,8 +763,8 @@ mod tests {
         let tokenizer_path = repo.get("tokenizer.json").expect("Failed to download tokenizer");
         let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).expect("Failed to load tokenizer");
 
-        // Test on Metal — that's what production uses. CPU is not representative.
-        let device = candle_core::Device::new_metal(0).unwrap_or(candle_core::Device::Cpu);
+        // Test on Metal — that's what production uses. NO CPU FALLBACK.
+        let device = candle_core::Device::new_metal(0).expect("Metal GPU required — no CPU fallback");
         let start = Instant::now();
 
         let mut backend = backends::load_gguf_backend(
