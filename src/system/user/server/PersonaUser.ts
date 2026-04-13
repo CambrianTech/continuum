@@ -2087,6 +2087,7 @@ export class PersonaUser extends AIUser {
           COLLECTIONS.USER_STATES,
           userState.id,
           userState,
+          true,
           'default'
         );
       } else {
