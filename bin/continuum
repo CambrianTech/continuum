@@ -582,6 +582,21 @@ cmd_tray_data() {
     status="yellow"; status_text="$online_count grid nodes"
   fi
 
+  # Build actions based on state
+  local actions=""
+  if [ "$docker_ok" = "false" ] && [ "$healthy" -eq 0 ]; then
+    case "$(uname -s)" in
+      Darwin) actions='{"id":"start-docker","label":"Start Docker Desktop","command":"open -a Docker"},{"id":"doctor","label":"Doctor","command":"continuum doctor"}' ;;
+      *)      actions='{"id":"start-docker","label":"Start Docker","command":"sudo systemctl start docker || sudo service docker start"},{"id":"doctor","label":"Doctor","command":"continuum doctor"}' ;;
+    esac
+  elif [ "$healthy" -eq 0 ]; then
+    actions='{"id":"start","label":"Start Services","command":"continuum start"},{"id":"doctor","label":"Doctor","command":"continuum doctor"},{"id":"logs","label":"View Logs","command":"continuum logs"}'
+  elif [ "$healthy" -ge 4 ]; then
+    actions='{"id":"open","label":"Open Browser","command":"continuum open"},{"id":"restart","label":"Restart","command":"continuum restart"},{"id":"stop","label":"Stop","command":"continuum stop"},{"id":"update","label":"Update","command":"continuum update"},{"id":"logs","label":"Logs","command":"continuum logs"}'
+  else
+    actions='{"id":"restart","label":"Restart","command":"continuum restart"},{"id":"doctor","label":"Doctor","command":"continuum doctor"},{"id":"logs","label":"Logs","command":"continuum logs"},{"id":"stop","label":"Stop","command":"continuum stop"}'
+  fi
+
   cat << JSONEOF
 {
   "status": "$status",
@@ -590,47 +605,7 @@ cmd_tray_data() {
   "services": {"healthy": $healthy, "total": $total},
   "tailnet": "$suffix",
   "nodes": $nodes_json,
-  "actions": [
-$(if [ "$docker_ok" = "false" ]; then
-  # Docker not running — recovery actions
-  case "$(uname -s)" in
-    Darwin) cat << 'ACTEOF'
-    {"id": "start-docker", "label": "Start Docker Desktop", "command": "open -a Docker"},
-    {"id": "doctor", "label": "Doctor", "command": "continuum doctor"}
-ACTEOF
-    ;;
-    *) cat << 'ACTEOF'
-    {"id": "start-docker", "label": "Start Docker", "command": "sudo systemctl start docker || sudo service docker start"},
-    {"id": "doctor", "label": "Doctor", "command": "continuum doctor"}
-ACTEOF
-    ;;
-  esac
-elif [ "$healthy" -eq 0 ]; then
-  # Docker running but no healthy containers — start services
-  cat << 'ACTEOF'
-    {"id": "start", "label": "Start Services", "command": "continuum start"},
-    {"id": "doctor", "label": "Doctor", "command": "continuum doctor"},
-    {"id": "logs", "label": "View Logs", "command": "continuum logs"}
-ACTEOF
-elif [ "$healthy" -ge 4 ]; then
-  # Healthy — normal actions
-  cat << 'ACTEOF'
-    {"id": "open", "label": "Open Browser", "command": "continuum open"},
-    {"id": "restart", "label": "Restart Services", "command": "continuum restart"},
-    {"id": "stop", "label": "Stop Services", "command": "continuum stop"},
-    {"id": "update", "label": "Update", "command": "continuum update"},
-    {"id": "logs", "label": "View Logs", "command": "continuum logs"}
-ACTEOF
-else
-  # Partially healthy — troubleshoot
-  cat << 'ACTEOF'
-    {"id": "restart", "label": "Restart Services", "command": "continuum restart"},
-    {"id": "doctor", "label": "Doctor", "command": "continuum doctor"},
-    {"id": "logs", "label": "View Logs", "command": "continuum logs"},
-    {"id": "stop", "label": "Stop Services", "command": "continuum stop"}
-ACTEOF
-fi)
-  ],
+  "actions": [$actions],
   "version": "1.0"
 }
 JSONEOF
