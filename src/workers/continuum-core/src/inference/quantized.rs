@@ -150,23 +150,20 @@ pub fn load_default_quantized(
 
     log.info(&format!("System RAM: {}GB — selecting best model", total_ram_gb));
 
-    // Model selection: Qwen2.5-Coder-3B-Instruct (known working with candle).
-    // TODO(#163): Switch to continuum-ai/qwen3.5-4b-code-forged-GGUF once the
-    // Rust candle engine supports the qwen35 hybrid architecture (DeltaNet +
-    // full attention). The 3.5 GGUF exists on HF but candle can't load it yet.
+    // Model selection: our forged Qwen3.5 models (PR #878 added candle backend)
     let (repo, filename, tokenizer_repo) = if total_ram_gb >= 32 {
-        log.info("Selected: Qwen2.5-Coder-3B-Instruct Q8_0 (high quality, 32GB+ device)");
+        log.info("Selected: qwen3.5-4b-code-forged Q8_0 (high quality, 32GB+ device)");
         (
-            "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
-            "qwen2.5-coder-3b-instruct-q8_0.gguf",
-            "Qwen/Qwen2.5-Coder-3B-Instruct",
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            "qwen3.5-4b-code-forged-Q8_0.gguf",
+            "Qwen/Qwen3-4B",
         )
     } else {
-        log.info("Selected: Qwen2.5-Coder-3B-Instruct Q4_K_M (compact, universal)");
+        log.info("Selected: qwen3.5-4b-code-forged Q4_K_M (compact, universal)");
         (
-            "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
-            "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
-            "Qwen/Qwen2.5-Coder-3B-Instruct",
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            "qwen3.5-4b-code-forged-Q4_K_M.gguf",
+            "Qwen/Qwen3-4B",
         )
     };
 
