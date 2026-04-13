@@ -421,68 +421,60 @@ impl DeltaNetLayer {
         let q = candle_transformers::utils::repeat_kv(q, repeat_factor)?; // [B, num_v_heads, T, head_k_dim]
         let k = candle_transformers::utils::repeat_kv(k, repeat_factor)?;
 
-        // Step 7: DeltaNet recurrence
-        // State: [B, num_v_heads, head_k_dim, head_v_dim]
+        // Step 7: DeltaNet recurrence — sequential per-token with Metal sync.
+        //
+        // The DeltaNet recurrence is inherently sequential: each token's state depends
+        // on the previous. A proper chunked algorithm (torch_chunk_gated_delta_rule)
+        // requires cumsum which candle lacks. Until we add cumsum + the full chunked
+        // algorithm, we use per-token recurrence with periodic Metal command buffer flush.
+        //
+        // Performance: ~0.4s/token on M1 Pro Metal for prefill. Single-token generation
+        // is fast (one step). Prefill is the bottleneck.
+        //
+        // TODO: Implement cumsum in candle fork, then port torch_chunk_gated_delta_rule
+        // for 64x fewer Metal dispatches during prefill.
+
         let scale = 1.0 / (self.head_k_dim as f64).sqrt();
+        let device = x.device();
+
         let mut state = match &self.recurrence_state {
             Some(s) => s.clone(),
             None => Tensor::zeros(
                 (b_sz, self.num_v_heads, self.head_k_dim, self.head_v_dim),
                 DType::F32,
-                x.device(),
+                device,
             )?,
         };
 
+        let q = (q * scale)?;
         let mut outputs = Vec::with_capacity(seq_len);
         for t in 0..seq_len {
-            // Metal: flush GPU command buffer periodically to prevent hang
-            // Without this, thousands of dispatches queue up and the GPU stalls
-            if t > 0 && t % 64 == 0 {
-                x.device().synchronize()?;
+            let q_t = q.i((.., .., t, ..))?;
+            let k_t = k.i((.., .., t, ..))?;
+            let v_t = v.i((.., .., t, ..))?;
+            let g_t = g.i((.., t, ..))?;
+            let beta_t = beta.i((.., t, ..))?;
+
+            // Decay
+            state = state.broadcast_mul(&g_t.exp()?.unsqueeze(2)?.unsqueeze(3)?)?;
+            // Retrieve
+            let kv_mem = k_t.unsqueeze(2)?.matmul(&state)?.squeeze(2)?;
+            // Delta write
+            let delta = beta_t.unsqueeze(2)?.broadcast_mul(&(&v_t - &kv_mem)?)?;
+            state = (state + k_t.unsqueeze(3)?.matmul(&delta.unsqueeze(2)?)?)?;
+            // Read
+            outputs.push(q_t.unsqueeze(2)?.matmul(&state)?.squeeze(2)?);
+
+            // Metal: flush GPU every 128 steps during prefill
+            if seq_len > 1 && t > 0 && t % 128 == 0 {
+                device.synchronize()?;
             }
-
-            // Per-timestep vectors
-            let q_t = (q.i((.., .., t, ..))? * scale)?;    // [B, num_v_heads, head_k_dim]
-            let k_t = k.i((.., .., t, ..))?;                // [B, num_v_heads, head_k_dim]
-            let v_t = v.i((.., .., t, ..))?;                // [B, num_v_heads, head_v_dim]
-            let g_t = g.i((.., t, ..))?.exp()?;              // [B, num_v_heads] → scalar per head
-            let beta_t = beta.i((.., t, ..))?;               // [B, num_v_heads]
-
-            // 1. DECAY: S = S * exp(g_t)
-            let g_expanded = g_t.unsqueeze(2)?.unsqueeze(3)?; // [B, num_v_heads, 1, 1]
-            state = state.broadcast_mul(&g_expanded)?;
-
-            // 2. RETRIEVE: read memory at key location
-            // kv_mem = S @ k_t (matmul state with key)
-            let k_col = k_t.unsqueeze(3)?;                   // [B, num_v_heads, head_k_dim, 1]
-            let kv_mem = state.matmul(&k_col)?.squeeze(3)?;  // [B, num_v_heads, head_v_dim]... wait
-            // Actually: S is [B, nh, hk, hv], k is [B, nh, hk]
-            // S^T @ k = [B, nh, hv, hk] @ [B, nh, hk, 1] = [B, nh, hv, 1]
-            // But we want k^T @ S: [B, nh, 1, hk] @ [B, nh, hk, hv] = [B, nh, 1, hv]
-            let k_row = k_t.unsqueeze(2)?;                   // [B, num_v_heads, 1, head_k_dim]
-            let kv_mem = k_row.matmul(&state)?.squeeze(2)?;  // [B, num_v_heads, head_v_dim]
-
-            // 3. DELTA: correction = beta * (v - kv_mem)
-            let beta_expanded = beta_t.unsqueeze(2)?;        // [B, num_v_heads, 1]
-            let delta = (beta_expanded.broadcast_mul(&(&v_t - &kv_mem)?))?; // [B, nh, hv]
-
-            // 4. WRITE: S += k ⊗ delta (outer product)
-            let k_col = k_t.unsqueeze(3)?;                   // [B, nh, hk, 1]
-            let delta_row = delta.unsqueeze(2)?;              // [B, nh, 1, hv]
-            let update = k_col.matmul(&delta_row)?;           // [B, nh, hk, hv]
-            state = (state + update)?;
-
-            // 5. READ: output = q^T @ S
-            let q_row = q_t.unsqueeze(2)?;                   // [B, nh, 1, hk]
-            let o_t = q_row.matmul(&state)?.squeeze(2)?;     // [B, nh, hv]
-
-            outputs.push(o_t);
         }
+        if seq_len > 1 { device.synchronize()?; }
+
+        let attn_out = Tensor::stack(&outputs, 2)?;
 
         self.recurrence_state = Some(state);
-
-        // Stack: [B, num_v_heads, T, head_v_dim]
-        let attn_out = Tensor::stack(&outputs, 2)?;
 
         // Step 8: RMSNorm per V-head, gated by SiLU(z)
         let attn_out = {
