@@ -89,6 +89,20 @@ impl GridRouter {
                     }
                 }
 
+                // best-model-for:<domain> — Many-Worlds grid routing
+                // Routes inference to the node with the best model for the task domain
+                _ if hint.starts_with(HINT_BEST_MODEL_PREFIX) => {
+                    let domain = &hint[HINT_BEST_MODEL_PREFIX.len()..];
+                    // Gather local models from Inference capabilities
+                    let local_models: Vec<String> = vec![]; // TODO: populate from local capabilities
+                    if let Some(node) = find_best_inference_node(registry, domain, &local_models) {
+                        return RouteDecision::Remote {
+                            node,
+                            reason: "best-model-for domain routing",
+                        };
+                    }
+                }
+
                 // node:<name> — route to a named node
                 _ if hint.starts_with("node:") => {
                     let name = hint[5..].to_lowercase();
@@ -118,16 +132,133 @@ impl GridRouter {
             }
         }
 
+        // 3b. Inference routing: if this is an inference command, check if a remote
+        // node has a better model. Many-Worlds: the population is the grid.
+        if is_inference(command) {
+            let domain = params.get("domain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("general");
+            let local_models: Vec<String> = vec![]; // TODO: populate from local Inference capability
+            if let Some(node) = find_best_inference_node(registry, domain, &local_models) {
+                return RouteDecision::Remote {
+                    node,
+                    reason: "better model available on grid",
+                };
+            }
+        }
+
         // 4. Default: local
         RouteDecision::Local
     }
 }
+
+/// Routing hint prefix for model-aware inference routing.
+/// Usage: routingHint = "best-model-for:code" or "best-model-for:general"
+pub const HINT_BEST_MODEL_PREFIX: &str = "best-model-for:";
 
 /// Check if a command requires GPU hardware.
 fn requires_gpu(command: &str) -> bool {
     command.starts_with("genome/train")
         || command.starts_with("plasticity/")
         || (command.starts_with("ai/") && command != "ai/report")
+}
+
+/// Check if a command is an inference request.
+fn is_inference(command: &str) -> bool {
+    command == "ai/generate"
+        || command == "cognition/generate"
+        || command.starts_with("ai/agent")
+}
+
+/// Find the best node for inference based on model quality.
+/// Ranks by: model size (larger = better), then latency (lower = better).
+/// Returns None if local node has the best or only model.
+fn find_best_inference_node(
+    registry: &NodeRegistry,
+    domain: &str,
+    local_models: &[String],
+) -> Option<GridNode> {
+    let candidates: Vec<GridNode> = registry
+        .all_nodes()
+        .into_iter()
+        .filter(|n| n.trust_level >= TrustLevel::Trusted)
+        .filter(|n| is_online(n))
+        .filter(|n| {
+            // Node must have inference capability with at least one model
+            n.capabilities.iter().any(|c| matches!(c, NodeCapability::Inference { models } if !models.is_empty()))
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Score each node: larger model name containing domain keywords = better
+    // Model naming convention: "continuum-ai/qwen3.5-27b-code-forged" — the "27b" indicates size
+    let score_model = |model: &str, domain: &str| -> u64 {
+        let mut score: u64 = 0;
+        // Extract parameter count from model name (e.g., "27b" → 27, "4b" → 4)
+        for part in model.split('-') {
+            if part.ends_with('b') || part.ends_with('B') {
+                if let Ok(size) = part[..part.len()-1].parse::<u64>() {
+                    score += size * 1000; // Larger model = higher score
+                }
+            }
+        }
+        // Bonus if model name contains the domain keyword
+        let model_lower = model.to_lowercase();
+        if model_lower.contains(domain) {
+            score += 500; // Domain match bonus
+        }
+        // Bonus for "forged" models (our optimized variants)
+        if model_lower.contains("forged") {
+            score += 200;
+        }
+        score
+    };
+
+    let best_local_score: u64 = local_models
+        .iter()
+        .map(|m| score_model(m, domain))
+        .max()
+        .unwrap_or(0);
+
+    // Find best remote node
+    let mut scored_nodes: Vec<(GridNode, u64)> = candidates
+        .into_iter()
+        .map(|node| {
+            let best_model_score = node.capabilities
+                .iter()
+                .filter_map(|c| match c {
+                    NodeCapability::Inference { models } => {
+                        models.iter().map(|m| score_model(m, domain)).max()
+                    }
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            (node, best_model_score)
+        })
+        .collect();
+
+    // Sort by score descending, then latency ascending
+    scored_nodes.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| {
+                a.0.latency_ms.unwrap_or(u64::MAX)
+                    .cmp(&b.0.latency_ms.unwrap_or(u64::MAX))
+            })
+    });
+
+    // Only route remotely if remote has a significantly better model
+    if let Some((node, score)) = scored_nodes.into_iter().next() {
+        if score > best_local_score + 500 {
+            // Remote has meaningfully better model
+            return Some(node);
+        }
+    }
+
+    None // Local is good enough
 }
 
 /// Find an online, trusted node with GPU capability.
