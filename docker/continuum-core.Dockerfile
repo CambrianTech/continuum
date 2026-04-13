@@ -26,13 +26,16 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 
 # System deps for compilation
+# cmake + libclang needed to build vendored llama.cpp (src/workers/llama/)
+# build-essential has g++/gcc for C++ compilation of llama.cpp source
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
-    libclang-dev clang \
+    libclang-dev clang build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
 # CUDA support (optional — only needed for GPU features)
-# For CPU-only builds, skip this and don't pass --features cuda
+# For CPU-only builds, skip this and don't pass --features cuda.
+# For CUDA: base the builder on nvidia/cuda:devel image (separate Dockerfile variant).
 ARG CUDA_VERSION=12.8
 ARG GPU_FEATURES=""
 
