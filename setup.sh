@@ -202,8 +202,44 @@ if [[ "$PLATFORM" == "mac" ]]; then
     cp "$TRAY_SRC" "$TRAY_APP/Contents/MacOS/Continuum"
     chmod +x "$TRAY_APP/Contents/MacOS/Continuum"
     cp bin/tray/Info.plist "$TRAY_APP/Contents/Info.plist"
-    echo "✅ Tray app installed → $TRAY_APP"
+    # Auto-start on login via LaunchAgent
+    LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
+    mkdir -p "$LAUNCH_AGENTS"
+    cp bin/tray/com.cambriantech.continuum.plist "$LAUNCH_AGENTS/"
+    echo "✅ Tray app installed → $TRAY_APP (auto-starts on login)"
   fi
+elif [[ "$PLATFORM" == "windows" ]]; then
+  # Windows: create startup shortcut for PowerShell tray
+  STARTUP_DIR="$APPDATA/Microsoft/Windows/Start Menu/Programs/Startup"
+  if [[ -d "$STARTUP_DIR" ]]; then
+    TRAY_PS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/tray/continuum-tray.ps1"
+    cat > "$STARTUP_DIR/continuum-tray.bat" << WINEOF
+@echo off
+powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File "$TRAY_PS"
+WINEOF
+    echo "✅ System tray installed (auto-starts on login)"
+  fi
+elif [[ "$PLATFORM" == "linux" ]] || [[ "$PLATFORM" == "wsl" ]]; then
+  # Linux: systemd user service
+  SYSTEMD_DIR="$HOME/.config/systemd/user"
+  mkdir -p "$SYSTEMD_DIR"
+  TRAY_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/tray/continuum-tray.py"
+  cat > "$SYSTEMD_DIR/continuum-tray.service" << SVCEOF
+[Unit]
+Description=Continuum System Tray
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/python3 $TRAY_PY
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+SVCEOF
+  systemctl --user daemon-reload 2>/dev/null
+  systemctl --user enable continuum-tray.service 2>/dev/null
+  echo "✅ System tray installed (auto-starts on login)"
 fi
 
 # ── Pull pre-built images ────────────────────────
