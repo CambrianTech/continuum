@@ -184,22 +184,25 @@ else
 fi
 
 # ── Install tray app (macOS) ─────────────────────
-if [[ "$PLATFORM" == "mac" ]] && command -v swiftc &>/dev/null; then
-  TRAY_BIN="bin/tray/continuum-tray"
-  TRAY_INSTALL="$HOME/.local/bin/continuum-tray"
+# Proper .app bundle required for macOS menubar (NSStatusBar + LSUIElement).
+if [[ "$PLATFORM" == "mac" ]]; then
+  TRAY_SRC="bin/tray/continuum-tray"
+  TRAY_APP="$HOME/Applications/Continuum.app"
 
-  # Build Swift tray if binary doesn't exist
-  if [[ ! -f "$TRAY_BIN" ]]; then
+  # Build from Swift source if binary doesn't exist
+  if [[ ! -f "$TRAY_SRC" ]] && command -v swiftc &>/dev/null; then
     echo "🔨 Building tray app (Swift)..."
     (cd bin/tray && swiftc -O -o continuum-tray ContinuumTray.swift -framework Cocoa 2>/dev/null) || {
       echo "⚠️  Tray app build failed (non-critical). Requires Xcode command line tools."
     }
   fi
 
-  if [[ -f "$TRAY_BIN" ]]; then
-    cp "$TRAY_BIN" "$TRAY_INSTALL"
-    chmod +x "$TRAY_INSTALL"
-    echo "✅ Tray app installed → $TRAY_INSTALL"
+  if [[ -f "$TRAY_SRC" ]]; then
+    mkdir -p "$TRAY_APP/Contents/MacOS" "$TRAY_APP/Contents/Resources"
+    cp "$TRAY_SRC" "$TRAY_APP/Contents/MacOS/Continuum"
+    chmod +x "$TRAY_APP/Contents/MacOS/Continuum"
+    cp bin/tray/Info.plist "$TRAY_APP/Contents/Info.plist"
+    echo "✅ Tray app installed → $TRAY_APP"
   fi
 fi
 
@@ -326,22 +329,15 @@ echo "  Run 'continuum status' anytime to check health."
 echo "  Run 'continuum doctor' to diagnose issues."
 echo ""
 
-# Launch tray app (macOS) — menubar control for start/stop/status
-TRAY_BIN="$HOME/.local/bin/continuum-tray"
-if [[ "$PLATFORM" == "mac" ]] && [[ -x "$TRAY_BIN" ]]; then
-  # Kill existing tray if running
-  pkill -f continuum-tray 2>/dev/null || true
-  nohup "$TRAY_BIN" &>/dev/null &
+# Launch tray app (macOS menubar) / system tray (Windows)
+if [[ "$PLATFORM" == "mac" ]] && [[ -d "$HOME/Applications/Continuum.app" ]]; then
+  pkill -f "Continuum.app" 2>/dev/null || true
+  sleep 0.5
+  open "$HOME/Applications/Continuum.app"
   echo "  🖥️ Tray app running (menubar)"
 fi
-
-# Launch tray app (macOS) — menubar control for start/stop/status
-TRAY_INSTALLED="$HOME/.local/bin/continuum-tray"
-if [[ "$PLATFORM" == "mac" ]] && [[ -x "$TRAY_INSTALLED" ]]; then
-  pkill -f continuum-tray 2>/dev/null || true
-  nohup "$TRAY_INSTALLED" &>/dev/null &
-  echo "  🖥️ Tray app running (menubar)"
-fi
+# TODO: Windows system tray — PowerShell NotifyIcon or .NET WinForms tray app
+# Similar to Mac: thin client reads `continuum tray-data` JSON, renders native menu
 
 # Open browser (prefer HTTPS grid URL if available)
 OPEN_URL="${REMOTE_URL:-$LOCAL_URL}"
