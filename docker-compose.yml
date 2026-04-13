@@ -82,6 +82,8 @@ services:
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility
+      # HuggingFace cache inside persistent ~/.continuum so model downloads survive restarts
+      - HF_HOME=/root/.continuum/hf_cache
     healthcheck:
       # Verify IPC responds, not just socket exists. Uses archive-worker binary
       # (already in image) as a lightweight ping — connects, sends ping, checks response.

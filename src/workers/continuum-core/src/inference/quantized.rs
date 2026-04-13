@@ -25,16 +25,61 @@ pub fn download_gguf_model(
     log.info(&format!("Downloading GGUF model: {}/{}", repo_id, filename));
     let start = Instant::now();
 
-    let api = Api::new()?;
-    let repo = api.repo(Repo::new(repo_id.to_string(), RepoType::Model));
-    let path = repo.get(filename)?;
+    // Try hf_hub API first (respects HF_HOME, HF_TOKEN, caches properly)
+    let hf_result = (|| -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+        let api = Api::new()?;
+        let repo = api.repo(Repo::new(repo_id.to_string(), RepoType::Model));
+        Ok(repo.get(filename)?)
+    })();
+
+    match hf_result {
+        Ok(path) => {
+            log.info(&format!(
+                "GGUF downloaded via hf_hub in {:.2}s: {:?}",
+                start.elapsed().as_secs_f32(), path
+            ));
+            return Ok(path);
+        }
+        Err(e) => {
+            log.warn(&format!(
+                "hf_hub download failed ({}), trying direct curl fallback...", e
+            ));
+        }
+    }
+
+    // Fallback: direct HTTP download via curl (handles HF LFS redirects that
+    // hf_hub sometimes fails on inside Docker containers)
+    let cache_dir = std::env::var("HF_HOME")
+        .unwrap_or_else(|_| format!("{}/.cache/huggingface", std::env::var("HOME").unwrap_or_default()));
+    let model_dir = format!("{}/hub/models--{}/snapshots/main",
+        cache_dir, repo_id.replace('/', "--"));
+    std::fs::create_dir_all(&model_dir)?;
+    let target_path = PathBuf::from(format!("{}/{}", model_dir, filename));
+
+    if target_path.exists() {
+        log.info(&format!("GGUF already cached: {:?}", target_path));
+        return Ok(target_path);
+    }
+
+    let url = format!(
+        "https://huggingface.co/{}/resolve/main/{}",
+        repo_id, filename
+    );
+    log.info(&format!("Downloading via curl: {}", url));
+
+    let status = std::process::Command::new("curl")
+        .args(["-sfL", &url, "-o", target_path.to_str().unwrap()])
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("curl download failed with status {}", status).into());
+    }
 
     log.info(&format!(
-        "GGUF downloaded in {:.2}s: {:?}",
-        start.elapsed().as_secs_f32(),
-        path
+        "GGUF downloaded via curl in {:.2}s: {:?}",
+        start.elapsed().as_secs_f32(), target_path
     ));
-    Ok(path)
+    Ok(target_path)
 }
 
 /// Load a quantized GGUF model as a ModelBackend.
