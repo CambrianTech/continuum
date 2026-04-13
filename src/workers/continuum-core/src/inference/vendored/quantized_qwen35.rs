@@ -482,17 +482,36 @@ impl DeltaNetLayer {
         };
 
         let attn_out = if seq_len == 1 {
-            // Single-token generation: one recurrence step
-            let q_t = (q.squeeze(2)?.contiguous()? * scale)?;
-            let k_t = k.squeeze(2)?.contiguous()?;
-            let v_t = v.squeeze(2)?.contiguous()?;
-            let g_t = g.i((.., 0, ..))?.exp()?;
-            let beta_t = beta.i((.., 0, ..))?;
+            // Single-token generation — llama.cpp approach: elementwise ops, no matmul.
+            // State is [B, nh, hk, hv]. k/q/v are [B, nh, dim].
+            // This avoids tiny matmuls that Metal can't optimize.
+            let q_t = (q.squeeze(2)? * scale)?;       // [B, nh, hk]
+            let k_t = k.squeeze(2)?;                   // [B, nh, hk]
+            let v_t = v.squeeze(2)?;                   // [B, nh, hv]
+            let g_t = g.i((.., 0, ..))?.exp()?;        // [B, nh]
+            let beta_t = beta.i((.., 0, ..))?;         // [B, nh]
+
+            // 1. Decay: S *= exp(g)
+            // g: [B, nh] → [B, nh, 1, 1] for broadcast with state [B, nh, hk, hv]
             state = state.broadcast_mul(&g_t.unsqueeze(2)?.unsqueeze(3)?)?;
-            let kv_mem = k_t.unsqueeze(2)?.matmul(&state)?.squeeze(2)?;
-            let delta = beta_t.unsqueeze(2)?.broadcast_mul(&(&v_t - &kv_mem)?)?;
-            state = (state + k_t.unsqueeze(3)?.matmul(&delta.unsqueeze(2)?)?)?;
-            q_t.unsqueeze(2)?.matmul(&state)?.squeeze(2)?.unsqueeze(2)?
+
+            // 2. Retrieve: sk = sum_rows(S * k)
+            // k: [B, nh, hk] → [B, nh, hk, 1] for elementwise mul with S [B, nh, hk, hv]
+            let sk = state.broadcast_mul(&k_t.unsqueeze(3)?)? // [B, nh, hk, hv]
+                .sum(2)?;                                       // [B, nh, hv] (sum over hk dim)
+
+            // 3. Delta: d = beta * (v - sk)
+            let d = beta_t.unsqueeze(2)?.broadcast_mul(&(&v_t - &sk)?)?; // [B, nh, hv]
+
+            // 4. Write: S += k outer d (elementwise: S[i,j] += k[i] * d[j])
+            // k: [B, nh, hk, 1], d: [B, nh, 1, hv] → broadcast mul = [B, nh, hk, hv]
+            state = (state + k_t.unsqueeze(3)?.broadcast_mul(&d.unsqueeze(2)?)?)?;
+
+            // 5. Read: o = sum_rows(S * q)
+            let o = state.broadcast_mul(&q_t.unsqueeze(3)?)? // [B, nh, hk, hv]
+                .sum(2)?;                                      // [B, nh, hv]
+
+            o.unsqueeze(2)? // [B, nh, 1, hv]
         } else {
             // Chunked prefill
             let q = (q.contiguous()? * scale)?;
