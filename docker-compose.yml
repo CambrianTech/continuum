@@ -104,7 +104,7 @@ services:
     depends_on:
       - livekit
     volumes:
-      - ipc-sockets:/root/.continuum/sockets
+      - ~/.continuum/sockets:/root/.continuum/sockets
     environment:
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
     healthcheck:
@@ -128,8 +128,7 @@ services:
     ports:
       - "${NODE_WS_PORT:-9001}:9001"   # WebSocket
     volumes:
-      - ipc-sockets:/root/.continuum/sockets
-      - ~/.continuum/config.env:/root/.continuum/config.env:ro
+      - ~/.continuum:/root/.continuum
     environment:
       - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
       - NODE_ENV=production
@@ -267,9 +266,4 @@ volumes:
   forge-output:
   models:
   voice-models:
-  ipc-sockets:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
   tailscale-state:
