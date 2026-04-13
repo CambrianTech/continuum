@@ -96,30 +96,36 @@ is_local_running() {
 }
 
 # ── Get best URL ────────────────────────────────────────────
+# One function. Tailscale Serve → HTTPS. Tailscale → TS IP. Neither → localhost.
+get_local_url() {
+  local port="${1:-9003}"  # 9003 for Docker, 9000 for bare metal
+
+  # 1. Tailscale Serve running? → HTTPS (real TLS, grid mode)
+  if tailscale serve status 2>/dev/null | grep -q "http"; then
+    local dns
+    dns=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
+    if [ -n "$dns" ]; then echo "https://$dns"; return 0; fi
+  fi
+
+  # 2. Tailscale connected? → HTTP via Tailscale IP (reachable from other devices)
+  if command -v tailscale &>/dev/null && tailscale ip -4 &>/dev/null 2>&1; then
+    local ip; ip=$(tailscale ip -4 2>/dev/null)
+    if [ -n "$ip" ]; then echo "http://$ip:$port"; return 0; fi
+  fi
+
+  # 3. No Tailscale → localhost
+  echo "http://localhost:$port"
+}
+
 get_url() {
-  # Local Docker running?
+  # Detect which mode: Docker (9003) or bare metal (9000)
   if is_local_running; then
-    echo "http://localhost:9003"
-    return 0
+    get_local_url 9003
+  elif curl -sf http://localhost:9000 &>/dev/null; then
+    get_local_url 9000
+  else
+    get_local_url 9003  # default to Docker port
   fi
-  # Grid: find a continuum node (look for one named "continuum" first, then any)
-  if command -v tailscale &>/dev/null; then
-    local suffix; suffix=$(tailnet_suffix)
-    [ -z "$suffix" ] && return 1
-    # Prefer node named "continuum"
-    if tailscale status 2>/dev/null | awk '{print $2}' | grep -qx "continuum"; then
-      echo "https://continuum.${suffix}"
-      return 0
-    fi
-    # Otherwise first non-self node
-    local self_name; self_name=$(hostname -s 2>/dev/null || echo "")
-    while read -r ip name rest; do
-      [ "$name" = "$self_name" ] && continue
-      echo "https://${name}.${suffix}"
-      return 0
-    done < <(tailscale status 2>/dev/null)
-  fi
-  return 1
 }
 
 # ── Commands ────────────────────────────────────────────────
