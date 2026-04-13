@@ -508,17 +508,41 @@ cmd_update() {
 cmd_tray_data() {
   # JSON output for native tray apps. Single source of truth.
   # Tray apps are thin renderers — they read this and build native menus.
+
+  # detect_server: Docker OR bare metal?
+  local server_mode="none" http_port=0 healthy=0 total=0
   local docker_ok="false"
+
+  # Check Docker first
   if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
     docker_ok="true"
+    if find_compose 2>/dev/null; then
+      cd "$COMPOSE_DIR"
+      healthy=$(docker compose ps --format '{{.Health}}' 2>/dev/null | grep -c healthy || echo 0)
+      total=$(docker compose ps --format '{{.Name}}' 2>/dev/null | wc -l | tr -d ' ')
+      if [ "$healthy" -ge 4 ]; then
+        server_mode="docker"; http_port=9003
+      fi
+    fi
   fi
 
-  # Container health
-  local healthy=0 total=0
-  if [ "$docker_ok" = "true" ] && find_compose 2>/dev/null; then
-    cd "$COMPOSE_DIR"
-    healthy=$(docker compose ps --format '{{.Health}}' 2>/dev/null | grep -c healthy || echo 0)
-    total=$(docker compose ps --format '{{.Name}}' 2>/dev/null | wc -l | tr -d ' ')
+  # Check bare metal if Docker isn't fully healthy
+  if [ "$server_mode" = "none" ]; then
+    # Read port from config.env
+    local bm_port=9000
+    if [ -f "$HOME/.continuum/config.env" ]; then
+      local cfg_port=$(grep "^HTTP_PORT=" "$HOME/.continuum/config.env" 2>/dev/null | cut -d= -f2)
+      [ -n "$cfg_port" ] && bm_port="$cfg_port"
+    fi
+    if curl -sf "http://localhost:$bm_port" &>/dev/null; then
+      server_mode="bare-metal"; http_port="$bm_port"
+      # Count bare metal as "healthy" — it's one process, either up or not
+      healthy=1; total=1
+      # Check if Rust core is actually alive (the real health signal)
+      if [ -S "$HOME/.continuum/sockets/continuum-core.sock" ]; then
+        healthy=5; total=5  # approximate: core + node + http + livekit + livekit-bridge
+      fi
+    fi
   fi
 
   # Grid nodes
@@ -570,16 +594,17 @@ cmd_tray_data() {
   online_count=$(echo "$nodes_json" | grep -o '"online":true' | wc -l | tr -d ' ')
 
   local status="red" status_text="Not running"
-  if [ "$docker_ok" = "false" ] && [ "$online_count" -gt 0 ]; then
-    status="yellow"; status_text="Docker off, $online_count grid nodes"
-  elif [ "$docker_ok" = "false" ]; then
-    status="red"; status_text="Docker not running"
-  elif [ "$healthy" -ge 4 ]; then
-    status="green"; status_text="$healthy services, $online_count nodes"
-  elif [ "$healthy" -gt 0 ]; then
-    status="yellow"; status_text="$healthy services, $online_count nodes"
+  if [ "$server_mode" = "docker" ] || [ "$server_mode" = "bare-metal" ]; then
+    if [ "$healthy" -ge 4 ]; then
+      status="green"; status_text="Running ($server_mode)"
+    else
+      status="yellow"; status_text="Degraded ($server_mode)"
+    fi
+    if [ "$online_count" -gt 0 ]; then
+      status_text="$status_text, $online_count nodes"
+    fi
   elif [ "$online_count" -gt 0 ]; then
-    status="yellow"; status_text="$online_count grid nodes"
+    status="yellow"; status_text="$online_count grid nodes (local off)"
   fi
 
   # Build actions based on state
