@@ -250,8 +250,16 @@ while read -r worker; do
   fi
 
   if [ "$worker_type" = "tcp" ]; then
-    # TCP worker (e.g., gRPC server) - no socket argument
-    (eval "$ULIMIT_CMD" exec "$binary") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
+    # TCP worker (e.g., llama-server, gRPC) — pass args if configured
+    if [ -z "$args" ]; then
+      (eval "$ULIMIT_CMD" exec "$binary") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
+    else
+      arg_array=()
+      while IFS= read -r arg; do
+        [ -n "$arg" ] && arg_array+=("$arg")
+      done <<< "$args"
+      (eval "$ULIMIT_CMD" exec "$binary" "${arg_array[@]}") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
+    fi
     WORKER_PID=$!
     disown $WORKER_PID
 

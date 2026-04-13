@@ -566,13 +566,41 @@ impl DeltaNetLayer {
             let g_t = g.i((.., 0, ..))?.exp()?;         // [B, nh]
             let beta_t = beta.i((.., 0, ..))?;          // [B, nh] — already sigmoided at Step 5
 
-            // Extract raw slices (CPU path — data is contiguous f32)
-            let q_data = q_t.flatten_all()?.to_vec1::<f32>()?;
-            let k_data = k_t.flatten_all()?.to_vec1::<f32>()?;
-            let v_data = v_t.flatten_all()?.to_vec1::<f32>()?;
-            let g_data = g_t.flatten_all()?.to_vec1::<f32>()?;
-            let beta_data = beta_t.flatten_all()?.to_vec1::<f32>()?;
-            let mut state_data = state.flatten_all()?.to_vec1::<f32>()?;
+            // Zero-copy read via storage_and_layout, state copies once for mutation
+            let q_t = q_t.contiguous()?;
+            let k_t = k_t.contiguous()?;
+            let v_t = v_t.contiguous()?;
+            let g_t = g_t.contiguous()?;
+            let beta_t = beta_t.contiguous()?;
+            let state_c = state.contiguous()?;
+
+            // Hold storage guards alive for zero-copy reads
+            let (q_s, q_l) = q_t.storage_and_layout();
+            let (k_s, k_l) = k_t.storage_and_layout();
+            let (v_s, v_l) = v_t.storage_and_layout();
+            let (g_s, g_l) = g_t.storage_and_layout();
+            let (b_s, b_l) = beta_t.storage_and_layout();
+            let (s_s, s_l) = state_c.storage_and_layout();
+
+            macro_rules! cpu_f32 {
+                ($storage:expr, $layout:expr, $count:expr) => {{
+                    match &*$storage {
+                        candle_core::Storage::Cpu(cpu) => {
+                            let data = cpu.as_slice::<f32>()?;
+                            &data[$layout.start_offset()..$layout.start_offset() + $count]
+                        }
+                        _ => candle_core::bail!("Expected CPU tensor for raw DeltaNet"),
+                    }
+                }};
+            }
+
+            let q_data = cpu_f32!(q_s, q_l, q_t.elem_count());
+            let k_data = cpu_f32!(k_s, k_l, k_t.elem_count());
+            let v_data = cpu_f32!(v_s, v_l, v_t.elem_count());
+            let g_data = cpu_f32!(g_s, g_l, g_t.elem_count());
+            let beta_data = cpu_f32!(b_s, b_l, beta_t.elem_count());
+            let mut state_data = cpu_f32!(s_s, s_l, state_c.elem_count()).to_vec();
+            drop(s_s); // Release state storage lock before mutation
             let mut output_data = vec![0f32; self.num_v_heads * self.head_v_dim];
 
             deltanet_step_raw(
