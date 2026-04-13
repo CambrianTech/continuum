@@ -2069,12 +2069,30 @@ export class PersonaUser extends AIUser {
     const userState = this.getDefaultState(storedEntity.id);
     userState.preferences = getDefaultPreferencesForType('persona');
 
-    const storedState = await ORM.store<UserStateEntity>(
-      COLLECTIONS.USER_STATES,
-      userState,
-      false,
-      'default'
-    );
+    // Upsert: create if new, update if exists (persona restarts reuse state).
+    // ORM has no upsert — store fails on "already exists" if the persona ran
+    // before and ~/.continuum persists state across Docker restarts.
+    let storedState: UserStateEntity;
+    try {
+      storedState = await ORM.store<UserStateEntity>(
+        COLLECTIONS.USER_STATES,
+        userState,
+        false,
+        'default'
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('already exists')) {
+        storedState = await ORM.update<UserStateEntity>(
+          COLLECTIONS.USER_STATES,
+          userState.id,
+          userState,
+          'default'
+        );
+      } else {
+        throw err;
+      }
+    }
 
     // STEP 3: Room membership now handled by RoomMembershipDaemon via events
     // User creation → data:users:created event → RoomMembershipDaemon auto-joins user

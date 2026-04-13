@@ -101,12 +101,19 @@ export class HumanUser extends BaseUser {
     const userState = this.getDefaultState(storedEntity.id);
     userState.preferences = getDefaultPreferencesForType('human');
 
-    const storedState = await ORM.store<UserStateEntity>(
-      COLLECTIONS.USER_STATES,
-      userState,
-      false,
-      'default'
-    );
+    let storedState: UserStateEntity;
+    try {
+      storedState = await ORM.store<UserStateEntity>(
+        COLLECTIONS.USER_STATES, userState, false, 'default'
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('already exists')) {
+        storedState = await ORM.update<UserStateEntity>(
+          COLLECTIONS.USER_STATES, userState.id, userState, 'default'
+        );
+      } else { throw err; }
+    }
 
     // STEP 3: Room membership now handled by RoomMembershipDaemon via events
     // User creation → data:users:created event → RoomMembershipDaemon auto-joins user
