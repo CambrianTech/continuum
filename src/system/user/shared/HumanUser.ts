@@ -110,7 +110,7 @@ export class HumanUser extends BaseUser {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('already exists')) {
         storedState = await ORM.update<UserStateEntity>(
-          COLLECTIONS.USER_STATES, userState.id, userState, 'default'
+          COLLECTIONS.USER_STATES, userState.id, userState, true, 'default'
         );
       } else { throw err; }
     }
