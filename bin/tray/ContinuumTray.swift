@@ -9,10 +9,16 @@ import Cocoa
 
 // ── JSON Model (matches `continuum tray-data` output) ────────
 
+struct Services: Decodable {
+    let healthy: Int
+    let total: Int
+}
+
 struct TrayData: Decodable {
     let status: String          // green, yellow, red
     let statusText: String
     let docker: Bool
+    let services: Services?
     let tailnet: String
     let nodes: [Node]
     let actions: [Action]
@@ -40,7 +46,7 @@ class ContinuumTray: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var healthTimer: Timer?
     private var data = TrayData(
-        status: "gray", statusText: "checking...", docker: false,
+        status: "gray", statusText: "checking...", docker: false, services: nil,
         tailnet: "", nodes: [], actions: [], version: "1.0"
     )
 
@@ -69,6 +75,8 @@ class ContinuumTray: NSObject, NSApplicationDelegate {
 
     // ── Refresh: call CLI, parse JSON, update UI ─────────────
 
+    private var isRecovering = false
+
     private func refresh() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
@@ -77,7 +85,7 @@ class ContinuumTray: NSObject, NSApplicationDelegate {
                   let parsed = try? JSONDecoder().decode(TrayData.self, from: jsonData) else {
                 DispatchQueue.main.async {
                     self.data = TrayData(
-                        status: "red", statusText: "CLI unavailable", docker: false,
+                        status: "red", statusText: "CLI unavailable", docker: false, services: nil,
                         tailnet: "", nodes: [], actions: [], version: "1.0"
                     )
                     self.renderIcon()
@@ -90,6 +98,32 @@ class ContinuumTray: NSObject, NSApplicationDelegate {
                 self.renderIcon()
                 self.renderMenu()
             }
+
+            // Auto-recovery: fix what we can without user intervention
+            if !self.isRecovering {
+                self.autoRecover(parsed)
+            }
+        }
+    }
+
+    /// Automatically recover from known bad states.
+    /// The tray has special powers — it's always running, even when Docker is down.
+    private func autoRecover(_ state: TrayData) {
+        isRecovering = true
+        defer { isRecovering = false }
+
+        // 1. Docker not running → start it
+        if !state.docker {
+            #if os(macOS)
+            let _ = runCLI("start") // continuum start handles Docker launch
+            #endif
+            return
+        }
+
+        // 2. Docker running but no healthy services → start them
+        if state.docker && (state.services?.healthy ?? 0) == 0 {
+            let _ = runCLI("start")
+            return
         }
     }
 
@@ -208,8 +242,25 @@ class ContinuumTray: NSObject, NSApplicationDelegate {
 
     @objc private func actionClicked(_ sender: NSMenuItem) {
         guard let command = sender.representedObject as? String else { return }
-        let script = "tell application \"Terminal\" to do script \"\(command)\""
-        NSAppleScript(source: script)?.executeAndReturnError(nil)
+
+        // Special case: "open -a Docker" launches Docker Desktop directly
+        if command.hasPrefix("open ") {
+            let script = "do shell script \"\(command)\""
+            NSAppleScript(source: script)?.executeAndReturnError(nil)
+            // Refresh after a delay to pick up Docker starting
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                self?.refresh()
+            }
+            return
+        }
+
+        // Run CLI commands silently in background, refresh status after
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let _ = self?.runCLI(command.replacingOccurrences(of: "continuum ", with: ""))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                self?.refresh()
+            }
+        }
     }
 
     @objc private func quitApp() { NSApp.terminate(nil) }

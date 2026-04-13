@@ -5,14 +5,29 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Find CLI: native Windows exe, or route through WSL
+$script:useWsl = $false
 $script:continuum = "$env:LOCALAPPDATA\continuum\continuum.exe"
 if (-not (Test-Path $script:continuum)) {
-    $script:continuum = "$env:USERPROFILE\.local\bin\continuum"
+    # Try WSL — the CLI is a bash script inside WSL
+    $wslCheck = & wsl.exe --exec which continuum 2>$null
+    if ($wslCheck) {
+        $script:useWsl = $true
+    }
+}
+
+function Invoke-Continuum {
+    param([string[]]$Args)
+    if ($script:useWsl) {
+        return & wsl.exe --exec continuum @Args 2>$null
+    } else {
+        return & $script:continuum @Args 2>$null
+    }
 }
 
 function Get-TrayData {
     try {
-        $json = & $script:continuum tray-data 2>$null
+        $json = Invoke-Continuum "tray-data"
         return $json | ConvertFrom-Json
     } catch {
         return @{
@@ -60,7 +75,13 @@ function Update-Menu {
     foreach ($action in $data.actions) {
         $item = $menu.Items.Add($action.label)
         $cmd = $action.command
-        $item.Add_Click({ Start-Process cmd -ArgumentList "/c $cmd" -WindowStyle Hidden })
+        $item.Add_Click({
+            if ($script:useWsl) {
+                Start-Process wsl.exe -ArgumentList "--exec $cmd" -WindowStyle Hidden
+            } else {
+                Start-Process cmd -ArgumentList "/c $cmd" -WindowStyle Hidden
+            }
+        })
     }
 
     # Grid nodes

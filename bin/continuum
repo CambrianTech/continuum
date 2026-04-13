@@ -570,13 +570,45 @@ cmd_tray_data() {
   "tailnet": "$suffix",
   "nodes": $nodes_json,
   "actions": [
+$(if [ "$docker_ok" = "false" ]; then
+  # Docker not running — recovery actions
+  case "$(uname -s)" in
+    Darwin) cat << 'ACTEOF'
+    {"id": "start-docker", "label": "Start Docker Desktop", "command": "open -a Docker"},
+    {"id": "doctor", "label": "Doctor", "command": "continuum doctor"}
+ACTEOF
+    ;;
+    *) cat << 'ACTEOF'
+    {"id": "start-docker", "label": "Start Docker", "command": "sudo systemctl start docker || sudo service docker start"},
+    {"id": "doctor", "label": "Doctor", "command": "continuum doctor"}
+ACTEOF
+    ;;
+  esac
+elif [ "$healthy" -eq 0 ]; then
+  # Docker running but no healthy containers — start services
+  cat << 'ACTEOF'
     {"id": "start", "label": "Start Services", "command": "continuum start"},
+    {"id": "doctor", "label": "Doctor", "command": "continuum doctor"},
+    {"id": "logs", "label": "View Logs", "command": "continuum logs"}
+ACTEOF
+elif [ "$healthy" -ge 4 ]; then
+  # Healthy — normal actions
+  cat << 'ACTEOF'
+    {"id": "open", "label": "Open Browser", "command": "continuum open"},
+    {"id": "restart", "label": "Restart Services", "command": "continuum restart"},
     {"id": "stop", "label": "Stop Services", "command": "continuum stop"},
+    {"id": "update", "label": "Update", "command": "continuum update"},
+    {"id": "logs", "label": "View Logs", "command": "continuum logs"}
+ACTEOF
+else
+  # Partially healthy — troubleshoot
+  cat << 'ACTEOF'
     {"id": "restart", "label": "Restart Services", "command": "continuum restart"},
     {"id": "doctor", "label": "Doctor", "command": "continuum doctor"},
-    {"id": "update", "label": "Update", "command": "continuum update"},
-    {"id": "provision", "label": "Provision Config", "command": "continuum provision"},
-    {"id": "logs", "label": "Logs", "command": "continuum logs"}
+    {"id": "logs", "label": "View Logs", "command": "continuum logs"},
+    {"id": "stop", "label": "Stop Services", "command": "continuum stop"}
+ACTEOF
+fi)
   ],
   "version": "1.0"
 }
