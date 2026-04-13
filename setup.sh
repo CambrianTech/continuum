@@ -51,7 +51,7 @@ if ! docker info &>/dev/null; then
     echo "⚠️  Docker Desktop running on Windows but WSL integration not enabled."
     echo "   Fixing: creating docker socket symlink..."
     # Create a wrapper that routes to docker.exe
-    if [[ ! -f /usr/local/bin/docker-wsl-proxy ]]; then
+    if [[ ! -f "$HOME/.local/bin/docker" ]] || ! "$HOME/.local/bin/docker" info &>/dev/null; then
       mkdir -p "$HOME/.local/bin"
       cat > "$HOME/.local/bin/docker" << DOCKERWRAP
 #!/bin/bash
