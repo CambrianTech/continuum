@@ -36,16 +36,11 @@
     },
     {
       "name": "llama-server",
-      "binary": "llama-server",
+      "binary": "scripts/start-llama-server.sh",
       "type": "tcp",
       "port": 8090,
-      "args": [
-        "--port", "8090",
-        "--host", "127.0.0.1",
-        "-ngl", "99",
-        "-c", "4096"
-      ],
-      "description": "llama.cpp inference server — fast quantized inference for all GGUF models. Model loaded via /model endpoint or --model flag at start.",
+      "args": [],
+      "description": "llama.cpp inference server — resolves best GGUF model for hardware, auto-downloads from HF",
       "enabled": true,
       "memoryLimit": "8G"
     }
