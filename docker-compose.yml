@@ -66,15 +66,12 @@ services:
       livekit-bridge:
         condition: service_healthy
     volumes:
-      - ipc-sockets:/root/.continuum/sockets
       - voice-models:/app/models:ro
-      - ~/.continuum/grid:/root/.continuum/grid:ro
-      - ~/.continuum/config.env:/root/.continuum/config.env:ro
-      # Model cache: Rust core downloads GGUF models from HuggingFace on first
-      # inference. Without this mount, models download into ephemeral container
-      # storage and are lost on every restart. With it, models persist on the
-      # host at ~/.continuum/models/ and survive container rebuilds.
-      - ~/.continuum/models:/root/.continuum/models
+      # Mount the ENTIRE ~/.continuum directory R/W. The Rust core reads config,
+      # writes model cache, logs, grid state, sockets, sessions — all under
+      # ~/.continuum. Cherry-picking subdirs with :ro caused silent failures
+      # whenever the core needed to write to a path that wasn't mounted.
+      - ~/.continuum:/root/.continuum
     # GPU access for Bevy headless 3D rendering (avatar snapshots, live video).
     # Set DOCKER_GPU_RUNTIME=nvidia in .env to enable GPU passthrough.
     # Default: runc (CPU only — uses static avatar fallbacks).
@@ -107,7 +104,7 @@ services:
     depends_on:
       - livekit
     volumes:
-      - ipc-sockets:/root/.continuum/sockets
+      - ~/.continuum/sockets:/root/.continuum/sockets
     environment:
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
     healthcheck:
@@ -131,8 +128,7 @@ services:
     ports:
       - "${NODE_WS_PORT:-9001}:9001"   # WebSocket
     volumes:
-      - ipc-sockets:/root/.continuum/sockets
-      - ~/.continuum/config.env:/root/.continuum/config.env:ro
+      - ~/.continuum:/root/.continuum
     environment:
       - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
       - NODE_ENV=production
@@ -270,9 +266,4 @@ volumes:
   forge-output:
   models:
   voice-models:
-  ipc-sockets:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
   tailscale-state:
