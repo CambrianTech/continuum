@@ -151,7 +151,7 @@ services:
     ports:
       - "9003:9003"   # HTTP
     volumes:
-      - ~/.continuum/config.env:/root/.continuum/config.env:ro
+      - ~/.continuum:/root/.continuum
     environment:
       - JTAG_HTTP_PORT=9003
       - JTAG_WEBSOCKET_PORT=${NODE_WS_PORT:-9001}
