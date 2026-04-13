@@ -5,4 +5,5 @@
 
 pub mod compact_llama;
 pub mod quantized_llama;
+pub mod quantized_qwen35;
 pub mod qwen2;
