@@ -175,23 +175,72 @@ pub fn allocate(
     let total_vram_gb = total_vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
     let gpu_name = gpu_manager.gpu_name().to_string();
     let gpu_type = detect_gpu_type(&gpu_name).to_string();
-    let local_model = select_local_model(total_vram_gb).to_string();
 
-    let usable_vram_gb = (total_vram_gb - SYSTEM_RESERVE_GB).max(0.0);
+    // In CPU mode (no GPU / Docker without GPU passthrough), use system RAM as
+    // the memory budget. Candle inference runs on CPU using system RAM — the VRAM
+    // field is zero but we still have memory to work with. Reserve 4GB for OS +
+    // Docker overhead, use the rest for models.
+    let system_ram_gb = {
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read_to_string("/proc/meminfo")
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("MemTotal:"))
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .and_then(|kb| kb.parse::<f64>().ok())
+                        .map(|kb| kb / (1024.0 * 1024.0))
+                })
+                .unwrap_or(8.0)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("sysctl")
+                .args(["-n", "hw.memsize"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .map(|bytes| bytes / (1024.0 * 1024.0 * 1024.0))
+                .unwrap_or(8.0)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        { 8.0f64 }
+    };
+
+    // Effective memory: GPU VRAM if available, system RAM otherwise.
+    // This is the key fix for Docker: containers have 24GB RAM but 0 VRAM.
+    let effective_memory_gb = if total_vram_gb > 1.0 {
+        total_vram_gb
+    } else {
+        system_ram_gb
+    };
+
+    let local_model = select_local_model(effective_memory_gb).to_string();
+    let usable_gb = (effective_memory_gb - SYSTEM_RESERVE_GB).max(0.0);
+
+    // Track MODELS loaded, not PERSONAS. Multiple personas sharing the same
+    // model don't multiply the memory cost. The model loads once; each persona
+    // is just a config pointing at it.
+    let mut models_loaded: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     let mut vram_allocated_gb: f64 = 0.0;
 
     let mut allocations = Vec::new();
     let mut skipped = Vec::new();
     let mut summary = Vec::new();
 
-    summary.push(format!(
-        "{}: {:.0}GB {} ({:.0}GB usable after {:.0}GB system reserve)",
-        gpu_name,
-        total_vram_gb,
-        gpu_type.to_uppercase(),
-        usable_vram_gb,
-        SYSTEM_RESERVE_GB
-    ));
+    if total_vram_gb > 1.0 {
+        summary.push(format!(
+            "{}: {:.0}GB {} ({:.0}GB usable after {:.0}GB reserve)",
+            gpu_name, total_vram_gb, gpu_type.to_uppercase(), usable_gb, SYSTEM_RESERVE_GB
+        ));
+    } else {
+        summary.push(format!(
+            "CPU mode: {:.0}GB system RAM ({:.0}GB usable after {:.0}GB reserve)",
+            system_ram_gb, usable_gb, SYSTEM_RESERVE_GB
+        ));
+    }
 
     let has_api_key = |env_var: &str| -> bool {
         available_api_keys.iter().any(|k| k == env_var)
@@ -229,31 +278,42 @@ pub fn allocate(
             continue;
         }
 
-        // Local candle inference: check VRAM budget
+        // Local candle inference: check memory budget (VRAM or system RAM).
+        // Model sharing: if two personas use the same model, the model loads ONCE.
+        // The second persona's cost is ~0 (just config overhead). This means a
+        // 24GB Docker container can run 4+ candle personas off one 3GB model.
         if entry.provider == "candle" {
-            let resolved = resolve_model_for_persona(entry, total_vram_gb, &local_model);
+            let resolved = resolve_model_for_persona(entry, effective_memory_gb, &local_model);
+            let model_name = resolved.model.clone();
             let needed_gb = resolved.vram_budget_gb;
 
-            if vram_allocated_gb + needed_gb <= usable_vram_gb {
-                allocation.vram_budget_gb = needed_gb;
-                allocation.resolved_model = Some(resolved.model);
-                allocation.reason = format!("{:.0}GB VRAM allocated", needed_gb);
-                vram_allocated_gb += needed_gb;
+            // If this model is already loaded by another persona, cost is 0.
+            let additional_cost = if models_loaded.contains_key(&model_name) {
+                0.0 // Model already in memory — sharing is free
+            } else {
+                needed_gb
+            };
+
+            if vram_allocated_gb + additional_cost <= usable_gb {
+                allocation.vram_budget_gb = additional_cost;
+                allocation.resolved_model = Some(model_name.clone());
+                if additional_cost == 0.0 {
+                    allocation.reason = format!("sharing {} (already loaded)", model_name);
+                } else {
+                    allocation.reason = format!("{:.0}GB {} allocated", needed_gb,
+                        if total_vram_gb > 1.0 { "VRAM" } else { "RAM (CPU mode)" });
+                }
+                if additional_cost > 0.0 {
+                    models_loaded.insert(model_name, needed_gb);
+                }
+                vram_allocated_gb += additional_cost;
                 any_candle_allocated = true;
                 allocations.push(allocation);
-            } else if !any_candle_allocated && usable_vram_gb <= 0.0 {
-                // No GPU at all — create ONE local persona for CPU fallback mode
-                allocation.vram_budget_gb = 0.0;
-                allocation.resolved_model = Some("unsloth/Llama-3.2-3B-Instruct".to_string());
-                allocation.reason = "CPU fallback mode (no GPU)".to_string();
-                any_candle_allocated = true;
-                allocations.push(allocation);
-                summary.push(format!("{}: CPU fallback mode (no GPU)", entry.display_name));
             } else {
                 allocation.reason = format!(
-                    "needs {:.0}GB VRAM, {:.0}GB left",
-                    needed_gb,
-                    usable_vram_gb - vram_allocated_gb
+                    "needs {:.0}GB, {:.0}GB left",
+                    additional_cost,
+                    usable_gb - vram_allocated_gb
                 );
                 skipped.push(allocation);
             }
