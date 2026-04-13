@@ -340,9 +340,53 @@ impl DeltaNetLayer {
         let b = self.ssm_beta.forward(&normed)?;           // [B, T, num_v_heads] (write strength)
         let a = self.ssm_alpha.forward(&normed)?;          // [B, T, num_v_heads] (decay input)
 
-        // Step 2: Causal conv1d on QKV with SiLU
-        // TODO: implement depthwise causal conv1d with state management
-        // For now, apply SiLU directly (conv1d is a short-range feature, model works without it)
+        // Step 2: Depthwise causal conv1d on QKV, then SiLU
+        // conv1d_weight: [kernel_width=4, qkv_dim=8192] (depthwise: each channel has own kernel)
+        // Causal: pad kernel_width-1 zeros on left
+        let mixed_qkv = {
+            let conv_dims = self.ssm_conv1d_weight.dims();
+            // GGUF may store as [kernel, channels] or [channels, kernel] — kernel is the small dim
+            let (kernel_width, qkv_dim) = if conv_dims[0] < conv_dims[1] {
+                (conv_dims[0], conv_dims[1])
+            } else {
+                (conv_dims[1], conv_dims[0])
+            };
+            // mixed_qkv: [B, T, qkv_dim] → transpose to [B, qkv_dim, T] for conv
+            let x_t = mixed_qkv.transpose(1, 2)?; // [B, C, T]
+
+            // Causal padding: prepend kernel_width-1 zeros (or conv_state for generation)
+            let pad_width = kernel_width - 1;
+            let x_padded = match &self.conv_state {
+                Some(state) if seq_len == 1 => {
+                    // Generation: use stored state
+                    Tensor::cat(&[state, &x_t], 2)? // [B, C, pad+1]
+                }
+                _ => {
+                    // Prefill: zero-pad
+                    let zeros = Tensor::zeros((b_sz, qkv_dim, pad_width), DType::F32, x.device())?;
+                    Tensor::cat(&[&zeros, &x_t], 2)? // [B, C, pad+T]
+                }
+            };
+
+            // Save last kernel_width-1 timesteps for next generation step
+            let total_len = x_padded.dims()[2];
+            if total_len >= kernel_width {
+                self.conv_state = Some(x_padded.narrow(2, total_len - pad_width, pad_width)?);
+            }
+
+            // Depthwise conv: weight needs shape [C, 1, K] for groups=C
+            let weight = if self.ssm_conv1d_weight.dims()[0] < self.ssm_conv1d_weight.dims()[1] {
+                // [K, C] → transpose → [C, K] → unsqueeze → [C, 1, K]
+                self.ssm_conv1d_weight.t()?.unsqueeze(1)?
+            } else {
+                // [C, K] → unsqueeze → [C, 1, K]
+                self.ssm_conv1d_weight.unsqueeze(1)?
+            };
+            // x_padded: [B, C, T+pad] → conv1d with groups=C
+            let conv_out = x_padded
+                .conv1d(&weight, 0, 1, 1, qkv_dim)?; // [B, C, T]
+            conv_out.transpose(1, 2)? // [B, T, C]
+        };
         let mixed_qkv = candle_nn::ops::silu(&mixed_qkv)?;
 
         // Step 3: Split QKV
