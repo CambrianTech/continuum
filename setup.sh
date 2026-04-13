@@ -45,17 +45,17 @@ touch "$HOME/.continuum/config.env"
 # ── Check if Docker is running ────────────────────
 if ! docker info &>/dev/null; then
   # WSL2: Docker Desktop runs on Windows side — WSL docker CLI needs socket forwarding
-  if [[ "$PLATFORM" == "wsl" ]] && command -v docker.exe &>/dev/null && docker.exe info &>/dev/null 2>&1; then
+  # Find docker.exe — may not be in WSL PATH
+  DOCKER_EXE_PATH=$(command -v docker.exe 2>/dev/null || echo "/mnt/c/Program Files/Docker/Docker/resources/bin/docker.exe")
+  if [[ "$PLATFORM" == "wsl" ]] && [[ -f "$DOCKER_EXE_PATH" ]] && "$DOCKER_EXE_PATH" info &>/dev/null 2>&1; then
     echo "⚠️  Docker Desktop running on Windows but WSL integration not enabled."
     echo "   Fixing: creating docker socket symlink..."
     # Create a wrapper that routes to docker.exe
     if [[ ! -f /usr/local/bin/docker-wsl-proxy ]]; then
       mkdir -p "$HOME/.local/bin"
-      # Find docker.exe on Windows side
-      DOCKER_EXE=$(command -v docker.exe 2>/dev/null || echo "/mnt/c/Program Files/Docker/Docker/resources/bin/docker.exe")
       cat > "$HOME/.local/bin/docker" << DOCKERWRAP
 #!/bin/bash
-exec "$DOCKER_EXE" "\$@"
+exec "$DOCKER_EXE_PATH" "\$@"
 DOCKERWRAP
       chmod +x "$HOME/.local/bin/docker"
       export PATH="$HOME/.local/bin:$PATH"
@@ -65,7 +65,7 @@ DOCKERWRAP
     if ! command -v docker-compose &>/dev/null; then
       cat > "$HOME/.local/bin/docker-compose" << COMPOSEWRAP
 #!/bin/bash
-exec "$DOCKER_EXE" compose "\$@"
+exec "$DOCKER_EXE_PATH" compose "\$@"
 COMPOSEWRAP
       chmod +x "$HOME/.local/bin/docker-compose"
     fi
@@ -236,16 +236,25 @@ if [[ "$PLATFORM" == "mac" ]]; then
     cp bin/tray/com.cambriantech.continuum.plist "$LAUNCH_AGENTS/"
     echo "✅ Tray app installed → $TRAY_APP (auto-starts on login)"
   fi
-elif [[ "$PLATFORM" == "windows" ]]; then
-  # Windows: create startup shortcut for PowerShell tray
-  STARTUP_DIR="$APPDATA/Microsoft/Windows/Start Menu/Programs/Startup"
+elif [[ "$PLATFORM" == "windows" ]] || [[ "$PLATFORM" == "wsl" ]]; then
+  # Windows/WSL: create startup shortcut for PowerShell tray
+  # From WSL, Windows Startup folder is at /mnt/c/Users/<user>/AppData/...
+  WIN_USER=$(cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r' || echo "")
+  if [[ -z "$WIN_USER" ]]; then
+    WIN_USER=$(/mnt/c/Windows/System32/cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r' || echo "")
+  fi
+  STARTUP_DIR="/mnt/c/Users/$WIN_USER/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup"
   if [[ -d "$STARTUP_DIR" ]]; then
-    TRAY_PS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/tray/continuum-tray.ps1"
+    # Convert WSL path to Windows path for PowerShell
+    TRAY_PS_WSL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/tray/continuum-tray.ps1"
+    TRAY_PS_WIN=$(wslpath -w "$TRAY_PS_WSL" 2>/dev/null || echo "\\\\wsl\$\\Ubuntu${TRAY_PS_WSL}")
     cat > "$STARTUP_DIR/continuum-tray.bat" << WINEOF
 @echo off
-powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File "$TRAY_PS"
+powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File "$TRAY_PS_WIN"
 WINEOF
     echo "✅ System tray installed (auto-starts on login)"
+  else
+    echo "⚠️  Could not find Windows Startup folder for user '$WIN_USER'"
   fi
 elif [[ "$PLATFORM" == "linux" ]] || [[ "$PLATFORM" == "wsl" ]]; then
   # Linux: systemd user service
