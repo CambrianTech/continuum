@@ -422,33 +422,50 @@ export abstract class WebSocketTransportClient extends TransportBase {
     }
 
     return new Promise((resolve, reject) => {
-      try {
-        this.socket = this.createWebSocket(url);
-        const clientId = this.generateClientId('ws_client');
-        
-        // Set up consistent event handling
-        this.setupWebSocketEvents(this.socket, clientId);
-        
-        // Add Promise resolution/rejection to the consistent event handlers
-        const handleOpen = (event: JTAGWebSocketOpenEvent): void => {
-          verbose() && console.log(`✅ ${this.name}: Handler compliance enforced by TypeScript`);
-          this.socket!.removeEventListener('error', handleError);
-          resolve();
-        };
-        
-        const handleError = (event: JTAGWebSocketErrorEvent): void => {
-          const errorMsg = event.error?.message || event.message || 'Connection failed';
-          this.socket!.removeEventListener('open', handleOpen);
-          reject(new Error(`WebSocket connection error: ${errorMsg}`));
-        };
-        
-        // Add temporary listeners for Promise resolution
-        this.socket.addEventListener('open', handleOpen);
-        this.socket.addEventListener('error', handleError);
-        
-      } catch (error) {
-        reject(error);
-      }
+      const maxInitialRetries = 30; // Try for up to ~60s (2s intervals)
+      let attempt = 0;
+
+      const tryConnect = () => {
+        try {
+          this.socket = this.createWebSocket(url);
+          const clientId = this.generateClientId('ws_client');
+
+          // Set up consistent event handling
+          this.setupWebSocketEvents(this.socket, clientId);
+
+          // Add Promise resolution/rejection to the consistent event handlers
+          const handleOpen = (_event: JTAGWebSocketOpenEvent): void => {
+            this.socket!.removeEventListener('error', handleError);
+            resolve();
+          };
+
+          const handleError = (_event: JTAGWebSocketErrorEvent): void => {
+            this.socket!.removeEventListener('open', handleOpen);
+            attempt++;
+            if (attempt < maxInitialRetries) {
+              // Retry silently — server may still be starting up (Docker race).
+              // No error log, no reject, no page reload. Just wait and try again.
+              setTimeout(tryConnect, 2000);
+            } else {
+              reject(new Error(`WebSocket connection failed after ${attempt} attempts`));
+            }
+          };
+
+          // Add temporary listeners for Promise resolution
+          this.socket.addEventListener('open', handleOpen);
+          this.socket.addEventListener('error', handleError);
+
+        } catch (error) {
+          attempt++;
+          if (attempt < maxInitialRetries) {
+            setTimeout(tryConnect, 2000);
+          } else {
+            reject(error);
+          }
+        }
+      };
+
+      tryConnect();
     });
   }
 

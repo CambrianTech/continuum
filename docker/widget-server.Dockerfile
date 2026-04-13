@@ -33,7 +33,9 @@ RUN cd examples/widget-ui && npx vite build
 
 EXPOSE 9003
 
-HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
+# Healthcheck — just verify the HTTP server responds. 30s interval, not 5s.
+# The real health signal is the WebSocket connection, which the browser monitors.
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
     CMD curl -sf http://localhost:9003/ || exit 1
 
 WORKDIR /app/examples/widget-ui
