@@ -754,7 +754,8 @@ mod tests {
         let tokenizer_path = repo.get("tokenizer.json").expect("Failed to download tokenizer");
         let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).expect("Failed to load tokenizer");
 
-        let device = candle_core::Device::Cpu; // CPU for test reliability
+        // Test on Metal — that's what production uses. CPU is not representative.
+        let device = candle_core::Device::new_metal(0).unwrap_or(candle_core::Device::Cpu);
         let start = Instant::now();
 
         let mut backend = backends::load_gguf_backend(

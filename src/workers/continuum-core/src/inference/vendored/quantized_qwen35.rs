@@ -435,6 +435,12 @@ impl DeltaNetLayer {
 
         let mut outputs = Vec::with_capacity(seq_len);
         for t in 0..seq_len {
+            // Metal: flush GPU command buffer periodically to prevent hang
+            // Without this, thousands of dispatches queue up and the GPU stalls
+            if t > 0 && t % 64 == 0 {
+                x.device().synchronize()?;
+            }
+
             // Per-timestep vectors
             let q_t = (q.i((.., .., t, ..))? * scale)?;    // [B, num_v_heads, head_k_dim]
             let k_t = k.i((.., .., t, ..))?;                // [B, num_v_heads, head_k_dim]
