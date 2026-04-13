@@ -47,6 +47,7 @@ use router::GridRouter;
 use transport::GridTransport;
 use transports::reticulum::ReticulumTransport;
 use transports::tailscale::TailscaleTransport;
+use transports::udp_events::UdpEventTransport;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -73,6 +74,8 @@ pub struct GridState {
     /// This node's capabilities (GPU, storage, inference, training).
     /// Populated at init from constructor params, enriched after GpuModule responds.
     pub(crate) local_capabilities: RwLock<Vec<NodeCapability>>,
+    /// UDP event transport for fire-and-forget streaming (sensor data, video, heartbeats).
+    pub(crate) udp_events: Mutex<UdpEventTransport>,
 }
 
 // ============================================================================
@@ -102,6 +105,17 @@ impl GridModule {
             });
         }
 
+        // UDP event transport — local node ID from hostname
+        let local_node_id = std::process::Command::new("hostname")
+            .arg("-s")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        let udp_events = UdpEventTransport::new(
+            local_node_id,
+            transports::udp_events::DEFAULT_UDP_PORT,
+        );
+
         Self {
             state: Arc::new(GridState {
                 transports: vec![tailscale, reticulum],
@@ -113,6 +127,7 @@ impl GridModule {
                 runtime_registry: Mutex::new(None),
                 bus: Mutex::new(None),
                 local_capabilities: RwLock::new(caps),
+                udp_events: Mutex::new(udp_events),
             }),
         }
     }
@@ -196,6 +211,32 @@ impl ServiceModule for GridModule {
                 tokio::spawn(async move {
                     connection::accept_loop(transport, state).await;
                 });
+            }
+        }
+
+        // Start UDP event transport for fire-and-forget streaming
+        {
+            let mut udp = self.state.udp_events.lock().await;
+            match udp.start().await {
+                Ok(()) => {
+                    let addr = udp.local_addr().map(|a| a.to_string()).unwrap_or("?".into());
+                    eprintln!("[grid] UDP event transport started: {addr}");
+
+                    // Spawn receive loop — injects remote events into local bus
+                    let bus = self.state.bus.lock().await.clone();
+                    let state = self.state.clone();
+                    tokio::spawn(async move {
+                        let udp = state.udp_events.lock().await;
+                        udp.recv_loop(move |event_name, data, source| {
+                            eprintln!("[grid-udp] Received event '{}' from {}", event_name, source);
+                            // TODO: inject into local Events.emit() via message bus
+                            let _ = (&event_name, &data);
+                        }).await;
+                    });
+                }
+                Err(e) => {
+                    eprintln!("[grid] UDP event transport not available: {e}");
+                }
             }
         }
 
