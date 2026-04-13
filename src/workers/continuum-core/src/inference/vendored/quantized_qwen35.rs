@@ -110,35 +110,45 @@ impl Module for Mlp {
     }
 }
 
-/// Cumulative sum along the last dimension.
-/// For tensor of shape [..., N], output[..., i] = sum(input[..., 0..=i]).
-/// Implemented by pulling to CPU, computing, pushing back to device.
-/// For small last-dim (e.g., chunk_size=64) this is fast enough.
+/// Cumulative sum along the last dimension — GPU-native via matmul.
+/// cumsum(x) = x @ tril(ones(N, N)) — uses Metal's existing matmul kernel.
+/// No CPU round-trip. For N=64 (chunk size), the tril matrix is tiny.
 fn cumsum_last_dim(x: &Tensor) -> Result<Tensor> {
-    let device = x.device().clone();
-    let shape = x.shape().clone();
-    let last = shape.dims().len() - 1;
-    let n = shape.dims()[last];
+    let n = x.dims()[x.dims().len() - 1];
+    let device = x.device();
 
-    // Flatten to 2D: [batch, n]
-    let flat_size: usize = shape.dims()[..last].iter().product();
-    let flat = x.reshape((flat_size, n))?;
+    // Lower-triangular ones matrix: tril[i][j] = 1 if j <= i
+    let tril_data: Vec<f32> = (0..n)
+        .flat_map(|i| (0..n).map(move |j| if j <= i { 1.0 } else { 0.0 }))
+        .collect();
+    let tril = Tensor::from_slice(&tril_data, (n, n), device)?;
 
-    // Pull to CPU for sequential scan
-    let data = flat.to_dtype(DType::F32)?.to_vec2::<f32>()?;
-    let mut result = vec![vec![0f32; n]; flat_size];
-    for i in 0..flat_size {
-        let mut acc = 0f32;
-        for j in 0..n {
-            acc += data[i][j];
-            result[i][j] = acc;
-        }
-    }
-
-    // Build tensor and reshape back
-    let flat_result: Vec<f32> = result.into_iter().flatten().collect();
-    let tensor = Tensor::from_slice(&flat_result, (flat_size, n), &device)?;
-    tensor.reshape(shape)
+    // Broadcast tril to match x's batch dims, then matmul.
+    // x: [B, nh, N] → x @ tril needs tril to be [N, N] broadcast to [B, nh, N, N]
+    // Candle matmul: [..., M, K] @ [..., K, N] → [..., M, N]
+    // So x needs to be [..., 1, N] and tril needs to be [N, N]
+    let ndim = x.dims().len();
+    let x_unsq = x.unsqueeze(ndim - 1)?;  // [..., N, 1]... no that's wrong
+    // Actually: x is [..., N]. We want output[..., i] = sum(x[..., 0..=i])
+    // Matmul approach: reshape x to [..., 1, N], matmul with [N, N] tril
+    // But candle needs matching batch dims for matmul.
+    // Simpler: broadcast tril to match x's leading dims
+    let mut tril_shape = vec![1usize; ndim - 1];
+    tril_shape.push(n);
+    tril_shape.push(n);
+    let tril = tril.reshape(&tril_shape[..])?; // [1, ..., N, N]
+    let tril = tril.broadcast_as(
+        &[x.dims()[..ndim-1].to_vec(), vec![n, n]].concat()[..]
+    )?;
+    // x: [..., N] → [..., 1, N]
+    let x_row = x.unsqueeze(ndim - 1)?; // [..., 1, N] — no, unsqueeze at ndim-1 gives [..., N, 1]
+    // We need [..., 1, N]: unsqueeze at position ndim-1 (before last)
+    let x_row = x.unsqueeze(ndim)?; // [..., N, 1]... still wrong
+    // Let me think: x is [B, nh, CS]. I want [B, nh, 1, CS] @ [B, nh, CS, CS] → [B, nh, 1, CS] → squeeze → [B, nh, CS]
+    let x_row = x.unsqueeze(ndim - 1)?; // [B, nh, 1, CS] — yes, insert before last dim
+    // Wait no: unsqueeze(ndim-1) on [B, nh, CS] with ndim=3 inserts at position 2: [B, nh, 1, CS] ✓
+    let result = x_row.matmul(&tril)?; // [B, nh, 1, CS]
+    result.squeeze(ndim - 1) // [B, nh, CS]
 }
 
 fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: &Tensor) -> Result<Tensor> {
@@ -461,11 +471,13 @@ impl DeltaNetLayer {
         let scale = 1.0 / (self.head_k_dim as f64).sqrt();
         let device = x.device();
 
+        // State and all DeltaNet ops run on whatever device the input is on.
+        // With hybrid routing, DeltaNet layers receive CPU tensors → Accelerate BLAS.
         let mut state = match &self.recurrence_state {
-            Some(s) => s.clone(),
+            Some(s) => s.to_device(x.device())?,
             None => Tensor::zeros(
                 (b_sz, self.num_v_heads, self.head_k_dim, self.head_v_dim),
-                DType::F32, device,
+                DType::F32, x.device(),
             )?,
         };
 
@@ -530,20 +542,20 @@ impl DeltaNetLayer {
 
                 // Inter-chunk: query state with per-token decay
                 let q_decayed = qc.broadcast_mul(&g_cum.unsqueeze(3)?.exp()?)?;
-                let sc = state.contiguous()?;
-                let inter = q_decayed.matmul(&sc)?;
+                let inter = q_decayed.matmul(&state)?;
 
-                // Intra-chunk: causal attention
-                let intra_scores = qc.matmul(&kc.t()?)?; // [B, nh, CS, CS]
-                // Causal mask
+                // Intra-chunk: causal attention (all on Metal — big parallel matmuls)
+                let intra_scores = qc.matmul(&kc.t()?)?;
                 let m: Vec<f32> = (0..CS).flat_map(|i| (0..CS).map(move |j| if j <= i { 1.0 } else { 0.0 })).collect();
                 let mask = Tensor::from_slice(&m, (CS, CS), device)?;
                 let intra = intra_scores.broadcast_mul(&mask)?.matmul(&vbc)?;
 
                 outs.push((inter + intra)?);
 
-                // Update state
-                state = (chunk_decay.broadcast_mul(&sc)? + kbc.t()?.matmul(&vbc)?)?;
+                // Update state (already on correct device via hybrid routing)
+                let kv_update = kbc.t()?.matmul(&vbc)?;
+                state = (chunk_decay.broadcast_mul(&state)? + kv_update)?;
+
                 device.synchronize()?;
             }
 
@@ -701,10 +713,13 @@ impl ModelWeights {
             // Detect layer type by checking tensor index (no I/O, just hashmap lookup)
             let is_attention = ct.tensor_infos.contains_key(&format!("{prefix}.attn_q.weight"));
 
-            // Shared: FFN (both layer types)
-            let ffn_gate = ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), device)?;
-            let ffn_down = ct.tensor(reader, &format!("{prefix}.ffn_down.weight"), device)?;
-            let ffn_up = ct.tensor(reader, &format!("{prefix}.ffn_up.weight"), device)?;
+            // Hybrid device routing: DeltaNet on CPU (Accelerate BLAS), Attention on Metal
+            let layer_device = if is_attention { device } else { &Device::Cpu };
+
+            // Shared: FFN (both layer types) — loaded on layer's device
+            let ffn_gate = ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), layer_device)?;
+            let ffn_down = ct.tensor(reader, &format!("{prefix}.ffn_down.weight"), layer_device)?;
+            let ffn_up = ct.tensor(reader, &format!("{prefix}.ffn_up.weight"), layer_device)?;
             let mlp = Mlp {
                 feed_forward_w1: QMatMul::from_qtensor(ffn_gate)?,
                 feed_forward_w2: QMatMul::from_qtensor(ffn_down)?,
@@ -713,22 +728,22 @@ impl ModelWeights {
 
             // Shared: norms
             let attention_norm = RmsNorm::from_qtensor(
-                ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), device)?,
+                ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), layer_device)?,
                 rms_norm_eps,
             )?;
             let post_attention_norm = RmsNorm::from_qtensor(
-                ct.tensor(reader, &format!("{prefix}.post_attention_norm.weight"), device)?,
+                ct.tensor(reader, &format!("{prefix}.post_attention_norm.weight"), layer_device)?,
                 rms_norm_eps,
             )?;
 
             if is_attention {
                 // Full attention layer: separate Q/K/V
-                let attention_wq = ct.tensor(reader, &format!("{prefix}.attn_q.weight"), device)?;
-                let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
-                let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
-                let attention_wo = ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
-                let attn_q_norm_t = ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), device)?;
-                let attn_k_norm_t = ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), device)?;
+                let attention_wq = ct.tensor(reader, &format!("{prefix}.attn_q.weight"), layer_device)?;
+                let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), layer_device)?;
+                let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), layer_device)?;
+                let attention_wo = ct.tensor(reader, &format!("{prefix}.attn_output.weight"), layer_device)?;
+                let attn_q_norm_t = ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), layer_device)?;
+                let attn_k_norm_t = ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), layer_device)?;
 
                 if layer_idx == 7 {
                     log.info(&format!("Layer {}: Attention (separate Q/K/V)", layer_idx));
@@ -755,20 +770,20 @@ impl ModelWeights {
                 }));
             } else {
                 // DeltaNet layer: fused QKV + SSM
-                let attn_qkv = ct.tensor(reader, &format!("{prefix}.attn_qkv.weight"), device)?;
-                let attn_gate = ct.tensor(reader, &format!("{prefix}.attn_gate.weight"), device)?;
+                let attn_qkv = ct.tensor(reader, &format!("{prefix}.attn_qkv.weight"), layer_device)?;
+                let attn_gate = ct.tensor(reader, &format!("{prefix}.attn_gate.weight"), layer_device)?;
 
-                // SSM tensors
-                let ssm_a = ct.tensor(reader, &format!("{prefix}.ssm_a"), device)?
-                    .dequantize(device)?;
-                let ssm_alpha = ct.tensor(reader, &format!("{prefix}.ssm_alpha.weight"), device)?;
-                let ssm_beta = ct.tensor(reader, &format!("{prefix}.ssm_beta.weight"), device)?;
-                let ssm_conv1d = ct.tensor(reader, &format!("{prefix}.ssm_conv1d.weight"), device)?
-                    .dequantize(device)?;
-                let ssm_dt_bias = ct.tensor(reader, &format!("{prefix}.ssm_dt.bias"), device)?
-                    .dequantize(device)?;
-                let ssm_norm = ct.tensor(reader, &format!("{prefix}.ssm_norm.weight"), device)?;
-                let ssm_out = ct.tensor(reader, &format!("{prefix}.ssm_out.weight"), device)?;
+                // SSM tensors — on CPU for Accelerate BLAS
+                let ssm_a = ct.tensor(reader, &format!("{prefix}.ssm_a"), layer_device)?
+                    .dequantize(layer_device)?;
+                let ssm_alpha = ct.tensor(reader, &format!("{prefix}.ssm_alpha.weight"), layer_device)?;
+                let ssm_beta = ct.tensor(reader, &format!("{prefix}.ssm_beta.weight"), layer_device)?;
+                let ssm_conv1d = ct.tensor(reader, &format!("{prefix}.ssm_conv1d.weight"), layer_device)?
+                    .dequantize(layer_device)?;
+                let ssm_dt_bias = ct.tensor(reader, &format!("{prefix}.ssm_dt.bias"), layer_device)?
+                    .dequantize(layer_device)?;
+                let ssm_norm = ct.tensor(reader, &format!("{prefix}.ssm_norm.weight"), layer_device)?;
+                let ssm_out = ct.tensor(reader, &format!("{prefix}.ssm_out.weight"), layer_device)?;
 
                 if layer_idx == 0 {
                     log.info(&format!("Layer {}: DeltaNet (fused QKV + SSM)", layer_idx));
@@ -861,19 +876,47 @@ impl ModelWeights {
 
         let _enter = self.span.enter();
 
+        // Hybrid device routing: DeltaNet layers on CPU (Accelerate BLAS),
+        // attention layers on Metal (SDPA). On Apple Silicon unified memory,
+        // the to_device() between CPU↔Metal is a memcpy but the state stays
+        // in the same physical RAM. DeltaNet's sequential 128x128 matmuls are
+        // faster on CPU BLAS than Metal kernel dispatch overhead.
+        let metal_device = x.device().clone();
+        let cpu_device = Device::Cpu;
         let mut layer_in = x.clone();
+        let mut prev_is_delta = false;
+
         for (i, layer) in self.layers.iter_mut().enumerate() {
-            let layer_type = match layer {
-                LayerKind::Attention(_) => "attn",
-                LayerKind::DeltaNet(_) => "delta",
-            };
+            let is_delta = matches!(layer, LayerKind::DeltaNet(_));
+
+            // Move tensor to correct device at layer type transitions
+            if i == 0 {
+                // First layer: move to its device
+                if is_delta {
+                    layer_in = layer_in.to_device(&cpu_device)?;
+                }
+            } else if is_delta != prev_is_delta {
+                // Layer type changed: DeltaNet→Attention or Attention→DeltaNet
+                if is_delta {
+                    layer_in = layer_in.to_device(&cpu_device)?;
+                } else {
+                    layer_in = layer_in.to_device(&metal_device)?;
+                }
+            }
+            prev_is_delta = is_delta;
+
             let layer_out = match layer {
                 LayerKind::Attention(attn) => attn.forward(&layer_in, mask.as_ref(), index_pos)
-                    .map_err(|e| candle_core::Error::Msg(format!("Layer {i} ({layer_type}): {e}")))?,
+                    .map_err(|e| candle_core::Error::Msg(format!("Layer {i} (attn): {e}")))?,
                 LayerKind::DeltaNet(delta) => delta.forward(&layer_in, index_pos)
-                    .map_err(|e| candle_core::Error::Msg(format!("Layer {i} ({layer_type}): {e}")))?,
+                    .map_err(|e| candle_core::Error::Msg(format!("Layer {i} (delta): {e}")))?,
             };
             layer_in = layer_out;
+        }
+
+        // Final output goes back to Metal for the output head
+        if prev_is_delta {
+            layer_in = layer_in.to_device(&metal_device)?;
         }
 
         let layer_in = self.norm.forward(&layer_in)?;
