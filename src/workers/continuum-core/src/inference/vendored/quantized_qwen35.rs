@@ -444,6 +444,10 @@ impl DeltaNetLayer {
         let recur_start = std::time::Instant::now();
         let mut outputs = Vec::with_capacity(seq_len);
         for t in 0..seq_len {
+            // Metal: flush GPU command buffer periodically to prevent hang
+            if t > 0 && t % 64 == 0 {
+                x.device().synchronize()?;
+            }
 
             // Per-timestep vectors
             let q_t = (q.i((.., .., t, ..))? * scale)?;    // [B, num_v_heads, head_k_dim]
@@ -643,9 +647,10 @@ impl ModelWeights {
             Err(_) => ct.tensor(reader, "token_embd.weight", device)?,
         };
 
-        // DeltaNet layers run on CPU (Accelerate BLAS for small matmuls),
-        // Attention layers run on Metal (SDPA). Hybrid per-layer device routing.
-        let cpu_device = Device::Cpu;
+        // All layers on the same device. Hybrid CPU/GPU routing is experimental
+        // and causes Metal matmul shape errors on attention layers after to_device().
+        // The llama.cpp backend is the fast path — this stays as the fallback.
+        let layer_device = device;
 
         let mut layers = Vec::with_capacity(block_count);
         for layer_idx in 0..block_count {
@@ -653,7 +658,6 @@ impl ModelWeights {
 
             // Detect layer type by checking tensor index (no I/O, just hashmap lookup)
             let is_attention = ct.tensor_infos.contains_key(&format!("{prefix}.attn_q.weight"));
-            let layer_device = if is_attention { device } else { &cpu_device };
 
             // Shared: FFN (both layer types) — loaded on the layer's device
             let ffn_gate = ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), layer_device)?;
@@ -820,33 +824,15 @@ impl ModelWeights {
         for layer in self.layers.iter_mut() {
             let layer_out = match layer {
                 LayerKind::Attention(attn) => {
-                    // Attention runs on GPU — move input if on CPU
-                    let input = if layer_in.device().is_cpu() {
-                        layer_in.to_device(&self.gpu_device)?.contiguous()?
-                    } else {
-                        layer_in
-                    };
-                    attn.forward(&input, mask.as_ref(), index_pos)?
+                    attn.forward(&layer_in, mask.as_ref(), index_pos)?
                 }
                 LayerKind::DeltaNet(delta) => {
-                    // DeltaNet runs on CPU — move input if on GPU
-                    let input = if !layer_in.device().is_cpu() {
-                        layer_in.to_device(&Device::Cpu)?
-                    } else {
-                        layer_in
-                    };
-                    delta.forward(&input, index_pos)?
+                    delta.forward(&layer_in, index_pos)?
                 }
             };
             layer_in = layer_out;
         }
 
-        // Final norm + output on GPU
-        let layer_in = if layer_in.device().is_cpu() {
-            layer_in.to_device(&self.gpu_device)?
-        } else {
-            layer_in
-        };
         let layer_in = self.norm.forward(&layer_in)?;
         let _enter = self.span_output.enter();
         self.output.forward(&layer_in)
