@@ -33,33 +33,50 @@ use crate::modules::plasticity::topology;
 use crate::runtime;
 
 /// Select best available compute device.
-/// Set CANDLE_FORCE_CPU=1 to bypass GPU for A/B testing.
-pub fn select_best_device() -> Device {
-    if std::env::var("CANDLE_FORCE_CPU").is_ok() {
-        runtime::logger("candle").info("  CANDLE_FORCE_CPU set — using CPU (for A/B testing)");
-        return Device::Cpu;
+/// CUDA > Metal. CPU is NOT acceptable — fail if no GPU.
+/// Metal GPU tier: determines compute routing strategy.
+/// "metal4" = M4/M5 (tensor API, BF16 native)
+/// "metal3" = M1-M3 (basic Metal compute)
+/// "unknown" = fallback
+#[cfg(feature = "metal")]
+fn detect_metal_tier(device: &Device) -> &'static str {
+    // Access the Metal device to check GPU family
+    if let Ok(metal) = device.as_metal_device() {
+        let name = format!("{:?}", metal);
+        // M4/M5 report MTLGPUFamilyMetal4 or Apple10+
+        if name.contains("M4") || name.contains("M5") || name.contains("Apple10") {
+            return "metal4";
+        }
     }
+    // Conservative default — use CPU path for DeltaNet
+    "metal3"
+}
+
+pub fn select_best_device() -> Device {
+    let log = runtime::logger("candle");
 
     #[cfg(feature = "cuda")]
     {
         if let Ok(device) = Device::new_cuda(0) {
-            runtime::logger("candle").info("  Using CUDA device");
+            log.info("  Using CUDA device");
             return device;
         }
-        runtime::logger("candle").info("  CUDA not available");
+        log.warn("  CUDA feature enabled but device not available");
     }
 
     #[cfg(feature = "metal")]
     {
         if let Ok(device) = Device::new_metal(0) {
-            runtime::logger("candle").info("  Using Metal device");
+            let gpu_tier = detect_metal_tier(&device);
+            log.info(&format!("  Using Metal device (tier: {})", gpu_tier));
             return device;
         }
-        runtime::logger("candle").info("  Metal not available");
+        log.warn("  Metal feature enabled but device not available");
     }
 
-    runtime::logger("candle").info("  Using CPU (no GPU acceleration)");
-    Device::Cpu
+    log.error("  ❌ No GPU available. CPU inference is not supported.");
+    log.error("  ❌ Build with: --features metal (macOS) or --features cuda (Linux/Windows with GPU)");
+    panic!("No GPU device available for inference. CPU fallback is disabled.");
 }
 
 /// Download model weights, handling both single file and sharded models.
@@ -148,8 +165,59 @@ pub fn load_model_by_id(
     ));
 
     log.info("  Downloading model files...");
-    let config_path = repo.get("config.json")?;
-    let tokenizer_path = repo.get("tokenizer.json")?;
+
+    // Try config.json and tokenizer.json — these may not exist in GGUF-only repos.
+    let config_result = repo.get("config.json");
+    let tokenizer_result = repo.get("tokenizer.json");
+
+    // If config.json/tokenizer.json are missing, this is likely a GGUF-only repo.
+    // Try downloading GGUF weights directly and resolve tokenizer from base model.
+    if config_result.is_err() || tokenizer_result.is_err() {
+        log.info("  config.json/tokenizer.json not found — checking for GGUF-only repo");
+        let weight_paths = download_weights(&repo)
+            .map_err(|e| format!("Failed to download weights: {e}"))?;
+
+        if weight_paths.len() == 1
+            && weight_paths[0]
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e == "gguf")
+                .unwrap_or(false)
+        {
+            // Resolve tokenizer from base model repo (GGUF repos typically derive from a base).
+            let tokenizer = resolve_tokenizer_for_gguf(&api, model_id, &repo, &log)?;
+
+            if let Some(bf16_backend) = try_load_bf16_safetensors(&weight_paths[0], model_id) {
+                log.info(&format!(
+                    "BF16 backend ready in {:?} (ctx={})",
+                    start.elapsed(),
+                    bf16_backend.context_length()
+                ));
+                return Ok(bf16_backend);
+            }
+
+            log.info("  Detected GGUF format — loading via GGUF backend");
+            let backend =
+                backends::load_gguf_backend(&weight_paths[0], tokenizer, model_id, &device)?;
+            let duration = start.elapsed();
+            log.info(&format!(
+                "GGUF model loaded in {:?} (arch={}, ctx={})",
+                duration,
+                backend.architecture(),
+                backend.context_length()
+            ));
+            return Ok(backend);
+        }
+
+        // Not a GGUF repo and config/tokenizer missing — fatal
+        if let Err(e) = config_result {
+            return Err(format!("config.json not found and no GGUF files available: {e}").into());
+        }
+        return Err(format!("tokenizer.json not found and no GGUF files available").into());
+    }
+
+    let config_path = config_result.unwrap();
+    let tokenizer_path = tokenizer_result.unwrap();
 
     let weight_paths =
         download_weights(&repo).map_err(|e| format!("Failed to download weights: {e}"))?;
@@ -194,6 +262,78 @@ pub fn load_model_by_id(
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
     load_safetensors_from_config(weight_paths, &config_str, tokenizer, model_id, &device)
+}
+
+/// Resolve a tokenizer for a GGUF-only repo by checking:
+/// 1. The repo itself (tokenizer.json might exist)
+/// 2. HF model card metadata for base_model tag
+/// 3. Common base model naming conventions
+fn resolve_tokenizer_for_gguf(
+    api: &Api,
+    model_id: &str,
+    _repo: &hf_hub::api::sync::ApiRepo,
+    log: &std::sync::Arc<runtime::ModuleLogger>,
+) -> Result<Tokenizer, Box<dyn std::error::Error + Send + Sync>> {
+    // Strategy 1: Check known base model mappings from model ID patterns
+    // e.g., "continuum-ai/qwen3.5-4b-code-forged-GGUF" → "Qwen/Qwen3.5-4B"
+    let base_model_candidates = infer_base_model_ids(model_id);
+
+    for base_id in &base_model_candidates {
+        log.info(&format!("  Trying tokenizer from base model: {}", base_id));
+        let base_repo = api.repo(Repo::with_revision(
+            base_id.to_string(),
+            RepoType::Model,
+            "main".to_string(),
+        ));
+        if let Ok(tokenizer_path) = base_repo.get("tokenizer.json") {
+            log.info(&format!("  ✅ Found tokenizer from base model: {}", base_id));
+            let tokenizer = Tokenizer::from_file(&tokenizer_path)
+                .map_err(|e| format!("Failed to load tokenizer from {}: {e}", base_id))?;
+            return Ok(tokenizer);
+        }
+    }
+
+    Err(format!(
+        "No tokenizer found for GGUF model {}. Tried base models: {:?}",
+        model_id, base_model_candidates
+    ).into())
+}
+
+/// Infer base model HF IDs from a GGUF model ID.
+/// Uses naming conventions to find the original model's tokenizer.
+fn infer_base_model_ids(model_id: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let lower = model_id.to_lowercase();
+
+    // Extract model family and size from common patterns:
+    // "org/qwen3.5-4b-*-GGUF" → "Qwen/Qwen3.5-4B"
+    // "org/qwen2.5-coder-7b-*" → "Qwen/Qwen2.5-Coder-7B"
+    if lower.contains("qwen3.5") || lower.contains("qwen3-5") {
+        // Extract size param like "4b", "7b", "14b"
+        if let Some(size) = extract_model_size(&lower) {
+            candidates.push(format!("Qwen/Qwen3.5-{}", size.to_uppercase()));
+        }
+    } else if lower.contains("qwen2.5") || lower.contains("qwen2-5") {
+        if let Some(size) = extract_model_size(&lower) {
+            if lower.contains("coder") {
+                candidates.push(format!("Qwen/Qwen2.5-Coder-{}", size.to_uppercase()));
+            }
+            candidates.push(format!("Qwen/Qwen2.5-{}", size.to_uppercase()));
+        }
+    } else if lower.contains("llama") {
+        if let Some(size) = extract_model_size(&lower) {
+            candidates.push(format!("meta-llama/Llama-3-{}", size.to_uppercase()));
+        }
+    }
+
+    candidates
+}
+
+/// Extract model size string (e.g., "4b", "7b", "14b") from a model ID.
+fn extract_model_size(model_id_lower: &str) -> Option<String> {
+    // Match patterns like "-4b-", "-7b-", "-14b-", "-0.5b-", "-1.5b-"
+    let re = regex::Regex::new(r"[\-_](\d+\.?\d*b)[\-_]").ok()?;
+    re.captures(model_id_lower).map(|c| c[1].to_string())
 }
 
 /// Load a safetensors model given already-resolved weight paths, config JSON, and tokenizer.
