@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["rlib"]
 
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
 [dependencies]
 # Nothing yet — FFI + safe wrapper is self-contained
 
