@@ -243,21 +243,17 @@ class ContinuumTray: NSObject, NSApplicationDelegate {
     @objc private func actionClicked(_ sender: NSMenuItem) {
         guard let command = sender.representedObject as? String else { return }
 
-        // Special case: "open -a Docker" launches Docker Desktop directly
-        if command.hasPrefix("open ") {
-            let script = "do shell script \"\(command)\""
-            NSAppleScript(source: script)?.executeAndReturnError(nil)
-            // Refresh after a delay to pick up Docker starting
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-                self?.refresh()
-            }
-            return
-        }
-
-        // Run CLI commands silently in background, refresh status after
+        // Run everything via /bin/bash — no AppleScript, no Terminal popups
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let _ = self?.runCLI(command.replacingOccurrences(of: "continuum ", with: ""))
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", command]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 self?.refresh()
             }
         }
