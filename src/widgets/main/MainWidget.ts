@@ -235,12 +235,22 @@ export class MainWidget extends ReactiveWidget {
     // Resolve can fail after page reload if the command system isn't ready yet.
     // Fall through with identifier as-is — the widget can resolve later.
     let resolved: Awaited<ReturnType<typeof RoutingService.resolve>> | undefined;
-    try {
-      resolved = identifier
-        ? (await RoutingService.resolve(contentType, identifier)) ?? undefined
-        : undefined;
-    } catch {
-      console.warn(`⚠️ MainWidget: RoutingService.resolve failed for ${contentType}/${identifier}, using identifier as-is`);
+    if (identifier) {
+      // Retry resolve until it succeeds — don't create a broken tab with a raw UUID.
+      // The WS connection may not be ready yet on first load (Docker startup race).
+      for (let attempt = 0; attempt < 30; attempt++) {
+        try {
+          resolved = (await RoutingService.resolve(contentType, identifier)) ?? undefined;
+          if (resolved) break;
+        } catch {
+          // WS not ready yet — wait and retry
+        }
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      if (!resolved) {
+        console.warn(`⚠️ MainWidget: RoutingService.resolve failed after 30 retries for ${contentType}/${identifier} — not opening broken tab`);
+        return; // Don't create a broken tab
+      }
     }
 
     const canonicalEntityId = resolved?.id || identifier;
