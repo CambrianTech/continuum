@@ -49,17 +49,117 @@ if ! docker info &>/dev/null; then
 fi
 echo "✅ Docker is running"
 
-# ── Check Docker resources ────────────────────────
-# Rancher Desktop and Docker Desktop have configurable VM memory.
-# 8GB minimum needed for all containers.
+# ── Auto-configure Docker VM resources ────────────
+# Docker Desktop and Rancher Desktop run a VM with fixed RAM/CPU.
+# Default allocations (2-6GB) are too small for continuum.
+# Auto-detect system resources and configure the VM to use half.
 DOCKER_MEM=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo "0")
 DOCKER_MEM_GB=$((DOCKER_MEM / 1073741824))
-if [ "$DOCKER_MEM_GB" -lt 8 ] && [ "$DOCKER_MEM_GB" -gt 0 ]; then
+MIN_MEM_GB=8
+
+if [ "$DOCKER_MEM_GB" -lt "$MIN_MEM_GB" ] && [ "$DOCKER_MEM_GB" -gt 0 ]; then
   echo ""
-  echo "⚠️  Docker has ${DOCKER_MEM_GB}GB RAM. Continuum needs at least 8GB."
-  echo "   Increase in Docker Desktop → Settings → Resources → Memory"
-  echo "   Or Rancher Desktop → Preferences → Virtual Machine → Memory"
+  echo "⚠️  Docker VM has ${DOCKER_MEM_GB}GB RAM (minimum ${MIN_MEM_GB}GB needed)."
   echo ""
+
+  # Detect system RAM and offer to fix
+  if [[ "$PLATFORM" == "mac" ]]; then
+    SYS_MEM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
+    SYS_CPUS=$(sysctl -n hw.ncpu 2>/dev/null || echo "4")
+  else
+    SYS_MEM_GB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{printf "%d", $2/1048576}')
+    SYS_CPUS=$(nproc 2>/dev/null || echo "4")
+  fi
+  TARGET_MEM=$((SYS_MEM_GB / 2))
+  TARGET_CPUS=$((SYS_CPUS / 2))
+  [ "$TARGET_MEM" -lt "$MIN_MEM_GB" ] && TARGET_MEM="$MIN_MEM_GB"
+  [ "$TARGET_CPUS" -lt 2 ] && TARGET_CPUS=2
+
+  DOCKER_UPDATED=false
+
+  # Try Rancher Desktop (macOS)
+  RANCHER_SETTINGS="$HOME/Library/Preferences/rancher-desktop/settings.json"
+  if [ -f "$RANCHER_SETTINGS" ]; then
+    echo "   Rancher Desktop detected."
+    echo "   Your system has ${SYS_MEM_GB}GB RAM / ${SYS_CPUS} CPUs."
+    echo "   Recommended: ${TARGET_MEM}GB RAM / ${TARGET_CPUS} CPUs for Docker VM."
+    echo ""
+    read -p "   Update Rancher Desktop VM to ${TARGET_MEM}GB/${TARGET_CPUS}CPUs? [Y/n] " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+      echo "   Skipped. You can change this manually in Rancher Desktop → Preferences → Virtual Machine."
+    else
+    echo "   Updating VM: ${TARGET_MEM}GB RAM, ${TARGET_CPUS} CPUs..."
+    # Use python3 (available on macOS) to patch JSON safely
+    python3 -c "
+import json, sys
+d = json.load(open('$RANCHER_SETTINGS'))
+d['virtualMachine']['memoryInGB'] = $TARGET_MEM
+d['virtualMachine']['numberCPUs'] = $TARGET_CPUS
+json.dump(d, open('$RANCHER_SETTINGS', 'w'), indent=2)
+print('   Updated: memoryInGB=${TARGET_MEM}, numberCPUs=${TARGET_CPUS}')
+" 2>/dev/null && DOCKER_UPDATED=true
+    if [ "$DOCKER_UPDATED" = true ]; then
+      echo "   Restarting Rancher Desktop VM (this takes ~30s)..."
+      rdctl shutdown 2>/dev/null; sleep 5; rdctl start 2>/dev/null &
+      # Wait for Docker to come back
+      for i in $(seq 1 60); do
+        docker info &>/dev/null && break
+        sleep 2
+      done
+      echo "✅ Rancher Desktop VM reconfigured: ${TARGET_MEM}GB RAM, ${TARGET_CPUS} CPUs"
+    fi
+    fi # end y/n prompt
+  fi
+
+  # Try Docker Desktop (macOS)
+  if [ "$DOCKER_UPDATED" = false ]; then
+    DD_SETTINGS="$HOME/Library/Group Containers/group.com.docker/settings-store.json"
+    DD_SETTINGS_ALT="$HOME/Library/Group Containers/group.com.docker/settings.json"
+    DD_FILE=""
+    [ -f "$DD_SETTINGS" ] && DD_FILE="$DD_SETTINGS"
+    [ -f "$DD_SETTINGS_ALT" ] && DD_FILE="$DD_SETTINGS_ALT"
+
+    if [ -n "$DD_FILE" ]; then
+      echo "   Docker Desktop detected."
+      echo "   Your system has ${SYS_MEM_GB}GB RAM / ${SYS_CPUS} CPUs."
+      echo "   Recommended: ${TARGET_MEM}GB RAM / ${TARGET_CPUS} CPUs for Docker VM."
+      echo ""
+      read -p "   Update Docker Desktop VM to ${TARGET_MEM}GB/${TARGET_CPUS}CPUs? [Y/n] " -n 1 -r
+      echo ""
+      if [[ $REPLY =~ ^[Nn]$ ]]; then
+        echo "   Skipped. Change manually: Docker Desktop → Settings → Resources → Memory"
+      else
+      echo "   Updating VM: ${TARGET_MEM}GB RAM, ${TARGET_CPUS} CPUs..."
+      TARGET_MEM_MIB=$((TARGET_MEM * 1024))
+      python3 -c "
+import json
+d = json.load(open('$DD_FILE'))
+d['memoryMiB'] = $TARGET_MEM_MIB
+d['cpus'] = $TARGET_CPUS
+json.dump(d, open('$DD_FILE', 'w'), indent=2)
+print('   Updated: memoryMiB=${TARGET_MEM_MIB}, cpus=${TARGET_CPUS}')
+" 2>/dev/null && DOCKER_UPDATED=true
+      if [ "$DOCKER_UPDATED" = true ]; then
+        echo "   Restart Docker Desktop to apply. (Or: osascript -e 'quit app \"Docker\"' && open -a Docker)"
+      fi
+      fi # end y/n prompt
+    fi
+  fi
+
+  # Linux: Docker uses host resources directly, no VM config needed
+  if [ "$DOCKER_UPDATED" = false ] && [[ "$PLATFORM" == "linux" ]]; then
+    echo "   Linux detected — Docker uses host resources directly. No VM to configure."
+    DOCKER_UPDATED=true
+  fi
+
+  if [ "$DOCKER_UPDATED" = false ]; then
+    echo ""
+    echo "   Could not auto-configure. Please increase Docker VM memory to at least ${MIN_MEM_GB}GB:"
+    echo "   Docker Desktop → Settings → Resources → Memory"
+    echo "   Rancher Desktop → Preferences → Virtual Machine → Memory"
+    echo ""
+  fi
 fi
 
 # ── Install continuum CLI ─────────────────────────
