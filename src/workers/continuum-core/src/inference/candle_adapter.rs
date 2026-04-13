@@ -680,35 +680,9 @@ impl AIProviderAdapter for CandleAdapter {
             None
         };
 
-        let (output_text, completion_tokens, new_model_guard) = if let Some((text, tokens)) = llamacpp_result {
-            (text, tokens, None)
-        } else {
-            // Fall back to candle
-            let result = tokio::task::spawn_blocking(move || {
-                #[cfg(target_os = "macos")]
-                extern "C" {
-                    fn objc_autoreleasePoolPush() -> *mut std::ffi::c_void;
-                    fn objc_autoreleasePoolPop(pool: *mut std::ffi::c_void);
-                }
-
-                #[cfg(target_os = "macos")]
-                let pool = unsafe { objc_autoreleasePoolPush() };
-
-                let result = inference_inner(
-                    backend_arc, gpu_mgr, use_quantized, &resolved_model, &prompt, max_tokens, &sampling,
-                );
-
-                #[cfg(target_os = "macos")]
-                unsafe { objc_autoreleasePoolPop(pool); }
-
-                result
-            })
-            .await
-            .map_err(|e| format!("Inference task panicked: {e}"))?;
-
-            let ((text, tokens), guard) = result?;
-            (text, tokens, guard)
-        };
+        let (output_text, completion_tokens) = llamacpp_result
+            .ok_or_else(|| "llama.cpp server not available. Start it with: llama-server -m <model.gguf> --port 8090".to_string())?;
+        let new_model_guard: Option<GpuAllocationGuard> = None;
 
         // Store model guard if this was a first load
         if let Some(guard) = new_model_guard {
