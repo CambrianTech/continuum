@@ -17,6 +17,7 @@ pub mod compact_llama_safetensors;
 pub mod llama_gguf;
 pub mod llama_safetensors;
 pub mod qwen2_safetensors;
+pub mod qwen35_gguf;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -586,10 +587,10 @@ pub fn load_gguf_backend(
             ));
             Ok(Box::new(backend))
         }
-        // Qwen3/3.5 — same tensor layout as Qwen2 in GGUF.
-        // GGUF metadata uses "qwen3" or "qwen35" depending on the converter.
+        // Qwen3.5 — hybrid DeltaNet + Attention architecture.
+        // NOT compatible with Llama backend (has SSM layers, fused QKV, partial RoPE).
         "qwen3" | "qwen35" => {
-            let backend = llama_gguf::LlamaGgufBackend::from_gguf(
+            let backend = qwen35_gguf::Qwen35GgufBackend::from_gguf(
                 content,
                 &mut reader,
                 tokenizer,
@@ -598,7 +599,7 @@ pub fn load_gguf_backend(
                 device,
             )?;
             log.info(&format!(
-                "Loaded Qwen3 via Llama GGUF backend: context_length={}",
+                "Loaded Qwen3.5 via hybrid DeltaNet+Attention backend: context_length={}",
                 backend.context_length()
             ));
             Ok(Box::new(backend))
