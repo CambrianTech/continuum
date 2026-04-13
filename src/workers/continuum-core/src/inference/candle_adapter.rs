@@ -94,28 +94,24 @@ impl CandleAdapter {
         }
     }
 
-    /// Try to connect to a running llama-server. If successful, all inference
-    /// routes through llama.cpp (30-60x faster). Falls back to candle on failure.
-    pub fn try_connect_llamacpp(&self, model_path: &str, port: u16) {
+    /// Load a GGUF model in-process via our vendored llama.cpp substrate.
+    /// No HTTP, no external process — the backend owns the model memory.
+    ///
+    /// Returns Err if the GGUF fails to load. Callers should propagate; the
+    /// no-fallback rule means we don't silently drop back to anything else.
+    pub fn load_llamacpp(&self, model_path: &str) -> Result<(), String> {
         let log = runtime::logger("candle");
         let config = backends::llamacpp::LlamaCppConfig {
             model_path: model_path.to_string(),
-            port,
             ..Default::default()
         };
-        // Don't start a new server — connect to an existing one
-        match check_llamacpp_health(&config) {
-            true => {
-                log.info(&format!("llama.cpp server found on port {} — using fast inference path", port));
-                // Create backend without starting server (it's already running)
-                *self.llamacpp_backend.write() = Some(
-                    backends::llamacpp::LlamaCppBackend::from_running(config)
-                );
-            }
-            false => {
-                log.info("No llama-server found — using candle backend");
-            }
-        }
+        let backend = backends::llamacpp::LlamaCppBackend::load(config)?;
+        log.info(&format!(
+            "llama.cpp backend loaded in-process: {}",
+            backend.model_id()
+        ));
+        *self.llamacpp_backend.write() = Some(backend);
+        Ok(())
     }
 
     /// Set GPU memory manager for VRAM allocation tracking.
@@ -377,19 +373,6 @@ impl Default for CandleAdapter {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Inner inference function extracted for autorelease pool wrapping.
-/// All Metal/ObjC objects created here are released when the pool is popped.
-fn check_llamacpp_health(config: &backends::llamacpp::LlamaCppConfig) -> bool {
-    let url = format!("http://{}:{}/health", config.host, config.port);
-    std::process::Command::new("curl")
-        .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "1", &url])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u16>().ok())
-        .map(|code| code == 200)
-        .unwrap_or(false)
 }
 
 fn inference_inner(
@@ -665,14 +648,15 @@ impl AIProviderAdapter for CandleAdapter {
             ));
         }
 
-        // ── Try llama.cpp backend first (30-60x faster than candle) ──
-        // If llama-server is running, use it. Otherwise fall back to candle.
+        // ── llama.cpp backend (in-process, owns the model memory) ──
+        // Per the no-fallback rule: this is the only runtime. If the backend
+        // wasn't loaded, we error below rather than degrade to something else.
         let llamacpp_result = if let Some(ref llama) = *self.llamacpp_backend.read() {
             let stop_tokens: Vec<&str> = vec!["<|im_end|>", "<|endoftext|>"];
-            match llama.generate(&prompt, max_tokens, sampling.temperature, &stop_tokens) {
+            match llama.generate(&prompt, max_tokens, sampling.temperature as f32, &stop_tokens) {
                 Ok((text, tokens)) => Some((text, tokens)),
                 Err(e) => {
-                    log.warn(&format!("llama.cpp failed, falling back to candle: {e}"));
+                    log.warn(&format!("llama.cpp generate failed: {e}"));
                     None
                 }
             }
@@ -681,7 +665,7 @@ impl AIProviderAdapter for CandleAdapter {
         };
 
         let (output_text, completion_tokens) = llamacpp_result
-            .ok_or_else(|| "llama.cpp server not available. Start it with: llama-server -m <model.gguf> --port 8090".to_string())?;
+            .ok_or_else(|| "llama.cpp backend not loaded. Call CandleAdapter::load_llamacpp(model_path) during init.".to_string())?;
         let new_model_guard: Option<GpuAllocationGuard> = None;
 
         // Store model guard if this was a first load

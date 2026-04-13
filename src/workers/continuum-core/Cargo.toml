@@ -67,9 +67,9 @@ candle-nn.workspace = true  # For VarBuilder
 candle-transformers.workspace = true
 tokenizers = { workspace = true, features = ["onig"] }
 
-# llama.cpp Rust bindings — the inference engine.
-# In-process, supports LoRA hot-swap, Metal/CUDA/ROCm/Vulkan backends.
-llama-cpp-2 = { version = "0.1", default-features = false }
+# llama.cpp — our vendored substrate (src/workers/llama).
+# In-process, supports LoRA hot-swap, Metal/CUDA backends via feature flags.
+llama = { path = "../llama" }
 
 # Pocket-TTS (Kyutai, 100M, Candle-based CPU TTS with voice cloning)
 # Uses candle 0.9 (separate from our 0.8) — CPU-only, no Metal flag to avoid conflicts
@@ -158,8 +158,8 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 [features]
 default = ["livekit-webrtc"]
 livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama-cpp-2/metal"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama-cpp-2/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 # Linux: swap ORT from static (download-binaries) to dynamic loading.
 # Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).

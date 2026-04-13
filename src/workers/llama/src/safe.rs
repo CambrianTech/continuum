@@ -84,7 +84,14 @@ impl Model {
     }
 
     /// Load a LoRA adapter bound to this model. Used for genome paging.
-    pub fn load_lora(&self, path: impl AsRef<Path>) -> Result<LoraAdapter<'_>, String> {
+    ///
+    /// The returned adapter must not outlive the model it was loaded from
+    /// (llama.cpp frees adapter memory when the model is dropped). This is
+    /// NOT expressed in the type system because self-referential owners
+    /// (e.g. a backend holding `Model` + `HashMap<Id, LoraAdapter>`) can't
+    /// be written safely with a borrowed lifetime. Callers must drop
+    /// adapters before the model — typically via field ordering.
+    pub fn load_lora(&self, path: impl AsRef<Path>) -> Result<LoraAdapter, String> {
         let path = path.as_ref();
         let c_path = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|e| format!("invalid path: {e}"))?;
@@ -92,7 +99,7 @@ impl Model {
         let ptr = NonNull::new(raw).ok_or_else(|| {
             format!("failed to load LoRA from {}", path.display())
         })?;
-        Ok(LoraAdapter { ptr, _model: PhantomData })
+        Ok(LoraAdapter { ptr })
     }
 
     /// Tokenize a string.
@@ -169,15 +176,16 @@ impl Drop for Model {
 
 /// A LoRA adapter loaded against a model. Can be hot-swapped on a context
 /// without rebuilding the context — this is the primitive genome paging uses.
-pub struct LoraAdapter<'m> {
+///
+/// No borrow on `Model` (see `Model::load_lora` docs for the invariant).
+pub struct LoraAdapter {
     ptr: NonNull<sys::llama_adapter_lora>,
-    _model: PhantomData<&'m Model>,
 }
 
-unsafe impl<'m> Send for LoraAdapter<'m> {}
-unsafe impl<'m> Sync for LoraAdapter<'m> {}
+unsafe impl Send for LoraAdapter {}
+unsafe impl Sync for LoraAdapter {}
 
-impl<'m> Drop for LoraAdapter<'m> {
+impl Drop for LoraAdapter {
     fn drop(&mut self) {
         unsafe { sys::llama_adapter_lora_free(self.ptr.as_ptr()); }
     }
@@ -266,7 +274,7 @@ impl<'m> Context<'m> {
     ///
     /// This is the hot-swap primitive — cheap enough to call between tokens
     /// for genome paging. Passing an empty slice clears all adapters.
-    pub fn set_loras(&mut self, adapters: &[(&LoraAdapter<'m>, f32)]) -> Result<(), String> {
+    pub fn set_loras(&mut self, adapters: &[(&LoraAdapter, f32)]) -> Result<(), String> {
         let mut ptrs: Vec<*mut sys::llama_adapter_lora> =
             adapters.iter().map(|(a, _)| a.ptr.as_ptr()).collect();
         let mut scales: Vec<f32> = adapters.iter().map(|(_, s)| *s).collect();

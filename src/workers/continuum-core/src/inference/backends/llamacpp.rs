@@ -1,29 +1,13 @@
-//! llama.cpp Backend — in-process bindings via llama-cpp-2.
+//! llama.cpp Backend — in-process via our vendored llama.cpp substrate.
 //!
-//! Loads the model directly (no HTTP server). Supports LoRA hot-swap
-//! for genome paging. Metal/CUDA via feature flags.
+//! Loads the model directly (no HTTP, no external crate). Supports LoRA
+//! hot-swap for genome paging. Metal/CUDA via feature flags.
 
 use std::collections::HashMap;
-use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use llama_cpp_2::{
-    context::params::LlamaContextParams,
-    llama_backend::LlamaBackend,
-    llama_batch::LlamaBatch,
-    model::{params::LlamaModelParams, AddBos, LlamaModel, Special, LlamaLoraAdapter},
-    sampling::LlamaSampler,
-};
-
-/// Wrapper to make LlamaLoraAdapter Send+Sync.
-/// The underlying C pointer is thread-safe as long as we only call
-/// context methods from one thread at a time (enforced by the context Mutex
-/// pattern in actual use). Interior mutability via Mutex since lora_adapter_set
-/// requires &mut.
-struct LoraWrapper(Mutex<LlamaLoraAdapter>);
-unsafe impl Send for LoraWrapper {}
-unsafe impl Sync for LoraWrapper {}
+use llama::{Batch, ContextParams, LoraAdapter, Model, ModelParams, Sampler};
 
 use crate::runtime;
 
@@ -36,7 +20,7 @@ pub struct LlamaCppConfig {
     pub context_length: u32,
     /// GPU layers to offload (-1 = all)
     pub n_gpu_layers: i32,
-    /// Random seed
+    /// Random seed for probabilistic sampling
     pub seed: u32,
 }
 
@@ -53,15 +37,17 @@ impl Default for LlamaCppConfig {
 
 /// In-process llama.cpp backend.
 ///
-/// Holds a LlamaModel and context. Thread-safe (protected by Mutex).
-/// Supports LoRA hot-swap for genome paging.
+/// Field declaration order matters: `loras` drops before `model` because
+/// `LoraAdapter`'s FFI free expects the model's adapter memory to still
+/// be live. Do not reorder.
 pub struct LlamaCppBackend {
-    backend: Arc<LlamaBackend>,
-    model: Arc<LlamaModel>,
-    context_params: LlamaContextParams,
-    /// Loaded LoRA adapters keyed by caller-chosen id.
-    /// Adapters are kept alive here; context references them via set().
-    loras: Mutex<HashMap<String, Arc<LoraWrapper>>>,
+    /// Active LoRA adapters keyed by caller-chosen id. Applied to the
+    /// context on every `generate()` call. Must drop before `model`.
+    loras: Mutex<HashMap<String, Arc<LoraAdapter>>>,
+    /// Loaded model. `Arc` so contexts can be cheaply spawned.
+    model: Arc<Model>,
+    context_params: ContextParams,
+    config: LlamaCppConfig,
     model_id: String,
 }
 
@@ -80,21 +66,16 @@ impl LlamaCppBackend {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".into());
 
-        let backend = LlamaBackend::init()
-            .map_err(|e| format!("Failed to init llama backend: {e}"))?;
-
-        let model_params = {
-            let mut params = LlamaModelParams::default();
-            params = params.with_n_gpu_layers(config.n_gpu_layers as u32);
-            params
+        let model_params = ModelParams {
+            n_gpu_layers: config.n_gpu_layers,
+            use_mmap: true,
         };
+        let model = Model::load(&model_path, model_params)?;
 
-        let model = LlamaModel::load_from_file(&backend, &model_path, &model_params)
-            .map_err(|e| format!("Failed to load model: {e}"))?;
-
-        let context_params = LlamaContextParams::default()
-            .with_n_ctx(Some(NonZeroU32::new(config.context_length).expect("ctx > 0")));
-        let _ = config.seed; // seed is on sampler, not context in this version
+        let context_params = ContextParams {
+            n_ctx: config.context_length,
+            n_batch: 512,
+        };
 
         log.info(&format!(
             "Loaded {} in {:?} (context={}, gpu_layers={})",
@@ -102,15 +83,19 @@ impl LlamaCppBackend {
         ));
 
         Ok(Self {
-            backend: Arc::new(backend),
+            loras: Mutex::new(HashMap::new()),
             model: Arc::new(model),
             context_params,
-            loras: Mutex::new(HashMap::new()),
+            config,
             model_id,
         })
     }
 
     /// Generate text from a prompt.
+    ///
+    /// Creates a fresh context per call (KV cache is per-context, and we
+    /// don't carry state across calls yet — that's a follow-up for
+    /// chat-style use where prior turns stay in KV).
     pub fn generate(
         &self,
         prompt: &str,
@@ -121,68 +106,59 @@ impl LlamaCppBackend {
         let log = runtime::logger("llamacpp");
         let start = std::time::Instant::now();
 
-        let mut ctx = self.model.new_context(&self.backend, self.context_params.clone())
-            .map_err(|e| format!("Failed to create context: {e}"))?;
+        let mut ctx = self.model.new_context(self.context_params.clone())?;
 
-        // Apply active LoRAs
+        // Apply active LoRA adapters (scale=1.0 for each — per-adapter scale
+        // is API work for when genome paging actually ships).
         {
             let loras = self.loras.lock().unwrap();
-            for wrapper in loras.values() {
-                let mut adapter = wrapper.0.lock().unwrap();
-                ctx.lora_adapter_set(&mut *adapter, 1.0)
-                    .map_err(|e| format!("Failed to set LoRA: {e}"))?;
+            if !loras.is_empty() {
+                let refs: Vec<(&LoraAdapter, f32)> = loras
+                    .values()
+                    .map(|a| (a.as_ref(), 1.0_f32))
+                    .collect();
+                ctx.set_loras(&refs)?;
             }
         }
 
-        // Tokenize prompt
-        let tokens_list = self.model.str_to_token(prompt, AddBos::Always)
-            .map_err(|e| format!("Tokenize failed: {e}"))?;
+        // Tokenize + prefill as a single-sequence batch.
+        let tokens = self.model.tokenize(prompt, true, false)?;
+        let prompt_len = tokens.len();
+        ctx.decode(&Batch::for_tokens(tokens))?;
 
-        let prompt_len = tokens_list.len();
-        let mut batch = LlamaBatch::new(512, 1);
-        let last_index = tokens_list.len().saturating_sub(1) as i32;
-        for (i, token) in tokens_list.into_iter().enumerate() {
-            let is_last = i as i32 == last_index;
-            batch.add(token, i as i32, &[0], is_last)
-                .map_err(|e| format!("Batch add failed: {e}"))?;
-        }
-
-        ctx.decode(&mut batch).map_err(|e| format!("Prefill decode failed: {e}"))?;
+        let mut sampler = if temperature <= 0.0 {
+            Sampler::greedy()
+        } else {
+            Sampler::chain()
+                .temp(temperature)
+                .dist(self.config.seed)
+                .build()
+        };
 
         let mut output = String::new();
-        let mut n_cur = batch.n_tokens();
-        let mut n_decode = 0;
-
-        let mut sampler = LlamaSampler::chain_simple([
-            LlamaSampler::temp(temperature.max(0.01)),
-            LlamaSampler::greedy(),
-        ]);
+        let mut n_decode = 0usize;
 
         while n_decode < max_tokens {
-            let token = sampler.sample(&ctx, batch.n_tokens() - 1);
+            let token = sampler.sample(&ctx, -1);
             sampler.accept(token);
 
             if self.model.is_eog_token(token) {
                 break;
             }
 
-            let token_str = self.model.token_to_str(token, Special::Tokenize)
-                .unwrap_or_default();
-            output.push_str(&token_str);
+            let piece = self.model.token_to_piece(token);
+            output.push_str(&piece);
 
-            // Check stop sequences
+            // Stop-sequence check (post-append so we don't emit partials
+            // past the stop marker).
             if stop.iter().any(|s| output.contains(s)) {
                 break;
             }
 
-            batch.clear();
-            batch.add(token, n_cur, &[0], true)
-                .map_err(|e| format!("Batch add failed: {e}"))?;
-
-            n_cur += 1;
+            // Feed the new token back as a 1-token batch. llama_batch_get_one
+            // tracks position automatically from the KV cache.
+            ctx.decode(&Batch::for_tokens(vec![token]))?;
             n_decode += 1;
-
-            ctx.decode(&mut batch).map_err(|e| format!("Decode failed: {e}"))?;
         }
 
         let elapsed = start.elapsed();
@@ -199,11 +175,12 @@ impl LlamaCppBackend {
     }
 
     /// Load a LoRA adapter from a file, keyed by id for later removal.
+    /// `_scale` is stored for a future per-adapter scale API; currently
+    /// all active adapters apply at scale 1.0.
     pub fn load_lora_adapter(&self, id: &str, path: &str, _scale: f32) -> Result<(), String> {
         let log = runtime::logger("llamacpp");
-        let adapter = self.model.lora_adapter_init(PathBuf::from(path))
-            .map_err(|e| format!("LoRA init failed: {e}"))?;
-        self.loras.lock().unwrap().insert(id.to_string(), Arc::new(LoraWrapper(Mutex::new(adapter))));
+        let adapter = self.model.load_lora(path)?;
+        self.loras.lock().unwrap().insert(id.to_string(), Arc::new(adapter));
         log.info(&format!("Loaded LoRA adapter: {}", id));
         Ok(())
     }
