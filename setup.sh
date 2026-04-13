@@ -329,15 +329,25 @@ echo "  Run 'continuum status' anytime to check health."
 echo "  Run 'continuum doctor' to diagnose issues."
 echo ""
 
-# Launch tray app (macOS menubar) / system tray (Windows)
+# Launch platform-specific tray app
 if [[ "$PLATFORM" == "mac" ]] && [[ -d "$HOME/Applications/Continuum.app" ]]; then
   pkill -f "Continuum.app" 2>/dev/null || true
   sleep 0.5
   open "$HOME/Applications/Continuum.app"
   echo "  🖥️ Tray app running (menubar)"
+elif [[ "$PLATFORM" == "windows" ]]; then
+  TRAY_PS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/tray/continuum-tray.ps1"
+  if [[ -f "$TRAY_PS" ]]; then
+    powershell.exe -WindowStyle Hidden -File "$TRAY_PS" &
+    echo "  🖥️ System tray running"
+  fi
+elif [[ "$PLATFORM" == "linux" ]] || [[ "$PLATFORM" == "wsl" ]]; then
+  TRAY_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/tray/continuum-tray.py"
+  if [[ -f "$TRAY_PY" ]] && command -v python3 &>/dev/null; then
+    python3 "$TRAY_PY" &>/dev/null &
+    echo "  🖥️ System tray running"
+  fi
 fi
-# TODO: Windows system tray — PowerShell NotifyIcon or .NET WinForms tray app
-# Similar to Mac: thin client reads `continuum tray-data` JSON, renders native menu
 
 # Open browser (prefer HTTPS grid URL if available)
 OPEN_URL="${REMOTE_URL:-$LOCAL_URL}"
