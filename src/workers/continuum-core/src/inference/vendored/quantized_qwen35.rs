@@ -191,53 +191,43 @@ impl AttentionLayer {
         let (b_sz, seq_len, _hidden) = x.dims3()?;
         let normed = self.attention_norm.forward(x)?;
 
-        let q = self.attention_wq.forward(&normed)?;
+        // Q proj output is 2x head_dim: first half = query, second half = gate
+        let q_full = self.attention_wq.forward(&normed)?; // [B, T, n_head * head_dim * 2]
         let k = self.attention_wk.forward(&normed)?;
         let v = self.attention_wv.forward(&normed)?;
 
-        // Q may have different head dim than K/V (Qwen3.5: Q=512/head, K/V=256/head)
-        let q_head_dim = q.dims()[2] / self.n_head;
-        let kv_head_dim = k.dims()[2] / self.n_kv_head;
-        let q = q
-            .reshape((b_sz, seq_len, self.n_head, q_head_dim))?
-            .transpose(1, 2)?;
+        // Split Q into query + gate (each head_dim=256)
+        let q_reshaped = q_full.reshape((b_sz, seq_len, self.n_head, self.head_dim * 2))?;
+        let q = q_reshaped.narrow(3, 0, self.head_dim)?;                    // [B, T, n_head, head_dim]
+        let attn_gate = q_reshaped.narrow(3, self.head_dim, self.head_dim)?; // [B, T, n_head, head_dim]
+        let attn_gate = attn_gate.reshape((b_sz, seq_len, self.n_head * self.head_dim))?; // [B, T, n_head*head_dim]
+
+        let q = q.transpose(1, 2)?;  // [B, n_head, T, head_dim]
         let k = k
-            .reshape((b_sz, seq_len, self.n_kv_head, kv_head_dim))?
+            .reshape((b_sz, seq_len, self.n_kv_head, self.head_dim))?
             .transpose(1, 2)?;
         let v = v
-            .reshape((b_sz, seq_len, self.n_kv_head, kv_head_dim))?
+            .reshape((b_sz, seq_len, self.n_kv_head, self.head_dim))?
             .transpose(1, 2)?
             .contiguous()?;
 
-        // QK norm: norm weight is [kv_head_dim]. Q may have larger head dim (e.g. 512 vs 256).
-        // Reshape to chunks matching norm weight size.
-        let norm_dim = self.attn_q_norm.weight.dims()[0];
+        // QK norm (per-head, head_dim=256)
         let q = {
             let (b, nh, s, hd) = q.dims4()?;
-            let n_chunks = hd / norm_dim;
-            let q_flat = q.reshape((b * nh * n_chunks, s, norm_dim))?;
+            let q_flat = q.reshape((b * nh, s, hd))?;
             let q_normed = self.attn_q_norm.forward(&q_flat)?;
             q_normed.reshape((b, nh, s, hd))?
         };
         let k = {
             let (b, nh, s, hd) = k.dims4()?;
-            let n_chunks = hd / norm_dim;
-            let k_flat = k.reshape((b * nh * n_chunks, s, norm_dim))?;
+            let k_flat = k.reshape((b * nh, s, hd))?;
             let k_normed = self.attn_k_norm.forward(&k_flat)?;
             k_normed.reshape((b, nh, s, hd))?
         };
 
-        // Partial RoPE: only first rope_dim dims of each head
+        // Partial RoPE
         let q = apply_partial_rotary_emb(&q, &self.cos, &self.sin, index_pos, self.rope_dim)?;
         let k = apply_partial_rotary_emb(&k, &self.cos, &self.sin, index_pos, self.rope_dim)?;
-
-        // For attention: Q head dim may be larger than K head dim (e.g. Q=512, K=256).
-        // Truncate Q to match K dim for attention score computation.
-        let q = if q_head_dim > kv_head_dim {
-            q.narrow(3, 0, kv_head_dim)?
-        } else {
-            q
-        };
 
         // KV cache
         let (k, v) = match &self.kv_cache {
@@ -277,7 +267,11 @@ impl AttentionLayer {
 
         let y = y
             .transpose(1, 2)?
-            .reshape(&[b_sz, seq_len, self.n_head * kv_head_dim])?;
+            .reshape(&[b_sz, seq_len, self.n_head * self.head_dim])?;
+
+        // Apply sigmoid gate (second half of Q proj output)
+        let y = (y * candle_nn::ops::sigmoid(&attn_gate)?)?;
+
         let attn_out = self.attention_wo.forward(&y)?;
 
         // Residual + post_attention_norm + FFN + residual
