@@ -56,6 +56,21 @@ pub struct LlamaCppBackend {
 }
 
 impl LlamaCppBackend {
+    /// Connect to an already-running llama-server (no process management).
+    pub fn from_running(config: LlamaCppConfig) -> Self {
+        let base_url = format!("http://{}:{}", config.host, config.port);
+        let model_id = std::path::Path::new(&config.model_path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".into());
+        Self {
+            config,
+            server_process: Mutex::new(None),
+            base_url,
+            model_id,
+        }
+    }
+
     /// Create a new backend and start llama-server.
     pub fn new(config: LlamaCppConfig) -> Result<Self, String> {
         let base_url = format!("http://{}:{}", config.host, config.port);

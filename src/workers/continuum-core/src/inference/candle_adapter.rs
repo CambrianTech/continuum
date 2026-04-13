@@ -60,6 +60,9 @@ pub struct CandleAdapter {
     /// system memory pressure. Prevents 4 personas from all piling into
     /// spawn_blocking simultaneously (40GB peak → controlled sequential).
     inference_semaphore: Arc<tokio::sync::Semaphore>,
+    /// llama.cpp backend — used for fast inference when llama-server is available.
+    /// Falls back to candle if None or if llama.cpp fails.
+    llamacpp_backend: RwLock<Option<backends::llamacpp::LlamaCppBackend>>,
 }
 
 impl CandleAdapter {
@@ -86,6 +89,32 @@ impl CandleAdapter {
             // Multiple concurrent inferences pile up KV caches + Metal state,
             // causing 40GB+ peaks. Sequential keeps peak at ~10GB above baseline.
             inference_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            // Try to connect to a running llama-server
+            llamacpp_backend: RwLock::new(None),
+        }
+    }
+
+    /// Try to connect to a running llama-server. If successful, all inference
+    /// routes through llama.cpp (30-60x faster). Falls back to candle on failure.
+    pub fn try_connect_llamacpp(&self, model_path: &str, port: u16) {
+        let log = runtime::logger("candle");
+        let config = backends::llamacpp::LlamaCppConfig {
+            model_path: model_path.to_string(),
+            port,
+            ..Default::default()
+        };
+        // Don't start a new server — connect to an existing one
+        match check_llamacpp_health(&config) {
+            true => {
+                log.info(&format!("llama.cpp server found on port {} — using fast inference path", port));
+                // Create backend without starting server (it's already running)
+                *self.llamacpp_backend.write() = Some(
+                    backends::llamacpp::LlamaCppBackend::from_running(config)
+                );
+            }
+            false => {
+                log.info("No llama-server found — using candle backend");
+            }
         }
     }
 
@@ -352,6 +381,17 @@ impl Default for CandleAdapter {
 
 /// Inner inference function extracted for autorelease pool wrapping.
 /// All Metal/ObjC objects created here are released when the pool is popped.
+fn check_llamacpp_health(config: &backends::llamacpp::LlamaCppConfig) -> bool {
+    let url = format!("http://{}:{}/health", config.host, config.port);
+    std::process::Command::new("curl")
+        .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "1", &url])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u16>().ok())
+        .map(|code| code == 200)
+        .unwrap_or(false)
+}
+
 fn inference_inner(
     backend_arc: Arc<RwLock<Option<BackendWrapper>>>,
     gpu_mgr: Option<Arc<GpuMemoryManager>>,
@@ -625,37 +665,50 @@ impl AIProviderAdapter for CandleAdapter {
             ));
         }
 
-        // Run inference on blocking thread pool (lazy model loading on first call)
-        //
-        // CRITICAL: Wrapped in macOS autorelease pool.
-        // Candle's Metal backend creates hundreds of ObjC/Metal objects per inference
-        // (command buffers, compute pipeline states, MTLBuffer allocations).
-        // Without an autorelease pool on the spawn_blocking thread, these objects
-        // accumulate in the thread-local default pool and are never released,
-        // causing GB-scale memory growth per inference call.
-        let result = tokio::task::spawn_blocking(move || {
-            #[cfg(target_os = "macos")]
-            extern "C" {
-                fn objc_autoreleasePoolPush() -> *mut std::ffi::c_void;
-                fn objc_autoreleasePoolPop(pool: *mut std::ffi::c_void);
+        // ── Try llama.cpp backend first (30-60x faster than candle) ──
+        // If llama-server is running, use it. Otherwise fall back to candle.
+        let llamacpp_result = if let Some(ref llama) = *self.llamacpp_backend.read() {
+            let stop_tokens: Vec<&str> = vec!["<|im_end|>", "<|endoftext|>"];
+            match llama.generate(&prompt, max_tokens, sampling.temperature, &stop_tokens) {
+                Ok((text, tokens)) => Some((text, tokens)),
+                Err(e) => {
+                    log.warn(&format!("llama.cpp failed, falling back to candle: {e}"));
+                    None
+                }
             }
+        } else {
+            None
+        };
 
-            #[cfg(target_os = "macos")]
-            let pool = unsafe { objc_autoreleasePoolPush() };
+        let (output_text, completion_tokens, new_model_guard) = if let Some((text, tokens)) = llamacpp_result {
+            (text, tokens, None)
+        } else {
+            // Fall back to candle
+            let result = tokio::task::spawn_blocking(move || {
+                #[cfg(target_os = "macos")]
+                extern "C" {
+                    fn objc_autoreleasePoolPush() -> *mut std::ffi::c_void;
+                    fn objc_autoreleasePoolPop(pool: *mut std::ffi::c_void);
+                }
 
-            let result = inference_inner(
-                backend_arc, gpu_mgr, use_quantized, &resolved_model, &prompt, max_tokens, &sampling,
-            );
+                #[cfg(target_os = "macos")]
+                let pool = unsafe { objc_autoreleasePoolPush() };
 
-            #[cfg(target_os = "macos")]
-            unsafe { objc_autoreleasePoolPop(pool); }
+                let result = inference_inner(
+                    backend_arc, gpu_mgr, use_quantized, &resolved_model, &prompt, max_tokens, &sampling,
+                );
 
-            result
-        })
-        .await
-        .map_err(|e| format!("Inference task panicked: {e}"))?;
+                #[cfg(target_os = "macos")]
+                unsafe { objc_autoreleasePoolPop(pool); }
 
-        let ((output_text, completion_tokens), new_model_guard) = result?;
+                result
+            })
+            .await
+            .map_err(|e| format!("Inference task panicked: {e}"))?;
+
+            let ((text, tokens), guard) = result?;
+            (text, tokens, guard)
+        };
 
         // Store model guard if this was a first load
         if let Some(guard) = new_model_guard {
