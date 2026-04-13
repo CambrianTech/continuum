@@ -151,6 +151,82 @@ fn cumsum_last_dim(x: &Tensor) -> Result<Tensor> {
     result.squeeze(ndim - 1) // [B, nh, CS]
 }
 
+// ─── Raw DeltaNet recurrence on CPU (bypasses candle tensor overhead) ───────
+//
+// For single-token generation: operates directly on f32 slices.
+// Pre-allocated state buffer, no Tensor creation in the hot path.
+// Uses raw loops (auto-vectorized by rustc to NEON SIMD in release mode).
+// This is the M1-M3 path where Metal tensor API is unavailable.
+
+/// Single-token DeltaNet recurrence on raw f32 slices.
+/// State is [num_heads, head_k_dim, head_v_dim] stored as flat f32.
+/// Returns output [num_heads, head_v_dim].
+fn deltanet_step_raw(
+    state: &mut [f32],       // [nh * hk * hv] — mutated in place
+    q: &[f32],               // [nh * hk]
+    k: &[f32],               // [nh * hk]
+    v: &[f32],               // [nh * hv]
+    g: &[f32],               // [nh] — log-decay (already exp'd)
+    beta: &[f32],            // [nh] — write gate (already sigmoided)
+    output: &mut [f32],      // [nh * hv] — written
+    nh: usize,
+    hk: usize,
+    hv: usize,
+    scale: f32,
+) {
+    let state_head_size = hk * hv;
+
+    for h in 0..nh {
+        let s = &mut state[h * state_head_size..(h + 1) * state_head_size];
+        let q_h = &q[h * hk..(h + 1) * hk];
+        let k_h = &k[h * hk..(h + 1) * hk];
+        let v_h = &v[h * hv..(h + 1) * hv];
+        let decay = g[h];
+        let beta_h = beta[h];
+        let o_h = &mut output[h * hv..(h + 1) * hv];
+
+        // 1. Decay: S *= decay (scalar multiply on entire head state)
+        for val in s.iter_mut() {
+            *val *= decay;
+        }
+
+        // 2. Retrieve: sk[j] = sum_i(S[i,j] * k[i]) for each j in 0..hv
+        // S is row-major [hk, hv], so S[i,j] = s[i * hv + j]
+        let mut sk = vec![0f32; hv]; // TODO: pre-allocate
+        for i in 0..hk {
+            let k_i = k_h[i];
+            let row = &s[i * hv..(i + 1) * hv];
+            for j in 0..hv {
+                sk[j] += row[j] * k_i;
+            }
+        }
+
+        // 3. Delta: d[j] = beta * (v[j] - sk[j])
+        let mut delta = vec![0f32; hv]; // TODO: pre-allocate
+        for j in 0..hv {
+            delta[j] = beta_h * (v_h[j] - sk[j]);
+        }
+
+        // 4. Write: S[i,j] += k[i] * delta[j] (rank-1 outer product update)
+        for i in 0..hk {
+            let k_i = k_h[i];
+            let row = &mut s[i * hv..(i + 1) * hv];
+            for j in 0..hv {
+                row[j] += k_i * delta[j];
+            }
+        }
+
+        // 5. Read: o[j] = sum_i(S[i,j] * q[i] * scale) for each j in 0..hv
+        for j in 0..hv {
+            let mut sum = 0f32;
+            for i in 0..hk {
+                sum += s[i * hv + j] * q_h[i];
+            }
+            o_h[j] = sum * scale;
+        }
+    }
+}
+
 fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: &Tensor) -> Result<Tensor> {
     let shape = mask.shape();
     let m = mask.where_cond(&on_true.broadcast_as(shape.dims())?, on_false)?;
@@ -482,35 +558,43 @@ impl DeltaNetLayer {
         };
 
         let attn_out = if seq_len == 1 {
-            // Single-token generation — llama.cpp approach: elementwise ops, no matmul.
-            // State is [B, nh, hk, hv]. k/q/v are [B, nh, dim].
-            // This avoids tiny matmuls that Metal can't optimize.
-            let q_t = (q.squeeze(2)? * scale)?;       // [B, nh, hk]
-            let k_t = k.squeeze(2)?;                   // [B, nh, hk]
-            let v_t = v.squeeze(2)?;                   // [B, nh, hv]
-            let g_t = g.i((.., 0, ..))?.exp()?;        // [B, nh]
-            let beta_t = beta.i((.., 0, ..))?;         // [B, nh]
+            // Single-token generation — raw Rust path, bypasses candle tensor overhead.
+            // Extracts f32 slices, runs deltanet_step_raw, writes result back.
+            let q_t = q.squeeze(2)?;                    // [B, nh, hk]
+            let k_t = k.squeeze(2)?;                    // [B, nh, hk]
+            let v_t = v.squeeze(2)?;                    // [B, nh, hv]
+            let g_t = g.i((.., 0, ..))?.exp()?;         // [B, nh]
+            let beta_t = beta.i((.., 0, ..))?;          // [B, nh] — already sigmoided at Step 5
 
-            // 1. Decay: S *= exp(g)
-            // g: [B, nh] → [B, nh, 1, 1] for broadcast with state [B, nh, hk, hv]
-            state = state.broadcast_mul(&g_t.unsqueeze(2)?.unsqueeze(3)?)?;
+            // Extract raw slices (CPU path — data is contiguous f32)
+            let q_data = q_t.flatten_all()?.to_vec1::<f32>()?;
+            let k_data = k_t.flatten_all()?.to_vec1::<f32>()?;
+            let v_data = v_t.flatten_all()?.to_vec1::<f32>()?;
+            let g_data = g_t.flatten_all()?.to_vec1::<f32>()?;
+            let beta_data = beta_t.flatten_all()?.to_vec1::<f32>()?;
+            let mut state_data = state.flatten_all()?.to_vec1::<f32>()?;
+            let mut output_data = vec![0f32; self.num_v_heads * self.head_v_dim];
 
-            // 2. Retrieve: sk = sum_rows(S * k)
-            // k: [B, nh, hk] → [B, nh, hk, 1] for elementwise mul with S [B, nh, hk, hv]
-            let sk = state.broadcast_mul(&k_t.unsqueeze(3)?)? // [B, nh, hk, hv]
-                .sum(2)?;                                       // [B, nh, hv] (sum over hk dim)
+            deltanet_step_raw(
+                &mut state_data,
+                &q_data, &k_data, &v_data,
+                &g_data, &beta_data,
+                &mut output_data,
+                self.num_v_heads, self.head_k_dim, self.head_v_dim,
+                scale as f32,
+            );
 
-            // 3. Delta: d = beta * (v - sk)
-            let d = beta_t.unsqueeze(2)?.broadcast_mul(&(&v_t - &sk)?)?; // [B, nh, hv]
-
-            // 4. Write: S += k outer d (elementwise: S[i,j] += k[i] * d[j])
-            // k: [B, nh, hk, 1], d: [B, nh, 1, hv] → broadcast mul = [B, nh, hk, hv]
-            state = (state + k_t.unsqueeze(3)?.broadcast_mul(&d.unsqueeze(2)?)?)?;
-
-            // 5. Read: o = sum_rows(S * q)
-            let o = state.broadcast_mul(&q_t.unsqueeze(3)?)? // [B, nh, hk, hv]
-                .sum(2)?;                                      // [B, nh, hv]
-
+            // Write back to tensors
+            state = Tensor::from_vec(
+                state_data,
+                (b_sz, self.num_v_heads, self.head_k_dim, self.head_v_dim),
+                x.device(),
+            )?;
+            let o = Tensor::from_vec(
+                output_data,
+                (b_sz, self.num_v_heads, self.head_v_dim),
+                x.device(),
+            )?;
             o.unsqueeze(2)? // [B, nh, 1, hv]
         } else {
             // Chunked prefill
