@@ -243,11 +243,11 @@ class ContinuumTray: NSObject, NSApplicationDelegate {
     @objc private func actionClicked(_ sender: NSMenuItem) {
         guard let command = sender.representedObject as? String else { return }
 
-        // Run everything via /bin/bash — no AppleScript, no Terminal popups
+        // Run via login shell so PATH includes ~/.local/bin where continuum lives
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = ["-c", command]
+            process.arguments = ["-l", "-c", command]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             try? process.run()
@@ -267,7 +267,7 @@ class ContinuumTray: NSObject, NSApplicationDelegate {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", "\"\(cliBin)\" \(command) 2>/dev/null"]
+        process.arguments = ["-l", "-c", "\"\(cliBin)\" \(command) 2>/dev/null"]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         do {

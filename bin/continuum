@@ -531,11 +531,26 @@ cmd_tray_data() {
       local is_grid="false"
       if echo "$name" | grep -q "\-grid"; then
         is_grid="true"
-        if [ "$online" = "true" ] && [ -n "$suffix" ]; then
+      fi
+      # Detect if this is our local node (match by Tailscale IP)
+      local is_self="false"
+      local my_ts_ip; my_ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+      if [ -n "$my_ts_ip" ] && [ "$ip" = "$my_ts_ip" ]; then
+        is_self="true"
+      fi
+
+      # Set URL based on node type
+      if [ "$online" = "true" ]; then
+        if [ "$is_self" = "true" ]; then
+          url="\"http://localhost:9003\""
+          if curl -sf http://localhost:9003 &>/dev/null; then ui_ok="true"; fi
+        elif [ "$is_grid" = "true" ] && [ -n "$suffix" ]; then
           url="\"https://${name}.${suffix}\""
           local code
           code=$(curl -sk -o /dev/null -w '%{http_code}' --connect-timeout 2 "https://${name}.${suffix}" 2>/dev/null || echo "000")
           if [ "$code" = "200" ]; then ui_ok="true"; fi
+        else
+          url="\"http://${ip}:9003\""
         fi
       fi
       [ "$first" = "true" ] && first=false || node_arr="$node_arr,"
