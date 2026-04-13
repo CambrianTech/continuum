@@ -1,0 +1,3 @@
+[submodule "src/workers/vendor/llama.cpp"]
+	path = src/workers/vendor/llama.cpp
+	url = https://github.com/ggerganov/llama.cpp

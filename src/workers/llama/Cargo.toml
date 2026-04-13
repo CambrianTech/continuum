@@ -1,0 +1,19 @@
+[package]
+name = "llama"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# Nothing yet — FFI + safe wrapper is self-contained
+
+[build-dependencies]
+cmake = "0.1"
+bindgen = "0.70"
+
+[features]
+default = []
+metal = []
+cuda = []
