@@ -44,10 +44,38 @@ touch "$HOME/.continuum/config.env"
 
 # ── Check if Docker is running ────────────────────
 if ! docker info &>/dev/null; then
-  echo "❌ Docker is installed but not running. Start Docker Desktop and try again."
-  exit 1
+  # WSL2: Docker Desktop runs on Windows side — WSL docker CLI needs socket forwarding
+  if [[ "$PLATFORM" == "wsl" ]] && command -v docker.exe &>/dev/null && docker.exe info &>/dev/null 2>&1; then
+    echo "⚠️  Docker Desktop running on Windows but WSL integration not enabled."
+    echo "   Fixing: creating docker socket symlink..."
+    # Create a wrapper that routes to docker.exe
+    if [[ ! -f /usr/local/bin/docker-wsl-proxy ]]; then
+      mkdir -p "$HOME/.local/bin"
+      # Find docker.exe on Windows side
+      DOCKER_EXE=$(command -v docker.exe 2>/dev/null || echo "/mnt/c/Program Files/Docker/Docker/resources/bin/docker.exe")
+      cat > "$HOME/.local/bin/docker" << DOCKERWRAP
+#!/bin/bash
+exec "$DOCKER_EXE" "\$@"
+DOCKERWRAP
+      chmod +x "$HOME/.local/bin/docker"
+      export PATH="$HOME/.local/bin:$PATH"
+      echo "✅ Docker routed to Docker Desktop (via docker.exe wrapper)"
+    fi
+    # Also create docker-compose wrapper
+    if ! command -v docker-compose &>/dev/null; then
+      cat > "$HOME/.local/bin/docker-compose" << COMPOSEWRAP
+#!/bin/bash
+exec "$DOCKER_EXE" compose "\$@"
+COMPOSEWRAP
+      chmod +x "$HOME/.local/bin/docker-compose"
+    fi
+  else
+    echo "❌ Docker is installed but not running. Start Docker Desktop and try again."
+    exit 1
+  fi
+else
+  echo "✅ Docker is running"
 fi
-echo "✅ Docker is running"
 
 # ── Auto-configure Docker VM resources ────────────
 # Docker Desktop and Rancher Desktop run a VM with fixed RAM/CPU.
