@@ -719,4 +719,76 @@ mod tests {
             output
         );
     }
+
+    /// VDD test: Qwen3.5 hybrid DeltaNet+Attention GGUF inference
+    /// Tests that the model loads, generates tokens, and produces coherent output.
+    ///
+    /// Run with: cargo test -p continuum-core --release -- --ignored test_qwen35_gguf_inference --nocapture
+    #[test]
+    #[ignore]
+    fn test_qwen35_gguf_inference() {
+        use super::backends;
+        use std::path::Path;
+
+        // Try to find the GGUF file
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let possible_paths = vec![
+            format!("{home}/.cache/huggingface/hub/models--continuum-ai--qwen3.5-4b-code-forged-GGUF/snapshots/6cfe43981913730b1abc4ad520510a24b3f05922/qwen3.5-4b-code-forged-Q4_K_M.gguf"),
+            "/tmp/gguf-test/models--continuum-ai--qwen3.5-4b-code-forged-GGUF/snapshots/6cfe43981913730b1abc4ad520510a24b3f05922/qwen3.5-4b-code-forged-Q4_K_M.gguf".to_string(),
+        ];
+
+        let model_path = possible_paths.iter().find(|p| Path::new(p).exists());
+        let model_path = match model_path {
+            Some(p) => Path::new(p),
+            None => {
+                eprintln!("Skipping: Qwen3.5 GGUF not found. Download with: huggingface-cli download continuum-ai/qwen3.5-4b-code-forged-GGUF qwen3.5-4b-code-forged-Q4_K_M.gguf");
+                return;
+            }
+        };
+
+        eprintln!("Loading Qwen3.5 GGUF from {:?}...", model_path);
+
+        // Load tokenizer from HF
+        let api = hf_hub::api::sync::Api::new().expect("HF API init");
+        let repo = api.repo(hf_hub::Repo::new("Qwen/Qwen3.5-4B".to_string(), hf_hub::RepoType::Model));
+        let tokenizer_path = repo.get("tokenizer.json").expect("Failed to download tokenizer");
+        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).expect("Failed to load tokenizer");
+
+        let device = candle_core::Device::Cpu; // CPU for test reliability
+        let start = Instant::now();
+
+        let mut backend = backends::load_gguf_backend(
+            model_path, tokenizer, "qwen3.5-4b-code-forged", &device,
+        ).expect("Failed to load Qwen3.5 GGUF");
+
+        let load_time = start.elapsed();
+        eprintln!("Model loaded in {:.1?}", load_time);
+        eprintln!("  arch={}, ctx={}, format={:?}",
+            backend.architecture(), backend.context_length(), backend.format());
+
+        assert_eq!(backend.architecture(), "qwen35");
+
+        // Generate a short completion
+        let prompt = "<|im_start|>user\nWhat is 2+2?<|im_end|>\n<|im_start|>assistant\n";
+
+        let sampling = backends::SamplingConfig::chat();
+        eprintln!("Generating (max 32 tokens)...");
+        let gen_start = Instant::now();
+        let (output, token_count) = backends::generate(backend.as_mut(), prompt, 32, &sampling)
+            .expect("Generation failed");
+        let gen_time = gen_start.elapsed();
+
+        eprintln!("\n--- Output ({} tokens in {:.1?}) ---", token_count, gen_time);
+        eprintln!("{}", output);
+        eprintln!("--- End ---\n");
+
+        assert!(token_count > 0, "Should generate at least one token");
+        assert!(!output.is_empty(), "Output should not be empty");
+        // Basic coherence: should mention "4" somewhere
+        assert!(
+            output.contains("4") || output.contains("four"),
+            "Output should answer 2+2=4: {}",
+            output
+        );
+    }
 }

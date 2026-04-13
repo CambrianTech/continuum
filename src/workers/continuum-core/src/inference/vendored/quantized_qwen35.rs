@@ -171,6 +171,8 @@ struct AttentionLayer {
     attention_wk: QMatMul,
     attention_wv: QMatMul,
     attention_wo: QMatMul,
+    attn_q_norm: RmsNorm,
+    attn_k_norm: RmsNorm,
     attention_norm: RmsNorm,
     post_attention_norm: RmsNorm,
     mlp: Mlp,
@@ -203,6 +205,20 @@ impl AttentionLayer {
             .reshape((b_sz, seq_len, self.n_kv_head, self.head_dim))?
             .transpose(1, 2)?
             .contiguous()?;
+
+        // QK norm (per-head)
+        let q = {
+            let (b, nh, s, hd) = q.dims4()?;
+            let q_flat = q.reshape((b * nh, s, hd))?;
+            let q_normed = self.attn_q_norm.forward(&q_flat)?;
+            q_normed.reshape((b, nh, s, hd))?
+        };
+        let k = {
+            let (b, nh, s, hd) = k.dims4()?;
+            let k_flat = k.reshape((b * nh, s, hd))?;
+            let k_normed = self.attn_k_norm.forward(&k_flat)?;
+            k_normed.reshape((b, nh, s, hd))?
+        };
 
         // Partial RoPE: only first rope_dim dims
         let q = apply_partial_rotary_emb(&q, &self.cos, &self.sin, index_pos, self.rope_dim)?;
@@ -263,10 +279,7 @@ impl AttentionLayer {
 #[derive(Debug, Clone)]
 struct DeltaNetLayer {
     attn_qkv: QMatMul,         // fused Q/K/V projection
-    attn_q_norm: RmsNorm,
-    attn_k_norm: RmsNorm,
     attn_gate: QMatMul,        // sigmoid gate
-    attn_output: QMatMul,      // output projection
     attention_norm: RmsNorm,
     post_attention_norm: RmsNorm,
     mlp: Mlp,
@@ -275,20 +288,21 @@ struct DeltaNetLayer {
     ssm_alpha: QMatMul,        // input gate
     ssm_beta: QMatMul,         // output gate
     ssm_conv1d_weight: Tensor, // short causal conv [kernel_width, qkv_dim]
-    ssm_dt: QMatMul,           // timestep projection
-    ssm_dt_bias: Tensor,       // timestep bias [n_head]
+    ssm_dt_bias: Tensor,       // timestep bias [n_head] (no weight — dt is bias-only)
     ssm_norm: RmsNorm,         // SSM output norm
     ssm_out: QMatMul,          // SSM output projection
     // Config
     n_head: usize,
     n_kv_head: usize,
+    n_ssm_head: usize,             // SSM head count (may differ from attention head count)
     head_dim: usize,
+    ssm_head_dim: usize,           // SSM head dim = qkv_dim / n_ssm_head
     rope_dim: usize,
     cos: Tensor,
     sin: Tensor,
     // Recurrence state persists across tokens
-    recurrence_state: Option<Tensor>, // [batch, n_head, head_dim, head_dim]
-    conv_state: Option<Tensor>,       // [batch, kernel_width-1, qkv_dim]
+    recurrence_state: Option<Tensor>, // [batch, n_ssm_head, ssm_head_dim, ssm_head_dim]
+    conv_state: Option<Tensor>,
 }
 
 impl DeltaNetLayer {
@@ -310,22 +324,6 @@ impl DeltaNetLayer {
         let k = k.reshape((b_sz, seq_len, self.n_kv_head, self.head_dim))?.transpose(1, 2)?;
         let v = v.reshape((b_sz, seq_len, self.n_kv_head, self.head_dim))?.transpose(1, 2)?;
 
-        // QK norm (per-head)
-        // RmsNorm expects [batch, seq, dim] but we have [batch, heads, seq, head_dim]
-        // Reshape to apply norm, then reshape back
-        let q = {
-            let (b, nh, s, hd) = q.dims4()?;
-            let q_flat = q.reshape((b * nh, s, hd))?;
-            let q_normed = self.attn_q_norm.forward(&q_flat)?;
-            q_normed.reshape((b, nh, s, hd))?
-        };
-        let k = {
-            let (b, nh, s, hd) = k.dims4()?;
-            let k_flat = k.reshape((b * nh, s, hd))?;
-            let k_normed = self.attn_k_norm.forward(&k_flat)?;
-            k_normed.reshape((b, nh, s, hd))?
-        };
-
         // Partial RoPE: only first rope_dim dims
         let q = apply_partial_rotary_emb(&q, &self.cos, &self.sin, index_pos, self.rope_dim)?;
         let k = apply_partial_rotary_emb(&k, &self.cos, &self.sin, index_pos, self.rope_dim)?;
@@ -335,13 +333,12 @@ impl DeltaNetLayer {
         let v = candle_transformers::utils::repeat_kv(v, self.n_head / self.n_kv_head)?;
 
         // DeltaNet recurrence
-        // dt = softplus(ssm_dt(normed) + ssm_dt_bias)
-        let dt_proj = self.ssm_dt.forward(&normed)?; // [batch, seq, n_head]
-        let dt = dt_proj.broadcast_add(&self.ssm_dt_bias)?;
-        // Numerically stable softplus: max(x,0) + log1p(exp(-|x|))
-        // For large x: softplus(x) ≈ x. For small x: softplus(x) ≈ log(1+exp(x)).
-        let dt_abs = dt.abs()?;
-        let dt_pos = dt.maximum(&Tensor::zeros_like(&dt)?)?;
+        // dt = softplus(ssm_dt_bias), broadcast across batch and seq
+        // ssm_dt_bias is [n_head], expanded to [1, 1, n_head] for broadcasting
+        let dt_raw = self.ssm_dt_bias.unsqueeze(0)?.unsqueeze(0)?; // [1, 1, n_head]
+        // Numerically stable softplus: max(x,0) + log(1+exp(-|x|))
+        let dt_abs = dt_raw.abs()?;
+        let dt_pos = dt_raw.maximum(&Tensor::zeros_like(&dt_raw)?)?;
         let dt = (dt_pos + dt_abs.neg()?.exp()?.affine(1.0, 1.0)?.log()?)?;
 
         // Decay: a = -exp(ssm_a) per head (negative so exp(a*dt) ∈ (0,1])
@@ -429,10 +426,7 @@ impl DeltaNetLayer {
 
         // Gating: sigmoid(gate(normed)) * ssm_projected
         let gate = candle_nn::ops::sigmoid(&self.attn_gate.forward(&normed)?)?;
-        let gated = (gate * ssm_projected)?;
-
-        // Output projection
-        let attn_out = self.attn_output.forward(&gated)?;
+        let attn_out = (gate * ssm_projected)?;
 
         // Residual + post_attention_norm + FFN + residual
         let h = (x + attn_out)?;
@@ -539,8 +533,8 @@ impl ModelWeights {
         for layer_idx in 0..block_count {
             let prefix = format!("blk.{layer_idx}");
 
-            // Detect layer type by checking which tensors exist
-            let is_attention = ct.tensor(reader, &format!("{prefix}.attn_q.weight"), device).is_ok();
+            // Detect layer type by checking tensor index (no I/O, just hashmap lookup)
+            let is_attention = ct.tensor_infos.contains_key(&format!("{prefix}.attn_q.weight"));
 
             // Shared: FFN (both layer types)
             let ffn_gate = ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), device)?;
@@ -568,6 +562,8 @@ impl ModelWeights {
                 let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
                 let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
                 let attention_wo = ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
+                let attn_q_norm_t = ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), device)?;
+                let attn_k_norm_t = ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), device)?;
 
                 if layer_idx == 7 {
                     log.info(&format!("Layer {}: Attention (separate Q/K/V)", layer_idx));
@@ -578,6 +574,8 @@ impl ModelWeights {
                     attention_wk: QMatMul::from_qtensor(attention_wk)?,
                     attention_wv: QMatMul::from_qtensor(attention_wv)?,
                     attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                    attn_q_norm: RmsNorm::from_qtensor(attn_q_norm_t, rms_norm_eps)?,
+                    attn_k_norm: RmsNorm::from_qtensor(attn_k_norm_t, rms_norm_eps)?,
                     attention_norm,
                     post_attention_norm,
                     mlp,
@@ -594,9 +592,6 @@ impl ModelWeights {
                 // DeltaNet layer: fused QKV + SSM
                 let attn_qkv = ct.tensor(reader, &format!("{prefix}.attn_qkv.weight"), device)?;
                 let attn_gate = ct.tensor(reader, &format!("{prefix}.attn_gate.weight"), device)?;
-                let attn_output = ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
-                let attn_q_norm = ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), device)?;
-                let attn_k_norm = ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), device)?;
 
                 // SSM tensors
                 let ssm_a = ct.tensor(reader, &format!("{prefix}.ssm_a"), device)?
@@ -605,7 +600,6 @@ impl ModelWeights {
                 let ssm_beta = ct.tensor(reader, &format!("{prefix}.ssm_beta.weight"), device)?;
                 let ssm_conv1d = ct.tensor(reader, &format!("{prefix}.ssm_conv1d.weight"), device)?
                     .dequantize(device)?;
-                let ssm_dt = ct.tensor(reader, &format!("{prefix}.ssm_dt.weight"), device)?;
                 let ssm_dt_bias = ct.tensor(reader, &format!("{prefix}.ssm_dt.bias"), device)?
                     .dequantize(device)?;
                 let ssm_norm = ct.tensor(reader, &format!("{prefix}.ssm_norm.weight"), device)?;
@@ -619,10 +613,7 @@ impl ModelWeights {
 
                 layers.push(LayerKind::DeltaNet(DeltaNetLayer {
                     attn_qkv: QMatMul::from_qtensor(attn_qkv)?,
-                    attn_q_norm: RmsNorm::from_qtensor(attn_q_norm, rms_norm_eps)?,
-                    attn_k_norm: RmsNorm::from_qtensor(attn_k_norm, rms_norm_eps)?,
                     attn_gate: QMatMul::from_qtensor(attn_gate)?,
-                    attn_output: QMatMul::from_qtensor(attn_output)?,
                     attention_norm,
                     post_attention_norm,
                     mlp,
@@ -630,7 +621,6 @@ impl ModelWeights {
                     ssm_alpha: QMatMul::from_qtensor(ssm_alpha)?,
                     ssm_beta: QMatMul::from_qtensor(ssm_beta)?,
                     ssm_conv1d_weight: ssm_conv1d,
-                    ssm_dt: QMatMul::from_qtensor(ssm_dt)?,
                     ssm_dt_bias,
                     ssm_norm: RmsNorm::from_qtensor(ssm_norm, rms_norm_eps)?,
                     ssm_out: QMatMul::from_qtensor(ssm_out)?,
