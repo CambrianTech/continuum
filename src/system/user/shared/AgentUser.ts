@@ -85,12 +85,19 @@ export class AgentUser extends AIUser {
     const userState = this.getDefaultState(storedEntity.id);
     userState.preferences = getDefaultPreferencesForType('agent');
 
-    const storedState = await ORM.store<UserStateEntity>(
-      COLLECTIONS.USER_STATES,
-      userState,
-      false,
-      'default'
-    );
+    let storedState: UserStateEntity;
+    try {
+      storedState = await ORM.store<UserStateEntity>(
+        COLLECTIONS.USER_STATES, userState, false, 'default'
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('already exists')) {
+        storedState = await ORM.update<UserStateEntity>(
+          COLLECTIONS.USER_STATES, userState.id, userState, true, 'default'
+        );
+      } else { throw err; }
+    }
 
     // STEP 3: Create AgentUser instance with SQLite storage (persistent)
     // Use SQLite on server, Memory in browser (though agents are typically server-only)
