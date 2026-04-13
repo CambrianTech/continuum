@@ -822,7 +822,7 @@ impl ModelWeights {
                 LayerKind::Attention(attn) => {
                     // Attention runs on GPU — move input if on CPU
                     let input = if layer_in.device().is_cpu() {
-                        layer_in.to_device(&self.gpu_device)?
+                        layer_in.to_device(&self.gpu_device)?.contiguous()?
                     } else {
                         layer_in
                     };
