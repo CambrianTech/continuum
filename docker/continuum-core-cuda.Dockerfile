@@ -29,15 +29,20 @@ ENV PATH=/root/.cargo/bin:$PATH
 # The error is: `ComputeCapDetectionFailed("Failed to run nvidia-smi: No
 # such file or directory ... set CUDA_COMPUTE_CAP environment variable")`.
 #
-# Semicolon-separated list gives us a fat binary that runs across the
-# deploy targets we care about:
+# candle-kernels accepts ONE value — not a semicolon list (tried, errored
+# with `Invalid compute capability: 80;86;89;90`). We pick 90 to match
+# BigMama's RTX 5090 (Blackwell). Users on older generations should
+# override this at build time with `--build-arg CUDA_COMPUTE_CAP=86`
+# (or whatever their arch is). Broader compat via multi-arch fat builds
+# is a separate follow-up if/when we ship a generic image.
+#
+# Compute cap reference:
 #   80 = Ampere (A100)
 #   86 = Ampere (RTX 30xx, A40)
 #   89 = Ada Lovelace (RTX 40xx, L40)
-#   90 = Hopper / Blackwell (H100, RTX 50xx — BigMama is here)
-# If you target a narrower range, shrink this list to cut kernel build
-# time and image size.
-ENV CUDA_COMPUTE_CAP=80;86;89;90
+#   90 = Hopper / Blackwell (H100, RTX 50xx)
+ARG CUDA_COMPUTE_CAP=90
+ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
 
 WORKDIR /app
 
