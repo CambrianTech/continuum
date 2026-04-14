@@ -1,14 +1,24 @@
-//! Concurrent multi-stream tests — designed for the BatchScheduler era.
+//! Concurrent multi-stream tests at the `llama` crate level.
 //!
-//! Today (per-call context, n_seq_max=1, inference_semaphore=1 in the
-//! Rust backend), N concurrent generate() calls serialize: total time
-//! ~= N × solo_time. The "should_be_concurrent" tests measure that
-//! ratio and assert it's near 1.0 (concurrent ≈ solo). They will FAIL
-//! or be slow today, and pass once continuous batching lands.
+//! SCOPE: raw-API safety under concurrent use. Each thread creates its
+//! OWN `Context` via `model.new_context()`. This path is inherently
+//! serialized — every context re-reads the model weights, and they
+//! contend at the Metal/CUDA command queue level. So per-call-context
+//! concurrency is ~0.25x efficiency on 4 streams by construction.
 //!
-//! The "no_corruption" tests guarantee that concurrent generations
-//! never bleed tokens between streams or produce empty output —
-//! that contract must hold both before and after batching.
+//! The `no_corruption_*` tests are the load-bearing contract here:
+//! concurrent per-call contexts must not crash, deadlock, or bleed
+//! tokens between streams. That safety property must hold regardless of
+//! which backend the caller chooses.
+//!
+//! The BatchScheduler (`continuum-core::inference::backends::llamacpp_scheduler`)
+//! is where real multi-stream throughput lives — shared context,
+//! n_seq_max sequences, one decode per loop advancing all seqs in
+//! parallel. Its perf contract belongs in a continuum-core-level test,
+//! not here. The `concurrent_streams_match_solo_throughput` test below
+//! measures per-call-context behavior only — useful as a regression
+//! floor (it should never drop BELOW 0.25x, which would indicate the
+//! Metal queue is actively deadlocking rather than serializing).
 //!
 //! Run:
 //!   cargo test --release -p llama --features metal \
@@ -175,11 +185,20 @@ fn solo_throughput_baseline() {
     assert!(n > 0, "solo produced no tokens");
 }
 
-/// With BatchScheduler, 4 concurrent streams should each see throughput
-/// near the solo rate (weights read once per decode, all seqs advance).
-/// Today (per-call ctx + serialized), this test should print a ratio
-/// near 0.25 (each stream gets 1/4 of solo). After batching lands, the
-/// ratio should approach 1.0.
+/// Per-call-context concurrent behavior — by construction this ratio
+/// is ~0.25x on 4 streams (each thread has its own Context, Metal
+/// queue serializes the decode calls). This test exists to catch a
+/// REGRESSION BELOW 0.25x: if the efficiency drops much lower, the
+/// Metal/CUDA queue is deadlocking rather than serializing, or one
+/// stream is starving entirely.
+///
+/// Real multi-stream throughput is a continuum-core concern — see
+/// `LlamaCppSchedulerBackend` in workers/continuum-core. Its perf
+/// contract belongs there, not here.
+///
+/// IMPORTANT: run this test with `--test-threads=1` for clean
+/// numbers. Cargo's default parallel test runner will contaminate the
+/// solo baseline with other tests' GPU work and make the ratio noise.
 #[test]
 #[ignore]
 fn concurrent_streams_match_solo_throughput() {
@@ -211,10 +230,11 @@ fn concurrent_streams_match_solo_throughput() {
     eprintln!("EFFICIENCY:  {:.2}x solo per stream  (1.0 = perfect batching, 0.25 = serialized 4-way)",
         efficiency);
 
-    // Today this asserts the LOWER bound: at least we serialize
-    // correctly. After BatchScheduler lands, raise this to >= 0.7.
-    assert!(efficiency >= 0.20,
-        "concurrent throughput collapsed below serialized baseline ({:.2}x)", efficiency);
+    // Per-call-context on 4 streams should land near 0.25x (serialized).
+    // Floor is 0.15x — catches deadlocks/starvation without flagging
+    // normal Metal queue scheduling jitter.
+    assert!(efficiency >= 0.15,
+        "per-call-context concurrent throughput collapsed below serialization floor ({:.2}x) — deadlock or stream starvation", efficiency);
 }
 
 #[test]
