@@ -14,11 +14,20 @@
 # nvidia/cuda devel image has nvcc, CUDA libs, and build tools
 FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
 
-# Rust
+# Rust + build-time system libs. Unlike the CPU variant which uses
+# rust:1.89-bookworm (Debian base with a lot of -dev libs pre-installed),
+# this CUDA builder image is nvidia/cuda:...ubuntu22.04 — a minimal
+# Ubuntu with just the CUDA toolchain. We need every -dev we rely on.
+#
+# Deps list mirrors the host dev set in src/scripts/install.sh's system
+# package list so any crate that builds natively in dev also builds in
+# CI. glib-sys and similar sys crates fail at `cargo chef cook` without
+# their corresponding -dev packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates gnupg \
     cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
     libclang-dev clang build-essential git \
+    libglib2.0-dev libasound2-dev libva-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.89
 ENV PATH=/root/.cargo/bin:$PATH
