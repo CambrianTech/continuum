@@ -98,10 +98,13 @@ impl CandleAdapter {
             gpu_manager: None,
             model_guard: RwLock::new(None),
             adapter_guards: RwLock::new(HashMap::new()),
-            // Serialize: 1 permit. Only one Candle inference at a time.
-            // Multiple concurrent inferences pile up KV caches + Metal state,
-            // causing 40GB+ peaks. Sequential keeps peak at ~10GB above baseline.
-            inference_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            // Parallel inference scaled by available RAM. Each concurrent
+            // inference costs roughly (model_size_gb) + (n_ctx_tokens * ~73KB
+            // for KV cache). For Qwen3.5-4B Q4_K_M at n_ctx=8192 that's
+            // ~2.7GB model + ~600MB KV per context. We cap at 4 to keep Metal
+            // scheduler happy. Machines with <16GB stay at 1; above that
+            // each additional 8GB buys one more parallel slot.
+            inference_semaphore: Arc::new(tokio::sync::Semaphore::new(concurrent_inference_permits())),
             llamacpp_load_gate: Arc::new(tokio::sync::Mutex::new(())),
             llamacpp_backend: Arc::new(RwLock::new(None)),
         }
@@ -940,6 +943,78 @@ pub fn resolve_model_id(requested: &str) -> String {
         "Model '{}' not in registry — treating as HuggingFace repo ID", requested
     ));
     requested.to_string()
+}
+
+/// Compute how many concurrent inferences this machine can handle.
+///
+/// Each concurrent inference costs roughly (model_size) + (n_ctx * ~73KB/tok
+/// for KV cache). For Qwen3.5-4B Q4_K_M at n_ctx=8192 that's ~2.7GB model
+/// (shared) + ~600MB KV per context. With ample headroom we can run 4
+/// conversations in parallel; on memory-tight machines we stay at 1.
+///
+/// TODO: this is the STATIC upper bound. The dynamic target (per Joel) is
+/// to ELASTICALLY expand permits when:
+///   - memory pressure is Normal AND queue has waiters AND free-mem allows
+/// and contract when:
+///   - memory pressure rises to High/Critical
+/// A background task will drive that by calling `add_permits` / absorbing
+/// permits via `forget` on this semaphore. For now we ship the RAM-based
+/// cap to remove the hardcoded 1-permit bottleneck that was serializing all
+/// local inference through a single slot.
+fn concurrent_inference_permits() -> usize {
+    let total_ram_gb: u64 = {
+        #[cfg(target_os = "macos")]
+        {
+            let mut size: u64 = 0;
+            let mut len = std::mem::size_of::<u64>();
+            let key = std::ffi::CString::new("hw.memsize").unwrap();
+            unsafe {
+                libc::sysctlbyname(
+                    key.as_ptr(),
+                    &mut size as *mut u64 as *mut _,
+                    &mut len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            size / (1024 * 1024 * 1024)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            std::fs::read_to_string("/proc/meminfo")
+                .ok()
+                .and_then(|s| s.lines().next().map(String::from))
+                .and_then(|line| line.split_whitespace().nth(1).map(String::from))
+                .and_then(|kb| kb.parse::<u64>().ok())
+                .map(|kb| kb / (1024 * 1024))
+                .unwrap_or(8)
+        }
+    };
+
+    // Conservative breakpoints. On a 32GB M1 Pro with 14 personas + RAG +
+    // Postgres already at ~80% RAM, 3 permits was observed to push back
+    // into the `llama_decode rc=1 — failed to find a memory slot` zone.
+    // Staying one notch below theoretical capacity until the dynamic
+    // pressure-reactive layer lands.
+    //
+    // 8-15GB  → 1 permit (serialize, too tight for parallel)
+    // 16-31GB → 2 permits
+    // 32-47GB → 2 permits (leaves headroom for RAG+Postgres+Bevy)
+    // 48GB+   → 3 permits (M5 Pro class — still leaves ~30GB for everything else)
+    let permits = if total_ram_gb >= 48 {
+        3
+    } else if total_ram_gb >= 16 {
+        2
+    } else {
+        1
+    };
+
+    runtime::logger("candle").info(&format!(
+        "Inference concurrency: {} permits (detected {}GB RAM, TODO: dynamic pressure-reactive)",
+        permits, total_ram_gb
+    ));
+
+    permits
 }
 
 /// Resolve the storage root for large files (models, adapters, datasets).

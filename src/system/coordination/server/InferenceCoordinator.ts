@@ -22,6 +22,8 @@
  * protect the infrastructure. Everything else is the AI's decision.
  */
 
+import * as os from 'os';
+
 export interface InferenceSlot {
   personaId: string;
   messageId: string;
@@ -43,18 +45,35 @@ const PROVIDER_GROUPS: Record<string, string> = {
 };
 
 /**
+ * Compute local-inference concurrency from system RAM.
+ * MUST match the Rust-side `concurrent_inference_permits` formula in
+ * candle_adapter.rs — if they drift, TS either denies too early (wastes
+ * available Rust permits) or lets too many through (stacks on Rust mutex
+ * through 60-180s decodes, starving everything).
+ *
+ * TODO: make this dynamic (pressure-reactive, demand-reactive) per Joel's
+ * direction. Static RAM-based for now to unblock parallel inference.
+ */
+function localInferenceCapacity(): number {
+  const totalRamGb = Math.floor(os.totalmem() / (1024 * 1024 * 1024));
+  // Conservative breakpoints (match candle_adapter.rs). M1 Pro 32GB with
+  // 14 personas + RAG + Postgres at ~80% RAM pushed into llama_decode
+  // rc=1 at 3 permits. Stay one notch below theoretical capacity until
+  // the dynamic pressure-reactive layer lands.
+  if (totalRamGb >= 48) return 3;
+  if (totalRamGb >= 16) return 2;
+  return 1;
+}
+
+/**
  * Per-provider hardware/API concurrency limits.
  * These represent REAL constraints — not policy throttles.
  */
 const PROVIDER_CAPACITY: Record<string, number> = {
-  // Local: 1. Concurrent llama.cpp decodes oversubscribe Metal on a single
-  // GPU (Rust side already has inference_semaphore=1 enforcing this), so
-  // letting >1 persona acquire just stacks them on the Rust semaphore for
-  // the full decode duration. Better to deny early at the TS-side and let
-  // the persona skip than to hold a slot for the full 60-180s wait.
-  'local-inference': 1,
-  // Original was 3, kept here as note: when we add a real worker pool with
-  // multiple model instances (or split MoE experts), bump this back up.
+  // Local: scales with RAM. Matches Rust inference_semaphore permit count
+  // so TS doesn't deny when Rust has capacity, and doesn't over-admit
+  // beyond Rust's hardware gate.
+  'local-inference': localInferenceCapacity(),
   'anthropic': 15,        // Generous API limits
   'openai': 15,
   'groq': 5,             // Aggressive rate limits but decent concurrency
