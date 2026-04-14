@@ -146,12 +146,27 @@ impl LlamaCppBackend {
         let prompt_tokens = self.model.tokenize(prompt, true, false)?;
         let prompt_len = prompt_tokens.len();
 
-        let mut batch = Batch::allocated(self.config.n_batch as i32, 1);
-        let last_idx = (prompt_tokens.len() - 1) as i32;
-        for (i, tok) in prompt_tokens.iter().enumerate() {
-            batch.push(*tok, i as i32, &[0], i as i32 == last_idx);
+        // Chunk the prefill into n_batch-sized decode calls. Prompts longer
+        // than the batch size (common with RAG — 5k+ token contexts) must be
+        // fed to llama.cpp in pieces, each within the allocated batch capacity.
+        // Without chunking, push overflows the llama-allocated arrays and
+        // crashes in memmove.
+        let n_batch = self.config.n_batch as usize;
+        let mut batch = Batch::allocated(n_batch as i32, 1);
+        let total = prompt_tokens.len();
+        let last_idx = total - 1;
+        let mut chunk_start = 0;
+        while chunk_start < total {
+            let chunk_end = (chunk_start + n_batch).min(total);
+            batch.clear();
+            for i in chunk_start..chunk_end {
+                // Request logits only for the final prompt token; all
+                // intermediate tokens are just context to build up the KV.
+                batch.push(prompt_tokens[i], i as i32, &[0], i == last_idx);
+            }
+            ctx.decode(&batch)?;
+            chunk_start = chunk_end;
         }
-        ctx.decode(&batch)?;
 
         // Sampling: greedy if temp<=0, else temperature sampling
         let mut sampler = if temperature <= 0.0 {
@@ -165,7 +180,11 @@ impl LlamaCppBackend {
 
         let mut output = String::new();
         let mut n_decoded = 0;
-        let mut n_cur = batch.n_tokens();
+        // n_cur is the absolute KV position for the next token. After
+        // prefill we have `total` tokens in context, so the next position
+        // is `total`. Using batch.n_tokens() would be wrong for chunked
+        // prefill — it only holds the size of the last chunk.
+        let mut n_cur = total as i32;
 
         for _ in 0..max_tokens {
             let token = sampler.sample(&ctx, -1);

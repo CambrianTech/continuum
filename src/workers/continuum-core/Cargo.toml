@@ -53,7 +53,13 @@ futures = "0.3"  # For VAD block_on in audio thread
 hound = "3.5"  # WAV file reading/writing
 once_cell.workspace = true
 rubato = "0.15"  # High-quality audio resampling
-whisper-rs = "0.13"  # Whisper.cpp bindings for STT
+# TEMPORARY: whisper-rs vendors its own ggml and appears to collide with
+# our llama crate's ggml_backend registry — server segfaults in
+# ggml_backend_dev_type during llama_model_load even with
+# CONTINUUM_SKIP_STT=1 (the skip avoids calling init but the symbols are
+# still linked). Gating this dep + the whisper.rs module behind the
+# 'whisper' feature proves the collision theory.
+# whisper-rs = "0.13"  # Whisper.cpp bindings for STT
 ort.workspace = true  # ONNX Runtime for TTS
 rayon.workspace = true
 ndarray.workspace = true

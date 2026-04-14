@@ -343,7 +343,9 @@ enum BatchStorage {
     /// C-allocated via `llama_batch_init`; must `llama_batch_free` on drop.
     /// The seq_id[i] slots are llama-owned (pre-allocated with n_seq_max
     /// slots each); we write INTO them on push, never replace the pointers.
-    Allocated { n_seq_max: i32 },
+    /// `capacity` is the llama-allocated array length — push must fail
+    /// (not corrupt memory) if callers try to exceed it.
+    Allocated { n_seq_max: i32, capacity: i32 },
 }
 
 unsafe impl Send for Batch {}
@@ -366,19 +368,30 @@ impl Batch {
     pub fn allocated(n_tokens: i32, n_seq_max: i32) -> Self {
         backend_init();
         let inner = unsafe { sys::llama_batch_init(n_tokens, 0, n_seq_max) };
-        let mut b = Self { inner, storage: BatchStorage::Allocated { n_seq_max } };
+        let mut b = Self {
+            inner,
+            storage: BatchStorage::Allocated { n_seq_max, capacity: n_tokens },
+        };
         // init leaves n_tokens uninitialized; clear forces it to 0.
         b.clear();
         b
     }
 
     /// Append a token to an `allocated` batch. Panics if called on a
-    /// `for_tokens` batch or if `seq_ids.len() > n_seq_max`.
+    /// `for_tokens` batch, if the batch is already at capacity, or if
+    /// `seq_ids.len() > n_seq_max`.
     pub fn push(&mut self, token: i32, pos: i32, seq_ids: &[i32], want_logits: bool) {
-        let n_seq_max = match self.storage {
-            BatchStorage::Allocated { n_seq_max } => n_seq_max,
+        let (n_seq_max, capacity) = match self.storage {
+            BatchStorage::Allocated { n_seq_max, capacity } => (n_seq_max, capacity),
             BatchStorage::OneSequence(_) => panic!("push() on single-sequence batch"),
         };
+        assert!(
+            self.inner.n_tokens < capacity,
+            "Batch::push overflow: n_tokens={} already at capacity={}. \
+             Chunk your prefill into capacity-sized decode calls \
+             (prompts longer than the batch size must be decoded in pieces).",
+            self.inner.n_tokens, capacity
+        );
         assert!(
             seq_ids.len() as i32 <= n_seq_max,
             "seq_ids.len()={} exceeds n_seq_max={}",
