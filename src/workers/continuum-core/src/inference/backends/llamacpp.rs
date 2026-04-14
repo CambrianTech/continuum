@@ -34,9 +34,12 @@ use crate::runtime;
 pub struct LlamaCppConfig {
     /// Path to the GGUF model file
     pub model_path: PathBuf,
-    /// Context length — total KV slot budget shared across all sequences
-    /// in the batch. The scheduler divides this among the active seqs at
-    /// runtime via llama.cpp's KV manager.
+    /// Per-sequence context budget (tokens). The actual `n_ctx` passed to
+    /// llama.cpp is `context_length * n_seq_max` because llama.cpp's KV
+    /// cache is a single shared pool across sequences — if N seqs each
+    /// hold P tokens, total KV needed is N*P. Sizing n_ctx equal to a
+    /// single-seq budget caused `llama_decode rc=1` (no memory slot)
+    /// when 3 RAG-heavy seqs ran in parallel under the new scheduler.
     pub context_length: u32,
     /// Batch size for prefill / per-decode token cap. Larger = faster
     /// prefill but more Metal compute buffer.
@@ -151,10 +154,18 @@ impl LlamaCppBackend {
     /// owns the shared Context and the OS-thread driver loop.
     fn scheduler(&self) -> &Scheduler {
         self.scheduler.get_or_init(|| {
+            // n_ctx is the SHARED KV pool across all sequences. Scale it
+            // by n_seq_max so each seq has `context_length` tokens of KV
+            // headroom even when all slots are occupied with RAG-heavy
+            // prompts. Without this scaling, 3 parallel seqs each pushing
+            // 3000+ token RAG prompts exhaust an 8192 KV pool and crash
+            // llama_decode with rc=1 (no memory slot).
+            let total_n_ctx = self.config.context_length
+                .saturating_mul(self.config.n_seq_max.max(1));
             Scheduler::spawn(
                 self.model.clone(),
                 SchedulerConfig {
-                    n_ctx: self.config.context_length,
+                    n_ctx: total_n_ctx,
                     n_batch: self.config.n_batch,
                     n_seq_max: self.config.n_seq_max,
                 },
