@@ -23,6 +23,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.89
 ENV PATH=/root/.cargo/bin:$PATH
 
+# candle-kernels' build script tries to detect the CUDA compute capability
+# via `nvidia-smi` at compile time. That's fine on bare metal but FAILS
+# inside `docker build` — GPUs aren't exposed until `docker run --gpus all`.
+# The error is: `ComputeCapDetectionFailed("Failed to run nvidia-smi: No
+# such file or directory ... set CUDA_COMPUTE_CAP environment variable")`.
+#
+# Semicolon-separated list gives us a fat binary that runs across the
+# deploy targets we care about:
+#   80 = Ampere (A100)
+#   86 = Ampere (RTX 30xx, A40)
+#   89 = Ada Lovelace (RTX 40xx, L40)
+#   90 = Hopper / Blackwell (H100, RTX 50xx — BigMama is here)
+# If you target a narrower range, shrink this list to cut kernel build
+# time and image size.
+ENV CUDA_COMPUTE_CAP=80;86;89;90
+
 WORKDIR /app
 
 # Cache dependencies
