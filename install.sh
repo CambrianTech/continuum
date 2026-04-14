@@ -163,19 +163,30 @@ else
   warn "Optional: https://tailscale.com/download"
 fi
 
-# ── 6. Pull images ─────────────────────────────────────────
-info "Pulling container images..."
-docker compose pull 2>/dev/null || warn "Some images not published yet — will build locally"
-
-# ── 7. Start ───────────────────────────────────────────────
-info "Starting Continuum..."
-
+# ── 6. Pick compose files + profile ───────────────────────
+# Base file is always loaded. On GPU hosts, layer docker-compose.gpu.yml
+# so continuum-core picks up the cuda image override (otherwise compose
+# silently uses the CPU image and inference falls back to CPU). The same
+# -f set MUST be passed to both `pull` and `up`, or pull grabs base
+# images while up tries to use override-named images that aren't local.
+COMPOSE_FILES="-f docker-compose.yml"
 COMPOSE_ARGS=""
 if [[ "$HAS_GPU" == "true" ]]; then
+  if [ -f "docker-compose.gpu.yml" ]; then
+    COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.gpu.yml"
+  else
+    warn "docker-compose.gpu.yml missing — GPU detected but cuda override won't apply. Continuing on CPU images."
+  fi
   COMPOSE_ARGS="--profile gpu"
 fi
 
-docker compose $COMPOSE_ARGS up -d
+# ── 7. Pull images ─────────────────────────────────────────
+info "Pulling container images..."
+docker compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
+
+# ── 8. Start ───────────────────────────────────────────────
+info "Starting Continuum..."
+docker compose $COMPOSE_FILES $COMPOSE_ARGS up -d
 
 # ── 8. Wait for health ─────────────────────────────────────
 info "Waiting for services..."
