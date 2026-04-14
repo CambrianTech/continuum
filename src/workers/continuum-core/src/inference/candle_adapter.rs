@@ -60,9 +60,19 @@ pub struct CandleAdapter {
     /// system memory pressure. Prevents 4 personas from all piling into
     /// spawn_blocking simultaneously (40GB peak → controlled sequential).
     inference_semaphore: Arc<tokio::sync::Semaphore>,
-    /// llama.cpp backend — used for fast inference when llama-server is available.
-    /// Falls back to candle if None or if llama.cpp fails.
-    llamacpp_backend: RwLock<Option<backends::llamacpp::LlamaCppBackend>>,
+    /// Serializes first-time load of `llamacpp_backend`. Separate from
+    /// `inference_semaphore` because loading is NOT inference — we don't
+    /// want the 6s model load to count against the inference concurrency
+    /// budget, and concurrent first-time loaders must be reduced to one
+    /// (two Metal-init calls on the same model has panicked in testing).
+    llamacpp_load_gate: Arc<tokio::sync::Mutex<()>>,
+    /// llama.cpp backend — in-process via the vendored substrate. Loaded
+    /// lazily on first inference; None until then.
+    ///
+    /// Wrapped in `Arc` so we can hand a clone to `spawn_blocking` without
+    /// holding a `RwLock` guard across the await point (parking_lot guards
+    /// are not `Send`).
+    llamacpp_backend: RwLock<Option<Arc<backends::llamacpp::LlamaCppBackend>>>,
 }
 
 impl CandleAdapter {
@@ -89,7 +99,7 @@ impl CandleAdapter {
             // Multiple concurrent inferences pile up KV caches + Metal state,
             // causing 40GB+ peaks. Sequential keeps peak at ~10GB above baseline.
             inference_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
-            // Try to connect to a running llama-server
+            llamacpp_load_gate: Arc::new(tokio::sync::Mutex::new(())),
             llamacpp_backend: RwLock::new(None),
         }
     }
@@ -110,7 +120,7 @@ impl CandleAdapter {
             "llama.cpp backend loaded in-process: {}",
             backend.model_id()
         ));
-        *self.llamacpp_backend.write() = Some(backend);
+        *self.llamacpp_backend.write() = Some(Arc::new(backend));
         Ok(())
     }
 
@@ -633,6 +643,45 @@ impl AIProviderAdapter for CandleAdapter {
             ));
         }
 
+        // ── Lazy-load the llama.cpp backend (BEFORE acquiring the inference
+        // semaphore). Loading is not inference; it is a one-time 6s / 2GB
+        // mmap + Metal-init operation that must not count against the
+        // inference concurrency budget, must not block the async runtime
+        // (it is sync C++), and must run at most once even under concurrent
+        // callers. ──
+        if self.llamacpp_backend.read().is_none() {
+            // Serialize first-time loaders. Dropped as soon as the load
+            // finishes so subsequent callers fall through immediately.
+            let _load_permit = self.llamacpp_load_gate.clone().lock_owned().await;
+            // Double-check: another caller may have loaded while we waited.
+            if self.llamacpp_backend.read().is_none() {
+                let gguf_path = find_local_gguf(&model_id)
+                    .ok_or_else(|| format!(
+                        "No GGUF for model '{}'. Ensure the model is downloaded to ~/.continuum/genome/models or HF cache.",
+                        model_id
+                    ))?;
+                let path_str = gguf_path.to_str()
+                    .ok_or("non-utf8 model path")?.to_string();
+                log.info(&format!("Loading llama.cpp backend: {}", path_str));
+                let load_start = std::time::Instant::now();
+                // Model::load is synchronous (mmap + Metal init + 2GB alloc);
+                // run on the blocking pool so the async runtime stays responsive.
+                let backend = tokio::task::spawn_blocking(move || {
+                    let config = backends::llamacpp::LlamaCppConfig {
+                        model_path: std::path::PathBuf::from(path_str),
+                        ..Default::default()
+                    };
+                    backends::llamacpp::LlamaCppBackend::load(config)
+                }).await
+                    .map_err(|e| format!("llama.cpp load task panicked: {e}"))??;
+                log.info(&format!(
+                    "llama.cpp backend ready ({:.2}s)",
+                    load_start.elapsed().as_secs_f64()
+                ));
+                *self.llamacpp_backend.write() = Some(Arc::new(backend));
+            }
+        }
+
         // Serialize local inference: only 1 at a time.
         // The RwLock on backend already serializes execution, but the semaphore
         // prevents multiple personas from even QUEUING on spawn_blocking threads
@@ -648,50 +697,23 @@ impl AIProviderAdapter for CandleAdapter {
             ));
         }
 
-        // ── llama.cpp backend (in-process, owns the model memory) ──
-        // Lazy load + generate BOTH happen in spawn_blocking — llama.cpp FFI
-        // calls are synchronous, CPU-heavy, and the model load takes ~6s with
-        // 2GB allocation. Never block the tokio runtime on this.
-        log.info(&format!("[LLAMA] generate_text entered, model_id={}", model_id));
-        // Resolve GGUF path (cheap, safe on async thread).
-        let gguf_path = if self.llamacpp_backend.read().is_none() {
-            let path = find_local_gguf(&model_id)
-                .ok_or_else(|| format!("No GGUF for model '{}'. Ensure model is downloaded to ~/.continuum/genome/models or HF cache.", model_id))?;
-            log.info(&format!("[LLAMA] will load GGUF: {}", path.display()));
-            Some(path)
-        } else {
-            None
-        };
-
-        let prompt_clone = prompt.clone();
+        // Generate on the blocking pool. spawn_blocking moves the sync C++
+        // work off the async runtime entirely — no main-thread blocking,
+        // no block_in_place pinning a worker, no guard held across await.
+        // We clone the Arc<LlamaCppBackend> out of the RwLock so the guard
+        // is dropped before we cross into the blocking task.
+        let llama_arc = self.llamacpp_backend.read()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "llama.cpp backend not loaded after load attempt".to_string())?;
+        let prompt_for_gen = prompt.clone();
         let temperature = sampling.temperature as f32;
-
-        // We pass a shared reference to self through an Arc-wrapped approach.
-        // Since self is &self and we can't Send it, hold the lock during the
-        // blocking call but RELEASE it via spawn_blocking for CPU isolation.
-        let (output_text, completion_tokens) = {
-            // Load the backend if needed — inside spawn_blocking
-            if let Some(path) = gguf_path {
-                let path_str = path.to_str().ok_or("non-utf8 path")?.to_string();
-                // self.load_llamacpp is sync — call it directly. It holds an internal
-                // lock for the brief time of the load. Moving to spawn_blocking would
-                // require &'static or Arc<CandleAdapter>, which we don't have here.
-                tokio::task::block_in_place(|| self.load_llamacpp(&path_str))?;
-                log.info("[LLAMA] load_llamacpp SUCCESS");
-            }
-
-            let stop_tokens: Vec<&str> = vec!["<|im_end|>", "<|endoftext|>"];
-            log.info(&format!("[LLAMA] calling generate with {} max_tokens, prompt {} chars", max_tokens, prompt_clone.len()));
-            let result = tokio::task::block_in_place(|| {
-                let guard = self.llamacpp_backend.read();
-                let llama = guard.as_ref()
-                    .ok_or_else(|| "llama.cpp backend not loaded after load attempt".to_string())?;
-                llama.generate(&prompt_clone, max_tokens, temperature, &stop_tokens, &[])
-                    .map_err(|e| format!("llama.cpp generate failed: {e}"))
-            })?;
-            log.info(&format!("[LLAMA] generated {} tokens", result.1));
-            result
-        };
+        let (output_text, completion_tokens) = tokio::task::spawn_blocking(move || {
+            let stop_tokens: [&str; 2] = ["<|im_end|>", "<|endoftext|>"];
+            llama_arc.generate(&prompt_for_gen, max_tokens, temperature, &stop_tokens, &[])
+        }).await
+            .map_err(|e| format!("llama.cpp generate task panicked: {e}"))?
+            .map_err(|e| format!("llama.cpp generate failed: {e}"))?;
         let new_model_guard: Option<GpuAllocationGuard> = None;
 
         // Store model guard if this was a first load
