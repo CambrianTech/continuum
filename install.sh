@@ -109,19 +109,12 @@ fi
 ok "Docker $(docker version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
 ok "Source: $INSTALL_DIR"
 
-# ── 3b. Install continuum command ─────────────────────────
-BIN_TARGET="/usr/local/bin/continuum"
-if [ -w "/usr/local/bin" ]; then
-  cp "$INSTALL_DIR/bin/continuum" "$BIN_TARGET"
-elif command -v sudo &>/dev/null; then
-  sudo cp "$INSTALL_DIR/bin/continuum" "$BIN_TARGET"
-else
-  BIN_TARGET="$HOME/.local/bin/continuum"
-  mkdir -p "$HOME/.local/bin"
-  cp "$INSTALL_DIR/bin/continuum" "$BIN_TARGET"
-fi
-chmod +x "$BIN_TARGET"
-ok "Command: $BIN_TARGET"
+# ── 3b. Install continuum command (modular, headless-safe) ─
+# Was an inline `sudo cp` that crashed on "no TTY for password" when the
+# install ran headless (curl|bash without -t, BigMama SSH dry-run, CI).
+# Now goes through mod_continuum_bin_link which routes to a user-space
+# fallback (~/.local/bin) when sudo would prompt without a TTY.
+mod_continuum_bin_link "$INSTALL_DIR/bin/continuum"
 
 # ── 4. Configuration ───────────────────────────────────────
 mkdir -p "$CONTINUUM_DATA"

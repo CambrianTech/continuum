@@ -197,3 +197,66 @@ PY
   done
   module_fail "docker-wsl-integration" "Docker Desktop didn't expose /var/run/docker.sock after 60s. Run 'wsl --shutdown' from Windows PowerShell, then re-run this installer."
 }
+
+# ── mod_continuum_bin_link ──────────────────────────────────
+# Place the `continuum` CLI on PATH. Tries (in order):
+#   1. /usr/local/bin/continuum if writable without sudo
+#   2. /usr/local/bin/continuum via ensure_sudo_warmed (one-prompt contract)
+#   3. ~/.local/bin/continuum (user-space fallback, no sudo)
+#
+# On a headless install (no TTY), step 2 cleanly degrades to step 3 instead
+# of crashing on `sudo: a terminal is required` — that was the fail mode
+# Carl hit on the first BigMama dry-run.
+#
+# Args:
+#   $1 — absolute path to the source `continuum` script (typically
+#        $INSTALL_DIR/bin/continuum).
+mod_continuum_bin_link() {
+  local src="$1"
+  if [ -z "$src" ] || [ ! -f "$src" ]; then
+    module_fail "continuum-bin" "source binary missing at: $src"
+  fi
+
+  # Idempotency: if /usr/local/bin/continuum already points at this src
+  # (or is byte-identical), skip. Same for the user-space fallback.
+  if [ -x "/usr/local/bin/continuum" ] && cmp -s "$src" "/usr/local/bin/continuum" 2>/dev/null; then
+    module_skip "continuum-bin" "/usr/local/bin/continuum already current"
+    return 0
+  fi
+  if [ -x "$HOME/.local/bin/continuum" ] && cmp -s "$src" "$HOME/.local/bin/continuum" 2>/dev/null; then
+    module_skip "continuum-bin" "~/.local/bin/continuum already current"
+    return 0
+  fi
+
+  # Tier 1: writable system path (root, devcontainer, etc.)
+  if [ -w "/usr/local/bin" ]; then
+    module_start "continuum-bin" "Linking continuum CLI → /usr/local/bin/continuum"
+    cp "$src" "/usr/local/bin/continuum" && chmod +x "/usr/local/bin/continuum" \
+      || module_fail "continuum-bin" "cp to /usr/local/bin failed (filesystem read-only?)"
+    module_done "continuum-bin"
+    return 0
+  fi
+
+  # Tier 2: try sudo if we have a TTY (ensure_sudo_warmed handles the
+  # no-TTY case by routing us to the user-space fallback below).
+  if command -v sudo &>/dev/null && [ -t 0 ]; then
+    module_start "continuum-bin" "Linking continuum CLI → /usr/local/bin/continuum (needs sudo)"
+    ensure_sudo_warmed
+    sudo cp "$src" "/usr/local/bin/continuum" && sudo chmod +x "/usr/local/bin/continuum" \
+      || module_fail "continuum-bin" "sudo cp to /usr/local/bin failed"
+    module_done "continuum-bin"
+    return 0
+  fi
+
+  # Tier 3: user-space fallback. No sudo, no surprises. Add ~/.local/bin
+  # to PATH if it isn't there (warn the user once).
+  module_start "continuum-bin" "Linking continuum CLI → ~/.local/bin/continuum (user-space fallback, no sudo)"
+  mkdir -p "$HOME/.local/bin"
+  cp "$src" "$HOME/.local/bin/continuum" && chmod +x "$HOME/.local/bin/continuum" \
+    || module_fail "continuum-bin" "cp to ~/.local/bin failed"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) warn "~/.local/bin is not in your PATH. Add: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  esac
+  module_done "continuum-bin"
+}
