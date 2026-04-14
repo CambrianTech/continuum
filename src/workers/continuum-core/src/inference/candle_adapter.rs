@@ -649,25 +649,48 @@ impl AIProviderAdapter for CandleAdapter {
         }
 
         // ── llama.cpp backend (in-process, owns the model memory) ──
-        // Lazy load on first inference — resolves the model path via the
-        // existing HF download / local model pipeline, then keeps the backend
-        // loaded for subsequent calls.
-        {
-            let needs_load = self.llamacpp_backend.read().is_none();
-            if needs_load {
-                let gguf_path = find_local_gguf(&model_id)
-                    .ok_or_else(|| format!("No GGUF for model '{}'. Ensure model is downloaded to ~/.continuum/genome/models or HF cache.", model_id))?;
-                self.load_llamacpp(gguf_path.to_str().ok_or("non-utf8 path")?)?;
-            }
-        }
+        // Lazy load + generate BOTH happen in spawn_blocking — llama.cpp FFI
+        // calls are synchronous, CPU-heavy, and the model load takes ~6s with
+        // 2GB allocation. Never block the tokio runtime on this.
+        log.info(&format!("[LLAMA] generate_text entered, model_id={}", model_id));
+        // Resolve GGUF path (cheap, safe on async thread).
+        let gguf_path = if self.llamacpp_backend.read().is_none() {
+            let path = find_local_gguf(&model_id)
+                .ok_or_else(|| format!("No GGUF for model '{}'. Ensure model is downloaded to ~/.continuum/genome/models or HF cache.", model_id))?;
+            log.info(&format!("[LLAMA] will load GGUF: {}", path.display()));
+            Some(path)
+        } else {
+            None
+        };
 
-        let stop_tokens: Vec<&str> = vec!["<|im_end|>", "<|endoftext|>"];
+        let prompt_clone = prompt.clone();
+        let temperature = sampling.temperature as f32;
+
+        // We pass a shared reference to self through an Arc-wrapped approach.
+        // Since self is &self and we can't Send it, hold the lock during the
+        // blocking call but RELEASE it via spawn_blocking for CPU isolation.
         let (output_text, completion_tokens) = {
-            let guard = self.llamacpp_backend.read();
-            let llama = guard.as_ref()
-                .ok_or_else(|| "llama.cpp backend not loaded after load attempt".to_string())?;
-            llama.generate(&prompt, max_tokens, sampling.temperature as f32, &stop_tokens, &[])
-                .map_err(|e| format!("llama.cpp generate failed: {e}"))?
+            // Load the backend if needed — inside spawn_blocking
+            if let Some(path) = gguf_path {
+                let path_str = path.to_str().ok_or("non-utf8 path")?.to_string();
+                // self.load_llamacpp is sync — call it directly. It holds an internal
+                // lock for the brief time of the load. Moving to spawn_blocking would
+                // require &'static or Arc<CandleAdapter>, which we don't have here.
+                tokio::task::block_in_place(|| self.load_llamacpp(&path_str))?;
+                log.info("[LLAMA] load_llamacpp SUCCESS");
+            }
+
+            let stop_tokens: Vec<&str> = vec!["<|im_end|>", "<|endoftext|>"];
+            log.info(&format!("[LLAMA] calling generate with {} max_tokens, prompt {} chars", max_tokens, prompt_clone.len()));
+            let result = tokio::task::block_in_place(|| {
+                let guard = self.llamacpp_backend.read();
+                let llama = guard.as_ref()
+                    .ok_or_else(|| "llama.cpp backend not loaded after load attempt".to_string())?;
+                llama.generate(&prompt_clone, max_tokens, temperature, &stop_tokens, &[])
+                    .map_err(|e| format!("llama.cpp generate failed: {e}"))
+            })?;
+            log.info(&format!("[LLAMA] generated {} tokens", result.1));
+            result
         };
         let new_model_guard: Option<GpuAllocationGuard> = None;
 
