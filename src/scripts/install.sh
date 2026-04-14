@@ -24,6 +24,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 source "$SCRIPT_DIR/shared/preflight.sh"
+# Shared primitives (logs, module_*, ensure_sudo_warmed) — see
+# docs/infrastructure/INSTALL-ARCHITECTURE.md for the module contract.
+source "$SCRIPT_DIR/lib/install-common.sh"
 
 cd "$PROJECT_DIR"
 
@@ -36,19 +39,17 @@ PLATFORM=$(preflight_detect_platform)
 echo -e "  Platform: ${GREEN}${PLATFORM}${NC}"
 
 # ============================================================================
-# Warm sudo cache once (Linux/WSL only)
+# Modular install steps (new pattern — see INSTALL-ARCHITECTURE.md)
 # ============================================================================
-# Prompt for password NOW so it's cached for all later steps (Postgres,
-# Tailscale, etc.). Without this, steps that need sudo on repeat runs
-# fail silently or re-prompt unexpectedly.
-if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
-  if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
-    if [ -t 0 ]; then
-      echo -e "  ${YELLOW}Some install steps need admin access.${NC}"
-      sudo -v
-    fi
-  fi
-fi
+# Module functions live in src/scripts/lib/install-common.sh (already sourced
+# above). Each mod_* is idempotent self-guarded; steps needing sudo call
+# ensure_sudo_warmed so the password is prompted at most ONCE per run.
+#
+# Running here: the modules that apply to both Carl's curl path and Dev's
+# local-build path. Platform/applicability guards inside each module make
+# them safe no-ops where they don't apply.
+mod_submodules_init
+mod_docker_wsl_integration
 
 # ============================================================================
 # GPU detection

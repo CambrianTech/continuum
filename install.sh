@@ -6,10 +6,16 @@
 # Optional: Tailscale for mesh networking + TLS (voice/video).
 set -e
 
+# Log primitives (info/ok/warn/fail/die) come from
+# src/scripts/lib/install-common.sh after clone. Until the repo is
+# cloned, use these minimal pre-clone versions; they'll be overridden
+# when we source the canonical library below.
 info()  { echo -e "\033[1;36m→\033[0m $*"; }
 ok()    { echo -e "\033[1;32m✓\033[0m $*"; }
 warn()  { echo -e "\033[1;33m!\033[0m $*"; }
 fail()  { echo -e "\033[1;31m✗\033[0m $*"; exit 1; }
+# Alias so the canonical lib's `die` also works here and vice versa.
+die()   { fail "$@"; }
 
 REPO="https://github.com/CambrianTech/continuum.git"
 INSTALL_DIR="${CONTINUUM_DIR:-$HOME/continuum}"
@@ -20,24 +26,6 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  Continuum Installer"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-
-# ── 0. Warm sudo cache up front ─────────────────────────────
-# Matches src/scripts/install.sh pattern: ask once, use for the rest of
-# the run (usermod on Linux, /usr/local/bin copy, Postgres/Tailscale
-# follow-ups from nested scripts). Without this, later steps either
-# re-prompt unexpectedly or fail silently on headless runs.
-OS_EARLY="$(uname -s)"
-if [ "$OS_EARLY" = "Linux" ] && [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
-  if [ -t 0 ]; then
-    echo -e "\033[1;33m!\033[0m Some install steps need admin access — prompting once up front so nothing re-prompts later."
-    sudo -v
-    # Keep sudo alive while this installer runs (refresh timestamp every
-    # 50s). Dies with the parent when install.sh exits.
-    ( while true; do sudo -n true 2>/dev/null; sleep 50; done ) &
-    SUDO_KEEPALIVE_PID=$!
-    trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true' EXIT
-  fi
-fi
 
 # ── 1. Detect environment ───────────────────────────────────
 info "Detecting environment..."
@@ -60,12 +48,22 @@ case "$OS" in
   *) fail "Unsupported OS: $OS" ;;
 esac
 
-# ── 2. Docker ───────────────────────────────────────────────
+# ── 2. Pre-clone bootstrap: git + minimal Docker presence check ────
+# We can't source the canonical module library yet (lives in the repo).
+# Just verify prerequisites so the clone can happen. Deeper checks live
+# in the canonical modules that run after the clone.
+
+if ! command -v git &>/dev/null; then
+  case "$OS" in
+    Linux) fail "git required. Run: sudo apt-get install -y git  (or equivalent), then re-run." ;;
+    Darwin) fail "git required. Run: brew install git  (or install Xcode CLI tools), then re-run." ;;
+  esac
+fi
+
 if ! command -v docker &>/dev/null; then
-  info "Docker not found"
   case "$OS" in
     Linux)
-      info "Installing Docker..."
+      info "Docker not found — installing via get.docker.com…"
       curl -fsSL https://get.docker.com | sh
       sudo usermod -aG docker "$USER"
       warn "Added $USER to docker group — log out and back in, then re-run this script"
@@ -76,75 +74,6 @@ if ! command -v docker &>/dev/null; then
       ;;
   esac
 fi
-
-# Detect WSL2 + Docker Desktop with broken integration before we trust
-# `docker info`. Symptom: Docker Desktop is running on the Windows side
-# (shared-sockets mounts exist), the current distro is in
-# IntegratedWslDistros, but /var/run/docker.sock isn't materialized in
-# this distro and the CLI fails "no such file". Standard Docker Desktop
-# integration setup wants a manual toggle — we auto-enable it instead.
-fix_wsl_docker_desktop_integration() {
-  # Only bother on WSL2 with Docker Desktop shared mount present.
-  grep -qi microsoft /proc/version 2>/dev/null || return 1
-  [ -d /mnt/wsl/docker-desktop ] || return 1
-
-  local distro="${WSL_DISTRO_NAME:-$(grep '^NAME=' /etc/os-release | cut -d\" -f2 | head -1)}"
-  [ -n "$distro" ] || return 1
-
-  # Find the Windows user's Docker Desktop settings file. Docker Desktop
-  # stores the list of integrated distros in a per-user JSON file at
-  # C:\Users\<user>\AppData\Roaming\Docker\settings-store.json. We just
-  # need any settings file whose IntegratedWslDistros we can update.
-  local settings
-  settings=$(ls /mnt/c/Users/*/AppData/Roaming/Docker/settings-store.json 2>/dev/null | head -1)
-  [ -n "$settings" ] && [ -w "$settings" ] || return 1
-
-  info "Docker Desktop detected; ensuring WSL integration for '$distro'…"
-  # Add distro to IntegratedWslDistros if not already present. Python3 is
-  # more reliable than jq in guaranteeing JSON round-trip preserves
-  # Docker's formatting.
-  python3 - "$settings" "$distro" <<'PY'
-import json, sys
-path, distro = sys.argv[1], sys.argv[2]
-with open(path) as f:
-    cfg = json.load(f)
-distros = cfg.setdefault("IntegratedWslDistros", [])
-if distro not in distros:
-    distros.append(distro)
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
-    print(f"enabled {distro}", flush=True)
-else:
-    print(f"already enabled {distro}", flush=True)
-PY
-
-  # Bounce Docker Desktop so the setting takes effect (hook-installs
-  # /var/run/docker.sock into our distro on restart). Non-fatal if the
-  # shutdown fails — we'll surface the socket check either way.
-  local pwsh="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-  if [ -x "$pwsh" ]; then
-    "$pwsh" -Command 'Stop-Process -Name "Docker Desktop" -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-Process -FilePath "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe"' >/dev/null 2>&1 || true
-  fi
-
-  # Poll for the socket (up to 60s). Clean output while we wait.
-  for i in $(seq 1 30); do
-    [ -S /var/run/docker.sock ] && { ok "WSL integration active"; return 0; }
-    sleep 2
-  done
-  return 1
-}
-
-if ! docker info &>/dev/null 2>&1; then
-  if fix_wsl_docker_desktop_integration; then
-    # Integration came up — reconfirm.
-    docker info &>/dev/null 2>&1 \
-      || fail "Docker WSL integration enabled but daemon still unreachable. Try: wsl --shutdown (from Windows PowerShell), then re-run."
-  else
-    fail "Docker installed but not running. Start Docker Desktop/Rancher Desktop and re-run."
-  fi
-fi
-
-ok "Docker $(docker version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
 
 # ── 3. Clone / update repo ─────────────────────────────────
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -157,12 +86,27 @@ else
   cd "$INSTALL_DIR"
 fi
 
-# Vendored substrates (llama.cpp, whisper.cpp) live as submodules. The
-# Dockerfiles fail fast if these aren't populated, so we just init them
-# here — zero onboarding tax. Safe on update runs too: git submodule
-# update is a no-op when submodules are already at the pinned commit.
-git submodule update --init --recursive 2>&1 | grep -vE '^(Submodule.*registered|Cloning into)' || true
+# ── 4. Shared modules (same code that Dev runs via npm start) ────
+# docs/infrastructure/INSTALL-ARCHITECTURE.md §Module-shape: the canonical
+# module library at src/scripts/lib/install-common.sh defines
+# mod_submodules_init + mod_docker_wsl_integration + log/sudo primitives.
+# Carl and Dev call the SAME functions so there's no drift.
+if [ ! -f "src/scripts/lib/install-common.sh" ]; then
+  fail "Canonical install library missing at src/scripts/lib/install-common.sh — incomplete clone? Try: rm -rf $INSTALL_DIR && re-run this installer."
+fi
 
+# shellcheck source=src/scripts/lib/install-common.sh
+source "src/scripts/lib/install-common.sh"
+
+mod_submodules_init
+mod_docker_wsl_integration
+
+# Now the real docker daemon check — after WSL integration module had
+# a chance to fix it on Windows/WSL2 hosts.
+if ! docker info &>/dev/null 2>&1; then
+  fail "Docker daemon not reachable. Start Docker Desktop / Rancher Desktop and re-run."
+fi
+ok "Docker $(docker version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
 ok "Source: $INSTALL_DIR"
 
 # ── 3b. Install continuum command ─────────────────────────
