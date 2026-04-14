@@ -12,9 +12,20 @@ use crate::sys;
 static BACKEND_INIT: Once = Once::new();
 
 /// Initialize the llama backend. Idempotent.
+///
+/// Also force-registers all compiled-in ggml backends (Metal, CUDA, BLAS,
+/// CPU). The +whole-archive link modifier should be enough on its own, but
+/// in practice rlib metadata or downstream bin link order can lose the
+/// static-initializer invocations — so we make a direct call to guarantee
+/// backends are populated before the first model load. Without this, the
+/// llama_model_load path can segfault in ggml_backend_dev_type() when the
+/// backend registry is empty.
 pub fn backend_init() {
     BACKEND_INIT.call_once(|| {
-        unsafe { sys::llama_backend_init(); }
+        unsafe {
+            sys::llama_backend_init();
+            sys::ggml_backend_load_all();
+        }
     });
 }
 
