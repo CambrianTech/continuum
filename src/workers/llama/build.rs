@@ -24,6 +24,7 @@ fn main() {
         .define("BUILD_SHARED_LIBS", "OFF");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
     // Metal on macOS
     if cfg!(feature = "metal") && target_os == "macos" {
@@ -35,6 +36,30 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=Accelerate");
     } else {
         cfg.define("GGML_METAL", "OFF");
+    }
+
+    // linux/aarch64 (Apple Silicon hosts running Docker via Rancher/colima,
+    // ARM servers, etc.): llama.cpp's ggml-cpu uses NEON FP16 vector
+    // intrinsics (vaddq_f16 and friends) that require armv8.2-a+fp16 target
+    // flags. GCC won't inline them under `-march=armv8-a` which is the
+    // default on many Linux arm64 toolchains. Without this the build fails
+    // with `inlining failed in call to 'vaddq_f16': target specific option
+    // mismatch`. We tell llama.cpp's CMake to opt us into the armv8.2-a
+    // baseline plus the dotprod/fp16 extensions that Apple Silicon (and
+    // every modern ARM server) supports.
+    //
+    // On Apple host macOS (Metal path above) this doesn't apply — Apple
+    // Clang handles it automatically via `-arch arm64` / `-mmacosx-version-
+    // min` and the Metal backend bypasses the NEON kernels anyway.
+    if target_os == "linux" && target_arch == "aarch64" {
+        // GGML_NATIVE=OFF — the default-ON path uses `-mcpu=native` and
+        // autodetects features via compile probes. Inside the Rancher/Lima
+        // VM (and other virtualized arm64 hosts), that probe doesn't
+        // reliably enable fp16 even on Apple-Silicon-class CPUs, so vfmaq_f16
+        // / vaddq_f16 fail to inline. Forcing OFF makes CMake honor
+        // GGML_CPU_ARM_ARCH instead.
+        cfg.define("GGML_NATIVE", "OFF");
+        cfg.define("GGML_CPU_ARM_ARCH", "armv8.2-a+dotprod+fp16");
     }
 
     // CUDA on Linux
