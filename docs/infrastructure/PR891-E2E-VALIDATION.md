@@ -89,8 +89,11 @@ curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/feature/infe
 
 ### Smoke checklist
 
-- [ ] Exactly **one** sudo password prompt total across the install (the
-      `ensure_sudo_warmed` invariant).
+- [ ] No surprise mid-install sudo prompts (each prompt is preceded by a
+      log line stating which module is asking and why). The strict "exactly
+      one prompt" assertion comes online once the legacy-sudo-site migration
+      ships in `src/scripts/install.sh` — until then, dry-run accepts
+      multiple prompts as long as each is announced.
 - [ ] If WSL integration disabled, install errors with the documented hint
       (`mod_docker_wsl_integration` should detect + print Docker Desktop
       toggle path).

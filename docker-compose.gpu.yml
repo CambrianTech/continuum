@@ -30,6 +30,13 @@
 services:
 
   continuum-core:
+    # The cuda variant is published as a SEPARATE image by CI
+    # (.github/workflows/docker-images.yml :: continuum-core-cuda).
+    # Without overriding image: here, `docker compose pull` would grab
+    # the CPU image from base; the build.dockerfile override only takes
+    # effect on local `compose build`. Both the pull-from-ghcr path AND
+    # the local-build path need to land on the cuda image.
+    image: ghcr.io/cambriantech/continuum-core-cuda:latest
     build:
       # Override Dockerfile to pick up CUDA toolkit + nvcc.
       dockerfile: ../../docker/continuum-core-cuda.Dockerfile
