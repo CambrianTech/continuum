@@ -57,12 +57,19 @@ fn main() {
     println!("cargo:rustc-link-lib=static=ggml");
     println!("cargo:rustc-link-lib=static=ggml-base");
     println!("cargo:rustc-link-lib=static=ggml-cpu");
+    // GGML backends register via C++ static initializers inside the backend's
+    // static archive. Without +whole-archive, ld --as-needed / dead_strip
+    // drops the archive because nothing from the main llama archive directly
+    // references a symbol in it — so ggml_backend_metal_reg / _cuda_reg
+    // never fire and the runtime falls back to CPU with a "backend missing"
+    // error. Force-load the whole archive so every registration symbol is
+    // preserved.
     if cfg!(feature = "metal") && target_os == "macos" {
-        println!("cargo:rustc-link-lib=static=ggml-metal");
-        println!("cargo:rustc-link-lib=static=ggml-blas");
+        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-metal");
+        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-blas");
     }
     if cfg!(feature = "cuda") && target_os == "linux" {
-        println!("cargo:rustc-link-lib=static=ggml-cuda");
+        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-cuda");
     }
 
     // C++ stdlib + OpenMP (llama.cpp CPU backend uses GOMP_parallel on Linux).
