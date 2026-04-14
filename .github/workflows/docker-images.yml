@@ -27,9 +27,9 @@ jobs:
   # ── Rust Core ─────────────────────────────────────────────
   continuum-core:
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch'
+    # Runs on PR too — validates the Dockerfile builds on every change.
+    # `push` step inside build-push-action below already gates ghcr upload
+    # on non-PR events, so PR runs are smoke-only.
     permissions:
       contents: read
       packages: write
@@ -71,12 +71,59 @@ jobs:
           build-contexts: |
             avatars=./src/models/avatars
 
+  # ── Rust Core (CUDA variant) ─────────────────────────────
+  # The cuda image is referenced by docker-compose.gpu.yml. Prior to this
+  # job the Dockerfile was orphaned: it existed on disk but no workflow
+  # built or published it, so `docker compose --profile gpu up` failed
+  # with a pull error (no such image in ghcr.io). amd64-only because
+  # NVIDIA Container Toolkit + CUDA is a practical-amd64 concern; arm64
+  # CUDA is Jetson-class and not the gpu-profile's target.
+  continuum-core-cuda:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive  # vendor/llama.cpp needs to be populated
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/cambriantech/continuum-core-cuda
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./src/workers
+          file: ./docker/continuum-core-cuda.Dockerfile
+          # amd64-only: CUDA devel image + NVIDIA Container Toolkit
+          # target amd64 hosts in practice.
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=continuum-core-cuda
+          cache-to: type=gha,mode=max,scope=continuum-core-cuda
+          build-contexts: |
+            avatars=./src/models/avatars
+
   # ── LiveKit Bridge (was missing from CI!) ─────────────────
   livekit-bridge:
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch'
+    # Same PR-smoke policy as continuum-core.
     permissions:
       contents: read
       packages: write
@@ -233,9 +280,21 @@ jobs:
   verify-architectures:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
-    needs: [continuum-core, livekit-bridge, node-server, model-init, widget-server]
+    needs: [continuum-core, continuum-core-cuda, livekit-bridge, node-server, model-init, widget-server]
     steps:
       - uses: docker/setup-qemu-action@v3
+
+      - name: Verify amd64-only cuda image
+        run: |
+          IMAGE="ghcr.io/cambriantech/continuum-core-cuda:latest"
+          echo "━━━ Checking $IMAGE (amd64-only) ━━━"
+          MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1)
+          if echo "$MANIFEST" | grep -q "linux/amd64"; then
+            echo "  ✅ linux/amd64 present"
+          else
+            echo "  ❌ linux/amd64 MISSING"
+            exit 1
+          fi
 
       - name: Verify all images exist for both architectures
         run: |
