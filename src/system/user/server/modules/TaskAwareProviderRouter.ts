@@ -5,18 +5,17 @@
  * The model should be selected PER TASK based on what's available
  * and what the task demands.
  *
- * When a persona's default provider is local (candle) and the task
- * requires capabilities the local model lacks (tool use, code generation,
- * complex reasoning), this router upgrades to the best available cloud
- * provider. The persona's identity stays the same — only the compute changes.
+ * With the Qwen3.5 4B code-forged model running through our vendored
+ * llama.cpp substrate (67.8 tok/s on M5 Pro Metal, 218 tok/s on RTX 5090
+ * CUDA), the local path can handle code, tool use, and analysis. This
+ * router now defaults to local and only escalates to cloud for domains
+ * where local is genuinely inadequate — currently none by default,
+ * kept as an extension point.
  *
- * Task domains that REQUIRE cloud models:
- * - code/debug/analysis: Local 3B can't write code or use tools
- * - tool_use: Local 3B ignores XML tool format entirely
- *
- * Task domains that work fine locally:
- * - conversation/social: Local 3B handles chat adequately
- * - creative: Acceptable for simple creative tasks
+ * The ZERO-API-KEYS principle: system must work with no cloud providers
+ * configured. Auto-upgrading to cloud for "tools" or "code" violated
+ * that — it's now gated behind CLOUD_REQUIRED_DOMAINS which is empty
+ * by default.
  *
  * @see #371 — Per-task model routing
  */
@@ -80,10 +79,16 @@ export function getDailySpend(): { date: string; spent: number; budget: number; 
   };
 }
 
-/** Domains where local models are completely inadequate */
-const CLOUD_REQUIRED_DOMAINS = new Set([
-  'code', 'debug', 'analysis', 'tool_use',
-]);
+/**
+ * Domains where local models are completely inadequate.
+ *
+ * Empty by default — our forged Qwen3.5 4B handles code/tools/debug
+ * at 67.8 tok/s (Metal) / 218 tok/s (CUDA) through the vendored
+ * llama.cpp substrate. Operators can add domains here if a workload
+ * demonstrably fails locally, but the no-fallback + zero-API-keys
+ * rules mean this set stays empty until proven otherwise.
+ */
+const CLOUD_REQUIRED_DOMAINS = new Set<string>([]);
 
 /** Provider fallback order for capability-demanding tasks */
 const CLOUD_PROVIDER_FALLBACK: readonly string[] = [
@@ -186,9 +191,16 @@ export function routeForTask(
     };
   }
 
-  // Check if this task domain requires cloud capabilities
+  // Check if this task domain requires cloud capabilities.
+  //
+  // Tools no longer trigger cloud upgrade — Qwen3.5 4B code-forged handles
+  // XML tool calls through the vendored llama.cpp substrate. The old
+  // "local 3B ignores XML tools" assumption was written when local meant
+  // a small unfined-tuned model; it's not true for our forged variant.
   const domainRequiresCloud = taskDomain && CLOUD_REQUIRED_DOMAINS.has(taskDomain);
-  const toolsRequireCloud = hasTools; // Local 3B ignores tools entirely
+  const toolsRequireCloud = false;
+  // Silence unused-parameter warning without changing the call signature.
+  void hasTools;
 
   if (!domainRequiresCloud && !toolsRequireCloud) {
     return {
