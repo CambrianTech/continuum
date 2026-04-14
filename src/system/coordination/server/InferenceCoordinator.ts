@@ -22,7 +22,7 @@
  * protect the infrastructure. Everything else is the AI's decision.
  */
 
-import * as os from 'os';
+import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export interface InferenceSlot {
   personaId: string;
@@ -45,35 +45,22 @@ const PROVIDER_GROUPS: Record<string, string> = {
 };
 
 /**
- * Compute local-inference concurrency from system RAM.
- * MUST match the Rust-side `concurrent_inference_permits` formula in
- * candle_adapter.rs — if they drift, TS either denies too early (wastes
- * available Rust permits) or lets too many through (stacks on Rust mutex
- * through 60-180s decodes, starving everything).
- *
- * TODO: make this dynamic (pressure-reactive, demand-reactive) per Joel's
- * direction. Static RAM-based for now to unblock parallel inference.
- */
-function localInferenceCapacity(): number {
-  const totalRamGb = Math.floor(os.totalmem() / (1024 * 1024 * 1024));
-  // Conservative breakpoints (match candle_adapter.rs). M1 Pro 32GB with
-  // 14 personas + RAG + Postgres at ~80% RAM pushed into llama_decode
-  // rc=1 at 3 permits. Stay one notch below theoretical capacity until
-  // the dynamic pressure-reactive layer lands.
-  if (totalRamGb >= 48) return 3;
-  if (totalRamGb >= 16) return 2;
-  return 1;
-}
-
-/**
  * Per-provider hardware/API concurrency limits.
  * These represent REAL constraints — not policy throttles.
+ *
+ * `local-inference` is resolved asynchronously from Rust's InferenceModule
+ * IPC (`inference/capacity`) at startup — see `InferenceCoordinatorImpl.
+ * initLocalCapacity`. Prior to that resolution, we default conservatively
+ * to 1 so we never over-admit before we know what the hardware is. Once
+ * Rust answers, `localInferenceCapacity` is updated in place and all
+ * subsequent `requestSlot` calls see the real value.
+ *
+ * This removes the TS/Rust dual-formula drift that issue #887 fixes — the
+ * formula now lives once in Rust's `system_resources::local_inference_
+ * capacity()` and TS reads from it.
  */
 const PROVIDER_CAPACITY: Record<string, number> = {
-  // Local: scales with RAM. Matches Rust inference_semaphore permit count
-  // so TS doesn't deny when Rust has capacity, and doesn't over-admit
-  // beyond Rust's hardware gate.
-  'local-inference': localInferenceCapacity(),
+  'local-inference': 1,   // bootstrap default; overwritten via initLocalCapacity()
   'anthropic': 15,        // Generous API limits
   'openai': 15,
   'groq': 5,             // Aggressive rate limits but decent concurrency
@@ -87,10 +74,44 @@ const PROVIDER_CAPACITY: Record<string, number> = {
 
 class InferenceCoordinatorImpl {
   private activeSlots: Map<string, InferenceSlot[]> = new Map();
+  private localCapacityResolved = false;
 
   constructor() {
     for (const provider of Object.keys(PROVIDER_CAPACITY)) {
       this.activeSlots.set(provider, []);
+    }
+    // Fire-and-forget: ask Rust for the real local-inference capacity.
+    // We don't await — constructor runs at module-load time and the Rust
+    // IPC server may not be ready yet. We keep the conservative default
+    // of 1 until the answer arrives. Failures are logged and retried.
+    this.initLocalCapacity().catch(err => {
+      console.warn('[InferenceCoordinator] initial capacity fetch failed, staying at default 1:', err?.message ?? err);
+    });
+  }
+
+  /**
+   * Pull `inference/capacity` from Rust (the single source of truth) and
+   * update `PROVIDER_CAPACITY['local-inference']` in place. Retries on
+   * transient IPC failure (the Rust socket may not be up yet at server
+   * boot). Safe to call multiple times — idempotent once resolved.
+   */
+  private async initLocalCapacity(attempt = 1): Promise<void> {
+    if (this.localCapacityResolved) return;
+    const maxAttempts = 5;
+    const delayMs = Math.min(2000 * attempt, 10_000);
+    try {
+      const capacity = await RustCoreIPCClient.getInstance().inferenceCapacity();
+      PROVIDER_CAPACITY['local-inference'] = capacity;
+      this.localCapacityResolved = true;
+      console.log(`[InferenceCoordinator] local-inference capacity resolved via Rust IPC: ${capacity}`);
+    } catch (err) {
+      if (attempt >= maxAttempts) {
+        console.warn(`[InferenceCoordinator] giving up on IPC capacity resolution after ${maxAttempts} attempts; staying at default 1`);
+        return;
+      }
+      setTimeout(() => {
+        this.initLocalCapacity(attempt + 1).catch(() => { /* logged in outer */ });
+      }, delayMs);
     }
   }
 

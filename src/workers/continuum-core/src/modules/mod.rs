@@ -20,6 +20,7 @@ pub mod embedding;
 pub mod gpu;
 pub mod grid;
 pub mod health;
+pub mod inference;
 pub mod live;
 pub mod logger;
 pub mod mcp;

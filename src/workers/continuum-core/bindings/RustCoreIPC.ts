@@ -58,6 +58,7 @@ import { GpuMixin } from './modules/gpu';
 import { SentinelMixin } from './modules/sentinel';
 import { ToolParsingMixin } from './modules/tool_parsing';
 import { SystemResourceMixin } from './modules/system_resources';
+import { InferenceMixin } from './modules/inference';
 import { AvatarMixin } from './modules/avatar';
 import { DatasetMixin } from './modules/dataset';
 import { VisionCacheMixin } from './modules/vision_cache';
@@ -119,19 +120,21 @@ const ComposedClient = GridMixin(PlasticityMixin(VisionCacheMixin(DatasetMixin(
 	AvatarMixin(
 		ToolParsingMixin(
 			SentinelMixin(
-				SystemResourceMixin(
-					GpuMixin(
-						RuntimeMixin(
-							EmbeddingMixin(
-								AIMixin(
-									ModelsMixin(
-										RagMixin(
-											SearchMixin(
-												CodeMixin(
-													MemoryMixin(
-														ChannelMixin(
-															CognitionMixin(
-																VoiceMixin(RustCoreIPCClientBase)
+				InferenceMixin(
+					SystemResourceMixin(
+						GpuMixin(
+							RuntimeMixin(
+								EmbeddingMixin(
+									AIMixin(
+										ModelsMixin(
+											RagMixin(
+												SearchMixin(
+													CodeMixin(
+														MemoryMixin(
+															ChannelMixin(
+																CognitionMixin(
+																	VoiceMixin(RustCoreIPCClientBase)
+																)
 															)
 														)
 													)

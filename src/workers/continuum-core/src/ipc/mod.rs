@@ -12,6 +12,7 @@ use crate::modules::embedding::EmbeddingModule;
 use crate::modules::gpu::GpuModule;
 use crate::modules::grid::GridModule;
 use crate::modules::health::HealthModule;
+use crate::modules::inference::InferenceModule;
 use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::live::{VoiceModule, VoiceState};
 use crate::modules::logger::LoggerModule;
@@ -794,6 +795,11 @@ pub fn start_server(
     let system_resource_module = Arc::new(SystemResourceModule::new(system_monitor));
     system_resource_module.set_pressure_monitor(pressure_monitor);
     runtime.register(system_resource_module);
+
+    // Phase 1: InferenceModule — exposes inference/capacity so TS side
+    // (InferenceCoordinator) reads a single Rust source of truth instead
+    // of duplicating the RAM formula. See issue #887.
+    runtime.register(Arc::new(InferenceModule::new()));
 
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());
