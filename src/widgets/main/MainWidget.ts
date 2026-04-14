@@ -203,27 +203,10 @@ export class MainWidget extends ReactiveWidget {
     setTimeout(async () => {
       await waitForClient();
 
-      // If user already has persisted tabs, restore THOSE instead of
-      // opening the default. Only open default if no persisted state.
-      const hasPersisted = this.userState?.contentState?.openItems?.length;
-      if (hasPersisted && hasPersisted > 0) {
-        // Persisted tabs get restored by ContentService automatically.
-        // Just switch to the active one — don't create a new default tab.
-        const activeId = this.userState?.contentState?.currentItemId;
-        const activeItem = this.userState?.contentState?.openItems?.find(
-          i => i.id === activeId
-        );
-        if (activeItem) {
-          try {
-            await this.openContentFromUrl(activeItem.type, activeItem.uniqueId || activeItem.entityId);
-          } catch (err) {
-            console.error(`❌ MainWidget: restore active tab failed:`, err);
-          }
-        }
-        return;
-      }
-
-      // No persisted state — open the default route
+      // Always open from URL. The URL is the source of truth for the initial view.
+      // Persisted tabs are already loaded into contentState via initializeContentTabs().
+      // openContentFromUrl will find existing matching tabs and switch to them,
+      // or create a new tab if none match.
       try {
         await this.openContentFromUrl(type, entityId);
       } catch (err) {

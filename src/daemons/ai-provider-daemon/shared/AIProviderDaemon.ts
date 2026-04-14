@@ -594,6 +594,7 @@ export class AIProviderDaemon extends DaemonBase {
    * @returns AdapterSelection with routing metadata for observability
    */
   private selectAdapter(provider?: string, model?: string): AdapterSelection | null {
+    console.log(`🔬 [ADAPTER-DEBUG] selectAdapter called: provider=${provider}, model=${model}, adapters=[${Array.from(this.adapters.keys()).join(',')}]`);
     // 1. EXPLICIT PROVIDER: Honor provider first (most specific)
     // This MUST be checked BEFORE model detection to avoid routing Groq's
     // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'

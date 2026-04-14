@@ -280,10 +280,12 @@ async function waitForJTAGReady(maxWaitSeconds: number = 180): Promise<boolean> 
           if (attempts % 5 === 0) {
             console.log(`   TS server ready but Rust IPC not yet connected...`);
           }
-        } catch {
+        } catch (dbErr: any) {
           // data/list failed — Rust worker not up yet, keep waiting
           if (attempts % 5 === 0) {
             console.log(`   TS server ready but Rust worker not responding...`);
+            console.log(`   DEBUG: ${dbErr?.message || dbErr}`);
+            console.log(`   DEBUG stderr: ${dbErr?.stderr?.slice?.(0, 200) || 'none'}`);
           }
         }
         // Don't return true yet — wait for Rust

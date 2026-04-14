@@ -3146,6 +3146,62 @@
       }
     },
     {
+      "name": "model/publish",
+      "description": "Publish a forged model to HuggingFace — safetensors, config, tokenizer, model card, and alloy provenance. This is the Factory's shipping department: the forge produces the artifact on a grid node, this command pushes it to HuggingFace where anyone can download it. Supports publishing from a local forged directory (bigmama-style) or from a grid node's finished/ station via grid/send.",
+      "params": {
+        "forgedDir": {
+          "type": "string",
+          "required": true,
+          "description": "forgedDir parameter"
+        },
+        "repoName": {
+          "type": "string",
+          "required": true,
+          "description": "repoName parameter"
+        },
+        "org": {
+          "type": "string",
+          "required": false,
+          "description": "org parameter"
+        },
+        "cardPath": {
+          "type": "string",
+          "required": false,
+          "description": "cardPath parameter"
+        },
+        "alloyPath": {
+          "type": "string",
+          "required": false,
+          "description": "alloyPath parameter"
+        },
+        "includeGguf": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeGguf parameter"
+        },
+        "private": {
+          "type": "boolean",
+          "required": false,
+          "description": "private parameter"
+        },
+        "evalPending": {
+          "type": "boolean",
+          "required": false,
+          "description": "evalPending parameter"
+        },
+        "nodeId": {
+          "type": "string",
+          "required": false,
+          "description": "nodeId parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        }
+      }
+    },
+    {
       "name": "model/list-published",
       "description": "List all published models from the continuum-ai HuggingFace org — download counts, likes, improvement scores, hardware targets, tags.",
       "params": {

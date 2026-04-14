@@ -149,8 +149,11 @@ export class ORM {
       // Emit event using DataDaemon's jtagContext for proper browser routing
       if (!suppressEvents && DataDaemon.jtagContext) {
         const eventName = getDataEventName(collection, 'created');
+        console.log(`🔔 [EVENT] ORM.store emitting: ${eventName} (id: ${result.data?.id?.slice?.(0,8) || '?'})`);
         Events.emit(DataDaemon.jtagContext, eventName, result.data)
           .catch(err => console.error(`ORM.store event emit failed for ${collection}:`, err));
+      } else if (!suppressEvents) {
+        console.warn(`⚠️ [EVENT] ORM.store: DataDaemon.jtagContext is NULL — event NOT emitted for ${collection}:created`);
       }
 
       return result.data!;

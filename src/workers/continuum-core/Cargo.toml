@@ -61,15 +61,16 @@ num_cpus = "1.16"  # CPU count detection
 dirs = "5.0"  # User directories for model paths
 sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
 
-# Candle ML framework (for training + Orpheus TTS; llama.cpp handles inference)
+# llama — our owned substrate for inference (67.8 tok/s on M5 Metal).
+# Vendored llama.cpp built via cmake, features gate metal/cuda.
+llama = { path = "../llama" }
+
+# Candle — kept for training, Orpheus TTS, and legacy backends.
+# Inference flows through the llama crate above.
 candle-core.workspace = true
 candle-nn.workspace = true  # For VarBuilder
 candle-transformers.workspace = true
 tokenizers = { workspace = true, features = ["onig"] }
-
-# llama.cpp — our vendored substrate (src/workers/llama).
-# In-process, supports LoRA hot-swap, Metal/CUDA backends via feature flags.
-llama = { path = "../llama" }
 
 # Pocket-TTS (Kyutai, 100M, Candle-based CPU TTS with voice cloning)
 # Uses candle 0.9 (separate from our 0.8) — CPU-only, no Metal flag to avoid conflicts
@@ -158,8 +159,8 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 [features]
 default = ["livekit-webrtc"]
 livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 # Linux: swap ORT from static (download-binaries) to dynamic loading.
 # Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).

@@ -544,30 +544,9 @@ export class SessionDaemonServer extends SessionDaemon {
       return await this.getUserById(seededOwner.id);
     }
 
-    /**
-     * Create anonymous human user for browser-ui clients
-     *
-     * This is called when a browser connects for the first time without
-     * an existing userId in localStorage. Creates a human user that can
-     * later be upgraded with proper authentication (login, passkey, etc.)
-     */
-    private async createAnonymousHuman(params: CreateSessionParams, deviceId?: string): Promise<BaseUser> {
-      const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {
-        userId: SYSTEM_SCOPES.SYSTEM,
-        type: 'human',
-        displayName: 'Anonymous User',
-        uniqueId: `anon-${generateUUID().slice(0, 8)}`,  // Unique but not meant for lookup
-        shortName: 'anon',
-        bio: 'Anonymous browser user',
-        avatar: undefined,
-        provider: 'browser'
-      });
-
-      const user = await UserFactory.create(createParams, this.context, this.router);
-      this.log.info(`✅ SessionDaemon: Created anonymous human user: ${user.entity.id.slice(0, 8)}... (deviceId: ${deviceId?.slice(0, 12) || 'none'})`);
-
-      return user;
-    }
+    // createAnonymousHuman — DELETED. Anonymous users are never created.
+    // Single-owner system: browser and CLI are always the seeded owner.
+    // If the owner doesn't exist, the system fails hard — no fallbacks.
 
     private async createUser(params: CreateSessionParams): Promise<BaseUser> {
       // Use UserIdentityResolver to detect identity and lookup existing user BEFORE creating
@@ -614,25 +593,37 @@ export class SessionDaemonServer extends SessionDaemon {
           // Always resolve to the owner, regardless of deviceId or existing sessions.
           this.log.info(`Session create: clientType=${clientType}, isShared=${params.isShared}`);
           if (clientType === 'browser-ui') {
-            const seededOwner = await this.findSeededHumanOwner();
-            if (seededOwner) {
-              // Find or create a session for the owner
-              const existingSession = this.sessions.find(s =>
-                s.isShared && s.isActive && s.userId === seededOwner.id
-              );
-              if (existingSession) {
-                existingSession.user = seededOwner;
-                this.log.info(`✅ SessionDaemon: Browser → existing session for ${seededOwner.displayName}`);
-                return createPayload(params.context, existingSession.sessionId, {
-                  success: true,
-                  timestamp: new Date().toISOString(),
-                  operation: 'get',
-                  session: existingSession
-                });
+            // Single-owner system. Browser IS the owner. Period.
+            // If the owner doesn't exist yet (seed hasn't run), WAIT. Never create anonymous users.
+            let seededOwner = await this.findSeededHumanOwner();
+            if (!seededOwner) {
+              this.log.info(`⏳ SessionDaemon: Owner not found — waiting for seed (up to 30s)...`);
+              for (let i = 0; i < 30 && !seededOwner; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                seededOwner = await this.findSeededHumanOwner();
               }
             }
-            // No owner session found — create new
-            this.log.info(`🆕 SessionDaemon: Creating new session for browser`);
+            if (!seededOwner) {
+              this.log.error(`❌ SessionDaemon: Owner not found after 30s. Seed may have failed.`);
+              throw new Error('System owner not found. Database may not be seeded.');
+            }
+
+            // Find or create a session for the owner
+            const existingSession = this.sessions.find(s =>
+              s.isShared && s.isActive && s.userId === seededOwner.id
+            );
+            if (existingSession) {
+              existingSession.user = seededOwner;
+              this.log.info(`✅ SessionDaemon: Browser → existing session for ${seededOwner.displayName}`);
+              return createPayload(params.context, existingSession.sessionId, {
+                success: true,
+                timestamp: new Date().toISOString(),
+                operation: 'get',
+                session: existingSession
+              });
+            }
+            // Create session for the owner (not anonymous)
+            this.log.info(`🆕 SessionDaemon: Creating session for owner ${seededOwner.displayName}`);
             return await this.createSession(params);
           }
 
@@ -692,38 +683,24 @@ export class SessionDaemonServer extends SessionDaemon {
 
       switch (clientType) {
         case 'browser-ui': {
-          // Browser = the human owner. Server resolves identity from DB,
-          // not from browser-sent data. Single-owner system: any browser
-          // connection IS the seeded human owner.
+          // Browser = the human owner. Single-owner system. No anonymous users. Ever.
           const seededOwner = await this.findSeededHumanOwner();
-          if (seededOwner) {
-            user = seededOwner;
-            this.log.info(`✅ Browser session → seeded owner: ${user.displayName}`);
-          } else {
-            this.log.info(`No seeded owner found — creating anonymous human`);
-            user = await this.createAnonymousHuman(params, identity?.deviceId);
+          if (!seededOwner) {
+            throw new Error('System owner not found. Database must be seeded before browser connects.');
           }
+          user = seededOwner;
+          this.log.info(`✅ Browser session → seeded owner: ${user.displayName}`);
           break;
         }
 
         case 'cli': {
-          // CLI = the human owner, same as browser. Single-owner system:
-          // ./jtag commands are Joel, not a separate "@cli" user.
-          const seededOwner = await this.findSeededHumanOwner();
-          if (seededOwner) {
-            user = seededOwner;
-            this.log.info(`✅ CLI session → seeded owner: ${user.displayName}`);
-          } else {
-            // No seeded owner yet (pre-seed or first boot) — fall back to uniqueId
-            const cliUniqueId = identity?.uniqueId || '@cli';
-            this.log.info(`💻 CLI session: no seeded owner, resolving uniqueId=${cliUniqueId}`);
-            const existingCli = await this.findUserByUniqueId(cliUniqueId);
-            if (existingCli) {
-              user = existingCli;
-            } else {
-              user = await this.createUser(params);
-            }
+          // CLI = the human owner. Single-owner system. No fallbacks.
+          const seededOwnerCli = await this.findSeededHumanOwner();
+          if (!seededOwnerCli) {
+            throw new Error('System owner not found. Database must be seeded before CLI connects.');
           }
+          user = seededOwnerCli;
+          this.log.info(`✅ CLI session → seeded owner: ${user.displayName}`);
           break;
         }
 

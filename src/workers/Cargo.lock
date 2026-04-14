@@ -2176,7 +2176,6 @@ dependencies = [
  "libc",
  "livekit",
  "livekit-api",
- "llama",
  "metal 0.32.0",
  "msedge-tts",
  "ndarray",

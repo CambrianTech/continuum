@@ -649,23 +649,26 @@ impl AIProviderAdapter for CandleAdapter {
         }
 
         // ── llama.cpp backend (in-process, owns the model memory) ──
-        // Per the no-fallback rule: this is the only runtime. If the backend
-        // wasn't loaded, we error below rather than degrade to something else.
-        let llamacpp_result = if let Some(ref llama) = *self.llamacpp_backend.read() {
-            let stop_tokens: Vec<&str> = vec!["<|im_end|>", "<|endoftext|>"];
-            match llama.generate(&prompt, max_tokens, sampling.temperature as f32, &stop_tokens) {
-                Ok((text, tokens)) => Some((text, tokens)),
-                Err(e) => {
-                    log.warn(&format!("llama.cpp generate failed: {e}"));
-                    None
-                }
+        // Lazy load on first inference — resolves the model path via the
+        // existing HF download / local model pipeline, then keeps the backend
+        // loaded for subsequent calls.
+        {
+            let needs_load = self.llamacpp_backend.read().is_none();
+            if needs_load {
+                let gguf_path = find_local_gguf(&model_id)
+                    .ok_or_else(|| format!("No GGUF for model '{}'. Ensure model is downloaded to ~/.continuum/genome/models or HF cache.", model_id))?;
+                self.load_llamacpp(gguf_path.to_str().ok_or("non-utf8 path")?)?;
             }
-        } else {
-            None
-        };
+        }
 
-        let (output_text, completion_tokens) = llamacpp_result
-            .ok_or_else(|| "llama.cpp backend not loaded. Call CandleAdapter::load_llamacpp(model_path) during init.".to_string())?;
+        let stop_tokens: Vec<&str> = vec!["<|im_end|>", "<|endoftext|>"];
+        let (output_text, completion_tokens) = {
+            let guard = self.llamacpp_backend.read();
+            let llama = guard.as_ref()
+                .ok_or_else(|| "llama.cpp backend not loaded after load attempt".to_string())?;
+            llama.generate(&prompt, max_tokens, sampling.temperature as f32, &stop_tokens)
+                .map_err(|e| format!("llama.cpp generate failed: {e}"))?
+        };
         let new_model_guard: Option<GpuAllocationGuard> = None;
 
         // Store model guard if this was a first load
@@ -889,6 +892,48 @@ fn storage_root() -> std::path::PathBuf {
 /// Check if a model is available locally as a GGUF.
 /// Searches ~/.continuum/ (internal NVMe, fast) FIRST, then CONTINUUM_STORAGE_PATH (external, slow).
 /// Returns the local directory path if found, None if not cached.
+/// Find the .gguf file for a model, searching local dirs + HF cache.
+/// Used by the llama.cpp backend which needs a GGUF file path directly.
+fn find_local_gguf(model_id: &str) -> Option<std::path::PathBuf> {
+    // Try local model dir first (via find_local_model)
+    if let Some(dir) = find_local_model(model_id) {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("gguf") {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    // Fall back to HF cache
+    let home = std::env::var("HOME").ok()?;
+    let hf_cache = std::path::PathBuf::from(&home).join(".cache/huggingface/hub");
+    if !hf_cache.exists() { return None; }
+    for entry in std::fs::read_dir(&hf_cache).ok()?.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Match "models--*<model_id>*" or a fuzzy match on slug
+        if name_str.starts_with("models--") && name_str.to_lowercase().contains(&model_id.to_lowercase().replace('/', "--")) {
+            // Look inside snapshots/<hash>/ for a .gguf file
+            let snapshots = entry.path().join("snapshots");
+            if let Ok(snaps) = std::fs::read_dir(&snapshots) {
+                for snap in snaps.flatten() {
+                    if let Ok(files) = std::fs::read_dir(snap.path()) {
+                        for f in files.flatten() {
+                            let p = f.path();
+                            if p.extension().and_then(|s| s.to_str()) == Some("gguf") {
+                                return Some(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn find_local_model(model_id: &str) -> Option<std::path::PathBuf> {
     let search_dirs = {
         let mut dirs = Vec::new();
