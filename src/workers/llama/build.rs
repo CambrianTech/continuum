@@ -65,11 +65,12 @@ fn main() {
         println!("cargo:rustc-link-lib=static=ggml-cuda");
     }
 
-    // C++ stdlib
+    // C++ stdlib + OpenMP (llama.cpp CPU backend uses GOMP_parallel on Linux).
     if target_os == "macos" {
         println!("cargo:rustc-link-lib=c++");
     } else {
         println!("cargo:rustc-link-lib=stdc++");
+        println!("cargo:rustc-link-lib=gomp");
     }
 
     // Generate FFI bindings for llama.h
