@@ -21,24 +21,6 @@ echo "  Continuum Installer"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# ── 0. Warm sudo cache up front ─────────────────────────────
-# Matches src/scripts/install.sh pattern: ask once, use for the rest of
-# the run (usermod on Linux, /usr/local/bin copy, Postgres/Tailscale
-# follow-ups from nested scripts). Without this, later steps either
-# re-prompt unexpectedly or fail silently on headless runs.
-OS_EARLY="$(uname -s)"
-if [ "$OS_EARLY" = "Linux" ] && [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
-  if [ -t 0 ]; then
-    echo -e "\033[1;33m!\033[0m Some install steps need admin access — prompting once up front so nothing re-prompts later."
-    sudo -v
-    # Keep sudo alive while this installer runs (refresh timestamp every
-    # 50s). Dies with the parent when install.sh exits.
-    ( while true; do sudo -n true 2>/dev/null; sleep 50; done ) &
-    SUDO_KEEPALIVE_PID=$!
-    trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true' EXIT
-  fi
-fi
-
 # ── 1. Detect environment ───────────────────────────────────
 info "Detecting environment..."
 
@@ -77,71 +59,8 @@ if ! command -v docker &>/dev/null; then
   esac
 fi
 
-# Detect WSL2 + Docker Desktop with broken integration before we trust
-# `docker info`. Symptom: Docker Desktop is running on the Windows side
-# (shared-sockets mounts exist), the current distro is in
-# IntegratedWslDistros, but /var/run/docker.sock isn't materialized in
-# this distro and the CLI fails "no such file". Standard Docker Desktop
-# integration setup wants a manual toggle — we auto-enable it instead.
-fix_wsl_docker_desktop_integration() {
-  # Only bother on WSL2 with Docker Desktop shared mount present.
-  grep -qi microsoft /proc/version 2>/dev/null || return 1
-  [ -d /mnt/wsl/docker-desktop ] || return 1
-
-  local distro="${WSL_DISTRO_NAME:-$(grep '^NAME=' /etc/os-release | cut -d\" -f2 | head -1)}"
-  [ -n "$distro" ] || return 1
-
-  # Find the Windows user's Docker Desktop settings file. Docker Desktop
-  # stores the list of integrated distros in a per-user JSON file at
-  # C:\Users\<user>\AppData\Roaming\Docker\settings-store.json. We just
-  # need any settings file whose IntegratedWslDistros we can update.
-  local settings
-  settings=$(ls /mnt/c/Users/*/AppData/Roaming/Docker/settings-store.json 2>/dev/null | head -1)
-  [ -n "$settings" ] && [ -w "$settings" ] || return 1
-
-  info "Docker Desktop detected; ensuring WSL integration for '$distro'…"
-  # Add distro to IntegratedWslDistros if not already present. Python3 is
-  # more reliable than jq in guaranteeing JSON round-trip preserves
-  # Docker's formatting.
-  python3 - "$settings" "$distro" <<'PY'
-import json, sys
-path, distro = sys.argv[1], sys.argv[2]
-with open(path) as f:
-    cfg = json.load(f)
-distros = cfg.setdefault("IntegratedWslDistros", [])
-if distro not in distros:
-    distros.append(distro)
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
-    print(f"enabled {distro}", flush=True)
-else:
-    print(f"already enabled {distro}", flush=True)
-PY
-
-  # Bounce Docker Desktop so the setting takes effect (hook-installs
-  # /var/run/docker.sock into our distro on restart). Non-fatal if the
-  # shutdown fails — we'll surface the socket check either way.
-  local pwsh="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-  if [ -x "$pwsh" ]; then
-    "$pwsh" -Command 'Stop-Process -Name "Docker Desktop" -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-Process -FilePath "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe"' >/dev/null 2>&1 || true
-  fi
-
-  # Poll for the socket (up to 60s). Clean output while we wait.
-  for i in $(seq 1 30); do
-    [ -S /var/run/docker.sock ] && { ok "WSL integration active"; return 0; }
-    sleep 2
-  done
-  return 1
-}
-
 if ! docker info &>/dev/null 2>&1; then
-  if fix_wsl_docker_desktop_integration; then
-    # Integration came up — reconfirm.
-    docker info &>/dev/null 2>&1 \
-      || fail "Docker WSL integration enabled but daemon still unreachable. Try: wsl --shutdown (from Windows PowerShell), then re-run."
-  else
-    fail "Docker installed but not running. Start Docker Desktop/Rancher Desktop and re-run."
-  fi
+  fail "Docker installed but not running. Start Docker Desktop/Rancher Desktop and re-run."
 fi
 
 ok "Docker $(docker version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
@@ -156,12 +75,6 @@ else
   git clone --depth 1 "$REPO" "$INSTALL_DIR"
   cd "$INSTALL_DIR"
 fi
-
-# Vendored substrates (llama.cpp, whisper.cpp) live as submodules. The
-# Dockerfiles fail fast if these aren't populated, so we just init them
-# here — zero onboarding tax. Safe on update runs too: git submodule
-# update is a no-op when submodules are already at the pinned commit.
-git submodule update --init --recursive 2>&1 | grep -vE '^(Submodule.*registered|Cloning into)' || true
 
 ok "Source: $INSTALL_DIR"
 
