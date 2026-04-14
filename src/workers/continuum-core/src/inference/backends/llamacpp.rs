@@ -127,6 +127,7 @@ impl LlamaCppBackend {
         let mut ctx = self.model.new_context(ContextParams {
             n_ctx: self.config.context_length,
             n_batch: self.config.n_batch,
+            n_seq_max: 1,  // chat personas use sequence 0 only
         })?;
 
         // Apply LoRAs (hot-swap per generation — genome paging primitive)

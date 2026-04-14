@@ -24,7 +24,7 @@ fn main() {
     ).expect("load");
     println!("Loaded in {:.2}s (vocab={})", load_start.elapsed().as_secs_f64(), model.n_vocab());
 
-    let mut ctx = model.new_context(ContextParams { n_ctx: 4096, n_batch: 512 })
+    let mut ctx = model.new_context(ContextParams { n_ctx: 4096, n_batch: 512, n_seq_max: 1 })
         .expect("context");
 
     let prompt_tokens = model.tokenize(prompt, true, false).expect("tokenize");

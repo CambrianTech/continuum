@@ -88,6 +88,7 @@ impl Model {
         let mut ffi = unsafe { sys::llama_context_default_params() };
         ffi.n_ctx = params.n_ctx;
         ffi.n_batch = params.n_batch;
+        ffi.n_seq_max = params.n_seq_max;
 
         let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
         let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
@@ -209,11 +210,17 @@ impl Drop for LoraAdapter {
 pub struct ContextParams {
     pub n_ctx: u32,
     pub n_batch: u32,
+    /// Maximum parallel sequences. Default llama.cpp sets this > 1 which
+    /// DIVIDES n_ctx among sequences — a 4096 n_ctx with default n_seq_max
+    /// yields only ~512-1024 usable positions per sequence, making RAG
+    /// prompts >1k tokens fail `llama_decode` with rc=1 ("no KV slot").
+    /// Single-persona chat only uses sequence 0, so default to 1.
+    pub n_seq_max: u32,
 }
 
 impl Default for ContextParams {
     fn default() -> Self {
-        Self { n_ctx: 4096, n_batch: 512 }
+        Self { n_ctx: 4096, n_batch: 512, n_seq_max: 1 }
     }
 }
 
