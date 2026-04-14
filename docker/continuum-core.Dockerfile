@@ -48,6 +48,15 @@ RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 
 # Now build actual source (fast — deps already compiled)
 COPY . .
+
+# Fail fast if the host forgot to init submodules. Without this, cmake's
+# CMakeLists-not-found error surfaces ~15 min into the cargo build —
+# terrible signal-to-noise. See issue #893.
+RUN test -f vendor/llama.cpp/CMakeLists.txt || ( \
+    echo "ERROR: vendor/llama.cpp is empty — host submodule not initialized." >&2 && \
+    echo "       Run this on the host before docker build:" >&2 && \
+    echo "         git submodule update --init --recursive" >&2 && \
+    exit 1 )
 RUN cargo build --release ${GPU_FEATURES} \
     --bin continuum-core-server \
     --bin archive-worker

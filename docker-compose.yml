@@ -1,5 +1,9 @@
 # Continuum — docker compose up
 #
+# FIRST-TIME SETUP (fresh clone): populate vendored substrates before build.
+#   git submodule update --init --recursive
+# The Dockerfiles fail fast with a clear message if you skip this step.
+#
 # Local:  docker compose up                    (HTTP on localhost, live calls on ws://localhost:7880)
 # Grid:   docker compose --profile grid up     (HTTPS via Tailscale, WebRTC over Tailscale mesh)
 # GPU:    docker compose --profile gpu up      (adds forge + inference)

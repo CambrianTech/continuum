@@ -34,6 +34,15 @@ RUN cargo chef prepare --recipe-path recipe.json
 ARG GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda"
 RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 
+# Fail fast if the host forgot to init submodules. Without this, cmake's
+# CMakeLists-not-found error surfaces deep inside the CUDA build —
+# terrible signal-to-noise. See issue #893.
+RUN test -f vendor/llama.cpp/CMakeLists.txt || ( \
+    echo "ERROR: vendor/llama.cpp is empty — host submodule not initialized." >&2 && \
+    echo "       Run this on the host before docker build:" >&2 && \
+    echo "         git submodule update --init --recursive" >&2 && \
+    exit 1 )
+
 # Build the actual binaries with vendored llama.cpp CUDA kernels
 RUN cargo build --release ${GPU_FEATURES} \
     --bin continuum-core-server \
