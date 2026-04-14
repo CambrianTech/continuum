@@ -12,7 +12,7 @@
  * - 50 comments/hr
  */
 
-import type { ISocialMediaProvider } from '../../shared/ISocialMediaProvider';
+import { SocialActionRequiredError, type ISocialMediaProvider } from '../../shared/ISocialMediaProvider';
 import type {
   SignupParams,
   SignupResult,
@@ -446,6 +446,35 @@ export class MoltbookProvider implements ISocialMediaProvider {
 
     if (!response.ok && response.status !== 404) {
       const errorText = await response.text().catch(() => 'Unknown error');
+
+      // Detect Moltbook's structured "action required" shape — they return
+      // `human_message` + `setup_url` + (optional) `api_alternative` on 403s
+      // like the post-rebrand owner-dashboard gate. Surface those fields
+      // through a typed error so callers can show the action cleanly
+      // instead of dumping raw JSON into a user's face.
+      try {
+        const parsed = JSON.parse(errorText) as Record<string, unknown>;
+        const humanMessage = typeof parsed.human_message === 'string'
+          ? parsed.human_message
+          : undefined;
+        const setupUrl = typeof parsed.setup_url === 'string' ? parsed.setup_url : undefined;
+        const apiAlternative = typeof parsed.api_alternative === 'string'
+          ? parsed.api_alternative
+          : undefined;
+        if (humanMessage && (setupUrl || apiAlternative)) {
+          throw new SocialActionRequiredError({
+            platformId: this.platformId,
+            status: response.status,
+            humanMessage,
+            setupUrl,
+            apiAlternative,
+          });
+        }
+      } catch (e) {
+        // Re-throw SocialActionRequiredError; swallow JSON parse errors.
+        if (e instanceof SocialActionRequiredError) throw e;
+      }
+
       throw new Error(`Moltbook API error (${method} ${path}): ${response.status} ${errorText}`);
     }
 

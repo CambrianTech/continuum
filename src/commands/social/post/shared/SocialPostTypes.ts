@@ -63,12 +63,30 @@ export const createSocialPostParams = (
 /**
  * Social Post Command Result
  */
+/**
+ * Structured "action required" info when a platform returns a user-
+ * resolvable setup/verification gate (e.g. Moltbook's 403 that asks the
+ * owner to complete the dashboard-connect flow). Populated instead of
+ * `error` so the CLI / UI can show an actionable next step.
+ */
+export interface SocialActionRequired {
+  /** Human-readable instruction (surfaced to the user verbatim). */
+  humanMessage: string;
+  /** Web flow URL the owner should visit to resolve the gate. */
+  setupUrl?: string;
+  /** Alternative API endpoint the caller can drive programmatically. */
+  apiAlternative?: string;
+}
+
 export interface SocialPostResult extends CommandResult {
   success: boolean;
   message: string;
 
   /** Created post details */
   post?: SocialPostData;
+
+  /** Populated when the platform needs owner setup — not a runtime failure. */
+  actionRequired?: SocialActionRequired;
 
   error?: JTAGError;
 }

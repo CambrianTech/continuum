@@ -10,6 +10,7 @@ import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase'
 import { SocialPostBaseCommand } from '../shared/SocialPostCommand';
 import type { SocialPostParams, SocialPostResult } from '../shared/SocialPostTypes';
 import { loadSocialContext } from '@system/social/server/SocialCommandHelper';
+import { SocialActionRequiredError } from '@system/social/shared/ISocialMediaProvider';
 
 export class SocialPostServerCommand extends SocialPostBaseCommand {
 
@@ -35,7 +36,26 @@ export class SocialPostServerCommand extends SocialPostBaseCommand {
       });
     }
 
-    const post = await ctx.provider.createPost({ title, content, community, url });
+    let post;
+    try {
+      post = await ctx.provider.createPost({ title, content, community, url });
+    } catch (e) {
+      // Owner-setup / verification gates are user-resolvable, not crashes.
+      // Return a clean result with the action info so the CLI/UI can surface
+      // it without dumping raw JSON.
+      if (e instanceof SocialActionRequiredError) {
+        return transformPayload(params, {
+          success: false,
+          message: e.humanMessage,
+          actionRequired: {
+            humanMessage: e.humanMessage,
+            setupUrl: e.setupUrl,
+            apiAlternative: e.apiAlternative,
+          },
+        });
+      }
+      throw e;
+    }
 
     return transformPayload(params, {
       success: true,

@@ -28,6 +28,39 @@ import type {
   RateLimitStatus,
 } from './SocialMediaTypes';
 
+/**
+ * Raised when a platform returns a user-resolvable setup/verification gate
+ * (e.g. Moltbook's "owner must connect dashboard / X account" 403). This is
+ * NOT a runtime failure — the caller should surface `humanMessage` + the
+ * action fields to the user rather than treating it like a crash.
+ *
+ * Providers SHOULD throw this (rather than a plain Error) whenever the
+ * platform response carries a structured "action required" shape.
+ */
+export class SocialActionRequiredError extends Error {
+  readonly humanMessage: string;
+  readonly setupUrl?: string;
+  readonly apiAlternative?: string;
+  readonly platformId: string;
+  readonly status: number;
+
+  constructor(args: {
+    platformId: string;
+    status: number;
+    humanMessage: string;
+    setupUrl?: string;
+    apiAlternative?: string;
+  }) {
+    super(args.humanMessage);
+    this.name = 'SocialActionRequiredError';
+    this.platformId = args.platformId;
+    this.status = args.status;
+    this.humanMessage = args.humanMessage;
+    this.setupUrl = args.setupUrl;
+    this.apiAlternative = args.apiAlternative;
+  }
+}
+
 export interface ISocialMediaProvider {
   /** Platform identifier (e.g., 'moltbook') */
   readonly platformId: string;
