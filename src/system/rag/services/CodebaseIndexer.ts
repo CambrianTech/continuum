@@ -292,21 +292,40 @@ export class CodebaseIndexer {
     if (this.queryCacheLoad) return this.queryCacheLoad;
 
     this.queryCacheLoad = (async () => {
-      const result = await ORM.query<CodeIndexEntity>({
-        collection: CodeIndexEntity.collection,
-        filter: {},
-        limit: 20000,
-      }, 'default');
+      // Paginate: a single ORM.query at limit=20000 hits the IPC's 60s
+      // timeout on a fully-indexed repo (~40k rows × 384 floats × 4 bytes
+      // = ~60MB) and returns an empty result, silently poisoning the cache.
+      // Page size 2000 keeps each round-trip well under the timeout.
+      const PAGE_SIZE = 2000;
+      const entries: CodeIndexEntry[] = [];
+      const t0 = Date.now();
+      let offset = 0;
+      let got = 0;
+      do {
+        const result = await ORM.query<CodeIndexEntity>({
+          collection: CodeIndexEntity.collection,
+          filter: {},
+          limit: PAGE_SIZE,
+          offset,
+        }, 'default');
+        if (!result.success || !result.data) {
+          log.warn(`Query cache load page failed at offset ${offset}; using ${entries.length} entries collected so far`);
+          break;
+        }
+        got = result.data.length;
+        for (const r of result.data) {
+          if (r.data.embedding && r.data.embedding.length > 0) {
+            entries.push(r.data);
+          }
+        }
+        offset += got;
+      } while (got === PAGE_SIZE);
 
-      const entries = (result.success && result.data)
-        ? result.data.map(r => r.data).filter(e => e.embedding && e.embedding.length > 0)
-        : [];
       const targets = entries.map(e => e.embedding!);
-
       const cache = { entries, targets };
       this.queryCache = cache;
       this.queryCacheLoad = null;
-      log.info(`Query cache loaded: ${entries.length} entries (${targets.length > 0 ? targets[0].length : 0}-dim)`);
+      log.info(`Query cache loaded: ${entries.length} entries (${targets.length > 0 ? targets[0].length : 0}-dim) in ${Date.now() - t0}ms across ${Math.ceil(offset / PAGE_SIZE)} pages`);
       return cache;
     })();
 
