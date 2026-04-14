@@ -47,7 +47,14 @@ const PROVIDER_GROUPS: Record<string, string> = {
  * These represent REAL constraints — not policy throttles.
  */
 const PROVIDER_CAPACITY: Record<string, number> = {
-  'local-inference': 3,   // Worker pool with multiple model instances
+  // Local: 1. Concurrent llama.cpp decodes oversubscribe Metal on a single
+  // GPU (Rust side already has inference_semaphore=1 enforcing this), so
+  // letting >1 persona acquire just stacks them on the Rust semaphore for
+  // the full decode duration. Better to deny early at the TS-side and let
+  // the persona skip than to hold a slot for the full 60-180s wait.
+  'local-inference': 1,
+  // Original was 3, kept here as note: when we add a real worker pool with
+  // multiple model instances (or split MoE experts), bump this back up.
   'anthropic': 15,        // Generous API limits
   'openai': 15,
   'groq': 5,             // Aggressive rate limits but decent concurrency
