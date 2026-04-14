@@ -20,6 +20,7 @@ use crate::ai::{
 use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::runtime;
+use crate::system_resources::local_inference_capacity;
 
 /// Default context window reported before a model is loaded.
 /// Once loaded, the actual model's context_length is used.
@@ -56,15 +57,11 @@ pub struct CandleAdapter {
     model_guard: RwLock<Option<GpuAllocationGuard>>,
     /// RAII guards for per-adapter VRAM allocations
     adapter_guards: RwLock<HashMap<String, GpuAllocationGuard>>,
-    /// Pressure-aware inference gate: limits concurrent local inference based on
-    /// system memory pressure. Prevents 4 personas from all piling into
-    /// spawn_blocking simultaneously (40GB peak → controlled sequential).
-    inference_semaphore: Arc<tokio::sync::Semaphore>,
-    /// Serializes first-time load of `llamacpp_backend`. Separate from
-    /// `inference_semaphore` because loading is NOT inference — we don't
-    /// want the 6s model load to count against the inference concurrency
-    /// budget, and concurrent first-time loaders must be reduced to one
-    /// (two Metal-init calls on the same model has panicked in testing).
+    /// Serializes first-time load of `llamacpp_backend`. Required because
+    /// concurrent Metal-init calls on the same model have panicked in
+    /// testing. The 6s model load is one-time per process and is dropped
+    /// as soon as the load completes — subsequent generate calls fall
+    /// straight through to the scheduler.
     llamacpp_load_gate: Arc<tokio::sync::Mutex<()>>,
     /// llama.cpp backend — in-process via the vendored substrate. Loaded
     /// lazily on first inference; None until then.
@@ -98,13 +95,6 @@ impl CandleAdapter {
             gpu_manager: None,
             model_guard: RwLock::new(None),
             adapter_guards: RwLock::new(HashMap::new()),
-            // Parallel inference scaled by available RAM. Each concurrent
-            // inference costs roughly (model_size_gb) + (n_ctx_tokens * ~73KB
-            // for KV cache). For Qwen3.5-4B Q4_K_M at n_ctx=8192 that's
-            // ~2.7GB model + ~600MB KV per context. We cap at 4 to keep Metal
-            // scheduler happy. Machines with <16GB stay at 1; above that
-            // each additional 8GB buys one more parallel slot.
-            inference_semaphore: Arc::new(tokio::sync::Semaphore::new(concurrent_inference_permits())),
             llamacpp_load_gate: Arc::new(tokio::sync::Mutex::new(())),
             llamacpp_backend: Arc::new(RwLock::new(None)),
         }
@@ -119,7 +109,7 @@ impl CandleAdapter {
         let log = runtime::logger("candle");
         let config = backends::llamacpp::LlamaCppConfig {
             model_path: std::path::PathBuf::from(model_path),
-            n_seq_max: concurrent_inference_permits() as u32,
+            n_seq_max: local_inference_capacity() as u32,
             ..Default::default()
         };
         let backend = backends::llamacpp::LlamaCppBackend::load(config)?;
@@ -154,6 +144,14 @@ impl CandleAdapter {
         let mut adapter = Self::new();
         adapter.use_quantized = false;
         adapter
+    }
+
+    /// Local-inference concurrency capacity in use by this adapter's
+    /// scheduler. Exposed so the TS-side `InferenceCoordinator` can fetch
+    /// the same number via IPC instead of re-deriving it (drift bait).
+    /// Both layers MUST agree to avoid double-gating bugs (see issue #887).
+    pub fn inference_capacity(&self) -> usize {
+        local_inference_capacity()
     }
 
     pub fn lora_capabilities(&self) -> LoRACapabilities {
@@ -541,7 +539,7 @@ impl AIProviderAdapter for CandleAdapter {
                         None => { log.warn("Eager-load: non-utf8 GGUF path"); return; }
                     };
                     let load_start = std::time::Instant::now();
-                    let n_seq_max = concurrent_inference_permits() as u32;
+                    let n_seq_max = local_inference_capacity() as u32;
                     let result = tokio::task::spawn_blocking(move || {
                         let config = backends::llamacpp::LlamaCppConfig {
                             model_path: std::path::PathBuf::from(path_str),
@@ -725,20 +723,13 @@ impl AIProviderAdapter for CandleAdapter {
             &model_id,
         ).await?;
 
-        // Serialize local inference: only 1 at a time.
-        // The RwLock on backend already serializes execution, but the semaphore
-        // prevents multiple personas from even QUEUING on spawn_blocking threads
-        // (each blocked thread holds stack + Metal state in memory).
-        let wait_start = std::time::Instant::now();
-        let _permit = self.inference_semaphore.clone().acquire_owned().await
-            .map_err(|e| format!("Inference semaphore closed: {e}"))?;
-        let wait_ms = wait_start.elapsed().as_millis();
-        if wait_ms > 100 {
-            log.info(&format!(
-                "Inference gate: waited {}ms for permit",
-                wait_ms
-            ));
-        }
+        // The continuous-batching scheduler IS the gate now: capacity is
+        // bounded by `n_seq_max` inside llama.cpp, and overflow requests
+        // queue on the scheduler's mpsc channel until a sequence slot
+        // frees. The previous `inference_semaphore.acquire_owned()` here
+        // double-gated — it serialized requests outside the scheduler
+        // even though the scheduler itself was already enforcing the
+        // same capacity bound. Removed.
 
         // Generate on the blocking pool. spawn_blocking moves the sync C++
         // work off the async runtime entirely — no main-thread blocking,
@@ -948,78 +939,6 @@ pub fn resolve_model_id(requested: &str) -> String {
     requested.to_string()
 }
 
-/// Compute how many concurrent inferences this machine can handle.
-///
-/// Each concurrent inference costs roughly (model_size) + (n_ctx * ~73KB/tok
-/// for KV cache). For Qwen3.5-4B Q4_K_M at n_ctx=8192 that's ~2.7GB model
-/// (shared) + ~600MB KV per context. With ample headroom we can run 4
-/// conversations in parallel; on memory-tight machines we stay at 1.
-///
-/// TODO: this is the STATIC upper bound. The dynamic target (per Joel) is
-/// to ELASTICALLY expand permits when:
-///   - memory pressure is Normal AND queue has waiters AND free-mem allows
-/// and contract when:
-///   - memory pressure rises to High/Critical
-/// A background task will drive that by calling `add_permits` / absorbing
-/// permits via `forget` on this semaphore. For now we ship the RAM-based
-/// cap to remove the hardcoded 1-permit bottleneck that was serializing all
-/// local inference through a single slot.
-fn concurrent_inference_permits() -> usize {
-    let total_ram_gb: u64 = {
-        #[cfg(target_os = "macos")]
-        {
-            let mut size: u64 = 0;
-            let mut len = std::mem::size_of::<u64>();
-            let key = std::ffi::CString::new("hw.memsize").unwrap();
-            unsafe {
-                libc::sysctlbyname(
-                    key.as_ptr(),
-                    &mut size as *mut u64 as *mut _,
-                    &mut len,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-            size / (1024 * 1024 * 1024)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            std::fs::read_to_string("/proc/meminfo")
-                .ok()
-                .and_then(|s| s.lines().next().map(String::from))
-                .and_then(|line| line.split_whitespace().nth(1).map(String::from))
-                .and_then(|kb| kb.parse::<u64>().ok())
-                .map(|kb| kb / (1024 * 1024))
-                .unwrap_or(8)
-        }
-    };
-
-    // Conservative breakpoints. On a 32GB M1 Pro with 14 personas + RAG +
-    // Postgres already at ~80% RAM, 3 permits was observed to push back
-    // into the `llama_decode rc=1 — failed to find a memory slot` zone.
-    // Staying one notch below theoretical capacity until the dynamic
-    // pressure-reactive layer lands.
-    //
-    // 8-15GB  → 1 permit (serialize, too tight for parallel)
-    // 16-31GB → 2 permits
-    // 32-47GB → 2 permits (leaves headroom for RAG+Postgres+Bevy)
-    // 48GB+   → 3 permits (M5 Pro class — still leaves ~30GB for everything else)
-    let permits = if total_ram_gb >= 48 {
-        3
-    } else if total_ram_gb >= 16 {
-        2
-    } else {
-        1
-    };
-
-    runtime::logger("candle").info(&format!(
-        "Inference concurrency: {} permits (detected {}GB RAM, TODO: dynamic pressure-reactive)",
-        permits, total_ram_gb
-    ));
-
-    permits
-}
-
 /// Resolve the storage root for large files (models, adapters, datasets).
 /// Checks CONTINUUM_STORAGE_PATH from: env var → ~/.continuum/config.env → fallback ~/.continuum/.
 fn storage_root() -> std::path::PathBuf {
@@ -1111,7 +1030,7 @@ async fn ensure_llamacpp_loaded_async(
     let backend = tokio::task::spawn_blocking(move || {
         let config = backends::llamacpp::LlamaCppConfig {
             model_path: std::path::PathBuf::from(path_str),
-            n_seq_max: concurrent_inference_permits() as u32,
+            n_seq_max: local_inference_capacity() as u32,
             ..Default::default()
         };
         backends::llamacpp::LlamaCppBackend::load(config)
