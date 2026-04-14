@@ -74,7 +74,9 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
 ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
 
 WORKDIR /app
-COPY --from=avatars . /app/avatars/
+# Avatar VRM models are NOT baked in — see continuum-core.Dockerfile for
+# the full reasoning. Empty placeholder dir so Rust catalog finds the path.
+RUN mkdir -p /app/avatars
 RUN mkdir -p /root/.continuum/sockets /root/.continuum/jtag/data /root/.continuum/jtag/logs
 
 HEALTHCHECK --interval=5s --timeout=3s --retries=3 \

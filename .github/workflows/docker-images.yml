@@ -67,9 +67,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Avatar models needed by the Dockerfile's COPY --from=avatars
-          build-contexts: |
-            avatars=./src/models/avatars
+          # Avatar VRM models are NOT shipped via build-context anymore —
+          # src/models/avatars is git-ignored (133MB), so a fresh CI checkout
+          # has nothing to mount. Dockerfiles now create an empty /app/avatars
+          # placeholder. When LFS / model-init download / curl-from-CC0
+          # avatar provisioning lands, restore this `build-contexts` line.
 
   # ── Rust Core (CUDA variant) ─────────────────────────────
   # The cuda image is referenced by docker-compose.gpu.yml. Prior to this
@@ -117,8 +119,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=continuum-core-cuda
           cache-to: type=gha,mode=max,scope=continuum-core-cuda
-          build-contexts: |
-            avatars=./src/models/avatars
+          # Avatar build-context removed — see continuum-core job above
+          # for full reasoning. Dockerfile creates an empty /app/avatars.
 
   # ── LiveKit Bridge (was missing from CI!) ─────────────────
   livekit-bridge:

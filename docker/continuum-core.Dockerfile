@@ -101,12 +101,19 @@ ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
 # paths like "models/avatars" resolve correctly from cwd
 WORKDIR /app
 
-# Avatar VRM models — baked into image (CC0 licensed, ~132MB).
-# Required for persona avatar selection in live calls.
-# Stored at /app/avatars (not /app/models/) because the voice-models Docker
-# volume mounts over /app/models at runtime and would hide baked-in files.
-# Symlink models/avatars → /app/avatars so Rust catalog discovers them.
-COPY --from=avatars . /app/avatars/
+# Avatar VRM models — NOT baked in here. The 133MB src/models/avatars
+# directory is git-ignored (matched by src/.gitignore '/models/'), so
+# CI's `docker build` can't COPY them as a build context — the build
+# fails with "no such file or directory: ./src/models/avatars".
+#
+# Live-call avatars are tracked separately as "known gap not gating
+# #891" (see docs/infrastructure/PR891-E2E-VALIDATION.md). When the
+# avatar-provisioning story lands (LFS, model-init download, or curl
+# from a CC0 URL in CI before docker build), restore this COPY plus
+# the matching `build-contexts: avatars=./src/models/avatars` lines in
+# .github/workflows/docker-images.yml. Until then: empty /app/avatars
+# placeholder dir so Rust catalog doesn't crash on missing path.
+RUN mkdir -p /app/avatars
 
 # Socket and data directories
 RUN mkdir -p /root/.continuum/sockets /root/.continuum/jtag/data /root/.continuum/jtag/logs
