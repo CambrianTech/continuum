@@ -32,7 +32,13 @@ impl Default for LlamaCppConfig {
     fn default() -> Self {
         Self {
             model_path: PathBuf::new(),
-            context_length: 4096,
+            // 2048 keeps KV cache ~half of 4096 (~1.2GB saved on Qwen3.5-4B
+            // Q4_K_M's hybrid attention/recurrence layers). On memory-tight
+            // machines (M1 Pro 32GB with 14 personas + Postgres + RAG cache)
+            // a 4096 context can push the system into Metal alloc failures
+            // that surface as `llama_decode rc=1`. RAG budgets fit fine in
+            // 2048 — average chat prompt is 500-1500 tokens.
+            context_length: 2048,
             n_batch: 512,
             n_gpu_layers: -1,
         }
