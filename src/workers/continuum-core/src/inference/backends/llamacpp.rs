@@ -51,7 +51,12 @@ pub struct LlamaCppBackend {
     /// Loaded LoRA adapters keyed by caller-chosen id.
     /// We store them in a Mutex<HashMap> so ensure_adapter/remove_adapter
     /// can add/remove at runtime for genome paging.
-    loras: Mutex<HashMap<String, LoraAdapter<'static>>>,
+    /// `LoraAdapter` has no lifetime parameter by design — see the llama
+    /// crate docs. The invariant "adapter must not outlive model" is held
+    /// here because `model: Arc<Model>` is declared BEFORE `loras` and
+    /// therefore drops AFTER (Rust drops struct fields in declaration
+    /// order; `loras` drops first, the model lives to the end).
+    loras: Mutex<HashMap<String, LoraAdapter>>,
 }
 
 // SAFETY: Model is Send+Sync (llama.cpp models are immutable after load).
@@ -92,17 +97,10 @@ impl LlamaCppBackend {
     pub fn model_id(&self) -> &str { &self.model_id }
 
     /// Ensure a LoRA adapter is loaded (idempotent). Used by genome paging.
-    ///
-    /// The `'static` lifetime on the stored LoraAdapter is a lie we maintain
-    /// by guaranteeing the Model outlives the backend (Arc keeps it alive).
     pub fn ensure_adapter(&self, id: &str, path: &Path) -> Result<(), String> {
         let mut guard = self.loras.lock().map_err(|e| format!("LoRA lock poisoned: {e}"))?;
         if guard.contains_key(id) { return Ok(()); }
-        // SAFETY: lifetime extension to 'static. We never drop the Model while
-        // adapters exist — the Arc<Model> is held by &self and adapters borrow
-        // from the Model which lives as long as the backend.
-        let adapter: LoraAdapter<'_> = self.model.load_lora(path)?;
-        let adapter: LoraAdapter<'static> = unsafe { std::mem::transmute(adapter) };
+        let adapter = self.model.load_lora(path)?;
         guard.insert(id.to_string(), adapter);
         Ok(())
     }
@@ -134,17 +132,14 @@ impl LlamaCppBackend {
         // Apply LoRAs (hot-swap per generation — genome paging primitive)
         if !active_loras.is_empty() {
             let guard = self.loras.lock().map_err(|e| format!("LoRA lock: {e}"))?;
-            let mut refs: Vec<(&LoraAdapter<'static>, f32)> = Vec::new();
+            let mut refs: Vec<(&LoraAdapter, f32)> = Vec::new();
             for (id, scale) in active_loras {
                 match guard.get(id) {
                     Some(adapter) => refs.push((adapter, *scale)),
                     None => return Err(format!("LoRA adapter not loaded: {id}")),
                 }
             }
-            // Transmute scope: refs must live for duration of set_loras call;
-            // we rely on the guard still being held.
-            let refs_any: Vec<(&LoraAdapter<'_>, f32)> = unsafe { std::mem::transmute(refs) };
-            ctx.set_loras(&refs_any)?;
+            ctx.set_loras(&refs)?;
         }
 
         // Tokenize + prefill

@@ -102,7 +102,7 @@ impl CandleAdapter {
     pub fn load_llamacpp(&self, model_path: &str) -> Result<(), String> {
         let log = runtime::logger("candle");
         let config = backends::llamacpp::LlamaCppConfig {
-            model_path: model_path.to_string(),
+            model_path: std::path::PathBuf::from(model_path),
             ..Default::default()
         };
         let backend = backends::llamacpp::LlamaCppBackend::load(config)?;
@@ -666,7 +666,7 @@ impl AIProviderAdapter for CandleAdapter {
             let guard = self.llamacpp_backend.read();
             let llama = guard.as_ref()
                 .ok_or_else(|| "llama.cpp backend not loaded after load attempt".to_string())?;
-            llama.generate(&prompt, max_tokens, sampling.temperature as f32, &stop_tokens)
+            llama.generate(&prompt, max_tokens, sampling.temperature as f32, &stop_tokens, &[])
                 .map_err(|e| format!("llama.cpp generate failed: {e}"))?
         };
         let new_model_guard: Option<GpuAllocationGuard> = None;
