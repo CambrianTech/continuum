@@ -58,9 +58,28 @@ interface FileChunk {
 // CodebaseIndexer
 // ============================================================================
 
+/**
+ * In-memory cache of code_index entries + their embeddings.
+ *
+ * Without this, `query()` pulls every row (20K on a fully-indexed repo) with
+ * its 384-dim float32 vector from SQLite over IPC on every persona message —
+ * ~30MB transferred per query, observed at ~60s per RAG compose on M1 Pro.
+ * The Rust top-K over the vectors is fast; the bulk row transfer is not.
+ *
+ * Cache is invalidated whenever `index()` finishes (entry count or content
+ * may have changed) and lazily reloaded on the next query. The 30MB
+ * footprint is trivial compared to the per-message latency savings.
+ */
+interface QueryCacheEntry {
+  entries: CodeIndexEntry[];
+  targets: number[][];
+}
+
 export class CodebaseIndexer {
   private ipcClient: RustCoreIPCClientType | null = null;
   private _indexing = false;
+  private queryCache: QueryCacheEntry | null = null;
+  private queryCacheLoad: Promise<QueryCacheEntry> | null = null;
 
   /** Whether an indexing operation is in progress */
   get indexing(): boolean { return this._indexing; }
@@ -207,6 +226,11 @@ export class CodebaseIndexer {
       }
     }
 
+    // Any write to code_index invalidates the in-memory query cache.
+    if (entriesCreated > 0) {
+      this.invalidateQueryCache();
+    }
+
     const durationMs = Date.now() - startTime;
     log.info(`Indexing complete: ${entriesCreated} entries from ${changedFiles.length} files in ${(durationMs / 1000).toFixed(1)}s (${errors.length} errors)`);
 
@@ -230,42 +254,72 @@ export class CodebaseIndexer {
   async query(queryText: string, maxResults: number = 10): Promise<CodeIndexEntry[]> {
     const ipc = await this.getIPC();
 
-    // 1. Generate query embedding
-    const queryEmbedding = await ipc.embeddingGenerate(queryText);
+    // Run the query-embed in parallel with the cache load; on a warm cache
+    // the cache load resolves instantly and we're bottlenecked only on the
+    // ~5ms embedding generation.
+    const [queryEmbedding, cache] = await Promise.all([
+      ipc.embeddingGenerate(queryText),
+      this.loadQueryCache(),
+    ]);
 
-    // 2. Load all indexed entries with embeddings
-    const result = await ORM.query<CodeIndexEntity>({
-      collection: CodeIndexEntity.collection,
-      filter: {},
-      limit: 20000,
-    }, 'default');
+    if (cache.entries.length === 0) return [];
 
-    if (!result.success || !result.data || result.data.length === 0) {
-      return [];
-    }
-
-    const entries = result.data
-      .map(r => r.data)
-      .filter(e => e.embedding && e.embedding.length > 0);
-    if (entries.length === 0) return [];
-
-    // 3. Use Rust top-K for fast cosine similarity
-    const targets = entries.map(e => e.embedding!);
     const topK = await ipc.embeddingTopK(
       queryEmbedding.embedding,
-      targets,
+      cache.targets,
       maxResults,
       0.3,  // minimum similarity threshold
     );
 
-    // 4. Map results back to entries with relevance scores
     return topK.results.map(r => {
-      const entry = entries[r.index];
+      const entry = cache.entries[r.index];
       return {
         ...entry,
         relevanceScore: r.similarity,
       } as CodeIndexEntry;
     });
+  }
+
+  /**
+   * Load (and memoize) the full set of indexed entries + their embeddings.
+   *
+   * Dedups concurrent callers via `queryCacheLoad`: the first caller kicks
+   * the ORM fetch, subsequent callers await the same promise. Cache persists
+   * until `invalidateQueryCache()` is called (on re-index).
+   */
+  private async loadQueryCache(): Promise<QueryCacheEntry> {
+    if (this.queryCache) return this.queryCache;
+    if (this.queryCacheLoad) return this.queryCacheLoad;
+
+    this.queryCacheLoad = (async () => {
+      const result = await ORM.query<CodeIndexEntity>({
+        collection: CodeIndexEntity.collection,
+        filter: {},
+        limit: 20000,
+      }, 'default');
+
+      const entries = (result.success && result.data)
+        ? result.data.map(r => r.data).filter(e => e.embedding && e.embedding.length > 0)
+        : [];
+      const targets = entries.map(e => e.embedding!);
+
+      const cache = { entries, targets };
+      this.queryCache = cache;
+      this.queryCacheLoad = null;
+      log.info(`Query cache loaded: ${entries.length} entries (${targets.length > 0 ? targets[0].length : 0}-dim)`);
+      return cache;
+    })();
+
+    return this.queryCacheLoad;
+  }
+
+  /**
+   * Drop the cached entries. Next query will reload from the database.
+   * Called after any operation that mutates the code_index collection.
+   */
+  private invalidateQueryCache(): void {
+    this.queryCache = null;
+    this.queryCacheLoad = null;
   }
 
   /**
@@ -288,6 +342,7 @@ export class CodebaseIndexer {
     } catch (err) {
       log.warn(`Failed to clear code index: ${err}`);
     }
+    this.invalidateQueryCache();
   }
 
   /**
