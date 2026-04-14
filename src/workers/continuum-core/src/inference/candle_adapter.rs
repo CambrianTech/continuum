@@ -119,6 +119,7 @@ impl CandleAdapter {
         let log = runtime::logger("candle");
         let config = backends::llamacpp::LlamaCppConfig {
             model_path: std::path::PathBuf::from(model_path),
+            n_seq_max: concurrent_inference_permits() as u32,
             ..Default::default()
         };
         let backend = backends::llamacpp::LlamaCppBackend::load(config)?;
@@ -540,9 +541,11 @@ impl AIProviderAdapter for CandleAdapter {
                         None => { log.warn("Eager-load: non-utf8 GGUF path"); return; }
                     };
                     let load_start = std::time::Instant::now();
+                    let n_seq_max = concurrent_inference_permits() as u32;
                     let result = tokio::task::spawn_blocking(move || {
                         let config = backends::llamacpp::LlamaCppConfig {
                             model_path: std::path::PathBuf::from(path_str),
+                            n_seq_max,
                             ..Default::default()
                         };
                         backends::llamacpp::LlamaCppBackend::load(config)
@@ -1108,6 +1111,7 @@ async fn ensure_llamacpp_loaded_async(
     let backend = tokio::task::spawn_blocking(move || {
         let config = backends::llamacpp::LlamaCppConfig {
             model_path: std::path::PathBuf::from(path_str),
+            n_seq_max: concurrent_inference_permits() as u32,
             ..Default::default()
         };
         backends::llamacpp::LlamaCppBackend::load(config)

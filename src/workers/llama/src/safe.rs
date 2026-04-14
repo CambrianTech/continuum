@@ -320,6 +320,36 @@ impl<'m> Context<'m> {
     fn model_ptr(&self) -> *const sys::llama_model {
         unsafe { sys::llama_get_model(self.ptr.as_ptr()) }
     }
+
+    /// Free the KV cache for a given sequence id (positions [p0, p1)).
+    /// Use `p0=-1, p1=-1` to remove the whole sequence. Required when
+    /// reusing a seq_id slot in a shared multi-sequence context.
+    pub fn memory_seq_rm(&mut self, seq_id: i32, p0: i32, p1: i32) -> bool {
+        unsafe {
+            let mem = sys::llama_get_memory(self.ptr.as_ptr());
+            sys::llama_memory_seq_rm(mem, seq_id, p0, p1)
+        }
+    }
+
+    /// Wipe the entire KV cache for this context.
+    /// `data=true` also clears the underlying data buffers; `false` only
+    /// clears metadata (faster, sufficient for reuse-without-leak).
+    pub fn memory_clear(&mut self, data: bool) {
+        unsafe {
+            let mem = sys::llama_get_memory(self.ptr.as_ptr());
+            sys::llama_memory_clear(mem, data);
+        }
+    }
+
+    /// Highest absolute KV position currently held for `seq_id`, or -1 if
+    /// the sequence is empty. Used by the batch scheduler to know what
+    /// `pos` to assign the next token in a continuous-batching loop.
+    pub fn memory_seq_pos_max(&self, seq_id: i32) -> i32 {
+        unsafe {
+            let mem = sys::llama_get_memory(self.ptr.as_ptr());
+            sys::llama_memory_seq_pos_max(mem, seq_id)
+        }
+    }
 }
 
 impl<'m> Drop for Context<'m> {
