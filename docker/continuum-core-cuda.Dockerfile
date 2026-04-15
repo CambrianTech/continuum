@@ -10,9 +10,15 @@
 #   args:
 #     GPU_FEATURES: "--no-default-features --features load-dynamic-ort,cuda"
 
-# ── Stage 1: Build with CUDA toolkit ─────────────────────────
-# nvidia/cuda devel image has nvcc, CUDA libs, and build tools
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
+# ── Stage 1: Chef base (cargo-chef installed, system deps in place) ──
+# Mirrors the multi-stage cargo-chef pattern from continuum-core.Dockerfile
+# (CPU variant). Doing it any other way — e.g. collapsing planner+builder
+# into one stage with `COPY . .` BEFORE chef cook — leaves stub binaries
+# from chef-cook's recipe build in /app/target/. The subsequent
+# `cargo build` then sees those stubs as "fresh" (newer mtime than the
+# COPY'd source) and silently skips rebuild — producing a 436KB shell
+# binary that exits 0 immediately. Painful to debug. Don't collapse.
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS chef
 
 # Rust + build-time system libs. Unlike the CPU variant which uses
 # rust:1.89-bookworm (Debian base with a lot of -dev libs pre-installed),
@@ -31,6 +37,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.89
 ENV PATH=/root/.cargo/bin:$PATH
+RUN cargo install cargo-chef --locked
+WORKDIR /app
+
+# ── Stage 2: Plan (read source → emit recipe.json) ──────────
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 3: Build (cook deps from recipe, then real source) ──
+FROM chef AS builder
 
 # candle-kernels' build script tries to detect the CUDA compute capability
 # via `nvidia-smi` at compile time. That's fine on bare metal but FAILS
@@ -53,16 +69,14 @@ ENV PATH=/root/.cargo/bin:$PATH
 ARG CUDA_COMPUTE_CAP=90
 ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
 
-WORKDIR /app
-
-# Cache dependencies
-RUN cargo install cargo-chef --locked
-
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
+# 1. Cook deps from the recipe ONLY (no source yet → no stub binaries
+#    produced for our workspace bins → no incremental-build false-positive).
 ARG GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda"
+COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
+
+# 2. NOW copy the real source. mtime is fresh; cargo will rebuild for real.
+COPY . .
 
 # Fail fast if the host forgot to init submodules. Without this, cmake's
 # CMakeLists-not-found error surfaces deep inside the CUDA build —
@@ -73,7 +87,7 @@ RUN test -f vendor/llama.cpp/CMakeLists.txt || ( \
     echo "         git submodule update --init --recursive" >&2 && \
     exit 1 )
 
-# Build the actual binaries with vendored llama.cpp CUDA kernels
+# 3. Build the actual binaries with vendored llama.cpp CUDA kernels.
 RUN cargo build --release ${GPU_FEATURES} \
     --bin continuum-core-server \
     --bin archive-worker
