@@ -126,7 +126,69 @@ else
   docker buildx use continuum-builder
 fi
 
-# ── Build + push ────────────────────────────────────────────────────
+# ── Phase 0: native cargo test ──────────────────────────────────────
+# Prove the Rust code is sound against the backend BEFORE we spin up a
+# Docker build. Fails in seconds instead of minutes when the regression
+# is in the Rust source. Runs only when the host can natively build the
+# feature set — otherwise skipped (not faked) so Phase 1+2 remains the
+# authoritative gate on skippable hosts.
+HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
+NATIVE_FEATURE=""
+case "$VARIANT:$HOST_OS" in
+  cuda:Linux)
+    # Needs nvcc + Nvidia driver. Detect nvidia-smi as a proxy.
+    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+      NATIVE_FEATURE="cuda"
+    else
+      echo "→ Phase 0 skipped: variant=cuda but no working nvidia-smi on host"
+    fi
+    ;;
+  vulkan:Linux)
+    # Needs libvulkan. Detect vulkaninfo or pkg-config.
+    if command -v vulkaninfo &>/dev/null || pkg-config --exists vulkan 2>/dev/null; then
+      NATIVE_FEATURE="vulkan"
+    else
+      echo "→ Phase 0 skipped: variant=vulkan but libvulkan not installed on host"
+    fi
+    ;;
+  core:*)
+    # Default features, no GPU required — always runnable.
+    NATIVE_FEATURE=""  # Empty means default features (no --features flag)
+    ;;
+  *:Darwin)
+    # Mac can't build cuda or vulkan natively — cuda is x86-only Nvidia,
+    # vulkan on Mac needs MoltenVK setup we haven't wired. But Metal IS
+    # the native Mac backend; running `--features=metal` proves the
+    # llama crate + scheduler code is sound for the same Rust paths that
+    # the container will exercise via Vulkan kernels. Not identical, but
+    # close enough to catch most Rust regressions in seconds.
+    NATIVE_FEATURE="metal"
+    echo "→ Phase 0 using --features=metal on Mac (variant=$VARIANT builds in container)"
+    ;;
+esac
+
+if [[ -n "${NATIVE_FEATURE+x}" ]]; then
+  echo ""
+  echo "→ Phase 0: cargo test -p llama ${NATIVE_FEATURE:+--features=$NATIVE_FEATURE}"
+  pushd "$REPO_ROOT/src/workers" >/dev/null
+  if [[ -n "$NATIVE_FEATURE" ]]; then
+    cargo test -p llama --features="$NATIVE_FEATURE" --release -- --test-threads=1
+  else
+    cargo test -p llama --release -- --test-threads=1
+  fi
+  TEST_RC=$?
+  popd >/dev/null
+  if [[ $TEST_RC -ne 0 ]]; then
+    echo "" >&2
+    echo "✗ Phase 0 (native cargo test) failed — NOT building docker image." >&2
+    echo "  Rust code regression in llama crate. Fix locally, re-run." >&2
+    exit 2
+  fi
+  echo "✓ Phase 0 passed"
+fi
+
+# ── Phase 1-4: docker build + slice + push ──────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  variant:    $VARIANT"
