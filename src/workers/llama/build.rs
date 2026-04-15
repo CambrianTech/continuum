@@ -32,7 +32,20 @@ fn main() {
         // CMake's POSITION_INDEPENDENT_CODE flag adds -fPIC to all C/C++
         // compilation including nvcc's host-side, so the resulting .a
         // archives can link into a .so. Cheap and safe everywhere.
-        .define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
+        .define("CMAKE_POSITION_INDEPENDENT_CODE", "ON")
+        // Disable NCCL (NVIDIA Collective Communications Library). It's
+        // for multi-GPU all-reduce; single-GPU deploys (BigMama 5090,
+        // Toby's Windows/WSL2, most users) never use it. The default
+        // ggml/CMakeLists.txt option is ON, and find_package(NCCL)
+        // succeeds inside nvidia/cuda:12.8.0-devel because NCCL headers
+        // are present — but the runtime image doesn't ship libnccl.so,
+        // and even if it did we'd be linking nccl* symbols into a
+        // workload that never calls them. Final link fails with:
+        //   undefined reference to `ncclCommInitAll' / `ncclAllReduce'
+        //   / `ncclGroupStart' / `ncclGetErrorString' (etc.)
+        // When we ship a multi-GPU build (later, separate image), flip
+        // this back ON and add libnccl to the runtime apt list.
+        .define("GGML_CUDA_NCCL", "OFF");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
