@@ -260,3 +260,57 @@ mod_continuum_bin_link() {
   esac
   module_done "continuum-bin"
 }
+
+# ── mod_tailscale_check ─────────────────────────────────────
+# Tailscale powers cross-machine peer discovery + TLS for the grid
+# story. Optional for pure-localhost installs but the install-time
+# detect saves a debugging session later when "why can't BigMama see
+# my widget" hits. No sudo. No install — just detect + nudge.
+mod_tailscale_check() {
+  if ! command -v tailscale &>/dev/null; then
+    module_skip "tailscale" "not installed (optional — install from tailscale.com if you want grid/cross-machine)"
+    return 0
+  fi
+  if ! tailscale status &>/dev/null; then
+    module_start "tailscale" "Installed but not running — start it via 'sudo tailscale up' (one-time)"
+    warn "Continuing — Continuum works locally without Tailscale."
+    return 0
+  fi
+  local ts_ip; ts_ip=$(tailscale ip -4 2>/dev/null | head -1)
+  module_skip "tailscale" "active at $ts_ip"
+}
+
+# ── mod_docker_check ────────────────────────────────────────
+# Hard requirement for Carl path; useful sanity-check for Dev too. Three
+# tiers: not installed → fail with install URL; installed-not-running →
+# fail with start instructions; running but WSL not integrated →
+# delegate to mod_docker_wsl_integration above.
+mod_docker_check() {
+  if ! command -v docker &>/dev/null; then
+    case "${PLATFORM:-$(uname -s)}" in
+      Linux|linux|wsl)
+        module_fail "docker" "Not installed. Install: curl -fsSL https://get.docker.com | sh; then 'sudo usermod -aG docker \$USER'; log out + back in."
+        ;;
+      Darwin|macos)
+        module_fail "docker" "Not installed. Install Docker Desktop: https://docker.com/products/docker-desktop or Rancher Desktop: https://rancherdesktop.io"
+        ;;
+      *)
+        module_fail "docker" "Not installed. Install Docker for your platform."
+        ;;
+    esac
+  fi
+  # Daemon reachability: if WSL2 + Docker Desktop integration broken,
+  # mod_docker_wsl_integration will repair it. Otherwise this is a
+  # 'start Docker Desktop' nudge.
+  if ! docker info &>/dev/null 2>&1; then
+    if grep -qi microsoft /proc/version 2>/dev/null && [ -d /mnt/wsl/docker-desktop ]; then
+      module_start "docker" "Daemon unreachable on WSL2 — delegating to mod_docker_wsl_integration"
+      mod_docker_wsl_integration
+      docker info &>/dev/null 2>&1 \
+        || module_fail "docker" "Daemon still unreachable after WSL integration repair. Try 'wsl --shutdown' from Windows PowerShell, then re-run."
+      return 0
+    fi
+    module_fail "docker" "Daemon not reachable. Start Docker Desktop / Rancher Desktop, then re-run."
+  fi
+  module_skip "docker" "$(docker version --format '{{.Server.Version}}' 2>/dev/null) reachable"
+}

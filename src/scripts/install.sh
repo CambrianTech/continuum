@@ -190,7 +190,10 @@ install_system_deps() {
       if [ ${#needed[@]} -gt 0 ]; then
         if $CAN_SUDO; then
           echo -e "  Installing: ${needed[*]}"
-          echo -e "  ${YELLOW}System packages need to be installed (one-time). You may be prompted for your password.${NC}"
+          # One-prompt-contract: ensure_sudo_warmed prompts ONCE if needed,
+          # arms keepalive, every subsequent sudo within the run is silent.
+          # See docs/infrastructure/INSTALL-ARCHITECTURE.md.
+          ensure_sudo_warmed
           $SUDO apt-get update -qq
           $SUDO apt-get install -y "${needed[@]}"
         else
@@ -416,6 +419,8 @@ install_postgres() {
     case "$PLATFORM" in
       macos) brew install postgresql@16 && brew services start postgresql@16 ;;
       linux|wsl)
+        # One-prompt-contract: warm sudo cache once for all postgres ops below.
+        ensure_sudo_warmed
         sudo apt-get install -y postgresql postgresql-client
         sudo service postgresql start 2>/dev/null || sudo pg_ctlcluster 16 main start 2>/dev/null || true
         ;;
@@ -423,7 +428,9 @@ install_postgres() {
     echo -e "  ${GREEN}✅ PostgreSQL installed${NC}"
   fi
 
-  # Set trust auth for local connections (no password needed for development)
+  # Set trust auth for local connections (no password needed for development).
+  # Sudo cache already warmed above (or already root); these calls are silent.
+  ensure_sudo_warmed
   local pg_hba=$(sudo -u postgres psql -t -c "SHOW hba_file" 2>/dev/null | tr -d ' ')
   if [ -n "$pg_hba" ] && [ -f "$pg_hba" ]; then
     if grep -q "scram-sha-256" "$pg_hba" 2>/dev/null; then
