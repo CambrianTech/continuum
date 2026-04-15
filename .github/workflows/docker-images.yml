@@ -17,6 +17,17 @@ on:
   # Manual trigger — rebuild all images on demand
   workflow_dispatch:
 
+# Auto-cancel in-progress runs when a new commit lands on the same branch.
+# Without this, rapid-fire pushes stack up concurrent multi-arch builds that
+# fight each other for runners + GHA cache + registry storage — which we hit
+# on this branch when three runs piled up during the Vulkan wall-march. The
+# `group` scopes cancellation per branch/PR so main + feature branches don't
+# interfere with each other. cancel-in-progress=true cancels obsolete builds
+# the moment a newer commit supersedes them.
+concurrency:
+  group: docker-images-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   # Every image gets both architectures. Docker picks the right one at pull time.
