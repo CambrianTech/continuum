@@ -39,7 +39,6 @@ jobs:
           submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
 
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -58,13 +57,14 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr,prefix=pr-
 
       - uses: docker/build-push-action@v6
         with:
           context: ./src/workers
           file: ./docker/continuum-core.Dockerfile
           platforms: ${{ env.PLATFORMS }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -93,7 +93,6 @@ jobs:
           submodules: recursive  # vendor/llama.cpp needs to be populated
 
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -108,6 +107,7 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr,prefix=pr-
 
       - uses: docker/build-push-action@v6
         with:
@@ -116,7 +116,7 @@ jobs:
           # amd64-only: CUDA devel image + NVIDIA Container Toolkit
           # target amd64 hosts in practice.
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=continuum-core-cuda
@@ -142,7 +142,6 @@ jobs:
           submodules: recursive  # vendor/llama.cpp needs to be populated
 
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -160,6 +159,7 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr,prefix=pr-
 
       - uses: docker/build-push-action@v6
         with:
@@ -168,7 +168,7 @@ jobs:
           # Multi-arch: linux/arm64 for Carl-on-Mac via Podman+krunkit,
           # linux/amd64 for generic Linux GPU hosts (AMD, Intel, virtio).
           platforms: ${{ env.PLATFORMS }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=continuum-core-vulkan
@@ -187,7 +187,6 @@ jobs:
           submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
 
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -203,13 +202,14 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr,prefix=pr-
 
       - uses: docker/build-push-action@v6
         with:
           context: ./src/workers
           file: ./docker/livekit-bridge.Dockerfile
           platforms: ${{ env.PLATFORMS }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -227,7 +227,6 @@ jobs:
           submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
 
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -243,13 +242,14 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr,prefix=pr-
 
       - uses: docker/build-push-action@v6
         with:
           context: ./src
           file: ./docker/node-server.Dockerfile
           platforms: ${{ env.PLATFORMS }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -267,7 +267,6 @@ jobs:
           submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
 
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -283,13 +282,14 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr,prefix=pr-
 
       - uses: docker/build-push-action@v6
         with:
           context: ./src
           file: ./docker/model-init.Dockerfile
           platforms: ${{ env.PLATFORMS }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -307,7 +307,6 @@ jobs:
           submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
 
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -323,13 +322,14 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr,prefix=pr-
 
       - uses: docker/build-push-action@v6
         with:
           context: ./src
           file: ./docker/widget-server.Dockerfile
           platforms: ${{ env.PLATFORMS }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

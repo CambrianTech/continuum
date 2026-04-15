@@ -36,7 +36,7 @@ services:
     # the CPU image from base; the build.dockerfile override only takes
     # effect on local `compose build`. Both the pull-from-ghcr path AND
     # the local-build path need to land on the cuda image.
-    image: ghcr.io/cambriantech/continuum-core-cuda:latest
+    image: ghcr.io/cambriantech/continuum-core-cuda:${CONTINUUM_IMAGE_TAG:-latest}
     build:
       # Override Dockerfile to pick up CUDA toolkit + nvcc.
       dockerfile: ../../docker/continuum-core-cuda.Dockerfile

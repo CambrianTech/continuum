@@ -234,7 +234,14 @@ elif [[ "$HAS_GPU" == "true" ]]; then
 fi
 
 # ── 7. Pull images ─────────────────────────────────────────
-info "Pulling container images..."
+# Image tag resolution: compose files honor ${CONTINUUM_IMAGE_TAG:-latest}.
+# Main-branch installs (Carl's default) use :latest. Reviewers validating
+# a PR before merge can pin the PR's staged image set:
+#   CONTINUUM_IMAGE_TAG=pr-891 curl -fsSL install.sh | bash
+# CI tags every PR build with pr-<number> (see .github/workflows/docker-images.yml).
+# Merging to main promotes that image set to :latest, so main and :latest
+# are always in sync by construction.
+info "Pulling container images (tag: ${CONTINUUM_IMAGE_TAG:-latest})..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
 
 # ── 8. Start ───────────────────────────────────────────────

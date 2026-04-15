@@ -40,7 +40,7 @@ services:
     build:
       context: ./src
       dockerfile: ../docker/model-init.Dockerfile
-    image: ghcr.io/cambriantech/continuum-model-init:latest
+    image: ghcr.io/cambriantech/continuum-model-init:${CONTINUUM_IMAGE_TAG:-latest}
     volumes:
       - voice-models:/models
     environment:
@@ -61,7 +61,7 @@ services:
         # --no-default-features excludes livekit-webrtc (handled by livekit-bridge).
         # load-dynamic-ort loads ONNX Runtime as shared lib (runtime discovery).
         GPU_FEATURES: "--no-default-features --features load-dynamic-ort"
-    image: ghcr.io/cambriantech/continuum-core:latest
+    image: ghcr.io/cambriantech/continuum-core:${CONTINUUM_IMAGE_TAG:-latest}
     restart: unless-stopped
     working_dir: /app
     depends_on:
@@ -105,7 +105,7 @@ services:
     build:
       context: ./src/workers
       dockerfile: ../../docker/livekit-bridge.Dockerfile
-    image: ghcr.io/cambriantech/continuum-livekit-bridge:latest
+    image: ghcr.io/cambriantech/continuum-livekit-bridge:${CONTINUUM_IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on:
       - livekit
@@ -124,7 +124,7 @@ services:
     build:
       context: ./src
       dockerfile: ../docker/node-server.Dockerfile
-    image: ghcr.io/cambriantech/continuum-node:latest
+    image: ghcr.io/cambriantech/continuum-node:${CONTINUUM_IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on:
       continuum-core:
@@ -147,7 +147,7 @@ services:
     build:
       context: ./src
       dockerfile: ../docker/widget-server.Dockerfile
-    image: ghcr.io/cambriantech/continuum-widgets:latest
+    image: ghcr.io/cambriantech/continuum-widgets:${CONTINUUM_IMAGE_TAG:-latest}
     restart: unless-stopped
     mem_limit: 512m
     depends_on:
@@ -226,7 +226,7 @@ services:
   # ── Forge Worker (sentinel-ai) ────────────────────────────
   forge-worker:
     build: ../sentinel-ai
-    image: ghcr.io/cambriantech/forge-worker:latest
+    image: ghcr.io/cambriantech/forge-worker:${CONTINUUM_IMAGE_TAG:-latest}
     profiles: ["gpu"]
     mem_limit: 28g
     deploy:

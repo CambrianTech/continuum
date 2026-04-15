@@ -47,7 +47,7 @@
 services:
 
   continuum-core:
-    image: ghcr.io/cambriantech/continuum-core-vulkan:latest
+    image: ghcr.io/cambriantech/continuum-core-vulkan:${CONTINUUM_IMAGE_TAG:-latest}
     build:
       dockerfile: ../../docker/continuum-core-vulkan.Dockerfile
       args:
