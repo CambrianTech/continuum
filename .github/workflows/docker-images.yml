@@ -67,7 +67,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=registry,ref=ghcr.io/cambriantech/continuum-core:buildcache
           cache-to: type=gha,mode=max
           # Avatar VRM models are NOT shipped via build-context anymore —
           # src/models/avatars is git-ignored (133MB), so a fresh CI checkout
@@ -119,7 +121,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=continuum-core-cuda
+          cache-from: |
+            type=gha,scope=continuum-core-cuda
+            type=registry,ref=ghcr.io/cambriantech/continuum-core-cuda:buildcache
           cache-to: type=gha,mode=max,scope=continuum-core-cuda
           # Avatar build-context removed — see continuum-core job above
           # for full reasoning. Dockerfile creates an empty /app/avatars.
@@ -171,7 +175,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=continuum-core-vulkan
+          cache-from: |
+            type=gha,scope=continuum-core-vulkan
+            type=registry,ref=ghcr.io/cambriantech/continuum-core-vulkan:buildcache
           cache-to: type=gha,mode=max,scope=continuum-core-vulkan
 
   # ── LiveKit Bridge (was missing from CI!) ─────────────────
@@ -212,7 +218,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=registry,ref=ghcr.io/cambriantech/continuum-livekit-bridge:buildcache
           cache-to: type=gha,mode=max
 
   # ── Node Server ───────────────────────────────────────────
@@ -252,7 +260,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=registry,ref=ghcr.io/cambriantech/continuum-node:buildcache
           cache-to: type=gha,mode=max
 
   # ── Model Init ────────────────────────────────────────────
@@ -292,7 +302,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=registry,ref=ghcr.io/cambriantech/continuum-model-init:buildcache
           cache-to: type=gha,mode=max
 
   # ── Widget Server ─────────────────────────────────────────
@@ -332,7 +344,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=registry,ref=ghcr.io/cambriantech/continuum-widgets:buildcache
           cache-to: type=gha,mode=max
 
   # ── Verify Both Architectures ─────────────────────────────
