@@ -3,6 +3,10 @@
 //! Cross-platform:
 //!   - macOS: GGML_METAL=ON (Metal framework available)
 //!   - Linux + `cuda` feature: GGML_CUDA=ON (requires CUDA toolkit)
+//!   - Linux + `vulkan` feature: GGML_VULKAN=ON (routes to host Metal via
+//!     MoltenVK when run under krunkit+Podman on Apple Silicon; gets ~80% of
+//!     native Metal perf. Also viable on Nvidia/AMD Linux hosts with
+//!     libvulkan.)
 //!   - Default: CPU only with BLAS if available
 
 use std::env;
@@ -96,6 +100,18 @@ fn main() {
         cfg.define("GGML_CUDA", "OFF");
     }
 
+    // Vulkan on Linux — the Carl-on-Mac path. Containers on Apple Silicon
+    // cannot access Metal directly (no GPU passthrough in Apple's hypervisor),
+    // but Podman + krunkit routes Vulkan API calls out to a Vulkan-to-Metal
+    // layer (MoltenVK) running on the host, achieving ~80% of native Metal
+    // throughput. Runtime needs libvulkan.so.1 + a Vulkan ICD present.
+    if cfg!(feature = "vulkan") && target_os == "linux" {
+        cfg.define("GGML_VULKAN", "ON");
+        println!("cargo:rustc-link-lib=vulkan");
+    } else {
+        cfg.define("GGML_VULKAN", "OFF");
+    }
+
     let dst = cfg.build();
 
     // Link the static libraries produced by cmake
@@ -119,6 +135,9 @@ fn main() {
     }
     if cfg!(feature = "cuda") && target_os == "linux" {
         println!("cargo:rustc-link-lib=static:+whole-archive=ggml-cuda");
+    }
+    if cfg!(feature = "vulkan") && target_os == "linux" {
+        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-vulkan");
     }
 
     // C++ stdlib + OpenMP (llama.cpp CPU backend uses GOMP_parallel on Linux).

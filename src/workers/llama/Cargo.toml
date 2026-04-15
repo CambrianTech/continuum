@@ -21,3 +21,4 @@ bindgen = "0.70"
 default = []
 metal = []
 cuda = []
+vulkan = []

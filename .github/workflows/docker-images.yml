@@ -124,6 +124,56 @@ jobs:
           # Avatar build-context removed — see continuum-core job above
           # for full reasoning. Dockerfile creates an empty /app/avatars.
 
+  # ── Rust Core (Vulkan) ────────────────────────────────────
+  # The Carl-on-Mac GPU path. Apple's hypervisor exposes no GPU to Linux
+  # containers (Docker Desktop / Apple container / krunkit all blocked by
+  # Apple), but Podman + krunkit routes Vulkan API calls out to MoltenVK
+  # on the host Mac, which translates to Metal. ~80% of native Metal perf
+  # on the reference llama.cpp benchmark (M2 Max, Phi-3: 63 vs 78 tok/s).
+  # Same image is valid on Nvidia/AMD Linux hosts with libvulkan.
+  continuum-core-vulkan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive  # vendor/llama.cpp needs to be populated
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # QEMU for cross-arch build. Carl-on-Mac is linux/arm64 under krunkit.
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/cambriantech/continuum-core-vulkan
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./src/workers
+          file: ./docker/continuum-core-vulkan.Dockerfile
+          # Multi-arch: linux/arm64 for Carl-on-Mac via Podman+krunkit,
+          # linux/amd64 for generic Linux GPU hosts (AMD, Intel, virtio).
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=continuum-core-vulkan
+          cache-to: type=gha,mode=max,scope=continuum-core-vulkan
+
   # ── LiveKit Bridge (was missing from CI!) ─────────────────
   livekit-bridge:
     runs-on: ubuntu-latest
@@ -292,7 +342,7 @@ jobs:
   verify-architectures:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
-    needs: [continuum-core, continuum-core-cuda, livekit-bridge, node-server, model-init, widget-server]
+    needs: [continuum-core, continuum-core-cuda, continuum-core-vulkan, livekit-bridge, node-server, model-init, widget-server]
     steps:
       - uses: docker/setup-qemu-action@v3
 
@@ -312,6 +362,7 @@ jobs:
         run: |
           IMAGES=(
             "ghcr.io/cambriantech/continuum-core:latest"
+            "ghcr.io/cambriantech/continuum-core-vulkan:latest"
             "ghcr.io/cambriantech/continuum-livekit-bridge:latest"
             "ghcr.io/cambriantech/continuum-node:latest"
             "ghcr.io/cambriantech/continuum-model-init:latest"
