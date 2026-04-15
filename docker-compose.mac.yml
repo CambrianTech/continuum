@@ -1,0 +1,79 @@
+# Continuum — Mac (Vulkan-in-container) override
+#
+# Layered on top of docker-compose.yml when running continuum-core inside a
+# container on an Apple Silicon Mac. Apple's hypervisor exposes no GPU to
+# Linux containers (Docker Desktop, Apple container, and krunkit are all
+# blocked by the lack of IOMMU on Apple GPUs — maintainers confirmed).
+#
+# The one working path: Podman + krunkit. krunkit is a VMM that routes
+# Vulkan API calls from inside the container out to MoltenVK on the host,
+# which translates Vulkan → Metal → Apple GPU. llama.cpp's GGML_VULKAN
+# backend is first-class: on the reference Phi-3 benchmark (M2 Max) the
+# container path gets ~80% of native Metal throughput (63 vs 78 tok/s).
+# Close enough to stay inside the "always GPU, never CPU fallback" envelope.
+#
+# Usage (Mac Carl — the curl-installer end user):
+#   brew tap slp/krunkit && brew install krunkit podman
+#   podman machine init --rootful=false --cpus=8 --memory=16384
+#   podman machine start
+#   podman compose -f docker-compose.yml -f docker-compose.mac.yml up
+#
+# Dev on Mac who wants PEAK Metal performance (no Vulkan translation tax)
+# should NOT use this override — just run continuum-core-server natively
+# via `npm start` / `cargo run --features=metal`. The 20% perf gap between
+# native Metal and krunkit Vulkan is the cost of putting inference in a
+# container; for Carl, that cost buys "one command and it just works."
+#
+# What this overrides relative to docker-compose.yml:
+#
+#   - continuum-core build switches to docker/continuum-core-vulkan.Dockerfile
+#     (Debian bookworm builder + Ubuntu 24.04 runtime with libvulkan1 and
+#     Mesa ICDs — venus driver used for virtio-GPU passthrough via krunkit).
+#   - GPU_FEATURES gains "vulkan" so workers/llama/build.rs links
+#     ggml-vulkan into the binary and the scheduler runs decode via Vulkan
+#     compute shaders.
+#   - continuum-core requests access to /dev/dri for virtio-GPU; krunkit
+#     exposes the Metal-backed Vulkan device there when running on Mac.
+#     On Linux hosts with a real GPU, mount /dev/dri from the actual
+#     device instead.
+#   - The legacy `inference` service is shadowed the same way as the GPU
+#     profile — personas flow through continuum-core's scheduler IPC, not
+#     a separate HTTP llama-server loopback.
+#
+# Why a separate file: docker-compose.yml remains the CPU-only baseline
+# (Ares bootloader exception, Linux CI smoke, non-accelerated fallback).
+# BigMama keeps using docker-compose.gpu.yml for CUDA. Mac Carl gets this.
+
+services:
+
+  continuum-core:
+    image: ghcr.io/cambriantech/continuum-core-vulkan:latest
+    build:
+      dockerfile: ../../docker/continuum-core-vulkan.Dockerfile
+      args:
+        GPU_FEATURES: "--no-default-features --features load-dynamic-ort,vulkan"
+    # /dev/dri is the virtio-GPU node krunkit exposes to the guest. The
+    # Vulkan ICD inside the container discovers it via `vulkaninfo` and
+    # uses it for compute submits. On a real Linux host with an AMD/Intel
+    # GPU this is the same device node; the venus/radv/anv ICDs each bind
+    # to it. No driver-specific volume mounts required.
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      # Tell libvulkan explicitly which ICD to prefer. On krunkit the
+      # venus driver (libvulkan_virtio.so) is the right one — it's the
+      # virtio-GPU passthrough ICD. mesa-vulkan-drivers ships the JSON
+      # manifest that points at it; this env var short-circuits autopick
+      # if multiple ICDs are installed (e.g. on Linux hosts with lvp
+      # software fallback also present).
+      - VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.x86_64.json:/usr/share/vulkan/icd.d/virtio_icd.aarch64.json
+      # Ask llama.cpp to offload all layers to the Vulkan device; matches
+      # the cuda profile's NVIDIA_VISIBLE_DEVICES=all spirit.
+      - LLAMACPP_VULKAN_DEVICE=0
+
+  # Shadow the upstream llama-server to a no-op — same reasoning as the
+  # gpu profile. Personas talk to continuum-core's scheduler over the
+  # local Unix socket; no separate HTTP llama-server.
+  inference:
+    deploy:
+      replicas: 0

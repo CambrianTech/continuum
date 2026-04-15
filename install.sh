@@ -60,20 +60,57 @@ if ! command -v git &>/dev/null; then
   esac
 fi
 
-if ! command -v docker &>/dev/null; then
-  case "$OS" in
-    Linux)
+# Container runtime. Linux gets Docker Engine (standard). Mac gets Podman +
+# krunkit because Apple's hypervisor exposes no GPU to containers (Docker
+# Desktop, Apple container, and other VMMs are all blocked — no IOMMU on
+# Apple GPUs). krunkit is the only VMM that routes Vulkan API calls from
+# the container out to MoltenVK on the host, giving Carl ~80% of native
+# Metal throughput. That keeps the "always accelerated, never CPU
+# fallback" directive intact.
+#
+# CONTAINER_CMD is used for every subsequent `compose` / `info` call, so
+# the same script works with either runtime.
+case "$OS" in
+  Linux)
+    if ! command -v docker &>/dev/null; then
       info "Docker not found — installing via get.docker.com…"
       curl -fsSL https://get.docker.com | sh
       sudo usermod -aG docker "$USER"
       warn "Added $USER to docker group — log out and back in, then re-run this script"
       exit 0
-      ;;
-    Darwin)
-      fail "Install Docker Desktop (https://docker.com/products/docker-desktop) or Rancher Desktop (https://rancherdesktop.io) and re-run"
-      ;;
-  esac
-fi
+    fi
+    CONTAINER_CMD=docker
+    ;;
+  Darwin)
+    if ! command -v podman &>/dev/null; then
+      if ! command -v brew &>/dev/null; then
+        fail "Homebrew required to install Podman + krunkit. Install from https://brew.sh then re-run."
+      fi
+      info "Podman + krunkit not found — installing for Metal-backed Vulkan container…"
+      brew tap slp/krunkit
+      brew install podman krunkit
+    fi
+    if ! command -v krunkit &>/dev/null; then
+      info "krunkit missing (needed for Vulkan→MoltenVK→Metal passthrough) — installing…"
+      brew tap slp/krunkit 2>/dev/null || true
+      brew install krunkit
+    fi
+    # Apple Silicon: Podman machine uses the libkrun provider so krunkit's
+    # Vulkan passthrough is wired automatically. CPU/memory sized for a 4B
+    # Q4_K_M model (~3GB VRAM) plus headroom for support services.
+    if ! podman machine list --format '{{.Running}}' 2>/dev/null | grep -q true; then
+      if ! podman machine list 2>/dev/null | grep -q podman-machine; then
+        info "Initializing Podman machine (libkrun provider)…"
+        CONTAINERS_MACHINE_PROVIDER=libkrun \
+          podman machine init --cpus=8 --memory=16384 --rootful=false
+      fi
+      info "Starting Podman machine…"
+      podman machine start
+    fi
+    CONTAINER_CMD=podman
+    ;;
+  *) fail "Unsupported OS: $OS" ;;
+esac
 
 # ── 3. Clone / update repo ─────────────────────────────────
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -101,12 +138,16 @@ source "src/scripts/lib/install-common.sh"
 mod_submodules_init
 mod_docker_wsl_integration
 
-# Now the real docker daemon check — after WSL integration module had
-# a chance to fix it on Windows/WSL2 hosts.
-if ! docker info &>/dev/null 2>&1; then
-  fail "Docker daemon not reachable. Start Docker Desktop / Rancher Desktop and re-run."
+# Real daemon check. On Linux this verifies Docker Engine is up (after the
+# WSL integration module had a chance to fix it on Windows/WSL2 hosts);
+# on Mac it verifies `podman machine start` above actually connected.
+if ! $CONTAINER_CMD info &>/dev/null 2>&1; then
+  case "$OS" in
+    Darwin) fail "Podman machine not reachable. Run: podman machine start — then re-run this installer." ;;
+    *)      fail "Docker daemon not reachable. Start Docker Desktop / Rancher Desktop and re-run." ;;
+  esac
 fi
-ok "Docker $(docker version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
+ok "$CONTAINER_CMD $($CONTAINER_CMD version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
 ok "Source: $INSTALL_DIR"
 
 # ── 3b. Install continuum command (modular, headless-safe) ─
@@ -171,7 +212,19 @@ fi
 # images while up tries to use override-named images that aren't local.
 COMPOSE_FILES="-f docker-compose.yml"
 COMPOSE_ARGS=""
-if [[ "$HAS_GPU" == "true" ]]; then
+if [[ "$OS" == "Darwin" ]]; then
+  # Mac Carl path — layer the Vulkan-in-container override so the
+  # continuum-core service picks up the vulkan image + /dev/dri passthrough
+  # for krunkit's virtio-GPU. Without this override the base file pulls
+  # the CPU-only continuum-core image, which violates the "always GPU"
+  # directive.
+  if [ -f "docker-compose.mac.yml" ]; then
+    COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.mac.yml"
+  else
+    warn "docker-compose.mac.yml missing — Mac detected but Vulkan override won't apply. Continuum would run CPU-only; aborting rather than ship a CPU inference path."
+    fail "Fix: ensure you cloned with repository integrity — the Mac override file is part of the PR891 install architecture."
+  fi
+elif [[ "$HAS_GPU" == "true" ]]; then
   if [ -f "docker-compose.gpu.yml" ]; then
     COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.gpu.yml"
   else
@@ -182,11 +235,11 @@ fi
 
 # ── 7. Pull images ─────────────────────────────────────────
 info "Pulling container images..."
-docker compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
+$CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
 
 # ── 8. Start ───────────────────────────────────────────────
 info "Starting Continuum..."
-docker compose $COMPOSE_FILES $COMPOSE_ARGS up -d
+$CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS up -d
 
 # ── 8. Wait for health ─────────────────────────────────────
 info "Waiting for services..."
@@ -194,7 +247,7 @@ for i in {1..30}; do
   if curl -sf http://localhost:9003 &>/dev/null || curl -sf https://localhost:9003 -k &>/dev/null; then
     break
   fi
-  [ $i -eq 30 ] && warn "Services still starting — check: docker compose logs"
+  [ $i -eq 30 ] && warn "Services still starting — check: $CONTAINER_CMD compose logs"
   sleep 2
 done
 
