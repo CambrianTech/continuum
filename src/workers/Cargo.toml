@@ -114,6 +114,20 @@ msedge-tts = "0.3"
 # is a link-time issue unaffected by codegen units. Default 16 enables parallel LLVM.
 [profile.release]
 # codegen-units = 1  # REMOVED — was single-threading rustc compilation for no benefit
+# Strip debug symbols — continuum-core-server is ~200MB+ without this, mostly
+# from rustc-emitted DWARF for libstd + candle + llama.cpp FFI bindings. We
+# don't ship debuggers into the container, and panics still produce readable
+# traces via symbol names in the stripped binary (just not source-line info).
+# Expected: ~200MB → ~80MB for continuum-core-server.
+strip = "symbols"
+# Thin LTO across crate boundaries. Gets ~80-90% of fat-LTO's runtime
+# benefit (cross-crate inlining on the hot path — llama crate ↔ continuum-
+# core per-token calls) but at a fraction of the build-time cost — ~5-10%
+# vs ~30%. For a project where iteration speed matters as much as runtime
+# perf, thin is the right default. Release-tagged builds can override
+# upward to fat via `RUSTFLAGS="-C lto=fat"` on the single blessed build
+# if we ever decide the last 10% is worth it.
+lto = "thin"
 
 # Override crates.io candle with our fork (Metal memory fix + RoPE NEOX fix).
 # This applies to all workspace members transparently.
