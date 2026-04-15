@@ -36,12 +36,17 @@ FROM rust:1.89-bookworm AS chef
 # System deps for compilation. Vulkan ICDs and shader tooling are only
 # needed at runtime (runtime stage below), but we do need libvulkan-dev for
 # the linker to find `-lvulkan` during `cargo build` in the builder stage.
-# glslc (vulkan-shader compiler) is pulled in by glslang-tools — llama.cpp's
-# ggml-vulkan CMake invokes it to compile .comp shaders ahead of time.
+#
+# ggml-vulkan's CMakeLists.txt runs `find_package(Vulkan COMPONENTS glslc)`
+# which specifically requires `glslc` (Google shaderc's SPIR-V compiler),
+# NOT `glslangValidator` (which is in glslang-tools). Without glslc the
+# cmake configure step bails out with:
+#   Could NOT find Vulkan (missing: glslc) (found version "1.3.239")
+# glslc is in its own debian package, bundled with shaderc.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
     libclang-dev clang build-essential git \
-    libvulkan-dev glslang-tools \
+    libvulkan-dev glslc glslang-tools \
     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 WORKDIR /app
