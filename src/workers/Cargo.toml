@@ -130,6 +130,18 @@ strip = "symbols"
 lto = "thin"
 
 # Override crates.io candle with our fork (Metal memory fix + RoPE NEOX fix).
+#
+# Status (2026-04-15): huggingface/candle PR #3411 — the RoPE NEOX fix
+# from this fork — was ACCEPTED AND MERGED upstream. The Metal memory
+# fix is also part of that fork branch. Once candle publishes a release
+# on crates.io that contains #3411's merge commit, we can GRADUATE off
+# the fork: drop the three `[patch.crates-io]` lines below and pin the
+# released candle-* version directly in the workspace deps. Until then
+# the fork stays — upstream-merged is necessary but not sufficient; only
+# a published release lets `cargo` find the fix at a version number.
+#
+# To check: `cargo search candle-core` or the candle CHANGELOG for the
+# first release >= the merge date. Graduation is a 3-line delete.
 # This applies to all workspace members transparently.
 [patch.crates-io]
 candle-core = { git = "https://github.com/joelteply/candle.git", branch = "fix/metal-memory-and-rope-neox" }
