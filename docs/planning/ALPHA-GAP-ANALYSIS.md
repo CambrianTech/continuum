@@ -128,6 +128,51 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 ---
 
+## The Inference Design Goal — Multi-Persona Live Chat at Low Latency
+
+> **"We should be able to have a few ais in a live chat at LOW latency, focus on that."** — Joel, 2026-04-15
+
+This is THE workload the whole stack must serve. Not single-persona batch inference. Not benchmark-leaderboard throughput. **3-5 AI personas in live voice+video chat simultaneously**, with the full sensory pipeline (Bevy avatar render, Whisper STT, Piper TTS, LiveKit WebRTC encode/decode) running concurrently on the same machine.
+
+**Proven on this machine today**: 10ish AI chat (14 tested, strains the machine — all but 4 were cloud inference). That's the current ceiling with mostly-cloud backends. The target raises ALL of those to native local inference running at conversation pace.
+
+**Why Qwen3.5-4B+ is the pick:** [`project_m5_is_primary_audience.md`](../../memory/project_m5_is_primary_audience.md) — forged specifically to fit the concurrent-sensory slot on Apple Silicon unified memory. Q4_K_M ≈ 2.6GB per instance, KV shared via continuous-batching scheduler (`n_seq_max` sequences in ONE Context), leaves room for Bevy + Whisper + Piper + LiveKit all co-resident.
+
+**Audience tier (BMW M4 / Corvette / Ford Focus analogy):**
+- Primary: MacBook M3-M5 Pro/Max (BMW M4)
+- Entry: MacBook Air (BMW 2 Series) — aspirational, must work
+- Desktop enthusiast: Nvidia RTX 3090+ (Corvette / Mustang)
+- Non-audience: ThinkPads without GPU, integrated-only, pre-Apple-Silicon (Ford Focus)
+
+**Go-live is possible before the full vision-Qwen3.5 landing** (stopgap: text-Qwen3.5 + sensory bridges via `VisionDescriptionService`, Whisper, Piper/Orpheus — already in the codebase). But vision-Qwen3.5 is quickly needed post-launch and NOT insurmountable because **factory + sentinel-ai were built for this exact purpose** (PR891's parent narrative). Forging vision-enabled variants per device tier is the post-launch track.
+
+### Cross-referenced issues
+
+This goal cuts across phases; the work is tracked here:
+
+| # | Phase | Role in the goal |
+|---|---|---|
+| [#582](https://github.com/CambrianTech/continuum/issues/582) | Phase 2 | Native multimodal pipeline — three parallel streams LISTEN+THINK+SPEAK, <2s latency for capable models |
+| [#799](https://github.com/CambrianTech/continuum/issues/799) | Phase 2 | Qwen3.5-Omni native audio — skip VAD→STT→LLM→TTS entirely |
+| [#800](https://github.com/CambrianTech/continuum/issues/800) | Phase 2 | `continuum-ai/whisper-forged` — forged STT model |
+| [#801](https://github.com/CambrianTech/continuum/issues/801) | Phase 2 | Per-persona TTS voice cloning |
+| [#652](https://github.com/CambrianTech/continuum/issues/652) | Phase 12 | Sub-100ms vision + real-time audio inference for personas |
+| [#649](https://github.com/CambrianTech/continuum/issues/649) | Phase 12 | LLaVA-style vision encoder — bolt-on vision via projection layer training |
+| [#650](https://github.com/CambrianTech/continuum/issues/650) | Phase 12 | Whisper-style audio encoder — hearing + speech natively |
+| [#579](https://github.com/CambrianTech/continuum/issues/579) | Phase 12 | Vision model forging — feature detector pruning, domain specialization |
+| [#894](https://github.com/CambrianTech/continuum/issues/894) | post-launch | Vision-Qwen3.5 variants per device tier — M5 default 4B-vision, MBA smaller, 3090+ larger |
+| [#895](https://github.com/CambrianTech/continuum/issues/895) | PR891 follow-up | Live multi-persona concurrency benchmark — 3-5 personas on M5, regression-gate for the scheduler |
+
+### What PR891 delivers toward this goal
+
+- **Continuous-batching scheduler** — shared Context, `n_seq_max` sequences (enables 3-5 concurrent persona streams from ONE model instance, KV pool shared not duplicated).
+- **Response-cap hard gate REMOVED** — personas can keep engaging in live chat without arbitrary silencing.
+- **Acceleration architecture committed** (no CPU fallback; UDP sidecar fallback designed for any case where a subsystem can't containerize) — guarantees every sensory subsystem stays GPU-close.
+- **Vulkan-in-container** for Mac Carl → Qwen3.5 at ~80% native Metal in a container, keeping Mac Carl install low-friction.
+- **Un-cheat sensory parity** (Phase 1 of RESTORE-FULL-PARITY-PLAN): whisper.cpp vendor, remove SKIP_STT/SKIP_TTS hatches, LiveKit default-features, avatars ship. Lands the sensory stack that makes "live chat" actually live.
+
+---
+
 ## Phase 2: Live Call Quality & Resource Management
 
 > The 3D video calls work but leak memory, have high latency, and break offline.
