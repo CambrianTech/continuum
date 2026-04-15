@@ -46,22 +46,33 @@ FROM rust:1.89-bookworm AS chef
 #    LayerSettingEXT / LayerSettingsCreateInfoEXT, so ggml-vulkan.cpp
 #    fails to compile with "'LayerSettingEXT' is not a member of 'vk'".
 #
-# Fix: install the LunarG Vulkan SDK directly. It's the canonical
-# upstream distribution (maintained by Khronos + LunarG), versioned
-# independently of the base OS, and bundles everything we need —
-# recent libvulkan-dev + vulkan-headers + glslc + shaderc + validation
-# layers + vulkan-tools. Same approach every serious Vulkan project
-# uses in CI. Follows the `-bookworm` apt codename to match our base.
+# Fix (iteration 2): LunarG doesn't publish a bookworm apt repo (only
+# Ubuntu codenames — jammy, noble). We can't pull their pre-built SDK
+# via apt here. But the compile failure is purely a header version
+# problem: ggml-vulkan.cpp needs the LayerSettingEXT symbols from
+# vulkan-hpp 1.3.283+. The shared library (libvulkan.so) from bookworm's
+# libvulkan-dev is linked at runtime by the ICD loader and doesn't care
+# about this — runtime works fine. We only need NEWER HEADERS.
+#
+# Cleanest minimal fix: install Khronos Vulkan-Headers and vulkan.hpp
+# directly from the KhronosGroup GitHub repo at a pinned version. They
+# are header-only (~10MB), version-pinned via ARG, and install into
+# /usr/local/include where CMake's FindVulkan.cmake finds them before
+# the bookworm-shipped headers in /usr/include/vulkan/. libvulkan-dev
+# stays installed to provide the runtime library and the .pc file.
+# glslc + glslang-tools stay on debian apt packages (version-independent
+# for the shader compiler).
+ARG VULKAN_HEADERS_VERSION=v1.3.290
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
-    libclang-dev clang build-essential git \
-    curl gnupg ca-certificates \
-    && curl -sSL https://packages.lunarg.com/lunarg-signing-key-pub.asc \
-       | gpg --dearmor -o /usr/share/keyrings/lunarg-vulkan-archive-keyring.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/lunarg-vulkan-archive-keyring.gpg] https://packages.lunarg.com/vulkan bookworm main" \
-       > /etc/apt/sources.list.d/lunarg-vulkan-bookworm.list \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        vulkan-sdk \
+    libclang-dev clang build-essential git ca-certificates \
+    libvulkan-dev glslc glslang-tools \
+    && git clone --depth 1 --branch ${VULKAN_HEADERS_VERSION} \
+        https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/vk-headers \
+    && cmake -S /tmp/vk-headers -B /tmp/vk-headers-build \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+    && cmake --install /tmp/vk-headers-build \
+    && rm -rf /tmp/vk-headers /tmp/vk-headers-build \
     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 WORKDIR /app
