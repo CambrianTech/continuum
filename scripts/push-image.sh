@@ -140,6 +140,33 @@ done
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
+# Two-phase: build-and-load first (to the local daemon, single platform),
+# run slice tests against the real binary, THEN build-and-push (all
+# requested platforms). If the slice tests fail, NOTHING is pushed —
+# we don't throw half-working images over the wall to CI.
+LOCAL_PLATFORM="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null || echo linux/amd64)"
+
+echo "→ Phase 1: local build + slice test on $LOCAL_PLATFORM"
+docker buildx build \
+  --platform "$LOCAL_PLATFORM" \
+  --file "$DOCKERFILE" \
+  --build-arg "GPU_FEATURES=$GPU_FEATURES" \
+  --tag "$TAG_SHA" \
+  --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
+  --load \
+  src/workers
+
+echo ""
+echo "→ Phase 2: slice tests"
+if ! "$SCRIPT_DIR/test-slices.sh" "$VARIANT" "$TAG_SHA"; then
+  echo ""
+  echo "✗ Slice tests failed — NOT pushing to registry." >&2
+  echo "  Fix the issue, re-run this script." >&2
+  exit 2
+fi
+
+echo ""
+echo "→ Phase 3: multi-platform build + push ($PLATFORMS)"
 docker buildx build \
   --platform "$PLATFORMS" \
   --file "$DOCKERFILE" \
