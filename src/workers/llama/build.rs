@@ -21,7 +21,18 @@ fn main() {
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_TESTS", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
-        .define("BUILD_SHARED_LIBS", "OFF");
+        .define("BUILD_SHARED_LIBS", "OFF")
+        // Static archives produced here get linked into continuum-core,
+        // which is crate-type = ["cdylib", "rlib"] — lib.rs builds a
+        // shared object. Without -fPIC the cuda variant fails at final
+        // link with:
+        //   /usr/bin/ld: libggml-cuda.a(...): relocation R_X86_64_PC32
+        //   against symbol `stderr@@GLIBC_2.2.5' can not be used when
+        //   making a shared object; recompile with -fPIC
+        // CMake's POSITION_INDEPENDENT_CODE flag adds -fPIC to all C/C++
+        // compilation including nvcc's host-side, so the resulting .a
+        // archives can link into a .so. Cheap and safe everywhere.
+        .define("CMAKE_POSITION_INDEPENDENT_CODE", "ON");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
