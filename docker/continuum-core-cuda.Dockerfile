@@ -98,7 +98,15 @@ FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 libpq5 curl netcat-openbsd \
     libglib2.0-0 libvulkan1 mesa-vulkan-drivers \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
+# libgomp1 is the OpenMP runtime that ggml-cpu's kernels link against
+# at build time (-lgomp set in workers/llama/build.rs for Linux). Without
+# it, the runtime image gets `error while loading shared libraries:
+# libgomp.so.1: cannot open shared object file` and the binary refuses
+# to start. CPU-only continuum-core.Dockerfile already had this baked
+# into a shared lib via libglib2.0-0t64; the cuda variant uses Ubuntu
+# 22.04 base which doesn't have OpenMP runtime by default.
 
 COPY --from=builder /app/target/release/continuum-core-server /usr/local/bin/
 COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
