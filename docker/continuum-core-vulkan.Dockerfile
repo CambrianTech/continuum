@@ -33,20 +33,35 @@
 # than the later COPY .), producing a 436KB shell binary. Don't collapse.
 FROM rust:1.89-bookworm AS chef
 
-# System deps for compilation. Vulkan ICDs and shader tooling are only
-# needed at runtime (runtime stage below), but we do need libvulkan-dev for
-# the linker to find `-lvulkan` during `cargo build` in the builder stage.
+# System deps for compilation.
 #
-# ggml-vulkan's CMakeLists.txt runs `find_package(Vulkan COMPONENTS glslc)`
-# which specifically requires `glslc` (Google shaderc's SPIR-V compiler),
-# NOT `glslangValidator` (which is in glslang-tools). Without glslc the
-# cmake configure step bails out with:
-#   Could NOT find Vulkan (missing: glslc) (found version "1.3.239")
-# glslc is in its own debian package, bundled with shaderc.
+# The two Vulkan walls we hit sequentially:
+#
+# 1. `find_package(Vulkan COMPONENTS glslc)` — needs glslc (Google's
+#    shaderc SPIR-V compiler), not glslangValidator. Separate package.
+#
+# 2. ggml-vulkan.cpp uses `VK_EXT_layer_settings` which was added to
+#    vulkan-hpp in 1.3.283+. Debian bookworm's libvulkan-dev is 1.3.239
+#    — the shared lib works fine but the C++ headers don't know about
+#    LayerSettingEXT / LayerSettingsCreateInfoEXT, so ggml-vulkan.cpp
+#    fails to compile with "'LayerSettingEXT' is not a member of 'vk'".
+#
+# Fix: install the LunarG Vulkan SDK directly. It's the canonical
+# upstream distribution (maintained by Khronos + LunarG), versioned
+# independently of the base OS, and bundles everything we need —
+# recent libvulkan-dev + vulkan-headers + glslc + shaderc + validation
+# layers + vulkan-tools. Same approach every serious Vulkan project
+# uses in CI. Follows the `-bookworm` apt codename to match our base.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
     libclang-dev clang build-essential git \
-    libvulkan-dev glslc glslang-tools \
+    curl gnupg ca-certificates \
+    && curl -sSL https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+       | gpg --dearmor -o /usr/share/keyrings/lunarg-vulkan-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/lunarg-vulkan-archive-keyring.gpg] https://packages.lunarg.com/vulkan bookworm main" \
+       > /etc/apt/sources.list.d/lunarg-vulkan-bookworm.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        vulkan-sdk \
     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 WORKDIR /app
