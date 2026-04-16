@@ -357,9 +357,28 @@ impl AdapterRegistry {
                     }
                 }
             }
+
+            // No adapter supports this model. Fail LOUD with available adapters +
+            // actionable remediation instead of silently routing to whatever's
+            // highest-priority. Silent fallback here is what forced every user
+            // onto Candle-CPU even when DMR+Metal / llama-vulkan was registered —
+            // the "worked" path hid the misroute. Joel's rule: no silent fallback,
+            // ever. If no adapter honestly supports the requested model, caller
+            // needs to know (usually "docker model pull X" or install the right
+            // GPU backend) rather than get mysteriously-slow CPU inference.
+            clog_warn!(
+                "No adapter supports model '{}'. Registered adapters: {:?}. Caller should install a backend that handles this model (e.g. `docker model pull {}` for DMR, or enable the Vulkan adapter) — NOT silent fallback.",
+                model_name,
+                self.available(),
+                model_name
+            );
+            return None;
         }
 
-        // 3. Return highest priority available adapter
+        // No model specified AND no preferred provider — this is an adapter
+        // probe, not a real generation request. Return highest priority
+        // available adapter for capability queries. Real generation goes
+        // through the model-or-provider branches above and fails loud.
         for id in &self.priority_order {
             if let Some(adapter) = self.adapters.get(id) {
                 return Some((id.as_str(), adapter.as_ref()));

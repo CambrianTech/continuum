@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use std::time::Instant;
 
 use crate::secrets::get_secret;
+use crate::{clog_info, clog_warn};
 
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
 use super::types::{
@@ -54,6 +55,14 @@ pub struct OpenAICompatibleAdapter {
     runtime_base_url: Option<String>,
     client: reqwest::Client,
     initialized: bool,
+    /// Live model catalog, populated from the server's /v1/models endpoint
+    /// at init and on-demand refresh. Lets `supports_model()` be HONEST —
+    /// for DMR this reflects whatever the user has `docker model pull`ed,
+    /// so the registry can route to DMR only when the model is actually
+    /// available. Without this, supports_model falls back to static
+    /// `supported_model_prefixes()` which for docker-model-runner returned
+    /// `[]` → DMR never won routing → every user silently landed on Candle.
+    runtime_models: std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<String>>>>,
 }
 
 impl OpenAICompatibleAdapter {
@@ -69,6 +78,61 @@ impl OpenAICompatibleAdapter {
             runtime_base_url: None,
             client,
             initialized: false,
+            runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    /// Fetch the live model list from the provider's /v1/models endpoint.
+    /// Used by adapters that have dynamic catalogs (DMR above all — the list
+    /// changes every time the user runs `docker model pull`). Populates
+    /// `runtime_models` on success; leaves it unchanged on failure so stale
+    /// data is preferred over empty data. Never silently succeeds with an
+    /// empty set — returns Err if the endpoint responds with nothing.
+    async fn refresh_runtime_models(&self) -> Result<(), String> {
+        let base_url = self.runtime_base_url.as_deref().unwrap_or(self.config.base_url);
+        let url = format!("{}/v1/models", base_url);
+
+        let mut req = self.client.get(&url);
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await.map_err(|e| format!("GET {} failed: {}", url, e))?;
+        if !resp.status().is_success() {
+            return Err(format!("GET {} returned {}", url, resp.status()));
+        }
+        let body: serde_json::Value = resp.json().await.map_err(|e| format!("Parse {} body: {}", url, e))?;
+        let ids: std::collections::HashSet<String> = body
+            .get("data")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return Err(format!("{} returned no models", url));
+        }
+        *self.runtime_models.write().unwrap() = Some(ids);
+        Ok(())
+    }
+
+    /// Returns true if model_name matches any live runtime model.
+    /// Match is exact OR a trivial contains in either direction to
+    /// handle the common "persona says short name, DMR stores full
+    /// hf.co/…-GGUF ID" pattern. No fuzzy magic beyond that — if neither
+    /// contains the other, the adapter honestly does not have the model.
+    fn runtime_models_contain(&self, model_name: &str) -> bool {
+        let guard = self.runtime_models.read().unwrap();
+        match guard.as_ref() {
+            None => false, // not populated — can't lie, return false
+            Some(ids) => {
+                let needle = model_name.to_lowercase();
+                ids.iter().any(|id| {
+                    let hay = id.to_lowercase();
+                    hay == needle || hay.contains(&needle) || needle.contains(&hay)
+                })
+            }
         }
     }
 
@@ -647,6 +711,30 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
 
         self.initialized = true;
+
+        // Populate runtime_models for adapters with dynamic catalogs (DMR).
+        // Best-effort: if the endpoint isn't reachable right now, init still
+        // succeeds — runtime_models stays None → supports_model returns false
+        // → registry hard-errors instead of silently routing to this adapter.
+        // That's the correct failure mode: don't falsely claim availability.
+        if self.config.provider_id == "docker-model-runner" {
+            if let Err(e) = self.refresh_runtime_models().await {
+                clog_warn!(
+                    "DMR model catalog fetch failed at init: {}. DMR will report no models available until a successful refresh.",
+                    e
+                );
+            } else {
+                let count = self
+                    .runtime_models
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .map(|s| s.len())
+                    .unwrap_or(0);
+                clog_info!("DMR live model catalog: {} model(s) available", count);
+            }
+        }
+
         Ok(())
     }
 
@@ -917,7 +1005,35 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "fireworks" => vec!["accounts/fireworks/"],     // Fireworks namespace
             "xai" => vec!["grok"],
             "google" => vec!["gemini"],
-            _ => vec![], // No auto-routing for unknown providers
+            // docker-model-runner has a DYNAMIC catalog — the user runs
+            // `docker model pull X` and now DMR can serve X. Static prefixes
+            // can't represent that; we override supports_model() below to
+            // consult the live catalog fetched at init.
+            _ => vec![],
+        }
+    }
+
+    /// Live-catalog honesty check for DMR, static-prefix match for everyone else.
+    ///
+    /// The default trait impl in adapter.rs:230 uses `starts_with` against
+    /// `supported_model_prefixes`. That works for cloud providers (gpt*,
+    /// deepseek*, etc.) where the catalog is fixed and known at build time.
+    /// DMR is dynamic — what's available depends on `docker model pull`
+    /// history — so we check the live runtime_models set populated at init.
+    ///
+    /// Returning false when the live set is empty or missing is the right
+    /// behavior: AdapterRegistry::select now hard-errors when no adapter
+    /// supports a model, which surfaces the real problem ("user never
+    /// pulled X") instead of silently routing to Candle-CPU.
+    fn supports_model(&self, model_name: &str) -> bool {
+        match self.config.provider_id {
+            "docker-model-runner" => self.runtime_models_contain(model_name),
+            _ => {
+                // Default: static prefix match (same as trait default impl).
+                self.supported_model_prefixes()
+                    .iter()
+                    .any(|prefix| model_name.to_lowercase().starts_with(&prefix.to_lowercase()))
+            }
         }
     }
 }

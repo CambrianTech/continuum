@@ -849,24 +849,37 @@ impl AIProviderAdapter for CandleAdapter {
     }
 
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
-        vec![
-            "llama",
-            "qwen",
-            "phi",
-            "mistral",
-            "codellama",
-            "gemma",
-            "tinyllama",
-            "orca",
-            "vicuna",
-            "wizardlm",
-            "neural-chat",
-            "stablelm",
-            "yi",
-            "deepseek-coder",
-            "unsloth/",
-            "smollm",
-        ]
+        // Intentionally empty — Candle is NOT a chat-routing default.
+        //
+        // Candle runs CPU-heavy on Apple Silicon and anywhere without a
+        // well-supported Metal/CUDA path; defaulting chat to Candle silently
+        // gave every user a slow first-chat experience, which is the single
+        // biggest "Continuum feels broken" signal.
+        //
+        // Chat routes explicitly through GPU adapters only:
+        //   - `docker-model-runner`      (DMR with vllm-metal on Mac, or
+        //                                 llama.cpp-cuda/rocm on Linux)
+        //   - `llama-vulkan`             (our vendored llama.cpp built with
+        //                                 --features=vulkan; covers "everyone
+        //                                 else with a GPU")
+        //
+        // Candle stays available as an adapter for callers who set
+        // `provider: "candle"` EXPLICITLY — intended for LoRA training /
+        // safetensors fine-tuning workflows where Candle's Rust-native
+        // autodiff + LoRA support is the right tool. Those callers bypass
+        // `supports_model()` entirely (AdapterRegistry::select line ~296
+        // short-circuits on exact provider match).
+        //
+        // **OBVIOUS SPOT FOR CPU SUPPORT LATER:** when we add back a CPU-ok
+        // path for hardware that has no GPU at all, it should be:
+        //   1. A NEW adapter (e.g. `candle-cpu`) — never mix this into the
+        //      existing `candle` adapter.
+        //   2. Registered ONLY when env `CONTINUUM_ALLOW_CPU_INFERENCE=1`
+        //      is set — no silent opt-in.
+        //   3. Accompanied by an install-time warning: "Continuum will run
+        //      without GPU acceleration. Expect N seconds per message."
+        //   4. Still fail-loud if model isn't on disk — same honesty rule.
+        vec![]
     }
 }
 
