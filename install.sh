@@ -89,16 +89,39 @@ case "$OS" in
     ;;
   Darwin)
     if ! command -v docker &>/dev/null; then
-      fail "Docker Desktop required on Mac. Install from https://docker.com/products/docker-desktop (Docker Desktop 4.62+ — need Model Runner), then re-run."
+      fail "Docker Desktop required on Mac.
+
+  1. Download: https://docker.com/products/docker-desktop  (4.62+ for Model Runner)
+  2. Install the .dmg, then launch Docker Desktop from Launchpad
+  3. When prompted, grant Admin password for the vmnetd privileged helper
+     (one-time macOS permission for container networking — standard Docker setup)
+  4. Wait for the whale icon in your menu bar to show 'Docker Desktop is running'
+  5. Re-run this install script
+"
     fi
     if ! docker info &>/dev/null 2>&1; then
-      fail "Docker Desktop not running. Start Docker Desktop, wait for it to be ready, then re-run."
+      fail "Docker Desktop is installed but not running.
+
+  1. Launch Docker Desktop from Launchpad (or Applications)
+  2. If this is your first launch, macOS will prompt for Admin password for the
+     vmnetd privileged helper — click 'Allow' and enter your password
+  3. Wait for the whale icon in your menu bar to show 'Docker Desktop is running'
+  4. Re-run this install script
+
+  (Scripted \`open -a Docker\` can't satisfy the macOS privileged-helper prompt —
+   that's why this script asks you to launch Docker Desktop manually once.)
+"
     fi
     # Docker Model Runner provides host-native vllm-metal for LLM inference.
     # Ships with Docker Desktop 4.62+. If `docker model` isn't available the
     # user's Docker Desktop is too old.
     if ! docker model --help &>/dev/null 2>&1; then
-      fail "Docker Model Runner not available (needs Docker Desktop 4.62+). Update Docker Desktop and re-run."
+      fail "Docker Model Runner not available (needs Docker Desktop 4.62+).
+
+  1. Open Docker Desktop → Settings → Software Updates → Check for updates
+  2. Install the update (restart Docker Desktop if prompted)
+  3. Re-run this install script
+"
     fi
     # CLI-plugins directory — Model Runner installs its backend plugins here.
     # One-time sudo mkdir; ensure_sudo_warmed gives us a single-prompt warmup
