@@ -161,6 +161,13 @@ tokio-postgres.workspace = true                           # Postgres async drive
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.32"
 objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
+# MLX — Apple Silicon native inference runtime. Phase A of continuum#897
+# only flags the module on via the `mlx` feature; the actual `mlx-rs` crate
+# dep lands in phase B when we implement forward() and have the full-Xcode
+# build prerequisite (mlx-sys transitively needs `xcrun metal` for shader
+# compilation, which the Command Line Tools don't include).
+#
+# mlx-rs = { version = "0.25", optional = true }  # phase B
 
 [features]
 default = ["livekit-webrtc"]
@@ -172,6 +179,12 @@ cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama
 # to MoltenVK on the host, which translates to Metal. Also valid on Linux
 # Nvidia/AMD hosts with libvulkan available.
 vulkan = ["llama/vulkan"]
+# MLX — Apple Silicon native inference path (phases A–E of continuum#897).
+# Only compiles on macOS/aarch64; the adapter module is guarded by this feature
+# AND by cfg(target_os = "macos") so non-Mac targets simply don't see the code.
+# Phase A: flag only, no mlx-rs dep yet. Phase B will add `dep:mlx-rs` back
+# once we're writing forward() and can ensure full Xcode is installed.
+mlx = []
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 # Linux: swap ORT from static (download-binaries) to dynamic loading.
 # Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).
