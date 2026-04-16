@@ -18,6 +18,7 @@ pub mod cognition;
 pub mod data;
 pub mod dataset;
 pub mod embedding;
+pub mod entity_schemas;
 pub mod gpu;
 pub mod grid;
 pub mod health;
