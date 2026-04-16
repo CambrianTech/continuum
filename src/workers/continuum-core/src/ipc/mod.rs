@@ -1,7 +1,10 @@
 use crate::code::{FileEngine, ShellSession};
 use crate::gpu::GpuMemoryManager;
 use crate::modules::agent::AgentModule;
-use crate::modules::auth::ExternalWebviewAuthModule;
+// TODO(memento): module crate::modules::auth doesn't exist in this tree.
+// Commit 423c5488f introduced this import but didn't add the file.
+// Disabled here + at registration site below so the build passes.
+// use crate::modules::auth::ExternalWebviewAuthModule;
 use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
@@ -809,7 +812,8 @@ pub fn start_server(
     runtime.register(Arc::new(HealthModule::new()));
 
     // ExternalWebviewAuthModule — OAuth 2.0 + PKCE via system browser
-    runtime.register(Arc::new(ExternalWebviewAuthModule::new()));
+    // TODO(memento): module not in tree (see import comment at top of file).
+    // runtime.register(Arc::new(ExternalWebviewAuthModule::new()));
 
     // Phase 1: GpuModule (GPU stats + pressure IPC)
     runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
