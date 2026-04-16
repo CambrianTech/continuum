@@ -17,6 +17,12 @@ What IS broken — three concrete violations and five concrete bottlenecks — a
 
 ### Violations
 
+0. **SQL leaking outside the adapter boundary into a TS command.**
+   `src/commands/data/schema/server/DataSchemaServerCommand.ts:280-311` generates raw `CREATE TABLE IF NOT EXISTS ...` and `ALTER TABLE ADD FOREIGN KEY ...` strings in TypeScript. SQL has escaped the adapter — this is the portability-killer. Couldn't swap to MongoDB / DynamoDB / S3 because that command speaks SQL directly to whatever's underneath. Schema generation must live INSIDE the adapter (or behind a typed `apply_schema(EntitySchema)` method on the adapter trait); the command should call the typed method, not build SQL.
+
+   Test: `grep -rn "SELECT \|INSERT INTO\|UPDATE \|DELETE FROM\|CREATE TABLE\|ALTER TABLE" src/ --include="*.ts"` should return zero non-comment hits after fix. Same grep on `src/workers/continuum-core/src` outside `orm/` should also be zero.
+
+
 1. **TS decorator metadata stops at the IPC boundary.**
    `grep -rn "Archive\|CompositeIndex\|orderByField\|sourceHandle" src/workers/continuum-core/src` → **zero matches**. The Rust ORM has no awareness that any entity has an archive policy, a composite index, or an indexed field. Decorators are documentation in TS land, ignored downstream. Indexes get created (or not) at runtime via the generic `ensure_schema` path which uses field-level `indexed: bool` only — no composite, no archive, no sort hints.
 
@@ -64,6 +70,39 @@ TS has rich entity decorators (the SSoT for schema + intent). The Rust ORM is a 
 When the work is moved out, the inner loop shrinks. When the inner loop shrinks, the system can carry more concurrent personas without thrashing. That's the win — not "we added postgres" or "we added a cache" abstractly, but specifically "we removed N work-items from each of M ops/sec."
 
 **The architecture-level commitment:** efficient-by-default means the path-of-least-resistance produces fast code, and the slow patterns (SELECT *, per-call JSON parse, per-write CREATE TABLE check) are not expressible in the new API surface. Future agents extending the system can't accidentally regress to the slow shape because the trait methods + typed structs + entity decorators don't leave room for it. Today's ORM accepts `Value` blobs and a free-form db_path and lets each handler reinvent how it does work — that's why the same mistakes keep returning. The fix is to remove the surface area where they could be made.
+
+## Quick wins (land BEFORE the structural phases)
+
+Three of the violations above can be fixed in a day each, no architectural changes required, with measurable perf wins. Worth landing as standalone PRs while phases 1-4 are designed/discussed.
+
+### Quick win #1 — `ensure_table_exists_pg` short-circuit cache (~20 lines, ~1 hr)
+
+Add a `DashMap<String, ()>` (collection name → "we ensured this runtime") to `PostgresAdapter`. Each callsite checks the map first; if present, skip the entire `CREATE TABLE IF NOT EXISTS` round-trip + Value walk. Cache invalidates on schema-evolve path (already exists). **Win: removes one full postgres round-trip + JSON walk per write.**
+
+Same fix applies to `SqliteAdapter`. Same shape.
+
+### Quick win #2 — replace `SELECT COUNT(*)` with `LIMIT N+1` for "has_more" checks (~half day)
+
+Most pagination callers don't need exact count — they need "is there a next page?" Switch from `SELECT COUNT(*)` (full table scan) to `SELECT ... LIMIT $1+1` and the handler returns `has_more = rows.len() > $1`. Where exact counts ARE needed (admin views, analytics), keep COUNT(*) but tag those callsites so they're explicit.
+
+For postgres, also consider `pg_class.reltuples::bigint AS estimated_count` for fast approximate counts on hot pagination paths. **Win: pagination on a 1M-row table goes from full-scan to index-seek + 1-row overshoot.**
+
+### Quick win #4 — move TS schema-SQL generator INTO the adapter (~half day)
+
+`DataSchemaServerCommand.ts` builds `CREATE TABLE` and `ALTER TABLE` strings in TS. Move the schema generation logic to the Rust adapter behind a typed `apply_schema(EntitySchema)` method. The TS command becomes a one-line call into Rust over IPC. Now SQL is fully sealed inside the adapter; future agents physically can't leak it back out.
+
+Branch: `fix/orm-tsschema-sql-leak`
+
+### Quick win #3 — typed param structs for the 5 most-called handlers (~1 day)
+
+Don't wait for full Phase 1. Just convert the top 5 hot handlers (create, read, update, delete, query) from `params: Value` to concrete structs. Replace `serde_json::from_value(params.clone())` at the IPC dispatch with a single typed deserialization. Other 21 handlers can wait for Phase 1 proper. **Win: removes ~80% of the per-call JSON parse cost since those 5 handlers carry the hot traffic.**
+
+These three quick wins land independently, on their own short-lived branches:
+- `fix/orm-ensure-schema-cache`
+- `fix/orm-pagination-no-count`
+- `fix/orm-typed-hot-handlers`
+
+Each ships with its own benchmark commit showing the win. They make the system measurably faster while phases 1-4 are still in design discussion.
 
 ## Idealism applied: 4 phases, speed-impact ordered
 
