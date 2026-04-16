@@ -117,13 +117,40 @@ echo ""
 echo "━━━ heartbeat: variant=$HEARTBEAT_VARIANT  tag=$TAG ━━━"
 echo ""
 
-# ── Slice 1: pull + compose up ──────────────────────────────────────
-echo "→ Pulling image set ($TAG)…"
-if ! $CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS pull >/dev/null 2>&1; then
-  fail "pull" "image tag '$TAG' not in registry — was it pushed? (try scripts/push-image.sh)"
-  exit 2
-fi
-pass "pull (all services have $TAG)"
+# ── Slice 1: images available (registry OR locally) + compose up ────
+# Heartbeat is used for two cases:
+#   (a) Dev validation on a freshly-built local image (via push-image.sh
+#       Phase 1 --load, before the push). Registry won't have the tag yet.
+#   (b) CI / reviewer validation against a published :pr-<N> or :<sha> tag.
+#       Registry has it.
+# So: try pull, IGNORE failure if the image exists locally (case a), FAIL
+# loud only if neither local nor registry has it.
+echo "→ Resolving image set ($TAG)…"
+$CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS pull --quiet 2>/dev/null \
+  && pass "pull (images fetched from registry)" \
+  || {
+    # Pull failed. Check if images exist locally for each service that
+    # compose needs — on Mac that's support services only (continuum-core
+    # runs native), on Linux it's the full set.
+    MISSING=""
+    for svc in $($CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS config --services 2>/dev/null); do
+      IMG=$($CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS config 2>/dev/null \
+        | awk -v svc="$svc" '
+            $0 ~ "^  "svc":" {found=1; next}
+            found && $0 ~ "^  [a-z]" {found=0}
+            found && $1 == "image:" {print $2; exit}')
+      if [[ -n "$IMG" ]] && ! $CONTAINER_CMD image inspect "$IMG" &>/dev/null; then
+        MISSING+="\n    $svc: $IMG"
+      fi
+    done
+    if [[ -z "$MISSING" ]]; then
+      pass "pull skipped — all images available locally (dev build mode)"
+    else
+      fail "images-available" "registry pull failed AND images missing locally:$MISSING"
+      echo "  Fix: build locally via scripts/push-image.sh <variant>, OR wait for CI to publish." >&2
+      exit 2
+    fi
+  }
 
 echo "→ Composing up…"
 if ! $CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS up -d >/dev/null 2>&1; then
