@@ -48,6 +48,63 @@ fi
 echo -e "${YELLOW}🚀 JTAG System Start${NC}"
 START_TIME=$(date +%s)
 
+# ── Cross-mode collision detection + port pre-flight ─────────────────
+# Continuum has two operating modes that bind the same ports:
+#   Dev mode (npm start, this script):   native continuum-core-server +
+#                                        native node-server via tsx.
+#   Carl mode (docker compose up):       everything containerized
+#                                        (continuum-core on Linux; support
+#                                        services on Mac Option B).
+# Run both at once → port fights on 9001, 9100, 7880-7882, 9003, 5432.
+# Both halves end up half-broken with cryptic EADDRINUSE deep in tsx logs.
+#
+# Three independent signals tell us which mode(s) are active:
+MODE_DOCKER=0; MODE_NATIVE_CORE=0; MODE_NATIVE_TSX=0
+if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+  if docker ps --filter "label=com.docker.compose.project=continuum" \
+       --format '{{.ID}}' 2>/dev/null | grep -q .; then
+    MODE_DOCKER=1
+  fi
+fi
+pgrep -x 'continuum-core-server' >/dev/null 2>&1 && MODE_NATIVE_CORE=1
+pgrep -f 'tsx.*scripts/launch-active-example' >/dev/null 2>&1 && MODE_NATIVE_TSX=1
+
+if [ "$MODE_DOCKER" -eq 1 ]; then
+  echo -e "${YELLOW}⚠  Containerized continuum stack is running (Carl mode).${NC}"
+  echo -e "${YELLOW}   npm start (Dev mode) will collide on ports 9001/9100/7880-82/9003/5432.${NC}"
+  echo -e "${YELLOW}   Run 'npm stop' (kills BOTH modes in one call) and re-try.${NC}"
+  echo ""
+fi
+if [ "$MODE_NATIVE_CORE" -eq 1 ] || [ "$MODE_NATIVE_TSX" -eq 1 ]; then
+  echo -e "${YELLOW}⚠  Native continuum processes from a prior npm start are still alive:${NC}"
+  [ "$MODE_NATIVE_CORE" -eq 1 ] && echo -e "${YELLOW}     continuum-core-server PID $(pgrep -x continuum-core-server | head -1)${NC}"
+  [ "$MODE_NATIVE_TSX" -eq 1 ] && echo -e "${YELLOW}     tsx orchestrator PID $(pgrep -f 'tsx.*scripts/launch-active-example' | head -1)${NC}"
+  echo -e "${YELLOW}   They will fight this npm start for their bound ports. Run 'npm stop' first.${NC}"
+  echo ""
+fi
+
+# Port pre-flight — fail fast, not deep in tsx with cryptic EADDRINUSE.
+# Check the two ports npm start ALWAYS binds (WS 9001 + Rust IPC TCP 9100
+# if env is set). LiveKit/widget ports only bind if those subsystems
+# actually start, so they're less likely to fail at entry.
+PORT_HOLDERS=""
+NODE_WS_PORT="${NODE_WS_PORT:-9001}"
+if lsof -iTCP:"$NODE_WS_PORT" -sTCP:LISTEN 2>/dev/null | grep -q LISTEN; then
+  HOLDER_CMD=$(lsof -nP -iTCP:"$NODE_WS_PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1" (PID "$2")"}')
+  PORT_HOLDERS="$PORT_HOLDERS\n     :$NODE_WS_PORT by $HOLDER_CMD"
+fi
+if [ -n "${CONTINUUM_CORE_TCP:-}" ] && lsof -iTCP:"$CONTINUUM_CORE_TCP" -sTCP:LISTEN 2>/dev/null | grep -q LISTEN; then
+  HOLDER_CMD=$(lsof -nP -iTCP:"$CONTINUUM_CORE_TCP" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1" (PID "$2")"}')
+  PORT_HOLDERS="$PORT_HOLDERS\n     :$CONTINUUM_CORE_TCP by $HOLDER_CMD"
+fi
+if [ -n "$PORT_HOLDERS" ]; then
+  echo -e "${RED}✗ Ports needed by npm start are already bound:${NC}"
+  echo -e "$PORT_HOLDERS"
+  echo -e "${RED}   Refusing to start — you'd hit cryptic EADDRINUSE deep in tsx logs.${NC}"
+  echo -e "${RED}   Run 'npm stop' to clear Dev-mode processes (and any Carl-mode stack).${NC}"
+  exit 1
+fi
+
 # Pre-flight: catch Xcode issues NOW, not buried in build output 30 lines deep
 preflight_check_xcode
 

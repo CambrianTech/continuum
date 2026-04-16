@@ -465,6 +465,16 @@ info "Pulling container images (tag: ${CONTINUUM_IMAGE_TAG:-latest})..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
 
 # ── 8. Start support services ──────────────────────────────
+# Inverse of parallel-start.sh's cross-mode detection: if native Dev-mode
+# processes (continuum-core-server, tsx orchestrator) are running, docker
+# compose up will collide on ports 9001/9100/7880-82/9003/5432. Warn so
+# the user can stop them before starting the stack.
+if pgrep -x 'continuum-core-server' >/dev/null 2>&1 \
+   || pgrep -f 'tsx.*scripts/launch-active-example' >/dev/null 2>&1; then
+  warn "Native Dev-mode continuum processes are running — they'll collide with the docker stack on ports."
+  warn "Run 'cd src && npm stop' to stop BOTH native and any running docker stack (idempotent)."
+  warn "Continuing — expect bind errors below if they persist."
+fi
 info "Starting support services..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS up -d
 
