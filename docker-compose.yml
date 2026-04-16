@@ -18,8 +18,18 @@
 
 services:
 
-  # ── PostgreSQL ────────────────────────────────────────────
+  # ── PostgreSQL (OPT-IN, grid deployments only) ────────────
+  # Default install uses SQLite at ~/.continuum/database/main.db — zero-dep,
+  # portable, works offline. Postgres is only needed for multi-writer grid
+  # setups where multiple continuum-core nodes share state over Tailscale.
+  #
+  # Enable with:    docker compose --profile postgres up
+  # And tell Rust to use it: DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
+  #
+  # When this profile is inactive, `depends_on: postgres` entries on other
+  # services are auto-skipped by compose — postgres simply doesn't run.
   postgres:
+    profiles: [postgres]
     image: postgres:17-alpine
     restart: unless-stopped
     mem_limit: 512m
@@ -73,9 +83,11 @@ services:
     # cuda / continuum-core-vulkan overlays) it's the actual ceiling.
     mem_limit: ${CONTINUUM_CORE_MEM:-16g}
     working_dir: /app
+    # depends_on does NOT include postgres — postgres is opt-in (profile),
+    # and by default continuum-core uses SQLite where no startup ordering
+    # matters. When users enable the postgres profile and set DATABASE_URL,
+    # Rust's PostgresAdapter (deadpool pool) retries connection on startup.
     depends_on:
-      postgres:
-        condition: service_healthy
       livekit-bridge:
         condition: service_healthy
     volumes:
@@ -92,7 +104,12 @@ services:
     # base file stays Podman/Rancher-compatible. Default CPU-fallback for
     # Bevy avatar rendering happens automatically when no runtime is set.
     environment:
-      - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
+      # DATABASE_URL is OPTIONAL. Unset → Rust defaults to SQLite at
+      # ~/.continuum/database/main.db (mounted from host via the
+      # ~/.continuum volume). Set to `postgres://continuum:continuum@postgres:5432/continuum`
+      # only when running the `postgres` compose profile. Rust's
+      # resolve_handle('main') reads this env to pick the adapter.
+      - DATABASE_URL=${DATABASE_URL:-}
       - AVATAR_MODELS_DIR=/app/avatars
       - LIVEKIT_URL=${LIVEKIT_URL:-ws://livekit:7880}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
@@ -145,17 +162,24 @@ services:
     # install.sh sets NODE_SERVER_MEM to max(2, host_gb/8). Default 2g
     # for manual docker compose users.
     mem_limit: ${NODE_SERVER_MEM:-2g}
+    # depends_on omits postgres — it's in the `postgres` profile (opt-in).
+    # node-server doesn't connect to postgres directly anyway; all data ops
+    # flow through continuum-core via IPC with opaque handles.
     depends_on:
       continuum-core:
-        condition: service_healthy
-      postgres:
         condition: service_healthy
     ports:
       - "${NODE_WS_PORT:-9001}:9001"   # WebSocket
     volumes:
       - ~/.continuum:/root/.continuum
     environment:
-      - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
+      # node-server never directly connects to a database — all data ops
+      # go through continuum-core via IPC, using opaque handles ('main' for
+      # the primary DB, persona UUIDs for per-persona DBs). Rust resolves
+      # handles to concrete backends. DATABASE_URL intentionally NOT set
+      # here: the old value leaked across the TS→Rust IPC boundary as a
+      # connection string and broke Mac Option B where docker-DNS doesn't
+      # resolve from the native host.
       - NODE_ENV=production
       - JTAG_SKIP_HTTP=1
       - JTAG_NO_TLS=1

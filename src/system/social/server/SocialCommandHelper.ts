@@ -22,7 +22,6 @@ import { SocialMediaProviderRegistry } from './SocialMediaProviderRegistry';
 import { DataOpen } from '@commands/data/open/shared/DataOpenTypes';
 import { DataList } from '@commands/data/list/shared/DataListTypes';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
-import { SystemPaths } from '@system/core/config/SystemPaths';
 import { UserEntity } from '@system/data/entities/UserEntity';
 import { Logger } from '@system/core/logging/Logger';
 
@@ -63,7 +62,7 @@ export async function loadSocialContext(
   // Resolve persona using standard priority pattern (shared across all social commands)
   const resolvedPersonaId = resolvePersonaId(personaId, params);
 
-  // Look up persona for their uniqueId (needed for SystemPaths)
+  // Look up persona for their uniqueId (slug for the @persona:<slug> handle)
   const userResult = await DataList.execute<UserEntity>({
     collection: UserEntity.collection,
     filter: { id: resolvedPersonaId },
@@ -80,8 +79,8 @@ export async function loadSocialContext(
   const persona = userResult.items[0];
   const personaUniqueId = persona.uniqueId;
 
-  // Open persona's longterm.db
-  const dbPath = SystemPaths.personas.longterm(personaUniqueId);
+  // Open persona's longterm.db via sentinel handle (@persona:<slug>)
+  const dbPath = `@persona:${personaUniqueId}`;
   const openResult = await DataOpen.execute({
     adapter: 'sqlite',
     config: { path: dbPath, mode: 'readwrite', wal: true, foreignKeys: true },
@@ -185,7 +184,7 @@ export async function loadSharedCredential(
   platformId: string,
 ): Promise<SocialCredentialEntity | undefined> {
   try {
-    const sharedDbPath = SystemPaths.personas.longterm(SHARED_CREDENTIAL_PERSONA);
+    const sharedDbPath = `@persona:${SHARED_CREDENTIAL_PERSONA}`;
     const openResult = await DataOpen.execute({
       adapter: 'sqlite',
       config: { path: sharedDbPath, mode: 'readwrite', wal: true, foreignKeys: true },
@@ -237,7 +236,7 @@ export async function openPersonaDb(
   }
 
   const personaUniqueId = userResult.items[0].uniqueId;
-  const dbPath = SystemPaths.personas.longterm(personaUniqueId);
+  const dbPath = `@persona:${personaUniqueId}`;
 
   const openResult = await DataOpen.execute({
     adapter: 'sqlite',

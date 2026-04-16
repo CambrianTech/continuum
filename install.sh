@@ -458,21 +458,13 @@ if [[ "$OS" == "Darwin" ]]; then
   info "Building + launching native continuum-core-server (Metal-enabled)..."
   info "  First run: cargo build takes 5-15 min. Subsequent runs: incremental."
 
-  # DATABASE_URL for native continuum-core. On Mac, postgres runs in a
-  # container but is exposed on the host at 127.0.0.1:5432 (via the
-  # docker-compose.mac.yml ports override). Native continuum-core reaches
-  # it through that loopback mapping — docker network DNS (`postgres:5432`)
-  # does NOT resolve from outside the Docker Desktop VM.
-  #
-  # Credentials match the compose postgres defaults (user/pass both
-  # `continuum`). Appended to config.env so `npm start` reads it on every
-  # launch — env var export below is a belt-and-suspenders for the current
-  # shell since config.env is the persistent source of truth.
-  if ! grep -q '^DATABASE_URL=' "$CONFIG_FILE" 2>/dev/null; then
-    echo "DATABASE_URL=postgres://continuum:continuum@127.0.0.1:5432/continuum" >> "$CONFIG_FILE"
-    ok "Wrote DATABASE_URL to $CONFIG_FILE (points at containerized postgres via 127.0.0.1:5432)"
-  fi
-  export DATABASE_URL="postgres://continuum:continuum@127.0.0.1:5432/continuum"
+  # No DATABASE_URL configured by default. Rust's data module defaults to
+  # SQLite at ~/.continuum/database/main.db — zero-dep, portable, no
+  # network topology gymnastics. For grid deployments (multi-writer over
+  # Tailscale) users explicitly set DATABASE_URL in config.env AND run
+  # `docker compose --profile postgres up`. All other callers (TS, tests,
+  # jtag CLI) pass opaque handles; Rust resolves them to the configured
+  # backend in modules/data.rs::resolve_handle.
 
   # CONTINUUM_CORE_TCP=9100 tells the native continuum-core-server to bind an
   # additional TCP listener alongside its Unix socket. Containerized
@@ -480,7 +472,15 @@ if [[ "$OS" == "Darwin" ]]; then
   # continuum-core via tcp://host.docker.internal:9100 because Unix sockets
   # don't traverse Docker Desktop's VM boundary on Mac. Native callers
   # (jtag CLI, continuum bin) keep using the Unix socket as before.
+  #
+  # CONTINUUM_CORE_BIND=0.0.0.0 is REQUIRED on Mac: Docker Desktop's
+  # `host.docker.internal` resolves inside containers to the host's
+  # docker-bridge IP (e.g. 192.168.65.254), NOT to 127.0.0.1. A loopback-
+  # bound listener is unreachable from containers. 0.0.0.0 accepts on all
+  # interfaces; macOS's application firewall blocks inbound LAN traffic
+  # for unsigned dev binaries by default, so exposure stays local.
   export CONTINUUM_CORE_TCP=9100
+  export CONTINUUM_CORE_BIND=0.0.0.0
   (cd "$INSTALL_DIR/src" && npm install --silent && npm start) || \
     warn "npm start failed — check logs at ~/.continuum/jtag/logs/system/continuum-core.log"
 fi

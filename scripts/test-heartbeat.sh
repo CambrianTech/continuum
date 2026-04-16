@@ -127,6 +127,41 @@ trap cleanup EXIT
 # conflicts from prior aborted heartbeats. Idempotent.
 cleanup 2>/dev/null || true
 
+# Pre-flight (Mac-only): detect stale/duplicate native continuum-core-server.
+# Option B runs continuum-core NATIVE on the host; a leftover process from a
+# prior `npm start` silently loses the Unix socket + TCP listener bind race
+# against a new one, leaving orchestration half-dead. Symptom matches the
+# 180s "JTAG system did not become ready" timeout that seed-continuum.ts
+# hits — ping returns but systemReady never flips, Rust IPC never confirms.
+#
+# NEVER killed silently — a legit in-use session stays untouched. Fail loud
+# with exact cleanup commands so the user decides.
+if [[ "$HEARTBEAT_VARIANT" == mac-native* ]]; then
+  CORE_PIDS=$(pgrep -fl "continuum-core-server" 2>/dev/null | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//')
+  if [[ -n "$CORE_PIDS" ]]; then
+    CORE_COUNT=$(echo "$CORE_PIDS" | wc -w | tr -d ' ')
+    if [[ "$CORE_COUNT" -gt 1 ]]; then
+      echo "ERROR: $CORE_COUNT continuum-core-server processes running: $CORE_PIDS" >&2
+      echo "       Multiple native cores fight for the Unix socket + TCP 9100;" >&2
+      echo "       orchestration wedges. Kill all and re-run:" >&2
+      echo "         pkill -9 -f continuum-core-server" >&2
+      echo "         rm -f ~/.continuum/sockets/*.sock" >&2
+      echo "         cd src && CONTINUUM_CORE_TCP=9100 npm start" >&2
+      exit 1
+    fi
+    # Single core — verify it's responsive (not wedged with MEMLEAK etc).
+    if ! timeout 5 "$REPO_ROOT/src/jtag" ping >/dev/null 2>&1; then
+      echo "ERROR: continuum-core-server PID $CORE_PIDS is running but unresponsive" >&2
+      echo "       (./jtag ping timed out at 5s). Likely wedged. Kill and restart:" >&2
+      echo "         pkill -9 -f continuum-core-server" >&2
+      echo "         rm -f ~/.continuum/sockets/*.sock" >&2
+      echo "         cd src && CONTINUUM_CORE_TCP=9100 npm start" >&2
+      exit 1
+    fi
+    echo "  ✓ pre-flight: single responsive continuum-core-server (PID $CORE_PIDS)"
+  fi
+fi
+
 echo ""
 echo "━━━ heartbeat: variant=$HEARTBEAT_VARIANT  tag=$TAG ━━━"
 echo ""
