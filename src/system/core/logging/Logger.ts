@@ -46,7 +46,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SystemPaths } from '../config/SystemPaths';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
-import { SOCKETS } from '../../../shared/config';
+import { resolveCoreEndpointString } from '../../../workers/continuum-core/bindings/modules/base';
 
 // Import from modular files
 import { LogLevel, FileMode, createLoggerConfig, parseFileMode } from './LoggerTypes';
@@ -141,12 +141,13 @@ class LoggerClass implements ParentLogger {
     this.logDir = SystemPaths.logs.system;
 
     // Initialize Rust worker connection (if enabled)
-    // LoggerModule is now part of continuum-core (Phase 4a)
+    // LoggerModule is now part of continuum-core (Phase 4a).
+    // resolveCoreEndpointString honors CONTINUUM_CORE_URL — returns a
+    // `tcp://host:port` URL for containerized callers on Mac (where Unix
+    // sockets can't traverse Docker Desktop's VM), otherwise an absolute
+    // Unix socket path. WorkerClient routes both forms transparently.
     if (this.useRustLogger) {
-      // Use socket path from shared config - resolve relative to cwd
-      const socketPath = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
-        ? SOCKETS.CONTINUUM_CORE
-        : path.resolve(process.cwd(), SOCKETS.CONTINUUM_CORE);
+      const socketPath = resolveCoreEndpointString();
       this.workerClient = new LoggerWorkerClient({
         socketPath,
         timeout: 10000,

@@ -42,6 +42,15 @@
 
 services:
 
+  # Postgres must be reachable from BOTH containerized node-server (docker
+  # network DNS: `postgres:5432`) AND native continuum-core on the host
+  # (localhost:5432, since docker network DNS doesn't resolve from outside
+  # the VM). Exposing 127.0.0.1:5432 on the host satisfies both without
+  # opening the port to the LAN.
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
   # continuum-core does NOT run in a container on Mac. Runs natively via
   # `npm start` so it can link Metal for Candle embeddings + Bevy render +
   # vision + audio + direct llama.cpp ggml-metal inference.
@@ -63,7 +72,15 @@ services:
   # (via CONTINUUM_CORE_TCP=9100 exported by install.sh before `npm start`),
   # and node-server connects to that via host.docker.internal (Docker
   # Desktop's standard alias for the host).
+  #
+  # depends_on override: base file waits on continuum-core health, but
+  # continuum-core is replicas=0 here (runs native), so that condition
+  # never satisfies. node-server gets a best-effort boot instead — it
+  # retries TCP to continuum-core via the usual IPC reconnect loop.
   node-server:
     environment:
       # Added for Mac: overrides the default Unix-socket path lookup.
       - CONTINUUM_CORE_URL=tcp://host.docker.internal:9100
+    depends_on:
+      postgres:
+        condition: service_healthy
