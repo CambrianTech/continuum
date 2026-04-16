@@ -222,6 +222,73 @@ PYEOF
     fi
     CONTAINER_CMD=docker
     ;;
+esac
+
+# ── Per-service memory caps — auto-calculated from host RAM ────────
+# Joel's directive: don't ask users to set mem limits; auto-calc from host.
+# Don't paper over OOMs with undersized limits; size containers for the
+# actual mission. Mission per-service budgets:
+#
+#   continuum-core (Linux container; on Mac it runs NATIVE and this cap
+#   is informational / unused because docker-compose.mac.yml sets
+#   replicas=0): needs to hold 4-8B param Qwen at Q4 (~4GB) + KV cache
+#   for 5 concurrent personas (~2GB) + embeddings + Bevy + vision +
+#   audio. Budget = host - 10GB (reserve for OS + Docker VM overhead
+#   + support services).
+#
+#   livekit-bridge: native WebRTC encode/decode buffers, multiple
+#   streams. Budget scales with host — roughly host/8.
+#
+#   node-server: TS orchestrator + IPC buffers + RAG state. Budget
+#   same as livekit-bridge.
+#
+#   model-init: one-time downloader, fits in 2GB.
+#
+#   widget-server: static + light TS, 1GB.
+#
+#   postgres: our dataset is small, 512MB (already set in compose).
+#   livekit server: 256m (already set in compose).
+#
+# Physical RAM is whichever host this runs on.
+if [[ -n "${PHYS_MIB:-}" ]]; then
+  # Mac branch set PHYS_MIB already. Linux sets it here from /proc/meminfo.
+  :
+elif [[ -f /proc/meminfo ]]; then
+  PHYS_MIB=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
+fi
+
+if [[ -n "${PHYS_MIB:-}" ]]; then
+  PHYS_GB=$((PHYS_MIB / 1024))
+
+  # continuum-core cap: (host - 10GB) on ≥32GB machines, (host - 8GB)
+  # on 20-31GB machines. Floor at 10GB.
+  if [[ $PHYS_GB -ge 32 ]]; then
+    CONTINUUM_CORE_MEM=$((PHYS_GB - 10))g
+  elif [[ $PHYS_GB -ge 20 ]]; then
+    CONTINUUM_CORE_MEM=$((PHYS_GB - 8))g
+  else
+    CONTINUUM_CORE_MEM=10g
+  fi
+
+  # Scale livekit-bridge + node-server with host. Floor 2GB each.
+  # 16GB host → 2g, 32GB → 4g, 64GB → 8g.
+  SCALED=$((PHYS_GB / 8))
+  [[ $SCALED -lt 2 ]] && SCALED=2
+  LIVEKIT_BRIDGE_MEM=${SCALED}g
+  NODE_SERVER_MEM=${SCALED}g
+
+  # Static + small — these don't need to scale.
+  MODEL_INIT_MEM=2g
+  WIDGET_SERVER_MEM=1g
+
+  export CONTINUUM_CORE_MEM LIVEKIT_BRIDGE_MEM NODE_SERVER_MEM MODEL_INIT_MEM WIDGET_SERVER_MEM
+
+  info "Memory caps (${PHYS_GB}GB host): continuum-core=${CONTINUUM_CORE_MEM}, livekit-bridge=${LIVEKIT_BRIDGE_MEM}, node-server=${NODE_SERVER_MEM}, model-init=${MODEL_INIT_MEM}, widget-server=${WIDGET_SERVER_MEM}"
+fi
+
+# (OS-branch case/esac above handled Linux/Darwin and set CONTAINER_CMD.)
+case "$OS" in
+  Linux|Darwin) : ;;
   *) fail "Unsupported OS: $OS" ;;
 esac
 
