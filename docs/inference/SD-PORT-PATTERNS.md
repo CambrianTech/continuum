@@ -157,6 +157,23 @@ The **generic generation loop stays in Rust**. The `ModelBackend::forward(...)` 
 
 For an LLM (not SD) workload the analog is even simpler — the "generation loop" is the token-by-token autoregressive loop, `forward()` returns next-token logits, and `eval()` is the materialization before sampling.
 
+## Translation to autoregressive LLMs (Qwen3.5 — what we actually need)
+
+The doc leads with SD because both ports are mature reference implementations of the same architecture pair. The actual MLX adapter target in #897 is an autoregressive LLM, not diffusion. Mapping the SD pattern across:
+
+| SD concept | LLM analog |
+|---|---|
+| Denoising loop over timesteps | Autoregressive loop over tokens |
+| `unet.forward(latent, t, cond)` | `model.forward(input_ids, kv_cache)` |
+| Symbolic latent → `mx.eval(latent)` | Symbolic logits → `mx.eval(logits)` before sampling |
+| `scheduler.step(noise_pred, t, latents)` | `sampler.sample(logits)` → next token id |
+| VAE decode at end | Detokenize at end |
+| Classifier-free guidance (concat→forward→split→blend) | NOT present in LLM. But the SHAPE — batched-parallel forward then demux outputs — is exactly what our continuous-batching scheduler does for multi-persona concurrent inference: concat N requests into one forward, split outputs back to N streams. **Same pattern, different reason.** |
+
+**Critical implication.** The seam (forward-symbolic / eval-materialize) maps directly: logits returned from `MlxAdapter::forward(input_ids, ...)` are symbolic until the sampler's `mx.eval(logits)` materializes them right before argmax/top-k. Our existing `ModelBackend::generate_step()` interface already has the right shape — Vulkan/CUDA backends return tokens after their own internal materialization; MLX backend defers materialization to the sampler. Each backend chooses where the boundary lives; the trait doesn't enforce.
+
+For phase B of #897 the cleanest study target is `mlx-community`'s Qwen-family examples (text autoregressive, no VAE/sampler complexity) — `ml-explore/mlx-examples/llms/mlx_lm/` is the reference that maps most directly to what we'll implement.
+
 ## Implications for Continuum's MLX ModelBackend adapter
 
 Concrete takeaways m5-test can act on in phase A (FFI + scaffold) of #897:
@@ -171,13 +188,16 @@ Concrete takeaways m5-test can act on in phase A (FFI + scaffold) of #897:
 
 5. **Quantization is baked into the artifact.** We ship `continuum-ai/qwen3.5-4b-omni-mlx-q4` (or similar name) per device tier. At load time the adapter picks the right one based on detected hardware (same device_target_ladder logic we use for GGUF selection).
 
+   **Format note (m5-test 2026-04-16):** `mx.load` reads safetensors but MLX's native indexed-npy format is faster at load time. The forge pipeline (#894) should emit mlx-native alongside the GGUF tier per artifact, not just safetensors. Adapter loader prefers mlx-native when available, falls back to safetensors when not.
+
 6. **Concrete starting point for reading.** The cleanest file-length pattern study is `ml-explore/mlx-examples/stable_diffusion/stable_diffusion/__init__.py` — 100ish lines, shows the full text-encoder → U-Net → VAE → scheduler flow with the MLX seam explicit. For the LLM-side analog, `ml-explore/mlx-examples/qwen/qwen.py` (or `mlx-community/qwen*` repos) would be the direct prior art.
 
 ## Open questions for m5-test to explore further
 
+- **KV cache ownership — gates phase B (most critical).** Autoregressive text generation needs cache-per-sequence management. Candle threads the cache through `forward()` explicitly (caller-owned). MLX could either own it internally (simpler API, opaque to caller) OR expose it (more control for our continuous-batching scheduler that wants to manage cache pools across concurrent persona streams). The choice determines whether MLX adapter integrates trivially with the existing scheduler or needs a special-case path. Decide before phase B kicks off — the answer dictates the trait shape.
 - **How does `mlx-rs` expose the lazy/eval boundary?** The crate's public API for deferred computation will shape how our `ModelBackend` methods are written. If it exposes `Array::eval()` naturally, we're set. If materialization is implicit in some ops, we need to understand the contract.
-- **Audio head + vision head in the Qwen3.5-Omni architecture:** where they attach to the transformer spine in MLX's implementation (vs what Candle would do) — critical for phases C + D of #897.
-- **Weight format interop:** does MLX load directly from the HF-published safetensors, or do we need a one-time conversion per artifact? If conversion is cheap and one-time, we bake it into the factory/forge pipeline (#894).
+- **Audio head + vision head — phases C + D, reference is `mlx-community/Qwen3-Omni`.** Specifically need to understand where the audio encoder/decoder and vision encoder attach to the transformer spine in their MLX implementation. Determines how `ModelBackend` trait expands (default impls for backends that don't have these, real impls for MLX). m5-test (2026-04-16) flagged the trait shape stays additive with `unimplemented!()` defaults — vulkan/cuda/llama.cpp paths inherit the no-op, MLX overrides.
+- **Weight format interop:** mlx-native indexed-npy is faster than safetensors. Forge pipeline emits both. Per-artifact one-time conversion is cheap; bake it into #894 forge stage.
 
 ## Not in scope of these reading notes
 
