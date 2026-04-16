@@ -73,7 +73,16 @@ When the work is moved out, the inner loop shrinks. When the inner loop shrinks,
 
 ## Quick wins (land BEFORE the structural phases)
 
-Three of the violations above can be fixed in a day each, no architectural changes required, with measurable perf wins. Worth landing as standalone PRs while phases 1-4 are designed/discussed.
+Four of the violations above can be fixed in a day each, no architectural changes required, with measurable perf wins. Worth landing as standalone PRs while phases 1-4 are designed/discussed.
+
+**Ship order (correctness-then-perf, per memento review):**
+1. **QW#0 — DataSchemaServerCommand SQL leak** (correctness/portability, not perf). Memento taking this today.
+2. **QW#3 — typed param structs for hot 5 handlers** (removes 26 clone+parse hops; sets up typed IPC for Phase 1).
+3. **QW#1 — ensure-schema short-circuit cache** (one round-trip per write removed).
+4. **QW#2 — pagination LIMIT N+1 / pg_class.reltuples** (full-scan removed from hot pagination path).
+
+**Audit confirmation (memento-suggested grep, run 2026-04-16):**
+`grep -rn -E "(SELECT|INSERT|UPDATE|DELETE|CREATE\s+TABLE|ALTER\s+TABLE).*FROM|INSERT\s+INTO" src/ --include="*.ts"` returned exactly one non-comment hit: `DataSchemaServerCommand.ts` (the QW#0 target). The hit at `ChatMessageEntity.ts:159` is a doc comment describing the query the entity supports, not executed SQL — fine to leave. So after QW#0 lands, **`src/**/*.ts` is fully SQL-clean** and the audit grep should return zero non-comment hits in perpetuity (regression test for any future PR).
 
 ### Quick win #1 — `ensure_table_exists_pg` short-circuit cache (~20 lines, ~1 hr)
 
