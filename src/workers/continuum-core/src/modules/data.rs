@@ -71,6 +71,10 @@ struct PaginatedQueryState {
     filter: Option<std::collections::HashMap<String, FieldFilter>>,
     sort: Option<Vec<crate::orm::query::SortSpec>>,
     page_size: usize,
+    /// Exact row count from the open-time COUNT(*). Only populated when the
+    /// caller passed `count_exact: true`; otherwise 0 means "not requested",
+    /// which is the default behavior (QW#2 — skip the full-table scan when
+    /// the caller only needs has_more, which is derived from LIMIT N+1).
     total_count: u64,
     current_page: usize,
     /// Cursor: last ID from previous page for efficient keyset pagination
@@ -169,9 +173,18 @@ impl DataModule {
     ///   (grid opt-in for Postgres / any future adapter); otherwise
     ///   defaults to a local SQLite file at
     ///   `$HOME/.continuum/database/main.db`.
-    /// - 36-char UUID shape — per-persona database. Maps to
-    ///   `$HOME/.continuum/personas/<uuid>/longterm.db`. Persona identity
-    ///   is the handle; TS never computes this path.
+    /// - `"@persona:<slug>"` — per-persona long-term memory DB. Resolves
+    ///   to `$HOME/.continuum/personas/<slug>/data/longterm.db` on the
+    ///   host. Mac Option B requires this — TS in container builds
+    ///   container-rooted paths (`/root/...`) that the native core on
+    ///   host can't open; the sentinel lets each side resolve to its
+    ///   own filesystem view of the shared `~/.continuum` mount.
+    /// - `"@metrics"` — telemetry SQLite. Resolves to
+    ///   `$HOME/.continuum/metrics/metrics.sqlite` on the host. Same
+    ///   Mac Option B rationale.
+    /// - 36-char UUID shape — per-persona database (UUID-keyed variant).
+    ///   Maps to `$HOME/.continuum/personas/<uuid>/longterm.db`. Kept
+    ///   for back-compat with callers using UUIDs as identity.
     /// - Starts with `postgres://` / `postgresql://` / filesystem path —
     ///   legacy passthrough. Logged at WARN so remaining leak sites show
     ///   up in the next audit. Will be removed once every caller migrates.
@@ -189,6 +202,38 @@ impl DataModule {
             let home = std::env::var("HOME")
                 .map_err(|_| "resolve_handle('main'): HOME env not set".to_string())?;
             return Ok(format!("{}/.continuum/database/main.db", home));
+        }
+
+        // Per-persona slug-shape sentinel: @persona:<slug>
+        // Slug matches the on-disk dir under $HOME/.continuum/personas/.
+        // Mac Option B fix — TS in container would otherwise ship a
+        // /root-rooted path the host-side native core can't open even
+        // though the file is the same on both sides of the mount.
+        if let Some(slug) = handle.strip_prefix("@persona:") {
+            if slug.is_empty() {
+                return Err("resolve_handle('@persona:'): empty slug".to_string());
+            }
+            // Defensive: slug must be a single path segment — no escapes.
+            if slug.contains('/') || slug.contains('\\') || slug.contains("..") {
+                return Err(format!(
+                    "resolve_handle('@persona:{}'): slug must be a single path segment",
+                    slug
+                ));
+            }
+            let home = std::env::var("HOME").map_err(|_| {
+                format!("resolve_handle('@persona:{}'): HOME env not set", slug)
+            })?;
+            return Ok(format!(
+                "{}/.continuum/personas/{}/data/longterm.db",
+                home, slug
+            ));
+        }
+
+        // Telemetry SQLite sentinel.
+        if handle == "@metrics" {
+            let home = std::env::var("HOME")
+                .map_err(|_| "resolve_handle('@metrics'): HOME env not set".to_string())?;
+            return Ok(format!("{}/.continuum/metrics/metrics.sqlite", home));
         }
 
         // Per-persona UUID shape: 8-4-4-4-12 hex chars with hyphens (36 total).
@@ -212,15 +257,15 @@ impl DataModule {
             log_info!(
                 "data",
                 "resolve_handle",
-                "LEGACY connection string at IPC boundary: {} — caller should pass a handle ('main' or persona UUID)",
+                "LEGACY connection string at IPC boundary: {} — caller should pass a handle ('main', '@persona:<slug>', '@metrics', or persona UUID)",
                 handle
             );
             return Ok(handle.to_string());
         }
 
         Err(format!(
-            "Unknown database handle: '{}'. Valid handles are 'main' or a persona UUID. \
-             Custom backends must be opened via data/open (future).",
+            "Unknown database handle: '{}'. Valid handles are 'main', '@persona:<slug>', \
+             '@metrics', or a persona UUID. Custom backends must be opened via data/open (future).",
             handle
         ))
     }
@@ -613,6 +658,15 @@ struct QueryOpenParams {
     sort: Option<Vec<crate::orm::query::SortSpec>>,
     #[serde(default = "default_page_size")]
     page_size: usize,
+    /// Opt in to a SELECT COUNT(*) at open time so callers that show
+    /// "X of N" displays get an exact total. Default false: skip the scan
+    /// (a ~1M-row chat_messages table no longer pays a full-table cost on
+    /// every scrollback open). When false the response carries
+    /// `totalCount: 0` as the "not requested" sentinel — `hasMore` is
+    /// always authoritative regardless and is derived from the LIMIT N+1
+    /// probe in `handle_query_next`.
+    #[serde(default)]
+    count_exact: bool,
 }
 
 /// Get next page params
@@ -1598,17 +1652,29 @@ impl DataModule {
 
         let adapter = self.get_adapter(&params.db_path).await?;
 
-        // Get total count first
-        let count_query = StorageQuery {
-            collection: params.collection.clone(),
-            filter: params.filter.clone(),
-            ..Default::default()
+        // QW#2: skip the upfront SELECT COUNT(*) by default — it's a full
+        // table scan that grows linearly with table size and most callers
+        // only need has_more, which is the LIMIT N+1 probe in
+        // handle_query_next. Caller opts in via count_exact: true when the
+        // UI actually needs an exact "X of N" display.
+        let total_count = if params.count_exact {
+            let count_query = StorageQuery {
+                collection: params.collection.clone(),
+                filter: params.filter.clone(),
+                ..Default::default()
+            };
+            adapter.count(count_query).await.data.unwrap_or(0) as u64
+        } else {
+            0
         };
-        let count_result = adapter.count(count_query).await;
-        let total_count = count_result.data.unwrap_or(0) as u64;
 
         // Generate unique query ID
         let query_id = uuid::Uuid::new_v4().to_string();
+
+        // has_more starts optimistic — the LIMIT N+1 probe on the first
+        // query_next call is the authoritative signal. If the table is
+        // empty, the caller sees an empty first page with has_more: false.
+        let has_more = if params.count_exact { total_count > 0 } else { true };
 
         // Create query state (query_id is the DashMap key, not stored in struct)
         let state = PaginatedQueryState {
@@ -1620,7 +1686,7 @@ impl DataModule {
             total_count,
             current_page: 0,
             cursor_id: None,
-            has_more: total_count > 0,
+            has_more,
             created_at: Instant::now(),
         };
 
@@ -1646,7 +1712,7 @@ impl DataModule {
                 "collection": params.collection,
                 "totalCount": total_count,
                 "pageSize": params.page_size,
-                "hasMore": total_count > 0
+                "hasMore": has_more
             }
         })))
     }
@@ -1711,14 +1777,18 @@ impl DataModule {
 
         let adapter = self.get_adapter(&db_path).await?;
 
-        // Build query with cursor-based pagination
-        // For simplicity, using OFFSET initially. TODO: implement true keyset pagination
+        // QW#2: fetch page_size + 1 rows. The extra row is the has_more
+        // probe — if we got it back, there's at least one more page; we
+        // drop it before returning the page. This replaces the prior
+        // formula `offset + items_count < total_count`, which was both
+        // wrong under concurrent inserts (total_count goes stale mid-iter)
+        // and required the open-time COUNT(*) we just stopped paying for.
         let offset = current_page * page_size;
         let query = StorageQuery {
             collection: collection.clone(),
             filter: filter.clone(),
             sort: sort.clone(),
-            limit: Some(page_size),
+            limit: Some(page_size + 1),
             offset: Some(offset),
             ..Default::default()
         };
@@ -1728,9 +1798,12 @@ impl DataModule {
             return Err(result.error.unwrap_or_else(|| "Query failed".to_string()));
         }
 
-        let records = result.data.unwrap_or_default();
+        let mut records = result.data.unwrap_or_default();
+        let new_has_more = records.len() > page_size;
+        if new_has_more {
+            records.truncate(page_size);
+        }
         let items_count = records.len();
-        let new_has_more = items_count == page_size && offset + items_count < total_count as usize;
 
         // Get last ID for cursor
         let new_cursor_id = records.last().map(|r| r.id.clone());
@@ -2002,6 +2075,25 @@ impl DataModule {
 mod tests {
     use super::*;
 
+    /// Helper: per-test isolated SQLite file routed through resolve_handle's
+    /// legacy passthrough. Tests still hit the abstraction (handle resolves
+    /// the same way TS callers' would); the passthrough is documented as a
+    /// migration target pending sentinel-handle adoption everywhere. When
+    /// the passthrough is removed, migrate these to per-test HOME +
+    /// "main" handle.
+    ///
+    /// Returns (TempDir guard, db_path String). Hold the guard for the
+    /// duration of the test — drop deletes the tempdir.
+    fn test_db_path(suffix: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir
+            .path()
+            .join(format!("{}.db", suffix))
+            .to_string_lossy()
+            .to_string();
+        (dir, path)
+    }
+
     #[tokio::test]
     async fn test_data_module_requires_db_path() {
         let module = DataModule::new();
@@ -2024,6 +2116,7 @@ mod tests {
     #[tokio::test]
     async fn test_data_module_create_and_read() {
         let module = DataModule::new();
+        let (_tmp, db_path) = test_db_path("create_and_read");
 
         // Create table first
         let schema = CollectionSchema {
@@ -2043,7 +2136,7 @@ mod tests {
             .handle_command(
                 "data/ensure-schema",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "schema": schema
                 }),
             )
@@ -2054,14 +2147,14 @@ mod tests {
             .handle_command(
                 "data/create",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_users",
                     "data": { "name": "Alice" }
                 }),
             )
             .await;
 
-        assert!(create_result.is_ok());
+        assert!(create_result.is_ok(), "create_result failed: {:?}", create_result);
 
         if let Ok(CommandResult::Json(result)) = create_result {
             assert!(result["success"].as_bool().unwrap_or(false));
@@ -2072,7 +2165,7 @@ mod tests {
                 .handle_command(
                     "data/read",
                     json!({
-                        "dbPath": ":memory:",
+                        "dbPath": &db_path,
                         "collection": "test_users",
                         "id": id
                     }),
@@ -2090,6 +2183,7 @@ mod tests {
     #[tokio::test]
     async fn test_vector_index_and_stats() {
         let module = DataModule::new();
+        let (_tmp, db_path) = test_db_path("vector_index");
 
         // Create schema with embedding field
         let schema = CollectionSchema {
@@ -2119,7 +2213,7 @@ mod tests {
             .handle_command(
                 "data/ensure-schema",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "schema": schema
                 }),
             )
@@ -2130,14 +2224,14 @@ mod tests {
             .handle_command(
                 "data/create",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_vectors",
                     "data": { "content": "Hello world" }
                 }),
             )
             .await;
 
-        assert!(create_result.is_ok());
+        assert!(create_result.is_ok(), "create_result failed: {:?}", create_result);
         let record_id = if let Ok(CommandResult::Json(result)) = &create_result {
             result["data"]["id"].as_str().unwrap().to_string()
         } else {
@@ -2150,7 +2244,7 @@ mod tests {
             .handle_command(
                 "vector/index",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_vectors",
                     "id": record_id,
                     "embedding": test_embedding
@@ -2168,7 +2262,7 @@ mod tests {
             .handle_command(
                 "vector/stats",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_vectors"
                 }),
             )
@@ -2187,6 +2281,7 @@ mod tests {
     #[tokio::test]
     async fn test_vector_search_basic() {
         let module = DataModule::new();
+        let (_tmp, db_path) = test_db_path("vector_search");
 
         // Create schema
         let schema = CollectionSchema {
@@ -2216,7 +2311,7 @@ mod tests {
             .handle_command(
                 "data/ensure-schema",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "schema": schema
                 }),
             )
@@ -2234,7 +2329,7 @@ mod tests {
                 .handle_command(
                     "data/create",
                     json!({
-                        "dbPath": ":memory:",
+                        "dbPath": &db_path,
                         "collection": "test_search",
                         "data": {
                             "content": format!("Document {}", idx),
@@ -2251,7 +2346,7 @@ mod tests {
             .handle_command(
                 "vector/search",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_search",
                     "queryVector": query_vector,
                     "k": 3,
@@ -2278,6 +2373,7 @@ mod tests {
     #[tokio::test]
     async fn test_vector_cache_invalidation() {
         let module = DataModule::new();
+        let (_tmp, db_path) = test_db_path("vector_cache");
 
         // Create schema
         let schema = CollectionSchema {
@@ -2297,7 +2393,7 @@ mod tests {
             .handle_command(
                 "data/ensure-schema",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "schema": schema
                 }),
             )
@@ -2308,7 +2404,7 @@ mod tests {
             .handle_command(
                 "data/create",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_cache",
                     "data": {
                         "embedding": vec![1.0; 384]
@@ -2323,7 +2419,7 @@ mod tests {
             .handle_command(
                 "vector/search",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_cache",
                     "queryVector": query,
                     "k": 1
@@ -2336,7 +2432,7 @@ mod tests {
             .handle_command(
                 "vector/stats",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_cache"
                 }),
             )
@@ -2352,7 +2448,7 @@ mod tests {
             .handle_command(
                 "vector/invalidate-cache",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_cache"
                 }),
             )
@@ -2369,7 +2465,7 @@ mod tests {
             .handle_command(
                 "vector/stats",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_cache"
                 }),
             )
@@ -2384,6 +2480,7 @@ mod tests {
     #[tokio::test]
     async fn test_paginated_query() {
         let module = DataModule::new();
+        let (_tmp, db_path) = test_db_path("paginated");
 
         // Create schema
         let schema = CollectionSchema {
@@ -2403,7 +2500,7 @@ mod tests {
             .handle_command(
                 "data/ensure-schema",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": db_path,
                     "schema": schema
                 }),
             )
@@ -2415,7 +2512,7 @@ mod tests {
                 .handle_command(
                     "data/create",
                     json!({
-                        "dbPath": ":memory:",
+                        "dbPath": db_path,
                         "collection": "test_paginated",
                         "data": { "name": format!("Item {}", i) }
                     }),
@@ -2423,24 +2520,27 @@ mod tests {
                 .await;
         }
 
-        // Open paginated query with page size 10
+        // Open paginated query with page size 10. Default count_exact=false
+        // means the response carries totalCount=0 (sentinel for "not
+        // requested") and has_more starts optimistic; the LIMIT N+1 probe
+        // in query-next is the authoritative has_more.
         let open_result = module
             .handle_command(
                 "data/query-open",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": db_path,
                     "collection": "test_paginated",
                     "pageSize": 10
                 }),
             )
             .await;
 
-        assert!(open_result.is_ok());
+        assert!(open_result.is_ok(), "open_result failed: {:?}", open_result);
         let query_id = if let Ok(CommandResult::Json(result)) = &open_result {
             let data = &result["data"];
-            assert_eq!(data["totalCount"], 25);
+            assert_eq!(data["totalCount"], 0, "QW#2: count_exact=false skips COUNT(*); 0 is the sentinel");
             assert_eq!(data["pageSize"], 10);
-            assert!(data["hasMore"].as_bool().unwrap());
+            assert!(data["hasMore"].as_bool().unwrap(), "QW#2: open is optimistic, query-next is authoritative");
             data["queryId"].as_str().unwrap().to_string()
         } else {
             panic!("Expected JSON result");
@@ -2496,10 +2596,73 @@ mod tests {
         }
     }
 
+    /// QW#2 back-compat: callers that need an exact "X of N" total can opt
+    /// in via count_exact: true. This restores the pre-QW#2 behavior — one
+    /// COUNT(*) at open time, totalCount populated in the response.
+    #[tokio::test]
+    async fn test_paginated_query_count_exact() {
+        let module = DataModule::new();
+        let (_tmp, db_path) = test_db_path("count_exact");
+
+        let schema = CollectionSchema {
+            collection: "test_count_exact".to_string(),
+            fields: vec![crate::orm::types::SchemaField {
+                name: "name".to_string(),
+                field_type: crate::orm::types::FieldType::String,
+                indexed: false,
+                unique: false,
+                nullable: true,
+                max_length: None,
+            }],
+            indexes: vec![],
+        };
+        let _ = module
+            .handle_command(
+                "data/ensure-schema",
+                json!({ "dbPath": db_path, "schema": schema }),
+            )
+            .await;
+
+        for i in 0..7 {
+            let _ = module
+                .handle_command(
+                    "data/create",
+                    json!({
+                        "dbPath": db_path,
+                        "collection": "test_count_exact",
+                        "data": { "name": format!("Item {}", i) }
+                    }),
+                )
+                .await;
+        }
+
+        let open_result = module
+            .handle_command(
+                "data/query-open",
+                json!({
+                    "dbPath": db_path,
+                    "collection": "test_count_exact",
+                    "pageSize": 10,
+                    "countExact": true
+                }),
+            )
+            .await;
+
+        assert!(open_result.is_ok(), "open_result failed: {:?}", open_result);
+        if let Ok(CommandResult::Json(result)) = open_result {
+            let data = &result["data"];
+            assert_eq!(data["totalCount"], 7, "count_exact=true should populate totalCount via COUNT(*)");
+            assert!(data["hasMore"].as_bool().unwrap());
+        } else {
+            panic!("Expected JSON result");
+        }
+    }
+
     #[tokio::test]
     #[ignore = "Requires libonnxruntime.dylib — run with ORT_DYLIB_PATH set"]
     async fn test_backfill_vectors() {
         let module = DataModule::new();
+        let (_tmp, db_path) = test_db_path("backfill");
 
         // Create schema with content and embedding fields
         let schema = CollectionSchema {
@@ -2529,7 +2692,7 @@ mod tests {
             .handle_command(
                 "data/ensure-schema",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "schema": schema
                 }),
             )
@@ -2541,7 +2704,7 @@ mod tests {
                 .handle_command(
                     "data/create",
                     json!({
-                        "dbPath": ":memory:",
+                        "dbPath": &db_path,
                         "collection": "test_backfill",
                         "data": { "content": format!("Test content number {}", i) }
                     }),
@@ -2554,7 +2717,7 @@ mod tests {
             .handle_command(
                 "vector/backfill",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_backfill",
                     "textField": "content",
                     "batchSize": 10
@@ -2577,7 +2740,7 @@ mod tests {
             .handle_command(
                 "vector/stats",
                 json!({
-                    "dbPath": ":memory:",
+                    "dbPath": &db_path,
                     "collection": "test_backfill"
                 }),
             )
