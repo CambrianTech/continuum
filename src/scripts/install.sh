@@ -428,25 +428,39 @@ install_postgres() {
     echo -e "  ${GREEN}✅ PostgreSQL installed${NC}"
   fi
 
-  # Set trust auth for local connections (no password needed for development).
-  # Sudo cache already warmed above (or already root); these calls are silent.
-  ensure_sudo_warmed
-  local pg_hba=$(sudo -u postgres psql -t -c "SHOW hba_file" 2>/dev/null | tr -d ' ')
-  if [ -n "$pg_hba" ] && [ -f "$pg_hba" ]; then
-    if grep -q "scram-sha-256" "$pg_hba" 2>/dev/null; then
-      sudo sed -i 's/scram-sha-256/trust/g' "$pg_hba"
-      sudo service postgresql restart 2>/dev/null || sudo pg_ctlcluster 16 main restart 2>/dev/null || true
-    fi
-  fi
-
-  # Create user and database if they don't exist
-  local pg_user="${USER:-postgres}"
-  if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$pg_user'" 2>/dev/null | grep -q 1; then
-    sudo -u postgres createuser -s "$pg_user" 2>/dev/null || true
-  fi
-  if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
-    createdb continuum 2>/dev/null || sudo -u postgres createdb continuum 2>/dev/null || true
-  fi
+  # Trust-auth + createuser logic is Linux-only. On macOS, Homebrew postgres
+  # accepts local connections without auth by default and runs as the
+  # invoking user — `createdb continuum` works directly with no sudo. The
+  # earlier unconditional `ensure_sudo_warmed` here was the failure mode
+  # that broke `npm start` when stdin wasn't a TTY (parallel-start.sh
+  # invokes this with CONTINUUM_DEPS_ONLY=1 every restart).
+  case "$PLATFORM" in
+    macos)
+      # Homebrew postgres: peer auth, user is whoever started brew services.
+      # Just ensure the continuum database exists.
+      if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
+        createdb continuum 2>/dev/null || true
+      fi
+      ;;
+    linux|wsl)
+      # apt-installed postgres needs trust-auth + role setup, all sudo.
+      ensure_sudo_warmed
+      local pg_hba=$(sudo -u postgres psql -t -c "SHOW hba_file" 2>/dev/null | tr -d ' ')
+      if [ -n "$pg_hba" ] && [ -f "$pg_hba" ]; then
+        if grep -q "scram-sha-256" "$pg_hba" 2>/dev/null; then
+          sudo sed -i 's/scram-sha-256/trust/g' "$pg_hba"
+          sudo service postgresql restart 2>/dev/null || sudo pg_ctlcluster 16 main restart 2>/dev/null || true
+        fi
+      fi
+      local pg_user="${USER:-postgres}"
+      if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$pg_user'" 2>/dev/null | grep -q 1; then
+        sudo -u postgres createuser -s "$pg_user" 2>/dev/null || true
+      fi
+      if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
+        createdb continuum 2>/dev/null || sudo -u postgres createdb continuum 2>/dev/null || true
+      fi
+      ;;
+  esac
   echo -e "  ${GREEN}✅ Database 'continuum' ready${NC}"
 }
 

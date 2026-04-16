@@ -185,22 +185,25 @@ PYEOF
   3. Re-run this install script
 "
     fi
-    # CLI-plugins directory — Model Runner installs its backend plugins here.
-    # One-time sudo mkdir; ensure_sudo_warmed gives us a single-prompt warmup
-    # that all remaining install steps reuse.
-    if [ ! -d /usr/local/cli-plugins ]; then
-      info "Creating /usr/local/cli-plugins for Docker Model Runner (one-time sudo)…"
-      ensure_sudo_warmed
-      sudo mkdir -p /usr/local/cli-plugins
-    fi
-    # Install the vllm-metal backend if not present. This downloads and
-    # registers the host-native vllm binary that Docker Desktop orchestrates.
-    # `docker model status` output lists each registered backend in a BACKEND
-    # column with a STATUS column next to it. `list-runners` was the wrong
-    # subcommand name (caught during M5 validation 2026-04-16).
+    # Verify the vllm runner is registered. On Docker DESKTOP (Mac), the
+    # runners are bundled — Docker Desktop installs them automatically when
+    # Model Runner is enabled. There's no /usr/local/cli-plugins step
+    # (that's the Docker ENGINE / Linux path; `docker model install-runner
+    # --help` says "Docker Engine only"). The earlier mkdir + install-runner
+    # block was misapplied Linux logic on Mac, and forced a sudo prompt
+    # for a directory Docker Desktop never reads from. Caught when CONTINUUM_
+    # DEPS_ONLY=1 from parallel-start.sh tripped the prompt non-interactively
+    # on every `npm start` (2026-04-16).
+    #
+    # If vllm shows "Not Installed", the user needs to enable it in Docker
+    # Desktop → Settings → Beta features → Model Runner → install backends.
+    # No CLI command can do this on Desktop, so we point at the GUI.
     if ! docker model status 2>/dev/null | awk '/^vllm[[:space:]]+Running/{found=1} END{exit !found}'; then
-      info "Installing vllm-metal runner (native Metal LLM inference on host)…"
-      docker model install-runner --backend vllm
+      warn "vllm-metal backend not registered with Docker Model Runner.
+  Open Docker Desktop → Settings → Features in development → Model Runner
+  → ensure 'Enable Docker Model Runner' is on → install the vllm backend.
+  Continuum will fall back to llama.cpp until vllm is enabled (~5x slower
+  on M-series for some models)."
     fi
     # Enable Model Runner's host-side TCP endpoint on port 12434. Without this,
     # continuum-core (running natively on the Mac host) can't reach the OpenAI-

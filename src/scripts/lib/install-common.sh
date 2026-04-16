@@ -78,13 +78,30 @@ ensure_sudo_warmed() {
   sudo -n true 2>/dev/null && return 0
   # Warmed earlier in this same run?
   [ "${_SUDO_WARMED:-0}" = "1" ] && return 0
-  # No terminal — we cannot prompt. Fail loud with a specific fix.
-  if [ ! -t 0 ]; then
-    die "Install needs sudo but stdin is not a terminal. Re-run in an interactive shell, or use the docker-compose path which needs no sudo."
+
+  # Caller signalled this is a non-fatal probe (e.g. parallel-start.sh
+  # re-running install.sh with CONTINUUM_DEPS_ONLY=1) — return non-zero
+  # and let the caller decide whether to skip-and-warn or fail loud.
+  if [ "${CONTINUUM_NONFAIL_SUDO:-0}" = "1" ]; then
+    return 1
+  fi
+
+  # Stdin not a TTY (curl | bash pattern, or background-launched scripts).
+  # Try /dev/tty as a fallback — many shells preserve a controlling
+  # terminal even when stdin is piped. This is what makes
+  #   curl ... install.sh | bash
+  # actually work for sudo prompts.
+  local sudo_in
+  if [ -t 0 ]; then
+    sudo_in=""           # stdin already a TTY — pass-through
+  elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    sudo_in="< /dev/tty" # piped stdin but controlling TTY exists — recover
+  else
+    die "Install needs sudo but no TTY is available (stdin not a terminal and /dev/tty unreadable). Re-run from an interactive shell, or set CONTINUUM_NONFAIL_SUDO=1 to make sudo failures non-fatal."
   fi
 
   info "Admin access needed — prompting once now; no further password prompts this run."
-  if ! sudo -v; then
+  if ! eval "sudo -v $sudo_in"; then
     die "sudo authentication failed. Re-run after fixing your password or sudoers."
   fi
 
