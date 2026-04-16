@@ -21,6 +21,7 @@
 use crate::ai::{
     AdapterRegistry, AnthropicAdapter, CandleAdapter, ChatMessage, MessageContent,
     OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
+    adapter::InferenceDevice,
 };
 use crate::logging::TimingGuard;
 use crate::runtime::{
@@ -352,7 +353,7 @@ impl ServiceModule for AIProviderModule {
 
                 // Select adapter
                 let (provider_id, adapter) = registry
-                    .select(request.provider.as_deref(), request.model.as_deref())
+                    .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
                     .ok_or_else(|| {
                         let available = registry.available();
                         if available.is_empty() {
@@ -555,7 +556,7 @@ pub async fn generate_text(
     request: TextGenerationRequest,
 ) -> Result<TextGenerationResponse, String> {
     let (provider_id, adapter) = registry
-        .select(request.provider.as_deref(), request.model.as_deref())
+        .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
         .ok_or_else(|| {
             let available = registry.available();
             if available.is_empty() {

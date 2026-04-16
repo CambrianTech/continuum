@@ -466,6 +466,13 @@ impl AIProviderAdapter for CandleAdapter {
         &self.config.name
     }
 
+    fn device_type(&self) -> crate::ai::adapter::InferenceDevice {
+        // Candle IS GPU (Metal via --features=metal, CUDA via --features=cuda).
+        // We chose it for GPU. The distinction from llama.cpp is MODE
+        // (training/LoRA vs fast-inference), not device class.
+        crate::ai::adapter::InferenceDevice::Gpu
+    }
+
     fn capabilities(&self) -> AdapterCapabilities {
         // Query the actual loaded backend for its context window.
         // Falls back to BF16_PRACTICAL_CONTEXT if backend not yet loaded.

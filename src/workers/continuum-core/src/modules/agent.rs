@@ -20,6 +20,7 @@
 //!
 //! Priority: Normal — agents are long-running background tasks.
 
+use crate::ai::adapter::InferenceDevice;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::runtime::{
@@ -602,7 +603,7 @@ async fn call_llm(
     registry.initialize_all().await?;
 
     // Select adapter based on model
-    let (_provider_id, adapter) = registry.select(None, Some(model)).ok_or_else(|| {
+    let (_provider_id, adapter) = registry.select(None, Some(model), InferenceDevice::default()).ok_or_else(|| {
         let available = registry.available();
         if available.is_empty() {
             "No AI providers available. Add API keys to ~/.continuum/config.env".to_string()
