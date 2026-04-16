@@ -1355,6 +1355,29 @@ impl StorageAdapter for PostgresAdapter {
             }
         }
 
+        // Phase 2 Step 4: seed the ensured_columns_cache (m5's QW#1) with
+        // the DECLARED column set from the schema. Subsequent writes skip
+        // the ensure_table_exists_cached probe entirely — zero runtime
+        // data-shape inference on the hot write path. Previously the cache
+        // was populated lazily on first write and grew column-by-column;
+        // now it starts authoritative.
+        //
+        // Bare-table name matches what ensure_table_exists_cached uses as
+        // the cache key (the unqualified collection → snake_case conversion).
+        let bare_table = naming::to_table_name(&schema.collection);
+        let mut cols = HashSet::new();
+        cols.insert("id".to_string());
+        cols.insert("created_at".to_string());
+        cols.insert("updated_at".to_string());
+        cols.insert("version".to_string());
+        for field in &schema.fields {
+            cols.insert(naming::to_snake_case(&field.name));
+        }
+        {
+            let mut cache = self.ensured_columns_cache.write().await;
+            cache.insert(bare_table, cols);
+        }
+
         StorageResult::ok(true)
     }
 
