@@ -132,13 +132,28 @@ $CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS pull --quiet 2>/dev/null \
     # Pull failed. Check if images exist locally for each service that
     # compose needs — on Mac that's support services only (continuum-core
     # runs native), on Linux it's the full set.
+    # Build a list of services that will ACTUALLY run (replicas > 0).
+    # On Mac the override sets continuum-core.replicas=0 because it runs
+    # natively — don't require its image to be present.
+    CONFIG=$($CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS config 2>/dev/null)
     MISSING=""
     for svc in $($CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS config --services 2>/dev/null); do
-      IMG=$($CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS config 2>/dev/null \
-        | awk -v svc="$svc" '
-            $0 ~ "^  "svc":" {found=1; next}
-            found && $0 ~ "^  [a-z]" {found=0}
-            found && $1 == "image:" {print $2; exit}')
+      # Parse this service's block from compose config output to get image + replicas
+      BLOCK=$(echo "$CONFIG" | awk -v svc="$svc" '
+          $0 ~ "^  "svc":" {found=1; next}
+          found && $0 ~ "^  [a-z]" {found=0}
+          found {print}')
+      IMG=$(echo "$BLOCK" | awk '$1 == "image:" {print $2; exit}')
+      # deploy.replicas nests under deploy: so look for it inside the block
+      REPLICAS=$(echo "$BLOCK" | awk '
+          $1 == "deploy:" {in_deploy=1; next}
+          in_deploy && $1 == "replicas:" {print $2; exit}
+          in_deploy && $0 ~ "^    [a-z]" {next}
+          in_deploy && $0 !~ "^  " {in_deploy=0}')
+      # Skip services that won't actually run
+      if [[ "$REPLICAS" == "0" ]]; then
+        continue
+      fi
       if [[ -n "$IMG" ]] && ! $CONTAINER_CMD image inspect "$IMG" &>/dev/null; then
         MISSING+="\n    $svc: $IMG"
       fi
