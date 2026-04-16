@@ -45,7 +45,7 @@ Each of these was necessary to unblock a build wall. None is acceptable as a shi
 
 | Slice | Owner | Concrete work |
 |---|---|---|
-| **3a. strip + LTO Rust binary** | `continuum-3bb8` (alongside 1a) | Add `strip = "symbols"` + `lto = "fat"` to `[profile.release]` in `src/workers/Cargo.toml`. Expected: ~200MB → ~80MB for continuum-core-server binary. No feature change. |
+| **3a. strip + LTO Rust binary** ✅ **DONE 2026-04-16** | `continuum-3bb8` | `strip = "symbols"` + `lto = "thin"` landed on `[profile.release]` (commit `5407faf2b`). Measured: continuum-core-server ~200MB → **87MB** (M1 Pro) / **86MB** (M5). Target ≥100MB reduction met (actual ~113MB). Chose thin-LTO over fat — ~5-10% build cost for ~80-90% of fat's runtime gain, keeps iteration fast. Fat stays available via `RUSTFLAGS="-C lto=fat"` for release-tagged builds if ever needed. No feature change. |
 | **3b. cargo-chef GHA registry cache** | *unclaimed* | Key on hash of `Cargo.lock` + feature flags. When deps don't change, `cargo chef cook` becomes a cache hit. ~30 min saved on every PR build. |
 | **3c. candle-kernels content cache** | *unclaimed* | Cache `target/release/build/candle-kernels-*/out` separately; CUDA kernel artifacts are content-addressed. ~25 min saved. |
 | **3d. Self-hosted CUDA runner** | *unclaimed* (longer term) | Run CI cuda job on BigMama. Pre-warmed cache, native nvcc, no GHA queue. Target: ~15 min total build. |
