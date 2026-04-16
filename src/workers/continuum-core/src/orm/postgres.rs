@@ -1362,20 +1362,26 @@ impl StorageAdapter for PostgresAdapter {
         // was populated lazily on first write and grew column-by-column;
         // now it starts authoritative.
         //
+        // Merge semantics (per m5-test review of PR #904): extend, don't
+        // replace. If ensure_table_exists_cached populated the entry first
+        // (theoretical ordering window — ensure_schema typically runs before
+        // any write, but nothing enforces that), we union our declared set
+        // into what's already known rather than dropping it. Matches the
+        // `or_insert_with + insert` pattern at ensure_table_exists_cached.
+        //
         // Bare-table name matches what ensure_table_exists_cached uses as
         // the cache key (the unqualified collection → snake_case conversion).
         let bare_table = naming::to_table_name(&schema.collection);
-        let mut cols = HashSet::new();
-        cols.insert("id".to_string());
-        cols.insert("created_at".to_string());
-        cols.insert("updated_at".to_string());
-        cols.insert("version".to_string());
-        for field in &schema.fields {
-            cols.insert(naming::to_snake_case(&field.name));
-        }
         {
             let mut cache = self.ensured_columns_cache.write().await;
-            cache.insert(bare_table, cols);
+            let entry = cache.entry(bare_table).or_insert_with(HashSet::new);
+            entry.insert("id".to_string());
+            entry.insert("created_at".to_string());
+            entry.insert("updated_at".to_string());
+            entry.insert("version".to_string());
+            for field in &schema.fields {
+                entry.insert(naming::to_snake_case(&field.name));
+            }
         }
 
         StorageResult::ok(true)
