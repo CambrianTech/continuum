@@ -347,8 +347,31 @@ impl ServiceModule for DataModule {
             command,
             params
         );
+        // ── Phase 1 typed-IPC scaffold ─────────────────────────────────
+        // `data/create` demonstrates the pattern: the match arm does the
+        // typed deserialization once, the handler receives already-typed
+        // params. Benefits per m5's survey: skips the `serde_json::from_value
+        // (params.clone())` hop inside each handler (one of 26 clone+parse
+        // callsites identified in docs/architecture/ORM-IDEALISM-PLAN.md).
+        //
+        // QW#3 (m5-test) mirrors this pattern across the remaining hot
+        // handlers — data/read, data/query, data/count, data/batch, and
+        // the cursor trio. Each conversion:
+        //   1. Change handler signature from `params: Value` → `params: XParams`
+        //   2. Drop the `from_value(params.clone())` block from the handler body
+        //   3. Update the match arm to `deserialize_params!(command, params)?` (or
+        //      inline the deserialize, either way) and pass the typed value
+        //
+        // Keeping the dispatch log above — it runs BEFORE deserialize, so
+        // parse errors are diagnosable by scrolling up to see the raw params.
         match command {
-            "data/create" => self.handle_create(params).await,
+            "data/create" => {
+                let typed: CreateParams = serde_json::from_value(params).map_err(|e| {
+                    log_error!("data", "handle_command", "data/create parse error: {}", e);
+                    format!("Invalid params for data/create: {e}")
+                })?;
+                self.handle_create(typed).await
+            }
             "data/read" => self.handle_read(params).await,
             "data/update" => self.handle_update(params).await,
             "data/delete" => self.handle_delete(params).await,
@@ -650,14 +673,12 @@ struct MigrationRollbackParams {
 }
 
 impl DataModule {
-    async fn handle_create(&self, params: Value) -> Result<CommandResult, String> {
+    /// Phase 1 typed-IPC scaffold: takes already-deserialized `CreateParams`.
+    /// Dispatch (handle_command) does the parse; handler body is pure logic.
+    /// Follow this shape for QW#3's other hot-handler conversions.
+    async fn handle_create(&self, params: CreateParams) -> Result<CommandResult, String> {
         use std::time::Instant;
         let start = Instant::now();
-
-        let params: CreateParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!("data", "create", "Parse error: {}, params: {}", e, params);
-            format!("Invalid params: {e}")
-        })?;
 
         let id = params
             .id
