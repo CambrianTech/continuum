@@ -18,17 +18,16 @@
  */
 
 import net from 'net';
-import path from 'path';
-import { SOCKETS } from '../../../shared/config';
+import { resolveCoreEndpoint, connectToCoreEndpoint } from '../../../workers/continuum-core/bindings/modules/base';
 import type {
   TextGenerationRequest,
 } from '../shared/AIProviderTypesV2';
 import type { TextGenerationResponse, RoutingInfo } from '../../../shared/generated/ai';
 
-// Socket path for continuum-core
-const SOCKET_PATH = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
-  ? SOCKETS.CONTINUUM_CORE
-  : path.resolve(process.cwd(), SOCKETS.CONTINUUM_CORE);
+// Endpoint resolution: honors CONTINUUM_CORE_URL env (tcp://host:port for
+// containerized callers on Mac where Unix sockets don't traverse Docker
+// Desktop's VM boundary). Falls back to SOCKETS.CONTINUUM_CORE Unix path.
+const CORE_ENDPOINT = resolveCoreEndpoint();
 
 /**
  * Rust response wrapper
@@ -118,7 +117,7 @@ export class AIProviderRustClient {
     this.connecting = true;
 
     return new Promise((resolve, reject) => {
-      this.socket = net.createConnection(SOCKET_PATH);
+      this.socket = connectToCoreEndpoint(CORE_ENDPOINT);
 
       this.socket.on('connect', () => {
         this.connected = true;
@@ -144,7 +143,7 @@ export class AIProviderRustClient {
       setTimeout(() => {
         if (!this.connected) {
           this.connecting = false;
-          reject(new Error(`Connection timeout to ${SOCKET_PATH}`));
+          reject(new Error(`Connection timeout to ${CORE_ENDPOINT.description}`));
         }
       }, 5000);
     });

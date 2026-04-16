@@ -13,12 +13,13 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
 import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
-import { SOCKETS } from '../../../shared/config';
-import { resolveSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { resolveCoreEndpointString } from '../../../workers/continuum-core/bindings/modules/base';
 
 export class ConsoleDaemonServer extends ConsoleDaemon {
-  // LoggerModule is now part of continuum-core (Phase 4a)
-  private readonly SOCKET_PATH = resolveSocketPath(SOCKETS.CONTINUUM_CORE);
+  // LoggerModule is now part of continuum-core (Phase 4a).
+  // CONTINUUM_CORE_URL override lets containerized callers reach a
+  // native continuum-core via tcp://host.docker.internal:9100 on Mac.
+  private readonly SOCKET_PATH = resolveCoreEndpointString();
   private loggerClient: LoggerWorkerClient | null = null;
   private connectionAttempted = false;
   private connectionFailed = false;

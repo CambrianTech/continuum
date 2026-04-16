@@ -30,6 +30,7 @@ import {
   ErrorType
 } from './WorkerMessages.js';
 import { TimingHarness } from '../../system/core/shared/TimingHarness';
+import { connectToSocketPathOrUrl } from '../../workers/continuum-core/bindings/modules/base';
 
 // IPC types that should NOT be timed (breaks recursive timing loop)
 // log/write → timing → appendFile → blocks event loop
@@ -134,7 +135,9 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
     }
 
     this.connectionState = 'connecting';
-    this.socket = net.createConnection(this.socketPath);
+    // Accepts Unix path or `tcp://host:port` (latter used by containerized
+    // callers on Mac to reach native continuum-core via host.docker.internal).
+    this.socket = connectToSocketPathOrUrl(this.socketPath);
 
     return new Promise((resolve, reject) => {
       if (!this.socket) {

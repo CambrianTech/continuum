@@ -16,14 +16,16 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
-import { SOCKETS } from '../../../shared/config';
-import { resolveSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { resolveCoreEndpointString } from '../../../workers/continuum-core/bindings/modules/base';
 
 export class LoggerDaemonServer extends LoggerDaemon {
   protected log: ComponentLogger;
   private workerClient: LoggerWorkerClient | null = null;
-  // LoggerModule is now part of continuum-core (Phase 4a)
-  private readonly SOCKET_PATH = resolveSocketPath(SOCKETS.CONTINUUM_CORE);
+  // LoggerModule is now part of continuum-core (Phase 4a).
+  // resolveCoreEndpointString honors CONTINUUM_CORE_URL — returns a tcp://
+  // URL for containerized callers on Mac, Unix path otherwise. WorkerClient
+  // handles both forms in its connect() path.
+  private readonly SOCKET_PATH = resolveCoreEndpointString();
   private healthCheckInterval: NodeJS.Timeout | null = null;
 
   constructor(context: JTAGContext, router: JTAGRouter) {

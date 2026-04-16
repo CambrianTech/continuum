@@ -11,16 +11,20 @@
  */
 
 import * as net from 'net';
-import * as path from 'path';
 import { Logger } from '../logging/Logger';
-import { SOCKETS } from '../../../shared/config';
+import {
+  connectToSocketPathOrUrl,
+  resolveCoreEndpointString,
+} from '../../../workers/continuum-core/bindings/modules/base';
 
 const log = Logger.create('RustVectorSearchClient', 'vector');
 
-/** Socket path for continuum-core (unified runtime) - resolved from shared config */
-const DEFAULT_SOCKET_PATH = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
-  ? SOCKETS.CONTINUUM_CORE
-  : path.resolve(process.cwd(), SOCKETS.CONTINUUM_CORE);
+/**
+ * Default endpoint for continuum-core (unified runtime). Honors
+ * CONTINUUM_CORE_URL — returns `tcp://host:port` for containerized callers
+ * on Mac, absolute Unix path otherwise. Routed via connectToSocketPathOrUrl.
+ */
+const DEFAULT_SOCKET_PATH = resolveCoreEndpointString();
 
 /** Response from Rust worker */
 interface RustResponse {
@@ -206,7 +210,7 @@ export class RustVectorSearchClient {
 
     this.isConnecting = true;
     this.connectPromise = new Promise((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
+      const socket = connectToSocketPathOrUrl(this.socketPath);
 
       const connectTimeout = setTimeout(() => {
         socket.destroy();
