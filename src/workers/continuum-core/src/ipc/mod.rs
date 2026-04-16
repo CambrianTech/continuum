@@ -1006,16 +1006,25 @@ pub fn start_server(
     // callers that can't reach a Unix socket (containerized node-server on
     // Mac, where the Unix socket lives on the host outside the Docker VM
     // boundary). Set CONTINUUM_CORE_TCP=<port> (typically 9100) to enable.
-    // Binds 127.0.0.1 by default — NOT exposed to the world. Docker Desktop
-    // resolves host.docker.internal to the host loopback, so containers reach
-    // this listener without exposing it externally.
+    //
+    // Bind address: CONTINUUM_CORE_BIND env, default 127.0.0.1 (safe —
+    // loopback only). Mac Option B install.sh sets 0.0.0.0 explicitly
+    // because Docker Desktop's `host.docker.internal` resolves to the
+    // host's docker-bridge IP (~192.168.65.254), NOT to 127.0.0.1 — a
+    // loopback-bound listener is unreachable from containers. Binding
+    // 0.0.0.0 accepts on the docker bridge; Mac's application firewall
+    // blocks LAN inbound for unsigned dev binaries by default, so the
+    // exposure stays local in practice. Explicit env-driven choice beats
+    // hidden platform detection.
     //
     // Unix socket remains the primary path — same binary, same server state,
     // same handle_client code via the IpcStream trait. TCP is additive.
     if let Ok(tcp_port_str) = std::env::var("CONTINUUM_CORE_TCP") {
         if let Ok(port) = tcp_port_str.parse::<u16>() {
             if port > 0 {
-                let bind_addr = format!("127.0.0.1:{}", port);
+                let bind_host = std::env::var("CONTINUUM_CORE_BIND")
+                    .unwrap_or_else(|_| "127.0.0.1".to_string());
+                let bind_addr = format!("{}:{}", bind_host, port);
                 match TcpListener::bind(&bind_addr) {
                     Ok(tcp_listener) => {
                         log_info!("ipc", "server", "TCP listener ready on {} (for container callers via host.docker.internal)", bind_addr);

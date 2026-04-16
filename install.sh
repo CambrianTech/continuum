@@ -455,7 +455,15 @@ if [[ "$OS" == "Darwin" ]]; then
   # continuum-core via tcp://host.docker.internal:9100 because Unix sockets
   # don't traverse Docker Desktop's VM boundary on Mac. Native callers
   # (jtag CLI, continuum bin) keep using the Unix socket as before.
+  #
+  # CONTINUUM_CORE_BIND=0.0.0.0 is REQUIRED on Mac: Docker Desktop's
+  # `host.docker.internal` resolves inside containers to the host's
+  # docker-bridge IP (e.g. 192.168.65.254), NOT to 127.0.0.1. A loopback-
+  # bound listener is unreachable from containers. 0.0.0.0 accepts on all
+  # interfaces; macOS's application firewall blocks inbound LAN traffic
+  # for unsigned dev binaries by default, so exposure stays local.
   export CONTINUUM_CORE_TCP=9100
+  export CONTINUUM_CORE_BIND=0.0.0.0
   (cd "$INSTALL_DIR/src" && npm install --silent && npm start) || \
     warn "npm start failed — check logs at ~/.continuum/jtag/logs/system/continuum-core.log"
 fi
