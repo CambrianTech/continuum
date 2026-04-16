@@ -437,7 +437,9 @@ impl ServiceModule for DataModule {
             "data/queryWithJoin" => self.handle_query_with_join(deserialize_params!(command, params)?).await,
             "data/count" => self.handle_count(deserialize_params!(command, params)?).await,
             "data/batch" => self.handle_batch(deserialize_params!(command, params)?).await,
-            "data/ensure-schema" => self.handle_ensure_schema(params).await,
+            "data/ensure-schema" => {
+                self.handle_ensure_schema(deserialize_params!(command, params)?).await
+            }
             "data/list-collections" => self.handle_list_collections(params).await,
             "data/collection-stats" => self.handle_collection_stats(params).await,
             "data/truncate" => self.handle_truncate(params).await,
@@ -575,9 +577,13 @@ struct BatchParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SchemaParams {
+struct EnsureSchemaParams {
     db_path: String,
-    schema: CollectionSchema,
+    /// Phase 2: callers pass a collection NAME, not an inline CollectionSchema.
+    /// Rust resolves the schema from entity_schemas.json (decorator-sourced
+    /// at build time via generate-entity-schemas.ts). The language level
+    /// never constructs SQL / fields / indexes on the wire.
+    collection: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -965,12 +971,27 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_ensure_schema(&self, params: Value) -> Result<CommandResult, String> {
-        let params: SchemaParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
+    /// Phase 2 Step 3: ensure_schema pivot through resolve().
+    /// Typed dispatch via deserialize_params! macro (Phase 1 primitive, m5).
+    /// Schema content sourced from entity_schemas.json (build-time codegen
+    /// from TS decorators), resolved per collection by the entity_schemas
+    /// module. Unknown collection → hard fail with rebuild hint.
+    async fn handle_ensure_schema(
+        &self,
+        params: EnsureSchemaParams,
+    ) -> Result<CommandResult, String> {
+        let entity = crate::modules::entity_schemas::resolve(&params.collection).ok_or_else(
+            || {
+                format!(
+                    "Unknown collection '{}' — not in entity_schemas.json. \
+                     If this is a newly added entity, rebuild TS: `npm run build:ts`.",
+                    params.collection
+                )
+            },
+        )?;
+        let collection_schema = crate::modules::entity_schemas::to_collection_schema(entity);
         let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.ensure_schema(params.schema).await;
+        let result = adapter.ensure_schema(collection_schema).await;
 
         CommandResult::json(&result)
     }
@@ -2087,15 +2108,11 @@ mod tests {
             indexes: vec![],
         };
 
-        let _ = module
-            .handle_command(
-                "data/ensure-schema",
-                json!({
-                    "dbPath": &db_path,
-                    "schema": schema
-                }),
-            )
-            .await;
+        // Tests bypass the IPC surface (which now requires a REGISTERED
+        // entity collection per Phase 2 Step 3) — call the adapter directly
+        // with a synthetic test CollectionSchema.
+        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let _ = adapter.ensure_schema(schema).await;
 
         // Create with dbPath
         let create_result = module
@@ -2164,15 +2181,11 @@ mod tests {
             indexes: vec![],
         };
 
-        let _ = module
-            .handle_command(
-                "data/ensure-schema",
-                json!({
-                    "dbPath": &db_path,
-                    "schema": schema
-                }),
-            )
-            .await;
+        // Tests bypass the IPC surface (which now requires a REGISTERED
+        // entity collection per Phase 2 Step 3) — call the adapter directly
+        // with a synthetic test CollectionSchema.
+        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let _ = adapter.ensure_schema(schema).await;
 
         // Create a record
         let create_result = module
@@ -2262,15 +2275,11 @@ mod tests {
             indexes: vec![],
         };
 
-        let _ = module
-            .handle_command(
-                "data/ensure-schema",
-                json!({
-                    "dbPath": &db_path,
-                    "schema": schema
-                }),
-            )
-            .await;
+        // Tests bypass the IPC surface (which now requires a REGISTERED
+        // entity collection per Phase 2 Step 3) — call the adapter directly
+        // with a synthetic test CollectionSchema.
+        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let _ = adapter.ensure_schema(schema).await;
 
         // Create records with embeddings
         let embeddings: Vec<Vec<f64>> = vec![
@@ -2344,15 +2353,11 @@ mod tests {
             indexes: vec![],
         };
 
-        let _ = module
-            .handle_command(
-                "data/ensure-schema",
-                json!({
-                    "dbPath": &db_path,
-                    "schema": schema
-                }),
-            )
-            .await;
+        // Tests bypass the IPC surface (which now requires a REGISTERED
+        // entity collection per Phase 2 Step 3) — call the adapter directly
+        // with a synthetic test CollectionSchema.
+        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let _ = adapter.ensure_schema(schema).await;
 
         // Create a record with embedding
         let _ = module
@@ -2451,15 +2456,9 @@ mod tests {
             indexes: vec![],
         };
 
-        let _ = module
-            .handle_command(
-                "data/ensure-schema",
-                json!({
-                    "dbPath": db_path,
-                    "schema": schema
-                }),
-            )
-            .await;
+        // Tests bypass the IPC surface (registered-entity-only post-Step 3).
+        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let _ = adapter.ensure_schema(schema).await;
 
         // Create 25 records
         for i in 0..25 {
@@ -2571,12 +2570,9 @@ mod tests {
             }],
             indexes: vec![],
         };
-        let _ = module
-            .handle_command(
-                "data/ensure-schema",
-                json!({ "dbPath": db_path, "schema": schema }),
-            )
-            .await;
+        // Tests bypass the IPC surface (registered-entity-only post-Step 3).
+        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let _ = adapter.ensure_schema(schema).await;
 
         for i in 0..7 {
             let _ = module
@@ -2643,15 +2639,11 @@ mod tests {
             indexes: vec![],
         };
 
-        let _ = module
-            .handle_command(
-                "data/ensure-schema",
-                json!({
-                    "dbPath": &db_path,
-                    "schema": schema
-                }),
-            )
-            .await;
+        // Tests bypass the IPC surface (which now requires a REGISTERED
+        // entity collection per Phase 2 Step 3) — call the adapter directly
+        // with a synthetic test CollectionSchema.
+        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let _ = adapter.ensure_schema(schema).await;
 
         // Create records without embeddings
         for i in 0..5 {

@@ -170,6 +170,60 @@ pub fn resolve(collection: &str) -> Option<&'static EntitySchema> {
     get_entity_schemas().get(collection)
 }
 
+/// Convert an EntitySchema (the decorator-sourced shape) to the
+/// adapter-facing CollectionSchema (what ensure_schema expects). This is
+/// the typed-data side of Phase 2: the language level never mentions SQL,
+/// but the adapter still needs a concrete schema struct to build CREATE
+/// TABLE from. The mapping collapses TS decorator field types
+/// ('primary', 'foreign_key', 'text', 'enum', 'date', 'number', 'boolean',
+/// 'json', 'blob') to the Rust FieldType enum that adapters understand.
+pub fn to_collection_schema(es: &EntitySchema) -> crate::orm::types::CollectionSchema {
+    use crate::orm::types::{CollectionSchema, FieldType, SchemaField, SchemaIndex};
+
+    let fields: Vec<SchemaField> = es
+        .fields
+        .iter()
+        .map(|f| {
+            // TS decorator types → Rust FieldType. Text-family stays String;
+            // blob is large JSON in practice (opt-in blob store handles
+            // the spilling behavior separately via blobThreshold).
+            let field_type = match f.field_type.as_str() {
+                "date" => FieldType::Date,
+                "number" => FieldType::Number,
+                "boolean" => FieldType::Boolean,
+                "json" | "blob" => FieldType::Json,
+                // primary | foreign_key | text | enum | anything else
+                _ => FieldType::String,
+            };
+            let opts = f.options.as_ref();
+            SchemaField {
+                name: f.field_name.clone(),
+                field_type,
+                indexed: opts.and_then(|o| o.index).unwrap_or(false),
+                unique: opts.and_then(|o| o.unique).unwrap_or(false),
+                nullable: opts.and_then(|o| o.nullable).unwrap_or(false),
+                max_length: opts.and_then(|o| o.max_length).map(|n| n as usize),
+            }
+        })
+        .collect();
+
+    let indexes: Vec<SchemaIndex> = es
+        .composite_indexes
+        .iter()
+        .map(|c| SchemaIndex {
+            name: c.name.clone(),
+            fields: c.fields.clone(),
+            unique: c.unique.unwrap_or(false),
+        })
+        .collect();
+
+    CollectionSchema {
+        collection: es.collection.clone(),
+        fields,
+        indexes,
+    }
+}
+
 fn parse_and_verify() -> Result<HashMap<String, EntitySchema>, String> {
     // First pass: parse as untyped Value so we can canonicalize + hash the
     // `entities` subtree exactly as TS emitted it. Avoids needing Serialize
