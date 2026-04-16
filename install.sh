@@ -112,6 +112,68 @@ case "$OS" in
    that's why this script asks you to launch Docker Desktop manually once.)
 "
     fi
+    # ── Docker Desktop VM memory — set to 80% of physical RAM ─────
+    # Default Docker Desktop VM memory on Mac is ~6-8GB. For our workload
+    # (Qwen 4-7B GGUF + vllm-metal + LiveKit + Bevy + multiple personas)
+    # that OOM-kills containers mid-run. Calculate 80% of host RAM, set
+    # it in Docker Desktop's settings-store.json, restart Docker Desktop
+    # to pick up the new limit.
+    #
+    # Minimum floor: 16GB Docker VM. Below that, Continuum can't run
+    # sanely — postgres + node-server + widget-server + livekit-bridge +
+    # model-init + model cache collectively need that much just to breathe
+    # alongside native continuum-core, Bevy, and sensory subsystems.
+    # Physical RAM below 20GB means even 80% leaves macOS itself starving,
+    # so we refuse install rather than ship a broken experience.
+    #
+    # Target assumption per Joel: 32GB+ M-series is the typical Continuum
+    # user. 16GB MacBook Air is the entry-tier floor. Below 20GB physical
+    # = hard refuse. Never set "stupidly low" numbers.
+    PHYS_BYTES=$(sysctl -n hw.memsize)
+    PHYS_MIB=$((PHYS_BYTES / 1048576))
+    PHYS_GB=$((PHYS_MIB / 1024))
+
+    if [[ "$PHYS_GB" -lt 20 ]]; then
+      fail "This Mac has ${PHYS_GB}GB physical RAM. Continuum requires at least 20GB to run the full sensory stack (continuum-core native Metal + Docker Desktop VM + macOS itself). Entry-tier support starts at 20GB — ideally 32GB+ for comfortable concurrent-persona performance."
+    fi
+
+    # 80% of physical RAM, but never below 16GB (Docker VM floor).
+    TARGET_MIB=$((PHYS_MIB * 80 / 100))
+    if [[ "$TARGET_MIB" -lt 16384 ]]; then
+      TARGET_MIB=16384
+    fi
+
+    CURRENT_MIB=$(docker system info --format '{{.MemTotal}}' 2>/dev/null | awk '{printf "%d\n", $1/1048576}')
+    SETTINGS_FILE="$HOME/Library/Group Containers/group.com.docker/settings-store.json"
+    # Bump if current is substantially below target (>10% gap — don't thrash
+    # restarts over rounding noise).
+    if [[ -f "$SETTINGS_FILE" ]] && [[ -n "$CURRENT_MIB" ]] && [[ "$CURRENT_MIB" -lt "$((TARGET_MIB * 90 / 100))" ]]; then
+      info "Docker Desktop VM memory is ${CURRENT_MIB}MiB; bumping to ${TARGET_MIB}MiB (80% of ${PHYS_GB}GB host RAM, 16GB floor) for Continuum's inference + sensory workload…"
+      python3 - <<PYEOF
+import json, os
+p = os.path.expanduser("$SETTINGS_FILE")
+with open(p) as f:
+    d = json.load(f)
+d["MemoryMiB"] = $TARGET_MIB
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+PYEOF
+      info "Restarting Docker Desktop to apply memory limit…"
+      docker desktop restart >/dev/null 2>&1 || true
+      # Wait for daemon to come back
+      for _ in $(seq 1 30); do
+        if docker info &>/dev/null 2>&1; then break; fi
+        sleep 4
+      done
+      if ! docker info &>/dev/null 2>&1; then
+        fail "Docker Desktop didn't come back after memory-limit restart. Launch it manually from Launchpad."
+      fi
+      NEW_MIB=$(docker system info --format '{{.MemTotal}}' 2>/dev/null | awk '{printf "%d\n", $1/1048576}')
+      ok "Docker Desktop VM memory now ${NEW_MIB}MiB (target ${TARGET_MIB}MiB)"
+    elif [[ -n "$CURRENT_MIB" ]]; then
+      ok "Docker Desktop VM memory already ${CURRENT_MIB}MiB (≥ ${TARGET_MIB}MiB target)"
+    fi
+
     # Docker Model Runner provides host-native vllm-metal for LLM inference.
     # Ships with Docker Desktop 4.62+. If `docker model` isn't available the
     # user's Docker Desktop is too old.
