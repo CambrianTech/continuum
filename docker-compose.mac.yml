@@ -55,3 +55,15 @@ services:
   inference:
     deploy:
       replicas: 0
+
+  # node-server runs in Docker on Mac (containerized per Option B).
+  # It needs to reach the NATIVE continuum-core-server on the host.
+  # Unix sockets don't traverse Docker Desktop's VM boundary on Mac, so
+  # continuum-core binds an additional TCP listener on 127.0.0.1:9100
+  # (via CONTINUUM_CORE_TCP=9100 exported by install.sh before `npm start`),
+  # and node-server connects to that via host.docker.internal (Docker
+  # Desktop's standard alias for the host).
+  node-server:
+    environment:
+      # Added for Mac: overrides the default Unix-socket path lookup.
+      - CONTINUUM_CORE_URL=tcp://host.docker.internal:9100

@@ -1,6 +1,7 @@
 use crate::code::{FileEngine, ShellSession};
 use crate::gpu::GpuMemoryManager;
 use crate::modules::agent::AgentModule;
+use crate::modules::auth::ExternalWebviewAuthModule;
 use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
@@ -42,12 +43,35 @@ use crate::system_resources::SystemResourceMonitor;
 use crate::{log_debug, log_error, log_info};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
 use ts_rs::TS;
 use uuid::Uuid;
+
+/// Stream abstraction that lets handle_client serve both Unix socket clients
+/// (native callers — continuum-core-server's primary IPC path) and TCP clients
+/// (container callers — node-server running inside Docker on Mac, where Unix
+/// sockets don't traverse the Docker VM boundary). Same request/response
+/// protocol over both transports.
+trait IpcStream: Read + Write + Send + Sized + 'static {
+    fn try_clone_stream(&self) -> std::io::Result<Self>;
+    fn peer_addr_str(&self) -> String;
+}
+
+impl IpcStream for UnixStream {
+    fn try_clone_stream(&self) -> std::io::Result<Self> { self.try_clone() }
+    fn peer_addr_str(&self) -> String { format!("{:?}", self.peer_addr().ok()) }
+}
+
+impl IpcStream for TcpStream {
+    fn try_clone_stream(&self) -> std::io::Result<Self> { self.try_clone() }
+    fn peer_addr_str(&self) -> String {
+        self.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string())
+    }
+}
 
 // ============================================================================
 // Request/Response Protocol
@@ -303,7 +327,7 @@ enum HandleResult {
 
 /// Send a length-prefixed JSON response frame.
 /// Frame format: [4 bytes u32 BE length][JSON payload bytes]
-fn send_json_frame(stream: &mut UnixStream, response: &Response) -> std::io::Result<()> {
+fn send_json_frame<S: Write>(stream: &mut S, response: &Response) -> std::io::Result<()> {
     let json = match serde_json::to_string(response) {
         Ok(j) => j,
         Err(e) => {
@@ -322,8 +346,8 @@ fn send_json_frame(stream: &mut UnixStream, response: &Response) -> std::io::Res
 /// Send a length-prefixed binary response frame.
 /// Frame format: [4 bytes u32 BE total_length][JSON header bytes][\0][raw binary bytes]
 /// The \0 separator is unambiguous — serde_json encodes null chars as \u0000.
-fn send_binary_frame(
-    stream: &mut UnixStream,
+fn send_binary_frame<S: Write>(
+    stream: &mut S,
     response: &Response,
     binary_data: &[u8],
 ) -> std::io::Result<()> {
@@ -359,11 +383,11 @@ fn send_binary_frame(
 /// The TS client multiplexes via requestId — responses can arrive in any order.
 /// This eliminates the sequential bottleneck where 6 concurrent requests from
 /// RAGComposer (global-awareness, semantic-memory, etc.) were serialized per-connection.
-fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result<()> {
-    let peer_addr = stream.peer_addr()?;
-    log_debug!("ipc", "server", "Client connected: {:?}", peer_addr);
+fn handle_client<S: IpcStream>(stream: S, state: Arc<ServerState>) -> std::io::Result<()> {
+    let peer_addr = stream.peer_addr_str();
+    log_debug!("ipc", "server", "Client connected: {}", peer_addr);
 
-    let reader = BufReader::new(stream.try_clone()?);
+    let reader = BufReader::new(stream.try_clone_stream()?);
 
     // Response channel — tokio tasks send completed results, writer thread serializes to socket.
     // Unbounded: request rate is limited by socket read speed, not processing speed.
@@ -371,7 +395,7 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
 
     // Writer thread — owns the write half of the socket, serializes response frames.
     // Multiple tokio tasks complete concurrently; this thread ensures atomic frame writes.
-    let mut writer_stream = stream.try_clone()?;
+    let mut writer_stream = stream.try_clone_stream()?;
     let writer_handle = std::thread::spawn(move || {
         for (request_id, result) in rx {
             let write_result = match result {
@@ -492,7 +516,7 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
     drop(tx);
     let _ = writer_handle.join();
 
-    log_debug!("ipc", "server", "Client disconnected: {:?}", peer_addr);
+    log_debug!("ipc", "server", "Client disconnected: {}", peer_addr);
     Ok(())
 }
 
@@ -784,6 +808,9 @@ pub fn start_server(
     // Phase 1: HealthModule (stateless)
     runtime.register(Arc::new(HealthModule::new()));
 
+    // ExternalWebviewAuthModule — OAuth 2.0 + PKCE via system browser
+    runtime.register(Arc::new(ExternalWebviewAuthModule::new()));
+
     // Phase 1: GpuModule (GPU stats + pressure IPC)
     runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
 
@@ -974,6 +1001,50 @@ pub fn start_server(
     ));
 
     log_info!("ipc", "server", "IPC server ready");
+
+    // Optional TCP listener — exposes the same IPC protocol over TCP for
+    // callers that can't reach a Unix socket (containerized node-server on
+    // Mac, where the Unix socket lives on the host outside the Docker VM
+    // boundary). Set CONTINUUM_CORE_TCP=<port> (typically 9100) to enable.
+    // Binds 127.0.0.1 by default — NOT exposed to the world. Docker Desktop
+    // resolves host.docker.internal to the host loopback, so containers reach
+    // this listener without exposing it externally.
+    //
+    // Unix socket remains the primary path — same binary, same server state,
+    // same handle_client code via the IpcStream trait. TCP is additive.
+    if let Ok(tcp_port_str) = std::env::var("CONTINUUM_CORE_TCP") {
+        if let Ok(port) = tcp_port_str.parse::<u16>() {
+            if port > 0 {
+                let bind_addr = format!("127.0.0.1:{}", port);
+                match TcpListener::bind(&bind_addr) {
+                    Ok(tcp_listener) => {
+                        log_info!("ipc", "server", "TCP listener ready on {} (for container callers via host.docker.internal)", bind_addr);
+                        let tcp_state = state.clone();
+                        std::thread::spawn(move || {
+                            for stream in tcp_listener.incoming() {
+                                match stream {
+                                    Ok(stream) => {
+                                        let state = tcp_state.clone();
+                                        std::thread::spawn(move || {
+                                            if let Err(e) = handle_client(stream, state) {
+                                                log_error!("ipc", "server", "TCP client error: {}", e);
+                                            }
+                                        });
+                                    }
+                                    Err(e) => {
+                                        log_error!("ipc", "server", "TCP accept error: {}", e);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        log_error!("ipc", "server", "TCP listener failed to bind {}: {}", bind_addr, e);
+                    }
+                }
+            }
+        }
+    }
 
     // Periodic memory leak reporter — logs RSS + top leakers every 10s
     // Also acts as OOM guard: exits gracefully before OOM kills us ungracefully.

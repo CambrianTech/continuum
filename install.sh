@@ -440,6 +440,13 @@ $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS up -d
 if [[ "$OS" == "Darwin" ]]; then
   info "Building + launching native continuum-core-server (Metal-enabled)..."
   info "  First run: cargo build takes 5-15 min. Subsequent runs: incremental."
+  # CONTINUUM_CORE_TCP=9100 tells the native continuum-core-server to bind an
+  # additional TCP listener alongside its Unix socket. Containerized
+  # node-server (Option B Mac architecture) reaches the host-native
+  # continuum-core via tcp://host.docker.internal:9100 because Unix sockets
+  # don't traverse Docker Desktop's VM boundary on Mac. Native callers
+  # (jtag CLI, continuum bin) keep using the Unix socket as before.
+  export CONTINUUM_CORE_TCP=9100
   (cd "$INSTALL_DIR/src" && npm install --silent && npm start) || \
     warn "npm start failed — check logs at ~/.continuum/jtag/logs/system/continuum-core.log"
 fi
