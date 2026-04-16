@@ -85,6 +85,8 @@ Each phase is backend-agnostic, independently shippable, and benchmarkable on it
 
 **Acceptance:** p99 latency for `chat_messages.recent_in_room(roomId, 50)` drops measurably vs current build-and-execute path.
 
+**Critical constraint (events stay correct):** writes must STILL emit `data:<collection>:created|updated|deleted` events at the same point in the pipeline. Personas (cognition module) wake on those events; UI websocket subscribes to them. A prepared statement that bypasses the event emission silently breaks AI response + UI updates. **Phase 3 work MUST run integration tests that assert events fire for writes routed through prepared statements.** Reads don't emit events, so the read-path cache is safe in this respect — but writes go through any path-altering optimization at the cost of events firing on every committed transaction.
+
 ### Phase 4 — Per-entity in-memory cache with declared invalidation
 
 **Win:** 0-latency reads for the bulk of "what room is this", "who is this user", "what's persona X's config" lookups that today round-trip the DB.
@@ -96,6 +98,8 @@ Each phase is backend-agnostic, independently shippable, and benchmarkable on it
 **Self-enforcing property:** caching policy is part of the entity declaration. New entities declare their cache shape at the same place they declare their schema. Future agents can't add "untracked" cache because there's no `cache` API to call ad-hoc — caching is invisible to callers.
 
 **Acceptance:** read-heavy hot lookups (rooms, users, persona configs) hit cache on second call; cache hit rate ≥ 90% for those entities under steady-state load; memory bound declared per-cache, not unlimited.
+
+**Critical constraint (events stay correct):** the cache layer is READ-side only. Writes flow through the unchanged write path so `data:<collection>:created|updated|deleted` events fire at the existing emission point, then invalidate the relevant cache slice as a side-effect of the event firing — not as a replacement for it. Order matters: emit event first, invalidate cache second. Personas + UI must observe writes via the event bus the same way they do today; the cache must be invisible to them. **Integration test: chat_messages.append from one client must produce a `data:chat_messages:created` event that wakes personas AND pushes to the UI websocket, with the cached read for the same room reflecting the new message on next call.**
 
 ### Phase 5 — SQLite-with-our-concurrency assessment (OPTIONAL, evaluated after Phase 4)
 
