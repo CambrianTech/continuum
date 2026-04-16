@@ -156,62 +156,154 @@ impl DataModule {
         }
     }
 
-    /// Get or create adapter for the given connection string. Connection string is REQUIRED.
+    /// Resolve a caller-supplied HANDLE to the backend connection string.
     ///
-    /// Routing logic:
-    /// - `postgres://` or `postgresql://` → PostgresAdapter (async pool, MVCC)
-    /// - Everything else (file paths, `:memory:`) → SqliteAdapter (worker thread)
-    async fn get_adapter(&self, db_path: &str) -> Result<Arc<dyn StorageAdapter>, String> {
-        // Check cache first (fast path - no lock needed)
-        if let Some(adapter) = self.adapters.get(db_path) {
+    /// Callers pass opaque handles across the IPC boundary — they never
+    /// construct URLs, filenames, or any other backend-specific identifier.
+    /// This function is the ONLY place in the codebase that maps
+    /// handle → connection string; downstream adapter selection in
+    /// `get_adapter` then routes by the resolved string's shape.
+    ///
+    /// Resolution rules:
+    /// - `"main"` — primary database. Uses `DATABASE_URL` env when set
+    ///   (grid opt-in for Postgres / any future adapter); otherwise
+    ///   defaults to a local SQLite file at
+    ///   `$HOME/.continuum/database/main.db`.
+    /// - 36-char UUID shape — per-persona database. Maps to
+    ///   `$HOME/.continuum/personas/<uuid>/longterm.db`. Persona identity
+    ///   is the handle; TS never computes this path.
+    /// - Starts with `postgres://` / `postgresql://` / filesystem path —
+    ///   legacy passthrough. Logged at WARN so remaining leak sites show
+    ///   up in the next audit. Will be removed once every caller migrates.
+    ///
+    /// This keeps the abstraction enforced at the caller boundary: SQL,
+    /// URLs, and filenames simply do not exist in the caller's language.
+    fn resolve_handle(&self, handle: &str) -> Result<String, String> {
+        // Main DB sentinel — honors DATABASE_URL env, falls back to SQLite.
+        if handle == "main" {
+            if let Ok(url) = std::env::var("DATABASE_URL") {
+                if !url.is_empty() {
+                    return Ok(url);
+                }
+            }
+            let home = std::env::var("HOME")
+                .map_err(|_| "resolve_handle('main'): HOME env not set".to_string())?;
+            return Ok(format!("{}/.continuum/database/main.db", home));
+        }
+
+        // Per-persona UUID shape: 8-4-4-4-12 hex chars with hyphens (36 total).
+        // Safe to check without crate parsing — the shape is unambiguous.
+        if is_uuid_shape(handle) {
+            let home = std::env::var("HOME")
+                .map_err(|_| format!("resolve_handle('{}'): HOME env not set", handle))?;
+            return Ok(format!(
+                "{}/.continuum/personas/{}/longterm.db",
+                home, handle
+            ));
+        }
+
+        // Legacy passthrough — log so we can hunt remaining callers.
+        if handle.starts_with("postgres://")
+            || handle.starts_with("postgresql://")
+            || handle.starts_with('/')
+            || handle.starts_with('.')
+            || handle.contains(".db")
+        {
+            log_info!(
+                "data",
+                "resolve_handle",
+                "LEGACY connection string at IPC boundary: {} — caller should pass a handle ('main' or persona UUID)",
+                handle
+            );
+            return Ok(handle.to_string());
+        }
+
+        Err(format!(
+            "Unknown database handle: '{}'. Valid handles are 'main' or a persona UUID. \
+             Custom backends must be opened via data/open (future).",
+            handle
+        ))
+    }
+
+    /// Get or create adapter for the given caller handle.
+    ///
+    /// Two-step resolution:
+    ///   1. `resolve_handle(handle)` → opaque backend connection string
+    ///   2. Route connection string to concrete adapter (Postgres / SQLite /
+    ///      future). Adapters are cached keyed by connection string so two
+    ///      handles resolving to the same backend share one pool.
+    async fn get_adapter(&self, handle: &str) -> Result<Arc<dyn StorageAdapter>, String> {
+        let connection_string = self.resolve_handle(handle)?;
+
+        // Check cache (keyed by resolved connection string, not by handle —
+        // different handles can point to the same backend).
+        if let Some(adapter) = self.adapters.get(&connection_string) {
             return Ok(adapter.clone());
         }
 
-        // Slow path: need to initialize. Use lock to prevent double-init.
         let _guard = self.init_lock.lock().await;
 
-        // Double-check after acquiring lock
-        if let Some(adapter) = self.adapters.get(db_path) {
+        if let Some(adapter) = self.adapters.get(&connection_string) {
             return Ok(adapter.clone());
         }
 
-        // Scale pool size based on database role:
-        // Main DB: full pool (high concurrency from all users/daemons)
-        // Per-persona DBs: small pool (occasional queries from one persona)
-        let is_main_db = db_path.contains("database/main.db")
-            || db_path.contains("database\\main.db")
-            || db_path.starts_with("postgres://")
-            || db_path.starts_with("postgresql://");
+        // Scale pool size based on role. Main DB (full pool) vs per-persona
+        // (small pool). Detection is post-resolution, on the connection
+        // string, since that's where the backend shape is visible.
+        let is_main_db = connection_string.contains("database/main.db")
+            || connection_string.contains("database\\main.db")
+            || connection_string.starts_with("postgres://")
+            || connection_string.starts_with("postgresql://");
         let max_connections = if is_main_db { 20 } else { 4 };
 
         let config = AdapterConfig {
-            connection_string: db_path.to_string(),
+            connection_string: connection_string.clone(),
             namespace: None,
             timeout_ms: 30_000,
             max_connections,
         };
 
-        // Route based on connection string
         let adapter: Arc<dyn StorageAdapter> =
-            if db_path.starts_with("postgres://") || db_path.starts_with("postgresql://") {
+            if connection_string.starts_with("postgres://")
+                || connection_string.starts_with("postgresql://")
+            {
                 log_info!(
                     "data",
                     "get_adapter",
-                    "Creating PostgresAdapter for: {}",
-                    db_path
+                    "Creating PostgresAdapter for handle='{}' (resolved)",
+                    handle
                 );
                 let mut pg = PostgresAdapter::new();
                 pg.initialize(config).await?;
                 Arc::new(pg)
             } else {
+                log_info!(
+                    "data",
+                    "get_adapter",
+                    "Creating SqliteAdapter for handle='{}' → {}",
+                    handle,
+                    connection_string
+                );
                 let mut sqlite = SqliteAdapter::new();
                 sqlite.initialize(config).await?;
                 Arc::new(sqlite)
             };
 
-        self.adapters.insert(db_path.to_string(), adapter.clone());
+        self.adapters.insert(connection_string, adapter.clone());
         Ok(adapter)
     }
+}
+
+/// Check if a string matches the 36-char UUID shape `8-4-4-4-12` hex.
+/// Intentionally simple — avoids pulling uuid crate just for a shape check.
+fn is_uuid_shape(s: &str) -> bool {
+    if s.len() != 36 {
+        return false;
+    }
+    s.chars().enumerate().all(|(i, c)| match i {
+        8 | 13 | 18 | 23 => c == '-',
+        _ => c.is_ascii_hexdigit(),
+    })
 }
 
 impl Default for DataModule {

@@ -37,7 +37,6 @@ import { resolveCoreEndpoint, connectToCoreEndpoint, type CoreEndpoint } from '.
 
 // Input type for joins (allows optional properties)
 type JoinSpecInput = Partial<JoinSpec> & Pick<JoinSpec, 'collection' | 'alias' | 'localField' | 'foreignField'>;
-import { getServerConfig } from '../../../system/config/ServerConfig';
 // NOTE: No SqlNamingConverter import - Rust SqliteAdapter handles all naming conversions
 
 // Endpoint resolution: honors CONTINUUM_CORE_URL env (tcp://host:port on Mac
@@ -347,7 +346,13 @@ export class ORMRustClient {
   private notFoundCache = new Map<string, number>();
 
   private constructor() {
-    this.dbPath = getServerConfig().getDatabasePath();
+    // The "main" handle is an opaque identifier — Rust resolves it to a
+    // concrete backend (SQLite by default, Postgres if DATABASE_URL env
+    // is set, or any future adapter) via modules/data.rs::resolve_handle.
+    // TS never holds, computes, or passes a connection string for the
+    // main DB. This line is intentionally a constant string, not
+    // getDatabasePath() — that would reintroduce the SQL/URL leak.
+    this.dbPath = 'main';
   }
 
   static getInstance(): ORMRustClient {
