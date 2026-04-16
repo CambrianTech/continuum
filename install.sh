@@ -202,6 +202,23 @@ PYEOF
       info "Installing vllm-metal runner (native Metal LLM inference on host)…"
       docker model install-runner --backend vllm
     fi
+    # Enable Model Runner's host-side TCP endpoint on port 12434. Without this,
+    # continuum-core (running natively on the Mac host) can't reach the OpenAI-
+    # compatible API — the probe in ai_provider.rs fails, the
+    # docker-model-runner adapter doesn't register, and Candle becomes the
+    # default local provider. That's a 5x perf regression (~10 tok/s vs ~50
+    # tok/s on M5). Caught during M5 validation 2026-04-16: I had to enable
+    # this manually before the adapter probe succeeded. Make it part of the
+    # install so Carl never has to discover the toggle.
+    #
+    # `docker desktop enable model-runner --tcp=12434 --cors=all` is idempotent
+    # — safe to re-run on every install. CORS=all is fine because the endpoint
+    # binds 127.0.0.1 only (not exposed externally).
+    if ! curl -fsS --max-time 1 http://localhost:12434/engines/llama.cpp/v1/models >/dev/null 2>&1; then
+      info "Enabling Docker Model Runner TCP endpoint on localhost:12434…"
+      docker desktop enable model-runner --tcp=12434 --cors=all 2>&1 | tail -3 || \
+        warn "Could not enable Model Runner TCP — continuum-core will fall back to Candle (slower). Enable manually: docker desktop enable model-runner --tcp=12434 --cors=all"
+    fi
     # Rust toolchain — continuum-core-server is built natively on Mac (not
     # containerized) so it can link Metal for Candle embeddings, Bevy, vision,
     # and audio MPS paths. Build happens during `npm start` at end of install.
