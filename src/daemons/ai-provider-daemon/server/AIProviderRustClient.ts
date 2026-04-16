@@ -81,6 +81,9 @@ export class AIProviderRustClient {
   private nextRequestId = 1;
   private connected = false;
   private connecting = false;
+  private wasConnected = false;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   private constructor() {}
 
@@ -121,7 +124,9 @@ export class AIProviderRustClient {
 
       this.socket.on('connect', () => {
         this.connected = true;
+        this.wasConnected = true;
         this.connecting = false;
+        this.reconnectAttempts = 0;
         resolve();
       });
 
@@ -131,13 +136,26 @@ export class AIProviderRustClient {
 
       this.socket.on('error', (err) => {
         this.connecting = false;
-        reject(err);
+        if (!this.wasConnected) {
+          reject(err);
+        }
       });
 
       this.socket.on('close', () => {
         this.connected = false;
         this.connecting = false;
         this.socket = null;
+        // CRITICAL: reject all in-flight requests so callers fail fast.
+        // Without this, aiGenerate callers hung forever when native core
+        // restarted — the root cause of the persona-subs-die-on-restart bug.
+        const err = new Error('AIProvider IPC socket closed — continuum-core restarted');
+        for (const callback of this.pendingRequests.values()) {
+          callback({ success: false, error: err.message });
+        }
+        this.pendingRequests.clear();
+        if (this.wasConnected) {
+          this.scheduleReconnect();
+        }
       });
 
       setTimeout(() => {
@@ -147,6 +165,26 @@ export class AIProviderRustClient {
         }
       }, 5000);
     });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 15000);
+    console.log(`[AIProviderRustClient] Reconnecting to continuum-core in ${delay}ms (attempt ${this.reconnectAttempts + 1})`);
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      try {
+        await this.ensureConnected();
+        console.log('[AIProviderRustClient] Reconnected to continuum-core');
+      } catch {
+        this.reconnectAttempts++;
+        if (this.reconnectAttempts < 20) {
+          this.scheduleReconnect();
+        } else {
+          console.error('[AIProviderRustClient] Gave up reconnecting after 20 attempts');
+        }
+      }
+    }, delay);
   }
 
   /**
