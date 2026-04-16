@@ -47,6 +47,22 @@ What IS broken — three concrete violations and five concrete bottlenecks — a
 
 TS has rich entity decorators (the SSoT for schema + intent). The Rust ORM is a generic doc store with `create/read/update/delete/query` against a `connection_string`. The two halves don't connect — decorator intent never propagates to the backend that could use it. That's why the abstraction looks idealistic on paper but produces dump-everything behavior in practice: anything goes, and nothing is enforced or optimized end-to-end.
 
+## Hot loop discipline (the lens for everything below)
+
+**Mental model from Joel:** the data layer is a render loop. Every per-call op (insert, update, select) is the inner pixel of the loop. A single `if`, a single string-build, a single round-trip you didn't need — those are wreckers when they multiply by every persona × every action × every event.
+
+**Verified hot-loop violations in current code (grep-confirmed against `src/workers/continuum-core/src/orm/postgres.rs`):**
+
+- **`ensure_table_exists_pg` runs on EVERY write.** Three callsites (lines 684, 824, 1107). Each one string-builds a `CREATE TABLE IF NOT EXISTS` and executes against postgres, walking the incoming `Value` to derive column types — even when the table has existed since process start. Should run **once per (collection, runtime)** at adapter init, then never again unless schema-evolves.
+- **`SELECT * FROM ... WHERE id = $1`** (line 785). Read-by-id pulls every column, including arbitrarily-large JSONB blobs. Should project only the columns the entity declares as needed for that op.
+- **`SELECT COUNT(*) FROM ...`** (line 1018). Scans every row in the collection for every paginated query. For large tables this is a multi-second cost. Should use `pg_class.reltuples` for estimated counts where exact isn't needed, or "fetch limit+1, return has_more flag" for "is there more" checks.
+- **JSON re-parse per call** (`serde_json::from_value(params.clone())` everywhere in `modules/data.rs` — **grep count: 26 callsites**). The most egregious of all the violations because it does work for no reason at all on every single op. **Includes the cursor handlers** (`query-open`, `query-next`, `query-close`) — so paginating page-by-page through 200 results parses JSON 200 times. The cursor system optimized the SQL side and left the parse cost untouched, which means cursor pagination is no faster than full-scan in the parse-cost dimension. See Phase 1.
+- **No prepared statements** — see Phase 3.
+
+**Discipline applied to all phases below:** every phase asks "what work just moved OUT of the per-call hot path?" Schema check moves from per-write to once-per-runtime. SELECT * moves from always-pull-all to declared-projection. JSON parse moves from per-call to typed-once-at-IPC. Statement parse+plan moves from per-query to prepared-once-cached.
+
+When the work is moved out, the inner loop shrinks. When the inner loop shrinks, the system can carry more concurrent personas without thrashing. That's the win — not "we added postgres" or "we added a cache" abstractly, but specifically "we removed N work-items from each of M ops/sec."
+
 ## Idealism applied: 4 phases, speed-impact ordered
 
 Each phase is backend-agnostic, independently shippable, and benchmarkable on its own.
