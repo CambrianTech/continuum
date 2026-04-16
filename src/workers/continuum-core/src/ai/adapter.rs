@@ -344,19 +344,27 @@ impl AdapterRegistry {
         model: Option<&str>,
         device: InferenceDevice,
     ) -> Option<(&'a str, &'a dyn AIProviderAdapter)> {
-        // 1. Explicit provider — bypass all routing, direct match.
+        // 1. Explicit provider — bypass routing for NAMED adapters.
+        //    Special case: "local" means "best available local GPU adapter"
+        //    — NOT a specific adapter name. Drops through to device-filtered
+        //    auto-selection (tier 3) with the requested model. This is how
+        //    local personas get DMR when available, Vulkan when not, and
+        //    hard-error when neither can serve the model.
         if let Some(pref) = preferred_provider {
-            for (id, adapter) in self.adapters.iter() {
-                if id == pref {
-                    return Some((id.as_str(), adapter.as_ref()));
+            if pref != "local" {
+                for (id, adapter) in self.adapters.iter() {
+                    if id == pref {
+                        return Some((id.as_str(), adapter.as_ref()));
+                    }
                 }
+                clog_warn!(
+                    "Provider '{}' explicitly requested but not available. Available: {:?}",
+                    pref,
+                    self.available()
+                );
+                return None;
             }
-            clog_warn!(
-                "Provider '{}' explicitly requested but not available. Available: {:?}",
-                pref,
-                self.available()
-            );
-            return None;
+            // "local" — fall through to device-filtered auto-selection below
         }
 
         // 2. Cloud-provider prefix detection (always eligible regardless of device).

@@ -28,6 +28,20 @@ export const SOTA_PROVIDERS = new Set([
  * Default model configurations by provider
  */
 export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
+  // 'local' = GPU-auto-routed. The Rust AdapterRegistry picks the best
+  // available GPU adapter (DMR with Metal/CUDA, or llama-vulkan) based
+  // on what's installed. The 'local' provider name is treated as "auto-
+  // select" in adapter.rs select() — it drops through to device-filtered
+  // priority-order selection instead of pinning a specific adapter.
+  'local': {
+    provider: 'local',
+    model: LOCAL_MODELS.DEFAULT,
+    temperature: 0.7,
+    maxTokens: 1000,
+    systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
+  },
+  // Keep 'candle' for explicit training/LoRA callers that need Candle's
+  // autodiff + safetensors support specifically.
   'candle': {
     provider: 'candle',
     model: LOCAL_MODELS.DEFAULT,

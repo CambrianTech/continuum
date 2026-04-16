@@ -55,9 +55,9 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   // error if neither is available. Never silent Candle-CPU fallback.
   // 4B GGUF is the universal default — fits every supported machine, fast
   // on Metal/Vulkan/CUDA. Power users upgrade to 27B manually (HF-gated).
-  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', type: 'persona', voiceId: '50', minVramGB: 3, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
-  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', type: 'persona', voiceId: '75', minVramGB: 5, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
-  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', type: 'persona', voiceId: '100', minVramGB: 5, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
+  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'local', type: 'persona', voiceId: '50', minVramGB: 3, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
+  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'local', type: 'persona', voiceId: '75', minVramGB: 5, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
+  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'local', type: 'persona', voiceId: '100', minVramGB: 5, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
 
   // Cloud provider personas (each needs its own API key)
   { uniqueId: generateUniqueId('DeepSeek'), displayName: 'DeepSeek Assistant', provider: 'deepseek', type: 'persona', voiceId: '125', apiKeyEnv: 'DEEPSEEK_API_KEY' },
@@ -67,7 +67,7 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   { uniqueId: generateUniqueId('Grok'), displayName: 'Grok', provider: 'xai', type: 'persona', voiceId: '220', apiKeyEnv: 'XAI_API_KEY' },
   { uniqueId: generateUniqueId('Together'), displayName: 'Together Assistant', provider: 'together', type: 'persona', voiceId: '30', apiKeyEnv: 'TOGETHER_API_KEY' },
   { uniqueId: generateUniqueId('Fireworks'), displayName: 'Fireworks AI', provider: 'fireworks', type: 'persona', voiceId: '60', apiKeyEnv: 'FIREWORKS_API_KEY' },
-  { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', type: 'persona', voiceId: '90', minVramGB: 4, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
+  { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', provider: 'local', type: 'persona', voiceId: '90', minVramGB: 4, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
   { uniqueId: generateUniqueId('Sentinel'), displayName: 'Sentinel', provider: 'sentinel', type: 'persona', voiceId: '240' },
   { uniqueId: generateUniqueId('Gemini'), displayName: 'Gemini', provider: 'google', type: 'persona', voiceId: '115', apiKeyEnv: 'GOOGLE_API_KEY' },
 
