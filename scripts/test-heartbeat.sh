@@ -109,9 +109,23 @@ fail() {
 cleanup() {
   echo ""
   echo "→ Tearing down stack…"
+  # Stop this run's compose stack
   $CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS down --timeout 5 >/dev/null 2>&1 || true
+  # Also reap any stale containers from prior heartbeat runs that may still
+  # be holding ports (7882/9001/9003 etc). We don't kill the user's native
+  # continuum-core-server — that's intentionally untouched.
+  for stale in $($CONTAINER_CMD ps --filter "label=com.docker.compose.project" --format "{{.ID}}" 2>/dev/null); do
+    PROJ=$($CONTAINER_CMD inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$stale" 2>/dev/null)
+    if [[ "$PROJ" == "continuum" ]]; then
+      $CONTAINER_CMD rm -f "$stale" >/dev/null 2>&1 || true
+    fi
+  done
 }
 trap cleanup EXIT
+
+# Pre-flight: run cleanup ONCE at start too, so re-runs don't hit port
+# conflicts from prior aborted heartbeats. Idempotent.
+cleanup 2>/dev/null || true
 
 echo ""
 echo "━━━ heartbeat: variant=$HEARTBEAT_VARIANT  tag=$TAG ━━━"
@@ -242,12 +256,19 @@ fi
 # ── Slice 5: acceleration engaged (variant-specific) ───────────────
 case "$HEARTBEAT_VARIANT" in
   mac-native*)
-    # Mac path: continuum-core is NATIVE on host. Check that it's running
-    # and Docker Model Runner vllm backend is reachable for LLM inference.
-    if lsof -U 2>/dev/null | grep -q "continuum-core.sock"; then
-      pass "native-core-running (continuum-core-server IPC socket present)"
+    # Mac path: continuum-core is NATIVE on host. Check that the IPC socket
+    # exists where we expect it — simpler than lsof output parsing and
+    # doesn't depend on permissions or lsof flavor differences.
+    CORE_SOCK="$HOME/.continuum/sockets/continuum-core.sock"
+    if [[ -S "$CORE_SOCK" ]]; then
+      pass "native-core-running (socket $CORE_SOCK present)"
     else
-      fail "native-core-running" "no continuum-core.sock found — did `npm start` launch the native server?"
+      # Diagnose WHY it's missing — pgrep for the process to help the user
+      if pgrep -f "continuum-core-server" &>/dev/null; then
+        fail "native-core-running" "continuum-core-server process IS running (pgrep found it) but socket $CORE_SOCK not found. Socket-path mismatch? Check the IPC Socket line in the server's startup log."
+      else
+        fail "native-core-running" "no continuum-core-server process running. Launch with: cd src && npm start  (or run the binary directly with an explicit socket path)"
+      fi
     fi
     # Docker Model Runner's vllm backend status (host-native, managed by Docker Desktop)
     # `docker model status` shows each registered backend in a BACKEND col.
