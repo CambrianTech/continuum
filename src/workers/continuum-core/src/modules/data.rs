@@ -339,6 +339,27 @@ impl DataModule {
     }
 }
 
+/// Phase 1 typed-IPC: deserialize raw IPC params into the typed struct
+/// the handler expects, uniformly logging the parse error with
+/// command-name context. Used in `handle_command` dispatch arms;
+/// CONSUMES `params` (no `.clone()`) — that was one of the per-call hot-path
+/// wins flagged in `docs/architecture/ORM-IDEALISM-PLAN.md`.
+///
+/// Usage:
+///     "data/read" => self.handle_read(deserialize_params!(command, params)?).await,
+///
+/// `command` is the outer variable being matched on. Returns
+/// `Result<TypedParams, String>`; the `?` propagates the formatted error
+/// string back to the IPC dispatch layer.
+macro_rules! deserialize_params {
+    ($command:expr, $params:expr) => {
+        serde_json::from_value($params).map_err(|e| {
+            log_error!("data", "handle_command", "{} parse error: {}", $command, e);
+            format!("Invalid params for {}: {}", $command, e)
+        })
+    };
+}
+
 /// Check if a string matches the 36-char UUID shape `8-4-4-4-12` hex.
 /// Intentionally simple — avoids pulling uuid crate just for a shape check.
 fn is_uuid_shape(s: &str) -> bool {
@@ -392,38 +413,30 @@ impl ServiceModule for DataModule {
             command,
             params
         );
-        // ── Phase 1 typed-IPC scaffold ─────────────────────────────────
-        // `data/create` demonstrates the pattern: the match arm does the
-        // typed deserialization once, the handler receives already-typed
-        // params. Benefits per m5's survey: skips the `serde_json::from_value
-        // (params.clone())` hop inside each handler (one of 26 clone+parse
-        // callsites identified in docs/architecture/ORM-IDEALISM-PLAN.md).
+        // ── Phase 1 typed-IPC dispatch ─────────────────────────────────
+        // Hot-path handlers (CRUD + count + batch + cursor trio + query
+        // join) take typed params. Dispatch deserializes once via the
+        // `deserialize_params!` macro defined above; handler bodies are
+        // pure logic, no `from_value(params.clone())` hop and no .clone().
         //
-        // QW#3 (m5-test) mirrors this pattern across the remaining hot
-        // handlers — data/read, data/query, data/count, data/batch, and
-        // the cursor trio. Each conversion:
-        //   1. Change handler signature from `params: Value` → `params: XParams`
-        //   2. Drop the `from_value(params.clone())` block from the handler body
-        //   3. Update the match arm to `deserialize_params!(command, params)?` (or
-        //      inline the deserialize, either way) and pass the typed value
+        // Per docs/architecture/ORM-IDEALISM-PLAN.md QW#3: removes 10 of
+        // the 26 clone+parse callsites the survey identified, plus
+        // standardizes parse-error logging at the dispatch level. Cold
+        // handlers (vector/*, migration/*, ensure-schema, list-collections,
+        // adapter/*) keep the in-handler parse for now — Phase 2 step 3
+        // will fold ensure-schema into the entity_schemas typed loader.
         //
         // Keeping the dispatch log above — it runs BEFORE deserialize, so
         // parse errors are diagnosable by scrolling up to see the raw params.
         match command {
-            "data/create" => {
-                let typed: CreateParams = serde_json::from_value(params).map_err(|e| {
-                    log_error!("data", "handle_command", "data/create parse error: {}", e);
-                    format!("Invalid params for data/create: {e}")
-                })?;
-                self.handle_create(typed).await
-            }
-            "data/read" => self.handle_read(params).await,
-            "data/update" => self.handle_update(params).await,
-            "data/delete" => self.handle_delete(params).await,
-            "data/query" | "data/list" => self.handle_query(params).await,
-            "data/queryWithJoin" => self.handle_query_with_join(params).await,
-            "data/count" => self.handle_count(params).await,
-            "data/batch" => self.handle_batch(params).await,
+            "data/create" => self.handle_create(deserialize_params!(command, params)?).await,
+            "data/read" => self.handle_read(deserialize_params!(command, params)?).await,
+            "data/update" => self.handle_update(deserialize_params!(command, params)?).await,
+            "data/delete" => self.handle_delete(deserialize_params!(command, params)?).await,
+            "data/query" | "data/list" => self.handle_query(deserialize_params!(command, params)?).await,
+            "data/queryWithJoin" => self.handle_query_with_join(deserialize_params!(command, params)?).await,
+            "data/count" => self.handle_count(deserialize_params!(command, params)?).await,
+            "data/batch" => self.handle_batch(deserialize_params!(command, params)?).await,
             "data/ensure-schema" => self.handle_ensure_schema(params).await,
             "data/list-collections" => self.handle_list_collections(params).await,
             "data/collection-stats" => self.handle_collection_stats(params).await,
@@ -431,9 +444,9 @@ impl ServiceModule for DataModule {
             "data/clear-all" => self.handle_clear_all(params).await,
 
             // Paginated queries - server-side cursor management
-            "data/query-open" => self.handle_query_open(params).await,
-            "data/query-next" => self.handle_query_next(params).await,
-            "data/query-close" => self.handle_query_close(params).await,
+            "data/query-open" => self.handle_query_open(deserialize_params!(command, params)?).await,
+            "data/query-next" => self.handle_query_next(deserialize_params!(command, params)?).await,
+            "data/query-close" => self.handle_query_close(deserialize_params!(command, params)?).await,
 
             "adapter/capabilities" => self.handle_capabilities(params).await,
             "adapter/info" => self.handle_info(params).await,
@@ -768,12 +781,9 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_read(&self, params: Value) -> Result<CommandResult, String> {
+    async fn handle_read(&self, params: ReadParams) -> Result<CommandResult, String> {
         use std::time::Instant;
         let start = Instant::now();
-
-        let params: ReadParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
         let result = adapter.read(&params.collection, &params.id).await;
@@ -785,12 +795,7 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_update(&self, params: Value) -> Result<CommandResult, String> {
-        let params: UpdateParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!("data", "update", "Parse error: {}, params: {}", e, params);
-            format!("Invalid params: {e}")
-        })?;
-
+    async fn handle_update(&self, params: UpdateParams) -> Result<CommandResult, String> {
         let collection = params.collection.clone();
         let id = params.id.clone();
 
@@ -819,10 +824,7 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_delete(&self, params: Value) -> Result<CommandResult, String> {
-        let params: DeleteParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
+    async fn handle_delete(&self, params: DeleteParams) -> Result<CommandResult, String> {
         let collection = params.collection.clone();
         let id = params.id.clone();
 
@@ -844,18 +846,13 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_query(&self, params: Value) -> Result<CommandResult, String> {
+    async fn handle_query(&self, params: QueryParams) -> Result<CommandResult, String> {
         // Limit concurrent queries to cap peak heap from 15 personas querying simultaneously.
         // Excess callers wait (not rejected) — bounded concurrency, not dropped work.
         let _permit = self.query_semaphore.acquire().await.map_err(|_| "query semaphore closed")?;
 
         use std::time::Instant;
         let start = Instant::now();
-
-        let params: QueryParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!("data", "query", "Parse error: {}, params: {}", e, params);
-            format!("Invalid params: {e}")
-        })?;
 
         let query = StorageQuery {
             collection: params.collection.clone(),
@@ -888,11 +885,8 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_query_with_join(&self, params: Value) -> Result<CommandResult, String> {
+    async fn handle_query_with_join(&self, params: QueryWithJoinParams) -> Result<CommandResult, String> {
         let _permit = self.query_semaphore.acquire().await.map_err(|_| "query semaphore closed")?;
-
-        let params: QueryWithJoinParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let query = StorageQuery {
             collection: params.collection,
@@ -911,12 +905,9 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_count(&self, params: Value) -> Result<CommandResult, String> {
+    async fn handle_count(&self, params: CountParams) -> Result<CommandResult, String> {
         use std::time::Instant;
         let start = Instant::now();
-
-        let params: CountParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let query = StorageQuery {
             collection: params.collection.clone(),
@@ -953,10 +944,7 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_batch(&self, params: Value) -> Result<CommandResult, String> {
-        let params: BatchParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
+    async fn handle_batch(&self, params: BatchParams) -> Result<CommandResult, String> {
         let op_count = params.operations.len();
 
         let adapter = self.get_adapter(&params.db_path).await?;
@@ -1635,20 +1623,9 @@ impl DataModule {
     /// - No IPC overhead per page (state is Rust-side)
     /// - Cursor-based pagination using last ID (faster than OFFSET for large datasets)
     /// - DashMap for concurrent query state (lock-free reads)
-    async fn handle_query_open(&self, params: Value) -> Result<CommandResult, String> {
+    async fn handle_query_open(&self, params: QueryOpenParams) -> Result<CommandResult, String> {
         use std::time::Instant;
         let start = Instant::now();
-
-        let params: QueryOpenParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "query-open",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
 
@@ -1721,20 +1698,9 @@ impl DataModule {
     ///
     /// Uses keyset pagination (WHERE id > cursor) instead of OFFSET for performance.
     /// For sorted queries, combines sort column(s) with id for deterministic ordering.
-    async fn handle_query_next(&self, params: Value) -> Result<CommandResult, String> {
+    async fn handle_query_next(&self, params: QueryNextParams) -> Result<CommandResult, String> {
         use std::time::Instant;
         let start = Instant::now();
-
-        let params: QueryNextParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "query-next",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
 
         // Get query state (immutable borrow for read)
         let state_info = self.paginated_queries.get(&params.query_id).map(|s| {
@@ -1856,18 +1822,7 @@ impl DataModule {
     }
 
     /// Close paginated query and free resources
-    async fn handle_query_close(&self, params: Value) -> Result<CommandResult, String> {
-        let params: QueryCloseParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "query-close",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
+    async fn handle_query_close(&self, params: QueryCloseParams) -> Result<CommandResult, String> {
         let removed = self.paginated_queries.remove(&params.query_id).is_some();
 
         log_info!(
