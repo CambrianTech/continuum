@@ -133,7 +133,10 @@ case "$OS" in
     fi
     # Install the vllm-metal backend if not present. This downloads and
     # registers the host-native vllm binary that Docker Desktop orchestrates.
-    if ! docker model list-runners 2>/dev/null | grep -qi vllm; then
+    # `docker model status` output lists each registered backend in a BACKEND
+    # column with a STATUS column next to it. `list-runners` was the wrong
+    # subcommand name (caught during M5 validation 2026-04-16).
+    if ! docker model status 2>/dev/null | awk '/^vllm[[:space:]]+Running/{found=1} END{exit !found}'; then
       info "Installing vllm-metal runner (native Metal LLM inference on host)…"
       docker model install-runner --backend vllm
     fi

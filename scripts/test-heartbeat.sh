@@ -250,10 +250,12 @@ case "$HEARTBEAT_VARIANT" in
       fail "native-core-running" "no continuum-core.sock found — did `npm start` launch the native server?"
     fi
     # Docker Model Runner's vllm backend status (host-native, managed by Docker Desktop)
-    if docker model list-runners 2>/dev/null | grep -qi vllm; then
-      pass "model-runner-vllm (vllm-metal backend registered)"
+    # `docker model status` shows each registered backend in a BACKEND col.
+    # Look for a line starting with 'vllm' + STATUS=Running.
+    if docker model status 2>/dev/null | awk '/^vllm[[:space:]]+Running/{found=1} END{exit !found}'; then
+      pass "model-runner-vllm (vllm-metal backend registered + Running)"
     else
-      fail "model-runner-vllm" "vllm backend not found. Run: docker model install-runner --backend vllm"
+      fail "model-runner-vllm" "vllm backend not registered. Run: docker model install-runner --backend vllm"
     fi
     # Verify continuum-core log shows Metal activity (ggml_metal kernel compile
     # = real Metal on Apple GPU, not any form of emulation).
