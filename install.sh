@@ -112,35 +112,50 @@ case "$OS" in
    that's why this script asks you to launch Docker Desktop manually once.)
 "
     fi
-    # ── Docker Desktop VM memory — set to 80% of physical RAM ─────
-    # Default Docker Desktop VM memory on Mac is ~6-8GB. For our workload
-    # (Qwen 4-7B GGUF + vllm-metal + LiveKit + Bevy + multiple personas)
-    # that OOM-kills containers mid-run. Calculate 80% of host RAM, set
-    # it in Docker Desktop's settings-store.json, restart Docker Desktop
-    # to pick up the new limit.
+    # ── Docker Desktop VM memory (Mac Option B — continuum-core NATIVE) ─────
+    # The previous 80%-of-RAM target crashed Docker Desktop mid-run on 32GB
+    # M1 during matrix testing (FlashGordon 2026-04-16): Docker VM at 25.6GB
+    # + native continuum-core at ~11GB RSS + macOS overhead ~6GB ≈ 43GB on a
+    # 32GB physical box → heavy swap → Docker daemon died, DMR endpoint
+    # disappeared, Helper AI fell back to Candle (5x slower) and never
+    # produced a reply within the chat gate. Real-world blocker on the
+    # primary-audience hardware.
     #
-    # Minimum floor: 16GB Docker VM. Below that, Continuum can't run
-    # sanely — postgres + node-server + widget-server + livekit-bridge +
-    # model-init + model cache collectively need that much just to breathe
-    # alongside native continuum-core, Bevy, and sensory subsystems.
-    # Physical RAM below 20GB means even 80% leaves macOS itself starving,
-    # so we refuse install rather than ship a broken experience.
+    # Mac Option B has THREE concurrent memory tenants, not two:
+    #   (a) native continuum-core     ~12GB budget (Qwen 4B Q4 + KV + Candle
+    #                                  embeddings + Bevy render + vision +
+    #                                  audio + working set)
+    #   (b) Docker Desktop VM         hosts postgres*, node-server, widget-
+    #                                  server, livekit-bridge, model-init.
+    #                                  With SQLite default (postgres opt-in),
+    #                                  the active containers need ~6-10GB.
+    #   (c) macOS itself              kernel, window server, user apps     ~6GB
     #
-    # Target assumption per Joel: 32GB+ M-series is the typical Continuum
-    # user. 16GB MacBook Air is the entry-tier floor. Below 20GB physical
-    # = hard refuse. Never set "stupidly low" numbers.
+    # So Mac Option B target: PHYS - NATIVE_BUDGET(12) - MACOS_OVERHEAD(6)
+    # = PHYS - 18GB headroom reserve. Floor at 10GB (below that, containers
+    # don't fit; Option B isn't viable on that hardware).
+    #
+    # Physical memory sizing (Option B honest mins, not aspirational):
+    #   32GB  → 14GB Docker VM (comfortable)
+    #   24GB  →  6GB Docker VM (below floor → refuse)
+    #   Below 24GB → refuse install (can't fit all three tenants).
     PHYS_BYTES=$(sysctl -n hw.memsize)
     PHYS_MIB=$((PHYS_BYTES / 1048576))
     PHYS_GB=$((PHYS_MIB / 1024))
 
-    if [[ "$PHYS_GB" -lt 20 ]]; then
-      fail "This Mac has ${PHYS_GB}GB physical RAM. Continuum requires at least 20GB to run the full sensory stack (continuum-core native Metal + Docker Desktop VM + macOS itself). Entry-tier support starts at 20GB — ideally 32GB+ for comfortable concurrent-persona performance."
+    # Reserve headroom for native continuum-core (12GB) + macOS (6GB).
+    NATIVE_RESERVE_MIB=$((12 * 1024))
+    MACOS_RESERVE_MIB=$((6 * 1024))
+    HEADROOM_MIB=$((NATIVE_RESERVE_MIB + MACOS_RESERVE_MIB))
+    DOCKER_FLOOR_MIB=$((10 * 1024))
+
+    if [[ "$PHYS_MIB" -lt $((HEADROOM_MIB + DOCKER_FLOOR_MIB)) ]]; then
+      fail "This Mac has ${PHYS_GB}GB physical RAM. Mac Option B (continuum-core native + Docker Desktop for support services) needs at least $(( (HEADROOM_MIB + DOCKER_FLOOR_MIB) / 1024 ))GB: ~12GB for native continuum-core (Qwen 4B + Bevy + vision + audio), ~6GB for macOS itself, and a ${DOCKER_FLOOR_MIB}MiB floor for the Docker VM. Below that, Docker Desktop crashes under combined memory pressure (verified on a 32GB box with the old 80%-target formula). Get a 32GB+ M-series for the primary audience experience."
     fi
 
-    # 80% of physical RAM, but never below 16GB (Docker VM floor).
-    TARGET_MIB=$((PHYS_MIB * 80 / 100))
-    if [[ "$TARGET_MIB" -lt 16384 ]]; then
-      TARGET_MIB=16384
+    TARGET_MIB=$((PHYS_MIB - HEADROOM_MIB))
+    if [[ "$TARGET_MIB" -lt "$DOCKER_FLOOR_MIB" ]]; then
+      TARGET_MIB=$DOCKER_FLOOR_MIB
     fi
 
     CURRENT_MIB=$(docker system info --format '{{.MemTotal}}' 2>/dev/null | awk '{printf "%d\n", $1/1048576}')
