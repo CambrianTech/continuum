@@ -60,16 +60,22 @@ if ! command -v git &>/dev/null; then
   esac
 fi
 
-# Container runtime. Linux gets Docker Engine (standard). Mac gets Podman +
-# krunkit because Apple's hypervisor exposes no GPU to containers (Docker
-# Desktop, Apple container, and other VMMs are all blocked — no IOMMU on
-# Apple GPUs). krunkit is the only VMM that routes Vulkan API calls from
-# the container out to MoltenVK on the host, giving Carl ~80% of native
-# Metal throughput. That keeps the "always accelerated, never CPU
-# fallback" directive intact.
+# Container runtime + inference setup.
 #
-# CONTAINER_CMD is used for every subsequent `compose` / `info` call, so
-# the same script works with either runtime.
+# Linux: Docker Engine + continuum-core runs containerized (with cuda/vulkan
+# GPU passthrough via /dev/dri or runtime:nvidia). Everything in containers.
+#
+# Mac: Docker Desktop for support services ONLY. continuum-core runs NATIVELY
+# on the host to access Metal for Candle embeddings, Bevy headless avatar
+# render, vision processing, and audio MPS paths — Apple's hypervisor exposes
+# no GPU to containers (Docker themselves confirmed in Feb 2026), so anything
+# Metal-needing must be on the host. LLM inference routes to Docker Model
+# Runner's vllm-metal backend, which also runs native on the host — Docker
+# Desktop manages the process but the compute happens on Apple Silicon directly.
+#
+# CONTAINER_CMD is used for every `compose` / `info` call. On Mac that
+# handles support services; continuum-core-server is launched separately
+# as a native host process via `npm start`.
 case "$OS" in
   Linux)
     if ! command -v docker &>/dev/null; then
@@ -82,32 +88,51 @@ case "$OS" in
     CONTAINER_CMD=docker
     ;;
   Darwin)
-    if ! command -v podman &>/dev/null; then
-      if ! command -v brew &>/dev/null; then
-        fail "Homebrew required to install Podman + krunkit. Install from https://brew.sh then re-run."
+    if ! command -v docker &>/dev/null; then
+      fail "Docker Desktop required on Mac. Install from https://docker.com/products/docker-desktop (Docker Desktop 4.62+ — need Model Runner), then re-run."
+    fi
+    if ! docker info &>/dev/null 2>&1; then
+      fail "Docker Desktop not running. Start Docker Desktop, wait for it to be ready, then re-run."
+    fi
+    # Docker Model Runner provides host-native vllm-metal for LLM inference.
+    # Ships with Docker Desktop 4.62+. If `docker model` isn't available the
+    # user's Docker Desktop is too old.
+    if ! docker model --help &>/dev/null 2>&1; then
+      fail "Docker Model Runner not available (needs Docker Desktop 4.62+). Update Docker Desktop and re-run."
+    fi
+    # CLI-plugins directory — Model Runner installs its backend plugins here.
+    # One-time sudo mkdir; ensure_sudo_warmed gives us a single-prompt warmup
+    # that all remaining install steps reuse.
+    if [ ! -d /usr/local/cli-plugins ]; then
+      info "Creating /usr/local/cli-plugins for Docker Model Runner (one-time sudo)…"
+      ensure_sudo_warmed
+      sudo mkdir -p /usr/local/cli-plugins
+    fi
+    # Install the vllm-metal backend if not present. This downloads and
+    # registers the host-native vllm binary that Docker Desktop orchestrates.
+    if ! docker model list-runners 2>/dev/null | grep -qi vllm; then
+      info "Installing vllm-metal runner (native Metal LLM inference on host)…"
+      docker model install-runner --backend vllm
+    fi
+    # Rust toolchain — continuum-core-server is built natively on Mac (not
+    # containerized) so it can link Metal for Candle embeddings, Bevy, vision,
+    # and audio MPS paths. Build happens during `npm start` at end of install.
+    if ! command -v cargo &>/dev/null; then
+      info "Rust not found — installing via rustup (needed for native continuum-core build)…"
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      # shellcheck disable=SC1091
+      [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+    fi
+    # Node toolchain — required to build TypeScript side + run launcher.
+    if ! command -v node &>/dev/null; then
+      if command -v brew &>/dev/null; then
+        info "Node not found — installing via Homebrew…"
+        brew install node
+      else
+        fail "Node.js required. Install from https://nodejs.org or via Homebrew, then re-run."
       fi
-      info "Podman + krunkit not found — installing for Metal-backed Vulkan container…"
-      brew tap slp/krunkit
-      brew install podman krunkit
     fi
-    if ! command -v krunkit &>/dev/null; then
-      info "krunkit missing (needed for Vulkan→MoltenVK→Metal passthrough) — installing…"
-      brew tap slp/krunkit 2>/dev/null || true
-      brew install krunkit
-    fi
-    # Apple Silicon: Podman machine uses the libkrun provider so krunkit's
-    # Vulkan passthrough is wired automatically. CPU/memory sized for a 4B
-    # Q4_K_M model (~3GB VRAM) plus headroom for support services.
-    if ! podman machine list --format '{{.Running}}' 2>/dev/null | grep -q true; then
-      if ! podman machine list 2>/dev/null | grep -q podman-machine; then
-        info "Initializing Podman machine (libkrun provider)…"
-        CONTAINERS_MACHINE_PROVIDER=libkrun \
-          podman machine init --cpus=8 --memory=16384 --rootful=false
-      fi
-      info "Starting Podman machine…"
-      podman machine start
-    fi
-    CONTAINER_CMD=podman
+    CONTAINER_CMD=docker
     ;;
   *) fail "Unsupported OS: $OS" ;;
 esac
@@ -213,15 +238,16 @@ fi
 COMPOSE_FILES="-f docker-compose.yml"
 COMPOSE_ARGS=""
 if [[ "$OS" == "Darwin" ]]; then
-  # Mac Carl path — layer the Vulkan-in-container override so the
-  # continuum-core service picks up the vulkan image + /dev/dri passthrough
-  # for krunkit's virtio-GPU. Without this override the base file pulls
-  # the CPU-only continuum-core image, which violates the "always GPU"
-  # directive.
+  # Mac path — the docker-compose.mac.yml override sets continuum-core's
+  # replicas to 0 so support services boot in containers but continuum-core
+  # stays off. We run continuum-core NATIVELY on Mac (via `npm start` below)
+  # so Candle embeddings, Bevy headless render, vision processing, and audio
+  # MPS paths all get real Metal. LLM inference routes to Docker Model
+  # Runner's vllm-metal backend — also host-native, no container GPU tax.
   if [ -f "docker-compose.mac.yml" ]; then
     COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.mac.yml"
   else
-    warn "docker-compose.mac.yml missing — Mac detected but Vulkan override won't apply. Continuum would run CPU-only; aborting rather than ship a CPU inference path."
+    warn "docker-compose.mac.yml missing — Mac detected but override won't apply. Without it, docker compose would try to run continuum-core in a container, which on Mac means CPU-only for Candle/Bevy/vision."
     fail "Fix: ensure you cloned with repository integrity — the Mac override file is part of the PR891 install architecture."
   fi
 elif [[ "$HAS_GPU" == "true" ]]; then
@@ -233,7 +259,7 @@ elif [[ "$HAS_GPU" == "true" ]]; then
   COMPOSE_ARGS="--profile gpu"
 fi
 
-# ── 7. Pull images ─────────────────────────────────────────
+# ── 7. Pull support-service images ─────────────────────────
 # Image tag resolution: compose files honor ${CONTINUUM_IMAGE_TAG:-latest}.
 # Main-branch installs (Carl's default) use :latest. Reviewers validating
 # a PR before merge can pin the PR's staged image set:
@@ -241,12 +267,27 @@ fi
 # CI tags every PR build with pr-<number> (see .github/workflows/docker-images.yml).
 # Merging to main promotes that image set to :latest, so main and :latest
 # are always in sync by construction.
+#
+# On Mac: `continuum-core` is not pulled (replicas=0 in docker-compose.mac.yml);
+# only support services (postgres, node-server, widget-server, livekit-bridge,
+# model-init) are pulled. continuum-core runs natively from `npm start` below.
 info "Pulling container images (tag: ${CONTINUUM_IMAGE_TAG:-latest})..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
 
-# ── 8. Start ───────────────────────────────────────────────
-info "Starting Continuum..."
+# ── 8. Start support services ──────────────────────────────
+info "Starting support services..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS up -d
+
+# ── 8b. Start continuum-core natively on Mac ───────────────
+# Mac runs continuum-core as a native host process so it can link Metal
+# directly. `npm start` drives the full build (cargo build --release
+# --features=metal + TS compile) and launches the server daemonized.
+if [[ "$OS" == "Darwin" ]]; then
+  info "Building + launching native continuum-core-server (Metal-enabled)..."
+  info "  First run: cargo build takes 5-15 min. Subsequent runs: incremental."
+  (cd "$INSTALL_DIR/src" && npm install --silent && npm start) || \
+    warn "npm start failed — check logs at ~/.continuum/jtag/logs/system/continuum-core.log"
+fi
 
 # ── 8. Wait for health ─────────────────────────────────────
 info "Waiting for services..."

@@ -1,79 +1,57 @@
-# Continuum — Mac (Vulkan-in-container) override
+# Continuum — Mac override (continuum-core runs NATIVE, not containerized)
 #
-# Layered on top of docker-compose.yml when running continuum-core inside a
-# container on an Apple Silicon Mac. Apple's hypervisor exposes no GPU to
-# Linux containers (Docker Desktop, Apple container, and krunkit are all
-# blocked by the lack of IOMMU on Apple GPUs — maintainers confirmed).
+# Apple's hypervisor exposes no GPU to Linux containers — Docker themselves
+# confirmed this in Feb 2026 ("Metal GPU access requires direct hardware
+# access, no GPU passthrough for Metal in containers"). Trying to put
+# continuum-core in a container on Mac means:
+#   - Candle embeddings (AllMiniLM-L6-V2) fall back to CPU
+#   - Bevy headless avatar render falls back to CPU
+#   - Vision processing pipeline falls back to CPU
+#   - Audio MPS paths (once wired) fall back to CPU
+#   - LLM inference needs krunkit+MoltenVK which tops out at 80% of native
+#     and fails to initialize on many M-series configs (ERROR_OUT_OF_HOST_
+#     MEMORY at vkCreateInstance — verified 2026-04-16 on M5 Sequoia)
 #
-# The one working path: Podman + krunkit. krunkit is a VMM that routes
-# Vulkan API calls from inside the container out to MoltenVK on the host,
-# which translates Vulkan → Metal → Apple GPU. llama.cpp's GGML_VULKAN
-# backend is first-class: on the reference Phi-3 benchmark (M2 Max) the
-# container path gets ~80% of native Metal throughput (63 vs 78 tok/s).
-# Close enough to stay inside the "always GPU, never CPU fallback" envelope.
+# The correct architecture for Mac:
 #
-# Usage (Mac Carl — the curl-installer end user):
-#   brew tap slp/krunkit && brew install krunkit podman
-#   podman machine init --rootful=false --cpus=8 --memory=16384
-#   podman machine start
-#   podman compose -f docker-compose.yml -f docker-compose.mac.yml up
+#   continuum-core           → NATIVE process on host (Metal-linked cargo
+#                              build). Launched via `npm start`, not docker.
+#   LLM inference            → Docker Model Runner's vllm-metal backend,
+#                              also running NATIVE on host (Docker Desktop
+#                              orchestrates but compute happens on Apple
+#                              GPU directly). continuum-core routes LLM
+#                              calls to http://host.docker.internal:<port>/
+#                              or localhost (since it's also on the host).
+#   Support services         → IN CONTAINERS (this file):
+#                              postgres, node-server, widget-server,
+#                              livekit-bridge, model-init.
 #
-# Dev on Mac who wants PEAK Metal performance (no Vulkan translation tax)
-# should NOT use this override — just run continuum-core-server natively
-# via `npm start` / `cargo run --features=metal`. The 20% perf gap between
-# native Metal and krunkit Vulkan is the cost of putting inference in a
-# container; for Carl, that cost buys "one command and it just works."
+# This override sets continuum-core's `deploy.replicas: 0` so `docker compose
+# up` on Mac brings up everything EXCEPT continuum-core. The install.sh
+# Mac branch then runs `npm start` separately to launch continuum-core-server
+# natively on the host.
 #
-# What this overrides relative to docker-compose.yml:
+# Usage (Mac — Carl and Dev both use this):
+#   docker compose -f docker-compose.yml -f docker-compose.mac.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
+#   cd src && npm start   # native continuum-core-server with Metal
 #
-#   - continuum-core build switches to docker/continuum-core-vulkan.Dockerfile
-#     (Debian bookworm builder + Ubuntu 24.04 runtime with libvulkan1 and
-#     Mesa ICDs — venus driver used for virtio-GPU passthrough via krunkit).
-#   - GPU_FEATURES gains "vulkan" so workers/llama/build.rs links
-#     ggml-vulkan into the binary and the scheduler runs decode via Vulkan
-#     compute shaders.
-#   - continuum-core requests access to /dev/dri for virtio-GPU; krunkit
-#     exposes the Metal-backed Vulkan device there when running on Mac.
-#     On Linux hosts with a real GPU, mount /dev/dri from the actual
-#     device instead.
-#   - The legacy `inference` service is shadowed the same way as the GPU
-#     profile — personas flow through continuum-core's scheduler IPC, not
-#     a separate HTTP llama-server loopback.
-#
-# Why a separate file: docker-compose.yml remains the CPU-only baseline
-# (Ares bootloader exception, Linux CI smoke, non-accelerated fallback).
-# BigMama keeps using docker-compose.gpu.yml for CUDA. Mac Carl gets this.
+# Linux (AMD/Intel/VirtIO) continues to use continuum-core-vulkan in a
+# container — that path works because /dev/dri passthrough is real on
+# Linux. See docker-compose.gpu.yml for the Nvidia+CUDA path.
 
 services:
 
+  # continuum-core does NOT run in a container on Mac. Runs natively via
+  # `npm start` so it can link Metal for Candle embeddings + Bevy render +
+  # vision + audio + direct llama.cpp ggml-metal inference.
   continuum-core:
-    image: ghcr.io/cambriantech/continuum-core-vulkan:${CONTINUUM_IMAGE_TAG:-latest}
-    build:
-      dockerfile: ../../docker/continuum-core-vulkan.Dockerfile
-      args:
-        GPU_FEATURES: "--no-default-features --features load-dynamic-ort,vulkan"
-    # /dev/dri is the virtio-GPU node krunkit exposes to the guest. The
-    # Vulkan ICD inside the container discovers it via `vulkaninfo` and
-    # uses it for compute submits. On a real Linux host with an AMD/Intel
-    # GPU this is the same device node; the venus/radv/anv ICDs each bind
-    # to it. No driver-specific volume mounts required.
-    devices:
-      - /dev/dri:/dev/dri
-    environment:
-      # Tell libvulkan explicitly which ICD to prefer. On krunkit the
-      # venus driver (libvulkan_virtio.so) is the right one — it's the
-      # virtio-GPU passthrough ICD. mesa-vulkan-drivers ships the JSON
-      # manifest that points at it; this env var short-circuits autopick
-      # if multiple ICDs are installed (e.g. on Linux hosts with lvp
-      # software fallback also present).
-      - VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.x86_64.json:/usr/share/vulkan/icd.d/virtio_icd.aarch64.json
-      # Ask llama.cpp to offload all layers to the Vulkan device; matches
-      # the cuda profile's NVIDIA_VISIBLE_DEVICES=all spirit.
-      - LLAMACPP_VULKAN_DEVICE=0
+    deploy:
+      replicas: 0
 
-  # Shadow the upstream llama-server to a no-op — same reasoning as the
-  # gpu profile. Personas talk to continuum-core's scheduler over the
-  # local Unix socket; no separate HTTP llama-server.
+  # Legacy inference service (upstream llama.cpp:server) stays off — same
+  # reason as the gpu profile. Personas talk to native continuum-core's
+  # scheduler + Docker Model Runner's vllm endpoint.
   inference:
     deploy:
       replicas: 0

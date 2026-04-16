@@ -44,46 +44,43 @@ SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo latest)"
 TAG="${1:-$SHA}"
 export CONTINUUM_IMAGE_TAG="$TAG"
 
-# Container runtime detection — match install.sh's logic.
+# Host detection + path selection.
+# Mac: continuum-core runs NATIVE (via npm start), support services in Docker
+# Desktop containers. LLM inference routes to Docker Model Runner's vllm-metal
+# (also host-native). Heartbeat probes the native socket + model-runner HTTP.
+# Linux: continuum-core runs CONTAINERIZED with GPU passthrough (cuda or
+# vulkan). Heartbeat probes the container's inference directly.
 HOST_OS="$(uname -s)"
-case "$HOST_OS" in
-  Darwin)
-    CONTAINER_CMD=podman
-    if ! command -v podman &>/dev/null; then
-      echo "ERROR: podman not installed. heartbeat requires Mac Carl runtime (Podman+krunkit) for vulkan path." >&2
-      exit 1
-    fi
-    ;;
-  Linux)
-    CONTAINER_CMD=docker
-    if ! command -v docker &>/dev/null; then
-      echo "ERROR: docker not installed. heartbeat requires Docker Engine on Linux." >&2
-      exit 1
-    fi
-    ;;
-  *) echo "ERROR: unsupported OS for heartbeat slice: $HOST_OS" >&2; exit 1 ;;
-esac
-
-if ! $CONTAINER_CMD info &>/dev/null; then
-  echo "ERROR: $CONTAINER_CMD daemon not reachable." >&2
+CONTAINER_CMD=docker
+if ! command -v docker &>/dev/null; then
+  echo "ERROR: docker not installed. Heartbeat requires Docker Desktop (Mac) or Docker Engine (Linux)." >&2
+  exit 1
+fi
+if ! docker info &>/dev/null; then
+  echo "ERROR: docker daemon not reachable." >&2
   case "$HOST_OS" in
-    Darwin) echo "       Run: podman machine start" >&2 ;;
+    Darwin) echo "       Start Docker Desktop, wait for it to be ready, then re-run." >&2 ;;
     *)      echo "       Start Docker Engine / Desktop and retry." >&2 ;;
   esac
   exit 1
 fi
 
-# Compose file selection — same logic as install.sh.
+# Compose file selection — match install.sh's logic.
 COMPOSE_FILES="-f $REPO_ROOT/docker-compose.yml"
 PROFILE_ARGS=""
 case "$HOST_OS" in
   Darwin)
     [[ -f "$REPO_ROOT/docker-compose.mac.yml" ]] || {
-      echo "ERROR: docker-compose.mac.yml missing. Mac heartbeat needs the Vulkan override." >&2
+      echo "ERROR: docker-compose.mac.yml missing. Mac heartbeat needs the override that excludes continuum-core from containers." >&2
       exit 1
     }
     COMPOSE_FILES="$COMPOSE_FILES -f $REPO_ROOT/docker-compose.mac.yml"
-    HEARTBEAT_VARIANT="vulkan (Mac via krunkit)"
+    HEARTBEAT_VARIANT="mac-native (support services in Docker, continuum-core native, LLM via Docker Model Runner)"
+    # Model Runner required on Mac.
+    if ! docker model --help &>/dev/null 2>&1; then
+      echo "ERROR: 'docker model' not available. Needs Docker Desktop 4.62+ with Model Runner." >&2
+      exit 1
+    fi
     ;;
   Linux)
     if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
@@ -93,9 +90,9 @@ case "$HOST_OS" in
       }
       COMPOSE_FILES="$COMPOSE_FILES -f $REPO_ROOT/docker-compose.gpu.yml"
       PROFILE_ARGS="--profile gpu"
-      HEARTBEAT_VARIANT="cuda"
+      HEARTBEAT_VARIANT="cuda (container GPU passthrough)"
     else
-      HEARTBEAT_VARIANT="vulkan (Linux generic GPU)"
+      HEARTBEAT_VARIANT="vulkan (Linux AMD/Intel/VirtIO — container /dev/dri passthrough)"
     fi
     ;;
 esac
@@ -200,9 +197,32 @@ else
   $CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS logs --tail=30 continuum-core 2>&1 | sed 's/^/    /' >&2
 fi
 
-# ── Slice 5: GPU device used (variant-specific) ─────────────────────
+# ── Slice 5: acceleration engaged (variant-specific) ───────────────
 case "$HEARTBEAT_VARIANT" in
-  cuda)
+  mac-native*)
+    # Mac path: continuum-core is NATIVE on host. Check that it's running
+    # and Docker Model Runner vllm backend is reachable for LLM inference.
+    if lsof -U 2>/dev/null | grep -q "continuum-core.sock"; then
+      pass "native-core-running (continuum-core-server IPC socket present)"
+    else
+      fail "native-core-running" "no continuum-core.sock found — did `npm start` launch the native server?"
+    fi
+    # Docker Model Runner's vllm backend status (host-native, managed by Docker Desktop)
+    if docker model list-runners 2>/dev/null | grep -qi vllm; then
+      pass "model-runner-vllm (vllm-metal backend registered)"
+    else
+      fail "model-runner-vllm" "vllm backend not found. Run: docker model install-runner --backend vllm"
+    fi
+    # Verify continuum-core log shows Metal activity (ggml_metal kernel compile
+    # = real Metal on Apple GPU, not any form of emulation).
+    METAL_LOG="$HOME/.continuum/jtag/logs/system/continuum-core.log"
+    if [[ -f "$METAL_LOG" ]] && grep -qE "ggml_metal_library_compile|ggml_metal_init" "$METAL_LOG"; then
+      pass "metal-engaged (ggml_metal kernel compilation visible in log — real Apple GPU)"
+    else
+      fail "metal-engaged" "no ggml_metal traces in continuum-core.log — native Metal not firing"
+    fi
+    ;;
+  cuda*)
     GPU_BUSY=$($CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS exec -T continuum-core \
       nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "0")
     if [[ "$GPU_BUSY" -gt 1000 ]]; then
@@ -211,7 +231,7 @@ case "$HEARTBEAT_VARIANT" in
       fail "cuda-gpu-engaged" "nvidia-smi shows ${GPU_BUSY}MB VRAM in use — model didn't load on GPU"
     fi
     ;;
-  "vulkan ("*)
+  vulkan*)
     DEV=$($CONTAINER_CMD compose $COMPOSE_FILES $PROFILE_ARGS exec -T continuum-core \
       vulkaninfo --summary 2>&1 | grep -E "deviceName" | head -1 | sed 's/.*= *//' || true)
     if [[ -n "$DEV" ]]; then

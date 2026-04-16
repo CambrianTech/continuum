@@ -77,9 +77,11 @@ services:
       # whenever the core needed to write to a path that wasn't mounted.
       - ~/.continuum:/root/.continuum
     # GPU access for Bevy headless 3D rendering (avatar snapshots, live video).
-    # Set DOCKER_GPU_RUNTIME=nvidia in .env to enable GPU passthrough.
-    # Default: runc (CPU only — uses static avatar fallbacks).
-    runtime: ${DOCKER_GPU_RUNTIME:-runc}
+    # NOTE: the `runtime:` key is Docker-only — Podman (Rancher alt) doesn't
+    # know it and errors out. NVIDIA runtime is now set ONLY in the gpu
+    # overlay (docker-compose.gpu.yml), not here in the base file, so this
+    # base file stays Podman/Rancher-compatible. Default CPU-fallback for
+    # Bevy avatar rendering happens automatically when no runtime is set.
     environment:
       - DATABASE_URL=postgres://continuum:continuum@postgres:5432/continuum
       - AVATAR_MODELS_DIR=/app/avatars
