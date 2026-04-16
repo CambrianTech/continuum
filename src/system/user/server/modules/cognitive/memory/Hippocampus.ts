@@ -15,10 +15,10 @@
  */
 
 import { PersonaContinuousSubprocess } from '../../PersonaSubprocess';
+import { SystemPaths } from '../../../../../core/config/SystemPaths';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { PersonaUser } from '../../../PersonaUser';
 import { Commands } from '../../../../../core/shared/Commands';
-import { SystemPaths } from '../../../../../core/config/SystemPaths';
 import type { DataOpenParams, DataOpenResult } from '../../../../../../commands/data/open/shared/DataOpenTypes';
 import type { DataListParams, DataListResult } from '../../../../../../commands/data/list/shared/DataListTypes';
 import type { BaseEntity } from '../../../../../data/entities/BaseEntity';
@@ -158,16 +158,19 @@ export class Hippocampus extends PersonaContinuousSubprocess {
    * Opens dedicated SQLite database for this persona
    */
   private async initializeDatabase(): Promise<void> {
-    // Use SystemPaths.personas.longterm() as SINGLE SOURCE OF TRUTH for path
-    const dbPath = SystemPaths.personas.longterm(this.persona.entity.uniqueId);
+    // Sentinel handle — Rust resolve_handle expands @persona:<slug> to the
+    // host-side longterm.db path. Required for Mac Option B: TS in container
+    // and native core on host see the same shared mount via different
+    // filesystem paths; the sentinel lets each side resolve to its own view.
+    const dbHandle = `@persona:${this.persona.entity.uniqueId}`;
 
     try {
-      this.log(`Opening LTM database: ${dbPath}`);
+      this.log(`Opening LTM database: ${dbHandle}`);
 
       const result = await DataOpen.execute({
         adapter: 'sqlite',
         config: {
-          path: dbPath,
+          path: dbHandle,
           mode: 'readwrite',
           wal: true,           // Write-Ahead Logging (fast writes)
           foreignKeys: true    // Referential integrity
@@ -186,22 +189,26 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     } catch (error) {
       const errorMsg = String(error);
 
-      // EXFAT FIX: Detect corrupted database and recover by deleting and retrying
+      // EXFAT FIX: Detect corrupted database and recover by deleting and retrying.
+      // Recovery does direct fs.unlink which needs the on-disk path (TS-side
+      // view of the docker mount), NOT the @persona:<slug> sentinel handle.
       if (errorMsg.includes('SQLITE_CORRUPT')) {
-        this.log(`⚠️ Detected corrupted database at ${dbPath}, attempting recovery...`);
+        const localDbPath = SystemPaths.personas.longterm(this.persona.entity.uniqueId);
+        this.log(`⚠️ Detected corrupted database at ${localDbPath}, attempting recovery...`);
 
         try {
           // Delete corrupted database
           const fs = await import('fs/promises');
-          await fs.unlink(dbPath);
-          this.log(`✅ Deleted corrupted database: ${dbPath}`);
+          await fs.unlink(localDbPath);
+          this.log(`✅ Deleted corrupted database: ${localDbPath}`);
 
-          // Retry opening (will create fresh database)
+          // Retry opening (will create fresh database) — Rust resolves the
+          // sentinel to the same file via the host's view of the mount.
           this.log(`🔄 Retrying database initialization with fresh file...`);
           const result = await DataOpen.execute({
             adapter: 'sqlite',
             config: {
-              path: dbPath,
+              path: dbHandle,
               mode: 'readwrite',
               wal: true,
               foreignKeys: true

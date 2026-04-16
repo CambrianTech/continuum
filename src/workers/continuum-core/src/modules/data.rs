@@ -169,9 +169,18 @@ impl DataModule {
     ///   (grid opt-in for Postgres / any future adapter); otherwise
     ///   defaults to a local SQLite file at
     ///   `$HOME/.continuum/database/main.db`.
-    /// - 36-char UUID shape — per-persona database. Maps to
-    ///   `$HOME/.continuum/personas/<uuid>/longterm.db`. Persona identity
-    ///   is the handle; TS never computes this path.
+    /// - `"@persona:<slug>"` — per-persona long-term memory DB. Resolves
+    ///   to `$HOME/.continuum/personas/<slug>/data/longterm.db` on the
+    ///   host. Mac Option B requires this — TS in container builds
+    ///   container-rooted paths (`/root/...`) that the native core on
+    ///   host can't open; the sentinel lets each side resolve to its
+    ///   own filesystem view of the shared `~/.continuum` mount.
+    /// - `"@metrics"` — telemetry SQLite. Resolves to
+    ///   `$HOME/.continuum/metrics/metrics.sqlite` on the host. Same
+    ///   Mac Option B rationale.
+    /// - 36-char UUID shape — per-persona database (UUID-keyed variant).
+    ///   Maps to `$HOME/.continuum/personas/<uuid>/longterm.db`. Kept
+    ///   for back-compat with callers using UUIDs as identity.
     /// - Starts with `postgres://` / `postgresql://` / filesystem path —
     ///   legacy passthrough. Logged at WARN so remaining leak sites show
     ///   up in the next audit. Will be removed once every caller migrates.
@@ -189,6 +198,38 @@ impl DataModule {
             let home = std::env::var("HOME")
                 .map_err(|_| "resolve_handle('main'): HOME env not set".to_string())?;
             return Ok(format!("{}/.continuum/database/main.db", home));
+        }
+
+        // Per-persona slug-shape sentinel: @persona:<slug>
+        // Slug matches the on-disk dir under $HOME/.continuum/personas/.
+        // Mac Option B fix — TS in container would otherwise ship a
+        // /root-rooted path the host-side native core can't open even
+        // though the file is the same on both sides of the mount.
+        if let Some(slug) = handle.strip_prefix("@persona:") {
+            if slug.is_empty() {
+                return Err("resolve_handle('@persona:'): empty slug".to_string());
+            }
+            // Defensive: slug must be a single path segment — no escapes.
+            if slug.contains('/') || slug.contains('\\') || slug.contains("..") {
+                return Err(format!(
+                    "resolve_handle('@persona:{}'): slug must be a single path segment",
+                    slug
+                ));
+            }
+            let home = std::env::var("HOME").map_err(|_| {
+                format!("resolve_handle('@persona:{}'): HOME env not set", slug)
+            })?;
+            return Ok(format!(
+                "{}/.continuum/personas/{}/data/longterm.db",
+                home, slug
+            ));
+        }
+
+        // Telemetry SQLite sentinel.
+        if handle == "@metrics" {
+            let home = std::env::var("HOME")
+                .map_err(|_| "resolve_handle('@metrics'): HOME env not set".to_string())?;
+            return Ok(format!("{}/.continuum/metrics/metrics.sqlite", home));
         }
 
         // Per-persona UUID shape: 8-4-4-4-12 hex chars with hyphens (36 total).
@@ -212,15 +253,15 @@ impl DataModule {
             log_info!(
                 "data",
                 "resolve_handle",
-                "LEGACY connection string at IPC boundary: {} — caller should pass a handle ('main' or persona UUID)",
+                "LEGACY connection string at IPC boundary: {} — caller should pass a handle ('main', '@persona:<slug>', '@metrics', or persona UUID)",
                 handle
             );
             return Ok(handle.to_string());
         }
 
         Err(format!(
-            "Unknown database handle: '{}'. Valid handles are 'main' or a persona UUID. \
-             Custom backends must be opened via data/open (future).",
+            "Unknown database handle: '{}'. Valid handles are 'main', '@persona:<slug>', \
+             '@metrics', or a persona UUID. Custom backends must be opened via data/open (future).",
             handle
         ))
     }

@@ -966,7 +966,9 @@ export class PersonaUser extends AIUser {
    * Data flow: longterm.db → DataOpen → DataList → field mapping → CorpusMemory[] / CorpusTimelineEvent[]
    */
   private async loadCorpusFromORM(): Promise<{ memories: CorpusMemory[], events: CorpusTimelineEvent[] }> {
-    const dbPath = SystemPaths.personas.longterm(this.entity.uniqueId);
+    // Sentinel handle — Rust resolve_handle expands @persona:<slug> to the
+    // host-side longterm.db path (Mac Option B).
+    const dbPath = `@persona:${this.entity.uniqueId}`;
 
     const openResult = await DataOpen.execute({
       adapter: 'sqlite',

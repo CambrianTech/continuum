@@ -78,10 +78,12 @@ export class MetricsCollector {
         fs.mkdirSync(metricsDir, { recursive: true });
       }
 
-      // Open dedicated database handle for metrics
+      // Open dedicated database handle for metrics via sentinel handle.
+      // Rust resolve_handle expands @metrics on the host side — required for
+      // Mac Option B where the native core can't open container-rooted paths.
       const registry = DatabaseHandleRegistry.getInstance();
       this._handle = await registry.open('sqlite', {
-        path: SystemPaths.metrics.database,
+        path: '@metrics',
       }, { emitEvents: false }); // No CRUD events for metrics — pure telemetry
 
       registry.registerAlias('metrics', this._handle);
