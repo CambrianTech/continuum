@@ -140,7 +140,7 @@
     "prepare": "npx tsx scripts/ensure-config.ts 2>/dev/null || true",
     "postinstall": "npm run worker:models || echo '⚠️ Voice model download failed (non-fatal — system starts without STT/TTS)'",
     "prebuild": "npx tsx scripts/ensure-config.ts && npx tsx generator/generate-rust-bindings.ts && npx tsx generator/generate-structure.ts && npx tsx generator/generate-command-schemas.ts && npx tsx generator/generate-command-constants.ts && npx tsx scripts/compile-sass.ts",
-    "build:ts": "npx tsx generator/generate-version.ts && npx tsx generator/generate-config.ts && npx tsx scripts/build-with-loud-failure.ts",
+    "build:ts": "npx tsx generator/generate-version.ts && npx tsx generator/generate-config.ts && npx tsx generator/generate-entity-schemas.ts && npx tsx scripts/build-with-loud-failure.ts",
     "build:cli": "npx esbuild dist/cli.js --bundle --platform=node --target=node18 --outfile=dist/cli-bundle.js --external:sqlite3 --external:better-sqlite3 --external:@anthropic-ai/sdk --external:@grpc/grpc-js --external:@grpc/proto-loader --external:playwright-core --external:playwright --minify 2>/dev/null && echo '✅ CLI bundle created'",
     "lint": "eslint . --max-warnings 0 && tsc --noEmit --project .",
     "lint:file": "eslint --max-warnings 0",
