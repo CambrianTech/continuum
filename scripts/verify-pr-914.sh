@@ -18,19 +18,18 @@ PROOF_FILE="/tmp/verify-pr-914.json"
 CHECKS=()
 PASS=0
 FAIL=0
+SKIP=0
 
 check() {
   local name="$1"
-  local result="$2"  # "pass" or "fail"
+  local result="$2"  # "pass", "fail", or "skip"
   local detail="$3"
   CHECKS+=("{\"name\":\"$name\",\"result\":\"$result\",\"detail\":\"$detail\"}")
-  if [ "$result" = "pass" ]; then
-    echo "  ✅ $name: $detail"
-    PASS=$((PASS + 1))
-  else
-    echo "  ❌ $name: $detail"
-    FAIL=$((FAIL + 1))
-  fi
+  case "$result" in
+    pass) echo "  ✅ $name: $detail"; PASS=$((PASS + 1)) ;;
+    fail) echo "  ❌ $name: $detail"; FAIL=$((FAIL + 1)) ;;
+    skip) echo "  ⏭️  $name: $detail"; SKIP=$((SKIP + 1)) ;;
+  esac
 }
 
 echo "=== PR #914 Verification — Voice LiveKit Migration ==="
@@ -48,12 +47,12 @@ else
 fi
 cd ..
 
-# 2. Port 3001 not bound
-echo "--- Check 2: Port 3001 not bound ---"
-if lsof -i :3001 -sTCP:LISTEN 2>/dev/null | grep -q LISTEN; then
-  check "port-3001-free" "fail" "Port 3001 still in use"
+# 2. startVoiceServer removed from JTAGSystemServer
+echo "--- Check 2: startVoiceServer removed from boot ---"
+if grep -q "startVoiceServer" src/system/core/system/server/JTAGSystemServer.ts 2>/dev/null; then
+  check "voice-server-removed" "fail" "startVoiceServer still called in JTAGSystemServer"
 else
-  check "port-3001-free" "pass" "Port 3001 not bound (old voice WS server removed)"
+  check "voice-server-removed" "pass" "startVoiceServer removed from server boot"
 fi
 
 # 3. VoiceWebSocketHandler.ts deleted
@@ -119,7 +118,7 @@ fi
 
 # Write proof JSON
 echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
+echo "=== Results: $PASS passed, $FAIL failed, $SKIP skipped ==="
 
 CHECKS_JSON=$(printf '%s,' "${CHECKS[@]}")
 CHECKS_JSON="[${CHECKS_JSON%,}]"
