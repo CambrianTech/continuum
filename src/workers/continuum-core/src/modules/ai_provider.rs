@@ -171,37 +171,27 @@ impl AIProviderModule {
             .is_ok();
 
             if localhost_ok {
-                eprintln!("[DMR-PROBE] localhost:12434 OK");
                 (true, None) // Use default base_url in adapter (localhost)
             } else {
-                eprintln!("[DMR-PROBE] localhost:12434 FAILED, checking container...");
                 // Not on localhost — check if we're inside a Docker container.
                 // model-runner.docker.internal resolves from inside Docker
                 // Desktop containers on Mac, Linux, and Windows (WSL2).
                 let in_container = std::path::Path::new("/.dockerenv").exists();
-                eprintln!("[DMR-PROBE] /.dockerenv exists: {}", in_container);
                 if in_container {
                     // DNS-resolve the internal hostname + TCP probe port 80.
                     use std::net::ToSocketAddrs;
-                    let dns_result = "model-runner.docker.internal:80".to_socket_addrs();
-                    eprintln!("[DMR-PROBE] DNS resolve result: {:?}", dns_result.as_ref().map(|a| a.size_hint()));
-                    let internal_ok = dns_result
+                    let internal_ok = "model-runner.docker.internal:80"
+                        .to_socket_addrs()
                         .ok()
-                        .and_then(|mut addrs| {
-                            let addr = addrs.next();
-                            eprintln!("[DMR-PROBE] First resolved addr: {:?}", addr);
-                            addr
-                        })
+                        .and_then(|mut addrs| addrs.next())
                         .map(|addr| {
-                            let result = std::net::TcpStream::connect_timeout(
+                            std::net::TcpStream::connect_timeout(
                                 &addr,
                                 std::time::Duration::from_secs(2),
-                            );
-                            eprintln!("[DMR-PROBE] TCP connect to {:?}: {:?}", addr, result.is_ok());
-                            result.is_ok()
+                            )
+                            .is_ok()
                         })
                         .unwrap_or(false);
-                    eprintln!("[DMR-PROBE] internal_ok: {}", internal_ok);
                     if internal_ok {
                         (
                             true,
