@@ -1,0 +1,72 @@
+{
+  "uniqueId": "metrics",
+  "name": "System Metrics",
+  "displayName": "Metrics",
+  "description": "Detailed performance metrics view — GPU/CPU/memory/inference latency timeseries",
+  "version": 1,
+  "layout": {
+    "main": [
+      "metrics-detail-widget"
+    ],
+    "right": {
+      "widgets": [
+        "chat-widget"
+      ],
+      "config": {
+        "room": "help",
+        "compact": true
+      }
+    }
+  },
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3
+      }
+    }
+  ],
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+  "strategy": {
+    "conversationPattern": "exploring",
+    "responseRules": [
+      "Help interpret metric timeseries and identify trends",
+      "Flag anomalies (sudden spikes, sustained pressure)",
+      "Correlate metrics across subsystems (inference vs memory vs GPU)",
+      "Suggest concrete remediation when a metric crosses a threshold"
+    ],
+    "decisionCriteria": [
+      "Which subsystem is the user investigating?",
+      "Is the metric in steady-state or trending?",
+      "Would historical comparison clarify root cause?"
+    ]
+  },
+  "isPublic": true,
+  "tags": [
+    "metrics",
+    "performance",
+    "monitoring",
+    "telemetry"
+  ],
+  "view": "metrics"
+}
