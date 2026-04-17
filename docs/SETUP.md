@@ -205,6 +205,16 @@ Then open `http://localhost:9003`, send a chat. Same expected throughput as Wind
 
 - **`runtime: nvidia` not recognized:** install [`nvidia-container-toolkit`](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and restart the Docker daemon.
 - **Container starts but no GPU access:** check `nvidia-smi` from inside the container with `docker exec continuum-continuum-core-1 nvidia-smi` — if blank, the runtime isn't binding.
+- **Permission denied on `~/.continuum/sockets/*` from the host user:** Docker containers run as root by default, so files they create in the bind-mounted `~/.continuum/` directory end up root-owned and unreadable by your normal user account. Symptom: CLI commands like `./jtag ping` fail with `EACCES: permission denied` even though the services are healthy. Fix:
+  ```bash
+  # Reclaim ownership (run as your normal user, not root)
+  sudo chown -R "$(id -u):$(id -g)" ~/.continuum
+  # Then set the container UID/GID to match yours so future writes stay yours
+  echo "PUID=$(id -u)" >> ~/.continuum/config.env
+  echo "PGID=$(id -g)" >> ~/.continuum/config.env
+  docker compose down && docker compose up -d
+  ```
+  This is a known Linux-only friction (Mac and Windows don't hit it because Docker Desktop's VM handles the UID translation). Tracked for a code-side fix that runs the container as the host UID by default.
 
 ---
 
