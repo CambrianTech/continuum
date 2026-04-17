@@ -280,6 +280,11 @@ if type ic_detect_hardware &>/dev/null; then
       else
         ok "Persona model already in DMR: $PERSONA_MODEL"
       fi
+      # Cap context window to prevent KV cache from consuming all RAM.
+      # Default 262k context × concurrent persona slots = 20GB+ KV cache on 32GB machine.
+      # 4096 tokens is sufficient for chat (RAG budget capped at ~2-4k). Saves ~18GB RAM.
+      docker model configure --context-size 4096 "$PERSONA_MODEL" 2>/dev/null \
+        || warn "Context size config failed — model may use excessive RAM. Fix: docker model configure --context-size 4096 $PERSONA_MODEL"
       ;;
     llama-vulkan)
       ok "Vulkan GPU path — model download handled by continuum-core at first inference"
