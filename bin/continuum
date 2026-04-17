@@ -773,6 +773,43 @@ cmd_doctor() {
     fi
   fi
 
+  # Stale-image detection — compare the running container's git revision
+  # (injected by docker/metadata-action via the org.opencontainers.image.revision
+  # label on every CI publish) to the local repo HEAD. Memento spent hours on
+  # PR891 chasing "why isn't my fix in the running binary" before realizing
+  # the container was a week-old image. This check turns that silent gap into
+  # a visible warning.
+  if find_compose 2>/dev/null; then
+    cd "$COMPOSE_DIR"
+    local core_name
+    core_name=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -E 'continuum-core(-1)?$' | head -1 || true)
+    if [ -n "$core_name" ]; then
+      # Container's image revision label = git SHA the image was built from
+      local image_id; image_id=$(docker inspect "$core_name" --format '{{.Image}}' 2>/dev/null || echo "")
+      local image_revision=""
+      if [ -n "$image_id" ]; then
+        image_revision=$(docker inspect "$image_id" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || echo "")
+      fi
+      # Local repo HEAD
+      local repo_head; repo_head=$(git -C "$COMPOSE_DIR" rev-parse HEAD 2>/dev/null || echo "")
+      if [ -n "$image_revision" ] && [ -n "$repo_head" ]; then
+        # Compare prefixes — image labels are full SHAs, git short-rev is 7 chars
+        local img_short="${image_revision:0:8}"
+        local repo_short="${repo_head:0:8}"
+        if [ "$img_short" = "$repo_short" ]; then
+          echo -e "  ${GREEN}●${RESET} Image revision: $img_short (matches repo HEAD)"
+        else
+          echo -e "  ${YELLOW}●${RESET} Image revision: $img_short (repo HEAD is $repo_short — image is stale)"
+          echo -e "      The running container was built from a different commit than your local repo."
+          echo -e "      Pull the latest published image: ${DIM}continuum update${RESET}"
+          echo -e "      Or, if you want THIS commit's code: ${DIM}continuum update --dev${RESET}"
+        fi
+      elif [ -z "$image_revision" ]; then
+        echo -e "  ${DIM}○${RESET} Image revision: no label (image built without docker/metadata-action; can't verify freshness)"
+      fi
+    fi
+  fi
+
   echo ""
 }
 
