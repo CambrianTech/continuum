@@ -54,14 +54,26 @@ fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
-    // Metal on macOS
+    // macOS always links Accelerate.framework — ggml-cpu's ops.cpp uses
+    // vDSP_vsmul / vDSP_vsub / vDSP_vsadd UNCONDITIONALLY on macOS (CMake's
+    // GGML_ACCELERATE auto-detection enables it whenever the SDK is
+    // present, regardless of the metal feature). Without this, building
+    // without `--features=metal` (or test targets that compile separate
+    // units without consistent feature propagation) fails with
+    // `ld: symbol(s) not found for architecture arm64` on _vDSP_vsub /
+    // _vDSP_vsmul / _vDSP_vsadd. Apple's CoreFoundation is needed by
+    // GGML's NSError plumbing on Mac too.
+    if target_os == "macos" {
+        println!("cargo:rustc-link-lib=framework=Accelerate");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+    }
+
+    // Metal on macOS — additional frameworks beyond the always-Mac set above.
     if cfg!(feature = "metal") && target_os == "macos" {
         cfg.define("GGML_METAL", "ON")
            .define("GGML_METAL_EMBED_LIBRARY", "ON");
-        println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=Metal");
         println!("cargo:rustc-link-lib=framework=MetalKit");
-        println!("cargo:rustc-link-lib=framework=Accelerate");
     } else {
         cfg.define("GGML_METAL", "OFF");
     }
