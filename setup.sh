@@ -281,7 +281,24 @@ fi
 # but DMR has no models on a fresh install. Carl from HF expects to chat
 # with the model whose card brought them here — so we pull it here, idempotent.
 QWEN_MODEL="hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF"
+QWEN_MODEL_LC="huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest"
 if command -v docker &>/dev/null && docker model --help &>/dev/null 2>&1; then
+  # Try to enable host-side TCP programmatically (same approach as root install.sh).
+  # Without the TCP endpoint, continuum-core containers can't reach DMR and chat
+  # routes to Candle (slow CPU) silently. GUI toggle is the fallback if the CLI
+  # command isn't available on this Docker Desktop version.
+  if ! curl -fsS --max-time 1 http://localhost:12434/engines/llama.cpp/v1/models >/dev/null 2>&1; then
+    echo "📡 Enabling Docker Model Runner host-side TCP endpoint..."
+    if docker desktop enable model-runner --tcp=12434 --cors=all 2>&1 | tail -3; then
+      echo "  ✅ DMR TCP endpoint enabled on localhost:12434"
+    else
+      echo "  ⚠️  Couldn't auto-enable TCP. Open Docker Desktop → Settings → AI"
+      echo "     and check 'Enable host-side TCP support' (port 12434). Without this,"
+      echo "     continuum-core containers fall back to CPU inference (slow)."
+    fi
+  fi
+
+  # Pull the forged Qwen. Idempotent — skip if cached.
   if ! docker model ls 2>/dev/null | grep -qi "qwen3.5-4b-code-forged"; then
     echo ""
     echo "📥 Pulling forged Qwen3.5-4B (2.5GB) into Docker Model Runner..."
@@ -296,19 +313,44 @@ if command -v docker &>/dev/null && docker model --help &>/dev/null 2>&1; then
     echo "  ✅ Qwen3.5-4B already in DMR (skipping pull)"
   fi
 
-  # Loud reminder for the manual Docker Desktop AI toggles. Without these,
-  # DMR runs the model on CPU even with a GPU present — fast machine, slow
-  # first chat, "Continuum feels broken" review.
-  echo ""
-  echo "  ℹ️  Manual one-time step: enable GPU acceleration in Docker Desktop"
-  echo "       Settings → AI → ✓ Enable GPU-backed inference"
-  echo "                       ✓ Enable host-side TCP support (port 12434)"
-  echo "       Without these, inference runs on CPU. See docs/SETUP.md for details."
+  # Verify the model is actually listed in the catalog AFTER the pull (in case
+  # the pull succeeded with a redirect/naming mismatch).
+  if ! docker model ls 2>/dev/null | grep -qi "qwen3.5-4b-code-forged"; then
+    echo "  ❌ Qwen pull reported success but model is NOT in 'docker model ls'."
+    echo "     Something's wrong with DMR. Retry: docker model pull $QWEN_MODEL"
+    echo "     Or file an issue with: docker model --version + the error above."
+  fi
+
+  # Check the GPU backend is actually engaged. If it's latest-cpu on a machine
+  # with a GPU, inference will be 5-10× slower than users expect from a local
+  # GPU path. The toggle that fixes this is Settings→AI→Enable GPU-backed
+  # inference — we can't flip it from CLI, but we CAN detect + yell about it.
+  BACKEND_LINE=$(docker model status 2>&1 | grep -i "llama.cpp" | head -1)
+  if echo "$BACKEND_LINE" | grep -q "latest-cpu"; then
+    echo ""
+    echo "  ❗ DMR backend is running llama.cpp latest-CPU — inference will be SLOW"
+    echo "     (10 tok/s instead of 50+ on Mac or 200+ on Nvidia)."
+    echo ""
+    echo "     Fix: open Docker Desktop → Settings → AI →"
+    echo "           ✓ Enable GPU-backed inference"
+    echo "           ✓ Enable host-side TCP support (if not already)"
+    echo "          Click Apply. Backend swaps to latest-metal (Mac) or"
+    echo "          latest-cuda (Nvidia) automatically. No restart required."
+    echo ""
+    echo "     After flipping the toggle, re-run this setup script or 'continuum update'."
+  elif echo "$BACKEND_LINE" | grep -qE "latest-metal|latest-cuda|latest-rocm|latest-vulkan"; then
+    BACKEND_NAME=$(echo "$BACKEND_LINE" | grep -oE "latest-(metal|cuda|rocm|vulkan)")
+    echo "  ✅ DMR backend: llama.cpp $BACKEND_NAME (GPU acceleration active)"
+  elif [ -n "$BACKEND_LINE" ]; then
+    echo "  ⚠️  DMR backend: $BACKEND_LINE"
+    echo "     Unexpected state — check 'docker model status' manually."
+  fi
 else
   echo ""
-  echo "  ⚠️ Docker Model Runner CLI not available."
-  echo "     Update to Docker Desktop 4.69+ for GPU-accelerated local inference."
-  echo "     See docs/SETUP.md for the per-OS install path."
+  echo "  ❗ Docker Model Runner CLI not available on this Docker Desktop."
+  echo "     Continuum requires Docker Desktop 4.69+ for local GPU inference."
+  echo "     Update from https://www.docker.com/products/docker-desktop and re-run this script."
+  echo "     (Continuing the install, but first chat will fail until DMR is set up.)"
 fi
 
 # ── Start ─────────────────────────────────────────
