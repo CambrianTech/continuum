@@ -194,11 +194,12 @@ impl OpenAICompatibleAdapter {
                         ModelCapability::ToolUse,
                     ],
                     context_window: 128000,
-                    max_output_tokens: Some(8192),
-                    cost_per_1k_tokens: Some(CostPer1kTokens {
+                    max_output_tokens: 8192,
+                    cost_per_1k_tokens: CostPer1kTokens {
                         input: 0.00014,
                         output: 0.00028,
-                    }),
+                    },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                     supports_streaming: true,
                     supports_tools: true,
                 },
@@ -212,11 +213,12 @@ impl OpenAICompatibleAdapter {
                         ModelCapability::ToolUse,
                     ],
                     context_window: 128000,
-                    max_output_tokens: Some(8192),
-                    cost_per_1k_tokens: Some(CostPer1kTokens {
+                    max_output_tokens: 8192,
+                    cost_per_1k_tokens: CostPer1kTokens {
                         input: 0.00055,
                         output: 0.00219,
-                    }),
+                    },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                     supports_streaming: true,
                     supports_tools: true,
                 },
@@ -248,11 +250,12 @@ impl OpenAICompatibleAdapter {
                         ModelCapability::ImageAnalysis,
                     ],
                     context_window: 128000,
-                    max_output_tokens: Some(4096),
-                    cost_per_1k_tokens: Some(CostPer1kTokens {
+                    max_output_tokens: 4096,
+                    cost_per_1k_tokens: CostPer1kTokens {
                         input: 0.01,
                         output: 0.03,
-                    }),
+                    },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                     supports_streaming: true,
                     supports_tools: true,
                 },
@@ -268,11 +271,12 @@ impl OpenAICompatibleAdapter {
                         ModelCapability::Multimodal,
                     ],
                     context_window: 128000,
-                    max_output_tokens: Some(4096),
-                    cost_per_1k_tokens: Some(CostPer1kTokens {
+                    max_output_tokens: 4096,
+                    cost_per_1k_tokens: CostPer1kTokens {
                         input: 0.005,
                         output: 0.015,
-                    }),
+                    },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                     supports_streaming: true,
                     supports_tools: true,
                 },
@@ -302,11 +306,12 @@ impl OpenAICompatibleAdapter {
                     ModelCapability::ToolUse,
                 ],
                 context_window: 131072,
-                max_output_tokens: Some(4096),
-                cost_per_1k_tokens: Some(CostPer1kTokens {
+                max_output_tokens: 4096,
+                cost_per_1k_tokens: CostPer1kTokens {
                     input: 0.00088,
                     output: 0.00088,
-                }),
+                },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                 supports_streaming: true,
                 supports_tools: true,
             }],
@@ -335,11 +340,12 @@ impl OpenAICompatibleAdapter {
                     ModelCapability::ToolUse,
                 ],
                 context_window: 131072,
-                max_output_tokens: Some(8192),
-                cost_per_1k_tokens: Some(CostPer1kTokens {
+                max_output_tokens: 8192,
+                cost_per_1k_tokens: CostPer1kTokens {
                     input: 0.00005,
                     output: 0.00008,
-                }),
+                },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                 supports_streaming: true,
                 supports_tools: true,
             }],
@@ -368,11 +374,12 @@ impl OpenAICompatibleAdapter {
                     ModelCapability::ToolUse,
                 ],
                 context_window: 128000,
-                max_output_tokens: Some(8192),
-                cost_per_1k_tokens: Some(CostPer1kTokens {
+                max_output_tokens: 8192,
+                cost_per_1k_tokens: CostPer1kTokens {
                     input: 0.0009,
                     output: 0.0009,
-                }),
+                },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                 supports_streaming: true,
                 supports_tools: true,
             }],
@@ -401,11 +408,12 @@ impl OpenAICompatibleAdapter {
                     ModelCapability::ToolUse,
                 ],
                 context_window: 131072,
-                max_output_tokens: Some(8192),
-                cost_per_1k_tokens: Some(CostPer1kTokens {
+                max_output_tokens: 8192,
+                cost_per_1k_tokens: CostPer1kTokens {
                     input: 0.003,
                     output: 0.015,
-                }),
+                },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                 supports_streaming: true,
                 supports_tools: true,
             }],
@@ -435,11 +443,12 @@ impl OpenAICompatibleAdapter {
                     ModelCapability::ImageAnalysis,
                 ],
                 context_window: 1000000,
-                max_output_tokens: Some(8192),
-                cost_per_1k_tokens: Some(CostPer1kTokens {
+                max_output_tokens: 8192,
+                cost_per_1k_tokens: CostPer1kTokens {
                     input: 0.000075,
                     output: 0.0003,
-                }),
+                },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                 supports_streaming: true,
                 supports_tools: true,
             }],
@@ -481,11 +490,12 @@ impl OpenAICompatibleAdapter {
                         ModelCapability::ToolUse,
                     ],
                     context_window: 32768,
-                    max_output_tokens: Some(4096),
-                    cost_per_1k_tokens: Some(CostPer1kTokens {
+                    max_output_tokens: 4096,
+                    cost_per_1k_tokens: CostPer1kTokens {
                         input: 0.0,
                         output: 0.0,
-                    }),
+                    },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                     supports_streaming: true,
                     supports_tools: true,
                 },
@@ -498,11 +508,12 @@ impl OpenAICompatibleAdapter {
                         ModelCapability::Chat,
                     ],
                     context_window: 32768,
-                    max_output_tokens: Some(4096),
-                    cost_per_1k_tokens: Some(CostPer1kTokens {
+                    max_output_tokens: 4096,
+                    cost_per_1k_tokens: CostPer1kTokens {
                         input: 0.0,
                         output: 0.0,
-                    }),
+                    },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                     supports_streaming: true,
                     supports_tools: false,
                 },

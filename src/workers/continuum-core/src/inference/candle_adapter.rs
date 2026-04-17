@@ -17,6 +17,9 @@ use crate::ai::{
     FinishReason, HealthState, HealthStatus, LoRAAdapterInfo, LoRACapabilities, ModelCapability,
     ModelInfo, RoutingInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
 };
+use crate::ai::types::{
+    CostPer1kTokens,
+};
 use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::runtime;
@@ -848,8 +851,9 @@ impl AIProviderAdapter for CandleAdapter {
             provider: "candle".to_string(),
             capabilities: vec![ModelCapability::TextGeneration, ModelCapability::Chat],
             context_window: DEFAULT_CONTEXT_WINDOW,
-            max_output_tokens: Some(4096),
-            cost_per_1k_tokens: None,
+            max_output_tokens: 4096,
+            cost_per_1k_tokens: CostPer1kTokens { input: 0.0, output: 0.0 },
+                    tokens_per_second: 15.0, // Local inference — updated at runtime from actual measurements
             supports_streaming: false,
             supports_tools: false,
         }]

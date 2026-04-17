@@ -514,11 +514,12 @@ impl AIProviderAdapter for AnthropicAdapter {
                     ModelCapability::Multimodal,
                 ],
                 context_window: 200000,
-                max_output_tokens: Some(8192),
-                cost_per_1k_tokens: Some(CostPer1kTokens {
+                max_output_tokens: 8192,
+                cost_per_1k_tokens: CostPer1kTokens {
                     input: 0.003,
                     output: 0.015,
-                }),
+                },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                 supports_streaming: true,
                 supports_tools: true,
             },
@@ -534,11 +535,12 @@ impl AIProviderAdapter for AnthropicAdapter {
                     ModelCapability::Multimodal,
                 ],
                 context_window: 200000,
-                max_output_tokens: Some(4096),
-                cost_per_1k_tokens: Some(CostPer1kTokens {
+                max_output_tokens: 4096,
+                cost_per_1k_tokens: CostPer1kTokens {
                     input: 0.015,
                     output: 0.075,
-                }),
+                },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                 supports_streaming: true,
                 supports_tools: true,
             },
@@ -553,11 +555,12 @@ impl AIProviderAdapter for AnthropicAdapter {
                     ModelCapability::ImageAnalysis,
                 ],
                 context_window: 200000,
-                max_output_tokens: Some(4096),
-                cost_per_1k_tokens: Some(CostPer1kTokens {
+                max_output_tokens: 4096,
+                cost_per_1k_tokens: CostPer1kTokens {
                     input: 0.00025,
                     output: 0.00125,
-                }),
+                },
+                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
                 supports_streaming: true,
                 supports_tools: true,
             },
