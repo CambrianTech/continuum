@@ -639,9 +639,14 @@ export class PersonaUser extends AIUser {
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
-    // Worker uses fast small model for gating decisions (should-respond check)
+    // Worker uses fast small model for gating decisions (should-respond check).
+    // 'local' routes through the same adapter registry as chat — DMR when
+    // available (Metal-fast on Mac, ~50 tok/s), Candle fallback when not.
+    // Previously hardcoded to 'candle' which forced CPU gating on ALL
+    // personas even when DMR+Metal was available — the gating bottleneck
+    // blocked the fast Metal response path.
     this.worker = new PersonaWorkerThread(this.id, {
-      providerType: 'candle',  // Always use Candle (native Rust) for fast gating (1b model)
+      providerType: 'local',
       providerConfig: {
         model: 'llama3.2:1b' // Fast model for gating decisions
       }
