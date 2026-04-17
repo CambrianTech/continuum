@@ -154,7 +154,9 @@ impl AIProviderModule {
         // ggml-via-candle while Model Runner is direct llama.cpp-metal.
         //
         // Probed at init time (TCP localhost:12434/.../v1/models). If reachable,
-        // registered with priority -1 (above Candle's 0). If not reachable, the
+        // registered with priority 0 (Candle is at 8/9 after the
+        // INFERENCE_MODE-driven priority kill in commit a28495135 — DMR is
+        // genuinely first in the priority_order walk). If not reachable, the
         // chat path returns the no-GPU-adapter hard error from select() — Candle
         // is NOT a chat fallback (its `supported_model_prefixes()` returns []
         // so it never matches in select()'s tier-3 device-filtered walk).

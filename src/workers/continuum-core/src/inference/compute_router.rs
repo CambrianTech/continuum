@@ -38,9 +38,12 @@ pub struct OpShape {
 }
 
 impl OpShape {
-    /// Matmul: m×k×n
+    /// Matmul: m×k×n. Uses saturating arithmetic so a hypothetical
+    /// >2^64 FLOPs op clamps at usize::MAX (which falls into the
+    /// "definitely above CPU ceiling" bucket) instead of wrapping
+    /// around to a tiny value and being mis-routed to CPU.
     pub fn matmul(m: usize, k: usize, n: usize) -> Self {
-        Self { flops: m * k * n, is_matmul: true, is_sequential: false }
+        Self { flops: m.saturating_mul(k).saturating_mul(n), is_matmul: true, is_sequential: false }
     }
 
     /// Elementwise op on n elements
@@ -48,9 +51,11 @@ impl OpShape {
         Self { flops: n, is_matmul: false, is_sequential: false }
     }
 
-    /// Sequential recurrence step (small matmul inside a loop)
+    /// Sequential recurrence step (small matmul inside a loop). Same
+    /// saturating-mul rationale as `matmul` — recurrence shapes can be
+    /// large in unusual configurations.
     pub fn recurrence_step(m: usize, k: usize, n: usize) -> Self {
-        Self { flops: m * k * n, is_matmul: true, is_sequential: true }
+        Self { flops: m.saturating_mul(k).saturating_mul(n), is_matmul: true, is_sequential: true }
     }
 }
 
