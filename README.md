@@ -124,6 +124,23 @@ cd continuum/src && npm install && npm start
 Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.
 </details>
 
+<details>
+<summary>Claude Code users — bonus skills</summary>
+
+Continuum ships a set of [Claude Code](https://claude.com/claude-code) skills so your IDE's Claude can invoke continuum operations without leaving the editor. Opt-in: `install.sh` drops them into `~/.claude/skills/` only if Claude Code is detected — otherwise silent no-op.
+
+| Skill | What it does |
+|---|---|
+| `/continuum:update` | Pull latest images, refresh forged Qwen (`--dev` flag for source rebuild) |
+| `/continuum:status` | Show containers, personas, DMR backend, grid nodes |
+| `/continuum:doctor` | Diagnose install + runtime problems, narrow to the root cause |
+| `/continuum:chat @<persona> <msg>` | Send a message to a continuum persona from your IDE |
+
+**Why this matters for devs**: the dev who's already coding in Claude Code gets continuum as a nearby `/command`, not a context switch. The long-term direction is continuum's own persona layer replaces the Claude-Code-as-IDE pattern entirely, but for the transition period this is how a dev using both systems gets them to talk to each other.
+
+Continuum does NOT require Claude Code. Carl (end-user) uses the widget. Skills are purely additive for the dev audience.
+</details>
+
 | Client | Status |
 |--------|--------|
 | **Browser** | Working — [Positron](docs/positron/POSITRON-ARCHITECTURE.md) widget system (Lit + Shadow DOM) |

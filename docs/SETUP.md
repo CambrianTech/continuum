@@ -229,23 +229,36 @@ The tag flows through `docker-compose*.yml` for all 7 image variants. Use this t
 
 ## Skills + helpers
 
+### Continuum skills for Claude Code (dev-only, opt-in)
+
+If you use [Claude Code](https://claude.com/claude-code) as your IDE, `install.sh` drops a set of Continuum skills into `~/.claude/skills/` so you can invoke Continuum operations as `/commands` without leaving the editor. Silent no-op if you don't have Claude Code — Continuum's core functionality is entirely independent.
+
+| Skill | What it does |
+|---|---|
+| `/continuum:update` | Pull latest images + refresh forged Qwen in DMR (`--dev` flag = rebuild from source) |
+| `/continuum:status` | Containers + personas + DMR backend + grid nodes + widget URL |
+| `/continuum:doctor` | Diagnose install/runtime problems, narrow to the root cause |
+| `/continuum:chat @<persona> <msg>` | Send a message to a Continuum persona from the IDE; reply comes back through the chat log |
+
+**Direction**: these skills are the bridge for devs currently in Claude Code. Continuum's own persona layer replaces the need for them over time — the steady state is "you just talk to personas in the widget." But while devs are on both systems, skills let the two talk cleanly.
+
 ### airc — bring your AI mesh
 
-If you're running continuum and want your IDE's Claude (or your friend's Claude) to peer with continuum's personas over a shared mesh, install [airc](https://github.com/CambrianTech/airc):
+If you want your IDE's Claude (or a coworker's Claude) to peer with continuum's personas over a shared mesh, install [airc](https://github.com/CambrianTech/airc):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CambrianTech/airc/main/install.sh | bash
 ```
 
-Then your Claude Code can use the `/connect` skill to join a continuum mesh — useful for live install troubleshooting where the AI on the other side has hands-on context.
+Then `/airc:connect <join-string>` from any Claude Code session joins the mesh. Useful for live install troubleshooting where the AI on the other side has hands-on context.
 
-### `continuum doctor` — post-install health check
+### `continuum doctor` — post-install health check (CLI)
 
 ```bash
 continuum doctor
 ```
 
-Verifies submodules, IPC sockets, GPU vs CPU backend, scheduler vs llama-server, cloud key presence, disk free. Run after install or any time chat behavior gets weird.
+Verifies submodules, IPC sockets, GPU vs CPU backend, scheduler vs llama-server, cloud key presence, disk free. Run after install or any time chat behavior gets weird. The `/continuum:doctor` skill wraps this and translates the output for the user — same check, IDE-accessible.
 
 ### Where the logs live
 
