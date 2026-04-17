@@ -78,6 +78,7 @@ FROM ubuntu:24.04 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3t64 libpq5 curl netcat-openbsd \
     libglib2.0-0t64 \
+    libgomp1 \
     libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
 
