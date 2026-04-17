@@ -842,9 +842,7 @@ export class PersonaUser extends AIUser {
     this.wireGenomeToProvider();
 
     // STEP 2: Subscribe to room-specific chat events (only if client available)
-    console.log(`🔬 [SUB-DEBUG] ${this.displayName}: client=${!!this.client} eventsSubscribed=${this.eventsSubscribed} rooms=${this.myRoomIds.size}`);
     if (this.client && !this.eventsSubscribed) {
-      console.log(`🔬 [SUB-DEBUG] ${this.displayName}: SUBSCRIBING to chat events NOW`);
       this.log.debug(`🔧 ${this.displayName}: About to subscribe to ${this.myRoomIds.size} room(s), eventsSubscribed=${this.eventsSubscribed}`);
 
       // Subscribe to ALL chat events once (not per-room)
@@ -1299,7 +1297,6 @@ export class PersonaUser extends AIUser {
    * NO autonomous loop yet - still processes immediately after enqueue
    */
   private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
-    console.log(`🔬 [MSG-DEBUG] ${this.displayName}: handleChatMessage called! sender=${messageEntity.senderName} text="${messageEntity.content?.text?.slice(0,50)}"`);
     // STEP 1: Ignore our own messages
     if (messageEntity.senderId === this.id) {
       return;
