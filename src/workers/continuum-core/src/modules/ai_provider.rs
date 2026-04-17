@@ -156,28 +156,80 @@ impl AIProviderModule {
         // Probed at init time (TCP localhost:12434/.../v1/models). If reachable,
         // registered with priority -1 (above Candle's 0). If not reachable, skipped
         // — no error, Candle remains the local fallback.
-        let dmr_available = {
-            // Quick blocking probe: synchronous TCP-connect to localhost:12434.
-            // We do this in the init path because async waiting here would
-            // complicate the registration flow; 1s timeout is generous for
-            // localhost. Failure just means DMR isn't enabled, fine.
-            std::net::TcpStream::connect_timeout(
+        // Docker Model Runner endpoint detection.
+        // Mac Option B (native core): DMR at localhost:12434 (via --tcp flag).
+        // Linux/Windows Docker Desktop (containerized core): DMR at
+        // model-runner.docker.internal (Docker Desktop internal DNS,
+        // no --tcp flag needed — the DNS route is always available from
+        // inside containers). Try localhost first (fast loopback probe),
+        // then container-internal DNS if we detect we're containerized.
+        let (dmr_available, dmr_base_url) = {
+            let localhost_ok = std::net::TcpStream::connect_timeout(
                 &"127.0.0.1:12434".parse().unwrap(),
                 std::time::Duration::from_secs(1),
             )
-            .is_ok()
+            .is_ok();
+
+            if localhost_ok {
+                (true, None) // Use default base_url in adapter (localhost)
+            } else {
+                // Not on localhost — check if we're inside a Docker container.
+                // model-runner.docker.internal resolves from inside Docker
+                // Desktop containers on Mac, Linux, and Windows (WSL2).
+                let in_container = std::path::Path::new("/.dockerenv").exists();
+                if in_container {
+                    // DNS-resolve the internal hostname + TCP probe port 80.
+                    use std::net::ToSocketAddrs;
+                    let internal_ok = "model-runner.docker.internal:80"
+                        .to_socket_addrs()
+                        .ok()
+                        .and_then(|mut addrs| addrs.next())
+                        .map(|addr| {
+                            std::net::TcpStream::connect_timeout(
+                                &addr,
+                                std::time::Duration::from_secs(2),
+                            )
+                            .is_ok()
+                        })
+                        .unwrap_or(false);
+                    if internal_ok {
+                        (
+                            true,
+                            Some(
+                                "http://model-runner.docker.internal/engines/llama.cpp"
+                                    .to_string(),
+                            ),
+                        )
+                    } else {
+                        (false, None)
+                    }
+                } else {
+                    (false, None)
+                }
+            }
         };
         if dmr_available {
-            self.log()
-                .info("Registering Docker Model Runner adapter (localhost:12434, host-native Metal/CUDA)");
+            let desc = dmr_base_url
+                .as_deref()
+                .unwrap_or("localhost:12434 (host-native)");
+            self.log().info(&format!(
+                "Registering Docker Model Runner adapter ({})",
+                desc
+            ));
+            let adapter = if let Some(url) = dmr_base_url {
+                OpenAICompatibleAdapter::docker_model_runner().with_runtime_base_url(url)
+            } else {
+                OpenAICompatibleAdapter::docker_model_runner()
+            };
             registry.register(
-                Box::new(OpenAICompatibleAdapter::docker_model_runner()),
+                Box::new(adapter),
                 0, // Highest priority — beats Candle for local inference
             );
         } else {
             self.log().info(
-                "Docker Model Runner not reachable on localhost:12434 — \
-                 Candle will be the local provider. To enable: \
+                "Docker Model Runner not reachable on localhost:12434 \
+                 (nor model-runner.docker.internal inside container) — \
+                 no local GPU inference available. To enable: \
                  docker desktop enable model-runner --tcp=12434",
             );
         }

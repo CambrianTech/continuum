@@ -82,6 +82,14 @@ impl OpenAICompatibleAdapter {
         }
     }
 
+    /// Override the base URL at runtime (e.g. when running inside a Docker
+    /// container on Windows/Linux where DMR is at model-runner.docker.internal
+    /// instead of localhost:12434). Called post-construction, before init.
+    pub fn with_runtime_base_url(mut self, url: String) -> Self {
+        self.runtime_base_url = Some(url);
+        self
+    }
+
     /// Fetch the live model list from the provider's /v1/models endpoint.
     /// Used by adapters that have dynamic catalogs (DMR above all — the list
     /// changes every time the user runs `docker model pull`). Populates
