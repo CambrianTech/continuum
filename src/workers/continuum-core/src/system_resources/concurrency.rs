@@ -26,13 +26,22 @@
 use crate::runtime;
 
 /// Total physical RAM in GB (rounded down). Single OS query; cheap.
+///
+/// Returns the conservative fallback `8` only when we can't read the real
+/// value AND the host actually has at least 8GB physical (most modern
+/// machines do). Each platform path checks its query's actual return code
+/// or output validity rather than silently substituting 0 / 8 on failure.
 fn total_ram_gb() -> u64 {
     #[cfg(target_os = "macos")]
     {
         let mut size: u64 = 0;
         let mut len = std::mem::size_of::<u64>();
         let key = std::ffi::CString::new("hw.memsize").unwrap();
-        unsafe {
+        // sysctlbyname returns 0 on success, -1 on failure. Previously the
+        // return code was discarded — a failed call would leave `size = 0`
+        // and report "0 GB RAM," forcing capacity = 1 silently. Per Joel's
+        // "errors save time" rule: surface the failure.
+        let rc = unsafe {
             libc::sysctlbyname(
                 key.as_ptr(),
                 &mut size as *mut u64 as *mut _,
@@ -41,17 +50,52 @@ fn total_ram_gb() -> u64 {
                 0,
             )
         };
+        if rc != 0 || size == 0 {
+            runtime::logger("concurrency").warn(&format!(
+                "sysctlbyname(hw.memsize) failed (rc={rc}, size={size}); falling back to conservative 8 GB"
+            ));
+            return 8;
+        }
         size / (1024 * 1024 * 1024)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
+        // /proc/meminfo on Linux. The previous code path was used for
+        // ALL non-macOS targets, including Windows — but Windows has no
+        // /proc, so the unwrap_or(8) silently fired and reported wrong
+        // capacity. Now Linux is the only platform that uses this branch.
         std::fs::read_to_string("/proc/meminfo")
             .ok()
             .and_then(|s| s.lines().next().map(String::from))
             .and_then(|line| line.split_whitespace().nth(1).map(String::from))
             .and_then(|kb| kb.parse::<u64>().ok())
             .map(|kb| kb / (1024 * 1024))
-            .unwrap_or(8)
+            .unwrap_or_else(|| {
+                runtime::logger("concurrency").warn(
+                    "/proc/meminfo unreadable; falling back to conservative 8 GB"
+                );
+                8
+            })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Windows has no /proc/meminfo. The previous "everything-not-macos
+        // is Linux" assumption silently returned 8 GB on every Windows host.
+        // Surface that this needs a real implementation rather than hide
+        // the gap with a default. windows-sys / GlobalMemoryStatusEx is the
+        // right call when this lands.
+        runtime::logger("concurrency").warn(
+            "Windows RAM detection not implemented — using conservative 8 GB. \
+             Add windows-sys + GlobalMemoryStatusEx for proper capacity sizing."
+        );
+        8
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        runtime::logger("concurrency").warn(
+            "RAM detection not implemented for this OS — using conservative 8 GB."
+        );
+        8
     }
 }
 
@@ -69,8 +113,20 @@ fn total_ram_gb() -> u64 {
 ///   * `48GB+` → 3 permits (M5 Pro class)
 ///
 /// Logged once on first call so operators can see what tier the host
-/// landed at without grepping config.
+/// landed at without grepping config. Subsequent calls return the cached
+/// value silently — this function is hot (adapter init, scheduler sizing).
 pub fn local_inference_capacity() -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CACHED: AtomicUsize = AtomicUsize::new(0);
+
+    // 0 = not yet computed (we use 1-based capacity values, so 0 is a safe
+    // sentinel for "uninitialized"). First caller computes + logs; everyone
+    // else reads the cache.
+    let cached = CACHED.load(Ordering::Acquire);
+    if cached != 0 {
+        return cached;
+    }
+
     let ram = total_ram_gb();
     let permits = if ram >= 48 {
         3
@@ -80,9 +136,12 @@ pub fn local_inference_capacity() -> usize {
         1
     };
     runtime::logger("concurrency").info(&format!(
-        "Local-inference capacity: {} permits (detected {}GB RAM, TODO: dynamic pressure-reactive)",
-        permits, ram
+        "Local-inference capacity: {permits} permits (detected {ram}GB RAM, TODO: dynamic pressure-reactive)"
     ));
+    // Race-tolerant: if two threads got here simultaneously, both will compute
+    // the same value and the second store is a no-op. Acceptable because the
+    // computation is pure (RAM doesn't change per process lifetime).
+    CACHED.store(permits, Ordering::Release);
     permits
 }
 
