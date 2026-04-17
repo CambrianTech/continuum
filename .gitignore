@@ -183,3 +183,4 @@ src/.continuum/sessions/validation/
 
 # Downloaded model binaries (Whisper, Piper, Silero VAD, etc.)
 src/workers/models/
+.airc/

@@ -1,0 +1,20 @@
+{
+  "name": "inference/capacity",
+  "description": "Report local-inference concurrency cap. How many parallel generate requests the hardware can handle simultaneously — matches the BatchScheduler's n_seq_max and the InferenceCoordinator's admission slots. Scaled by RAM: 48GB+ → 3, 16GB+ → 2, else 1. Single source of truth across the TS admission layer and the Rust scheduler (see issue #887).",
+  "params": [],
+  "results": [
+    {
+      "name": "capacity",
+      "type": "number",
+      "description": "Number of concurrent local-inference slots available on this host. Always >= 1."
+    }
+  ],
+  "examples": [
+    {
+      "description": "Query local inference capacity",
+      "command": "./jtag inference/capacity",
+      "expectedResult": "{ capacity: 2 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

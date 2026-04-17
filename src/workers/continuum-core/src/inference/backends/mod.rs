@@ -16,8 +16,16 @@
 pub mod compact_llama_safetensors;
 pub mod llama_gguf;
 pub mod llama_safetensors;
+pub mod llamacpp;
+pub mod llamacpp_scheduler;
 pub mod qwen2_safetensors;
 pub mod qwen35_gguf;
+
+// MLX adapter: macOS + `mlx` feature only. Gated here so non-Mac / feature-off
+// builds don't see the module at all. Phase A scaffold — see continuum#897
+// and docs/inference/MLX-BACKEND.md.
+#[cfg(all(feature = "mlx", target_os = "macos"))]
+pub mod mlx_adapter;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -324,6 +332,7 @@ pub fn generate(
     all_tokens.push(first_token);
 
     // ── Phase 2: Generate ──
+    let gen_start = Instant::now();
     let mut nan_count = 0;
 
     for i in 1..max_tokens {
@@ -463,15 +472,23 @@ pub fn generate(
         }
     }
 
+    let gen_ms = gen_start.elapsed().as_millis();
+    let gen_count = generated_tokens.len();
+    let gen_tok_s = if gen_ms > 0 { (gen_count as f64 / gen_ms as f64) * 1000.0 } else { 0.0 };
+    log.info(&format!(
+        "Generation: {} tokens in {}ms ({:.1} tok/s)",
+        gen_count, gen_ms, gen_tok_s
+    ));
+
     let rss_after = crate::system_resources::process_rss_mb();
     let duration = start.elapsed();
     log.info(&format!(
-        "Generated {} tokens in {:?} (arch={}, format={:?}, prefill={}, RSS={}→{}MB Δ{}MB)",
-        generated_tokens.len(),
+        "Total: {} tokens in {:?} (arch={}, format={:?}, prefill={}tok/{}ms, gen={:.1}tok/s, RSS={}→{}MB Δ{}MB)",
+        gen_count,
         duration,
         backend.architecture(),
         backend.format(),
-        prompt_len,
+        prompt_len, prefill_ms, gen_tok_s,
         rss_before,
         rss_after,
         rss_after as i64 - rss_before as i64

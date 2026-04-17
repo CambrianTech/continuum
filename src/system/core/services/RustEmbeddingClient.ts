@@ -15,9 +15,11 @@
  */
 
 import * as net from 'net';
-import * as path from 'path';
 import { Logger } from '../logging/Logger';
-import { SOCKETS } from '../../../shared/config';
+import {
+  connectToSocketPathOrUrl,
+  resolveCoreEndpointString,
+} from '../../../workers/continuum-core/bindings/modules/base';
 
 const log = Logger.create('RustEmbeddingClient', 'embedding');
 
@@ -32,10 +34,12 @@ interface BinaryHeader {
   model?: string;
 }
 
-/** Default socket path - resolved from shared config */
-const DEFAULT_SOCKET_PATH = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
-  ? SOCKETS.CONTINUUM_CORE
-  : path.resolve(process.cwd(), SOCKETS.CONTINUUM_CORE);
+/**
+ * Default endpoint for continuum-core. Honors CONTINUUM_CORE_URL — a
+ * `tcp://host:port` URL for containerized callers on Mac, otherwise the
+ * absolute Unix socket path. `connectToSocketPathOrUrl` routes both forms.
+ */
+const DEFAULT_SOCKET_PATH = resolveCoreEndpointString();
 
 /** Available embedding models in Rust worker */
 export type RustEmbeddingModel =
@@ -282,7 +286,7 @@ export class RustEmbeddingClient {
     }
 
     return new Promise((resolve, reject) => {
-      this.socket = net.createConnection(this.socketPath);
+      this.socket = connectToSocketPathOrUrl(this.socketPath);
       this.buffer = Buffer.alloc(0);
       this.expectedFrameLength = null;
 

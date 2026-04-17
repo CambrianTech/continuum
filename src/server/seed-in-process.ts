@@ -17,7 +17,9 @@ import { PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel } from '../s
 import { CONTENT_TYPE_CONFIGS } from '../shared/generated/ContentTypes';
 import { DataList } from '../commands/data/list/shared/DataListTypes';
 import { DataCreate } from '../commands/data/create/shared/DataCreateTypes';
+import { DataUpdate } from '../commands/data/update/shared/DataUpdateTypes';
 import { Events } from '../system/core/shared/Events';
+import { getModelConfigForProvider } from '../system/user/server/config/PersonaModelConfigs';
 
 // ── Persona profile definitions ────────────────────────────────────────
 
@@ -209,12 +211,62 @@ class DatabaseSeeder {
 // ── Public API ─────────────────────────────────────────────────────────
 
 /**
+ * Sync persona providers to match seed config on every restart.
+ * Runs even when DB is already seeded — ensures code changes to
+ * persona provider routing (e.g. 'candle' → 'local') propagate
+ * without requiring a DB wipe. This is the automation of the manual
+ * sqlite3 UPDATE hack that was needed during GPU-always development.
+ */
+async function syncPersonaProviders(_seeder: DatabaseSeeder): Promise<void> {
+  const { personas } = getAvailablePersonas();
+
+  for (const config of personas) {
+    if (!config.provider) continue;
+
+    try {
+      const result = await DataList.execute<UserEntity>({
+        collection: 'users',
+        dbHandle: 'default',
+        filter: { uniqueId: config.uniqueId },
+        limit: 1,
+      });
+
+      if (!result.success || !result.items?.length) continue;
+
+      const user = result.items[0];
+      const currentProvider = (user as Record<string, unknown>).modelConfig
+        ? ((user as Record<string, unknown>).modelConfig as Record<string, unknown>).provider
+        : undefined;
+
+      if (currentProvider !== config.provider) {
+        const newConfig = getModelConfigForProvider(config.provider);
+        await DataUpdate.execute({
+          collection: 'users',
+          dbHandle: 'default',
+          id: user.id,
+          data: { modelConfig: newConfig } as Partial<UserEntity>,
+        });
+        console.log(`  🔄 Synced ${config.displayName} provider: ${currentProvider} → ${config.provider}`);
+      }
+    } catch {
+      // Non-fatal — persona might not exist yet
+    }
+  }
+}
+
+/**
  * Seed the database if empty. Returns true if seeding was performed.
  */
 export async function seedDatabase(): Promise<boolean> {
   const seeder = new DatabaseSeeder();
 
-  if (await seeder.isSeeded()) return false;
+  if (await seeder.isSeeded()) {
+    // Even when already seeded, sync persona providers to match seed config.
+    // Without this, code changes (e.g. provider:'candle' → 'local') survive
+    // in the DB across restarts and personas route to the wrong adapter.
+    await syncPersonaProviders(seeder);
+    return false;
+  }
 
   console.log('🌱 Seeding database (in-process)...');
   const start = Date.now();

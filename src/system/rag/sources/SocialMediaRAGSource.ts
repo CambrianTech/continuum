@@ -33,7 +33,6 @@ import { loadSharedCredential } from '@system/social/server/SocialCommandHelper'
 import { ORM } from '@daemons/data-daemon/server/ORM';
 import { DataOpen } from '@commands/data/open/shared/DataOpenTypes';
 import { DataList } from '@commands/data/list/shared/DataListTypes';
-import { SystemPaths } from '@system/core/config/SystemPaths';
 import { UserEntity } from '@system/data/entities/UserEntity';
 import { Logger } from '@system/core/logging/Logger';
 
@@ -277,7 +276,7 @@ export class SocialMediaRAGSource implements RAGSource {
     sharedCred: SocialCredentialEntity | undefined,
   ): Promise<SocialCredentialEntity | undefined> {
     try {
-      const dbPath = SystemPaths.personas.longterm(personaUniqueId);
+      const dbPath = `@persona:${personaUniqueId}`;
       const openResult = await SocialMediaRAGSource.withTimeout(
         DataOpen.execute({
           adapter: 'sqlite',

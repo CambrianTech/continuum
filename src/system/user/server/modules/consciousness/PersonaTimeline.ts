@@ -153,8 +153,9 @@ export class PersonaTimeline {
       error: (msg) => console.error(`[Timeline:${personaName}] ${msg}`)
     };
 
-    // Use SystemPaths as SINGLE SOURCE OF TRUTH (same database as Hippocampus)
-    this.dbPath = SystemPaths.personas.longterm(uniqueId);
+    // Sentinel handle (same DB as Hippocampus). Rust resolve_handle expands
+    // @persona:<slug> on the host side — required for Mac Option B.
+    this.dbPath = `@persona:${uniqueId}`;
     this.legacyJsonPath = path.join(SystemPaths.personas.data(uniqueId), 'timeline.json');
   }
 

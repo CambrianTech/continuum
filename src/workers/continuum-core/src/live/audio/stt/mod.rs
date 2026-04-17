@@ -12,12 +12,12 @@
 mod moonshine;
 mod openai_realtime;
 mod stub;
-mod whisper;
+// mod whisper;  // TEMPORARY: disabled with whisper-rs dep to test ggml collision
 
 pub use moonshine::MoonshineStt;
 pub use openai_realtime::{OpenAIRealtimeSTT, TurnDetection, TurnDetectionType};
 pub use stub::StubSTT;
-pub use whisper::WhisperSTT;
+// pub use whisper::WhisperSTT;
 
 use crate::clog_info;
 use async_trait::async_trait;
@@ -201,8 +201,9 @@ pub fn init_registry() {
     let registry = STT_REGISTRY.get_or_init(|| {
         let mut reg = STTRegistry::new();
 
-        // Register Whisper (local) adapter - primary production adapter
-        reg.register(Arc::new(WhisperSTT::new()));
+        // TEMPORARY: Whisper registration disabled — whisper-rs dep is gated off
+        // while we debug the ggml backend registry collision with our llama crate.
+        // reg.register(Arc::new(WhisperSTT::new()));
 
         // Register OpenAI Realtime adapter - streaming + semantic VAD
         // Will be used when OPENAI_API_KEY is set and fast response needed

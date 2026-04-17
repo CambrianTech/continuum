@@ -26,13 +26,16 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 
 # System deps for compilation
+# cmake + libclang needed to build vendored llama.cpp (src/workers/llama/)
+# build-essential has g++/gcc for C++ compilation of llama.cpp source
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake pkg-config libssl-dev libpq-dev protobuf-compiler \
-    libclang-dev clang \
+    libclang-dev clang build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
 # CUDA support (optional — only needed for GPU features)
-# For CPU-only builds, skip this and don't pass --features cuda
+# For CPU-only builds, skip this and don't pass --features cuda.
+# For CUDA: base the builder on nvidia/cuda:devel image (separate Dockerfile variant).
 ARG CUDA_VERSION=12.8
 ARG GPU_FEATURES=""
 
@@ -45,6 +48,23 @@ RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 
 # Now build actual source (fast — deps already compiled)
 COPY . .
+
+# entity_schemas.json lives outside the workers build context (at
+# src/shared/generated/). The Rust code includes it via relative path
+# from modules/entity_schemas.rs. Docker additional_contexts makes it
+# available without expanding the build context to all of src/.
+# include_str! path from continuum-core/src/modules/ is ../../../../shared/generated/
+# which resolves to /shared/generated/ from WORKDIR /app
+COPY --from=shared-generated entity_schemas.json /shared/generated/entity_schemas.json
+
+# Fail fast if the host forgot to init submodules. Without this, cmake's
+# CMakeLists-not-found error surfaces ~15 min into the cargo build —
+# terrible signal-to-noise. See issue #893.
+RUN test -f vendor/llama.cpp/CMakeLists.txt || ( \
+    echo "ERROR: vendor/llama.cpp is empty — host submodule not initialized." >&2 && \
+    echo "       Run this on the host before docker build:" >&2 && \
+    echo "         git submodule update --init --recursive" >&2 && \
+    exit 1 )
 RUN cargo build --release ${GPU_FEATURES} \
     --bin continuum-core-server \
     --bin archive-worker
@@ -58,6 +78,7 @@ FROM ubuntu:24.04 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3t64 libpq5 curl netcat-openbsd \
     libglib2.0-0t64 \
+    libgomp1 \
     libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
 
@@ -89,12 +110,19 @@ ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
 # paths like "models/avatars" resolve correctly from cwd
 WORKDIR /app
 
-# Avatar VRM models — baked into image (CC0 licensed, ~132MB).
-# Required for persona avatar selection in live calls.
-# Stored at /app/avatars (not /app/models/) because the voice-models Docker
-# volume mounts over /app/models at runtime and would hide baked-in files.
-# Symlink models/avatars → /app/avatars so Rust catalog discovers them.
-COPY --from=avatars . /app/avatars/
+# Avatar VRM models — NOT baked in here. The 133MB src/models/avatars
+# directory is git-ignored (matched by src/.gitignore '/models/'), so
+# CI's `docker build` can't COPY them as a build context — the build
+# fails with "no such file or directory: ./src/models/avatars".
+#
+# Live-call avatars are tracked separately as "known gap not gating
+# #891" (see docs/infrastructure/PR891-E2E-VALIDATION.md). When the
+# avatar-provisioning story lands (LFS, model-init download, or curl
+# from a CC0 URL in CI before docker build), restore this COPY plus
+# the matching `build-contexts: avatars=./src/models/avatars` lines in
+# .github/workflows/docker-images.yml. Until then: empty /app/avatars
+# placeholder dir so Rust catalog doesn't crash on missing path.
+RUN mkdir -p /app/avatars
 
 # Socket and data directories
 RUN mkdir -p /root/.continuum/sockets /root/.continuum/jtag/data /root/.continuum/jtag/logs

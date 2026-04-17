@@ -1,0 +1,72 @@
+# Continuum — GPU profile override
+#
+# Layered on top of docker-compose.yml when you want the production CUDA
+# deployment. Wires our owned substrate (workers/llama vendored llama.cpp +
+# continuum-core's continuous-batching scheduler) into the continuum-core
+# container instead of the previously-orphaned upstream llama-server image.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile gpu up
+#
+# What this overrides relative to docker-compose.yml:
+#
+#   - continuum-core build switches to docker/continuum-core-cuda.Dockerfile
+#     (was the previously-orphaned cuda variant; now actually used).
+#   - GPU_FEATURES gains "cuda" so workers/llama/build.rs links ggml-cuda
+#     into the binary and our scheduler runs decode on the NVIDIA GPU.
+#   - continuum-core requests an NVIDIA GPU device reservation so docker
+#     passes through CUDA. (CUDA_VISIBLE_DEVICES + driver capabilities.)
+#   - The legacy `inference` service (upstream ggml-org/llama.cpp:server-cuda
+#     image) is shadowed by continuum-core itself — every persona request
+#     now flows through our scheduler IPC. No HTTP loopback to llama-server.
+#     forge-worker stays as-is (it's a separate sentinel-ai forge job runner,
+#     unrelated to inference serving).
+#
+# Why a separate file: docker-compose.yml stays the CPU/Metal-friendly
+# baseline that anyone can `docker compose up` without an NVIDIA GPU.
+# Apple Silicon devs, Linux CPU-only servers, CI lint runners — all keep
+# working with the base file. GPU users layer this in.
+
+services:
+
+  continuum-core:
+    # The cuda variant is published as a SEPARATE image by CI
+    # (.github/workflows/docker-images.yml :: continuum-core-cuda).
+    # Without overriding image: here, `docker compose pull` would grab
+    # the CPU image from base; the build.dockerfile override only takes
+    # effect on local `compose build`. Both the pull-from-ghcr path AND
+    # the local-build path need to land on the cuda image.
+    image: ghcr.io/cambriantech/continuum-core-cuda:${CONTINUUM_IMAGE_TAG:-latest}
+    build:
+      # Override Dockerfile to pick up CUDA toolkit + nvcc.
+      dockerfile: ../../docker/continuum-core-cuda.Dockerfile
+      args:
+        # Add cuda to the existing feature flags. The base file already
+        # passes load-dynamic-ort + no-default-features; we extend with cuda
+        # so the llama crate's build.rs activates GGML_CUDA=ON at cmake time.
+        GPU_FEATURES: "--no-default-features --features load-dynamic-ort,cuda"
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+      - CUDA_VISIBLE_DEVICES=0
+
+  # Shadow the upstream-llama-server `inference` service to a no-op so
+  # `docker compose --profile gpu up` doesn't start it. Personas now talk
+  # to continuum-core's scheduler over the local Unix socket; there's no
+  # need for a separate HTTP llama-server listening on :8090.
+  #
+  # We use `replicas: 0` rather than removing the service entirely so the
+  # base compose file's definition stays intact (someone running just the
+  # base file without this override still gets the legacy behavior — for
+  # backward compatibility while we transition).
+  inference:
+    deploy:
+      replicas: 0

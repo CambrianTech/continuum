@@ -1,0 +1,73 @@
+# Continuum — Mac override (continuum-core runs NATIVE, not containerized)
+#
+# Apple's hypervisor exposes no GPU to Linux containers — Docker themselves
+# confirmed this in Feb 2026 ("Metal GPU access requires direct hardware
+# access, no GPU passthrough for Metal in containers"). Trying to put
+# continuum-core in a container on Mac means:
+#   - Candle embeddings (AllMiniLM-L6-V2) fall back to CPU
+#   - Bevy headless avatar render falls back to CPU
+#   - Vision processing pipeline falls back to CPU
+#   - Audio MPS paths (once wired) fall back to CPU
+#   - LLM inference needs krunkit+MoltenVK which tops out at 80% of native
+#     and fails to initialize on many M-series configs (ERROR_OUT_OF_HOST_
+#     MEMORY at vkCreateInstance — verified 2026-04-16 on M5 Sequoia)
+#
+# The correct architecture for Mac:
+#
+#   continuum-core           → NATIVE process on host (Metal-linked cargo
+#                              build). Launched via `npm start`, not docker.
+#   LLM inference            → Docker Model Runner's vllm-metal backend,
+#                              also running NATIVE on host (Docker Desktop
+#                              orchestrates but compute happens on Apple
+#                              GPU directly). continuum-core routes LLM
+#                              calls to http://host.docker.internal:<port>/
+#                              or localhost (since it's also on the host).
+#   Support services         → IN CONTAINERS (this file):
+#                              postgres, node-server, widget-server,
+#                              livekit-bridge, model-init.
+#
+# This override sets continuum-core's `deploy.replicas: 0` so `docker compose
+# up` on Mac brings up everything EXCEPT continuum-core. The install.sh
+# Mac branch then runs `npm start` separately to launch continuum-core-server
+# natively on the host.
+#
+# Usage (Mac — Carl and Dev both use this):
+#   docker compose -f docker-compose.yml -f docker-compose.mac.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
+#   cd src && npm start   # native continuum-core-server with Metal
+#
+# Linux (AMD/Intel/VirtIO) continues to use continuum-core-vulkan in a
+# container — that path works because /dev/dri passthrough is real on
+# Linux. See docker-compose.gpu.yml for the Nvidia+CUDA path.
+
+services:
+
+  # continuum-core does NOT run in a container on Mac. Runs natively via
+  # `npm start` so it can link Metal for Candle embeddings + Bevy render +
+  # vision + audio + direct llama.cpp ggml-metal inference.
+  continuum-core:
+    deploy:
+      replicas: 0
+
+  # Legacy inference service (upstream llama.cpp:server) stays off — same
+  # reason as the gpu profile. Personas talk to native continuum-core's
+  # scheduler + Docker Model Runner's vllm endpoint.
+  inference:
+    deploy:
+      replicas: 0
+
+  # node-server runs in Docker on Mac (containerized per Option B).
+  # It needs to reach the NATIVE continuum-core-server on the host.
+  # Unix sockets don't traverse Docker Desktop's VM boundary on Mac, so
+  # continuum-core binds an additional TCP listener on 127.0.0.1:9100
+  # (via CONTINUUM_CORE_TCP=9100 exported by install.sh before `npm start`),
+  # and node-server connects to that via host.docker.internal (Docker
+  # Desktop's standard alias for the host).
+  #
+  # No postgres override needed — postgres is now opt-in via the `postgres`
+  # compose profile, and node-server no longer connects to any DB directly
+  # (all data ops go through continuum-core via IPC with opaque handles).
+  node-server:
+    environment:
+      # Added for Mac: overrides the default Unix-socket path lookup.
+      - CONTINUUM_CORE_URL=tcp://host.docker.internal:9100

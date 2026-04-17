@@ -639,11 +639,22 @@ export class PersonaUser extends AIUser {
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
-    // Worker uses fast small model for gating decisions (should-respond check)
+    // Worker uses fast small model for gating decisions (should-respond check).
+    // 'local' routes through the same adapter registry as chat — DMR when
+    // available (Metal-fast on Mac, ~50 tok/s), Candle fallback when not.
+    // Previously hardcoded to 'candle' which forced CPU gating on ALL
+    // personas even when DMR+Metal was available — the gating bottleneck
+    // blocked the fast Metal response path.
     this.worker = new PersonaWorkerThread(this.id, {
-      providerType: 'candle',  // Always use Candle (native Rust) for fast gating (1b model)
+      providerType: 'local',
       providerConfig: {
-        model: 'llama3.2:1b' // Fast model for gating decisions
+        // Use the same model the persona uses for chat. With DMR+Metal
+        // this is fast enough for gating (~50 tok/s). Using a separate
+        // 1B model required pulling a second model into DMR which
+        // install.sh doesn't do for Carl's default — missing model →
+        // gating errors → no replies. Same-model avoids the catalog
+        // mismatch entirely.
+        model: this.modelConfig.model
       }
     });
   }
@@ -831,7 +842,9 @@ export class PersonaUser extends AIUser {
     this.wireGenomeToProvider();
 
     // STEP 2: Subscribe to room-specific chat events (only if client available)
+    console.log(`🔬 [SUB-DEBUG] ${this.displayName}: client=${!!this.client} eventsSubscribed=${this.eventsSubscribed} rooms=${this.myRoomIds.size}`);
     if (this.client && !this.eventsSubscribed) {
+      console.log(`🔬 [SUB-DEBUG] ${this.displayName}: SUBSCRIBING to chat events NOW`);
       this.log.debug(`🔧 ${this.displayName}: About to subscribe to ${this.myRoomIds.size} room(s), eventsSubscribed=${this.eventsSubscribed}`);
 
       // Subscribe to ALL chat events once (not per-room)
@@ -964,7 +977,9 @@ export class PersonaUser extends AIUser {
    * Data flow: longterm.db → DataOpen → DataList → field mapping → CorpusMemory[] / CorpusTimelineEvent[]
    */
   private async loadCorpusFromORM(): Promise<{ memories: CorpusMemory[], events: CorpusTimelineEvent[] }> {
-    const dbPath = SystemPaths.personas.longterm(this.entity.uniqueId);
+    // Sentinel handle — Rust resolve_handle expands @persona:<slug> to the
+    // host-side longterm.db path (Mac Option B).
+    const dbPath = `@persona:${this.entity.uniqueId}`;
 
     const openResult = await DataOpen.execute({
       adapter: 'sqlite',
@@ -1284,6 +1299,7 @@ export class PersonaUser extends AIUser {
    * NO autonomous loop yet - still processes immediately after enqueue
    */
   private async handleChatMessage(messageEntity: ChatMessageEntity): Promise<void> {
+    console.log(`🔬 [MSG-DEBUG] ${this.displayName}: handleChatMessage called! sender=${messageEntity.senderName} text="${messageEntity.content?.text?.slice(0,50)}"`);
     // STEP 1: Ignore our own messages
     if (messageEntity.senderId === this.id) {
       return;

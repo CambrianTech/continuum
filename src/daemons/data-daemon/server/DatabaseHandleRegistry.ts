@@ -19,7 +19,6 @@
  */
 
 import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { getDatabasePath, getServerConfig } from '../../../system/config/ServerConfig';
 
 /**
  * Database handle - opaque identifier for ANY storage adapter
@@ -158,12 +157,14 @@ export class DatabaseHandleRegistry {
     this.handleMetadata = new Map();
     this.handleAliases = new Map();
 
-    // Initialize default handle metadata
-    const expandedDbPath = getDatabasePath();
-
+    // The default handle is the opaque 'main' identifier — Rust owns the
+    // backend resolution (SQLite by default, or whatever DATABASE_URL
+    // declares). TS tracks metadata only (adapter=rust, timestamps); it
+    // does NOT store a connection string or file path, which would leak
+    // the SQL/URL abstraction back into the caller layer.
     this.handleMetadata.set(DEFAULT_HANDLE, {
-      adapter: 'rust' as AdapterType,  // All I/O goes through Rust
-      config: { filename: expandedDbPath },
+      adapter: 'rust' as AdapterType,
+      config: {} as AdapterConfig,
       openedAt: Date.now(),
       lastUsedAt: Date.now()
     });
@@ -383,15 +384,23 @@ export class DatabaseHandleRegistry {
    * @returns Database file path, or null if handle not found or has no path
    */
   getDbPath(handle?: DbHandle): string | null {
-    // Default handle uses main database
+    // The default handle maps to the opaque 'main' identifier — Rust resolves
+    // it to a concrete backend via modules/data.rs::resolve_handle (SQLite by
+    // default, Postgres when DATABASE_URL is set, future adapters likewise).
+    // TS NEVER holds or returns a connection string here; doing so would
+    // reintroduce the SQL/URL abstraction leak at the caller boundary.
     if (!handle || handle === 'default') {
-      return getDatabasePath();
+      return 'main';
     }
 
     const metadata = this.handleMetadata.get(handle);
     if (!metadata) return null;
 
-    // Extract path from config based on adapter type
+    // Legacy passthrough for handles registered via data/open with an
+    // explicit path config (training imports, custom auxiliary DBs).
+    // Rust's resolve_handle logs these so we can migrate them to the
+    // sentinel/UUID form in a follow-up pass — it's a pre-existing leak,
+    // not a newly introduced one.
     const config = metadata.config;
     if ('path' in config && config.path) {
       return config.path;

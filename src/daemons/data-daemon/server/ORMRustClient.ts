@@ -33,17 +33,15 @@ import type {
   JoinSpec,
 } from '../shared/DataStorageAdapter';
 import type { VectorSearchResult } from '../shared/VectorSearchTypes';
-import { SOCKETS } from '../../../shared/config';
+import { resolveCoreEndpoint, connectToCoreEndpoint, type CoreEndpoint } from '../../../workers/continuum-core/bindings/modules/base';
 
 // Input type for joins (allows optional properties)
 type JoinSpecInput = Partial<JoinSpec> & Pick<JoinSpec, 'collection' | 'alias' | 'localField' | 'foreignField'>;
-import { getServerConfig } from '../../../system/config/ServerConfig';
 // NOTE: No SqlNamingConverter import - Rust SqliteAdapter handles all naming conversions
 
-// Socket path for continuum-core - resolved from config
-const SOCKET_PATH = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
-  ? SOCKETS.CONTINUUM_CORE
-  : path.resolve(process.cwd(), SOCKETS.CONTINUUM_CORE);
+// Endpoint resolution: honors CONTINUUM_CORE_URL env (tcp://host:port on Mac
+// containerized-TS → native-Rust) or defaults to the Unix socket path.
+const CORE_ENDPOINT = resolveCoreEndpoint();
 
 /**
  * Rust StorageResult<T> - matches orm/types.rs StorageResult
@@ -106,7 +104,7 @@ class IPCConnection {
   private _connecting = false;
 
   constructor(
-    private socketPath: string,
+    private endpoint: CoreEndpoint,
     private connectionIndex: number,
   ) {
     // Offset request IDs per connection to avoid confusion in logs
@@ -131,7 +129,7 @@ class IPCConnection {
     this._connecting = true;
 
     return new Promise((resolve, reject) => {
-      this.socket = net.createConnection(this.socketPath);
+      this.socket = connectToCoreEndpoint(this.endpoint);
 
       this.socket.on('connect', () => {
         this._connected = true;
@@ -167,7 +165,7 @@ class IPCConnection {
       setTimeout(() => {
         if (!this._connected) {
           this._connecting = false;
-          reject(new Error(`Connection timeout to ${this.socketPath} (conn #${this.connectionIndex})`));
+          reject(new Error(`Connection timeout to ${this.endpoint.description} (conn #${this.connectionIndex})`));
         }
       }, 5000);
     });
@@ -348,7 +346,13 @@ export class ORMRustClient {
   private notFoundCache = new Map<string, number>();
 
   private constructor() {
-    this.dbPath = getServerConfig().getDatabasePath();
+    // The "main" handle is an opaque identifier — Rust resolves it to a
+    // concrete backend (SQLite by default, Postgres if DATABASE_URL env
+    // is set, or any future adapter) via modules/data.rs::resolve_handle.
+    // TS never holds, computes, or passes a connection string for the
+    // main DB. This line is intentionally a constant string, not
+    // getDatabasePath() — that would reintroduce the SQL/URL leak.
+    this.dbPath = 'main';
   }
 
   static getInstance(): ORMRustClient {
@@ -378,7 +382,7 @@ export class ORMRustClient {
     try {
       // Create connections — connect as many as possible, don't fail if some drop
       for (let i = 0; i < POOL_SIZE; i++) {
-        this.connections.push(new IPCConnection(SOCKET_PATH, i));
+        this.connections.push(new IPCConnection(CORE_ENDPOINT, i));
       }
       const results = await Promise.allSettled(
         this.connections.map(c => c.connect())

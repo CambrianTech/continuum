@@ -2,7 +2,22 @@
 //!
 //! Claude Code sends `POST /v1/messages` in Anthropic format when
 //! `ANTHROPIC_BASE_URL` is set. This module serves that endpoint,
-//! routing to CandleAdapter (with LoRA support) for inference.
+//! routing through the SAME `AdapterRegistry::select()` path as the
+//! default persona chat — DMR / Vulkan GPU adapters preferred,
+//! hard-fails when no GPU adapter can serve the model.
+//!
+//! GPU-always contract (matches Joel's "no silent CPU fallback" rule):
+//! - This endpoint NEVER silently falls back to CandleAdapter for
+//!   inference. Candle's role is LoRA training on GPU, not chat.
+//! - If select() returns None, the response is 503 with a remediation
+//!   hint (pull model into DMR, or install the right GPU backend).
+//! - Historic note: an earlier version had explicit
+//!   `or_else(|| select(Some(PROVIDER_CANDLE_QUANTIZED), ...))` chained
+//!   onto select(), which bypassed the GPU device check by hitting
+//!   tier-1 explicit-provider match. Removed because Candle inference
+//!   is currently slower than CPU+DMR and shipping it as a silent
+//!   fallback gave users a "Continuum feels broken" first-chat tier
+//!   surface even when the right GPU backend was available.
 //!
 //! Architecture:
 //! - Axum HTTP server on dynamic port (127.0.0.1:0)
@@ -24,6 +39,7 @@ use anthropic_compat::{
 
 use crate::ai::{
     ActiveAdapterRequest, ChatMessage, MessageContent, TextGenerationRequest,
+    adapter::InferenceDevice,
 };
 
 use axum::{
@@ -127,18 +143,34 @@ async fn messages_handler(
     let registry = crate::modules::ai_provider::global_registry();
     let registry_guard = registry.read().await;
 
+    // GPU-always contract: route through select() with the requested
+    // provider/model, accept what select() returns, fail loud if
+    // nothing matches. NO silent fallback to Candle (or anything CPU)
+    // — Candle is for LoRA training on GPU, not for inference. See the
+    // module-level docstring above for the historic note on why the
+    // explicit candle fallback chain was removed.
     let (provider_id, adapter) = registry_guard
-        .select(Some(&spec.provider), spec.model.as_deref())
-        .or_else(|| registry_guard.select(Some(PROVIDER_CANDLE_QUANTIZED), None))
-        .or_else(|| registry_guard.select(Some(PROVIDER_CANDLE_SAFETENSORS), None))
+        .select(Some(&spec.provider), spec.model.as_deref(), InferenceDevice::default())
         .ok_or_else(|| {
+            let available = registry_guard.available();
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({
                     "type": "error",
                     "error": {
                         "type": "overloaded_error",
-                        "message": "No local inference provider available. Set INFERENCE_MODE=local in config.env"
+                        "message": format!(
+                            "No GPU-capable adapter supports model '{}' (provider='{}'). \
+                             Available adapters: {:?}. \
+                             Pull the model into Docker Model Runner (`docker model pull <model-id>`) \
+                             or install the right GPU backend (Metal on Mac via Docker Desktop AI \
+                             toggle, CUDA on Linux/WSL2 via nvidia-container-toolkit + Docker \
+                             Desktop AI toggle). Falling back to Candle (CPU-tier speed) was \
+                             intentionally disabled — see docs/SETUP.md for per-OS install steps.",
+                            spec.model.as_deref().unwrap_or("(unspecified)"),
+                            spec.provider,
+                            available
+                        )
                     }
                 })),
             )

@@ -140,4 +140,31 @@ fi
 rm -f "$CONTINUUM_ROOT/jtag/logs/system/npm-start.pid" 2>/dev/null || true
 rm -f "$CONTINUUM_ROOT/jtag/system.lock" 2>/dev/null || true
 
+# 12. Also stop the containerized continuum stack (Carl mode).
+# Idempotent: docker compose down is safe to run when nothing is up.
+# Scoped by the "continuum" compose project label so we never touch
+# other docker projects on the host. Docker Desktop ITSELF stays up —
+# it's shared infrastructure (both modes use it for Model Runner),
+# and relaunch requires the vmnetd privileged-helper prompt on Mac.
+# Only the compose stack goes down.
+if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+  RUNNING=$(docker ps -q --filter "label=com.docker.compose.project=continuum" 2>/dev/null)
+  if [ -n "$RUNNING" ]; then
+    echo -e "   Stopping containerized continuum stack..."
+    ROOT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+    # Prefer the repo's compose files so overrides (mac.yml, gpu.yml) apply
+    # and postgres-profile / network resources get torn down cleanly.
+    if [ -f "$ROOT_DIR/docker-compose.yml" ]; then
+      COMPOSE_FILES="-f $ROOT_DIR/docker-compose.yml"
+      [ -f "$ROOT_DIR/docker-compose.mac.yml" ] && COMPOSE_FILES="$COMPOSE_FILES -f $ROOT_DIR/docker-compose.mac.yml"
+      [ -f "$ROOT_DIR/docker-compose.gpu.yml" ] && COMPOSE_FILES="$COMPOSE_FILES -f $ROOT_DIR/docker-compose.gpu.yml"
+      (cd "$ROOT_DIR" && docker compose $COMPOSE_FILES down --timeout 5 2>/dev/null) || true
+    else
+      # Repo files unavailable — stop containers by label.
+      docker stop $RUNNING 2>/dev/null || true
+      docker rm $RUNNING 2>/dev/null || true
+    fi
+  fi
+fi
+
 echo -e "${GREEN}✅ JTAG system stopped${NC}"

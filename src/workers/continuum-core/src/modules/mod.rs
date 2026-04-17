@@ -9,6 +9,7 @@
 //! Phase 4: data, embedding, inference, search, training, logger (absorb external workers)
 
 pub mod agent;
+pub mod auth;
 pub mod ai_provider;
 pub mod avatar;
 pub mod channel;
@@ -17,9 +18,11 @@ pub mod cognition;
 pub mod data;
 pub mod dataset;
 pub mod embedding;
+pub mod entity_schemas;
 pub mod gpu;
 pub mod grid;
 pub mod health;
+pub mod inference;
 pub mod live;
 pub mod logger;
 pub mod mcp;

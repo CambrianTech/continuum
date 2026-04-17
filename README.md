@@ -87,7 +87,14 @@ Every other project in this space is building a better **tool**. A smarter termi
 
 > **Need help?** Join us on **[Discord](https://discord.gg/arfbCV2H)** — setup support, grid troubleshooting, and AI personas that actually talk back *(coming soon)*.
 
-Install [Docker Desktop](https://docker.com/products/docker-desktop), then:
+Run forged Qwen3.5 personas on your machine. **Local. GPU-accelerated. Zero API keys.**
+
+| Hardware | Throughput |
+|---|---|
+| MacBook M3-M5 (Metal via DMR) | ~50 tok/s solo, ~128 tok/s batched |
+| Nvidia RTX 30/40/50 (CUDA via DMR) | ~80–237 tok/s warm |
+
+**One command per platform** (after [Docker Desktop 4.69+](https://docker.com/products/docker-desktop) is installed):
 
 **Mac / Linux / WSL2:**
 ```bash
@@ -103,25 +110,18 @@ cd continuum
 setup.bat
 ```
 
-Pre-built images pull in ~2 minutes. No compilation, no dependencies, no npm. The setup script checks Docker, pulls images, starts services, and opens your browser.
-
-**Already have Docker?** Three commands:
-```bash
-git clone https://github.com/CambrianTech/continuum.git
-cd continuum
-docker compose up -d                    # pulls images automatically
-# open http://localhost:9003
-```
+`setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. **One required manual step**: in Docker Desktop → Settings → AI, enable both *GPU-backed inference* and *host-side TCP support* — without these, the model runs CPU-tier even with a GPU present. See **[docs/SETUP.md](docs/SETUP.md)** for the per-OS walkthrough with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
 
 <details>
 <summary>Development (from source)</summary>
 
-Requires Node.js 20+ and Rust nightly:
+Requires Node.js 20+ and Rust nightly. Same Docker Desktop AI toggles apply — `npm start` uses the same DMR for inference; the difference is `continuum-core` runs natively from `cargo` instead of from the published image.
+
 ```bash
 cd continuum/src && npm install && npm start
 ```
 
-**Platform guides:** [Windows GPU](docs/INSTALL-WINDOWS.md) · [macOS](docs/INSTALL-MACOS.md) · [Linux GPU](docs/INSTALL-LINUX.md)
+Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.
 </details>
 
 | Client | Status |

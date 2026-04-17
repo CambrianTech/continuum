@@ -1,10 +1,46 @@
 # Alpha Gap Analysis — Master Plan
 
-**Updated**: 2026-04-06
-**Status**: **RECIPE-DRIVEN UI MERGED (PR #790).** URL scheme verb/noun, RecipeEntity as proper ORM entity (view, entityType, team, modes, locked), right panel widgets from recipes not hardcoded. 19,774 HF downloads. ORT panic fix committed. Stability issues identified: IPC reconnection (#793), event bridge (#794), duplicate tabs (#795). Docker+Live+Grid E2E validation next (#796). Custom STT/TTS forging planned (#800, #801).
-**Branch**: `main`
+**Updated**: 2026-04-17
+**Status**: **PR #891 (feature/inference-perf) closing.** Docker Model Runner is THE inference runtime (Metal Mac, CUDA Windows/Linux). Candle off chat routing. ORM abstraction sealed (handles not URLs). SQLite default (postgres opt-in). Full matrix GREEN: M5 Mac × {Docker, npm}, BigMama Win/WSL2 × Docker. Zero API keys required for first chat. Image pipeline: dev builds on metal → pushes to ghcr → CI validates (never builds). 4 personas chat via DMR GPU on both platforms.
+**Branch**: `feature/inference-perf` → merging to `main`
 
 This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
+
+---
+
+## What Changed Since April 6 (PR #891 Session — 2026-04-16/17)
+
+### Architecture Pivots
+- **Docker Model Runner = chat inference runtime.** DMR via Docker Desktop: Metal on Mac (~50 tok/s), CUDA on Windows/Linux (~237 tok/s). Candle relegated to training/LoRA only. No silent CPU fallback — hard error with install hint. (#905, closed)
+- **ORM abstraction sealed.** Callers pass opaque handles (`@main`, `@persona:<slug>`, `@metrics`), never URLs/paths/SQL. Rust resolves handles to backends via `entity_schemas.json` (build-time codegen from TS decorators). SQLite default; postgres opt-in via `--profile postgres`. Phase 2 complete (steps 1-4).
+- **Mac Option B.** Native continuum-core on host (Metal) + Docker support services. TCP listener (port 9100) bridges containerized node-server to native core via `host.docker.internal`. Docker VM sized to PHYS - 18GB headroom (not 80%).
+- **Windows Docker Desktop.** DMR reachable from containers at `model-runner.docker.internal` (not localhost:12434). CUDA backend requires Docker Desktop Settings → AI toggles (not scriptable yet, #910).
+
+### Infrastructure
+- **CI validates, doesn't build** (#906, closed — pipeline in place). `push-image.sh` on metal hardware → ghcr stages images → CI pulls + validates. Image-coverage gate checks `:pr-<N>` tags exist.
+- **Cross-mode collision detection.** `npm stop` kills BOTH Docker stack AND native processes. `npm start` detects if Docker stack already running (and vice versa). Port pre-flight fails fast on 9001/9100 instead of late EADDRINUSE.
+- **Heartbeat pre-flight.** Detects stale/duplicate native continuum-core-server on Mac. Fails loud with kill recipe.
+
+### Verified Matrix (PR #891)
+| Cell | Status | Detail |
+|---|---|---|
+| M5 Mac × Docker | GREEN | DMR Metal, 50 tok/s, 4 personas |
+| M5 Mac × npm | GREEN | DMR Metal |
+| BigMama Win/WSL2 × Docker | GREEN | DMR CUDA, 237 tok/s, 4 personas, 13.6GB GPU |
+| M1 Mac × npm | GREEN (cloud) | Local Candle functional but slow |
+| M1 Mac × Docker | INFRA-FIXED | VM sizing bug fixed (31be8660a), needs Docker Desktop relaunch to retest |
+
+### Issues Closed by PR #891
+- #769 Qwen3.5 as default model
+- #887 Inference capacity consolidation
+- #898 npm start port conflicts with Docker
+- #906 CI validates staged images pipeline
+
+### New Issues Filed (Post-Merge Follow-ups)
+- #908 Windows npm start should route through docker compose
+- #909 Local persona tool execution (cloud wired, local not)
+- #910 DMR CUDA on Windows needs manual Docker Desktop toggle
+- #911 16GB MacBook Air can't run Option B (product scope decision)
 
 ---
 
@@ -25,20 +61,20 @@ This document is the **single source of truth** for remaining work. Each phase i
 | Recipe-Sentinel convergence | Working | Recipes declare sentinelTemplates, RAG filters by recipe |
 | Recipe commands | Working | recipe/list, recipe/run, recipe/generate |
 | Capability registry | Working | Skill domains, all 10 adapters self-register |
-| ORM | Working | SQLite + Postgres, schema evolution, self-healing |
+| ORM | Working | SQLite default + Postgres opt-in. Handle-based abstraction (Phase 2 complete). entity_schemas.json codegen. QW#1-3 perf wins. |
 | RAG (chat history) | Working | Tiered cache L1/L2, 30-50ms cached |
 | RAG (codebase) | Proven E2E | CodebaseIndexer + CodebaseSearchSource, auto-index on startup |
 | Vision pipeline | Proven E2E | Tiered perception, content-addressed cache |
 | Neural compression | Proven E2E | Head pruning + Q3_K_S: 32B model on 32GB MacBook, 5.3 tok/s |
 | Compression pipeline | Built | Planner + GGUF writer + pipeline orchestration, 142 tests |
 | HuggingFace distribution | Live | continuum-ai/qwen2.5-coder-14b-compacted published |
-| Local GGUF inference | Working | Candle Metal backend, Qwen2 architecture support |
-| Auto model discovery | Working | CandleAdapter finds local GGUFs, falls back to HF download |
+| Local GGUF inference | Working | Docker Model Runner (Metal Mac / CUDA Win+Linux). Candle = training only. |
+| Auto model discovery | Working | DMR live catalog + resolve_dmr_model_name. install.sh pulls default model. |
 | Pressure system | Complete | ThoughtStream slots + voice broadcast gating (PR #304) |
 | Decision logging | Complete | CoordinationDecisionLogger, full RAG context capture |
 | Widget system | Working | 32 auto-discovered widgets, Lit + Shadow DOM |
 | Command system | Working | 339 auto-discovered commands, zero central registries |
-| AI providers | Working | 12 providers (Anthropic, OpenAI, DeepSeek, Google, Groq, xAI, Fireworks, Together, Mistral, Candle, Candle-gRPC, Sentinel) |
+| AI providers | Working | 12 providers. GPU-always routing: DMR priority 0, Candle off chat path. InferenceDevice enum filters by GPU/CPU. No silent fallback. |
 | continuum-core | Working | 26 Rust modules, 1,179+ tests |
 
 ---
@@ -125,6 +161,51 @@ This document is the **single source of truth** for remaining work. Each phase i
 | PersonaMessageEvaluator.ts | 909 | <500 |
 
 **Done when**: Zero `any` in production. All commands generator-backed. Lint/clippy clean. Pre-push hooks enforced. 100+ sentinel tests.
+
+---
+
+## The Inference Design Goal — Multi-Persona Live Chat at Low Latency
+
+> **"We should be able to have a few ais in a live chat at LOW latency, focus on that."** — Joel, 2026-04-15
+
+This is THE workload the whole stack must serve. Not single-persona batch inference. Not benchmark-leaderboard throughput. **3-5 AI personas in live voice+video chat simultaneously**, with the full sensory pipeline (Bevy avatar render, Whisper STT, Piper TTS, LiveKit WebRTC encode/decode) running concurrently on the same machine.
+
+**Proven on this machine today**: 10ish AI chat (14 tested, strains the machine — all but 4 were cloud inference). That's the current ceiling with mostly-cloud backends. The target raises ALL of those to native local inference running at conversation pace.
+
+**Why Qwen3.5-4B+ is the pick:** [`project_m5_is_primary_audience.md`](../../memory/project_m5_is_primary_audience.md) — forged specifically to fit the concurrent-sensory slot on Apple Silicon unified memory. Q4_K_M ≈ 2.6GB per instance, KV shared via continuous-batching scheduler (`n_seq_max` sequences in ONE Context), leaves room for Bevy + Whisper + Piper + LiveKit all co-resident.
+
+**Audience tier (BMW M4 / Corvette / Ford Focus analogy):**
+- Primary: MacBook M3-M5 Pro/Max (BMW M4)
+- Entry: MacBook Air (BMW 2 Series) — aspirational, must work
+- Desktop enthusiast: Nvidia RTX 3090+ (Corvette / Mustang)
+- Non-audience: ThinkPads without GPU, integrated-only, pre-Apple-Silicon (Ford Focus)
+
+**Go-live is possible before the full vision-Qwen3.5 landing** (stopgap: text-Qwen3.5 + sensory bridges via `VisionDescriptionService`, Whisper, Piper/Orpheus — already in the codebase). But vision-Qwen3.5 is quickly needed post-launch and NOT insurmountable because **factory + sentinel-ai were built for this exact purpose** (PR891's parent narrative). Forging vision-enabled variants per device tier is the post-launch track.
+
+### Cross-referenced issues
+
+This goal cuts across phases; the work is tracked here:
+
+| # | Phase | Role in the goal |
+|---|---|---|
+| [#582](https://github.com/CambrianTech/continuum/issues/582) | Phase 2 | Native multimodal pipeline — three parallel streams LISTEN+THINK+SPEAK, <2s latency for capable models |
+| [#799](https://github.com/CambrianTech/continuum/issues/799) | Phase 2 | Qwen3.5-Omni native audio — skip VAD→STT→LLM→TTS entirely |
+| [#800](https://github.com/CambrianTech/continuum/issues/800) | Phase 2 | `continuum-ai/whisper-forged` — forged STT model |
+| [#801](https://github.com/CambrianTech/continuum/issues/801) | Phase 2 | Per-persona TTS voice cloning |
+| [#652](https://github.com/CambrianTech/continuum/issues/652) | Phase 12 | Sub-100ms vision + real-time audio inference for personas |
+| [#649](https://github.com/CambrianTech/continuum/issues/649) | Phase 12 | LLaVA-style vision encoder — bolt-on vision via projection layer training |
+| [#650](https://github.com/CambrianTech/continuum/issues/650) | Phase 12 | Whisper-style audio encoder — hearing + speech natively |
+| [#579](https://github.com/CambrianTech/continuum/issues/579) | Phase 12 | Vision model forging — feature detector pruning, domain specialization |
+| [#894](https://github.com/CambrianTech/continuum/issues/894) | post-launch | Vision-Qwen3.5 variants per device tier — M5 default 4B-vision, MBA smaller, 3090+ larger |
+| [#895](https://github.com/CambrianTech/continuum/issues/895) | PR891 follow-up | Live multi-persona concurrency benchmark — 3-5 personas on M5, regression-gate for the scheduler |
+
+### What PR891 delivers toward this goal
+
+- **Continuous-batching scheduler** — shared Context, `n_seq_max` sequences (enables 3-5 concurrent persona streams from ONE model instance, KV pool shared not duplicated).
+- **Response-cap hard gate REMOVED** — personas can keep engaging in live chat without arbitrary silencing.
+- **Acceleration architecture committed** (no CPU fallback; UDP sidecar fallback designed for any case where a subsystem can't containerize) — guarantees every sensory subsystem stays GPU-close.
+- **Vulkan-in-container** for Mac Carl → Qwen3.5 at ~80% native Metal in a container, keeping Mac Carl install low-friction.
+- **Un-cheat sensory parity** (Phase 1 of RESTORE-FULL-PARITY-PLAN): whisper.cpp vendor, remove SKIP_STT/SKIP_TTS hatches, LiveKit default-features, avatars ship. Lands the sensory stack that makes "live chat" actually live.
 
 ---
 

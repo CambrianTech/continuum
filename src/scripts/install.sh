@@ -24,6 +24,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 source "$SCRIPT_DIR/shared/preflight.sh"
+# Shared primitives (logs, module_*, ensure_sudo_warmed) — see
+# docs/infrastructure/INSTALL-ARCHITECTURE.md for the module contract.
+source "$SCRIPT_DIR/lib/install-common.sh"
 
 cd "$PROJECT_DIR"
 
@@ -36,19 +39,17 @@ PLATFORM=$(preflight_detect_platform)
 echo -e "  Platform: ${GREEN}${PLATFORM}${NC}"
 
 # ============================================================================
-# Warm sudo cache once (Linux/WSL only)
+# Modular install steps (new pattern — see INSTALL-ARCHITECTURE.md)
 # ============================================================================
-# Prompt for password NOW so it's cached for all later steps (Postgres,
-# Tailscale, etc.). Without this, steps that need sudo on repeat runs
-# fail silently or re-prompt unexpectedly.
-if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "wsl" ]; then
-  if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
-    if [ -t 0 ]; then
-      echo -e "  ${YELLOW}Some install steps need admin access.${NC}"
-      sudo -v
-    fi
-  fi
-fi
+# Module functions live in src/scripts/lib/install-common.sh (already sourced
+# above). Each mod_* is idempotent self-guarded; steps needing sudo call
+# ensure_sudo_warmed so the password is prompted at most ONCE per run.
+#
+# Running here: the modules that apply to both Carl's curl path and Dev's
+# local-build path. Platform/applicability guards inside each module make
+# them safe no-ops where they don't apply.
+mod_submodules_init
+mod_docker_wsl_integration
 
 # ============================================================================
 # GPU detection
@@ -189,7 +190,10 @@ install_system_deps() {
       if [ ${#needed[@]} -gt 0 ]; then
         if $CAN_SUDO; then
           echo -e "  Installing: ${needed[*]}"
-          echo -e "  ${YELLOW}System packages need to be installed (one-time). You may be prompted for your password.${NC}"
+          # One-prompt-contract: ensure_sudo_warmed prompts ONCE if needed,
+          # arms keepalive, every subsequent sudo within the run is silent.
+          # See docs/infrastructure/INSTALL-ARCHITECTURE.md.
+          ensure_sudo_warmed
           $SUDO apt-get update -qq
           $SUDO apt-get install -y "${needed[@]}"
         else
@@ -415,6 +419,8 @@ install_postgres() {
     case "$PLATFORM" in
       macos) brew install postgresql@16 && brew services start postgresql@16 ;;
       linux|wsl)
+        # One-prompt-contract: warm sudo cache once for all postgres ops below.
+        ensure_sudo_warmed
         sudo apt-get install -y postgresql postgresql-client
         sudo service postgresql start 2>/dev/null || sudo pg_ctlcluster 16 main start 2>/dev/null || true
         ;;
@@ -422,23 +428,39 @@ install_postgres() {
     echo -e "  ${GREEN}✅ PostgreSQL installed${NC}"
   fi
 
-  # Set trust auth for local connections (no password needed for development)
-  local pg_hba=$(sudo -u postgres psql -t -c "SHOW hba_file" 2>/dev/null | tr -d ' ')
-  if [ -n "$pg_hba" ] && [ -f "$pg_hba" ]; then
-    if grep -q "scram-sha-256" "$pg_hba" 2>/dev/null; then
-      sudo sed -i 's/scram-sha-256/trust/g' "$pg_hba"
-      sudo service postgresql restart 2>/dev/null || sudo pg_ctlcluster 16 main restart 2>/dev/null || true
-    fi
-  fi
-
-  # Create user and database if they don't exist
-  local pg_user="${USER:-postgres}"
-  if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$pg_user'" 2>/dev/null | grep -q 1; then
-    sudo -u postgres createuser -s "$pg_user" 2>/dev/null || true
-  fi
-  if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
-    createdb continuum 2>/dev/null || sudo -u postgres createdb continuum 2>/dev/null || true
-  fi
+  # Trust-auth + createuser logic is Linux-only. On macOS, Homebrew postgres
+  # accepts local connections without auth by default and runs as the
+  # invoking user — `createdb continuum` works directly with no sudo. The
+  # earlier unconditional `ensure_sudo_warmed` here was the failure mode
+  # that broke `npm start` when stdin wasn't a TTY (parallel-start.sh
+  # invokes this with CONTINUUM_DEPS_ONLY=1 every restart).
+  case "$PLATFORM" in
+    macos)
+      # Homebrew postgres: peer auth, user is whoever started brew services.
+      # Just ensure the continuum database exists.
+      if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
+        createdb continuum 2>/dev/null || true
+      fi
+      ;;
+    linux|wsl)
+      # apt-installed postgres needs trust-auth + role setup, all sudo.
+      ensure_sudo_warmed
+      local pg_hba=$(sudo -u postgres psql -t -c "SHOW hba_file" 2>/dev/null | tr -d ' ')
+      if [ -n "$pg_hba" ] && [ -f "$pg_hba" ]; then
+        if grep -q "scram-sha-256" "$pg_hba" 2>/dev/null; then
+          sudo sed -i 's/scram-sha-256/trust/g' "$pg_hba"
+          sudo service postgresql restart 2>/dev/null || sudo pg_ctlcluster 16 main restart 2>/dev/null || true
+        fi
+      fi
+      local pg_user="${USER:-postgres}"
+      if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$pg_user'" 2>/dev/null | grep -q 1; then
+        sudo -u postgres createuser -s "$pg_user" 2>/dev/null || true
+      fi
+      if ! psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
+        createdb continuum 2>/dev/null || sudo -u postgres createdb continuum 2>/dev/null || true
+      fi
+      ;;
+  esac
   echo -e "  ${GREEN}✅ Database 'continuum' ready${NC}"
 }
 

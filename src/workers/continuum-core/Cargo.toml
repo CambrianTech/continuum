@@ -35,6 +35,7 @@ tikv-jemallocator = "0.6"  # jemalloc: returns memory to OS aggressively, reduce
 libc = "0.2"     # Process group management (setsid, kill -pgid)
 toml = "0.8"     # Avatar model manifest parsing
 base64 = "0.22"  # Base64 encoding for audio data
+sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636)
 async-trait.workspace = true
 chrono.workspace = true
 
@@ -53,7 +54,13 @@ futures = "0.3"  # For VAD block_on in audio thread
 hound = "3.5"  # WAV file reading/writing
 once_cell.workspace = true
 rubato = "0.15"  # High-quality audio resampling
-whisper-rs = "0.13"  # Whisper.cpp bindings for STT
+# TEMPORARY: whisper-rs vendors its own ggml and appears to collide with
+# our llama crate's ggml_backend registry — server segfaults in
+# ggml_backend_dev_type during llama_model_load even with
+# CONTINUUM_SKIP_STT=1 (the skip avoids calling init but the symbols are
+# still linked). Gating this dep + the whisper.rs module behind the
+# 'whisper' feature proves the collision theory.
+# whisper-rs = "0.13"  # Whisper.cpp bindings for STT
 ort.workspace = true  # ONNX Runtime for TTS
 rayon.workspace = true
 ndarray.workspace = true
@@ -61,7 +68,12 @@ num_cpus = "1.16"  # CPU count detection
 dirs = "5.0"  # User directories for model paths
 sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
 
-# Candle ML framework (for local LLM inference + Orpheus TTS)
+# llama — our owned substrate for inference (67.8 tok/s on M5 Metal).
+# Vendored llama.cpp built via cmake, features gate metal/cuda.
+llama = { path = "../llama" }
+
+# Candle — kept for training, Orpheus TTS, and legacy backends.
+# Inference flows through the llama crate above.
 candle-core.workspace = true
 candle-nn.workspace = true  # For VarBuilder
 candle-transformers.workspace = true
@@ -150,12 +162,30 @@ tokio-postgres.workspace = true                           # Postgres async drive
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.32"
 objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
+# MLX — Apple Silicon native inference runtime. Phase A of continuum#897
+# only flags the module on via the `mlx` feature; the actual `mlx-rs` crate
+# dep lands in phase B when we implement forward() and have the full-Xcode
+# build prerequisite (mlx-sys transitively needs `xcrun metal` for shader
+# compilation, which the Command Line Tools don't include).
+#
+# mlx-rs = { version = "0.25", optional = true }  # phase B
 
 [features]
 default = ["livekit-webrtc"]
 livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda"]
+# Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
+# Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
+# to MoltenVK on the host, which translates to Metal. Also valid on Linux
+# Nvidia/AMD hosts with libvulkan available.
+vulkan = ["llama/vulkan"]
+# MLX — Apple Silicon native inference path (phases A–E of continuum#897).
+# Only compiles on macOS/aarch64; the adapter module is guarded by this feature
+# AND by cfg(target_os = "macos") so non-Mac targets simply don't see the code.
+# Phase A: flag only, no mlx-rs dep yet. Phase B will add `dep:mlx-rs` back
+# once we're writing forward() and can ensure full Xcode is installed.
+mlx = []
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 # Linux: swap ORT from static (download-binaries) to dynamic loading.
 # Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).

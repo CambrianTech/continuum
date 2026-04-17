@@ -27,6 +27,98 @@ export function getContinuumCoreSocketPath(): string {
 	return resolveSocketPath(SOCKETS.CONTINUUM_CORE);
 }
 
+/**
+ * Continuum-core endpoint resolution.
+ *
+ * Where the TypeScript side of continuum connects to the Rust continuum-core
+ * server. Two transport options:
+ *   - Unix domain socket (path like /Users/.../continuum-core.sock) — primary
+ *     path when native TS can reach the same filesystem as the Rust server.
+ *   - TCP (host:port) — required when the TS side is inside a Docker container
+ *     and the Rust server runs native on the host Mac, because Unix sockets
+ *     don't traverse Docker Desktop's VM boundary.
+ *
+ * Controlled by the CONTINUUM_CORE_URL env var (set by install.sh / compose):
+ *   tcp://host:port   → TCP connection
+ *   unix:///path.sock → explicit Unix override
+ *   (unset)           → default Unix path from SOCKETS.CONTINUUM_CORE
+ *
+ * The wire protocol is the same either way — length-prefixed JSON, matching
+ * the Rust IPC server's IpcStream trait (which accepts both transports).
+ */
+export interface CoreEndpoint {
+	/** Unix domain socket path (set when isTcp=false) */
+	path?: string;
+	/** TCP host (set when isTcp=true) */
+	host?: string;
+	/** TCP port (set when isTcp=true) */
+	port?: number;
+	/** Which transport — tells callers which `net.createConnection` overload to use */
+	isTcp: boolean;
+	/** Human-readable description for logging */
+	description: string;
+}
+
+/**
+ * Resolve the continuum-core endpoint from CONTINUUM_CORE_URL env (if set)
+ * or fall back to the given default Unix socket path.
+ */
+export function resolveCoreEndpoint(defaultPath: string = SOCKETS.CONTINUUM_CORE): CoreEndpoint {
+	const envUrl = process.env.CONTINUUM_CORE_URL;
+	if (envUrl) {
+		const tcpMatch = envUrl.match(/^tcp:\/\/([^:/]+):(\d+)$/);
+		if (tcpMatch) {
+			const host = tcpMatch[1];
+			const port = parseInt(tcpMatch[2], 10);
+			return { host, port, isTcp: true, description: `tcp://${host}:${port}` };
+		}
+		// Unix override via env. Supports bare path or unix://path form.
+		const unixPath = envUrl.replace(/^unix:\/\//, '');
+		const resolved = resolveSocketPath(unixPath);
+		return { path: resolved, isTcp: false, description: resolved };
+	}
+	const resolved = resolveSocketPath(defaultPath);
+	return { path: resolved, isTcp: false, description: resolved };
+}
+
+/**
+ * Open a net.Socket to the continuum-core endpoint — picks TCP vs Unix per
+ * the endpoint.isTcp flag. Protocol is identical either way.
+ */
+export function connectToCoreEndpoint(endpoint: CoreEndpoint): net.Socket {
+	if (endpoint.isTcp) {
+		return net.createConnection({ host: endpoint.host!, port: endpoint.port! });
+	}
+	return net.createConnection(endpoint.path!);
+}
+
+/**
+ * Resolve continuum-core endpoint as a single socketPath-style string.
+ * Returns `tcp://host:port` if CONTINUUM_CORE_URL is a tcp URL, otherwise
+ * the absolute Unix socket path. Used by callers that store `socketPath` as
+ * a single string config field — they pass the result straight through to
+ * `connectToSocketPathOrUrl` at connection time.
+ */
+export function resolveCoreEndpointString(defaultPath: string = SOCKETS.CONTINUUM_CORE): string {
+	const endpoint = resolveCoreEndpoint(defaultPath);
+	if (endpoint.isTcp) return `tcp://${endpoint.host}:${endpoint.port}`;
+	return endpoint.path!;
+}
+
+/**
+ * Open a net.Socket given either a Unix socket filesystem path or a
+ * `tcp://host:port` URL string. String-oriented twin of `connectToCoreEndpoint`
+ * — fits existing callers that carry one `socketPath: string` through layers
+ * of config. Protocol over the wire is identical either way.
+ */
+export function connectToSocketPathOrUrl(socketPathOrUrl: string): net.Socket {
+	const tcpMatch = socketPathOrUrl.match(/^tcp:\/\/([^:/]+):(\d+)$/);
+	if (tcpMatch) {
+		return net.createConnection({ host: tcpMatch[1], port: parseInt(tcpMatch[2], 10) });
+	}
+	return net.createConnection(socketPathOrUrl);
+}
+
 /** JSON response from IPC — result is untyped at the wire boundary (JSON.parse output) */
 export interface IPCJsonResponse {
 	success: boolean;
@@ -98,7 +190,10 @@ export class RustCoreIPCClientBase extends EventEmitter {
 		}
 
 		return new Promise((resolve, reject) => {
-			this._socket = net.createConnection(this._socketPath);
+			// Honor CONTINUUM_CORE_URL (tcp://... for containerized callers on
+			// Mac) over the default Unix path. Protocol identical either way.
+			const endpoint = resolveCoreEndpoint(this._socketPath);
+			this._socket = connectToCoreEndpoint(endpoint);
 
 			this._socket.on('connect', () => {
 				this._connected = true;

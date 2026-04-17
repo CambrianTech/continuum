@@ -10,7 +10,7 @@ import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBa
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import type { DataSchemaParams, DataSchemaResult, EntitySchema, SchemaField, EntityExamples, EntitySQL, ValidationResult } from '../shared/DataSchemaTypes';
+import type { DataSchemaParams, DataSchemaResult, EntitySchema, SchemaField, EntityExamples, ValidationResult } from '../shared/DataSchemaTypes';
 import { createDataSchemaResultFromParams } from '../shared/DataSchemaTypes';
 import { getFieldMetadata, hasFieldMetadata, type FieldMetadata } from '../../../../system/data/decorators/FieldDecorators';
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
@@ -57,11 +57,11 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
         if (hasFieldMetadata(EntityClass)) {
           console.log(`✅ DataSchema: Using decorator metadata for ${collectionName}`);
           const fieldMetadata = getFieldMetadata(EntityClass);
-          schema = this.buildEntitySchema(collectionName, EntityClass.name, fieldMetadata, params.examples, params.sql);
+          schema = this.buildEntitySchema(collectionName, EntityClass.name, fieldMetadata, params.examples);
         } else {
           // Generic BaseEntity fallback - works with any entity extending BaseEntity
           console.log(`🔧 DataSchema: Using BaseEntity patterns for ${collectionName}`);
-          schema = this.createGenericBaseEntitySchema(collectionName, EntityClass.name, params.examples, params.sql);
+          schema = this.createGenericBaseEntitySchema(collectionName, EntityClass.name, params.examples);
         }
 
         // Validate data generically if provided - works with any entity type
@@ -71,7 +71,7 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
       } else {
         // No entity registered - fall back to data inference (architecture compliant)
         console.log(`⚠️ DataSchema: No entity registered for "${params.collection}", using data inference`);
-        schema = await this.inferSchemaFromData(params.collection, params.examples, params.sql);
+        schema = await this.inferSchemaFromData(params.collection, params.examples);
 
         if (params.validateData) {
           validation = {
@@ -104,8 +104,7 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
     collection: string,
     className: string,
     fieldMetadata: Map<string, FieldMetadata>,
-    includeExamples?: boolean,
-    includeSql?: boolean
+    includeExamples?: boolean
   ): EntitySchema {
     const fields: SchemaField[] = [];
     const indexes: string[] = [];
@@ -166,11 +165,6 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
     // Add examples if requested
     if (includeExamples) {
       schema.examples = this.generateEntityExamples(fields, collection);
-    }
-
-    // Add SQL statements if requested
-    if (includeSql) {
-      schema.sql = this.generateEntitySQL(collection, fields, indexes, foreignKeys);
     }
 
     return schema;
@@ -267,96 +261,12 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
   }
 
   /**
-   * Generate SQL statements for entity creation
-   */
-  private generateEntitySQL(
-    collection: string,
-    fields: SchemaField[],
-    indexes: string[],
-    foreignKeys: Array<{ field: string; references: string }>
-  ): EntitySQL {
-    const tableName = collection.toLowerCase();
-
-    // Generate CREATE TABLE statement
-    const columnDefinitions = fields.map(field => {
-      const columnName = this.toSnakeCase(field.fieldName);
-      const sqlType = this.getSQLType(field.fieldType);
-
-      const constraints = [];
-      if (!field.nullable) constraints.push('NOT NULL');
-      if (field.unique) constraints.push('UNIQUE');
-      if (field.fieldType === 'primary') constraints.push('PRIMARY KEY');
-      if (field.default !== undefined) {
-        const defaultValue = typeof field.default === 'string' ? `'${field.default}'` : field.default;
-        constraints.push(`DEFAULT ${defaultValue}`);
-      }
-
-      return `  ${columnName} ${sqlType}${constraints.length ? ' ' + constraints.join(' ') : ''}`;
-    });
-
-    const createTable = `CREATE TABLE IF NOT EXISTS ${tableName} (\n${columnDefinitions.join(',\n')}\n);`;
-
-    // Generate INDEX statements
-    const indexStatements = indexes.map(fieldName => {
-      const columnName = this.toSnakeCase(fieldName);
-      return `CREATE INDEX IF NOT EXISTS idx_${tableName}_${columnName} ON ${tableName}(${columnName});`;
-    });
-
-    // Generate FOREIGN KEY statements
-    const foreignKeyStatements = foreignKeys.map(fk => {
-      const columnName = this.toSnakeCase(fk.field);
-      const [refTable, refColumn] = fk.references.split('.');
-      const refTableName = refTable.toLowerCase();
-      const refColumnName = this.toSnakeCase(refColumn);
-      return `ALTER TABLE ${tableName} ADD FOREIGN KEY (${columnName}) REFERENCES ${refTableName}(${refColumnName});`;
-    });
-
-    return {
-      createTable,
-      indexes: indexStatements,
-      foreignKeys: foreignKeyStatements
-    };
-  }
-
-  /**
-   * Convert camelCase to snake_case for SQL column names
-   */
-  private toSnakeCase(str: string): string {
-    return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`).replace(/^_/, '');
-  }
-
-  /**
-   * Map field types to SQL types
-   */
-  private getSQLType(fieldType: string): string {
-    switch (fieldType) {
-      case 'primary':
-      case 'foreign_key':
-      case 'text':
-        return 'TEXT';
-      case 'date':
-        return 'DATETIME';
-      case 'enum':
-        return 'TEXT';
-      case 'json':
-        return 'TEXT';
-      case 'number':
-        return 'INTEGER';
-      case 'boolean':
-        return 'BOOLEAN';
-      default:
-        return 'TEXT';
-    }
-  }
-
-  /**
    * Fallback: Infer schema from existing data in the collection
    * Analyzes actual data structure to create schema when entity registry isn't available
    */
   private async inferSchemaFromData(
     collection: string,
-    includeExamples?: boolean,
-    includeSql?: boolean
+    includeExamples?: boolean
   ): Promise<EntitySchema> {
     console.log(`🔍 DataSchema: Inferring schema from data for ${collection}`);
 
@@ -366,7 +276,7 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
 
       if (!sampleData || sampleData.length === 0) {
         // No data available, create minimal BaseEntity schema
-        return this.createBaseEntitySchema(collection, includeExamples, includeSql);
+        return this.createBaseEntitySchema(collection, includeExamples);
       }
 
       // Analyze the sample data to infer field types
@@ -387,16 +297,11 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
         schema.examples = this.generateInferredExamples(inferredFields, collection, sampleData);
       }
 
-      // Add SQL if requested
-      if (includeSql) {
-        schema.sql = this.generateEntitySQL(collection, inferredFields, ['id'], []);
-      }
-
       return schema;
     } catch (error) {
       console.error(`❌ DataSchema: Error inferring schema for ${collection}:`, error);
       // Fallback to BaseEntity schema
-      return this.createBaseEntitySchema(collection, includeExamples, includeSql);
+      return this.createBaseEntitySchema(collection, includeExamples);
     }
   }
 
@@ -514,8 +419,7 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
    */
   private createBaseEntitySchema(
     collection: string,
-    includeExamples?: boolean,
-    includeSql?: boolean
+    includeExamples?: boolean
   ): EntitySchema {
     const baseFields: SchemaField[] = [
       { fieldName: 'id', fieldType: 'primary', required: true, nullable: false },
@@ -536,10 +440,6 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
 
     if (includeExamples) {
       schema.examples = this.generateEntityExamples(baseFields, collection);
-    }
-
-    if (includeSql) {
-      schema.sql = this.generateEntitySQL(collection, baseFields, schema.indexes, []);
     }
 
     return schema;
@@ -726,8 +626,7 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
   private createGenericBaseEntitySchema(
     collectionName: string,
     entityClassName: string,
-    includeExamples?: boolean,
-    includeSql?: boolean
+    includeExamples?: boolean
   ): EntitySchema {
     console.log(`🔧 DataSchema: Creating BaseEntity schema for ${collectionName}`);
 
@@ -750,10 +649,6 @@ export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataS
 
     if (includeExamples) {
       schema.examples = this.generateEntityExamples(baseFields, collectionName);
-    }
-
-    if (includeSql) {
-      schema.sql = this.generateEntitySQL(collectionName, baseFields, schema.indexes, []);
     }
 
     return schema;

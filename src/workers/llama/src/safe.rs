@@ -1,0 +1,623 @@
+//! Safe Rust wrapper over llama.cpp FFI.
+
+use std::ffi::CString;
+use std::marker::PhantomData;
+use std::os::raw::c_char;
+use std::path::Path;
+use std::ptr::NonNull;
+use std::sync::Once;
+
+use crate::sys;
+
+static BACKEND_INIT: Once = Once::new();
+
+/// Initialize the llama backend. Idempotent.
+///
+/// Also force-registers all compiled-in ggml backends (Metal, CUDA, BLAS,
+/// CPU). The +whole-archive link modifier should be enough on its own, but
+/// in practice rlib metadata or downstream bin link order can lose the
+/// static-initializer invocations — so we make a direct call to guarantee
+/// backends are populated before the first model load. Without this, the
+/// llama_model_load path can segfault in ggml_backend_dev_type() when the
+/// backend registry is empty.
+pub fn backend_init() {
+    BACKEND_INIT.call_once(|| {
+        unsafe {
+            sys::llama_backend_init();
+            sys::ggml_backend_load_all();
+        }
+    });
+}
+
+/// A loaded llama model. Thread-safe (contexts are single-threaded but model is shared).
+pub struct Model {
+    ptr: NonNull<sys::llama_model>,
+}
+
+unsafe impl Send for Model {}
+unsafe impl Sync for Model {}
+
+/// Model load parameters.
+#[derive(Debug, Clone)]
+pub struct ModelParams {
+    /// Number of layers to offload to GPU (-1 = all)
+    pub n_gpu_layers: i32,
+    /// mmap the file (faster load, usually safe)
+    pub use_mmap: bool,
+}
+
+impl Default for ModelParams {
+    fn default() -> Self {
+        Self { n_gpu_layers: -1, use_mmap: true }
+    }
+}
+
+impl Model {
+    /// Load a GGUF model from disk.
+    pub fn load(path: impl AsRef<Path>, params: ModelParams) -> Result<Self, String> {
+        backend_init();
+
+        let path = path.as_ref();
+        let c_path = CString::new(path.to_string_lossy().as_bytes())
+            .map_err(|e| format!("invalid path: {e}"))?;
+
+        let mut ffi_params = unsafe { sys::llama_model_default_params() };
+        ffi_params.n_gpu_layers = params.n_gpu_layers;
+        ffi_params.use_mmap = params.use_mmap;
+
+        let raw = unsafe { sys::llama_model_load_from_file(c_path.as_ptr(), ffi_params) };
+        let ptr = NonNull::new(raw).ok_or_else(|| {
+            format!("failed to load model from {}", path.display())
+        })?;
+
+        Ok(Self { ptr })
+    }
+
+    /// Vocabulary size.
+    pub fn n_vocab(&self) -> i32 {
+        unsafe { sys::llama_vocab_n_tokens(sys::llama_model_get_vocab(self.ptr.as_ptr())) }
+    }
+
+    /// Hidden-state dimension (embedding size).
+    pub fn n_embd(&self) -> i32 {
+        unsafe { sys::llama_model_n_embd(self.ptr.as_ptr()) }
+    }
+
+    /// Create an inference context.
+    pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
+        let mut ffi = unsafe { sys::llama_context_default_params() };
+        ffi.n_ctx = params.n_ctx;
+        ffi.n_batch = params.n_batch;
+        ffi.n_seq_max = params.n_seq_max;
+
+        let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
+        let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
+        Ok(Context { ptr: ctx, _model: PhantomData })
+    }
+
+    /// Load a LoRA adapter bound to this model. Used for genome paging.
+    ///
+    /// The returned adapter must not outlive the model it was loaded from
+    /// (llama.cpp frees adapter memory when the model is dropped). This is
+    /// NOT expressed in the type system because self-referential owners
+    /// (e.g. a backend holding `Model` + `HashMap<Id, LoraAdapter>`) can't
+    /// be written safely with a borrowed lifetime. Callers must drop
+    /// adapters before the model — typically via field ordering.
+    pub fn load_lora(&self, path: impl AsRef<Path>) -> Result<LoraAdapter, String> {
+        let path = path.as_ref();
+        let c_path = CString::new(path.to_string_lossy().as_bytes())
+            .map_err(|e| format!("invalid path: {e}"))?;
+        let raw = unsafe { sys::llama_adapter_lora_init(self.ptr.as_ptr(), c_path.as_ptr()) };
+        let ptr = NonNull::new(raw).ok_or_else(|| {
+            format!("failed to load LoRA from {}", path.display())
+        })?;
+        Ok(LoraAdapter { ptr })
+    }
+
+    /// Tokenize a string.
+    pub fn tokenize(&self, text: &str, add_bos: bool, special: bool) -> Result<Vec<i32>, String> {
+        let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
+        let c_text = CString::new(text).map_err(|e| format!("invalid text: {e}"))?;
+        let text_len = c_text.as_bytes().len() as i32;
+
+        // First call with size 0 to get required size (negative = required)
+        let required = unsafe {
+            sys::llama_tokenize(
+                vocab,
+                c_text.as_ptr(),
+                text_len,
+                std::ptr::null_mut(),
+                0,
+                add_bos,
+                special,
+            )
+        };
+        let size = required.unsigned_abs() as usize;
+        let mut tokens = vec![0i32; size];
+        let n = unsafe {
+            sys::llama_tokenize(
+                vocab,
+                c_text.as_ptr(),
+                text_len,
+                tokens.as_mut_ptr(),
+                size as i32,
+                add_bos,
+                special,
+            )
+        };
+        if n < 0 {
+            return Err(format!("tokenize failed: {n}"));
+        }
+        tokens.truncate(n as usize);
+        Ok(tokens)
+    }
+
+    /// Convert a token to its UTF-8 string representation.
+    pub fn token_to_piece(&self, token: i32) -> String {
+        let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
+        let mut buf = vec![0u8; 128];
+        let n = unsafe {
+            sys::llama_token_to_piece(
+                vocab,
+                token,
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len() as i32,
+                0,
+                false,
+            )
+        };
+        if n < 0 { return String::new(); }
+        buf.truncate(n as usize);
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// Check if token is end-of-generation.
+    pub fn is_eog_token(&self, token: i32) -> bool {
+        let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
+        unsafe { sys::llama_vocab_is_eog(vocab, token) }
+    }
+}
+
+impl Drop for Model {
+    fn drop(&mut self) {
+        unsafe { sys::llama_model_free(self.ptr.as_ptr()); }
+    }
+}
+
+// ─── LoRA adapter ────────────────────────────────────────────────────────
+
+/// A LoRA adapter loaded against a model. Can be hot-swapped on a context
+/// without rebuilding the context — this is the primitive genome paging uses.
+///
+/// No borrow on `Model` (see `Model::load_lora` docs for the invariant).
+pub struct LoraAdapter {
+    ptr: NonNull<sys::llama_adapter_lora>,
+}
+
+unsafe impl Send for LoraAdapter {}
+unsafe impl Sync for LoraAdapter {}
+
+impl Drop for LoraAdapter {
+    fn drop(&mut self) {
+        unsafe { sys::llama_adapter_lora_free(self.ptr.as_ptr()); }
+    }
+}
+
+// ─── Context ─────────────────────────────────────────────────────────────
+
+/// Context parameters.
+#[derive(Debug, Clone)]
+pub struct ContextParams {
+    pub n_ctx: u32,
+    pub n_batch: u32,
+    /// Maximum parallel sequences. Default llama.cpp sets this > 1 which
+    /// DIVIDES n_ctx among sequences — a 4096 n_ctx with default n_seq_max
+    /// yields only ~512-1024 usable positions per sequence, making RAG
+    /// prompts >1k tokens fail `llama_decode` with rc=1 ("no KV slot").
+    /// Single-persona chat only uses sequence 0, so default to 1.
+    pub n_seq_max: u32,
+}
+
+impl Default for ContextParams {
+    fn default() -> Self {
+        Self { n_ctx: 4096, n_batch: 512, n_seq_max: 1 }
+    }
+}
+
+/// An inference context for a model. Single-threaded.
+pub struct Context<'m> {
+    ptr: NonNull<sys::llama_context>,
+    _model: PhantomData<&'m Model>,
+}
+
+impl<'m> Context<'m> {
+    /// Context window size.
+    pub fn n_ctx(&self) -> u32 {
+        unsafe { sys::llama_n_ctx(self.ptr.as_ptr()) }
+    }
+
+    /// Process a batch through the model (updates KV cache, produces logits
+    /// for tokens where `batch.push(..., want_logits=true)` was called).
+    ///
+    /// Return codes from llama.cpp:
+    ///   0 — success
+    ///   1 — no KV slot (reduce batch or raise n_ctx)
+    ///   2 — aborted (partial state retained)
+    ///  -1 — invalid batch
+    /// <-1 — fatal
+    pub fn decode(&mut self, batch: &Batch) -> Result<(), String> {
+        let rc = unsafe { sys::llama_decode(self.ptr.as_ptr(), batch.inner) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(format!("llama_decode returned {rc}"))
+        }
+    }
+
+    /// Logits for the i-th token position in the last batch (tokens with
+    /// `want_logits=true`). Length = n_vocab.
+    ///
+    /// Use `-1` for the last token that had logits requested.
+    pub fn logits_ith(&self, i: i32) -> &[f32] {
+        let n_vocab = unsafe {
+            sys::llama_vocab_n_tokens(sys::llama_model_get_vocab(self.model_ptr()))
+        } as usize;
+        unsafe {
+            let ptr = sys::llama_get_logits_ith(self.ptr.as_ptr(), i);
+            if ptr.is_null() {
+                &[]
+            } else {
+                std::slice::from_raw_parts(ptr, n_vocab)
+            }
+        }
+    }
+
+    /// Mutable logits for the i-th position — for repetition penalty / logit bias
+    /// applied before sampling without routing through a sampler.
+    pub fn logits_ith_mut(&mut self, i: i32) -> &mut [f32] {
+        let n_vocab = unsafe {
+            sys::llama_vocab_n_tokens(sys::llama_model_get_vocab(self.model_ptr()))
+        } as usize;
+        unsafe {
+            let ptr = sys::llama_get_logits_ith(self.ptr.as_ptr(), i);
+            if ptr.is_null() {
+                &mut []
+            } else {
+                std::slice::from_raw_parts_mut(ptr, n_vocab)
+            }
+        }
+    }
+
+    /// Set the active LoRA adapter set on this context.
+    ///
+    /// This is the hot-swap primitive — cheap enough to call between tokens
+    /// for genome paging. Passing an empty slice clears all adapters.
+    pub fn set_loras(&mut self, adapters: &[(&LoraAdapter, f32)]) -> Result<(), String> {
+        let mut ptrs: Vec<*mut sys::llama_adapter_lora> =
+            adapters.iter().map(|(a, _)| a.ptr.as_ptr()).collect();
+        let mut scales: Vec<f32> = adapters.iter().map(|(_, s)| *s).collect();
+        let rc = unsafe {
+            sys::llama_set_adapters_lora(
+                self.ptr.as_ptr(),
+                if ptrs.is_empty() { std::ptr::null_mut() } else { ptrs.as_mut_ptr() },
+                ptrs.len(),
+                if scales.is_empty() { std::ptr::null_mut() } else { scales.as_mut_ptr() },
+            )
+        };
+        if rc == 0 { Ok(()) } else { Err(format!("llama_set_adapters_lora returned {rc}")) }
+    }
+
+    /// Clear all LoRA adapters.
+    pub fn clear_loras(&mut self) -> Result<(), String> {
+        self.set_loras(&[])
+    }
+
+    /// Number of threads used for single-token generation.
+    pub fn set_n_threads(&mut self, n_threads: i32, n_threads_batch: i32) {
+        unsafe { sys::llama_set_n_threads(self.ptr.as_ptr(), n_threads, n_threads_batch); }
+    }
+
+    fn model_ptr(&self) -> *const sys::llama_model {
+        unsafe { sys::llama_get_model(self.ptr.as_ptr()) }
+    }
+
+    /// Free the KV cache for a given sequence id (positions [p0, p1)).
+    /// Use `p0=-1, p1=-1` to remove the whole sequence. Required when
+    /// reusing a seq_id slot in a shared multi-sequence context.
+    pub fn memory_seq_rm(&mut self, seq_id: i32, p0: i32, p1: i32) -> bool {
+        unsafe {
+            let mem = sys::llama_get_memory(self.ptr.as_ptr());
+            sys::llama_memory_seq_rm(mem, seq_id, p0, p1)
+        }
+    }
+
+    /// Wipe the entire KV cache for this context.
+    /// `data=true` also clears the underlying data buffers; `false` only
+    /// clears metadata (faster, sufficient for reuse-without-leak).
+    pub fn memory_clear(&mut self, data: bool) {
+        unsafe {
+            let mem = sys::llama_get_memory(self.ptr.as_ptr());
+            sys::llama_memory_clear(mem, data);
+        }
+    }
+
+    /// Highest absolute KV position currently held for `seq_id`, or -1 if
+    /// the sequence is empty. Used by the batch scheduler to know what
+    /// `pos` to assign the next token in a continuous-batching loop.
+    pub fn memory_seq_pos_max(&self, seq_id: i32) -> i32 {
+        unsafe {
+            let mem = sys::llama_get_memory(self.ptr.as_ptr());
+            sys::llama_memory_seq_pos_max(mem, seq_id)
+        }
+    }
+}
+
+impl<'m> Drop for Context<'m> {
+    fn drop(&mut self) {
+        unsafe { sys::llama_free(self.ptr.as_ptr()); }
+    }
+}
+
+// ─── Batch ───────────────────────────────────────────────────────────────
+
+/// A batch of tokens to feed into `Context::decode`.
+///
+/// Two construction modes:
+///   * `for_tokens(&[...])` — single sequence, positions auto-assigned.
+///     Cheapest path for generation. Uses `llama_batch_get_one`.
+///   * `allocated(n_tokens, n_seq_max)` — preallocated for manual push,
+///     supports multi-sequence. Uses `llama_batch_init` / `_free`.
+pub struct Batch {
+    inner: sys::llama_batch,
+    storage: BatchStorage,
+}
+
+enum BatchStorage {
+    /// Owns the token Vec that `inner.token` points into. The Vec is never
+    /// read directly from Rust — llama.cpp dereferences the raw pointer
+    /// during decode — but it MUST outlive the batch, so we pin it here.
+    OneSequence(#[allow(dead_code)] Vec<i32>),
+    /// C-allocated via `llama_batch_init`; must `llama_batch_free` on drop.
+    /// The seq_id[i] slots are llama-owned (pre-allocated with n_seq_max
+    /// slots each); we write INTO them on push, never replace the pointers.
+    /// `capacity` is the llama-allocated array length — push must fail
+    /// (not corrupt memory) if callers try to exceed it.
+    Allocated { n_seq_max: i32, capacity: i32 },
+}
+
+unsafe impl Send for Batch {}
+
+impl Batch {
+    /// Single-sequence batch of the given tokens. Positions auto-assigned by
+    /// `llama_decode` based on KV state. Only the last token gets logits.
+    pub fn for_tokens(mut tokens: Vec<i32>) -> Self {
+        backend_init();
+        // SAFETY: tokens' backing storage is kept alive via storage field;
+        // llama_batch_get_one points at the slice, does not take ownership.
+        let inner = unsafe {
+            sys::llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32)
+        };
+        Self { inner, storage: BatchStorage::OneSequence(tokens) }
+    }
+
+    /// Preallocated batch capable of holding up to `n_tokens` with up to
+    /// `n_seq_max` sequences per token. Populate with `push`.
+    pub fn allocated(n_tokens: i32, n_seq_max: i32) -> Self {
+        backend_init();
+        let inner = unsafe { sys::llama_batch_init(n_tokens, 0, n_seq_max) };
+        let mut b = Self {
+            inner,
+            storage: BatchStorage::Allocated { n_seq_max, capacity: n_tokens },
+        };
+        // init leaves n_tokens uninitialized; clear forces it to 0.
+        b.clear();
+        b
+    }
+
+    /// Append a token to an `allocated` batch. Panics if called on a
+    /// `for_tokens` batch, if the batch is already at capacity, or if
+    /// `seq_ids.len() > n_seq_max`.
+    pub fn push(&mut self, token: i32, pos: i32, seq_ids: &[i32], want_logits: bool) {
+        let (n_seq_max, capacity) = match self.storage {
+            BatchStorage::Allocated { n_seq_max, capacity } => (n_seq_max, capacity),
+            BatchStorage::OneSequence(_) => panic!("push() on single-sequence batch"),
+        };
+        assert!(
+            self.inner.n_tokens < capacity,
+            "Batch::push overflow: n_tokens={} already at capacity={}. \
+             Chunk your prefill into capacity-sized decode calls \
+             (prompts longer than the batch size must be decoded in pieces).",
+            self.inner.n_tokens, capacity
+        );
+        assert!(
+            seq_ids.len() as i32 <= n_seq_max,
+            "seq_ids.len()={} exceeds n_seq_max={}",
+            seq_ids.len(), n_seq_max
+        );
+        let idx = self.inner.n_tokens as usize;
+        // SAFETY: we write INTO llama-allocated arrays (token/pos/n_seq_id/
+        // logits each sized n_tokens; seq_id[idx] sized n_seq_max). We do not
+        // replace any pointer — `llama_batch_free` walks seq_id[] and frees
+        // each slot, so keeping llama's allocation intact is required.
+        unsafe {
+            *self.inner.token.add(idx) = token;
+            *self.inner.pos.add(idx) = pos;
+            *self.inner.n_seq_id.add(idx) = seq_ids.len() as i32;
+            let seq_slot = *self.inner.seq_id.add(idx);
+            for (i, &sid) in seq_ids.iter().enumerate() {
+                *seq_slot.add(i) = sid;
+            }
+            *self.inner.logits.add(idx) = i8::from(want_logits);
+        }
+        self.inner.n_tokens += 1;
+    }
+
+    /// Reset an `allocated` batch to empty.
+    pub fn clear(&mut self) {
+        self.inner.n_tokens = 0;
+    }
+
+    pub fn n_tokens(&self) -> i32 {
+        self.inner.n_tokens
+    }
+}
+
+impl Drop for Batch {
+    fn drop(&mut self) {
+        if matches!(self.storage, BatchStorage::Allocated { .. }) {
+            unsafe { sys::llama_batch_free(self.inner); }
+        }
+        // OneSequence: Vec drop handles token memory; batch struct itself is
+        // stack-allocated, no free needed.
+    }
+}
+
+// ─── Sampler ─────────────────────────────────────────────────────────────
+
+/// A sampler pipeline. Build with `Sampler::chain()` and chain methods, or
+/// use `Sampler::greedy()` for deterministic argmax.
+pub struct Sampler {
+    ptr: NonNull<sys::llama_sampler>,
+}
+
+unsafe impl Send for Sampler {}
+
+impl Sampler {
+    /// Deterministic argmax sampler.
+    pub fn greedy() -> Self {
+        let raw = unsafe { sys::llama_sampler_init_greedy() };
+        // SAFETY: init_greedy is infallible in upstream llama.cpp.
+        Self { ptr: NonNull::new(raw).expect("llama_sampler_init_greedy returned null") }
+    }
+
+    /// Start building a sampler chain. Samplers apply in insertion order;
+    /// terminate the chain with `dist(seed)` for probabilistic sampling or
+    /// leave unterminated for argmax-after-filters.
+    pub fn chain() -> SamplerChainBuilder {
+        let params = unsafe { sys::llama_sampler_chain_default_params() };
+        let raw = unsafe { sys::llama_sampler_chain_init(params) };
+        SamplerChainBuilder {
+            chain: NonNull::new(raw).expect("llama_sampler_chain_init returned null"),
+        }
+    }
+
+    /// Sample the next token from logits at `idx` in the context. Updates the
+    /// sampler's internal state (e.g., penalties).
+    pub fn sample(&mut self, ctx: &Context<'_>, idx: i32) -> i32 {
+        unsafe { sys::llama_sampler_sample(self.ptr.as_ptr(), ctx.ptr.as_ptr(), idx) }
+    }
+
+    /// Notify the sampler a token was accepted (for stateful samplers like
+    /// penalties / mirostat). Usually called after sample() by the caller.
+    pub fn accept(&mut self, token: i32) {
+        unsafe { sys::llama_sampler_accept(self.ptr.as_ptr(), token); }
+    }
+
+    /// Reset sampler state (e.g., clear penalty history).
+    pub fn reset(&mut self) {
+        unsafe { sys::llama_sampler_reset(self.ptr.as_ptr()); }
+    }
+}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        unsafe { sys::llama_sampler_free(self.ptr.as_ptr()); }
+    }
+}
+
+/// Builder for a sampler chain.
+pub struct SamplerChainBuilder {
+    chain: NonNull<sys::llama_sampler>,
+}
+
+impl SamplerChainBuilder {
+    fn add(self, smpl: *mut sys::llama_sampler) -> Self {
+        // SAFETY: chain takes ownership of smpl per llama.h docs.
+        unsafe { sys::llama_sampler_chain_add(self.chain.as_ptr(), smpl); }
+        self
+    }
+
+    pub fn top_k(self, k: i32) -> Self {
+        let s = unsafe { sys::llama_sampler_init_top_k(k) };
+        self.add(s)
+    }
+
+    pub fn top_p(self, p: f32, min_keep: usize) -> Self {
+        let s = unsafe { sys::llama_sampler_init_top_p(p, min_keep) };
+        self.add(s)
+    }
+
+    pub fn min_p(self, p: f32, min_keep: usize) -> Self {
+        let s = unsafe { sys::llama_sampler_init_min_p(p, min_keep) };
+        self.add(s)
+    }
+
+    pub fn temp(self, t: f32) -> Self {
+        let s = unsafe { sys::llama_sampler_init_temp(t) };
+        self.add(s)
+    }
+
+    /// Repetition/frequency/presence penalties, llama.cpp style.
+    /// `last_n` = number of recent tokens to consider (0 disables, -1 = n_ctx).
+    pub fn penalties(
+        self,
+        last_n: i32,
+        repeat: f32,
+        freq: f32,
+        presence: f32,
+    ) -> Self {
+        let s = unsafe {
+            sys::llama_sampler_init_penalties(last_n, repeat, freq, presence)
+        };
+        self.add(s)
+    }
+
+    /// Probabilistic final step. Usually the last thing in a chain.
+    pub fn dist(self, seed: u32) -> Self {
+        let s = unsafe { sys::llama_sampler_init_dist(seed) };
+        self.add(s)
+    }
+
+    pub fn build(self) -> Sampler {
+        Sampler { ptr: self.chain }
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sampler_greedy_builds_and_drops() {
+        let _s = Sampler::greedy();
+    }
+
+    #[test]
+    fn sampler_chain_builds_and_drops() {
+        let _s = Sampler::chain()
+            .top_k(40)
+            .top_p(0.9, 1)
+            .temp(0.8)
+            .dist(42)
+            .build();
+    }
+
+    #[test]
+    fn batch_for_tokens_roundtrip() {
+        let b = Batch::for_tokens(vec![1, 2, 3, 4]);
+        assert_eq!(b.n_tokens(), 4);
+    }
+
+    #[test]
+    fn batch_allocated_push_clear() {
+        let mut b = Batch::allocated(8, 1);
+        assert_eq!(b.n_tokens(), 0);
+        b.push(42, 0, &[0], true);
+        b.push(43, 1, &[0], true);
+        assert_eq!(b.n_tokens(), 2);
+        b.clear();
+        assert_eq!(b.n_tokens(), 0);
+    }
+}

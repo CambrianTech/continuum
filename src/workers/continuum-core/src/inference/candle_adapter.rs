@@ -20,6 +20,7 @@ use crate::ai::{
 use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
 use crate::runtime;
+use crate::system_resources::local_inference_capacity;
 
 /// Default context window reported before a model is loaded.
 /// Once loaded, the actual model's context_length is used.
@@ -56,10 +57,22 @@ pub struct CandleAdapter {
     model_guard: RwLock<Option<GpuAllocationGuard>>,
     /// RAII guards for per-adapter VRAM allocations
     adapter_guards: RwLock<HashMap<String, GpuAllocationGuard>>,
-    /// Pressure-aware inference gate: limits concurrent local inference based on
-    /// system memory pressure. Prevents 4 personas from all piling into
-    /// spawn_blocking simultaneously (40GB peak → controlled sequential).
-    inference_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Serializes first-time load of `llamacpp_backend`. Required because
+    /// concurrent Metal-init calls on the same model have panicked in
+    /// testing. The 6s model load is one-time per process and is dropped
+    /// as soon as the load completes — subsequent generate calls fall
+    /// straight through to the scheduler.
+    llamacpp_load_gate: Arc<tokio::sync::Mutex<()>>,
+    /// llama.cpp backend — in-process via the vendored substrate. Loaded
+    /// lazily on first inference; None until then.
+    ///
+    /// Wrapped in `Arc` so we can hand a clone to `spawn_blocking` without
+    /// holding a `RwLock` guard across the await point (parking_lot guards
+    /// are not `Send`).
+    ///
+    /// Wrapped in `Arc` so we can hand the slot to a background warmup task
+    /// that outlives the `&mut self` borrow of `initialize()`.
+    llamacpp_backend: Arc<RwLock<Option<Arc<backends::llamacpp::LlamaCppBackend>>>>,
 }
 
 impl CandleAdapter {
@@ -82,11 +95,30 @@ impl CandleAdapter {
             gpu_manager: None,
             model_guard: RwLock::new(None),
             adapter_guards: RwLock::new(HashMap::new()),
-            // Serialize: 1 permit. Only one Candle inference at a time.
-            // Multiple concurrent inferences pile up KV caches + Metal state,
-            // causing 40GB+ peaks. Sequential keeps peak at ~10GB above baseline.
-            inference_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            llamacpp_load_gate: Arc::new(tokio::sync::Mutex::new(())),
+            llamacpp_backend: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Load a GGUF model in-process via our vendored llama.cpp substrate.
+    /// No HTTP, no external process — the backend owns the model memory.
+    ///
+    /// Returns Err if the GGUF fails to load. Callers should propagate; the
+    /// no-fallback rule means we don't silently drop back to anything else.
+    pub fn load_llamacpp(&self, model_path: &str) -> Result<(), String> {
+        let log = runtime::logger("candle");
+        let config = backends::llamacpp::LlamaCppConfig {
+            model_path: std::path::PathBuf::from(model_path),
+            n_seq_max: local_inference_capacity() as u32,
+            ..Default::default()
+        };
+        let backend = backends::llamacpp::LlamaCppBackend::load(config)?;
+        log.info(&format!(
+            "llama.cpp backend loaded in-process: {}",
+            backend.model_id()
+        ));
+        *self.llamacpp_backend.write() = Some(Arc::new(backend));
+        Ok(())
     }
 
     /// Set GPU memory manager for VRAM allocation tracking.
@@ -112,6 +144,14 @@ impl CandleAdapter {
         let mut adapter = Self::new();
         adapter.use_quantized = false;
         adapter
+    }
+
+    /// Local-inference concurrency capacity in use by this adapter's
+    /// scheduler. Exposed so the TS-side `InferenceCoordinator` can fetch
+    /// the same number via IPC instead of re-deriving it (drift bait).
+    /// Both layers MUST agree to avoid double-gating bugs (see issue #887).
+    pub fn inference_capacity(&self) -> usize {
+        local_inference_capacity()
     }
 
     pub fn lora_capabilities(&self) -> LoRACapabilities {
@@ -350,8 +390,6 @@ impl Default for CandleAdapter {
     }
 }
 
-/// Inner inference function extracted for autorelease pool wrapping.
-/// All Metal/ObjC objects created here are released when the pool is popped.
 fn inference_inner(
     backend_arc: Arc<RwLock<Option<BackendWrapper>>>,
     gpu_mgr: Option<Arc<GpuMemoryManager>>,
@@ -428,6 +466,13 @@ impl AIProviderAdapter for CandleAdapter {
         &self.config.name
     }
 
+    fn device_type(&self) -> crate::ai::adapter::InferenceDevice {
+        // Candle IS GPU (Metal via --features=metal, CUDA via --features=cuda).
+        // We chose it for GPU. The distinction from llama.cpp is MODE
+        // (training/LoRA vs fast-inference), not device class.
+        crate::ai::adapter::InferenceDevice::Gpu
+    }
+
     fn capabilities(&self) -> AdapterCapabilities {
         // Query the actual loaded backend for its context window.
         // Falls back to BF16_PRACTICAL_CONTEXT if backend not yet loaded.
@@ -462,11 +507,74 @@ impl AIProviderAdapter for CandleAdapter {
     async fn initialize(&mut self) -> Result<(), String> {
         let log = runtime::logger("candle");
         log.info(&format!(
-            "Candle adapter ready (quantized={}, model will load on first use)",
+            "Candle adapter ready (quantized={})",
             self.use_quantized
         ));
-        // Model loads lazily on first generate_text() call.
-        // This keeps IPC socket creation fast — no 30s model loading during startup.
+
+        // Eager-load the llama.cpp model in the background so the first user
+        // chat message doesn't pay the 6s model-load latency. The load uses
+        // the same load-gate as the lazy path in generate_text — if a request
+        // arrives before warmup completes, it waits on the same mutex; if it
+        // arrives after, the backend is already populated and the load_gate
+        // is uncontended.
+        //
+        // Failure is non-fatal: if no GGUF is found locally we just log a
+        // warning and the lazy path still applies on first request. This is
+        // only a startup optimization, not a correctness requirement.
+        if self.use_quantized {
+            // Pick the first GGUF available locally — this is the model the
+            // first chat will most likely target. If multiple GGUFs are
+            // cached, this picks one and the lazy path will fall back if a
+            // request asks for a different one (current design has only ONE
+            // backend per CandleAdapter, so the eager pick is the de-facto
+            // default until restart).
+            if let Some(local_gguf) = find_first_local_gguf() {
+                let backend_slot = self.llamacpp_backend.clone();
+                let load_gate = self.llamacpp_load_gate.clone();
+                tokio::spawn(async move {
+                    let log = runtime::logger("candle");
+                    log.info(&format!(
+                        "🔥 Eager-loading llama.cpp backend (background): {}",
+                        local_gguf.display()
+                    ));
+                    let _load_permit = load_gate.lock_owned().await;
+                    if backend_slot.read().is_some() {
+                        return; // a request raced us and lazy-loaded already
+                    }
+                    let path_str = match local_gguf.to_str() {
+                        Some(s) => s.to_string(),
+                        None => { log.warn("Eager-load: non-utf8 GGUF path"); return; }
+                    };
+                    let load_start = std::time::Instant::now();
+                    let n_seq_max = local_inference_capacity() as u32;
+                    let result = tokio::task::spawn_blocking(move || {
+                        let config = backends::llamacpp::LlamaCppConfig {
+                            model_path: std::path::PathBuf::from(path_str),
+                            n_seq_max,
+                            ..Default::default()
+                        };
+                        backends::llamacpp::LlamaCppBackend::load(config)
+                    }).await;
+                    match result {
+                        Ok(Ok(backend)) => {
+                            log.info(&format!(
+                                "🔥 Eager-load complete in {:.2}s — first chat will skip the cold start",
+                                load_start.elapsed().as_secs_f64()
+                            ));
+                            *backend_slot.write() = Some(Arc::new(backend));
+                        }
+                        Ok(Err(e)) => log.warn(&format!(
+                            "Eager-load failed ({e}); falling back to lazy load"
+                        )),
+                        Err(e) => log.warn(&format!(
+                            "Eager-load task panicked ({e}); falling back to lazy load"
+                        )),
+                    }
+                });
+            } else {
+                log.info("Eager-load skipped: no local GGUF found in ~/.cache/huggingface or models dir");
+            }
+        }
         Ok(())
     }
 
@@ -610,52 +718,44 @@ impl AIProviderAdapter for CandleAdapter {
             ));
         }
 
-        // Serialize local inference: only 1 at a time.
-        // The RwLock on backend already serializes execution, but the semaphore
-        // prevents multiple personas from even QUEUING on spawn_blocking threads
-        // (each blocked thread holds stack + Metal state in memory).
-        let wait_start = std::time::Instant::now();
-        let _permit = self.inference_semaphore.clone().acquire_owned().await
-            .map_err(|e| format!("Inference semaphore closed: {e}"))?;
-        let wait_ms = wait_start.elapsed().as_millis();
-        if wait_ms > 100 {
-            log.info(&format!(
-                "Inference gate: waited {}ms for permit",
-                wait_ms
-            ));
-        }
+        // ── Ensure llama.cpp backend is loaded (BEFORE acquiring the
+        // inference semaphore). Idempotent: if eager-load (initialize)
+        // already populated the backend, this returns immediately. If a
+        // concurrent caller is in the middle of loading, we wait on the
+        // same load_gate. Loading runs on spawn_blocking so the async
+        // runtime stays responsive during the 6s mmap + Metal init. ──
+        ensure_llamacpp_loaded_async(
+            self.llamacpp_backend.clone(),
+            self.llamacpp_load_gate.clone(),
+            &model_id,
+        ).await?;
 
-        // Run inference on blocking thread pool (lazy model loading on first call)
-        //
-        // CRITICAL: Wrapped in macOS autorelease pool.
-        // Candle's Metal backend creates hundreds of ObjC/Metal objects per inference
-        // (command buffers, compute pipeline states, MTLBuffer allocations).
-        // Without an autorelease pool on the spawn_blocking thread, these objects
-        // accumulate in the thread-local default pool and are never released,
-        // causing GB-scale memory growth per inference call.
-        let result = tokio::task::spawn_blocking(move || {
-            #[cfg(target_os = "macos")]
-            extern "C" {
-                fn objc_autoreleasePoolPush() -> *mut std::ffi::c_void;
-                fn objc_autoreleasePoolPop(pool: *mut std::ffi::c_void);
-            }
+        // The continuous-batching scheduler IS the gate now: capacity is
+        // bounded by `n_seq_max` inside llama.cpp, and overflow requests
+        // queue on the scheduler's mpsc channel until a sequence slot
+        // frees. The previous `inference_semaphore.acquire_owned()` here
+        // double-gated — it serialized requests outside the scheduler
+        // even though the scheduler itself was already enforcing the
+        // same capacity bound. Removed.
 
-            #[cfg(target_os = "macos")]
-            let pool = unsafe { objc_autoreleasePoolPush() };
-
-            let result = inference_inner(
-                backend_arc, gpu_mgr, use_quantized, &resolved_model, &prompt, max_tokens, &sampling,
-            );
-
-            #[cfg(target_os = "macos")]
-            unsafe { objc_autoreleasePoolPop(pool); }
-
-            result
-        })
-        .await
-        .map_err(|e| format!("Inference task panicked: {e}"))?;
-
-        let ((output_text, completion_tokens), new_model_guard) = result?;
+        // Generate on the blocking pool. spawn_blocking moves the sync C++
+        // work off the async runtime entirely — no main-thread blocking,
+        // no block_in_place pinning a worker, no guard held across await.
+        // We clone the Arc<LlamaCppBackend> out of the RwLock so the guard
+        // is dropped before we cross into the blocking task.
+        let llama_arc = self.llamacpp_backend.read()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "llama.cpp backend not loaded after load attempt".to_string())?;
+        let prompt_for_gen = prompt.clone();
+        let temperature = sampling.temperature as f32;
+        let (output_text, completion_tokens) = tokio::task::spawn_blocking(move || {
+            let stop_tokens: [&str; 2] = ["<|im_end|>", "<|endoftext|>"];
+            llama_arc.generate(&prompt_for_gen, max_tokens, temperature, &stop_tokens, &[])
+        }).await
+            .map_err(|e| format!("llama.cpp generate task panicked: {e}"))?
+            .map_err(|e| format!("llama.cpp generate failed: {e}"))?;
+        let new_model_guard: Option<GpuAllocationGuard> = None;
 
         // Store model guard if this was a first load
         if let Some(guard) = new_model_guard {
@@ -756,24 +856,37 @@ impl AIProviderAdapter for CandleAdapter {
     }
 
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
-        vec![
-            "llama",
-            "qwen",
-            "phi",
-            "mistral",
-            "codellama",
-            "gemma",
-            "tinyllama",
-            "orca",
-            "vicuna",
-            "wizardlm",
-            "neural-chat",
-            "stablelm",
-            "yi",
-            "deepseek-coder",
-            "unsloth/",
-            "smollm",
-        ]
+        // Intentionally empty — Candle is NOT a chat-routing default.
+        //
+        // Candle runs CPU-heavy on Apple Silicon and anywhere without a
+        // well-supported Metal/CUDA path; defaulting chat to Candle silently
+        // gave every user a slow first-chat experience, which is the single
+        // biggest "Continuum feels broken" signal.
+        //
+        // Chat routes explicitly through GPU adapters only:
+        //   - `docker-model-runner`      (DMR with vllm-metal on Mac, or
+        //                                 llama.cpp-cuda/rocm on Linux)
+        //   - `llama-vulkan`             (our vendored llama.cpp built with
+        //                                 --features=vulkan; covers "everyone
+        //                                 else with a GPU")
+        //
+        // Candle stays available as an adapter for callers who set
+        // `provider: "candle"` EXPLICITLY — intended for LoRA training /
+        // safetensors fine-tuning workflows where Candle's Rust-native
+        // autodiff + LoRA support is the right tool. Those callers bypass
+        // `supports_model()` entirely (AdapterRegistry::select line ~296
+        // short-circuits on exact provider match).
+        //
+        // **OBVIOUS SPOT FOR CPU SUPPORT LATER:** when we add back a CPU-ok
+        // path for hardware that has no GPU at all, it should be:
+        //   1. A NEW adapter (e.g. `candle-cpu`) — never mix this into the
+        //      existing `candle` adapter.
+        //   2. Registered ONLY when env `CONTINUUM_ALLOW_CPU_INFERENCE=1`
+        //      is set — no silent opt-in.
+        //   3. Accompanied by an install-time warning: "Continuum will run
+        //      without GPU acceleration. Expect N seconds per message."
+        //   4. Still fail-loud if model isn't on disk — same honesty rule.
+        vec![]
     }
 }
 
@@ -875,9 +988,127 @@ fn storage_root() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".continuum")
 }
 
+/// Find the first available GGUF on disk for eager-load warmup. Scans the
+/// HF cache (`~/.cache/huggingface/hub/models--*-GGUF/snapshots/*/*.gguf`)
+/// and returns the first match. Used by `initialize()` to pick a sensible
+/// default model when no specific request has come in yet.
+fn find_first_local_gguf() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let hf_cache = std::path::PathBuf::from(&home).join(".cache/huggingface/hub");
+    if !hf_cache.exists() { return None; }
+    for entry in std::fs::read_dir(&hf_cache).ok()?.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.starts_with("models--") { continue; }
+        let snapshots = entry.path().join("snapshots");
+        let Ok(snaps) = std::fs::read_dir(&snapshots) else { continue; };
+        for snap in snaps.flatten() {
+            let Ok(files) = std::fs::read_dir(snap.path()) else { continue; };
+            for f in files.flatten() {
+                let p = f.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("gguf") {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Ensure the llama.cpp backend is loaded for `model_id`. Idempotent and
+/// safe for concurrent callers via `load_gate`. The actual `Model::load`
+/// runs in `spawn_blocking` because it is a synchronous C++ FFI call
+/// (mmap + Metal init + ~2GB allocation) that must not stall the async
+/// runtime.
+///
+/// Returns Err if the GGUF cannot be located or load fails. Used by both
+/// the eager-load path in `initialize()` and the lazy load path in
+/// `generate_text()`. Sharing one helper means only one place to update
+/// when load semantics change.
+async fn ensure_llamacpp_loaded_async(
+    backend_slot: Arc<RwLock<Option<Arc<backends::llamacpp::LlamaCppBackend>>>>,
+    load_gate: Arc<tokio::sync::Mutex<()>>,
+    model_id: &str,
+) -> Result<(), String> {
+    if backend_slot.read().is_some() {
+        return Ok(());
+    }
+    let _load_permit = load_gate.lock_owned().await;
+    if backend_slot.read().is_some() {
+        return Ok(());
+    }
+    let log = runtime::logger("candle");
+    let gguf_path = find_local_gguf(model_id)
+        .ok_or_else(|| format!(
+            "No GGUF for model '{}'. Ensure the model is downloaded to ~/.continuum/genome/models or HF cache.",
+            model_id
+        ))?;
+    let path_str = gguf_path.to_str()
+        .ok_or("non-utf8 model path")?.to_string();
+    log.info(&format!("Loading llama.cpp backend: {}", path_str));
+    let load_start = std::time::Instant::now();
+    let backend = tokio::task::spawn_blocking(move || {
+        let config = backends::llamacpp::LlamaCppConfig {
+            model_path: std::path::PathBuf::from(path_str),
+            n_seq_max: local_inference_capacity() as u32,
+            ..Default::default()
+        };
+        backends::llamacpp::LlamaCppBackend::load(config)
+    }).await
+        .map_err(|e| format!("llama.cpp load task panicked: {e}"))??;
+    log.info(&format!(
+        "llama.cpp backend ready ({:.2}s)",
+        load_start.elapsed().as_secs_f64()
+    ));
+    *backend_slot.write() = Some(Arc::new(backend));
+    Ok(())
+}
+
 /// Check if a model is available locally as a GGUF.
 /// Searches ~/.continuum/ (internal NVMe, fast) FIRST, then CONTINUUM_STORAGE_PATH (external, slow).
 /// Returns the local directory path if found, None if not cached.
+/// Find the .gguf file for a model, searching local dirs + HF cache.
+/// Used by the llama.cpp backend which needs a GGUF file path directly.
+fn find_local_gguf(model_id: &str) -> Option<std::path::PathBuf> {
+    // Try local model dir first (via find_local_model)
+    if let Some(dir) = find_local_model(model_id) {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("gguf") {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    // Fall back to HF cache
+    let home = std::env::var("HOME").ok()?;
+    let hf_cache = std::path::PathBuf::from(&home).join(".cache/huggingface/hub");
+    if !hf_cache.exists() { return None; }
+    for entry in std::fs::read_dir(&hf_cache).ok()?.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Match "models--*<model_id>*" or a fuzzy match on slug
+        if name_str.starts_with("models--") && name_str.to_lowercase().contains(&model_id.to_lowercase().replace('/', "--")) {
+            // Look inside snapshots/<hash>/ for a .gguf file
+            let snapshots = entry.path().join("snapshots");
+            if let Ok(snaps) = std::fs::read_dir(&snapshots) {
+                for snap in snaps.flatten() {
+                    if let Ok(files) = std::fs::read_dir(snap.path()) {
+                        for f in files.flatten() {
+                            let p = f.path();
+                            if p.extension().and_then(|s| s.to_str()) == Some("gguf") {
+                                return Some(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn find_local_model(model_id: &str) -> Option<std::path::PathBuf> {
     let search_dirs = {
         let mut dirs = Vec::new();

@@ -21,6 +21,7 @@
 use crate::ai::{
     AdapterRegistry, AnthropicAdapter, CandleAdapter, ChatMessage, MessageContent,
     OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
+    adapter::InferenceDevice,
 };
 use crate::logging::TimingGuard;
 use crate::runtime::{
@@ -146,34 +147,124 @@ impl AIProviderModule {
             registry.register(Box::new(OpenAICompatibleAdapter::google()), 7);
         }
 
-        // Candle local inference — ALWAYS registered. No API key needed.
-        // It's the foundational provider: every machine can run local inference.
-        // INFERENCE_MODE controls priority: "local"/"candle" = primary, otherwise fallback.
-        {
-            let inference_mode = get_secret("INFERENCE_MODE").unwrap_or_default();
-            let is_primary = inference_mode.eq_ignore_ascii_case("local")
-                || inference_mode.eq_ignore_ascii_case("candle")
-                || registry.available().is_empty(); // Primary if no cloud providers
+        // Docker Model Runner — preferred local provider when reachable. Routes
+        // to llama.cpp-metal/cuda or vllm-metal depending on platform, all running
+        // host-native via Docker Desktop. ~50 tok/s on M5 (Qwen2.5-7B Q4_K_M),
+        // beats Candle's ~10 tok/s by 5x because Candle's Metal path goes through
+        // ggml-via-candle while Model Runner is direct llama.cpp-metal.
+        //
+        // Probed at init time (TCP localhost:12434/.../v1/models). If reachable,
+        // registered with priority -1 (above Candle's 0). If not reachable, the
+        // chat path returns the no-GPU-adapter hard error from select() — Candle
+        // is NOT a chat fallback (its `supported_model_prefixes()` returns []
+        // so it never matches in select()'s tier-3 device-filtered walk).
+        // Candle's role is LoRA training on GPU, not inference.
+        // Docker Model Runner endpoint detection.
+        // Mac Option B (native core): DMR at localhost:12434 (via --tcp flag).
+        // Linux/Windows Docker Desktop (containerized core): DMR at
+        // model-runner.docker.internal (Docker Desktop internal DNS,
+        // no --tcp flag needed — the DNS route is always available from
+        // inside containers). Try localhost first (fast loopback probe),
+        // then container-internal DNS if we detect we're containerized.
+        let (dmr_available, dmr_base_url) = {
+            let localhost_ok = std::net::TcpStream::connect_timeout(
+                &"127.0.0.1:12434".parse().unwrap(),
+                std::time::Duration::from_secs(1),
+            )
+            .is_ok();
 
-            // Register quantized adapter (GGUF) — larger context, lower VRAM, no LoRA.
-            // Best for coding agent sessions where context window matters most.
+            if localhost_ok {
+                (true, None) // Use default base_url in adapter (localhost)
+            } else {
+                // Not on localhost — check if we're inside a Docker container.
+                // model-runner.docker.internal resolves from inside Docker
+                // Desktop containers on Mac, Linux, and Windows (WSL2).
+                let in_container = std::path::Path::new("/.dockerenv").exists();
+                if in_container {
+                    // DNS-resolve the internal hostname + TCP probe port 80.
+                    use std::net::ToSocketAddrs;
+                    let internal_ok = "model-runner.docker.internal:80"
+                        .to_socket_addrs()
+                        .ok()
+                        .and_then(|mut addrs| addrs.next())
+                        .map(|addr| {
+                            std::net::TcpStream::connect_timeout(
+                                &addr,
+                                std::time::Duration::from_secs(2),
+                            )
+                            .is_ok()
+                        })
+                        .unwrap_or(false);
+                    if internal_ok {
+                        (
+                            true,
+                            Some(
+                                "http://model-runner.docker.internal/engines/llama.cpp"
+                                    .to_string(),
+                            ),
+                        )
+                    } else {
+                        (false, None)
+                    }
+                } else {
+                    (false, None)
+                }
+            }
+        };
+        if dmr_available {
+            let desc = dmr_base_url
+                .as_deref()
+                .unwrap_or("localhost:12434 (host-native)");
+            self.log().info(&format!(
+                "Registering Docker Model Runner adapter ({})",
+                desc
+            ));
+            let adapter = if let Some(url) = dmr_base_url {
+                OpenAICompatibleAdapter::docker_model_runner().with_runtime_base_url(url)
+            } else {
+                OpenAICompatibleAdapter::docker_model_runner()
+            };
+            registry.register(
+                Box::new(adapter),
+                0, // Highest priority — beats Candle for local inference
+            );
+        } else {
+            self.log().info(
+                "Docker Model Runner not reachable on localhost:12434 \
+                 (nor model-runner.docker.internal inside container) — \
+                 no local GPU inference available. To enable: \
+                 docker desktop enable model-runner --tcp=12434",
+            );
+        }
+
+        // Candle local inference — ALWAYS registered, ALWAYS lowest priority.
+        // Candle's role is LoRA training on GPU, NOT chat inference. It is
+        // never picked for chat by the provider's routing because its
+        // `supported_model_prefixes()` returns vec![] (capability fact:
+        // currently doesn't serve chat-class models at the speed the
+        // contract requires). Callers wanting LoRA training pass
+        // `provider="candle"` explicitly, which short-circuits routing
+        // and goes straight to the named adapter.
+        //
+        // No env-var-driven priority promotion. The runtime config does
+        // not get to elevate Candle to chat-primary. The provider is the
+        // single source of truth for routing — env vars don't.
+        {
             self.log()
-                .info("Registering Candle quantized adapter (GGUF, large context)");
+                .info("Registering Candle quantized adapter (GGUF, LoRA training only)");
             let mut candle_q = CandleAdapter::quantized();
             if let Some(mgr) = &self.gpu_manager {
                 candle_q.set_gpu_manager(mgr.clone());
             }
-            registry.register(Box::new(candle_q), if is_primary { 0 } else { 8 });
+            registry.register(Box::new(candle_q), 8);
 
-            // Register safetensors adapter (BF16) — supports LoRA fine-tuning.
-            // Used when a persona's LoRA adapter needs to be activated.
             self.log()
-                .info("Registering Candle safetensors adapter (BF16, LoRA support)");
+                .info("Registering Candle safetensors adapter (BF16, LoRA training only)");
             let mut candle_st = CandleAdapter::regular();
             if let Some(mgr) = &self.gpu_manager {
                 candle_st.set_gpu_manager(mgr.clone());
             }
-            registry.register(Box::new(candle_st), if is_primary { 1 } else { 9 });
+            registry.register(Box::new(candle_st), 9);
         }
 
         // Initialize all registered adapters
@@ -315,7 +406,7 @@ impl ServiceModule for AIProviderModule {
 
                 // Select adapter
                 let (provider_id, adapter) = registry
-                    .select(request.provider.as_deref(), request.model.as_deref())
+                    .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
                     .ok_or_else(|| {
                         let available = registry.available();
                         if available.is_empty() {
@@ -518,7 +609,7 @@ pub async fn generate_text(
     request: TextGenerationRequest,
 ) -> Result<TextGenerationResponse, String> {
     let (provider_id, adapter) = registry
-        .select(request.provider.as_deref(), request.model.as_deref())
+        .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
         .ok_or_else(|| {
             let available = registry.available();
             if available.is_empty() {

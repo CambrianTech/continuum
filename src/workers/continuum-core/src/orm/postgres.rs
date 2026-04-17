@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_postgres::types::{Json, ToSql};
@@ -52,6 +52,12 @@ pub struct PostgresAdapter {
     /// Cached column types per table — avoids repeated information_schema queries.
     /// Invalidated per-table when schema evolution adds new columns.
     col_type_cache: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
+    /// Per-table set of column names known to exist after a successful ensure.
+    /// Lets us short-circuit ensure_table_exists_pg on the hot write path
+    /// when the incoming row introduces no new columns. Process-local; if a
+    /// concurrent writer ALTERs the table, the next miss-then-success rebuilds
+    /// the entry.
+    ensured_columns_cache: Arc<RwLock<HashMap<String, HashSet<String>>>>,
 }
 
 impl PostgresAdapter {
@@ -60,6 +66,7 @@ impl PostgresAdapter {
             pool: None,
             schema: "public".to_string(),
             col_type_cache: Arc::new(RwLock::new(HashMap::new())),
+            ensured_columns_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -92,10 +99,69 @@ impl PostgresAdapter {
         types
     }
 
-    /// Invalidate cached column types for a table (after schema evolution)
+    /// Invalidate cached column types for a table (after schema evolution).
+    /// The ensured-columns cache is managed exclusively by
+    /// `ensure_table_exists_cached`, so we do NOT touch it here — the wrapper
+    /// only inserts after a real ALTER has succeeded, so the entry remains
+    /// authoritative for the columns we just added.
     async fn invalidate_column_cache(&self, bare_table: &str) {
         let mut cache = self.col_type_cache.write().await;
         cache.remove(bare_table);
+    }
+
+    /// Hot-path wrapper around `ensure_table_exists_pg`.
+    ///
+    /// Most writes don't introduce new columns — running CREATE IF NOT EXISTS +
+    /// information_schema lookup + per-column ALTER existence check on every
+    /// row burns 2 round-trips for nothing. We track the set of column names
+    /// proven to exist for a table; if every column the row needs is already
+    /// in that set, we skip straight to the INSERT.
+    ///
+    /// Returns `true` when we actually hit Postgres (caller should invalidate
+    /// the column-type cache because an ALTER may have happened); `false`
+    /// means the cache absorbed the call.
+    async fn ensure_table_exists_cached(
+        &self,
+        client: &deadpool_postgres::Client,
+        qualified_table: &str,
+        bare_table: &str,
+        data: &Value,
+    ) -> Result<bool, String> {
+        let needed: Vec<String> = if let Value::Object(obj) = data {
+            obj.keys()
+                .filter(|k| !METADATA_KEYS.contains(&k.as_str()))
+                .map(|k| naming::to_snake_case(k))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        {
+            let cache = self.ensured_columns_cache.read().await;
+            if let Some(known) = cache.get(bare_table) {
+                if needed.iter().all(|c| known.contains(c)) {
+                    return Ok(false);
+                }
+            }
+        }
+
+        ensure_table_exists_pg(client, qualified_table, bare_table, &self.schema, data).await?;
+
+        {
+            let mut cache = self.ensured_columns_cache.write().await;
+            let entry = cache.entry(bare_table.to_string()).or_insert_with(|| {
+                let mut s = HashSet::new();
+                s.insert("id".to_string());
+                s.insert("created_at".to_string());
+                s.insert("updated_at".to_string());
+                s.insert("version".to_string());
+                s
+            });
+            for c in &needed {
+                entry.insert(c.clone());
+            }
+        }
+        Ok(true)
     }
 
     /// Return a schema-qualified table name for SQL statements
@@ -680,19 +746,19 @@ impl StorageAdapter for PostgresAdapter {
         let now_rfc3339 = now.to_rfc3339();
 
         // Ensure table exists (auto-create from data shape).
-        // Invalidate column type cache afterwards — table may have been created or altered.
-        if let Err(e) = ensure_table_exists_pg(
-            &client,
-            &qualified_table,
-            &bare_table,
-            &self.schema,
-            &record.data,
-        )
-        .await
+        // Invalidate column type cache only when the cached helper actually
+        // hit Postgres — if the row introduced no new columns, both caches
+        // stay warm and we save 2 round-trips on the steady-state hot path.
+        let schema_changed = match self
+            .ensure_table_exists_cached(&client, &qualified_table, &bare_table, &record.data)
+            .await
         {
-            return StorageResult::err(e);
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(e),
+        };
+        if schema_changed {
+            self.invalidate_column_cache(&bare_table).await;
         }
-        self.invalidate_column_cache(&bare_table).await;
 
         // Get column types for type-aware parameter coercion
         let col_types = self.cached_column_types(&client, &bare_table).await;
@@ -827,12 +893,16 @@ impl StorageAdapter for PostgresAdapter {
             for col in cols {
                 dummy.insert(col.clone(), Value::Null);
             }
-            if let Err(e) = ensure_table_exists_pg(
-                &client, &table, &bare_table, &self.schema, &Value::Object(dummy),
-            ).await {
-                return StorageResult::err(e);
+            let schema_changed = match self
+                .ensure_table_exists_cached(&client, &table, &bare_table, &Value::Object(dummy))
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => return StorageResult::err(e),
+            };
+            if schema_changed {
+                self.invalidate_column_cache(&bare_table).await;
             }
-            self.invalidate_column_cache(&bare_table).await;
         }
 
         let col_types = self.cached_column_types(&client, &bare_table).await;
@@ -1101,9 +1171,13 @@ impl StorageAdapter for PostgresAdapter {
             Ok(rows) if rows > 0 => self.read(collection, id).await,
             Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
             Err(e) => {
-                // Schema evolution: auto-add missing columns and retry
+                // Schema evolution: auto-add missing columns and retry.
+                // Evict the ensured-columns cache first — it lied (claimed a
+                // column existed that Postgres just rejected), so we must hit
+                // information_schema to rebuild ground truth.
                 let err_msg = format_pg_error(&e);
                 if err_msg.contains("does not exist") && err_msg.contains("column") {
+                    self.ensured_columns_cache.write().await.remove(&bare_table);
                     if let Err(evolve_err) = ensure_table_exists_pg(
                         &client, &table, &bare_table, &self.schema, &data
                     ).await {
@@ -1278,6 +1352,35 @@ impl StorageAdapter for PostgresAdapter {
             );
             if let Err(e) = client.execute(&idx_sql, &[]).await {
                 return StorageResult::err(format!("Create composite index failed: {}", format_pg_error(&e)));
+            }
+        }
+
+        // Phase 2 Step 4: seed the ensured_columns_cache (m5's QW#1) with
+        // the DECLARED column set from the schema. Subsequent writes skip
+        // the ensure_table_exists_cached probe entirely — zero runtime
+        // data-shape inference on the hot write path. Previously the cache
+        // was populated lazily on first write and grew column-by-column;
+        // now it starts authoritative.
+        //
+        // Merge semantics (per m5-test review of PR #904): extend, don't
+        // replace. If ensure_table_exists_cached populated the entry first
+        // (theoretical ordering window — ensure_schema typically runs before
+        // any write, but nothing enforces that), we union our declared set
+        // into what's already known rather than dropping it. Matches the
+        // `or_insert_with + insert` pattern at ensure_table_exists_cached.
+        //
+        // Bare-table name matches what ensure_table_exists_cached uses as
+        // the cache key (the unqualified collection → snake_case conversion).
+        let bare_table = naming::to_table_name(&schema.collection);
+        {
+            let mut cache = self.ensured_columns_cache.write().await;
+            let entry = cache.entry(bare_table).or_insert_with(HashSet::new);
+            entry.insert("id".to_string());
+            entry.insert("created_at".to_string());
+            entry.insert("updated_at".to_string());
+            entry.insert("version".to_string());
+            for field in &schema.fields {
+                entry.insert(naming::to_snake_case(&field.name));
             }
         }
 

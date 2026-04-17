@@ -1,0 +1,153 @@
+# Inference Capacity Command
+
+Report local-inference concurrency cap. How many parallel generate requests the hardware can handle simultaneously — matches the BatchScheduler's n_seq_max and the InferenceCoordinator's admission slots. Scaled by RAM: 48GB+ → 3, 16GB+ → 2, else 1. Single source of truth across the TS admission layer and the Rust scheduler (see issue #887).
+
+## Table of Contents
+
+- [Usage](#usage)
+  - [CLI Usage](#cli-usage)
+  - [Tool Usage](#tool-usage)
+- [Parameters](#parameters)
+- [Result](#result)
+- [Examples](#examples)
+- [Testing](#testing)
+  - [Unit Tests](#unit-tests)
+  - [Integration Tests](#integration-tests)
+- [Getting Help](#getting-help)
+- [Access Level](#access-level)
+- [Implementation Notes](#implementation-notes)
+
+## Usage
+
+### CLI Usage
+
+From the command line using the jtag CLI:
+
+```bash
+./jtag inference/capacity 
+```
+
+### Tool Usage
+
+From Persona tools or programmatic access using `Commands.execute()`:
+
+```typescript
+import { Commands } from '@system/core/shared/Commands';
+
+const result = await Commands.execute('inference/capacity', {
+  // your parameters here
+});
+```
+
+## Parameters
+
+No parameters required.
+
+## Result
+
+Returns `InferenceCapacityResult` with:
+
+Returns CommandResult with:
+- **capacity**: `number` - Number of concurrent local-inference slots available on this host. Always >= 1.
+
+## Examples
+
+### Query local inference capacity
+
+```bash
+./jtag inference/capacity
+```
+
+**Expected result:**
+{ capacity: 2 }
+
+## Getting Help
+
+### Using the Help Tool
+
+Get detailed usage information for this command:
+
+**CLI:**
+```bash
+./jtag help inference/capacity
+```
+
+**Tool:**
+```typescript
+// Use your help tool with command name 'inference/capacity'
+```
+
+### Using the README Tool
+
+Access this README programmatically:
+
+**CLI:**
+```bash
+./jtag readme inference/capacity
+```
+
+**Tool:**
+```typescript
+// Use your readme tool with command name 'inference/capacity'
+```
+
+## Testing
+
+### Unit Tests
+
+Test command logic in isolation using mock dependencies:
+
+```bash
+# Run unit tests (no server required)
+npx tsx commands/Inference Capacity/test/unit/InferenceCapacityCommand.test.ts
+```
+
+**What's tested:**
+- Command structure and parameter validation
+- Mock command execution patterns
+- Required parameter validation (throws ValidationError)
+- Optional parameter handling (sensible defaults)
+- Performance requirements
+- Assertion utility helpers
+
+**TDD Workflow:**
+1. Write/modify unit test first (test-driven development)
+2. Run test, see it fail
+3. Implement feature
+4. Run test, see it pass
+5. Refactor if needed
+
+### Integration Tests
+
+Test command with real client connections and system integration:
+
+```bash
+# Prerequisites: Server must be running
+npm start  # Wait 90+ seconds for deployment
+
+# Run integration tests
+npx tsx commands/Inference Capacity/test/integration/InferenceCapacityIntegration.test.ts
+```
+
+**What's tested:**
+- Client connection to live system
+- Real command execution via WebSocket
+- ValidationError handling for missing params
+- Optional parameter defaults
+- Performance under load
+- Various parameter combinations
+
+**Best Practice:**
+Run unit tests frequently during development (fast feedback). Run integration tests before committing (verify system integration).
+
+## Access Level
+
+**ai-safe** - Safe for AI personas to call autonomously
+
+## Implementation Notes
+
+- **Shared Logic**: Core business logic in `shared/InferenceCapacityTypes.ts`
+- **Browser**: Browser-specific implementation in `browser/InferenceCapacityBrowserCommand.ts`
+- **Server**: Server-specific implementation in `server/InferenceCapacityServerCommand.ts`
+- **Unit Tests**: Isolated testing in `test/unit/InferenceCapacityCommand.test.ts`
+- **Integration Tests**: System testing in `test/integration/InferenceCapacityIntegration.test.ts`

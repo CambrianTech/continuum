@@ -655,6 +655,81 @@ cmd_doctor() {
     fi
   fi
 
+  # Submodules — vendored substrates needed for any local build (npm start
+  # OR docker build). Empty submodule = silent failures deep in cmake.
+  if find_compose 2>/dev/null && [ -d "$COMPOSE_DIR/src/workers/vendor/llama.cpp" ]; then
+    if [ -f "$COMPOSE_DIR/src/workers/vendor/llama.cpp/CMakeLists.txt" ]; then
+      echo -e "  ${GREEN}●${RESET} Submodules: vendor/llama.cpp populated"
+    else
+      echo -e "  ${RED}●${RESET} Submodules: vendor/llama.cpp empty (run: git submodule update --init --recursive)"
+    fi
+  fi
+
+  # IPC sockets — Rust core <-> TS server <-> personas. Sockets missing
+  # means containers aren't healthy or weren't started. Quick triage.
+  if [ -S "$CONTINUUM_HOME/sockets/continuum-core.sock" ]; then
+    echo -e "  ${GREEN}●${RESET} IPC: continuum-core.sock present"
+  elif [ -d "$CONTINUUM_HOME/sockets" ]; then
+    echo -e "  ${YELLOW}●${RESET} IPC: continuum-core.sock missing (container not up or not yet ready)"
+  fi
+
+  # Inference backend — distinguishes GPU vs silent-CPU-fallback. CPU
+  # fallback works but at <1/10 the throughput, so it's a real bug to
+  # surface. Also distinguishes our scheduler from upstream llama-server
+  # in the gpu profile.
+  if find_compose 2>/dev/null; then
+    cd "$COMPOSE_DIR"
+    local core_name
+    # `set -e + pipefail` is in effect: protect the pipeline because grep
+    # returning 1 on no-match propagates through the substitution and
+    # exits the script. We want "no container" to be a clean empty value.
+    core_name=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -E 'continuum-core(-1)?$' | head -1 || true)
+    if [ -n "$core_name" ]; then
+      local logs
+      logs=$(docker logs "$core_name" 2>&1 | tail -200)
+      if echo "$logs" | grep -qiE "ggml-cuda.*reg|cuda.*backend|cuda.*device"; then
+        echo -e "  ${GREEN}●${RESET} Backend: CUDA (GPU)"
+      elif echo "$logs" | grep -qiE "ggml-metal.*reg|metal.*backend"; then
+        echo -e "  ${GREEN}●${RESET} Backend: Metal (Apple GPU)"
+      elif echo "$logs" | grep -qiE "backend.*missing|fallback.*cpu|no.*gpu.*backend"; then
+        echo -e "  ${RED}●${RESET} Backend: CPU fallback (GPU not engaged — slow!)"
+      else
+        echo -e "  ${YELLOW}●${RESET} Backend: indeterminate (no backend marker in last 200 log lines)"
+      fi
+      # Substrate check — our scheduler vs upstream llama-server
+      if echo "$logs" | grep -qE "n_seq_max|seq_id|continuous.batch"; then
+        echo -e "  ${GREEN}●${RESET} Substrate: continuum scheduler"
+      elif echo "$logs" | grep -qE "llama.server.*starting|HTTP server listening"; then
+        echo -e "  ${RED}●${RESET} Substrate: upstream llama-server (wrong image — gpu override missing?)"
+      fi
+    fi
+  fi
+
+  # Cloud API keys — distinguishes local-only (intentional) from
+  # misconfigured (forgot to add key but expected cloud personas).
+  if [ -f "$CONTINUUM_HOME/config.env" ]; then
+    local providers
+    # Same pipefail caveat as Backend block — grep no-match must not exit.
+    providers=$(grep -oE "^(ANTHROPIC|OPENAI|GROQ|XAI|TOGETHER|FIREWORKS|GOOGLE|DEEPSEEK)_API_KEY" "$CONTINUUM_HOME/config.env" 2>/dev/null \
+                | sed 's/_API_KEY//' | tr '\n' ' ' || true)
+    if [ -n "$providers" ]; then
+      echo -e "  ${GREEN}●${RESET} Cloud API keys: $providers"
+    else
+      echo -e "  ${DIM}○${RESET} Cloud API keys: none (local-only mode)"
+    fi
+  fi
+
+  # Disk free in $HOME — < 5GB starts failing model downloads silently.
+  if command -v df &>/dev/null; then
+    local free_gb
+    free_gb=$(df -g "$HOME" 2>/dev/null | awk 'NR==2{print $4}' || df -k "$HOME" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')
+    if [ -n "$free_gb" ] && [ "$free_gb" -ge 5 ] 2>/dev/null; then
+      echo -e "  ${GREEN}●${RESET} Disk free in \$HOME: ${free_gb}G"
+    elif [ -n "$free_gb" ]; then
+      echo -e "  ${RED}●${RESET} Disk free in \$HOME: ${free_gb}G (low — model downloads need ~5G+)"
+    fi
+  fi
+
   echo ""
 }
 

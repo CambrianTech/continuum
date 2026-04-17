@@ -157,7 +157,9 @@ export class PersonaAutonomousLoop {
       }
 
       const bridge = this.personaUser.rustCognitionBridge!;
+      console.log(`🔬 [LOOP-DEBUG] ${this.personaUser.displayName}: calling serviceCycleFull, inbox=${this.personaUser.inbox.getSize()}`);
       const result = await bridge.serviceCycleFull();
+      console.log(`🔬 [LOOP-DEBUG] ${this.personaUser.displayName}: serviceCycleFull returned should_process=${result.should_process} hasItem=${!!result.item}`);
 
       if (!result.should_process || !result.item) {
         break;

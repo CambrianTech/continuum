@@ -275,6 +275,42 @@ if [ -f .env ] && grep -q "COMPOSE_PROFILES=grid" .env 2>/dev/null; then
   PROFILE=""  # docker compose reads from .env automatically
 fi
 
+# ── Pull the headline Qwen model into Docker Model Runner ─────
+# Without this, the first chat returns "model not found" because the
+# default seeded personas point at continuum-ai/qwen3.5-4b-code-forged-GGUF
+# but DMR has no models on a fresh install. Carl from HF expects to chat
+# with the model whose card brought them here — so we pull it here, idempotent.
+QWEN_MODEL="hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF"
+if command -v docker &>/dev/null && docker model --help &>/dev/null 2>&1; then
+  if ! docker model ls 2>/dev/null | grep -qi "qwen3.5-4b-code-forged"; then
+    echo ""
+    echo "📥 Pulling forged Qwen3.5-4B (2.5GB) into Docker Model Runner..."
+    echo "   First-time only — subsequent installs reuse the cached model."
+    if docker model pull "$QWEN_MODEL" 2>&1 | tail -5; then
+      echo "  ✅ Qwen3.5-4B pulled into DMR"
+    else
+      echo "  ⚠️ Qwen pull failed — personas will still seed but first chat will fail until you run:"
+      echo "       docker model pull $QWEN_MODEL"
+    fi
+  else
+    echo "  ✅ Qwen3.5-4B already in DMR (skipping pull)"
+  fi
+
+  # Loud reminder for the manual Docker Desktop AI toggles. Without these,
+  # DMR runs the model on CPU even with a GPU present — fast machine, slow
+  # first chat, "Continuum feels broken" review.
+  echo ""
+  echo "  ℹ️  Manual one-time step: enable GPU acceleration in Docker Desktop"
+  echo "       Settings → AI → ✓ Enable GPU-backed inference"
+  echo "                       ✓ Enable host-side TCP support (port 12434)"
+  echo "       Without these, inference runs on CPU. See docs/SETUP.md for details."
+else
+  echo ""
+  echo "  ⚠️ Docker Model Runner CLI not available."
+  echo "     Update to Docker Desktop 4.69+ for GPU-accelerated local inference."
+  echo "     See docs/SETUP.md for the per-OS install path."
+fi
+
 # ── Start ─────────────────────────────────────────
 echo ""
 echo "🚀 Starting Continuum..."

@@ -162,8 +162,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize TTS/STT in background (non-blocking - happens after startup)
     // Wrapped in catch_unwind because ORT panics (not errors) when libonnxruntime.dylib
     // is missing. A missing TTS/STT model must NEVER crash the entire server.
-    tokio::spawn(async {
-        let result = tokio::task::spawn(async {
+    //
+    // CONTINUUM_SKIP_STT=1 skips STT init entirely. whisper-rs vendors its own
+    // ggml and races our llama crate's ggml backend registry on Metal — the
+    // loser gets NULL back from ggml_backend_metal_init and segfaults inside
+    // whisper_kv_cache_init. Skipping until the ggml registries are unified
+    // or whisper-rs is taught about our backend.
+    let skip_stt = std::env::var("CONTINUUM_SKIP_STT").ok().as_deref() == Some("1");
+    let skip_tts = std::env::var("CONTINUUM_SKIP_TTS").ok().as_deref() == Some("1");
+    tokio::spawn(async move {
+        let result = tokio::task::spawn(async move {
+            if skip_stt {
+                tracing::warn!("⏭️  STT init skipped (CONTINUUM_SKIP_STT=1)");
+            } else {
             // Initialize STT registry and adapters
             continuum_core::live::audio::stt::init_registry();
             match continuum_core::live::audio::stt::initialize().await {
@@ -179,7 +190,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::warn!("   Place in: models/whisper/ggml-base.en.bin");
                 }
             }
+            } // end !skip_stt
 
+            if skip_tts {
+                tracing::warn!("⏭️  TTS init skipped (CONTINUUM_SKIP_TTS=1)");
+            } else {
             // Initialize TTS registry and adapters
             continuum_core::live::audio::tts::init_registry();
             match continuum_core::live::audio::tts::initialize().await {
@@ -197,6 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::warn!("   Place in: models/piper/");
                 }
             }
+            } // end !skip_tts
         }).await;
 
         if let Err(e) = result {

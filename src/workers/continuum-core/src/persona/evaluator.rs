@@ -4,12 +4,17 @@
 //! `full_evaluate()` function. One IPC call, <1ms, zero GC.
 //!
 //! Gate order (short-circuits on first SILENT):
-//! 1. Response cap — response_count >= max_responses → SILENT
-//! 2. Mention detection — reuses text_analysis::mention_detection
-//! 3. Rate limiting — per-room time window from RateLimiterState
-//! 4. Sleep mode — checks SleepMode + topic similarity
-//! 5. Directed mention filter — !is_mentioned && has_directed_mention → SILENT
-//! 6. Fast-path decision — delegates to PersonaCognitionEngine::fast_path_decision
+//! 1. Sleep mode — checks SleepMode + topic similarity (persona's own opt-out)
+//! 2. Self-message — infinite loop prevention (inside fast_path)
+//! 3. Fast-path decision — delegates to PersonaCognitionEngine::fast_path_decision
+//!
+//! Note: response_count is collected as a SIGNAL (LLM sees it in social_signals
+//! and can self-quiet if a conversation is getting too noisy) but is NOT a hard
+//! gate. Local models have no cost; cloud rate limits belong at the provider
+//! layer (their billing + RPS quotas), not as a hardcoded 50-message veto here.
+//! The previous response_cap gate was a cloud-provider concern that leaked onto
+//! every persona including local ones — removed to honor "LLM decides, not dumb
+//! heuristics" (the philosophy this module already preaches).
 //!
 //! Types exported to TypeScript via ts-rs.
 
@@ -289,9 +294,16 @@ pub struct GateDetails {
 /// speed and passes them to the LLM as awareness. Only TRUE safety gates can block.
 ///
 /// Hard gates (system protection only):
-/// 1. Response cap — resource exhaustion prevention
-/// 2. Sleep mode — persona's OWN voluntary decision (respects autonomy)
-/// 3. Self-message — infinite loop prevention (inside fast_path)
+/// 1. Sleep mode — persona's OWN voluntary decision (respects autonomy)
+/// 2. Self-message — infinite loop prevention (inside fast_path)
+///
+/// Removed: response cap. Was a cloud-provider "resource exhaustion" concept
+/// that blocked local personas (which have zero cost) after 50 responses per
+/// session per room. Response count is still collected as a signal so the LLM
+/// can choose to self-quiet when appropriate — but the decision is the LLM's,
+/// not a hardcoded counter's. Cloud rate-limit enforcement belongs at the
+/// provider adapter level (OpenAI RPS, Anthropic TPM, etc.), not in the
+/// universal evaluator.
 ///
 /// Signals (collected, passed to LLM as context — NOT vetoes):
 /// - Echo chamber metrics (AI count, human recency)
@@ -341,35 +353,12 @@ pub fn full_evaluate(
     };
 
     // =========================================================================
-    // HARD GATE 1: Response cap (resource exhaustion — system protection)
+    // HARD GATE 1: Sleep mode (persona's OWN voluntary decision — respects autonomy)
     // =========================================================================
-    if rate_limiter.has_reached_response_cap(request.room_id) {
-        return FullEvaluateResult {
-            should_respond: false,
-            confidence: 1.0,
-            reason: format!(
-                "Response cap reached ({}/{})",
-                response_count, rate_limiter.max_responses_per_session
-            ),
-            gate: "response_cap".into(),
-            decision_time_ms: start.elapsed().as_secs_f64() * 1000.0,
-            gate_details: Some(GateDetails {
-                response_count: Some(response_count),
-                max_responses: Some(rate_limiter.max_responses_per_session),
-                rate_limit_wait_seconds: None,
-                sleep_mode: None,
-                is_mentioned: Some(is_mentioned),
-                has_directed_mention: Some(has_directed_mention),
-                topic_similarity: None,
-                echo_chamber_ai_count: Some(echo_result.ai_message_count as u32),
-            }),
-            social_signals: Some(social_signals),
-        };
-    }
-
-    // =========================================================================
-    // HARD GATE 2: Sleep mode (persona's OWN voluntary decision)
-    // =========================================================================
+    // Note: response_count is available in social_signals above. Personas that
+    // want to self-quiet after N turns can read their own response_count from
+    // the social-awareness block and choose silence — that's the LLM deciding,
+    // not a dumb heuristic. No hardcoded response_cap gate anymore.
     let effective_sleep = sleep_state.effective_mode(now_ms);
     if effective_sleep != SleepMode::Active {
         let should_respond_in_sleep = match effective_sleep {
@@ -604,23 +593,32 @@ mod tests {
     }
 
     #[test]
-    fn test_gate_1_response_cap() {
+    fn test_response_count_is_signal_not_gate() {
+        // Formerly test_gate_1_response_cap — asserted that hitting the cap
+        // produced a hard gate=response_cap SILENT. That gate was removed:
+        // local personas have no resource exhaustion, and cloud rate limits
+        // belong at the provider layer. Response count is still collected as
+        // a social signal so the LLM can choose to self-quiet, but it never
+        // short-circuits the evaluator.
         let (engine, persona_id) = test_engine("TestBot");
         let request = test_request(persona_id, "TestBot");
         let sleep = SleepState::default();
         let mut rate_limiter = RateLimiterState::new(10.0, 3);
 
-        // Push count past cap
         let room_id = request.room_id;
         let now = now_ms();
         rate_limiter.track_response(room_id, now - 30_000);
         rate_limiter.track_response(room_id, now - 20_000);
-        rate_limiter.track_response(room_id, now - 11_000); // 11s ago — not rate limited
+        rate_limiter.track_response(room_id, now - 11_000); // 11s ago — well past rate-limit window
 
         let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
-        assert!(!result.should_respond);
-        assert_eq!(result.gate, "response_cap");
-        assert_eq!(result.gate_details.unwrap().response_count, Some(3));
+        // Gate MUST NOT be response_cap anymore.
+        assert_ne!(result.gate, "response_cap",
+            "response_cap was removed — count is a social signal now, not a hard gate");
+        // But the count MUST still flow into social_signals so the LLM can see it.
+        let sigs = result.social_signals.expect("social_signals always populated");
+        assert_eq!(sigs.response_count_this_session, Some(3));
+        assert_eq!(sigs.response_cap, Some(3));
     }
 
     #[test]

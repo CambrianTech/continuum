@@ -22,6 +22,35 @@ use super::types::{
     TextGenerationRequest, TextGenerationResponse,
 };
 
+/// Device preference for inference — same pattern as PyTorch device='cuda'
+/// or Android's MediaCodec hardware acceleration flags. Callers declare
+/// what they need; the registry picks the best match from what's available.
+///
+/// Default: Gpu (enforced now — no silent CPU fallback).
+/// Auto (try GPU, explicit CPU fallback) is reserved for future opt-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferenceDevice {
+    /// GPU-accelerated inference only. Metal (Mac) / CUDA (Nvidia) /
+    /// ROCm (AMD) / Vulkan (everyone else). If no GPU adapter can serve
+    /// the model → hard error, never silent CPU.
+    Gpu,
+    /// CPU-only inference. Candle / future CPU adapter. Currently only
+    /// reachable when caller EXPLICITLY requests it (training pipelines,
+    /// or env CONTINUUM_ALLOW_CPU_INFERENCE=1). Never auto-selected.
+    Cpu,
+    /// Try GPU first; if unavailable, fall back to CPU WITH a visible
+    /// log warning. NOT IMPLEMENTED YET — reserved for when we trust
+    /// the CPU path enough to ship it as a degraded-but-acceptable
+    /// experience. Until then, `Auto` behaves identically to `Gpu`.
+    Auto,
+}
+
+impl Default for InferenceDevice {
+    fn default() -> Self {
+        InferenceDevice::Gpu
+    }
+}
+
 /// AI provider adapter configuration
 #[derive(Debug, Clone)]
 pub struct AdapterConfig {
@@ -213,14 +242,28 @@ pub trait AIProviderAdapter: Send + Sync {
         vec![]
     }
 
-    // ─── Model Routing ────────────────────────────────────────────────────────
-    // Adapters define what model prefixes they support for automatic routing.
-    // This replaces hardcoded string matching in routing logic.
+    // ─── Device & Capability Routing ─────────────────────────────────────────
+    // Adapters declare their device class (GPU/CPU/Cloud) and what model
+    // prefixes they support. AdapterRegistry::select() uses both to pick
+    // the best match for the caller's request.
+
+    /// What device class does this adapter run on?
+    ///
+    /// - Gpu: Metal, CUDA, ROCm, Vulkan — hardware-accelerated inference.
+    ///   Docker Model Runner, llama.cpp-metal, llama-vulkan all return Gpu.
+    /// - Cpu: Candle CPU inference. Only selected when explicitly requested
+    ///   (training pipelines) or when CONTINUUM_ALLOW_CPU_INFERENCE is set.
+    /// - Cloud: API-based providers (Anthropic, OpenAI, etc.) — not local
+    ///   compute at all. Always eligible regardless of device preference
+    ///   because they don't consume local resources.
+    ///
+    /// Default: Gpu. Override in CPU-only adapters (Candle).
+    fn device_type(&self) -> InferenceDevice {
+        InferenceDevice::Gpu
+    }
 
     /// Get model name prefixes this adapter supports.
     /// Used by AdapterRegistry to auto-route requests based on model name.
-    /// Example: Anthropic returns ["claude"], OpenAI returns ["gpt"],
-    /// Candle returns ["llama", "qwen", "phi", "mistral", ...].
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
         vec![] // Default: no auto-routing by model name
     }
@@ -282,90 +325,114 @@ impl AdapterRegistry {
             .collect()
     }
 
-    /// Select best adapter based on request
-    /// Returns (provider_id, adapter)
+    /// Select best adapter based on request.
     ///
-    /// When preferred_provider is explicitly set, returns ONLY that provider or None.
-    /// NO silent fallback to another provider — if you ask for candle, you get candle or an error.
+    /// Device-aware routing (like PyTorch device='cuda' / Android MediaCodec):
+    /// - `device = Gpu`: only GPU-capable adapters (DMR, llama-metal, llama-vulkan).
+    ///   Hard error if no GPU adapter supports the model. DEFAULT.
+    /// - `device = Cpu`: only CPU-capable adapters (Candle). Explicit opt-in for
+    ///   training/LoRA. Never auto-selected for chat.
+    /// - `device = Auto`: try GPU first, CPU fallback WITH warning. RESERVED —
+    ///   not implemented yet, behaves as Gpu until we trust the CPU path.
+    ///
+    /// Explicit `preferred_provider` always wins regardless of device.
+    /// Cloud providers (Anthropic, OpenAI, etc.) are always eligible — they're
+    /// not local compute, so device preference doesn't apply.
     pub fn select<'a>(
         &'a self,
         preferred_provider: Option<&str>,
         model: Option<&str>,
+        device: InferenceDevice,
     ) -> Option<(&'a str, &'a dyn AIProviderAdapter)> {
-        // 1. If preferred provider specified, use it — NO FALLBACK
+        // 1. Explicit provider — bypass routing for NAMED adapters.
+        //    Special case: "local" means "best available local GPU adapter"
+        //    — NOT a specific adapter name. Drops through to device-filtered
+        //    auto-selection (tier 3) with the requested model. This is how
+        //    local personas get DMR when available, Vulkan when not, and
+        //    hard-error when neither can serve the model.
         if let Some(pref) = preferred_provider {
-            for (id, adapter) in self.adapters.iter() {
-                if id == pref {
-                    return Some((id.as_str(), adapter.as_ref()));
-                }
-            }
-            // Explicit provider requested but not found — fail hard, don't silently route elsewhere
-            clog_warn!(
-                "Provider '{}' explicitly requested but not available. Available: {:?}",
-                pref,
-                self.available()
-            );
-            return None;
-        }
-
-        // 2. Detect provider from model name
-        if let Some(model_name) = model {
-            let model_lower = model_name.to_lowercase();
-
-            // Claude -> Anthropic
-            if model_lower.starts_with("claude") {
-                if let Some(adapter) = self.adapters.get("anthropic") {
-                    return Some(("anthropic", adapter.as_ref()));
-                }
-            }
-
-            // GPT -> OpenAI
-            if model_lower.starts_with("gpt") {
-                if let Some(adapter) = self.adapters.get("openai") {
-                    return Some(("openai", adapter.as_ref()));
-                }
-            }
-
-            // DeepSeek models
-            if model_lower.starts_with("deepseek") {
-                if let Some(adapter) = self.adapters.get("deepseek") {
-                    return Some(("deepseek", adapter.as_ref()));
-                }
-            }
-
-            // Grok -> XAI
-            if model_lower.starts_with("grok") {
-                if let Some(adapter) = self.adapters.get("xai") {
-                    return Some(("xai", adapter.as_ref()));
-                }
-            }
-
-            // Gemini -> Google
-            if model_lower.starts_with("gemini") {
-                if let Some(adapter) = self.adapters.get("google") {
-                    return Some(("google", adapter.as_ref()));
-                }
-            }
-
-            // 2.5. Check if any adapter explicitly supports this model
-            // Adapters define their supported prefixes via supported_model_prefixes()
-            // This is the authoritative routing - adapter knows what it supports
-            for id in &self.priority_order {
-                if let Some(adapter) = self.adapters.get(id) {
-                    if adapter.supports_model(model_name) {
+            if pref != "local" {
+                for (id, adapter) in self.adapters.iter() {
+                    if id == pref {
                         return Some((id.as_str(), adapter.as_ref()));
                     }
                 }
+                clog_warn!(
+                    "Provider '{}' explicitly requested but not available. Available: {:?}",
+                    pref,
+                    self.available()
+                );
+                return None;
+            }
+            // "local" — fall through to device-filtered auto-selection below
+        }
+
+        // 2. Cloud-provider prefix detection (always eligible regardless of device).
+        // These are the well-known cloud API providers whose model names
+        // unambiguously identify the provider.
+        if let Some(model_name) = model {
+            let model_lower = model_name.to_lowercase();
+            let cloud_match: Option<&str> = if model_lower.starts_with("claude") {
+                Some("anthropic")
+            } else if model_lower.starts_with("gpt") || model_lower.starts_with("o1") || model_lower.starts_with("o3") {
+                Some("openai")
+            } else if model_lower.starts_with("deepseek") {
+                Some("deepseek")
+            } else if model_lower.starts_with("grok") {
+                Some("xai")
+            } else if model_lower.starts_with("gemini") {
+                Some("google")
+            } else {
+                None
+            };
+            if let Some(provider_id) = cloud_match {
+                if let Some(adapter) = self.adapters.get(provider_id) {
+                    return Some((provider_id, adapter.as_ref()));
+                }
             }
         }
 
-        // 3. Return highest priority available adapter
+        // 3. Device-filtered local adapter selection.
+        // Walk priority order; only consider adapters whose device_type
+        // matches the request. GPU adapter that honestly supports the model
+        // wins. No silent cross-device fallback.
+        let device_matches = |adapter_device: InferenceDevice| -> bool {
+            match device {
+                InferenceDevice::Gpu => adapter_device == InferenceDevice::Gpu,
+                InferenceDevice::Cpu => adapter_device == InferenceDevice::Cpu,
+                InferenceDevice::Auto => true, // future: GPU-first then CPU
+            }
+        };
+
         for id in &self.priority_order {
             if let Some(adapter) = self.adapters.get(id) {
-                return Some((id.as_str(), adapter.as_ref()));
+                if !device_matches(adapter.device_type()) {
+                    continue; // wrong device class — skip, don't fallback
+                }
+                // If model specified, adapter must honestly support it.
+                // If no model specified, any adapter on the right device works.
+                if model.map_or(true, |m| adapter.supports_model(m)) {
+                    return Some((id.as_str(), adapter.as_ref()));
+                }
             }
         }
 
+        // No adapter matched. Fail loud.
+        if let Some(model_name) = model {
+            clog_warn!(
+                "No {:?}-device adapter supports model '{}'. Registered: {:?}. Pull model into DMR: `docker model pull {}`, or install the right GPU backend.",
+                device,
+                model_name,
+                self.available(),
+                model_name
+            );
+        } else {
+            clog_warn!(
+                "No {:?}-device adapter available. Registered: {:?}.",
+                device,
+                self.available()
+            );
+        }
         None
     }
 
