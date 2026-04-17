@@ -122,15 +122,18 @@ for PERSONA in "${PERSONA_LIST[@]}"; do
 
   # Extract the message id. jtag prefixes with warnings ('⚠️ Bundle not found',
   # 'npm warn ...') BEFORE the JSON, so slice from the first '{' to EOF.
-  MSG_ID="$(printf '%s' "$SEND_RESULT" | python3 -c "import sys,json,re
-try:
-    raw = sys.stdin.read()
-    idx = raw.find('{')
-    d = json.loads(raw[idx:]) if idx >= 0 else {}
-    print(d.get('shortId', d.get('messageId', '')))
-except:
-    print('')
-" 2>/dev/null)"
+  # If JSON parsing fails, Python's traceback prints to stderr (visible) and
+  # MSG_ID stays empty; the caller's "send_failed" branch then prints
+  # SEND_RESULT for diagnosis. No silent `2>/dev/null` — errors save time.
+  MSG_ID="$(printf '%s' "$SEND_RESULT" | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+idx = raw.find('{')
+if idx < 0:
+    sys.exit(0)  # jtag printed no json — caller will surface via SEND_RESULT
+d = json.loads(raw[idx:])  # raise if malformed: traceback → stderr → user sees it
+print(d.get('shortId', d.get('messageId', '')))
+")"
 
   if [ -z "$MSG_ID" ]; then
     echo "  ❌ send failed. raw response:"
@@ -157,48 +160,42 @@ except:
       # references our marker (persona replies typically quote-back or
       # respond directly to our message).
       FOUND="$(printf '%s' "$EXPORT" | python3 -c "
-import sys,json,re
-try:
-    raw = sys.stdin.read()
-    idx = raw.find('{')
-    d = json.loads(raw[idx:]) if idx >= 0 else {}
-    md = d.get('markdown','')
-    marker = '${MARKER}'
-    persona = '${PERSONA}'.lower()
-    # Parse messages out of the markdown. Each block is of shape:
-    #   (possible leading empty line)
-    #   ## #<id> - <display name> (reply to #<id>)
-    #   *<timestamp>*
-    #   (empty line)
-    #   <body line 1>
-    #   <body line 2>
-    #   ...
-    # Blocks separated by '---' at start-of-line.
-    blocks = re.split(r'\n---\n', md)
-    for b in reversed(blocks):  # newest first
-        lines = b.strip().split('\n')
-        # First non-empty line is the header (## #<id> - <name>)
-        header = ''
-        body_start = 0
-        for i, line in enumerate(lines):
-            if line.startswith('## '):
-                header = line.lower()
-                # Body starts after the header and the timestamp '*...*' line + blank
-                body_start = i + 1
-                # Skip timestamp line(s) and empty lines until we hit content
-                while body_start < len(lines) and (lines[body_start].startswith('*') or lines[body_start].strip() == ''):
-                    body_start += 1
-                break
-        body = '\n'.join(lines[body_start:]).strip()
-        # Match on persona display-name hints in the header (helper/teacher/codereview/local).
-        # Exclude messages whose BODY contains our probe marker (those are OUR sends, not replies).
-        # Body length > 30 filters out ultra-short / failed messages.
-        if persona in header and marker not in body and len(body) > 30:
-            print('FOUND::' + body[:500].replace('\n',' '))
+import sys, json, re
+raw = sys.stdin.read()
+idx = raw.find('{')
+if idx < 0:
+    sys.exit(0)  # jtag printed no json this poll — try again next iteration
+d = json.loads(raw[idx:])  # malformed json from jtag IS a real bug — let it raise
+md = d.get('markdown', '')
+marker = '${MARKER}'
+persona = '${PERSONA}'.lower()
+# Each markdown block is shaped:
+#   (leading empty line)
+#   ## #<id> - <display name> (reply to #<id>)
+#   *<timestamp>*
+#   (empty line)
+#   <body line 1>
+#   ...
+# Blocks separated by '---' at start-of-line.
+blocks = re.split(r'\n---\n', md)
+for b in reversed(blocks):  # newest first
+    lines = b.strip().split('\n')
+    header = ''
+    body_start = 0
+    for i, line in enumerate(lines):
+        if line.startswith('## '):
+            header = line.lower()
+            body_start = i + 1
+            while body_start < len(lines) and (lines[body_start].startswith('*') or lines[body_start].strip() == ''):
+                body_start += 1
             break
-except Exception:
-    pass
-" 2>/dev/null)"
+    body = '\n'.join(lines[body_start:]).strip()
+    # Match: persona display-name in the header, body doesn't contain our
+    # marker (excludes echoes of our own send), body has actual content.
+    if persona in header and marker not in body and len(body) > 30:
+        print('FOUND::' + body[:500].replace('\n', ' '))
+        break
+")"
 
       if [[ "$FOUND" == FOUND::* ]]; then
         REPLY="${FOUND#FOUND::}"

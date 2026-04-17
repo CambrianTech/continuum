@@ -387,20 +387,35 @@ if command -v curl &>/dev/null && curl -fsS --max-time 2 http://localhost:12434/
   echo ""
   echo "🧪 Probing local inference end-to-end..."
 
+  # Capture stderr separately — DMR connection failure is expected-noise (we
+  # already gated on the /v1/models probe above), but we want any other curl
+  # error VISIBLE.
   PROBE_RESPONSE=$(curl -s --max-time 30 -X POST http://localhost:12434/engines/v1/chat/completions \
     -H "Content-Type: application/json" \
-    -d '{"model":"huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest","messages":[{"role":"user","content":"Reply with exactly one word: ready"}],"max_tokens":20,"temperature":0.1}' 2>/dev/null || echo "")
+    -d '{"model":"huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest","messages":[{"role":"user","content":"Reply with exactly one word: ready"}],"max_tokens":20,"temperature":0.1}')
 
   if [ -z "$PROBE_RESPONSE" ]; then
-    echo "  ⚠️  Probe failed — couldn't reach DMR. Inference may not work."
-    echo "     Retry manually after setup completes:"
-    echo "       curl http://localhost:12434/engines/v1/models"
+    echo "  ⚠️  Probe returned empty. DMR is reachable (we just checked) but rejected the chat request."
+    echo "     Try this manually to see the actual error:"
+    echo "       curl -v http://localhost:12434/engines/v1/chat/completions ..."
   else
     # printf '%s' — DO NOT use echo. The JSON response contains literal
     # backslash-n sequences inside the model's <think>\n... content, and
     # bash's echo will interpret them as real newlines, breaking json.load.
-    PROBE_TPS=$(printf '%s' "$PROBE_RESPONSE" | python3 -c "import sys,json;d=json.load(sys.stdin);t=d.get('timings',{});print(f'{t.get(\"predicted_per_second\",0):.0f}')" 2>/dev/null || echo "0")
-    PROBE_TOKENS=$(printf '%s' "$PROBE_RESPONSE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('usage',{}).get('completion_tokens',0))" 2>/dev/null || echo "0")
+    # Don't suppress python errors — if json.load fails, the traceback prints
+    # to stderr where the user sees it. Empty result triggers a loud message
+    # below; silent "0" would falsely trip the CPU-speed warning.
+    PROBE_TPS=$(printf '%s' "$PROBE_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+t = d['timings']  # required: GPU-tier classification depends on it
+print(f'{t[\"predicted_per_second\"]:.0f}')
+")
+    PROBE_TOKENS=$(printf '%s' "$PROBE_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d['usage']['completion_tokens'])  # required, not optional
+")
 
     if [ "$PROBE_TOKENS" -eq 0 ]; then
       echo "  ⚠️  Probe returned zero tokens. Model may have failed to load or DMR routing is broken."

@@ -38,12 +38,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Parse args ──────────────────────────────────────────────────────
+# Allow --no-cache anywhere in the arg list so users don't have to remember
+# positional order. Sets NO_CACHE_FLAG which gets passed to buildx if set.
+NO_CACHE_FLAG=""
+POSITIONAL_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --no-cache) NO_CACHE_FLAG="--no-cache" ;;
+    *) POSITIONAL_ARGS+=("$arg") ;;
+  esac
+done
+set -- "${POSITIONAL_ARGS[@]}"
+
 VARIANT="${1:-}"
 PLATFORMS="${2:-}"
 
 if [[ -z "$VARIANT" ]]; then
   cat >&2 <<EOF
-Usage: $0 <variant> [platforms]
+Usage: $0 <variant> [platforms] [--no-cache]
 
 Variants:
   core    — CPU-only (Ares bootloader exception; not a Carl default)
@@ -56,6 +68,14 @@ Platforms (optional): linux/amd64, linux/arm64, or comma-separated both.
     core    → linux/amd64,linux/arm64
     cuda    → linux/amd64   (CUDA is x86-only in practice)
     vulkan  → linux/amd64,linux/arm64
+
+Flags:
+  --no-cache    Force a fresh build, ignore the docker layer cache.
+                Use this when source changes aren't being picked up — caught
+                during PR891 work where a stale cargo compilation was reused
+                across rebuilds and the resulting binary lacked DMR routing
+                code from the latest source. Default: cache enabled (faster
+                iteration; ~2-3× faster builds when nothing relevant changed).
 EOF
   exit 1
 fi
@@ -231,7 +251,7 @@ echo ""
 # we don't throw half-working images over the wall to CI.
 LOCAL_PLATFORM="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null || echo linux/amd64)"
 
-echo "→ Phase 1: local build + slice test on $LOCAL_PLATFORM"
+echo "→ Phase 1: local build + slice test on $LOCAL_PLATFORM${NO_CACHE_FLAG:+ (NO CACHE)}"
 docker buildx build \
   --platform "$LOCAL_PLATFORM" \
   --file "$DOCKERFILE" \
@@ -239,6 +259,7 @@ docker buildx build \
   --build-context "shared-generated=src/shared/generated" \
   --tag "$TAG_SHA" \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
+  $NO_CACHE_FLAG \
   --load \
   src/workers
 
@@ -252,7 +273,7 @@ if ! "$SCRIPT_DIR/test-slices.sh" "$VARIANT" "$TAG_SHA"; then
 fi
 
 echo ""
-echo "→ Phase 3: multi-platform build + push ($PLATFORMS)"
+echo "→ Phase 3: multi-platform build + push ($PLATFORMS)${NO_CACHE_FLAG:+ (NO CACHE)}"
 docker buildx build \
   --platform "$PLATFORMS" \
   --file "$DOCKERFILE" \
@@ -261,6 +282,7 @@ docker buildx build \
   "${TAGS[@]}" \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
   --cache-to   "type=registry,ref=$REGISTRY/$IMAGE:buildcache,mode=max" \
+  $NO_CACHE_FLAG \
   --push \
   src/workers
 
