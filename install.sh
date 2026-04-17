@@ -403,6 +403,27 @@ ok "Source: $INSTALL_DIR"
 # fallback (~/.local/bin) when sudo would prompt without a TTY.
 mod_continuum_bin_link "$INSTALL_DIR/bin/continuum"
 
+# ── 3c. Install Claude Code skills (opt-in, only if ~/.claude exists) ─
+# Continuum ships a set of slash-command skills (continuum:update,
+# eventually continuum:status, continuum:doctor, continuum:chat) that
+# let an AI in any project invoke continuum operations directly —
+# "plug continuum into your IDE Claude" pattern, mirrors airc's
+# skills install.
+#
+# Opt-in: only installs when ~/.claude/skills/ exists (indicating the
+# user has Claude Code installed and is running). Silent no-op otherwise
+# — continuum's core functionality doesn't require Claude Code.
+if [ -d "$HOME/.claude/skills" ] && [ -d "$INSTALL_DIR/skills" ]; then
+  info "Installing Continuum skills into ~/.claude/skills/ (Claude Code detected)..."
+  for skill_dir in "$INSTALL_DIR/skills"/*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name=$(basename "$skill_dir")
+    mkdir -p "$HOME/.claude/skills/$skill_name"
+    cp -r "$skill_dir"/* "$HOME/.claude/skills/$skill_name/"
+    ok "  Installed skill: /$(basename "$skill_name" | tr '-' ':')"
+  done
+fi
+
 # ── 4. Configuration ───────────────────────────────────────
 mkdir -p "$CONTINUUM_DATA"
 
