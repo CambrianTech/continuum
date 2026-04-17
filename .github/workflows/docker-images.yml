@@ -373,22 +373,66 @@ jobs:
             type=registry,ref=ghcr.io/cambriantech/continuum-widgets:buildcache
           cache-to: type=gha,mode=max
 
-  # ── Verify Both Architectures ─────────────────────────────
-  # Runs AFTER all builds. Pulls both amd64 and arm64 images and
-  # verifies they actually work. This prevents the "it built but
-  # the wrong arch got pushed" scenario that broke Mac users.
+  # ── Verify Image Coverage ─────────────────────────────────
+  # Runs AFTER all builds, on EVERY trigger (PR + main), even when some
+  # build jobs failed. Three responsibilities:
+  #   1. Coverage gate — every variant we ship must have a manifest at
+  #      the right tag. Missing image = failed build = merge BLOCKED.
+  #      (Previously this job was `if: github.event_name != 'pull_request'`
+  #       which meant a PR could merge with broken images — exactly the
+  #       'CI passed missing slices' state Joel called out.)
+  #   2. Tag selection — `:pr-<N>` on PR builds, `:latest` on main, `:<sha>`
+  #      always present. Picks the right tag for the trigger.
+  #   3. Architecture check — multi-arch manifests must include all
+  #      expected platforms. amd64-only is OK only for cuda.
   verify-architectures:
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
+    # Run on every trigger (was: only main pushes — that gap let PRs
+    # merge with broken images).
+    # Run even when individual build jobs failed — that's the whole
+    # point of this gate. Without `if: always()`, GHA skips the dependent
+    # when any need fails, hiding the coverage gap.
+    if: always()
     needs: [continuum-core, continuum-core-cuda, continuum-core-vulkan, livekit-bridge, node-server, model-init, widget-server]
     steps:
       - uses: docker/setup-qemu-action@v3
 
+      - name: Determine image tag (pr-<N> | latest | <sha>)
+        id: tag
+        run: |
+          # PR builds → :pr-<N>. main pushes → :latest. Otherwise → :<sha>.
+          if [[ -n "${{ github.event.pull_request.number }}" ]]; then
+            TAG="pr-${{ github.event.pull_request.number }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG="latest"
+          else
+            TAG="${{ github.sha }}"
+            TAG="${TAG:0:40}"  # full sha — metadata-action strips to short, we use full to be safe
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Verifying coverage at tag: $TAG"
+
+      - name: Report build job results (so failures are loud)
+        run: |
+          echo "━━━ Per-variant build results ━━━"
+          echo "  continuum-core:         ${{ needs.continuum-core.result }}"
+          echo "  continuum-core-cuda:    ${{ needs.continuum-core-cuda.result }}"
+          echo "  continuum-core-vulkan:  ${{ needs.continuum-core-vulkan.result }}"
+          echo "  livekit-bridge:         ${{ needs.livekit-bridge.result }}"
+          echo "  node-server:            ${{ needs.node-server.result }}"
+          echo "  model-init:             ${{ needs.model-init.result }}"
+          echo "  widget-server:          ${{ needs.widget-server.result }}"
+
       - name: Verify amd64-only cuda image
         run: |
-          IMAGE="ghcr.io/cambriantech/continuum-core-cuda:latest"
+          TAG="${{ steps.tag.outputs.tag }}"
+          IMAGE="ghcr.io/cambriantech/continuum-core-cuda:$TAG"
           echo "━━━ Checking $IMAGE (amd64-only) ━━━"
-          MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1)
+          if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
+            echo "  ❌ MISSING — image not in registry. Build job result: ${{ needs.continuum-core-cuda.result }}"
+            echo "  $MANIFEST"
+            exit 1
+          fi
           if echo "$MANIFEST" | grep -q "linux/amd64"; then
             echo "  ✅ linux/amd64 present"
           else
@@ -396,15 +440,16 @@ jobs:
             exit 1
           fi
 
-      - name: Verify all images exist for both architectures
+      - name: Verify multi-arch images exist for both architectures
         run: |
+          TAG="${{ steps.tag.outputs.tag }}"
           IMAGES=(
-            "ghcr.io/cambriantech/continuum-core:latest"
-            "ghcr.io/cambriantech/continuum-core-vulkan:latest"
-            "ghcr.io/cambriantech/continuum-livekit-bridge:latest"
-            "ghcr.io/cambriantech/continuum-node:latest"
-            "ghcr.io/cambriantech/continuum-model-init:latest"
-            "ghcr.io/cambriantech/continuum-widgets:latest"
+            "ghcr.io/cambriantech/continuum-core:$TAG"
+            "ghcr.io/cambriantech/continuum-core-vulkan:$TAG"
+            "ghcr.io/cambriantech/continuum-livekit-bridge:$TAG"
+            "ghcr.io/cambriantech/continuum-node:$TAG"
+            "ghcr.io/cambriantech/continuum-model-init:$TAG"
+            "ghcr.io/cambriantech/continuum-widgets:$TAG"
           )
 
           FAILED=0
@@ -412,8 +457,14 @@ jobs:
           for IMAGE in "${IMAGES[@]}"; do
             echo "━━━ Checking $IMAGE ━━━"
 
-            # Verify manifest exists and has both architectures
-            MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1)
+            # First: does the manifest exist at all? Missing = build failed
+            # or never pushed. Either way: blocks the merge.
+            if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
+              echo "  ❌ MISSING — image not in registry"
+              echo "  $MANIFEST"
+              FAILED=1
+              continue
+            fi
 
             for ARCH in amd64 arm64; do
               if echo "$MANIFEST" | grep -q "linux/$ARCH"; then
@@ -448,10 +499,11 @@ jobs:
           done
 
           if [ "$FAILED" -ne 0 ]; then
-            echo "❌ ARCHITECTURE VERIFICATION FAILED"
-            echo "Some images are missing arm64 or amd64 variants."
-            echo "Mac users WILL get broken images if this is merged."
+            echo "❌ IMAGE COVERAGE GATE FAILED"
+            echo "One or more required images are missing OR missing an architecture."
+            echo "If this is a PR build, the merge is BLOCKED until all variants publish."
+            echo "Run scripts/push-image.sh on the right hardware to bypass slow CI."
             exit 1
           fi
 
-          echo "✅ All images verified for both amd64 and arm64"
+          echo "✅ All images verified at tag $TAG (coverage + architectures)"
