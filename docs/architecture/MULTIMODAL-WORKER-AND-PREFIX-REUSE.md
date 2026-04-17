@@ -85,7 +85,29 @@ Invalidates naturally when a new message lands (changes `history_tail_msg_ids`).
 
 ---
 
-## Part 2 — Multimodal-native worker (delete the STT/TTS sandwich)
+## Part 2 — Multimodal-native worker (collapse the STT/TTS sandwich, don't delete the pipeline)
+
+> **STT/TTS isn't going away — it becomes the leveler that gives ANY model the full sensory experience.** A niche 1B medical-specialist GGUF, an older Llama 3.1 text-only, a cloud provider without audio — all of them become first-class citizens of the system because the bridge layer fills in what their base model doesn't do natively. The system equalizes the experience: every persona sees, hears, speaks, listens, and has voice identity regardless of what model is actually inside. The bridge doesn't hide the model — it completes it. Local multimodal-native (Qwen3.5) is the *fast path*; the bridge layer is the *universal substrate* that lets us mix models freely without users ever knowing which class they're talking to.
+
+**The decision matrix is `ModelMetadata.capabilities`:**
+
+| Model class | STT | LLM | TTS | Voice identity |
+|---|---|---|---|---|
+| Local multimodal (Qwen3.5) | skip — model takes audio | one forward, emits audio | skip — model emits audio | per-persona voice LoRA fine-tuned into the model |
+| Cloud multimodal (Gemini Live, Claude w/ audio) | skip — provider takes audio | provider call | skip — provider emits audio | voice-conversion adapter over the provider's audio output (~50-100 MB local model) |
+| Cloud text-only (older OpenAI, etc.) | Whisper bridge | provider call | TTS bridge + persona voice | TTS-side voice clone OR provider's "voices" |
+| Local text-only (legacy local GGUF) | Whisper bridge | local call | TTS bridge | TTS-side voice clone |
+
+**Why the bridge is the universal substrate, not a fallback:** future model classes won't all be multimodal-native — there'll be tiny domain-specialist models (1B medical, 1.5B legal, 700M code-specific), older local checkpoints worth keeping for specific strengths (Llama 3.1, original Mistral), and emerging niche sensory models (specialist vision, specialist audio). The bridge is what lets every one of them be a real persona with the full sensory experience. The system mixes model classes freely; users see/hear/talk to a teammate; they never have to know whether the brain inside is Qwen3.5-multimodal or a 1B specialist running through STT/TTS bridges. Same UX, any model.
+
+**Voice identity stays a first-class property regardless of model class.** The persona declares its voice once; the system picks the right path to make that voice come out the speaker:
+- multimodal-native: voice LoRA loaded with the model
+- cloud-multimodal: voice-conversion adapter (small local model) over the provider's audio output
+- text-only paths: TTS-side voice clone
+
+That's what "Maya is Maya" means architecturally — not "Maya only works on local hardware" but "Maya's voice survives whichever inference path is currently serving her."
+
+
 
 ### What we do today for a voice turn
 
