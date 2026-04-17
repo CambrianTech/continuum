@@ -184,7 +184,12 @@ services:
       - NODE_ENV=production
       - JTAG_SKIP_HTTP=1
       - JTAG_NO_TLS=1
-      - LIVEKIT_URL=${LIVEKIT_BROWSER_URL:-ws://livekit:7880}
+      # Browser connects to LiveKit via host-mapped port, not Docker DNS.
+      # 'ws://livekit:7880' only resolves inside the Docker network;
+      # the browser runs on the host where 'livekit' doesn't resolve.
+      # localhost:7880 works because livekit binds that port to the host.
+      # Grid mode overrides via LIVEKIT_BROWSER_URL=ws://tailscale:7880.
+      - LIVEKIT_URL=${LIVEKIT_BROWSER_URL:-ws://localhost:7880}
 
   # ── Widget Server (Vite) ──────────────────────────────────
   widget-server:
