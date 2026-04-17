@@ -146,7 +146,6 @@ class IPCConnection {
       });
 
       this.socket.on('close', () => {
-        const wasPreviouslyConnected = this._connected;
         this._connected = false;
         this._connecting = false;
         this.socket = null;
@@ -156,10 +155,16 @@ class IPCConnection {
         }
         this.pendingRequests.clear();
         this.pendingTimings.clear();
-        // Auto-reconnect with exponential backoff if we were previously connected
-        if (wasPreviouslyConnected) {
-          this.scheduleReconnect();
-        }
+        // Always schedule reconnect — even on FIRST-connect failures.
+        // The previous `if (wasPreviouslyConnected)` guard meant a boot-time
+        // race (Rust core not ready yet when TS data daemon starts) would
+        // cause connect() to reject ONCE and never retry — leaving the pool
+        // permanently disconnected unless the caller knew to retry. The
+        // scheduleReconnect() loop has its own maxAttempts cap (currently
+        // 20 × exponential backoff, max 30s between tries) so this can't
+        // spin forever; after the cap it logs loud and gives up. From
+        // memento's PR891-followup gap #2.
+        this.scheduleReconnect();
       });
 
       setTimeout(() => {

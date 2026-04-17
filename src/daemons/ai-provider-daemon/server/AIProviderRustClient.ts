@@ -153,9 +153,13 @@ export class AIProviderRustClient {
           callback({ success: false, error: err.message });
         }
         this.pendingRequests.clear();
-        if (this.wasConnected) {
-          this.scheduleReconnect();
-        }
+        // Always schedule reconnect — even on FIRST-connect failures.
+        // The previous `if (this.wasConnected)` guard meant a boot-time race
+        // (Rust core not ready yet when this client initializes) would cause
+        // connect() to reject once and never retry. scheduleReconnect's own
+        // max-attempts cap (20) prevents infinite spin; after the cap it
+        // logs loud and gives up. Same fix as ORMRustClient.
+        this.scheduleReconnect();
       });
 
       setTimeout(() => {
