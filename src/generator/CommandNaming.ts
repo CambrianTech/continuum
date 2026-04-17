@@ -29,6 +29,13 @@ export interface ResultSpec {
   name: string;
   type: string;
   description?: string;
+  // Defaults to true. Set false ONLY for fields that genuinely don't apply
+  // on every result (e.g. cursor only on paginated, warning only on partial).
+  // Required-by-default catches forgotten field assignments at compile time.
+  // (Mirror of ResultSpec in shared/specs/CommandSpec.ts — these two interfaces
+  // should be unified, but their CommandSpec parents have divergent `examples`
+  // shapes so consolidation is its own change.)
+  required?: boolean;
 }
 
 export interface ExampleSpec {
