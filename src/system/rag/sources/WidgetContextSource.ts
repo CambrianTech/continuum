@@ -11,6 +11,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { WidgetContextService } from '../services/WidgetContextService';
 import { Logger } from '../../core/logging/Logger';
 
@@ -18,6 +19,7 @@ const log = Logger.create('WidgetContextSource', 'rag');
 
 export class WidgetContextSource implements RAGSource {
   readonly name = 'widget-context';
+  readonly tier = PromptTier.VOLATILE;
   readonly priority = 75;  // High - UI context is very relevant
   readonly defaultBudgetPercent = 5;
   readonly isShared = true;
@@ -27,7 +29,7 @@ export class WidgetContextSource implements RAGSource {
     return !!(context.options.widgetContext || context.sessionId);
   }
 
-  async load(context: RAGSourceContext, _allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, _allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     try {
@@ -90,7 +92,7 @@ Use this context to provide relevant, contextual assistance.
 `.trim();
   }
 
-  private emptySection(startTime: number, error?: string): RAGSection {
+  private emptySection(startTime: number, error?: string): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

@@ -14,6 +14,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { PersonaToolRegistry } from '../../user/server/modules/PersonaToolRegistry';
 import { Logger } from '../../core/logging/Logger';
 
@@ -70,6 +71,7 @@ const CODE_TOOL_GROUPS: readonly CodeToolGroup[] = [
 
 export class CodeToolSource implements RAGSource {
   readonly name = 'code-tools';
+  readonly tier = PromptTier.INVARIANT;
   readonly priority = 50;  // Medium — below conversation/widget, above learning config
   readonly defaultBudgetPercent = 5;
 
@@ -84,7 +86,7 @@ export class CodeToolSource implements RAGSource {
     return tools.some(t => t.name.startsWith('code/'));
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     try {
@@ -253,7 +255,7 @@ export class CodeToolSource implements RAGSource {
     return tools.filter(t => t.name.startsWith('code/')).length;
   }
 
-  private emptySection(startTime: number, error?: string): RAGSection {
+  private emptySection(startTime: number, error?: string): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

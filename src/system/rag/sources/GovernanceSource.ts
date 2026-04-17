@@ -7,6 +7,7 @@
  */
 
 import type { RAGSource, RAGSection, RAGSourceContext } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { isSlowLocalModel, getContextWindow } from '../../shared/ModelContextWindows';
 
 /**
@@ -58,6 +59,7 @@ You can propose collective decisions with collaboration/decision/propose and vot
  */
 export class GovernanceSource implements RAGSource {
   readonly name = 'governance';
+  readonly tier = PromptTier.SEMI_STABLE;
   readonly isShared = true;
 
   // Low priority - governance examples are nice-to-have, not critical
@@ -78,7 +80,7 @@ export class GovernanceSource implements RAGSource {
     return true;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = Date.now();
 
     // Determine which version to use based on budget and model capability

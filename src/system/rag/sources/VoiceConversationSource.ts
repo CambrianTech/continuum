@@ -14,6 +14,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import type { LLMMessage } from '../shared/RAGTypes';
 import { extractSentiment, formatEmotionLabel } from '../shared/TextSentiment';
 import { Logger } from '../../core/logging/Logger';
@@ -53,6 +54,7 @@ export function unregisterVoiceOrchestrator(): void {
 
 export class VoiceConversationSource implements RAGSource {
   readonly name = 'voice-conversation';
+  readonly tier = PromptTier.VOLATILE;
   readonly priority = 85;
   readonly defaultBudgetPercent = 30;
 
@@ -67,7 +69,7 @@ export class VoiceConversationSource implements RAGSource {
     return hasVoiceSession && hasOrchestrator;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     if (!voiceOrchestrator) {
@@ -254,7 +256,7 @@ You may speak for as long as needed to complete your thought. Natural conversati
     return breakdown;
   }
 
-  private emptySection(startTime: number, error?: string): RAGSection {
+  private emptySection(startTime: number, error?: string): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

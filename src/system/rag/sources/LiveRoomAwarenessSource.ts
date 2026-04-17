@@ -16,6 +16,7 @@
  */
 
 import type { RAGSource, RAGSection, RAGSourceContext } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import type { RAGArtifact } from '../shared/RAGTypes';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { CallEntity, type CallParticipant } from '../../data/entities/CallEntity';
@@ -27,6 +28,7 @@ const log = Logger.create('LiveRoomAwarenessSource', 'rag');
 
 export class LiveRoomAwarenessSource implements RAGSource {
   readonly name = 'live-room-awareness';
+  readonly tier = PromptTier.SEMI_STABLE;
   readonly priority = 30;
   readonly defaultBudgetPercent = 3;
 
@@ -41,7 +43,7 @@ export class LiveRoomAwarenessSource implements RAGSource {
     return true;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     const call = this.getActiveCall();
@@ -200,7 +202,7 @@ export class LiveRoomAwarenessSource implements RAGSource {
     }
   }
 
-  private emptySection(loadTimeMs: number): RAGSection {
+  private emptySection(loadTimeMs: number): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

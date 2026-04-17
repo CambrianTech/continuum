@@ -14,6 +14,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { Logger } from '../../core/logging/Logger';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -45,6 +46,7 @@ const DOC_CHAPTERS: readonly Omit<DocChapter, 'count'>[] = [
 
 export class DocumentationSource implements RAGSource {
   readonly name = 'documentation';
+  readonly tier = PromptTier.INVARIANT;
   readonly priority = 35;
   readonly defaultBudgetPercent = 5;
   readonly isShared = true;
@@ -62,7 +64,7 @@ export class DocumentationSource implements RAGSource {
     return true;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     try {

@@ -19,6 +19,38 @@ import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 export type RAGDomain = 'chat' | 'academy' | 'game' | 'code' | 'analysis';
 
 /**
+ * Prompt tier — declares how often a RAG source's contribution changes between
+ * requests. Drives stable-byte-prefix prompt assembly so llama-server / vllm /
+ * DMR can reuse the KV cache for the invariant region instead of reprocessing
+ * the full prompt every turn.
+ *
+ * The contract: a section's bytes must be byte-identical across requests for
+ * sources at the same tier with the same inputs. INVARIANT and SEMI_STABLE
+ * sources MUST NOT contain timestamps, request IDs, or any per-request
+ * volatile data. Those go in VOLATILE only.
+ *
+ * Final assembly order is always: INVARIANT → SEMI_STABLE → VOLATILE.
+ * Within each tier, sources are sorted by name (alphabetical) so the byte
+ * order is fully deterministic.
+ *
+ * See: docs/architecture/MULTIMODAL-WORKER-AND-PREFIX-REUSE.md (Part 1)
+ */
+export const enum PromptTier {
+  /** Persona system prompt, recipe rules, role identity, tool definitions.
+   * Changes ~weekly when persona/recipe is edited. Identical bytes across
+   * thousands of turns for the same persona+recipe. */
+  INVARIANT = 'invariant',
+  /** Conversation history, active genome adapters, participants, governance
+   * state. Grows monotonically — new content APPENDS to the existing
+   * prefix, doesn't rewrite earlier bytes. */
+  SEMI_STABLE = 'semi_stable',
+  /** Latest user message, audio chunks, current timestamp, last-second
+   * pressure observations. Changes every request. The only region the
+   * server actually has to reprocess token-by-token. */
+  VOLATILE = 'volatile',
+}
+
+/**
  * Model capabilities that affect RAG context building
  * Determines how artifacts (images, etc.) are processed
  */

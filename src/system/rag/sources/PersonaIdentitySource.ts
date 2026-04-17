@@ -18,6 +18,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import type { PersonaIdentity } from '../shared/RAGTypes';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { UserEntity } from '../../data/entities/UserEntity';
@@ -28,6 +29,7 @@ const log = Logger.create('PersonaIdentitySource', 'rag');
 
 export class PersonaIdentitySource implements RAGSource {
   readonly name = 'persona-identity';
+  readonly tier = PromptTier.INVARIANT;
   readonly priority = 95;  // Critical - must be included
   readonly defaultBudgetPercent = 20;
 
@@ -91,7 +93,7 @@ export class PersonaIdentitySource implements RAGSource {
     return true;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     try {
@@ -373,7 +375,7 @@ LIMITS:
 
   // ── Helpers ──────────────────────────────────────────────────────
 
-  private defaultSection(startTime: number, error?: string): RAGSection {
+  private defaultSection(startTime: number, error?: string): Omit<RAGSection, 'tier'> {
     const defaultIdentity: PersonaIdentity = {
       name: 'AI Assistant',
       systemPrompt: 'You are a helpful AI assistant participating in a group chat.'

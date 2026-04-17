@@ -10,6 +10,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import type { LLMMessage } from '../shared/RAGTypes';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity, type MediaItem } from '../../data/entities/ChatMessageEntity';
@@ -145,6 +146,7 @@ interface InflightEntry {
 
 export class ConversationHistorySource implements RAGSource {
   readonly name = 'conversation-history';
+  readonly tier = PromptTier.SEMI_STABLE;
   readonly priority = 80;  // High - conversation is core context
   readonly defaultBudgetPercent = 25;  // Gets largest share of budget
 
@@ -224,7 +226,7 @@ export class ConversationHistorySource implements RAGSource {
     return true;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
     ConversationHistorySource.initEventSubscription();
 
@@ -564,7 +566,7 @@ export class ConversationHistorySource implements RAGSource {
     return [];
   }
 
-  private emptySection(startTime: number, error?: string): RAGSection {
+  private emptySection(startTime: number, error?: string): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

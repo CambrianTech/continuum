@@ -18,6 +18,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { type RAGArtifact, type MediaArtifactMetadata, hasMediaMetadata } from '../shared/RAGTypes';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 import { ConversationHistorySource } from './ConversationHistorySource';
@@ -31,6 +32,7 @@ const TOKENS_PER_IMAGE_BASE64 = 1000;
 
 export class MediaArtifactSource implements RAGSource {
   readonly name = 'media-artifacts';
+  readonly tier = PromptTier.VOLATILE;
   readonly priority = 65;
   readonly defaultBudgetPercent = 5;
 
@@ -39,7 +41,7 @@ export class MediaArtifactSource implements RAGSource {
     return context.options.includeArtifacts !== false;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     // Scan window for media. Balance between finding images in chatty rooms and
