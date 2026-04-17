@@ -58,38 +58,25 @@ export interface VoiceStartResult extends CommandResult {
   livekitToken: string;
   // Resolved room ID
   roomId: string;
-  // Legacy — kept for backwards compat; same as livekitUrl
-  wsUrl: string;
   error?: JTAGError;
 }
 
 /**
- * Factory function for creating VoiceStartResult with defaults
+ * Factory function for creating VoiceStartResult
  */
 export const createVoiceStartResult = (
   context: JTAGContext,
   sessionId: UUID,
   data: {
     success: boolean;
-    // Session handle (UUID) for correlation
-    handle?: string;
-    // LiveKit WebSocket URL
-    livekitUrl?: string;
-    // LiveKit JWT token
-    livekitToken?: string;
-    // Legacy — same as livekitUrl
-    wsUrl?: string;
-    // Resolved room ID
-    roomId?: string;
+    handle: string;
+    livekitUrl: string;
+    livekitToken: string;
+    roomId: string;
     error?: JTAGError;
   }
 ): VoiceStartResult => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
-  handle: data.handle ?? '',
-  livekitUrl: data.livekitUrl ?? '',
-  livekitToken: data.livekitToken ?? '',
-  wsUrl: data.wsUrl ?? '',
-  roomId: data.roomId ?? '',
   ...data
 });
 

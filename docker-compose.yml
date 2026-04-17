@@ -4,10 +4,11 @@
 #   git submodule update --init --recursive
 # The Dockerfiles fail fast with a clear message if you skip this step.
 #
-# Local:  docker compose up                    (HTTP on localhost, live calls on ws://localhost:7880)
+# Local:  docker compose up                    (text chat on localhost — no WebRTC needed)
+# Live:   docker compose --profile live up     (adds LiveKit + bridge for voice/video/avatars)
 # Grid:   docker compose --profile grid up     (HTTPS via Tailscale, WebRTC over Tailscale mesh)
 # GPU:    docker compose --profile gpu up      (adds forge + inference)
-# All:    docker compose --profile grid --profile gpu up
+# All:    docker compose --profile live --profile grid --profile gpu up
 #
 # Grid mode .env (required):
 #   TS_AUTHKEY=tskey-auth-...
@@ -84,13 +85,10 @@ services:
     # cuda / continuum-core-vulkan overlays) it's the actual ceiling.
     mem_limit: ${CONTINUUM_CORE_MEM:-16g}
     working_dir: /app
-    # depends_on does NOT include postgres — postgres is opt-in (profile),
-    # and by default continuum-core uses SQLite where no startup ordering
-    # matters. When users enable the postgres profile and set DATABASE_URL,
-    # Rust's PostgresAdapter (deadpool pool) retries connection on startup.
-    depends_on:
-      livekit-bridge:
-        condition: service_healthy
+    # depends_on does NOT include postgres or livekit-bridge — both are
+    # opt-in profiles. Postgres: [postgres] profile. LiveKit: [live] profile.
+    # Text chat works without WebRTC. When live profile is active,
+    # continuum-core discovers livekit-bridge via its socket at startup.
     volumes:
       - voice-models:/app/models:ro
       # Mount the ENTIRE ~/.continuum directory R/W. The Rust core reads config,
@@ -130,7 +128,9 @@ services:
   # ── LiveKit Bridge (Rust — WebRTC transport adapter) ──────
   # Links webrtc-sys but NOT ort. Separate process eliminates
   # the protobuf symbol conflict that deadlocked continuum-core.
+  # Opt-in via: docker compose --profile live up
   livekit-bridge:
+    profiles: [live]
     build:
       context: ./src/workers
       dockerfile: ../../docker/livekit-bridge.Dockerfile
@@ -208,10 +208,11 @@ services:
       - JTAG_WS_PROXY_PORT=9001
 
   # ── LiveKit (WebRTC) — local mode ───────────────────────────
-  # Dev server for local development. Always starts.
+  # Opt-in via: docker compose --profile live up
+  # Text chat works without LiveKit. Enable for voice/video/avatar streaming.
   # In grid mode, set LIVEKIT_HOST_PORT=0 in .env to avoid port conflict with tailscale.
-  # (LiveKit still runs but on unmapped ports — harmless, ~50MB RAM.)
   livekit:
+    profiles: [live]
     image: livekit/livekit-server:latest
     restart: unless-stopped
     mem_limit: 256m

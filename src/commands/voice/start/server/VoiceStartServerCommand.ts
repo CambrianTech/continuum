@@ -73,7 +73,6 @@ export class VoiceStartServerCommand extends CommandBase<VoiceStartParams, Voice
       handle,
       livekitUrl,
       livekitToken,
-      wsUrl: livekitUrl, // backwards compat
       roomId,
     });
   }

@@ -42,13 +42,19 @@ This document is the **single source of truth** for remaining work. Each phase i
 - #910 DMR CUDA on Windows needs manual Docker Desktop toggle
 - #911 16GB MacBook Air can't run Option B (product scope decision)
 
+### Voice/LiveKit Decoupling (2026-04-17)
+- **LiveKit moved to `--profile live`.** `docker compose up` (no profiles) now starts ONLY text chat infrastructure: core, node-server, widget-server, model-init. Voice/video/avatars require `--profile live`. Carl gets text chat without downloading/running WebRTC containers. Saves ~300MB RAM + eliminates livekit startup dependency.
+- **Voice/start migrated to LiveKit.** Server command returns LiveKit URL + JWT (not legacy port-3001 WebSocket). Browser widget rewritten from 427→178 lines: raw WS + AudioWorklet replaced with AudioStreamClient (LiveKit WebRTC). VOICE_WS_PORT/3001 eliminated.
+- **Type safety enforced in command factories.** Required result fields must be required in factory data params. Generator updated (anvil commit b96a6520a): `ResultSpec.required` defaults to true. 452 generated files will tighten on re-gen.
+- **Dead code removed:** `wsUrl` field (legacy compat for port-3001), AudioWorklet voice processors orphaned (to be cleaned up).
+
 ---
 
 ## Current State (What Works)
 
 | Subsystem | Status | Notes |
 |-----------|--------|-------|
-| Live video calls | Working | Human + 14 AI avatars, 3D scenes, real-time voice |
+| Live video calls | Working | Human + 14 AI avatars, 3D scenes, real-time voice. Requires `--profile live`. |
 | Persona telemetry | Working | INT/NRG/ATN meters, cognitive diamonds, genome bars |
 | Memory pressure | Working | Graduated levels (normal/warning/high/critical), RSS bounded |
 | Persona cadence | Working | Pressure-aware adaptive timing |
