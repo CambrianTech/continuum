@@ -28,9 +28,14 @@
       "description": "Session handle (UUID) for correlation"
     },
     {
-      "name": "wsUrl",
+      "name": "livekitUrl",
       "type": "string",
-      "description": "WebSocket URL to connect for audio streaming"
+      "description": "LiveKit WebSocket URL for the browser to connect"
+    },
+    {
+      "name": "livekitToken",
+      "type": "string",
+      "description": "LiveKit JWT token for authentication"
     },
     {
       "name": "roomId",
@@ -42,12 +47,12 @@
     {
       "description": "Start voice chat in general room",
       "command": "./jtag voice/start --room=\"general\"",
-      "expectedResult": "{ handle: \"abc-123\", wsUrl: \"ws://localhost:3000/ws/voice?handle=abc-123\" }"
+      "expectedResult": "{ handle: \"abc-123\", livekitUrl: \"ws://localhost:7880\", livekitToken: \"eyJ...\" }"
     },
     {
       "description": "Start with specific model",
-      "command": "./jtag voice/start --room=\"general\" --model=\"llama3.2:3b\"",
-      "expectedResult": "{ handle: \"def-456\", wsUrl: \"ws://...\" }"
+      "command": "./jtag voice/start --room=\"general\" --model=\"qwen3.5-4b\"",
+      "expectedResult": "{ handle: \"def-456\", livekitUrl: \"ws://localhost:7880\", livekitToken: \"eyJ...\" }"
     }
   ],
   "accessLevel": "ai-safe"
