@@ -17,7 +17,8 @@
 #   continuum wake <node>  Wake + restart a downed grid node
 #   continuum provision    Pull config from a grid node
 #   continuum transfer <n> Deploy Continuum to a new machine
-#   continuum update       Git pull + rebuild + restart
+#   continuum update       Carl: git pull + docker compose pull + up (fast, default)
+#                          Dev:  add --dev flag for build-from-source
 #   continuum doctor       Diagnose common problems
 #
 # Installed by: curl -fsSL continuum.homes/install | bash
@@ -490,13 +491,55 @@ cmd_update() {
     exit 1
   fi
   cd "$COMPOSE_DIR"
-  echo -e "${BLUE}📥 Updating...${RESET}"
-  git pull origin main
-  echo -e "${BLUE}🔨 Rebuilding...${RESET}"
-  docker compose build --parallel
-  echo -e "${BLUE}🔄 Restarting...${RESET}"
+
+  # Default = Carl path: pull prebuilt images from ghcr (fast).
+  # --build / --dev = Dev path: rebuild from source (slow, needed when touching Rust/TS).
+  local mode="pull"
+  for arg in "$@"; do
+    case "$arg" in
+      --build|--dev) mode="build" ;;
+      --help|-h)
+        echo "continuum update — pull latest and restart."
+        echo ""
+        echo "  continuum update            Carl path: git pull + docker compose pull + up -d"
+        echo "                              + refresh Qwen model in DMR. Fast (~30s on warm cache)."
+        echo "  continuum update --dev      Dev path: git pull + docker compose build + up -d."
+        echo "                              Slower but picks up local source changes."
+        echo ""
+        return 0 ;;
+    esac
+  done
+
+  echo -e "${BLUE}📥 Fetching latest source...${RESET}"
+  git pull origin main || echo -e "${YELLOW}⚠️  git pull failed — continuing with local source.${RESET}"
+
+  if [ "$mode" = "pull" ]; then
+    echo -e "${BLUE}📦 Pulling latest images from ghcr...${RESET}"
+    if ! docker compose pull; then
+      echo -e "${RED}❌ Image pull failed. If this is a dev machine and you want to rebuild from source instead:${RESET}"
+      echo -e "    continuum update --dev"
+      exit 1
+    fi
+
+    # Refresh the default forged Qwen in DMR so new quantization / eval releases
+    # land without requiring the user to know about docker model pull. Idempotent
+    # on the docker model CLI — no-op if DMR isn't installed / TCP toggle off.
+    if docker model --help &>/dev/null 2>&1; then
+      echo -e "${BLUE}🧠 Refreshing forged Qwen in Docker Model Runner...${RESET}"
+      docker model pull hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF 2>&1 | tail -3 || \
+        echo -e "${YELLOW}⚠️  Qwen refresh failed (continuing — you can retry manually: docker model pull hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF)${RESET}"
+    fi
+  else
+    echo -e "${BLUE}🔨 Rebuilding images from source (dev mode — slow)...${RESET}"
+    docker compose build --parallel
+  fi
+
+  echo -e "${BLUE}🔄 Restarting services...${RESET}"
   docker compose up -d
+
   echo -e "${GREEN}✅ Updated${RESET}"
+  echo -e "  Check status: ${DIM}continuum status${RESET}"
+  echo -e "  Diagnose:     ${DIM}continuum doctor${RESET}"
 }
 
 cmd_tray_data() {
