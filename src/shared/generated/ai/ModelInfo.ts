@@ -3,6 +3,13 @@ import type { CostPer1kTokens } from "./CostPer1kTokens";
 import type { ModelCapability } from "./ModelCapability";
 
 /**
- * Model information
+ * Model information — ALL fields REQUIRED.
+ * The adapter knows its model. No optionals, no defaults, no guessing.
+ * If an adapter can't provide a field, it's not ready to register.
  */
-export type ModelInfo = { id: string, name: string, provider: string, capabilities: Array<ModelCapability>, contextWindow: number, maxOutputTokens?: number, costPer1kTokens?: CostPer1kTokens, supportsStreaming: boolean, supportsTools: boolean, };
+export type ModelInfo = { id: string, name: string, provider: string, capabilities: Array<ModelCapability>, contextWindow: number, maxOutputTokens: number, costPer1kTokens: CostPer1kTokens, 
+/**
+ * Measured or estimated inference speed on current hardware.
+ * Used by RAG budget and slot coordination.
+ */
+tokensPerSecond: number, supportsStreaming: boolean, supportsTools: boolean, };
