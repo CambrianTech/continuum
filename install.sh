@@ -447,6 +447,38 @@ else
   ok "Config exists: $CONFIG_FILE"
 fi
 
+# ── 4b. LiveKit API credentials — auto-generate per-install ─
+# LiveKit ships with `--dev` keys (API_KEY=devkey, API_SECRET=secret)
+# baked into the LiveKit-server binary's dev mode. Fine for local Carl
+# (LiveKit container only listens on localhost). NOT fine for any
+# Tailscale-grid-exposed deployment — anyone on your tailnet could
+# join your voice/video session with the dev keys.
+#
+# Generate strong random API_KEY + API_SECRET on first install. Idempotent:
+# only generate if not already present in config.env. Per-install unique
+# secrets without requiring the user to do anything. Memento's PR914
+# voice migration uses these via getSecret().
+if ! grep -q '^LIVEKIT_API_KEY=' "$CONFIG_FILE" 2>/dev/null; then
+  if command -v openssl &>/dev/null; then
+    LK_KEY=$(openssl rand -hex 16)      # 32 chars — readable in logs
+    LK_SECRET=$(openssl rand -hex 32)   # 64 chars — full strength
+    {
+      echo ""
+      echo "# LiveKit credentials — auto-generated at install for per-instance uniqueness"
+      echo "# (LiveKit's --dev mode defaults are insecure for any networked deployment)"
+      echo "LIVEKIT_API_KEY=$LK_KEY"
+      echo "LIVEKIT_API_SECRET=$LK_SECRET"
+    } >> "$CONFIG_FILE"
+    ok "LiveKit credentials: generated (LIVEKIT_API_KEY/SECRET in config.env)"
+  else
+    warn "openssl not found — skipping LiveKit credential generation. Install will use insecure dev defaults."
+    warn "  Manually generate: openssl rand -hex 16 (key), openssl rand -hex 32 (secret)"
+    warn "  Add LIVEKIT_API_KEY= and LIVEKIT_API_SECRET= to $CONFIG_FILE"
+  fi
+else
+  ok "LiveKit credentials: already present in config.env"
+fi
+
 # ── 5. TLS certs (Tailscale) ──────────────────────────────
 TS_HOSTNAME=""
 if command -v tailscale &>/dev/null; then
