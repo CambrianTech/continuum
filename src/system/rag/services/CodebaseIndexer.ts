@@ -28,8 +28,17 @@ const log = Logger.create('CodebaseIndexer', 'rag');
 /** Maximum content length per chunk (chars). Longer chunks are split. */
 const MAX_CHUNK_CHARS = 2000;
 
-/** Batch size for embedding generation — one Rust IPC call per batch */
-const EMBEDDING_BATCH_SIZE = 64;
+/** Batch size for embedding generation — one Rust IPC call per batch.
+ * Was 64; dropped to 16 because 64 × ~80MB-per-batch RSS growth saturated
+ * the event loop and starved chat for ~2min after every boot on M5.
+ * 16 gives Rust IPC the ~4× headroom to interleave with persona inference. */
+const EMBEDDING_BATCH_SIZE = 16;
+
+/** Pause between batches (ms) to yield the event loop and let the Rust
+ * IPC pipeline drain. Without this, the indexer blocks chat and live for
+ * the full duration. 50ms is small enough to not visibly slow indexing
+ * but big enough that other IO can interleave. */
+const EMBEDDING_BATCH_PAUSE_MS = 50;
 
 /** File extensions to index */
 const INDEXABLE_EXTENSIONS = new Set(['.ts', '.md', '.js']);
@@ -223,6 +232,14 @@ export class CodebaseIndexer {
       } catch (err) {
         log.error(`Embedding batch ${i}-${i + batch.length} failed: ${err}`);
         errors.push({ file: `batch-${i}`, error: String(err) });
+      }
+
+      // Yield to other IO between batches. Without this, the indexer
+      // monopolises the event loop and chat/voice/personas all stall
+      // for the full indexing duration. Chat-arrival latency matters
+      // more than indexing throughput.
+      if (i + EMBEDDING_BATCH_SIZE < allChunks.length) {
+        await new Promise(resolve => setTimeout(resolve, EMBEDDING_BATCH_PAUSE_MS));
       }
     }
 
