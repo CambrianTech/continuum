@@ -92,6 +92,11 @@ RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 # NOW copy real source. mtime fresh → cargo rebuilds for real.
 COPY . .
 
+# entity_schemas.json lives outside the workers build context (at
+# src/shared/generated/). Same pattern as continuum-core / continuum-core-cuda —
+# CI must pass `build-contexts: shared-generated=./src/shared/generated`.
+COPY --from=shared-generated entity_schemas.json /shared/generated/entity_schemas.json
+
 # Fail fast if submodules are uninitialized.
 RUN test -f vendor/llama.cpp/CMakeLists.txt || ( \
     echo "ERROR: vendor/llama.cpp is empty — host submodule not initialized." >&2 && \

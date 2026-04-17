@@ -74,6 +74,11 @@ jobs:
         with:
           context: ./src/workers
           file: ./docker/continuum-core.Dockerfile
+          # entity_schemas.json (Phase 2 codegen) lives outside the workers
+          # context. Mirrors docker-compose.yml's `additional_contexts:`.
+          # Without this the build fails: `error: couldn't read entity_schemas.json`.
+          build-contexts: |
+            shared-generated=./src/shared/generated
           platforms: ${{ env.PLATFORMS }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -126,6 +131,10 @@ jobs:
         with:
           context: ./src/workers
           file: ./docker/continuum-core-cuda.Dockerfile
+          # entity_schemas.json (Phase 2 codegen) lives outside the workers
+          # context. Required by the cargo build step.
+          build-contexts: |
+            shared-generated=./src/shared/generated
           # amd64-only: CUDA devel image + NVIDIA Container Toolkit
           # target amd64 hosts in practice.
           platforms: linux/amd64
@@ -180,6 +189,10 @@ jobs:
         with:
           context: ./src/workers
           file: ./docker/continuum-core-vulkan.Dockerfile
+          # entity_schemas.json (Phase 2 codegen) lives outside the workers
+          # context. Required by the cargo build step.
+          build-contexts: |
+            shared-generated=./src/shared/generated
           # Multi-arch: linux/arm64 for Carl-on-Mac via Podman+krunkit,
           # linux/amd64 for generic Linux GPU hosts (AMD, Intel, virtio).
           platforms: ${{ env.PLATFORMS }}

@@ -78,6 +78,14 @@ RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 # 2. NOW copy the real source. mtime is fresh; cargo will rebuild for real.
 COPY . .
 
+# entity_schemas.json lives outside the workers build context (at
+# src/shared/generated/). The Rust code includes it via relative path
+# from modules/entity_schemas.rs that escapes the build context.
+# Resolved include_str! path from continuum-core/src/modules/ is
+# ../../../../shared/generated/ which lands at /shared/generated/
+# from WORKDIR /app. CI must pass `build-contexts: shared-generated=./src/shared/generated`.
+COPY --from=shared-generated entity_schemas.json /shared/generated/entity_schemas.json
+
 # Fail fast if the host forgot to init submodules. Without this, cmake's
 # CMakeLists-not-found error surfaces deep inside the CUDA build —
 # terrible signal-to-noise. See issue #893.
