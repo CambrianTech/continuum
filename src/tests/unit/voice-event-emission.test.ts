@@ -1,7 +1,7 @@
 /**
  * Voice Event Emission Unit Tests
  *
- * Tests that VoiceWebSocketHandler correctly emits voice:transcription:directed events
+ * Tests that transcription relay correctly emits voice:transcription:directed events
  * for each AI participant returned by VoiceOrchestrator.
  *
  * Pattern: Rust computes → TypeScript emits (follows CRUD pattern)
@@ -45,7 +45,7 @@ describe('Voice Event Emission', () => {
       timestamp: Date.now(),
     };
 
-    // This is what VoiceWebSocketHandler should do
+    // This is what transcription relay should do
     for (const aiId of responderIds) {
       await Events.emit('voice:transcription:directed', {
         sessionId: utteranceEvent.sessionId,
@@ -98,7 +98,7 @@ describe('Voice Event Emission', () => {
       timestamp: Date.now(),
     };
 
-    // This is what VoiceWebSocketHandler should do
+    // This is what transcription relay should do
     for (const aiId of responderIds) {
       await Events.emit('voice:transcription:directed', {
         sessionId: utteranceEvent.sessionId,
