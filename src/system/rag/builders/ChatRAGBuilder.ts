@@ -228,9 +228,23 @@ export class ChatRAGBuilder extends RAGBuilder {
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
     let composeMs: number | undefined;
     let legacyMs: number | undefined;
-    // Token budget from model's context window — 75% for input.
+    // Token budget from model's context window — 75% for input, BUT capped.
+    //
+    // Why the cap: Qwen3.5-4b advertises a 262144-token window. 75% of that
+    // is ~196k tokens — which (a) we never actually fill but (b) caused
+    // llama-server to allocate full 262k KV cache PER PERSONA SLOT,
+    // 20+GB resident on 4 local personas. Joel saw 44GB total against 32GB
+    // RAM = swap hell. Activity Monitor showed com.docker.llama-server at
+    // 20.87 GB. RAG was only filling 14k of the budget, but that 14k
+    // prompt was still >10× too large for chat-snappy responses on M5.
+    //
+    // CHAT_INPUT_BUDGET_CEILING is a "you'd never sensibly need more than
+    // this for a single chat turn" cap. 8192 = system prompt (~2k) +
+    // recent history (~3k) + RAG context (~3k). Bigger contexts belong
+    // to specialized recipes (research, codereview) that can opt up.
+    const CHAT_INPUT_BUDGET_CEILING = 8192;
     const contextWindow = getContextWindow(options.modelId, options.provider);
-    const totalBudget = Math.floor(contextWindow * 0.75);
+    const totalBudget = Math.min(Math.floor(contextWindow * 0.75), CHAT_INPUT_BUDGET_CEILING);
 
     {
       const composer = this.getComposer();
