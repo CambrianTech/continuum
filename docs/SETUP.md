@@ -169,6 +169,7 @@ While inference runs, you should see GPU utilization spike to 70%+ and memory gr
 - **`docker model status` says `latest-cpu`:** the GPU toggle is off, or Docker Desktop hasn't finished installing the CUDA backend. Re-check Settings → AI, click Apply, wait 60 seconds.
 - **Personas reply but `nvidia-smi` shows no activity:** the host-side TCP toggle is off. The container can't reach DMR; it's likely silently routing to a CPU path. Toggle it on.
 - **Build fails with apt timeouts:** WSL networking issue, often resolved by `--network=host` or by `wsl --shutdown` to reset DNS. See [docs/infrastructure/WINDOWS-WSL2-INSTALL-GUIDE.md](infrastructure/WINDOWS-WSL2-INSTALL-GUIDE.md) for the full playbook.
+- **`docker push` silently 401s from WSL2 even after `docker login` succeeded** *(dev-path only — Carl doesn't push):* Docker Desktop writes `credsStore: desktop.exe` into WSL2's `~/.docker/config.json`, which delegates auth to the Windows Credential Manager — but WSL2 can't invoke the Windows GUI credential manager, so pushes silently 401. Fix: pipe a PAT into `docker login` from inside WSL, which stores creds inline in `config.json` instead of delegating: `echo '<PAT>' \| docker login ghcr.io -u <user> --password-stdin`. Or `gh auth token \| docker login ghcr.io -u <user> --password-stdin` if the `gh` CLI is installed with `write:packages` scope.
 
 ---
 
