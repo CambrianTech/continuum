@@ -202,9 +202,13 @@ else
   check "setup-probe-errors" "pass" "Inference probe errors visible (errors save time)"
 fi
 
-# 16. jtag ping (system running)
+# 16. jtag ping (system running) — `timeout` ships on Linux, `gtimeout` from coreutils on macOS
 echo "--- Check 16: System alive ---"
-if (cd src && timeout 15 ./jtag ping 2>/dev/null | grep -q '"success": true'); then
+TIMEOUT_BIN=""
+command -v timeout >/dev/null 2>&1 && TIMEOUT_BIN="timeout 15"
+[ -z "$TIMEOUT_BIN" ] && command -v gtimeout >/dev/null 2>&1 && TIMEOUT_BIN="gtimeout 15"
+PING_OUT=$(cd src && $TIMEOUT_BIN ./jtag ping 2>/dev/null || true)
+if echo "$PING_OUT" | grep -q '"success": true'; then
   check "jtag-ping" "pass" "System responding (npm start running)"
 else
   check "jtag-ping" "skip" "System not running — start with npm start to verify runtime"
