@@ -141,9 +141,20 @@ fn main() {
     // never fire and the runtime falls back to CPU with a "backend missing"
     // error. Force-load the whole archive so every registration symbol is
     // preserved.
+    // ggml-blas is built UNCONDITIONALLY on macOS — GGML's CMake enables
+    // BLAS whenever Accelerate is auto-detected (always present in the
+    // macOS SDK). The registry constructor in ggml-backend-reg.cpp.o
+    // statically references `ggml_backend_blas_reg`, so the libggml-blas.a
+    // archive must be linked regardless of the metal feature. Without
+    // this, building with --no-default-features (or with feature paths
+    // that don't enable metal) fails with:
+    //   Undefined symbols for architecture arm64:
+    //     "_ggml_backend_blas_reg" in ggml-backend-reg.cpp.o
+    if target_os == "macos" {
+        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-blas");
+    }
     if cfg!(feature = "metal") && target_os == "macos" {
         println!("cargo:rustc-link-lib=static:+whole-archive=ggml-metal");
-        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-blas");
     }
     if cfg!(feature = "cuda") && target_os == "linux" {
         println!("cargo:rustc-link-lib=static:+whole-archive=ggml-cuda");
