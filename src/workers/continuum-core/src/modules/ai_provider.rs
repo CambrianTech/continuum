@@ -237,36 +237,34 @@ impl AIProviderModule {
             );
         }
 
-        // Candle local inference — ALWAYS registered. No API key needed.
-        // It's the foundational provider: every machine can run local inference.
-        // INFERENCE_MODE controls priority: "local"/"candle" = primary, otherwise fallback.
-        // When Docker Model Runner is also registered (above), Candle drops to
-        // priority 8/9 so DMR wins for fresh requests.
+        // Candle local inference — ALWAYS registered, ALWAYS lowest priority.
+        // Candle's role is LoRA training on GPU, NOT chat inference. It is
+        // never picked for chat by the provider's routing because its
+        // `supported_model_prefixes()` returns vec![] (capability fact:
+        // currently doesn't serve chat-class models at the speed the
+        // contract requires). Callers wanting LoRA training pass
+        // `provider="candle"` explicitly, which short-circuits routing
+        // and goes straight to the named adapter.
+        //
+        // No env-var-driven priority promotion. The runtime config does
+        // not get to elevate Candle to chat-primary. The provider is the
+        // single source of truth for routing — env vars don't.
         {
-            let inference_mode = get_secret("INFERENCE_MODE").unwrap_or_default();
-            let is_primary = inference_mode.eq_ignore_ascii_case("local")
-                || inference_mode.eq_ignore_ascii_case("candle")
-                || (!dmr_available && registry.available().is_empty()); // Primary if no cloud providers AND no DMR
-
-            // Register quantized adapter (GGUF) — larger context, lower VRAM, no LoRA.
-            // Best for coding agent sessions where context window matters most.
             self.log()
-                .info("Registering Candle quantized adapter (GGUF, large context)");
+                .info("Registering Candle quantized adapter (GGUF, LoRA training only)");
             let mut candle_q = CandleAdapter::quantized();
             if let Some(mgr) = &self.gpu_manager {
                 candle_q.set_gpu_manager(mgr.clone());
             }
-            registry.register(Box::new(candle_q), if is_primary { 0 } else { 8 });
+            registry.register(Box::new(candle_q), 8);
 
-            // Register safetensors adapter (BF16) — supports LoRA fine-tuning.
-            // Used when a persona's LoRA adapter needs to be activated.
             self.log()
-                .info("Registering Candle safetensors adapter (BF16, LoRA support)");
+                .info("Registering Candle safetensors adapter (BF16, LoRA training only)");
             let mut candle_st = CandleAdapter::regular();
             if let Some(mgr) = &self.gpu_manager {
                 candle_st.set_gpu_manager(mgr.clone());
             }
-            registry.register(Box::new(candle_st), if is_primary { 1 } else { 9 });
+            registry.register(Box::new(candle_st), 9);
         }
 
         // Initialize all registered adapters
