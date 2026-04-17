@@ -154,8 +154,11 @@ impl AIProviderModule {
         // ggml-via-candle while Model Runner is direct llama.cpp-metal.
         //
         // Probed at init time (TCP localhost:12434/.../v1/models). If reachable,
-        // registered with priority -1 (above Candle's 0). If not reachable, skipped
-        // — no error, Candle remains the local fallback.
+        // registered with priority -1 (above Candle's 0). If not reachable, the
+        // chat path returns the no-GPU-adapter hard error from select() — Candle
+        // is NOT a chat fallback (its `supported_model_prefixes()` returns []
+        // so it never matches in select()'s tier-3 device-filtered walk).
+        // Candle's role is LoRA training on GPU, not inference.
         // Docker Model Runner endpoint detection.
         // Mac Option B (native core): DMR at localhost:12434 (via --tcp flag).
         // Linux/Windows Docker Desktop (containerized core): DMR at
