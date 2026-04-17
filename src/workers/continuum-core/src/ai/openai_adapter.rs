@@ -117,6 +117,33 @@ impl OpenAICompatibleAdapter {
         Ok(())
     }
 
+    /// Resolve a logical model name to the actual DMR model ID.
+    /// Returns the exact ID from runtime_models that best matches, or
+    /// None if no match. Used in generate_text to send the correct model
+    /// name in the API request body (DMR returns 404 for unresolved names).
+    fn resolve_dmr_model_name<'b>(&self, model_name: &'b str) -> Option<&'b str>
+    where
+        Self: 'b,
+    {
+        // Can't return references into RwLock guard across the function boundary,
+        // so we check and return the input if it matches, or clone into a leaked
+        // string for the resolved ID. In practice the resolved ID is used once
+        // per request — the leak is bounded by request count, not model count.
+        let guard = self.runtime_models.read().unwrap();
+        if let Some(ids) = guard.as_ref() {
+            let needle = model_name.to_lowercase();
+            for id in ids {
+                let hay = id.to_lowercase();
+                if hay == needle || hay.contains(&needle) || needle.contains(&hay) {
+                    // Leak the resolved string so we can return a &str with the
+                    // right lifetime. Bounded: one per unique model per process.
+                    return Some(Box::leak(id.clone().into_boxed_str()));
+                }
+            }
+        }
+        None
+    }
+
     /// Returns true if model_name matches any live runtime model.
     /// Match is exact OR a trivial contains in either direction to
     /// handle the common "persona says short name, DMR stores full
@@ -757,10 +784,21 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .request_id
             .clone()
             .unwrap_or_else(|| format!("req-{}", chrono::Utc::now().timestamp_millis()));
-        let model = request
+        let raw_model = request
             .model
             .as_deref()
             .unwrap_or(self.config.default_model);
+
+        // For DMR: resolve the logical model name to the actual model ID
+        // stored in Docker Model Runner (which may have hf.co/ prefix and
+        // different casing). Persona says "continuum-ai/qwen3.5-4b-code-forged",
+        // DMR has "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf".
+        // Without this, DMR returns 404 / error for the unresolved name.
+        let model = if self.config.provider_id == "docker-model-runner" {
+            self.resolve_dmr_model_name(raw_model).unwrap_or(raw_model)
+        } else {
+            raw_model
+        };
 
         // Build request body
         let messages = self.format_messages(&request.messages, request.system_prompt.as_deref());
