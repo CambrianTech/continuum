@@ -468,7 +468,7 @@ export class ChatRAGBuilder extends RAGBuilder {
 
     // Emit cognition event for rag-build stage (FIRE-AND-FORGET: don't block on event emission)
     const totalTokens = finalConversationHistory.reduce((sum, msg) => sum + (msg.content?.length ?? 0), 0);
-    const maxTokens = 128000;  // Typical context window
+    const maxTokens = contextWindow;
 
     // Fire-and-forget: don't await event emission, it's non-critical telemetry
     Events.emit<StageCompleteEvent>(
