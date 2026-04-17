@@ -45,7 +45,8 @@ This document is the **single source of truth** for remaining work. Each phase i
 ### Voice/LiveKit Cleanup (2026-04-17)
 - **LiveKit is ALWAYS ON.** LiveKit provides the UDP/WebRTC transport that made 14 personas + 4 LLMs + TTS/STT + Bevy avatars work simultaneously on M1. It is NOT optional. `docker compose up` starts the full stack including LiveKit + bridge. Same pattern as Docker Model Runner — efficient transport is a core requirement, not a feature flag.
 - **Voice/start migrated to LiveKit.** Server command returns LiveKit URL + JWT (not legacy port-3001 WebSocket). Browser widget rewritten from 427→178 lines: raw WS + AudioWorklet replaced with AudioStreamClient (LiveKit WebRTC). VOICE_WS_PORT/3001 eliminated from browser side.
-- **Old WebSocket voice path (port 3001) still active server-side.** VoiceWebSocketHandler.ts still starts on every boot via JTAGSystemServer. Identified as duplicated infrastructure — same transcription routing, TTS synthesis, and session state as LiveKit path. Cleanup is a separate PR to avoid regressions.
+- **Old WebSocket voice path (port 3001) DELETED.** VoiceWebSocketHandler.ts removed (586 lines), startVoiceServer() removed from JTAGSystemServer boot. Port 3001 no longer binds. LiveKit is now the sole voice transport. Orchestration logic (VoiceOrchestrator, AIAudioBridge) retained — they serve the LiveKit path.
+- **TTS ONNX deadlock on M1 (issue #915).** Kokoro model session creation deadlocks on M1 Metal EP. Main thread blocks on _pthread_join. Doesn't affect M5/BigMama (CUDA EP). Blocks TTS→STT test pipeline on M1.
 - **Type safety enforced in command factories.** Required result fields must be required in factory data params. Generator updated (anvil commit b96a6520a): `ResultSpec.required` defaults to true. 452 generated files will tighten on re-gen.
 
 ---
