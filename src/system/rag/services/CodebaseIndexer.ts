@@ -291,7 +291,14 @@ export class CodebaseIndexer {
     if (this.queryCache) return this.queryCache;
     if (this.queryCacheLoad) return this.queryCacheLoad;
 
-    this.queryCacheLoad = (async () => {
+    // Wrap the IIFE in a Promise we can clear via .finally regardless of
+    // success or rejection. Previously the `this.queryCacheLoad = null`
+    // assignment lived inside the IIFE body — if any line above it threw
+    // (e.g., an unexpected ORM error), the rejected Promise stayed cached
+    // and every subsequent loadQueryCache() returned the same rejection
+    // forever. Caller sees "indexer permanently broken" with no retry path.
+    // .finally fires on both branches, so the next call gets a clean slate.
+    const loadPromise = (async () => {
       // Paginate: a single ORM.query at limit=20000 hits the IPC's 60s
       // timeout on a fully-indexed repo (~40k rows × 384 floats × 4 bytes
       // = ~60MB) and returns an empty result, silently poisoning the cache.
@@ -324,10 +331,17 @@ export class CodebaseIndexer {
       const targets = entries.map(e => e.embedding!);
       const cache = { entries, targets };
       this.queryCache = cache;
-      this.queryCacheLoad = null;
       log.info(`Query cache loaded: ${entries.length} entries (${targets.length > 0 ? targets[0].length : 0}-dim) in ${Date.now() - t0}ms across ${Math.ceil(offset / PAGE_SIZE)} pages`);
       return cache;
     })();
+
+    this.queryCacheLoad = loadPromise.finally(() => {
+      // Always clear the in-flight pointer, success OR rejection. Concurrent
+      // callers that already grabbed the Promise still see the same outcome
+      // (success or rejection) — but the NEXT invocation can retry instead
+      // of being handed the cached rejection.
+      this.queryCacheLoad = null;
+    });
 
     return this.queryCacheLoad;
   }
