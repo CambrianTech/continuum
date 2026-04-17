@@ -599,24 +599,38 @@ export class AIProviderDaemon extends DaemonBase {
     // This MUST be checked BEFORE model detection to avoid routing Groq's
     // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'
     if (provider) {
-      // LOCAL PROVIDER ALIASING: Route local providers to Candle
-      // Candle is the ONLY local inference path
+      // LOCAL PROVIDER ROUTING: 'local' routes through Rust AIProviderModule
+      // which picks the best GPU adapter (DMR Metal/CUDA or llama-vulkan).
+      // Candle is training-only, NOT a chat inference path.
+      // The Rust adapter registry handles priority-based selection:
+      //   DMR (priority 0) > llama-vulkan > Candle (lowest, training only)
       const localProviders = ['local', 'llamacpp'];
       if (localProviders.includes(provider)) {
-        const candleReg = this.adapters.get('candle');
-        if (candleReg && candleReg.enabled) {
-          this.log.info(`🔄 AIProviderDaemon: Routing '${provider}' → 'candle' (provider_aliasing)`);
+        // Route through Rust IPC — the Rust AIProviderModule has DMR registered
+        // and will select the correct GPU adapter. Don't intercept here.
+        const rustReg = this.adapters.get('rust-ipc') || this.adapters.get('local');
+        if (rustReg && rustReg.enabled) {
+          this.log.info(`🔄 AIProviderDaemon: Routing '${provider}' → Rust IPC (GPU-auto-select)`);
           return {
-            adapter: candleReg.adapter,
-            routingReason: 'provider_aliasing',
+            adapter: rustReg.adapter,
+            routingReason: 'local_gpu_routing',
             isLocal: true,
           };
         }
-        // NO FALLBACK: If candle not available, FAIL - don't silently use something else
+        // Try candle as last resort (training adapter, slow but functional)
+        const candleReg = this.adapters.get('candle');
+        if (candleReg && candleReg.enabled) {
+          this.log.info(`⚠️ AIProviderDaemon: No Rust IPC adapter — using Candle (CPU, slow)`);
+          return {
+            adapter: candleReg.adapter,
+            routingReason: 'candle_last_resort',
+            isLocal: true,
+          };
+        }
         throw new AIProviderError(
-          `Local provider '${provider}' requested but Candle adapter not available`,
+          `Local provider '${provider}' requested but no local inference adapter available`,
           'daemon',
-          'CANDLE_NOT_AVAILABLE'
+          'LOCAL_NOT_AVAILABLE'
         );
       }
 

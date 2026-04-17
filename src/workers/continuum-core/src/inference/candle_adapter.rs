@@ -507,74 +507,16 @@ impl AIProviderAdapter for CandleAdapter {
     async fn initialize(&mut self) -> Result<(), String> {
         let log = runtime::logger("candle");
         log.info(&format!(
-            "Candle adapter ready (quantized={})",
+            "Candle adapter ready (quantized={}) — training/LoRA only, no eager model load",
             self.use_quantized
         ));
-
-        // Eager-load the llama.cpp model in the background so the first user
-        // chat message doesn't pay the 6s model-load latency. The load uses
-        // the same load-gate as the lazy path in generate_text — if a request
-        // arrives before warmup completes, it waits on the same mutex; if it
-        // arrives after, the backend is already populated and the load_gate
-        // is uncontended.
-        //
-        // Failure is non-fatal: if no GGUF is found locally we just log a
-        // warning and the lazy path still applies on first request. This is
-        // only a startup optimization, not a correctness requirement.
-        if self.use_quantized {
-            // Pick the first GGUF available locally — this is the model the
-            // first chat will most likely target. If multiple GGUFs are
-            // cached, this picks one and the lazy path will fall back if a
-            // request asks for a different one (current design has only ONE
-            // backend per CandleAdapter, so the eager pick is the de-facto
-            // default until restart).
-            if let Some(local_gguf) = find_first_local_gguf() {
-                let backend_slot = self.llamacpp_backend.clone();
-                let load_gate = self.llamacpp_load_gate.clone();
-                tokio::spawn(async move {
-                    let log = runtime::logger("candle");
-                    log.info(&format!(
-                        "🔥 Eager-loading llama.cpp backend (background): {}",
-                        local_gguf.display()
-                    ));
-                    let _load_permit = load_gate.lock_owned().await;
-                    if backend_slot.read().is_some() {
-                        return; // a request raced us and lazy-loaded already
-                    }
-                    let path_str = match local_gguf.to_str() {
-                        Some(s) => s.to_string(),
-                        None => { log.warn("Eager-load: non-utf8 GGUF path"); return; }
-                    };
-                    let load_start = std::time::Instant::now();
-                    let n_seq_max = local_inference_capacity() as u32;
-                    let result = tokio::task::spawn_blocking(move || {
-                        let config = backends::llamacpp::LlamaCppConfig {
-                            model_path: std::path::PathBuf::from(path_str),
-                            n_seq_max,
-                            ..Default::default()
-                        };
-                        backends::llamacpp::LlamaCppBackend::load(config)
-                    }).await;
-                    match result {
-                        Ok(Ok(backend)) => {
-                            log.info(&format!(
-                                "🔥 Eager-load complete in {:.2}s — first chat will skip the cold start",
-                                load_start.elapsed().as_secs_f64()
-                            ));
-                            *backend_slot.write() = Some(Arc::new(backend));
-                        }
-                        Ok(Err(e)) => log.warn(&format!(
-                            "Eager-load failed ({e}); falling back to lazy load"
-                        )),
-                        Err(e) => log.warn(&format!(
-                            "Eager-load task panicked ({e}); falling back to lazy load"
-                        )),
-                    }
-                });
-            } else {
-                log.info("Eager-load skipped: no local GGUF found in ~/.cache/huggingface or models dir");
-            }
-        }
+        // NO eager model load. Candle is for LoRA training, NOT chat inference.
+        // Chat goes through Docker Model Runner (DMR) via the 'local' provider
+        // routing in AdapterRegistry::select(). Eager-loading the GGUF here
+        // wastes 2.5GB RAM on a model that DMR already serves via Metal/CUDA,
+        // and triggers a llama.cpp Metal assertion crash on M1 (ggml-metal-
+        // device.m:612 rsets assert on process exit). Candle lazy-loads when
+        // explicitly requested for training via provider="candle".
         Ok(())
     }
 
