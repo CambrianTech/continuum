@@ -376,6 +376,50 @@ for i in $(seq 1 90); do
   sleep 2
 done
 
+# ── Post-start inference probe ──────────────────────────────
+# "All containers healthy" isn't the same as "the user can actually
+# chat." This probe sends a real inference request to DMR and verifies
+# (a) the response comes back, (b) tok/s is in GPU territory not CPU,
+# (c) the reply is non-empty / non-garbage. If any of those fail, the
+# user learns NOW with specific remediation — not when they open the
+# widget, type "hello," and wait 30 seconds for a 10-tok/s CPU reply.
+if command -v curl &>/dev/null && curl -fsS --max-time 2 http://localhost:12434/engines/v1/models >/dev/null 2>&1; then
+  echo ""
+  echo "🧪 Probing local inference end-to-end..."
+
+  PROBE_RESPONSE=$(curl -s --max-time 30 -X POST http://localhost:12434/engines/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{"model":"huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest","messages":[{"role":"user","content":"Reply with exactly one word: ready"}],"max_tokens":20,"temperature":0.1}' 2>/dev/null || echo "")
+
+  if [ -z "$PROBE_RESPONSE" ]; then
+    echo "  ⚠️  Probe failed — couldn't reach DMR. Inference may not work."
+    echo "     Retry manually after setup completes:"
+    echo "       curl http://localhost:12434/engines/v1/models"
+  else
+    # printf '%s' — DO NOT use echo. The JSON response contains literal
+    # backslash-n sequences inside the model's <think>\n... content, and
+    # bash's echo will interpret them as real newlines, breaking json.load.
+    PROBE_TPS=$(printf '%s' "$PROBE_RESPONSE" | python3 -c "import sys,json;d=json.load(sys.stdin);t=d.get('timings',{});print(f'{t.get(\"predicted_per_second\",0):.0f}')" 2>/dev/null || echo "0")
+    PROBE_TOKENS=$(printf '%s' "$PROBE_RESPONSE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('usage',{}).get('completion_tokens',0))" 2>/dev/null || echo "0")
+
+    if [ "$PROBE_TOKENS" -eq 0 ]; then
+      echo "  ⚠️  Probe returned zero tokens. Model may have failed to load or DMR routing is broken."
+      echo "     Debug:"
+      echo "       docker model status"
+      echo "       docker model ls | grep qwen"
+    elif [ "$PROBE_TPS" -lt 15 ]; then
+      echo "  ❗ Probe got $PROBE_TOKENS tokens at $PROBE_TPS tok/s — that's CPU speed."
+      echo "     The inference probe SUCCEEDED but GPU acceleration isn't engaged."
+      echo "     This is the Docker Desktop 'Enable GPU-backed inference' toggle (Settings → AI)."
+      echo "     Chat will work but will be SLOW (5-10× slower than expected) until you flip it."
+    elif [ "$PROBE_TPS" -lt 80 ]; then
+      echo "  ✅ Probe: $PROBE_TOKENS tokens at $PROBE_TPS tok/s (Metal GPU, Mac-tier speed)"
+    else
+      echo "  ✅ Probe: $PROBE_TOKENS tokens at $PROBE_TPS tok/s (CUDA GPU, Nvidia-tier speed)"
+    fi
+  fi
+fi
+
 echo ""
 
 echo "  ✅ Continuum is running!"
