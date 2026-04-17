@@ -151,11 +151,20 @@ HOST_ARCH="$(uname -m)"
 NATIVE_FEATURE=""
 case "$VARIANT:$HOST_OS" in
   cuda:Linux)
-    # Needs nvcc + Nvidia driver. Detect nvidia-smi as a proxy.
-    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+    # Needs nvcc (CUDA dev toolkit) + Nvidia driver. nvidia-smi alone is
+    # the DRIVER — common state on WSL2 hosts where the GPU is passed
+    # through but the dev toolkit was never installed. nvcc is what
+    # actually compiles the Rust+CUDA build, so it's the real prereq.
+    # Skip Phase 0 cleanly when only the driver is present rather than
+    # failing late inside cargo with a confusing nvcc-not-found error.
+    if command -v nvcc &>/dev/null; then
       NATIVE_FEATURE="cuda"
+    elif command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+      echo "→ Phase 0 skipped: variant=cuda — nvidia-smi present but nvcc missing"
+      echo "  (driver passthrough without CUDA dev toolkit; install cuda-toolkit-nvcc to enable native Phase 0)"
+      echo "  Phase 1+ docker build inside the container has its own CUDA toolkit, so the image build itself is fine."
     else
-      echo "→ Phase 0 skipped: variant=cuda but no working nvidia-smi on host"
+      echo "→ Phase 0 skipped: variant=cuda but no working nvidia-smi or nvcc on host"
     fi
     ;;
   vulkan:Linux)
