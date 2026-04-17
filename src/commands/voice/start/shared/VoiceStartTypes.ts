@@ -52,10 +52,14 @@ export interface VoiceStartResult extends CommandResult {
   success: boolean;
   // Session handle (UUID) for correlation
   handle: string;
-  // WebSocket URL to connect for audio streaming
-  wsUrl: string;
+  // LiveKit WebSocket URL for the browser to connect
+  livekitUrl: string;
+  // LiveKit JWT token for authentication
+  livekitToken: string;
   // Resolved room ID
   roomId: string;
+  // Legacy — kept for backwards compat; same as livekitUrl
+  wsUrl: string;
   error?: JTAGError;
 }
 
@@ -69,7 +73,11 @@ export const createVoiceStartResult = (
     success: boolean;
     // Session handle (UUID) for correlation
     handle?: string;
-    // WebSocket URL to connect for audio streaming
+    // LiveKit WebSocket URL
+    livekitUrl?: string;
+    // LiveKit JWT token
+    livekitToken?: string;
+    // Legacy — same as livekitUrl
     wsUrl?: string;
     // Resolved room ID
     roomId?: string;
@@ -78,6 +86,8 @@ export const createVoiceStartResult = (
 ): VoiceStartResult => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
   handle: data.handle ?? '',
+  livekitUrl: data.livekitUrl ?? '',
+  livekitToken: data.livekitToken ?? '',
   wsUrl: data.wsUrl ?? '',
   roomId: data.roomId ?? '',
   ...data
