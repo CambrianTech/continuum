@@ -42,11 +42,11 @@ This document is the **single source of truth** for remaining work. Each phase i
 - #910 DMR CUDA on Windows needs manual Docker Desktop toggle
 - #911 16GB MacBook Air can't run Option B (product scope decision)
 
-### Voice/LiveKit Decoupling (2026-04-17)
-- **LiveKit moved to `--profile live`.** `docker compose up` (no profiles) now starts ONLY text chat infrastructure: core, node-server, widget-server, model-init. Voice/video/avatars require `--profile live`. Carl gets text chat without downloading/running WebRTC containers. Saves ~300MB RAM + eliminates livekit startup dependency.
-- **Voice/start migrated to LiveKit.** Server command returns LiveKit URL + JWT (not legacy port-3001 WebSocket). Browser widget rewritten from 427→178 lines: raw WS + AudioWorklet replaced with AudioStreamClient (LiveKit WebRTC). VOICE_WS_PORT/3001 eliminated.
+### Voice/LiveKit Cleanup (2026-04-17)
+- **LiveKit is ALWAYS ON.** LiveKit provides the UDP/WebRTC transport that made 14 personas + 4 LLMs + TTS/STT + Bevy avatars work simultaneously on M1. It is NOT optional. `docker compose up` starts the full stack including LiveKit + bridge. Same pattern as Docker Model Runner — efficient transport is a core requirement, not a feature flag.
+- **Voice/start migrated to LiveKit.** Server command returns LiveKit URL + JWT (not legacy port-3001 WebSocket). Browser widget rewritten from 427→178 lines: raw WS + AudioWorklet replaced with AudioStreamClient (LiveKit WebRTC). VOICE_WS_PORT/3001 eliminated from browser side.
+- **Old WebSocket voice path (port 3001) still active server-side.** VoiceWebSocketHandler.ts still starts on every boot via JTAGSystemServer. Identified as duplicated infrastructure — same transcription routing, TTS synthesis, and session state as LiveKit path. Cleanup is a separate PR to avoid regressions.
 - **Type safety enforced in command factories.** Required result fields must be required in factory data params. Generator updated (anvil commit b96a6520a): `ResultSpec.required` defaults to true. 452 generated files will tighten on re-gen.
-- **Dead code removed:** `wsUrl` field (legacy compat for port-3001), AudioWorklet voice processors orphaned (to be cleaned up).
 
 ---
 
@@ -54,7 +54,7 @@ This document is the **single source of truth** for remaining work. Each phase i
 
 | Subsystem | Status | Notes |
 |-----------|--------|-------|
-| Live video calls | Working | Human + 14 AI avatars, 3D scenes, real-time voice. Requires `--profile live`. |
+| Live video calls | Working | Human + 14 AI avatars, 3D scenes, real-time voice. LiveKit always-on. |
 | Persona telemetry | Working | INT/NRG/ATN meters, cognitive diamonds, genome bars |
 | Memory pressure | Working | Graduated levels (normal/warning/high/critical), RSS bounded |
 | Persona cadence | Working | Pressure-aware adaptive timing |
