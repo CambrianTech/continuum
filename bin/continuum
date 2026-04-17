@@ -655,7 +655,13 @@ cmd_doctor() {
 
   # Config
   if [ -f "$CONTINUUM_HOME/config.env" ]; then
-    local count; count=$(grep -c "=" "$CONTINUUM_HOME/config.env" 2>/dev/null || echo 0)
+    # grep -c prints the count then exits 1 if there are 0 matches. The old
+    # `|| echo 0` then ran and appended "0" to the variable — output was
+    # "0\n0 keys" on any empty config. Capture grep's output, ignore exit code,
+    # default to 0 if empty.
+    local count
+    count=$(grep -c "=" "$CONTINUUM_HOME/config.env" 2>/dev/null || true)
+    count=${count:-0}
     echo -e "  ${GREEN}●${RESET} Config: $count keys in $CONTINUUM_HOME/config.env"
     if grep -q "TS_AUTHKEY" "$CONTINUUM_HOME/config.env" 2>/dev/null; then
       echo -e "  ${GREEN}●${RESET} Grid auth key: configured"
