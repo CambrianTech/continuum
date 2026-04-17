@@ -215,27 +215,43 @@ export class TokenBuilder {
   }
 
   /**
-   * Build factory function data parameter type for createResult
-   * Result fields are typically more flexible (success required, most others optional)
+   * Build factory function data parameter type for createResult.
+   *
+   * Result fields default to REQUIRED. The previous "all optional for error
+   * cases" generation threw away the compile-time guarantee that the result
+   * interface promised — a command that forgot to set `roomId` would hand
+   * back `undefined` instead of getting a compile error. Set
+   * `required: false` on a ResultSpec ONLY when the field genuinely doesn't
+   * apply on every result (cursor on the last page, warning on partial
+   * success). Don't make a field optional just because "error cases might
+   * not have it" — error responses should use a different shape entirely.
    */
   static buildResultFactoryDataType(results: ResultSpec[]): string {
     // success is always required in result factories
     const fields = ['    success: boolean;'];
 
-    // All other result fields are typically optional (for error cases)
     results.forEach(result => {
       const comment = result.description ? `    // ${result.description}\n` : '';
-      fields.push(`${comment}    ${result.name}?: ${result.type};`);
+      const optional = result.required === false ? '?' : '';
+      fields.push(`${comment}    ${result.name}${optional}: ${result.type};`);
     });
 
-    // error is always optional
+    // error is always optional (only present on failure responses)
     fields.push('    error?: JTAGError;');
 
     return `{\n${fields.join('\n')}\n  }`;
   }
 
   /**
-   * Build default value assignments for result fields in factory functions
+   * Build default value assignments for result fields in factory functions.
+   *
+   * Required fields (the default) get `data.<field>` directly — if the
+   * caller didn't set it, that's a compile error in the data param type
+   * (see buildResultFactoryDataType above), not a silent runtime fallback.
+   *
+   * Optional fields (`required: false` on the spec) get the `?? default`
+   * fallback — that's the correct semantic for fields that genuinely may
+   * be absent.
    */
   static buildResultFactoryDefaults(results: ResultSpec[]): string {
     if (results.length === 0) {
@@ -244,9 +260,12 @@ export class TokenBuilder {
 
     return results
       .map(result => {
-        // Generate sensible defaults based on type
-        const defaultValue = this.defaultValueForType(result.type);
-        return `  ${result.name}: data.${result.name} ?? ${defaultValue},`;
+        if (result.required === false) {
+          const defaultValue = this.defaultValueForType(result.type);
+          return `  ${result.name}: data.${result.name} ?? ${defaultValue},`;
+        }
+        // Required: pass through directly. Type system enforces presence.
+        return `  ${result.name}: data.${result.name},`;
       })
       .join('\n');
   }

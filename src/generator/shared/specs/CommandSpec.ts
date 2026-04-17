@@ -37,6 +37,24 @@ export interface ResultSpec {
 
   /** Human-readable description of what this field means */
   description: string;
+
+  /**
+   * Whether this field MUST be provided by the command implementation.
+   *
+   * Defaults to `true` — required-by-default is the safer convention per
+   * Joel's principle: "if you NEED a variable, make it required. Optionals
+   * are used by you guys at 5× the normal rate." When a field is required
+   * (the default), the generator emits NO `?:` in the result type and NO
+   * `?? default` in the factory — so a command that forgets to set the
+   * field gets a COMPILE error, not a silent runtime failure.
+   *
+   * Set `required: false` ONLY when the field genuinely doesn't apply on
+   * every result (e.g. a `cursor` only set when there are more pages,
+   * a `warning` only set on partial-success). Don't make a field optional
+   * just because "error cases might not have it" — error responses should
+   * use a different shape entirely.
+   */
+  required?: boolean;
 }
 
 /**
