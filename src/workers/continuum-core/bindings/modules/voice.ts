@@ -107,7 +107,7 @@ export interface VoiceMixin {
 	voiceRegisterSession(sessionId: string, roomId: string, participants: VoiceParticipant[]): Promise<void>;
 	voiceEndSession(sessionId: string): Promise<void>;
 	voiceOnUtterance(event: UtteranceEvent): Promise<string[]>;
-	voiceSynthesize(text: string, voice?: string, adapter?: string): Promise<VoiceSynthesizeResult>;
+	voiceSynthesize(text: string, voice?: string, adapter?: string, timeoutMs?: number): Promise<VoiceSynthesizeResult>;
 	voiceSpeakInCall(callId: string, userId: string, text: string, voice?: string, adapter?: string, displayName?: string, seq?: number): Promise<VoiceSynthesizeResult>;
 	voiceInjectAudio(callId: string, userId: string, samples: number[]): Promise<void>;
 	voiceAmbientAdd(callId: string, sourceName: string): Promise<{ handle: string; source_name: string }>;
@@ -184,14 +184,17 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 		async voiceSynthesize(
 			text: string,
 			voice?: string,
-			adapter?: string
+			adapter?: string,
+			timeoutMs?: number
 		): Promise<VoiceSynthesizeResult> {
+			// First TTS call loads ONNX model — can take 90s+ on M1 (Metal JIT).
+			// Default 120s timeout accommodates cold start; subsequent calls are <2s.
 			const { response, binaryData } = await this.requestFull({
 				command: 'voice/synthesize',
 				text,
 				voice,
 				adapter,
-			});
+			}, timeoutMs ?? 120_000);
 
 			if (!response.success) {
 				throw new Error(response.error || 'Failed to synthesize speech');

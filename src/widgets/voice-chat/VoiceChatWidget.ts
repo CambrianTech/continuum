@@ -23,7 +23,7 @@ export interface VoiceState {
 }
 
 export class VoiceChatWidget {
-  public roomId: string = '';
+  public roomId: string;
   public handle: string = '';
 
   private voiceState: VoiceState = {
@@ -45,12 +45,8 @@ export class VoiceChatWidget {
   private localUserId: string = '';
 
   constructor(options?: { roomId?: string; onStateChange?: (state: VoiceState) => void }) {
-    if (options?.roomId) {
-      this.roomId = options.roomId;
-    }
-    if (options?.onStateChange) {
-      this.onStateChange = options.onStateChange;
-    }
+    this.roomId = options?.roomId ?? 'general';
+    this.onStateChange = options?.onStateChange;
   }
 
   get state(): VoiceState {
@@ -69,7 +65,7 @@ export class VoiceChatWidget {
     try {
       // Get LiveKit credentials from voice/start command
       const result: VoiceStartResult = await VoiceStart.execute({
-        room: this.roomId || 'general',
+        room: this.roomId,
       });
 
       if (!result.success) {

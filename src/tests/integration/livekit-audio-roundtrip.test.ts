@@ -484,8 +484,8 @@ async function main() {
 	await ipc.connect();
 	console.log(`\n  ✅ Connected to continuum-core IPC`);
 
-	// Warmup TTS (first call loads ONNX model)
-	console.log('  ⏳ Warming up Kokoro TTS...');
+	// Warmup TTS (first call loads ONNX model — can take 90s+ on M1 due to Metal JIT)
+	console.log('  ⏳ Warming up Kokoro TTS (first call loads ONNX, may take 90s+ on M1)...');
 	const warmStart = performance.now();
 	await ipc.voiceSynthesize('warmup', undefined, 'kokoro');
 	console.log(`  ✅ TTS warmup: ${(performance.now() - warmStart).toFixed(0)}ms`);
