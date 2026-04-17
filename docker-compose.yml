@@ -69,6 +69,7 @@ services:
       dockerfile: ../../docker/continuum-core.Dockerfile
       additional_contexts:
         avatars: ./src/models/avatars
+        shared-generated: ./src/shared/generated
       args:
         # --no-default-features excludes livekit-webrtc (handled by livekit-bridge).
         # load-dynamic-ort loads ONNX Runtime as shared lib (runtime discovery).

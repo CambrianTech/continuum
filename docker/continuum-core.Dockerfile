@@ -49,6 +49,14 @@ RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 # Now build actual source (fast — deps already compiled)
 COPY . .
 
+# entity_schemas.json lives outside the workers build context (at
+# src/shared/generated/). The Rust code includes it via relative path
+# from modules/entity_schemas.rs. Docker additional_contexts makes it
+# available without expanding the build context to all of src/.
+# include_str! path from continuum-core/src/modules/ is ../../../../shared/generated/
+# which resolves to /shared/generated/ from WORKDIR /app
+COPY --from=shared-generated entity_schemas.json /shared/generated/entity_schemas.json
+
 # Fail fast if the host forgot to init submodules. Without this, cmake's
 # CMakeLists-not-found error surfaces ~15 min into the cargo build —
 # terrible signal-to-noise. See issue #893.
