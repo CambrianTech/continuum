@@ -93,6 +93,20 @@ if [[ "$BRANCH" == "main" ]]; then
   TAGS+=(--tag "$TAG_LATEST")
 fi
 
+# Add :pr-<N> tag if there's an open PR for this branch — keeps the
+# `CONTINUUM_IMAGE_TAG=pr-<N> curl install.sh | bash` reviewer flow
+# working when we build locally instead of via CI. Mirrors the CI
+# `type=ref,event=pr,prefix=pr-` rule. PR_NUMBER env override exists
+# for hosts where `gh` isn't available (e.g. SSH on BigMama).
+PR_NUMBER="${PR_NUMBER:-}"
+if [[ -z "$PR_NUMBER" ]] && command -v gh >/dev/null 2>&1; then
+  PR_NUMBER="$(gh pr list --head "$BRANCH" --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+fi
+if [[ -n "$PR_NUMBER" ]]; then
+  TAG_PR="$REGISTRY/$IMAGE:pr-$PR_NUMBER"
+  TAGS+=(--tag "$TAG_PR")
+fi
+
 # ── Pre-flight ──────────────────────────────────────────────────────
 cd "$REPO_ROOT"
 
@@ -213,6 +227,7 @@ docker buildx build \
   --platform "$LOCAL_PLATFORM" \
   --file "$DOCKERFILE" \
   --build-arg "GPU_FEATURES=$GPU_FEATURES" \
+  --build-context "shared-generated=src/shared/generated" \
   --tag "$TAG_SHA" \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
   --load \
@@ -233,6 +248,7 @@ docker buildx build \
   --platform "$PLATFORMS" \
   --file "$DOCKERFILE" \
   --build-arg "GPU_FEATURES=$GPU_FEATURES" \
+  --build-context "shared-generated=src/shared/generated" \
   "${TAGS[@]}" \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
   --cache-to   "type=registry,ref=$REGISTRY/$IMAGE:buildcache,mode=max" \
