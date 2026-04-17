@@ -5,8 +5,8 @@
  *
  * Flow:
  * 1. Set up voice call session with AI participants
- * 2. Rust continuum-core transcribes audio → sends Transcription message
- * 3. VoiceWebSocketHandler receives message → relays to VoiceOrchestrator
+ * 2. Rust continuum-core transcribes audio via LiveKit STT listener
+ * 3. CollaborationLiveTranscriptionServerCommand relays to VoiceOrchestrator
  * 4. VoiceOrchestrator broadcasts to all AI participants
  * 5. AIs receive voice:transcription:directed events
  */

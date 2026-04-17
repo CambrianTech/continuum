@@ -101,8 +101,8 @@ class MockPersonaUser {
   }
 }
 
-// Simulate VoiceWebSocketHandler logic
-async function simulateVoiceWebSocketHandler(
+// Simulate TranscriptionRelay logic
+async function simulateTranscriptionRelay(
   orchestrator: MockVoiceOrchestrator,
   utteranceEvent: {
     sessionId: string;
@@ -116,7 +116,7 @@ async function simulateVoiceWebSocketHandler(
   // Step 1: Rust computes responder IDs (ALREADY WORKS - tested separately)
   const responderIds = await orchestrator.onUtterance(utteranceEvent);
 
-  console.log(`📡 VoiceWebSocketHandler: Got ${responderIds.length} responders from orchestrator`);
+  console.log(`📡 TranscriptionRelay: Got ${responderIds.length} responders from orchestrator`);
 
   // Step 2: TypeScript emits events (THIS IS WHAT WE'RE TESTING)
   for (const aiId of responderIds) {
@@ -130,7 +130,7 @@ async function simulateVoiceWebSocketHandler(
       timestamp: utteranceEvent.timestamp,
     });
 
-    console.log(`📤 VoiceWebSocketHandler: Emitted event to AI ${aiId.slice(0, 8)}`);
+    console.log(`📤 TranscriptionRelay: Emitted event to AI ${aiId.slice(0, 8)}`);
   }
 }
 
@@ -155,7 +155,7 @@ describe('Voice AI Response Flow - Integration', () => {
 
   it('should complete full flow: utterance → orchestrator → events → AI inbox', async () => {
     // Simulate user speaking
-    await simulateVoiceWebSocketHandler(orchestrator, {
+    await simulateTranscriptionRelay(orchestrator, {
       sessionId: TEST_SESSION_ID,
       speakerId: TEST_HUMAN_ID,
       speakerName: 'Human User',
@@ -194,7 +194,7 @@ describe('Voice AI Response Flow - Integration', () => {
     // Create session with only AI 1
     orchestrator.registerSession('single-ai-session', [TEST_AI_1_ID]);
 
-    await simulateVoiceWebSocketHandler(orchestrator, {
+    await simulateTranscriptionRelay(orchestrator, {
       sessionId: 'single-ai-session',
       speakerId: TEST_HUMAN_ID,
       speakerName: 'Human User',
@@ -215,7 +215,7 @@ describe('Voice AI Response Flow - Integration', () => {
 
   it('should exclude speaker from responders', async () => {
     // Simulate AI 1 speaking (should only notify AI 2)
-    await simulateVoiceWebSocketHandler(orchestrator, {
+    await simulateTranscriptionRelay(orchestrator, {
       sessionId: TEST_SESSION_ID,
       speakerId: TEST_AI_1_ID, // AI 1 is the speaker
       speakerName: 'Helper AI',
@@ -238,7 +238,7 @@ describe('Voice AI Response Flow - Integration', () => {
 
   it('should handle multiple utterances in sequence', async () => {
     // Utterance 1
-    await simulateVoiceWebSocketHandler(orchestrator, {
+    await simulateTranscriptionRelay(orchestrator, {
       sessionId: TEST_SESSION_ID,
       speakerId: TEST_HUMAN_ID,
       speakerName: 'Human User',
@@ -250,7 +250,7 @@ describe('Voice AI Response Flow - Integration', () => {
     await new Promise(resolve => setTimeout(resolve, 20));
 
     // Utterance 2
-    await simulateVoiceWebSocketHandler(orchestrator, {
+    await simulateTranscriptionRelay(orchestrator, {
       sessionId: TEST_SESSION_ID,
       speakerId: TEST_HUMAN_ID,
       speakerName: 'Human User',
@@ -277,7 +277,7 @@ describe('Voice AI Response Flow - Integration', () => {
 
     const emitSpy = vi.spyOn(Events, 'emit');
 
-    await simulateVoiceWebSocketHandler(orchestrator, {
+    await simulateTranscriptionRelay(orchestrator, {
       sessionId: 'empty-session',
       speakerId: TEST_HUMAN_ID,
       speakerName: 'Human User',
@@ -311,7 +311,7 @@ describe('Voice AI Response Flow - Integration', () => {
       timestamp: 1234567890,
     };
 
-    await simulateVoiceWebSocketHandler(orchestrator, originalEvent);
+    await simulateTranscriptionRelay(orchestrator, originalEvent);
 
     await new Promise(resolve => setTimeout(resolve, 20));
 
@@ -370,7 +370,7 @@ describe('Voice AI Response Flow - Performance', () => {
   it('should complete flow in < 10ms for 5 AIs', async () => {
     const start = performance.now();
 
-    await simulateVoiceWebSocketHandler(orchestrator, {
+    await simulateTranscriptionRelay(orchestrator, {
       sessionId: TEST_SESSION_ID,
       speakerId: TEST_HUMAN_ID,
       speakerName: 'Human User',

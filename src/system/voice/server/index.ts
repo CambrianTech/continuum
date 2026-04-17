@@ -1,17 +1,11 @@
 /**
  * Voice Server Module
  *
- * Exports voice WebSocket server, orchestrator, and utilities.
+ * Exports voice orchestrator, session management, and audio bridges.
+ * Transport is handled by LiveKit WebRTC (via livekit-bridge).
  *
  * Feature flag: USE_RUST_VOICE switches between TypeScript and Rust orchestrator
- * This proves the API is correct - both implementations work seamlessly
  */
-
-export {
-  VoiceWebSocketServer,
-  getVoiceWebSocketServer,
-  startVoiceServer,
-} from './VoiceWebSocketHandler';
 
 export {
   VoiceOrchestrator,

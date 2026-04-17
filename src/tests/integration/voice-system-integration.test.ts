@@ -158,41 +158,36 @@ async function testPersonaUserVoiceHandling(personas: UserEntity[]): Promise<voi
   console.log('✅ PersonaUser.ts has correct voice event handling structure');
 }
 
-// Test: Verify VoiceWebSocketHandler emits events
-async function testVoiceWebSocketHandlerStructure(): Promise<void> {
-  console.log('\n🔍 Test 5: Verify VoiceWebSocketHandler emits events (code inspection)');
+// Test: Verify LiveKit transcription command emits events
+async function testLiveKitTranscriptionStructure(): Promise<void> {
+  console.log('\n🔍 Test 5: Verify LiveKit transcription relay emits events (code inspection)');
 
   const fs = await import('fs');
   const path = await import('path');
 
-  const handlerPath = path.join(
+  const commandPath = path.join(
     process.cwd(),
-    'system/voice/server/VoiceWebSocketHandler.ts'
+    'commands/collaboration/live/transcription/server/CollaborationLiveTranscriptionServerCommand.ts'
   );
 
-  const handlerCode = fs.readFileSync(handlerPath, 'utf-8');
+  const commandCode = fs.readFileSync(commandPath, 'utf-8');
 
   assert(
-    handlerCode.includes('getRustVoiceOrchestrator'),
-    'VoiceWebSocketHandler uses Rust orchestrator'
-  );
-
-  assert(
-    handlerCode.includes('voice:transcription:directed'),
-    'VoiceWebSocketHandler emits voice:transcription:directed events'
+    commandCode.includes('getRustVoiceOrchestrator'),
+    'LiveKit transcription command uses Rust orchestrator'
   );
 
   assert(
-    handlerCode.includes('Events.emit'),
-    'VoiceWebSocketHandler uses Events.emit'
+    commandCode.includes('voice:transcription:directed'),
+    'LiveKit transcription command emits voice:transcription:directed events'
   );
 
   assert(
-    handlerCode.includes('for (const aiId of responderIds)'),
-    'VoiceWebSocketHandler loops through responder IDs'
+    commandCode.includes('Events.emit'),
+    'LiveKit transcription command uses Events.emit'
   );
 
-  console.log('✅ VoiceWebSocketHandler.ts has correct event emission structure');
+  console.log('✅ CollaborationLiveTranscriptionServerCommand.ts has correct event emission structure');
 }
 
 // Test: Verify Rust orchestrator is accessible
@@ -348,12 +343,12 @@ async function runAllTests(): Promise<void> {
     exitCode = 1;
   }
 
-  // Test 5: VoiceWebSocketHandler structure
+  // Test 5: LiveKit transcription relay structure
   try {
-    await testVoiceWebSocketHandlerStructure();
-    results.push({ test: 'VoiceWebSocketHandler structure', passed: true });
+    await testLiveKitTranscriptionStructure();
+    results.push({ test: 'LiveKit transcription relay structure', passed: true });
   } catch (error) {
-    results.push({ test: 'VoiceWebSocketHandler structure', passed: false, error: String(error) });
+    results.push({ test: 'LiveKit transcription relay structure', passed: false, error: String(error) });
     exitCode = 1;
   }
 

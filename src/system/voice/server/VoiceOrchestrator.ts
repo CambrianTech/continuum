@@ -2,9 +2,9 @@
  * VoiceOrchestrator - Bridges voice transcriptions with persona system
  *
  * Responsibilities:
- * 1. Receive transcription events from VoiceWebSocketHandler
+ * 1. Receive transcription events from LiveKit STT listener (via CollaborationLiveTranscriptionServerCommand)
  * 2. Broadcast transcripts to ALL text-based AIs (audio-native AIs hear via mixer)
- * 3. Route persona responses to TTS
+ * 3. Route persona responses to TTS via AIAudioBridge → LiveKit
  *
  * NO turn-taking gating. NO cooldowns. NO arbiter selection.
  * Every text-based AI gets every utterance. They each decide independently
