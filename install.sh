@@ -259,6 +259,37 @@ PYEOF
     ;;
 esac
 
+# ── GPU detection + persona model pull (shared by Carl + Dev) ──────
+# Uses the centralized ic_detect_hardware / ic_decide_gpu_path from
+# install-common.sh so both install.sh paths use the SAME detection.
+# After this block: IC_GPU_PATH tells us which inference backend to
+# verify, and the default persona model is pulled into DMR (if DMR path).
+if type ic_detect_hardware &>/dev/null; then
+  ic_detect_hardware
+  ic_decide_gpu_path
+  ic_describe_hardware
+
+  # Pull default persona model into DMR so Carl's first chat is instant.
+  # Only for DMR paths — Vulkan path loads models differently (local GGUF).
+  PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF"
+  case "$IC_GPU_PATH" in
+    dmr-*)
+      if ! docker model ls 2>/dev/null | grep -q "qwen3.5-4b-code-forged"; then
+        info "Pulling default persona model into Docker Model Runner (~2.7GB, first install only)..."
+        docker model pull "$PERSONA_MODEL" || warn "Model pull failed — chat will error until model is available. Retry: docker model pull $PERSONA_MODEL"
+      else
+        ok "Persona model already in DMR: $PERSONA_MODEL"
+      fi
+      ;;
+    llama-vulkan)
+      ok "Vulkan GPU path — model download handled by continuum-core at first inference"
+      ;;
+    unsupported)
+      warn "No supported GPU detected. Local chat will error until a GPU adapter is available."
+      ;;
+  esac
+fi
+
 # ── Per-service memory caps — auto-calculated from host RAM ────────
 # Joel's directive: don't ask users to set mem limits; auto-calc from host.
 # Don't paper over OOMs with undersized limits; size containers for the

@@ -331,3 +331,165 @@ mod_docker_check() {
   fi
   module_skip "docker" "$(docker version --format '{{.Server.Version}}' 2>/dev/null) reachable"
 }
+
+# ============================================================================
+# Hardware detection + GPU/inference runtime decision (shared by Carl + Dev)
+# ============================================================================
+#
+# Both install entry points (public `install.sh` curl-target, and
+# `src/scripts/install.sh` Dev/parallel-start target) call these functions
+# so detection lives in ONE place. Yesterday's session surfaced a pattern:
+# the same detection duplicated across both install scripts drifted out
+# of sync. Centralizing here kills that drift.
+#
+# What "detection" produces (globals, no subshell needed by callers):
+#   IC_PLATFORM   : macos | linux | wsl
+#   IC_ARCH       : arm64 | x86_64 | other
+#   IC_RAM_GB     : integer
+#   IC_RAM_MIB    : integer (computed once, used for Docker VM sizing)
+#   IC_GPU_KIND   : metal | cuda | vulkan | rocm | none
+#   IC_GPU_NAME   : human-readable (e.g. "Apple Silicon", "NVIDIA RTX 5090")
+#   IC_VRAM_GB    : integer (0 if unknown or unified-memory device)
+#
+# What "decision" produces:
+#   IC_GPU_PATH   : dmr-metal | dmr-cuda | dmr-rocm | llama-vulkan | unsupported
+#   IC_DMR_BACKEND   : vllm | llama.cpp | "" (when not DMR-path)
+#   IC_DMR_GPU_FLAG  : cuda | rocm | "" (Mac's vllm-metal needs no flag)
+#   IC_MODEL_TIER    : 4b   (universal default; higher tiers later)
+#
+# CPU path is INTENTIONALLY UNSUPPORTED here. Continuum's contract is
+# GPU-always for chat (Metal on Mac, Vulkan/CUDA/ROCm elsewhere). When
+# a future CPU adapter lands it will be its own IC_GPU_PATH value,
+# gated on `CONTINUUM_ALLOW_CPU_INFERENCE=1`, and explicit in logs.
+
+ic_detect_hardware() {
+  # Platform
+  case "$(uname -s)" in
+    Darwin) IC_PLATFORM="macos" ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        IC_PLATFORM="wsl"
+      else
+        IC_PLATFORM="linux"
+      fi
+      ;;
+    *) IC_PLATFORM="unknown" ;;
+  esac
+  IC_ARCH="$(uname -m)"
+
+  # RAM
+  case "$IC_PLATFORM" in
+    macos)
+      IC_RAM_MIB=$(( $(sysctl -n hw.memsize) / 1048576 ))
+      ;;
+    linux|wsl)
+      IC_RAM_MIB=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo)
+      ;;
+    *)
+      IC_RAM_MIB=0
+      ;;
+  esac
+  IC_RAM_GB=$(( IC_RAM_MIB / 1024 ))
+
+  # GPU
+  IC_GPU_KIND="none"
+  IC_GPU_NAME=""
+  IC_VRAM_GB=0
+
+  case "$IC_PLATFORM" in
+    macos)
+      if sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -qi apple; then
+        IC_GPU_KIND="metal"
+        IC_GPU_NAME="Apple Silicon"
+        IC_VRAM_GB="$IC_RAM_GB"   # Apple unified memory — GPU shares with CPU
+      fi
+      ;;
+    linux|wsl)
+      # nvidia-smi — easiest signal. Works on Linux + WSL2 when CUDA drivers installed.
+      local smi=""
+      if command -v nvidia-smi &>/dev/null; then
+        smi="nvidia-smi"
+      elif [ -f /usr/lib/wsl/lib/nvidia-smi ]; then
+        smi="/usr/lib/wsl/lib/nvidia-smi"
+      fi
+      if [ -n "$smi" ] && "$smi" --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
+        IC_GPU_KIND="cuda"
+        IC_GPU_NAME="$("$smi" --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+        local vram_mib="$("$smi" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)"
+        IC_VRAM_GB=$(( vram_mib / 1024 ))
+      elif command -v rocminfo &>/dev/null && rocminfo >/dev/null 2>&1; then
+        IC_GPU_KIND="rocm"
+        IC_GPU_NAME="$(rocminfo 2>/dev/null | awk '/Marketing Name:/{sub(/.*Name:[[:space:]]*/,"");print;exit}')"
+        # rocm-smi VRAM parsing — best-effort, not all AMD stacks report uniformly
+        if command -v rocm-smi &>/dev/null; then
+          local vram_bytes="$(rocm-smi --showmeminfo vram 2>/dev/null | awk '/vram.*Total.*Memory/{for(i=1;i<=NF;i++)if($i~/^[0-9]+$/){print $i;exit}}')"
+          IC_VRAM_GB=$(( ${vram_bytes:-0} / 1073741824 ))
+        fi
+      elif command -v vulkaninfo &>/dev/null && vulkaninfo --summary 2>/dev/null | grep -q deviceName; then
+        # Vulkan-only case: GPU exists, no CUDA/ROCm drivers. Common on Intel
+        # Arc / older AMD / mixed hardware. Use our vendored llama.cpp with
+        # --features=vulkan (shipped natively, not through DMR which doesn't
+        # expose a Vulkan flag).
+        IC_GPU_KIND="vulkan"
+        IC_GPU_NAME="$(vulkaninfo --summary 2>/dev/null | awk -F= '/deviceName/{gsub(/^[[:space:]]*/,"",$2);print $2;exit}')"
+        # Vulkan VRAM query is nontrivial; leave IC_VRAM_GB=0 for now.
+      fi
+      ;;
+  esac
+}
+
+ic_decide_gpu_path() {
+  # Requires ic_detect_hardware to have run.
+  case "$IC_PLATFORM:$IC_GPU_KIND" in
+    macos:metal)
+      IC_GPU_PATH="dmr-metal"
+      IC_DMR_BACKEND="vllm"     # Docker Desktop bundles vllm-metal
+      IC_DMR_GPU_FLAG=""         # --gpu not applicable on Desktop
+      ;;
+    linux:cuda|wsl:cuda)
+      IC_GPU_PATH="dmr-cuda"
+      IC_DMR_BACKEND="llama.cpp"
+      IC_DMR_GPU_FLAG="cuda"
+      ;;
+    linux:rocm)
+      IC_GPU_PATH="dmr-rocm"
+      IC_DMR_BACKEND="llama.cpp"
+      IC_DMR_GPU_FLAG="rocm"
+      ;;
+    linux:vulkan|wsl:vulkan)
+      IC_GPU_PATH="llama-vulkan"
+      IC_DMR_BACKEND=""   # not DMR; handled by continuum-core's llama adapter
+      IC_DMR_GPU_FLAG=""
+      ;;
+    *)
+      IC_GPU_PATH="unsupported"
+      IC_DMR_BACKEND=""
+      IC_DMR_GPU_FLAG=""
+      ;;
+  esac
+
+  # Model tier from RAM. 4B Q4 GGUF is ~2.7GB on disk; needs ~6-8GB active.
+  # Below 20GB physical RAM, Continuum can't run the full stack cleanly.
+  if [ "$IC_RAM_GB" -lt 20 ]; then
+    IC_MODEL_TIER="too-small"
+  else
+    IC_MODEL_TIER="4b"
+  fi
+}
+
+# One-liner for humans — prints the detected + decided state for logging.
+ic_describe_hardware() {
+  printf '  Platform:   %s (%s)\n'        "$IC_PLATFORM" "$IC_ARCH"
+  printf '  RAM:        %sGB\n'           "$IC_RAM_GB"
+  if [ -n "$IC_GPU_NAME" ]; then
+    if [ "$IC_VRAM_GB" -gt 0 ]; then
+      printf '  GPU:        %s (%s, %sGB VRAM)\n' "$IC_GPU_NAME" "$IC_GPU_KIND" "$IC_VRAM_GB"
+    else
+      printf '  GPU:        %s (%s)\n'    "$IC_GPU_NAME" "$IC_GPU_KIND"
+    fi
+  else
+    printf '  GPU:        none detected\n'
+  fi
+  printf '  GPU path:   %s\n'             "${IC_GPU_PATH:-undecided}"
+  printf '  Model tier: %s\n'             "${IC_MODEL_TIER:-undecided}"
+}

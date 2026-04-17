@@ -24,6 +24,7 @@ use anthropic_compat::{
 
 use crate::ai::{
     ActiveAdapterRequest, ChatMessage, MessageContent, TextGenerationRequest,
+    adapter::InferenceDevice,
 };
 
 use axum::{
@@ -128,9 +129,9 @@ async fn messages_handler(
     let registry_guard = registry.read().await;
 
     let (provider_id, adapter) = registry_guard
-        .select(Some(&spec.provider), spec.model.as_deref())
-        .or_else(|| registry_guard.select(Some(PROVIDER_CANDLE_QUANTIZED), None))
-        .or_else(|| registry_guard.select(Some(PROVIDER_CANDLE_SAFETENSORS), None))
+        .select(Some(&spec.provider), spec.model.as_deref(), InferenceDevice::default())
+        .or_else(|| registry_guard.select(Some(PROVIDER_CANDLE_QUANTIZED), None, InferenceDevice::default()))
+        .or_else(|| registry_guard.select(Some(PROVIDER_CANDLE_SAFETENSORS), None, InferenceDevice::default()))
         .ok_or_else(|| {
             (
                 StatusCode::SERVICE_UNAVAILABLE,
