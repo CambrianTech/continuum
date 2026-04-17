@@ -671,22 +671,49 @@ export class SystemOrchestrator extends EventEmitter {
 
     // Auto-seed database if empty (first run or after data:clear).
     // In-process via Commands.execute() — zero subprocess spawns, works in both
-    // Docker and bare metal. The old npm run data:seed approach spawns jtag CLI
-    // subprocesses that connect via WebSocket, which is fragile and slow.
-    setTimeout(async () => {
-      try {
-        const { seedDatabase } = await import('../../server/seed-in-process');
-        const seeded = await seedDatabase();
-        if (seeded) {
-          console.log('✅ Database seeded (in-process)');
-        } else {
-          console.log('✅ Database already seeded');
+    // Docker and bare metal.
+    //
+    // The old version was `setTimeout(..., 3000)` then seedDatabase() once
+    // and console.warn on failure. Race: if IPC wasn't connected by t+3000ms,
+    // the seed silently failed and the server continued running with no
+    // personas. New users would see "all containers healthy" but no AI to
+    // chat with — exact symptom memento hit on stuck-IPC restarts.
+    //
+    // New shape: retry up to 30 attempts × 1s backoff = 30s total budget.
+    // Each retry naturally exercises the IPC connection (Commands.execute
+    // throws if the daemon isn't reachable yet, retry catches and waits).
+    // If it still fails after 30s, that's a REAL failure — log loud (.error
+    // not .warn) so the operator sees the install is broken instead of
+    // discovering it via a missing chat reply later.
+    void (async () => {
+      const { seedDatabase } = await import('../../server/seed-in-process');
+      const MAX_ATTEMPTS = 30;
+      const BACKOFF_MS = 1000;
+      let lastError: unknown = null;
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          const seeded = await seedDatabase();
+          console.log(seeded ? '✅ Database seeded (in-process)' : '✅ Database already seeded');
+          return;
+        } catch (e: unknown) {
+          lastError = e;
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise(resolve => setTimeout(resolve, BACKOFF_MS));
+          }
         }
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`⚠️ Auto-seed failed: ${msg}`);
       }
-    }, 3000);
+
+      const msg = lastError instanceof Error ? lastError.message : String(lastError);
+      console.error(
+        `❌ Auto-seed failed after ${MAX_ATTEMPTS}× ${BACKOFF_MS}ms retries: ${msg}\n` +
+        `   The server is running but personas / rooms / recipes were NOT seeded.\n` +
+        `   First-chat will fail (no personas to reply). Diagnose:\n` +
+        `     - Is the data daemon (or Rust IPC) reachable? jtag ai/status\n` +
+        `     - Is the database file writable? ls -la ~/.continuum/database/\n` +
+        `   Run 'npm run data:reseed' once the underlying issue is resolved.`
+      );
+    })();
 
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_READY,
