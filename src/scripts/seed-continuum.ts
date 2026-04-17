@@ -456,11 +456,14 @@ async function seedViaJTAG() {
       }
     }
 
-    // Step 4: PARALLEL update existing users (provider + metadata)
-    // This replaces N sequential subprocess spawns with one parallel batch
+    // Step 4: Sync ALL users to seed config (provider + metadata)
+    // Runs for EVERY persona, not just pre-existing ones. This ensures
+    // that seed config changes (e.g. provider: 'candle' → 'local') are
+    // always applied, even if the user entity already existed from a
+    // prior seed run. Without this, stale provider values survive across
+    // code updates and users silently route to the wrong adapter.
     const updatePromises: Promise<boolean>[] = [];
     for (const persona of activePersonas) {
-      if (missingUniqueIds.includes(persona.uniqueId)) continue;
       const existingUser = usersByUniqueId.get(persona.uniqueId);
       if (!existingUser) continue;
 

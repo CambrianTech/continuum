@@ -648,7 +648,13 @@ export class PersonaUser extends AIUser {
     this.worker = new PersonaWorkerThread(this.id, {
       providerType: 'local',
       providerConfig: {
-        model: 'llama3.2:1b' // Fast model for gating decisions
+        // Use the same model the persona uses for chat. With DMR+Metal
+        // this is fast enough for gating (~50 tok/s). Using a separate
+        // 1B model required pulling a second model into DMR which
+        // install.sh doesn't do for Carl's default — missing model →
+        // gating errors → no replies. Same-model avoids the catalog
+        // mismatch entirely.
+        model: this.modelConfig.model
       }
     });
   }
