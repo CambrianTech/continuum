@@ -318,21 +318,37 @@ export class ChatRAGBuilder extends RAGBuilder {
     // 2.4. Inject RAG source context into system prompt — GENERIC LOOP
     // Each RAGSource provides a systemPromptSection. We inject them all without
     // knowing source names. Adding a new source requires ZERO changes here.
+    //
+    // Phase 1.5 (issue #918): the assembly order is enforced for stable
+    // byte-prefix prompts so llama-server / DMR can reuse KV cache. Order:
+    //   1. Identity systemPrompt (INVARIANT — already in finalIdentity)
+    //   2. Tool definitions (INVARIANT — moved here from end)
+    //   3. Loop iterates systemPromptSections in tier-sorted order
+    //      (Phase 1's RAGComposer sort guarantees Map iteration order is
+    //       INVARIANT → SEMI_STABLE → VOLATILE → alphabetical within tier)
+    //   4. Human presence (VOLATILE — moved here from start)
+    // Volatile content lives only in the suffix; the INVARIANT prefix is
+    // byte-identical across thousands of turns for the same persona+recipe.
     const finalIdentity = { ...identity };
 
-    // 2.4.1. Inject human presence awareness (which room each user is viewing)
-    // This is NOT a RAG source — it's lightweight synchronous state, always injected.
-    const allPresence = HumanPresenceTracker.allPresence;
-    if (allPresence.length > 0) {
-      const lines = allPresence.map(p => {
-        const viewingThis = p.roomId === contextId;
-        return `- ${p.displayName} is viewing: ${p.roomName}${viewingThis ? ' (this room — they can see your response in real-time)' : ''}`;
-      });
-      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
-        `\n\n## HUMAN PRESENCE\n${lines.join('\n')}`;
+    // 2.4.1. Inject INVARIANT tool definitions FIRST (after identity).
+    // Tool definitions are INVARIANT per the source classification — they
+    // change only when the tool catalog itself changes, not per request.
+    // Putting them at the top of the prefix maximizes the byte-stable
+    // region that DMR can reuse.
+    const toolDefinitionsPrompt = systemPromptSections.get('tool-definitions');
+    let injectedCount = 0;
+    if (!isSmallContext && toolDefinitionsPrompt) {
+      finalIdentity.systemPrompt += toolDefinitionsPrompt;
+      injectedCount++;
+      this.log(`🔧 ChatRAGBuilder: Injected tool definitions (INVARIANT, byte-stable prefix region)`);
     }
 
-    // 2.4.2. Inject all RAG source systemPromptSections generically
+    // 2.4.2. Inject all OTHER RAG source systemPromptSections in tier order.
+    //
+    // The Map iteration order matches the (tier, sourceName) sort that
+    // RAGComposer applied to result.sections in Phase 1 — Map preserves
+    // insertion order, and extractFromComposition inserts in that order.
     //
     // Sources with wrapper instructions — the section content gets wrapped with
     // additional context instructions. Eventually these wrappers should move INTO
@@ -349,10 +365,9 @@ export class ChatRAGBuilder extends RAGBuilder {
     // Codebase search is critical — if someone asks about code, they need the answer.
     const ALWAYS_INJECT = new Set(['codebase-search']);
 
-    // Tool definitions are injected separately (native specs vs XML have different paths)
+    // Tool definitions already injected above; skip in the generic loop.
     const SKIP_GENERIC = new Set(['tool-definitions']);
 
-    let injectedCount = 0;
     for (const [sourceName, section] of systemPromptSections) {
       if (SKIP_GENERIC.has(sourceName)) continue;
       if (isSmallContext && !ALWAYS_INJECT.has(sourceName)) continue;
@@ -363,12 +378,18 @@ export class ChatRAGBuilder extends RAGBuilder {
       this.log(`🔧 ChatRAGBuilder: Injected ${sourceName} into system prompt`);
     }
 
-    // 2.4.3. Inject XML tool definitions for text-based providers (budget-aware via ToolDefinitionsSource)
-    const toolDefinitionsPrompt = systemPromptSections.get('tool-definitions');
-    if (!isSmallContext && toolDefinitionsPrompt) {
-      finalIdentity.systemPrompt += toolDefinitionsPrompt;
-      injectedCount++;
-      this.log(`🔧 ChatRAGBuilder: Injected tool definitions into system prompt (XML format)`);
+    // 2.4.3. Inject VOLATILE human presence LAST.
+    // HumanPresenceTracker is not a RAGSource but its content is volatile
+    // (changes when any user switches rooms). It must live in the suffix,
+    // never in the byte-stable prefix region.
+    const allPresence = HumanPresenceTracker.allPresence;
+    if (allPresence.length > 0) {
+      const lines = allPresence.map(p => {
+        const viewingThis = p.roomId === contextId;
+        return `- ${p.displayName} is viewing: ${p.roomName}${viewingThis ? ' (this room — they can see your response in real-time)' : ''}`;
+      });
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n## HUMAN PRESENCE\n${lines.join('\n')}`;
     }
 
     if (isSmallContext) {
