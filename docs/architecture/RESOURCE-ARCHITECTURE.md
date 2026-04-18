@@ -163,6 +163,31 @@ Same hierarchy serves every paged AI entity:
 
 This is what "cold storage → inference" looks like in our system: a continuous gradient from "available somewhere on the internet" to "in the GPU registers right now," with the broker arbitrating placement based on real activity. No layer is special-cased. The same paging primitive serves the full chain because each tier is just another `PagedResourcePool` with its own loader (cold-fetch / mmap / dequantize / etc.) and its own demotion target. **Working smarter, not harder, all the way from the network down to the silicon.**
 
+#### Compositional paging: handle more than you should fit
+
+The hierarchy above treats each entity (an MoE expert, a LoRA adapter, a model layer) as the unit of paging. The next-deeper insight: **an entity is itself an assembly of typed sub-entities**, and if the system knows the assembly recipe, it can page parts in/out *during* an inference run — not just at load time.
+
+An MoE expert isn't a monolithic blob; it's W₁, W₂, W₃ projection matrices + a layer norm + a router-projection vector. A LoRA adapter is the rank-decomposed factors (B × A) plus a scale. A transformer layer is attention + feed-forward + norms. All of these are *compositions* of typed parts.
+
+Once we name the parts as their own pool entries, **inference can pull them just-in-time** from whatever tier currently holds them:
+
+```
+Expert-42 activates for this token
+  → router declares need for [W₁, W₂, W₃] of expert 42
+  → W₁ is L1 (VRAM full precision)        — used directly
+  → W₂ is L2 (RAM quantized)              — dequantize, stream to GPU, use
+  → W₃ is L3 (mmap'd disk)                — page in, stream to GPU, use
+  → After this token, all three demoted back to wherever the broker chooses,
+    based on predicted next use (broker may keep W₁/W₂ hot if router pattern
+    suggests this expert will fire again soon)
+```
+
+This unlocks **handling more than physically fits**. A 70B-parameter MoE model whose total weights exceed VRAM becomes runnable on a 16 GB machine if the architecture tolerates streaming sub-entity loads per token. The trade-off is latency (cold-tier hits cost real time), but the freedom is enormous: the system can attempt workloads that "shouldn't fit," and the broker decides per-request whether the latency is acceptable for that activity (research recipe? yes, take the hit. Voice chat? skip the cold expert, use a hotter approximation).
+
+Existing inference engines already do crude versions: llama.cpp's `--n-gpu-layers 32` (offload N layers), Hugging Face Accelerate's disk-offload, vllm's PagedAttention. **What we add: principled, uniform, broker-managed across every entity type, with the assembly recipe declared as part of the entity's metadata.** Same primitive serves it because each sub-entity is just another `PagedResourcePool` entry; the assembler is a thin orchestration layer that consults the recipe and pulls parts from wherever they live.
+
+When this lands fully, the answer to "can my MacBook Air run a 70B MoE?" becomes "yes, slower than VRAM-resident, but yes — and the broker decides per-request whether the slowdown is acceptable for what you're doing." Hardware ceiling becomes negotiable rather than fixed. That's the working-smarter-not-harder pattern at its limit: the system literally exceeds its own apparent capacity because it knows how to stream the constituent parts.
+
 ### 4. Intelligent (eventually ML/LLM-driven) priority
 
 The pool exposes the levers; the brain plugs in via the PressureBroker (Phase 7).
