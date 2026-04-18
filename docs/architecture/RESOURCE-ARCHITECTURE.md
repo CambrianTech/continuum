@@ -128,6 +128,41 @@ On hit at L2/L3: optionally promote upward
 
 The primitive stays simple; tiering composes. CPU L1/L2/L3 cache works this way. OS page-out-to-disk works this way (kernel handles the actual paging). For our L3 we can `mmap` files so the kernel becomes the L4 manager automatically.
 
+#### The full hierarchy: cold storage → inference
+
+The same composition extends down to **cold storage** and up to **active inference VRAM**, giving every paged AI entity the full hierarchy:
+
+```
+L1  VRAM full precision      — active inference (hot path)
+L2  RAM quantized            — recently evicted from L1; rehydrate on hit
+L3  mmap'd disk              — kernel-managed paging (our L4 effectively free)
+L4  Cold storage / archive   — local SSD warm cache; pulled from HF/grid on miss
+                                (or remote storage / network archive)
+```
+
+For an MoE expert router asking "give me expert #42":
+
+1. **L1 hit** — VRAM full precision, used directly
+2. **L1 miss → L2 hit** — quantized RAM copy promoted to L1 (or used quantized for less-critical paths)
+3. **L2 miss → L3 hit** — mmap'd file paged in by kernel, loaded to L2/L1 by us
+4. **L3 miss → L4 hit** — fetched from cold archive (network/grid), cascades up through L3 → L2 → L1
+5. **L4 miss** — fetched from HuggingFace / model registry, populates all tiers
+
+Each transition has a cost (compress on demote, dequantize on promote, network round-trip on cold fetch). The PressureBroker decides which tier each entity lives in based on activity prediction + cost. ML-driven prediction here directly equals "less cold-tier traffic" which directly equals lower latency for the user.
+
+Same hierarchy serves every paged AI entity:
+
+| Entity | L1 (VRAM) | L2 (RAM quantized) | L3 (mmap disk) | L4 (cold) |
+|---|---|---|---|---|
+| MoE expert | Full precision weights | Quantized weights | GGUF/safetensors file | HF / grid registry |
+| LoRA adapter | Active scale weights | Quantized | On-disk adapter | HF / grid |
+| KV cache | FP16 active | INT8 demoted | INT4 spilled | (drop — too cold) |
+| Embedding | Float32Array | Int8Array | File-backed | (drop or recompute) |
+| Recalled memory | Full text in RAM | Compressed gist | Per-room corpus on disk | Long-term archive |
+| Model weights | VRAM (active inference) | RAM (warm idle) | Disk model file | HF / model registry |
+
+This is what "cold storage → inference" looks like in our system: a continuous gradient from "available somewhere on the internet" to "in the GPU registers right now," with the broker arbitrating placement based on real activity. No layer is special-cased. The same paging primitive serves the full chain because each tier is just another `PagedResourcePool` with its own loader (cold-fetch / mmap / dequantize / etc.) and its own demotion target. **Working smarter, not harder, all the way from the network down to the silicon.**
+
 ### 4. Intelligent (eventually ML/LLM-driven) priority
 
 The pool exposes the levers; the brain plugs in via the PressureBroker (Phase 7).
