@@ -112,6 +112,90 @@ export class PersonaLifecycleManager {
     }
 
     console.log(`✅ PersonaLifecycleManager: ${created} persona(s) activated on startup`);
+
+    // Cold-start prewarming: fire a tiny no-op generation per local persona
+    // so DMR loads the model + warms the slot BEFORE the user's first message.
+    // Without this, the first real chat eats a ~6s model-load cold start
+    // PLUS the normal generation time — felt like an eternity ("ais take a
+    // long time to load"). With prewarm, the model is resident and ready;
+    // first chat hits a warm slot.
+    //
+    // Fire-and-forget: doesn't block boot, doesn't fail boot if DMR is down.
+    // Cloud personas are skipped — their providers are already "warm" by API.
+    void this.prewarmAllPersonas(allocation.allocations);
+  }
+
+  /**
+   * Fire prewarm requests in parallel for local personas. Each is bounded
+   * by short timeouts so a stuck DMR can never hang boot.
+   */
+  private async prewarmAllPersonas(allocations: PersonaAllocation[]): Promise<void> {
+    const local = allocations.filter(a => this.isLocalProvider(a.provider));
+    if (local.length === 0) return;
+
+    // Probe DMR availability ONCE before firing all prewarms — saves N
+    // failed connection attempts when DMR isn't up yet (Docker still booting).
+    const dmrUp = await this.checkDmrAvailable();
+    if (!dmrUp) {
+      console.log(`⏭️ PersonaLifecycleManager: DMR not reachable yet — skipping prewarm for ${local.length} local persona(s)`);
+      return;
+    }
+
+    console.log(`🔥 PersonaLifecycleManager: Prewarming ${local.length} local persona(s)...`);
+    const startedAt = Date.now();
+    await Promise.allSettled(local.map(p => this.prewarmPersona(p)));
+    console.log(`🔥 PersonaLifecycleManager: Prewarm batch finished in ${Date.now() - startedAt}ms`);
+  }
+
+  /**
+   * Quick DMR availability probe with a hard 2s timeout. Returns false on
+   * any failure (network, timeout, non-200) — never throws. Docker concern:
+   * DMR runs in Docker Desktop's container; on cold Docker start it may
+   * take a few seconds beyond our system boot to be reachable. We'd rather
+   * skip prewarm than hang.
+   */
+  private async checkDmrAvailable(): Promise<boolean> {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2000);
+      const res = await fetch('http://localhost:12434/engines/v1/models', { signal: ctrl.signal });
+      clearTimeout(timer);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Fire a single tiny generation to warm the model + DMR slot for one persona.
+   * max_tokens=1 keeps it nearly free; the cost we want is the model load,
+   * not the generation. Errors are swallowed — prewarm failure is non-fatal.
+   */
+  private async prewarmPersona(allocation: PersonaAllocation): Promise<void> {
+    const model = allocation.resolvedModel || allocation.modelId;
+    if (!model) return;
+    try {
+      await Commands.execute('ai/generate', {
+        provider: allocation.provider,
+        model,
+        messages: [{ role: 'user', content: 'ready' }],
+        max_tokens: 1,
+        temperature: 0.0,
+      } as Partial<CommandParams>);
+      console.log(`  🔥 Prewarmed: ${allocation.displayName} (${model})`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`  ⏭️ Prewarm failed (non-fatal) for ${allocation.displayName}: ${msg}`);
+    }
+  }
+
+  /**
+   * Provider classes that route to the local DMR/llama-server pool — these
+   * benefit from prewarm because they pay model-load cold start. Cloud
+   * providers maintain their own warm state via API connection pooling.
+   */
+  private isLocalProvider(provider: string): boolean {
+    return provider === 'local' || provider === 'candle' || provider === 'sentinel';
   }
 
   /**
