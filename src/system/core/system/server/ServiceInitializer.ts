@@ -18,7 +18,10 @@ const log = Logger.create('ServiceInitializer');
  * Fire-and-forget: doesn't block server startup, logs results.
  */
 function initializeCodebaseIndexing(): void {
-  // Delay 10s to let the system fully settle before I/O-heavy indexing
+  // Delay 120s — personas must boot and respond to first chats before
+  // indexing starts. At 10s the embedding storm saturates the event loop
+  // and blocks ALL persona responses for 2+ minutes. Chat is the product;
+  // codebase search is optimization that can wait.
   setTimeout(async () => {
     try {
       const { getCodebaseIndexer } = await import('../../../rag/services/CodebaseIndexer');
@@ -40,7 +43,7 @@ function initializeCodebaseIndexing(): void {
     } catch (err) {
       log.warn(`Background codebase indexing failed: ${err}`);
     }
-  }, 10_000);
+  }, 120_000);
 }
 
 export async function initializeServices(): Promise<void> {
