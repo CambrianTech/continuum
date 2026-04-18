@@ -344,6 +344,55 @@ impl GenomePagingEngine {
         }
     }
 
+    /// Drive eviction until memory_pressure ≤ `target_pressure`, returning
+    /// total bytes freed. The lever the PressureBroker (paging::broker) calls
+    /// when global resource pressure crosses a tier threshold and the broker
+    /// decides this adapter pool should give some back. Pure addition over
+    /// `activate_skill`'s implicit eviction — the formula and victim selection
+    /// (`select_eviction_victim` → `calculate_eviction_score`) are the same;
+    /// this just runs the loop without an activation request driving it.
+    ///
+    /// Critical adapters (priority > 0.9) are still untouchable. If every
+    /// remaining adapter is critical and pressure is still above target, the
+    /// loop terminates and reports the bytes already freed — never panics,
+    /// never evicts a critical adapter, never returns a pressure higher than
+    /// what was actually achieved.
+    pub fn evict_under_pressure(&mut self, target_pressure: f32) -> u64 {
+        let initial_used_mb = self.memory_used_mb;
+        // No-op when already under target (cheap check before locking the
+        // active map).
+        if self.memory_pressure() <= target_pressure {
+            return 0;
+        }
+        let target_used_mb = self.memory_budget_mb * target_pressure;
+        loop {
+            if self.memory_used_mb <= target_used_mb {
+                break;
+            }
+            match self.select_eviction_victim() {
+                Some(victim_name) => {
+                    if let Some(victim) = self.active.remove(&victim_name) {
+                        self.memory_used_mb -= victim.size_mb;
+                        self.allocation_guards.remove(&victim_name);
+                        if let Some(mgr) = &self.gpu_manager {
+                            mgr.eviction_registry
+                                .unregister(&format!("genome:adapter:{}", victim_name));
+                        }
+                        let mut unloaded = victim;
+                        unloaded.is_loaded = false;
+                        self.available.insert(unloaded.name.clone(), unloaded);
+                    }
+                }
+                // No more evictable adapters — every remaining is critical.
+                // Stop and report what we got. Broker's tier ladder will
+                // decide whether to escalate elsewhere.
+                None => break,
+            }
+        }
+        let freed_mb = (initial_used_mb - self.memory_used_mb).max(0.0);
+        (freed_mb * 1024.0 * 1024.0) as u64
+    }
+
     /// Select the adapter with highest eviction score (most evictable).
     /// Returns None if no adapters can be evicted (all critical).
     fn select_eviction_victim(&self) -> Option<String> {
@@ -741,6 +790,89 @@ mod tests {
             engine.active.contains_key("critical"),
             "Critical adapter should survive"
         );
+    }
+
+    // ── Engine: Pressure-Driven Eviction (broker lever) ──────────────
+
+    #[test]
+    fn test_evict_under_pressure_no_op_when_below_target() {
+        let mut engine = GenomePagingEngine::new(100.0);
+        engine.active.insert(
+            "a".into(),
+            make_adapter("a", "code", 30.0, 0.5, true, 1000),
+        );
+        engine.memory_used_mb = 30.0; // pressure = 0.30
+        let bytes_freed = engine.evict_under_pressure(0.75);
+        assert_eq!(bytes_freed, 0, "below-target should not evict");
+        assert!(engine.active.contains_key("a"));
+    }
+
+    #[test]
+    fn test_evict_under_pressure_drops_lru_until_target() {
+        let mut engine = GenomePagingEngine::new(100.0);
+        // Three normal adapters at 30 MB each = 90% pressure.
+        engine.active.insert(
+            "oldest".into(),
+            make_adapter("oldest", "code", 30.0, 0.5, true, 1000),
+        );
+        engine.active.insert(
+            "middle".into(),
+            make_adapter("middle", "chat", 30.0, 0.5, true, 5000),
+        );
+        engine.active.insert(
+            "newest".into(),
+            make_adapter("newest", "creative", 30.0, 0.5, true, 9000),
+        );
+        engine.memory_used_mb = 90.0; // pressure = 0.90
+        // Drop to ≤ 0.50. Need to free until used ≤ 50 MB → drop two.
+        let bytes_freed = engine.evict_under_pressure(0.50);
+        assert!(bytes_freed > 0);
+        assert!(engine.memory_used_mb <= 50.0);
+        // Oldest goes first (highest score), then middle.
+        assert!(!engine.active.contains_key("oldest"));
+        assert!(!engine.active.contains_key("middle"));
+        assert!(engine.active.contains_key("newest"));
+    }
+
+    #[test]
+    fn test_evict_under_pressure_never_drops_critical_adapters() {
+        let mut engine = GenomePagingEngine::new(100.0);
+        engine.active.insert(
+            "critical_a".into(),
+            make_adapter("critical_a", "code", 40.0, 0.95, true, 1000),
+        );
+        engine.active.insert(
+            "critical_b".into(),
+            make_adapter("critical_b", "chat", 40.0, 0.95, true, 5000),
+        );
+        engine.memory_used_mb = 80.0; // pressure = 0.80
+        // Asks for 0.30 — but every remaining is critical, so loop terminates
+        // honestly with what was achievable (zero bytes).
+        let bytes_freed = engine.evict_under_pressure(0.30);
+        assert_eq!(bytes_freed, 0, "all-critical pool yields nothing");
+        assert!(engine.active.contains_key("critical_a"));
+        assert!(engine.active.contains_key("critical_b"));
+    }
+
+    #[test]
+    fn test_evict_under_pressure_releases_gpu_guard_for_each_victim() {
+        let mut engine = GenomePagingEngine::new(100.0);
+        // Two normals; one ancient (forced first victim), one recent.
+        engine.active.insert(
+            "ancient".into(),
+            make_adapter("ancient", "code", 60.0, 0.5, true, 1000),
+        );
+        engine.active.insert(
+            "recent".into(),
+            make_adapter("recent", "chat", 30.0, 0.5, true, 9000),
+        );
+        engine.memory_used_mb = 90.0;
+        // Engine has no gpu_manager set → allocation_guards stays empty,
+        // but the unregister/remove path should still execute cleanly.
+        let bytes_freed = engine.evict_under_pressure(0.50);
+        assert!(bytes_freed >= 60 * 1024 * 1024, "freed at least the ancient adapter");
+        assert!(!engine.active.contains_key("ancient"));
+        assert!(engine.available.contains_key("ancient"), "evicted moves to available");
     }
 
     // ── Engine: Sync State ────────────────────────────────────────────
