@@ -280,6 +280,29 @@ if type ic_detect_hardware &>/dev/null; then
       else
         ok "Persona model already in DMR: $PERSONA_MODEL"
       fi
+      # Install vLLM MLX backend on Mac for 3x faster Qwen3.5 DeltaNet inference.
+      # llama.cpp's Metal shaders for Gated DeltaNet are poorly optimized (~11 tok/s);
+      # vllm-metal uses native MLX kernels (~33+ tok/s). Requires Docker Desktop 4.62+.
+      if [[ "$OS" == "Darwin" ]]; then
+        if docker model runner ls 2>/dev/null | grep -q "vllm"; then
+          ok "vLLM MLX backend already installed"
+        else
+          info "Installing vLLM MLX backend for native Apple Silicon inference..."
+          if docker model install-runner --backend vllm 2>/dev/null; then
+            ok "vLLM MLX backend installed — Qwen3.5 DeltaNet will use native MLX kernels"
+            # Pull MLX-format Qwen3.5-4B for vllm-metal routing.
+            # DMR auto-routes MLX models to vllm-metal when installed.
+            MLX_MODEL="hf.co/mlx-community/Qwen3.5-4B-MLX-4bit"
+            if ! docker model ls 2>/dev/null | grep -q "Qwen3.5-4B-MLX"; then
+              info "Pulling MLX-format Qwen3.5-4B (~2.5GB, for 3x faster inference)..."
+              docker model pull "$MLX_MODEL" \
+                || warn "MLX model pull failed. GGUF via llama.cpp will be used instead."
+            fi
+          else
+            warn "vLLM install failed (requires Docker Desktop 4.62+). llama.cpp Metal will be used."
+          fi
+        fi
+      fi
       ;;
     llama-vulkan)
       ok "Vulkan GPU path — model download handled by continuum-core at first inference"
