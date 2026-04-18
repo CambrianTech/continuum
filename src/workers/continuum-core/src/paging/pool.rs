@@ -1,0 +1,615 @@
+//! PagedResourcePool — the unified paging primitive.
+//!
+//! Same shape used by every resource that needs paging:
+//!   - LoRA adapter weights (genome registry adopts this)
+//!   - KV cache pages (PagedAttention via vllm-metal handles natively;
+//!     thin wrapper exposes its semantics through the same interface)
+//!   - MoE expert weights (when MoE forge ships)
+//!   - Model weights (multiple loaded models per host)
+//!   - Embedding vectors (content-addressed dedup; fixes the 0/64 hit rate)
+//!   - Memory recall results (TieredMemoryCache reformulation)
+//!
+//! Each consumer hand-rolled its own implementation today. The drift between
+//! them IS the bug — different pressure interpretations, eviction policies,
+//! single-flight handling. This primitive is the shared shape.
+//!
+//! Operations:
+//!   - `get(k)` — L1 hit, returns owned value if cached, no load
+//!   - `load_or_share(k, loader)` — single-flight load + cache; concurrent
+//!     calls for the same key share ONE loader invocation
+//!   - `pin(k)` — reference-counted hold; entry not evicted while pinned
+//!   - `evict(k)` — forced drop regardless of pin count
+//!   - `stats()` — pressure, hit rate, count for the PressureBroker
+//!
+//! Properties:
+//!   - **Thread-safe** by default (parking_lot::RwLock + tokio Mutex for
+//!     the inflight map). Built for the multi-persona concurrent case.
+//!   - **Required config** — no Option<>, every choice declared explicitly
+//!     per Joel's required-not-optional discipline.
+//!   - **Reject-promise cleanup** — failed loads don't poison the cache;
+//!     the inflight slot is removed on both Ok and Err.
+//!   - **Pressure-driven eviction** — `maybe_evict` triggers when occupancy
+//!     exceeds `max_bytes`, drops unpinned entries by eviction priority
+//!     (LRU default) until back to 75% of capacity.
+//!
+//! See: docs/architecture/UNIFIED-PAGING.md
+
+use parking_lot::RwLock;
+use std::collections::HashMap;
+use std::future::Future;
+use std::hash::Hash;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
+
+/// Stats snapshot — for monitoring + PressureBroker decisions.
+#[derive(Debug, Clone)]
+pub struct PoolStats {
+    pub name: String,
+    pub entry_count: usize,
+    pub pinned_count: usize,
+    pub total_bytes: u64,
+    pub max_bytes: u64,
+    /// 0.0..1.0 — ratio of used to capacity. >1.0 means over-budget.
+    pub pressure: f64,
+    pub hit_count: u64,
+    pub miss_count: u64,
+    pub eviction_count: u64,
+    pub inflight_count: usize,
+}
+
+/// Internal entry — exposed via `EvictionPriority` callbacks.
+///
+/// Hot fields (last_access_at, access_count, pin_count) are atomics so
+/// the pool's read-heavy `get()` path runs under RwLock::read with no
+/// serialization point. Concurrent personas hit the cache in parallel.
+pub struct PoolEntry<V> {
+    pub value: V,
+    pub size_bytes: u64,
+    pub pin_count: AtomicU32,
+    /// Unix ms.
+    pub loaded_at: u64,
+    /// Unix ms — atomic so concurrent `get()` callers can update without
+    /// blocking each other on a write lock.
+    pub last_access_at: AtomicU64,
+    /// Atomic so concurrent `get()` callers can increment without blocking.
+    pub access_count: AtomicU64,
+}
+
+/// Snapshot view for eviction-priority callbacks (atomics resolved to
+/// owned values so the callback signature is simple).
+#[derive(Debug, Clone, Copy)]
+pub struct PoolEntryView {
+    pub size_bytes: u64,
+    pub pin_count: u32,
+    pub loaded_at: u64,
+    pub last_access_at: u64,
+    pub access_count: u64,
+}
+
+/// Sizer — returns byte cost of a value. Use `|_| 1` for count-based pools.
+pub type Sizer<V> = Arc<dyn Fn(&V) -> u64 + Send + Sync>;
+
+/// Eviction priority — lower priority = evict first.
+/// Takes the snapshot view (atomics resolved) so the callback is simple.
+pub type EvictionPriority = Arc<dyn Fn(&PoolEntryView) -> i64 + Send + Sync>;
+
+/// LRU eviction priority — older `last_access_at` evicts first.
+pub fn lru_priority() -> EvictionPriority {
+    Arc::new(|entry: &PoolEntryView| -(entry.last_access_at as i64))
+}
+
+/// Size-weighted LRU — among similarly-aged entries, larger evicts first.
+/// Useful for embedding caches and model-weight pools where some entries
+/// are dramatically larger than others (free more memory per eviction).
+pub fn size_weighted_lru() -> EvictionPriority {
+    Arc::new(|entry: &PoolEntryView| {
+        -(entry.last_access_at as i64) - (entry.size_bytes / 1024) as i64
+    })
+}
+
+/// Pool configuration. All fields required (no Option<> per Joel's rule).
+pub struct PoolConfig<V> {
+    pub name: String,
+    pub max_bytes: u64,
+    pub sizer: Sizer<V>,
+    pub eviction_priority: EvictionPriority,
+}
+
+/// A pinned reference. While at least one PinHandle is alive for an entry,
+/// it cannot be evicted. Drop the handle to release; ref count decrements
+/// automatically.
+pub struct PinHandle<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    key: K,
+    pool: Arc<Inner<K, V>>,
+    released: bool,
+}
+
+impl<K, V> PinHandle<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    /// Borrow the pinned value. Available for the lifetime of the handle.
+    pub fn value(&self) -> Option<V> {
+        let entries = self.pool.entries.read();
+        entries.get(&self.key).map(|e| e.value.clone())
+    }
+
+    /// Explicitly release the pin. Idempotent. Drop also releases.
+    pub fn release(mut self) {
+        self.do_release();
+    }
+
+    fn do_release(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        // Atomic decrement under read lock — concurrent pin/release on
+        // different keys don't serialize.
+        let entries = self.pool.entries.read();
+        if let Some(entry) = entries.get(&self.key) {
+            // Saturating sub via compare-and-swap loop.
+            let mut current = entry.pin_count.load(Ordering::Acquire);
+            loop {
+                if current == 0 {
+                    break;
+                }
+                match entry.pin_count.compare_exchange_weak(
+                    current,
+                    current - 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => current = actual,
+                }
+            }
+        }
+    }
+}
+
+impl<K, V> Drop for PinHandle<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        self.do_release();
+    }
+}
+
+/// Internal shared state — held behind Arc so PinHandle and the pool
+/// share access without ownership friction.
+struct Inner<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    config: PoolConfig<V>,
+    entries: RwLock<HashMap<K, PoolEntry<V>>>,
+    /// Single-flight in-flight loaders. tokio::sync::Mutex because we
+    /// hold this across awaits.
+    inflight: Mutex<HashMap<K, futures::future::Shared<Pin<Box<dyn Future<Output = Result<V, String>> + Send>>>>>,
+    /// Atomic counters — concurrent get/load callers update without lock contention.
+    hits: AtomicU64,
+    misses: AtomicU64,
+    evictions: AtomicU64,
+}
+
+/// The unified paging primitive — generic over key and value types.
+pub struct PagedResourcePool<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    inner: Arc<Inner<K, V>>,
+}
+
+impl<K, V> PagedResourcePool<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    /// Create a new pool with the given configuration.
+    pub fn new(config: PoolConfig<V>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                config,
+                entries: RwLock::new(HashMap::new()),
+                inflight: Mutex::new(HashMap::new()),
+                hits: AtomicU64::new(0),
+                misses: AtomicU64::new(0),
+                evictions: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    /// L1 hit — returns the value if cached, None on miss. Concurrent
+    /// readers run in parallel under RwLock::read; per-entry atomics
+    /// update last_access_at + access_count without serializing.
+    pub fn get(&self, key: &K) -> Option<V> {
+        let entries = self.inner.entries.read();
+        if let Some(entry) = entries.get(key) {
+            entry.last_access_at.store(now_ms(), Ordering::Release);
+            entry.access_count.fetch_add(1, Ordering::AcqRel);
+            self.inner.hits.fetch_add(1, Ordering::Relaxed);
+            return Some(entry.value.clone());
+        }
+        self.inner.misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    /// Load-or-share — if the key isn't present, invoke the loader.
+    /// Concurrent calls for the same key share ONE loader invocation
+    /// (single-flight). Failed loads don't poison the cache slot.
+    pub async fn load_or_share<F, Fut>(&self, key: K, loader: F) -> Result<V, String>
+    where
+        F: FnOnce(K) -> Fut + Send,
+        Fut: Future<Output = Result<V, String>> + Send + 'static,
+    {
+        // Fast path: cache hit.
+        if let Some(value) = self.get(&key) {
+            return Ok(value);
+        }
+        // Check inflight or start one.
+        let shared = {
+            let mut inflight = self.inner.inflight.lock().await;
+            if let Some(existing) = inflight.get(&key) {
+                existing.clone()
+            } else {
+                use futures::future::FutureExt;
+                let fut = loader(key.clone()).boxed();
+                let shared = fut.shared();
+                inflight.insert(key.clone(), shared.clone());
+                shared
+            }
+        };
+        // Await the shared future (other callers also waiting see the same).
+        let result = shared.await;
+        // Cleanup inflight slot regardless of success/failure.
+        {
+            let mut inflight = self.inner.inflight.lock().await;
+            inflight.remove(&key);
+        }
+        // On success, insert and maybe evict.
+        match result {
+            Ok(value) => {
+                self.insert(key, value.clone());
+                Ok(value)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Manually insert a value. Useful for content-hash pools (e.g.,
+    /// embeddings) where the key can't reconstruct the input. Caller has
+    /// already produced the value; this records it for future hits.
+    pub fn insert(&self, key: K, value: V) {
+        let size_bytes = (self.inner.config.sizer)(&value);
+        let now = now_ms();
+        {
+            let mut entries = self.inner.entries.write();
+            entries.insert(
+                key,
+                PoolEntry {
+                    value,
+                    size_bytes,
+                    pin_count: AtomicU32::new(0),
+                    loaded_at: now,
+                    last_access_at: AtomicU64::new(now),
+                    access_count: AtomicU64::new(1),
+                },
+            );
+        }
+        self.maybe_evict();
+    }
+
+    /// Pin an entry to keep it resident. Returns None on miss.
+    /// Pin/release are atomic — concurrent pins on different keys don't
+    /// serialize on each other.
+    pub fn pin(&self, key: &K) -> Option<PinHandle<K, V>> {
+        let entries = self.inner.entries.read();
+        let entry = entries.get(key)?;
+        entry.pin_count.fetch_add(1, Ordering::AcqRel);
+        entry.last_access_at.store(now_ms(), Ordering::Release);
+        Some(PinHandle {
+            key: key.clone(),
+            pool: self.inner.clone(),
+            released: false,
+        })
+    }
+
+    /// Force-evict by key, regardless of pin count. Use sparingly —
+    /// the normal path is `maybe_evict` triggered by pressure.
+    pub fn evict(&self, key: &K) -> bool {
+        let mut entries = self.inner.entries.write();
+        if entries.remove(key).is_some() {
+            self.inner.evictions.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+        false
+    }
+
+    /// Snapshot stats for monitoring + PressureBroker queries.
+    pub async fn stats(&self) -> PoolStats {
+        let entries = self.inner.entries.read();
+        let mut total_bytes: u64 = 0;
+        let mut pinned_count: usize = 0;
+        for entry in entries.values() {
+            total_bytes += entry.size_bytes;
+            if entry.pin_count.load(Ordering::Acquire) > 0 {
+                pinned_count += 1;
+            }
+        }
+        let max_bytes = self.inner.config.max_bytes;
+        let pressure = if max_bytes > 0 {
+            total_bytes as f64 / max_bytes as f64
+        } else {
+            0.0
+        };
+        let inflight_count = self.inner.inflight.lock().await.len();
+        PoolStats {
+            name: self.inner.config.name.clone(),
+            entry_count: entries.len(),
+            pinned_count,
+            total_bytes,
+            max_bytes,
+            pressure,
+            hit_count: self.inner.hits.load(Ordering::Relaxed),
+            miss_count: self.inner.misses.load(Ordering::Relaxed),
+            eviction_count: self.inner.evictions.load(Ordering::Relaxed),
+            inflight_count,
+        }
+    }
+
+    /// Reduce occupancy to 75% of max_bytes by evicting unpinned entries
+    /// in eviction-priority order (lowest priority first). Pinned entries
+    /// are never touched here.
+    fn maybe_evict(&self) {
+        let target_bytes = (self.inner.config.max_bytes as f64 * 0.75) as u64;
+        let mut entries = self.inner.entries.write();
+        let mut total_bytes: u64 = entries.values().map(|e| e.size_bytes).sum();
+        if total_bytes <= self.inner.config.max_bytes {
+            return;
+        }
+        // Build candidate list: only unpinned, sorted by eviction priority asc.
+        // Resolve atomics to PoolEntryView for the priority callback.
+        let mut candidates: Vec<(K, i64, u64)> = entries
+            .iter()
+            .filter(|(_, e)| e.pin_count.load(Ordering::Acquire) == 0)
+            .map(|(k, e)| {
+                let view = PoolEntryView {
+                    size_bytes: e.size_bytes,
+                    pin_count: e.pin_count.load(Ordering::Acquire),
+                    loaded_at: e.loaded_at,
+                    last_access_at: e.last_access_at.load(Ordering::Acquire),
+                    access_count: e.access_count.load(Ordering::Acquire),
+                };
+                (k.clone(), (self.inner.config.eviction_priority)(&view), e.size_bytes)
+            })
+            .collect();
+        candidates.sort_by_key(|(_, prio, _)| *prio);
+        let mut evicted: u64 = 0;
+        for (k, _, size) in candidates {
+            if total_bytes <= target_bytes {
+                break;
+            }
+            entries.remove(&k);
+            total_bytes -= size;
+            evicted += 1;
+        }
+        if evicted > 0 {
+            self.inner.evictions.fetch_add(evicted, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Current Unix ms — monotonic enough for LRU ordering.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn count_sizer<V>() -> Sizer<V>
+    where
+        V: 'static,
+    {
+        Arc::new(|_| 1)
+    }
+
+    fn bytes_sizer() -> Sizer<Vec<u8>> {
+        Arc::new(|v: &Vec<u8>| v.len() as u64)
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_on_miss_and_value_on_hit() {
+        let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
+            name: "test".to_string(),
+            max_bytes: 1024,
+            sizer: bytes_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        assert!(pool.get(&"missing".to_string()).is_none());
+        pool.insert("k1".to_string(), vec![1, 2, 3]);
+        assert_eq!(pool.get(&"k1".to_string()), Some(vec![1, 2, 3]));
+    }
+
+    #[tokio::test]
+    async fn load_or_share_dedups_concurrent_loads() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let pool: PagedResourcePool<String, u32> = PagedResourcePool::new(PoolConfig {
+            name: "test".to_string(),
+            max_bytes: 1024,
+            sizer: count_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        let load_count = Arc::new(AtomicU32::new(0));
+        let lc1 = load_count.clone();
+        let lc2 = load_count.clone();
+        let lc3 = load_count.clone();
+        let key = "shared".to_string();
+        let f1 = pool.load_or_share(key.clone(), move |_| {
+            let lc = lc1.clone();
+            async move {
+                lc.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                Ok(42_u32)
+            }
+        });
+        let f2 = pool.load_or_share(key.clone(), move |_| {
+            let lc = lc2.clone();
+            async move {
+                lc.fetch_add(1, Ordering::SeqCst);
+                Ok(99_u32)
+            }
+        });
+        let f3 = pool.load_or_share(key.clone(), move |_| {
+            let lc = lc3.clone();
+            async move {
+                lc.fetch_add(1, Ordering::SeqCst);
+                Ok(7_u32)
+            }
+        });
+        let (r1, r2, r3) = tokio::join!(f1, f2, f3);
+        assert_eq!(r1.unwrap(), 42);
+        assert_eq!(r2.unwrap(), 42);
+        assert_eq!(r3.unwrap(), 42);
+        // All three callers shared one load — counter should be 1, not 3.
+        assert_eq!(load_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pin_prevents_eviction_under_pressure() {
+        let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
+            name: "test".to_string(),
+            max_bytes: 100,
+            sizer: bytes_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        pool.insert("pinned".to_string(), vec![0; 50]);
+        let _handle = pool.pin(&"pinned".to_string()).expect("pin should succeed");
+        // Push way over budget with unpinned entries.
+        for i in 0..5 {
+            pool.insert(format!("transient_{i}"), vec![0; 80]);
+        }
+        // Pinned entry must survive.
+        assert!(pool.get(&"pinned".to_string()).is_some());
+    }
+
+    #[tokio::test]
+    async fn maybe_evict_keeps_total_within_max_bytes() {
+        let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
+            name: "test".to_string(),
+            max_bytes: 100,
+            sizer: bytes_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        // Insert beyond budget. Eviction fires when total > max_bytes,
+        // drops back to 75% target. Between firings, total can sit
+        // anywhere ≤ max_bytes — that's the contract.
+        for i in 0..5 {
+            pool.insert(format!("k_{i}"), vec![0; 30]);
+        }
+        let stats = pool.stats().await;
+        assert!(
+            stats.total_bytes <= 100,
+            "expected total_bytes <= max_bytes (100) after eviction firings, got {}",
+            stats.total_bytes
+        );
+        assert!(stats.eviction_count > 0, "eviction should have fired at least once");
+    }
+
+    #[tokio::test]
+    async fn eviction_drops_to_target_when_far_over() {
+        let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
+            name: "test".to_string(),
+            max_bytes: 100,
+            sizer: bytes_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        // Single insert that's WAY over budget triggers eviction down
+        // to 75% target in one pass.
+        for i in 0..3 {
+            pool.insert(format!("warm_{i}"), vec![0; 30]);
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
+        // Now insert a big one that pushes over.
+        pool.insert("big".to_string(), vec![0; 50]);
+        let stats = pool.stats().await;
+        // After this single eviction pass, total ≤ 75 (target).
+        assert!(
+            stats.total_bytes <= 75,
+            "single big insert should trigger eviction to 75% target; got {}",
+            stats.total_bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_pin_handle_releases_ref_count() {
+        let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
+            name: "test".to_string(),
+            max_bytes: 100,
+            sizer: bytes_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        pool.insert("x".to_string(), vec![0; 50]);
+        {
+            let _handle = pool.pin(&"x".to_string()).unwrap();
+            let stats = pool.stats().await;
+            assert_eq!(stats.pinned_count, 1);
+        }
+        // _handle dropped here — pin count should return to 0.
+        let stats = pool.stats().await;
+        assert_eq!(stats.pinned_count, 0);
+    }
+
+    #[tokio::test]
+    async fn failed_load_does_not_poison_cache() {
+        let pool: PagedResourcePool<String, u32> = PagedResourcePool::new(PoolConfig {
+            name: "test".to_string(),
+            max_bytes: 1024,
+            sizer: count_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        // First call fails.
+        let r1 = pool
+            .load_or_share("k".to_string(), |_| async {
+                Err::<u32, String>("boom".to_string())
+            })
+            .await;
+        assert!(r1.is_err());
+        // Second call should succeed (no poisoned slot from rejection).
+        let r2 = pool
+            .load_or_share("k".to_string(), |_| async { Ok(123_u32) })
+            .await;
+        assert_eq!(r2.unwrap(), 123);
+    }
+
+    #[tokio::test]
+    async fn stats_pressure_tracks_occupancy() {
+        let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
+            name: "test".to_string(),
+            max_bytes: 100,
+            sizer: bytes_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        pool.insert("k".to_string(), vec![0; 25]);
+        let stats = pool.stats().await;
+        assert_eq!(stats.total_bytes, 25);
+        assert!((stats.pressure - 0.25).abs() < 0.001);
+    }
+}
