@@ -273,6 +273,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         contextWindow: 200000,
         maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.003, output: 0.015 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true,  // Native tool_use support enabled
       },
@@ -284,6 +285,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         contextWindow: 200000,
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.015, output: 0.075 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true,  // Native tool_use support enabled
       },
@@ -295,6 +297,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         contextWindow: 200000,
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.00025, output: 0.00125 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true,  // Native tool_use support enabled
       },

@@ -116,7 +116,9 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
               provider: this.providerId,
               capabilities: ['text-generation', 'chat'] as ModelCapability[],
               contextWindow: m.context_window,
-              maxOutputTokens: m.max_output_tokens,
+              maxOutputTokens: m.max_output_tokens ?? 2048,
+              costPer1kTokens: { input: 0, output: 0 },
+              tokensPerSecond: 15,
               supportsStreaming: false,
               supportsTools: false,
             }));
@@ -134,6 +136,9 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 2048, // BF16 practical limit on Metal
+        maxOutputTokens: 2048,
+        costPer1kTokens: { input: 0, output: 0 },
+        tokensPerSecond: 15,
         supportsStreaming: false,
         supportsTools: false,
       },

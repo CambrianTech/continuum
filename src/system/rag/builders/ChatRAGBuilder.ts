@@ -228,8 +228,9 @@ export class ChatRAGBuilder extends RAGBuilder {
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
     let composeMs: number | undefined;
     let legacyMs: number | undefined;
-    // Token budget from model's context window — 75% for input.
-    const contextWindow = getContextWindow(options.modelId, options.provider);
+    // Token budget from model's declared context window — 75% for input.
+    // contextWindow comes from the adapter via RAGBuildOptions. No lookup.
+    const contextWindow = options.contextWindow;
     const totalBudget = Math.floor(contextWindow * 0.75);
 
     {
@@ -593,8 +594,8 @@ export class ChatRAGBuilder extends RAGBuilder {
     }
 
     const modelId = options.modelId;
-    const contextWindow = getContextWindow(modelId, options.provider);
-    const isSlowModel = isSlowLocalModel(modelId, options.provider);
+    const contextWindow = options.contextWindow;
+    const isSlowModel = options.tokensPerSecond < 20; // <20 tok/s = slow local model
 
     if (isSlowModel) {
       // For slow local models, use latency-aware constraint to avoid fetching
@@ -639,7 +640,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     const modelId = options.modelId;
     const systemPromptTokens = options.systemPromptTokens ?? 500;
     const safetyMargin = 100;  // Extra buffer for formatting/metadata
-    const contextWindow = getContextWindow(modelId, options.provider);
+    const contextWindow = options.contextWindow;
 
     // Estimate input tokens from actual message content.
     // Llama tokenizer averages ~3.0 chars/token (measured: 8091 chars → 2701 tokens).

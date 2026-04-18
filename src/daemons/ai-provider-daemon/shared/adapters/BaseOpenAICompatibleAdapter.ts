@@ -676,7 +676,9 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
         || modelData.context_window
         || modelData.max_input_tokens
         || 4096,
-      maxOutputTokens: modelData.max_tokens,
+      maxOutputTokens: modelData.max_tokens ?? 4096,
+      costPer1kTokens: { input: 0, output: 0 }, // Updated from provider pricing at runtime
+      tokensPerSecond: 1000, // Cloud API — network-bound, not compute-bound
       supportsStreaming: true,
       supportsTools: false,
     };

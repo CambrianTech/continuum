@@ -211,11 +211,13 @@ export interface RAGBuildOptions {
   // NEW: Task completion tracking - prevent infinite loops
   excludeMessageIds?: UUID[];  // Message IDs to exclude from RAG context (e.g., processed tool results)
 
-  // Model-aware context budgeting — model identity is REQUIRED for correct budget.
-  // Without modelId+provider, every token calculation falls back to wrong defaults.
-  modelId: string;    // Target model ID — drives context window, token budget, everything
-  provider: string;   // AI provider (e.g. 'anthropic', 'candle', 'deepseek') — scopes model lookup
-  maxTokens: number;  // Max completion tokens — must come from model config
+  // Model-aware context budgeting — ALL fields REQUIRED from the model's own metadata.
+  // The adapter declares these. No lookup tables, no getContextWindow().
+  modelId: string;    // Target model ID
+  provider: string;   // AI provider (e.g. 'anthropic', 'local', 'deepseek')
+  maxTokens: number;  // Max completion tokens — from model config
+  contextWindow: number;  // Model's context window in tokens — from adapter, NOT a lookup
+  tokensPerSecond: number;  // Model's inference speed on current hardware — from adapter
   systemPromptTokens?: number;  // Estimated system prompt tokens (default: 500)
 
   // NEW: Model capability-aware processing

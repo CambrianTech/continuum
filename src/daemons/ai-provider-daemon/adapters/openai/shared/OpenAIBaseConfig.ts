@@ -59,7 +59,9 @@ export class OpenAIBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 128000,
+        maxOutputTokens: 16384,
         costPer1kTokens: { input: 0.0025, output: 0.01 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -69,7 +71,9 @@ export class OpenAIBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 128000,
+        maxOutputTokens: 16384,
         costPer1kTokens: { input: 0.00015, output: 0.0006 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -79,7 +83,9 @@ export class OpenAIBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 128000,
+        maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.01, output: 0.03 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -89,7 +95,9 @@ export class OpenAIBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 8192,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.03, output: 0.06 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -99,7 +107,9 @@ export class OpenAIBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 16385,
+        maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.0005, output: 0.0015 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       }

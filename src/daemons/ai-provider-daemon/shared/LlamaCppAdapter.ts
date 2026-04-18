@@ -284,6 +284,9 @@ export class LlamaCppAdapter implements AIProviderAdapter {
               provider: this.providerId,
               capabilities: this.supportedCapabilities,
               contextWindow: 4096,
+              maxOutputTokens: 4096,
+              costPer1kTokens: { input: 0, output: 0 },
+              tokensPerSecond: 15,
               supportsStreaming: false,
               supportsTools: false
             });

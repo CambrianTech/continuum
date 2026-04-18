@@ -399,7 +399,9 @@ pub enum ModelCapability {
     ToolUse,
 }
 
-/// Model information
+/// Model information — ALL fields REQUIRED.
+/// The adapter knows its model. No optionals, no defaults, no guessing.
+/// If an adapter can't provide a field, it's not ready to register.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/ai/ModelInfo.ts")]
 #[serde(rename_all = "camelCase")]
@@ -409,12 +411,12 @@ pub struct ModelInfo {
     pub provider: String,
     pub capabilities: Vec<ModelCapability>,
     pub context_window: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub max_output_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub cost_per_1k_tokens: Option<CostPer1kTokens>,
+    pub max_output_tokens: u32,
+    pub cost_per_1k_tokens: CostPer1kTokens,
+    /// Measured or estimated inference speed on current hardware.
+    /// Used by RAG budget and slot coordination.
+    #[ts(type = "number")]
+    pub tokens_per_second: f32,
     pub supports_streaming: bool,
     pub supports_tools: bool,
 }

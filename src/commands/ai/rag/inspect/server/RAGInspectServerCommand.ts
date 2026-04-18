@@ -9,6 +9,7 @@ import type { JTAGContext } from '../../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../../daemons/command-daemon/shared/CommandBase';
 import type { RAGInspectParams, RAGInspectResult } from '../shared/RAGInspectTypes';
 import { ChatRAGBuilder } from '../../../../../system/rag/builders/ChatRAGBuilder';
+import { getContextWindow, getInferenceSpeed } from '../../../../../system/shared/ModelContextWindows';
 import { ORM } from '../../../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity } from '../../../../../system/data/entities/ChatMessageEntity';
 import { getThoughtStreamCoordinator } from '../../../../../system/conversation/server/ThoughtStreamCoordinator';
@@ -35,6 +36,8 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
           includeArtifacts: params.includeArtifacts ?? true,
           includeMemories: params.includeMemories ?? true,
           maxTokens: params.maxTokens ?? 2000,
+          contextWindow: getContextWindow(params.modelId, params.provider),
+          tokensPerSecond: getInferenceSpeed(params.modelId, params.provider),
         }
       );
 
