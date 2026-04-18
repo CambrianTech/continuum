@@ -342,6 +342,27 @@ By exposing the levers cleanly — pluggable eviction, rich stats, priority-awar
 
 ---
 
+## The maturity arc — caps are training wheels
+
+The conservative defaults in early phases (16k chat KV, install-time global cap, hardcoded `MAX_NATIVE_TOOLS`, static-tier ladders) are **protective measures, not the destination**. They exist because we don't yet trust the architecture to manage real load dynamically.
+
+As the broker, the paging primitive consumers, the pressure-aware scheduler, and the recipe-declared resource manifests each ship and prove themselves under real workloads, **the caps relax**. The arc:
+
+| Today | After the broker matures | End state |
+|---|---|---|
+| Hardcoded 16k/32k KV ceiling | Recipe-declared budgets respected | Whatever the workload genuinely needs, dynamically tiered |
+| Static `MAX_NATIVE_TOOLS=16` | Recipe-relevance filter | Whatever tools the LLM actually uses, learned per recipe |
+| Conservative `local-inference: 1` slot | Pressure-aware admission | As many concurrent inferences as the GPU can sustain at acceptable latency |
+| Embedding cache 256 MB fixed | Broker reshapes by competing demand | Cache grows when memory is free, shrinks when other pools need it |
+
+The destination isn't "no limits" — it's "limits set by ground truth, not by fear." The system measures what's happening (`gpu/stats`, pressure watchers, observed TPS, recipe activity) and sets the lever positions that fit reality. When the broker (and eventually the ML/LLM policy layer) is solid, **freedom comes back** — recipes can request what they need, conversations can be as long as they need to be, parallel personas can scale to what the hardware actually supports, because the architecture knows how to handle the consequences gracefully (demote, page out, time-share, prioritize) instead of refusing or crashing.
+
+Caps today are about not blowing up while we build the brain. Caps tomorrow are about the brain knowing exactly where the real edges are. Caps in the end-state are mostly absent — the broker handles edges by reshaping resources, not by refusing requests.
+
+This matters because it's the difference between a *constrained appliance* (hardcoded limits forever) and an *AI-native OS* (the system knows itself well enough to let workloads be expansive when capacity allows). Continuum aims for the second.
+
+---
+
 ## Provenance
 
 Architectural insights captured in this doc came out of an extended conversation between Joel and the Claude assistants during the inference-perf branch session of 2026-04-17 / -18. Key framings:
