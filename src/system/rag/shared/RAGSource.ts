@@ -19,6 +19,10 @@
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { RAGBuildOptions, LLMMessage, RAGArtifact, PersonaMemory, PersonaIdentity, RecipeStrategy } from './RAGTypes';
+import { PromptTier } from './RAGTypes';
+
+// Re-export so source files only need one import
+export { PromptTier } from './RAGTypes';
 
 /**
  * Context passed to each RAGSource for loading
@@ -70,6 +74,9 @@ export interface RAGSourceContext {
 export interface RAGSection {
   /** Source that produced this section */
   readonly sourceName: string;
+  /** Tier this section belongs to — drives stable-byte-prefix ordering.
+   * Mirrored from the producing source's declared tier. */
+  readonly tier: PromptTier;
   /** Estimated token count */
   readonly tokenCount: number;
   /** Time taken to load (ms) */
@@ -106,6 +113,29 @@ export interface RAGSource {
   readonly priority: number;
 
   /**
+   * Tier — INVARIANT / SEMI_STABLE / VOLATILE.
+   * Required. Drives stable-byte-prefix prompt assembly so llama-server
+   * reuses KV cache for the unchanging region instead of reprocessing
+   * the full prompt every turn.
+   *
+   * Classification rules:
+   * - INVARIANT — system prompt fragments, recipe rules, role identity,
+   *   tool definitions. Bytes must be identical across thousands of turns
+   *   for the same persona+recipe. NO timestamps, NO request IDs, NO
+   *   per-request volatile data.
+   * - SEMI_STABLE — conversation history, memories, participants,
+   *   governance. Grows monotonically — append-only relative to the
+   *   previous turn. Earlier bytes never rewritten.
+   * - VOLATILE — current message, audio chunks, current timestamp,
+   *   per-request observations. The only region the server reprocesses
+   *   token-by-token.
+   *
+   * If you can't decide, the source probably mixes tiers and should be
+   * split into separate sources at the right granularity.
+   */
+  readonly tier: PromptTier;
+
+  /**
    * Default budget allocation as percentage (0-100).
    * Total across all sources should roughly equal 100.
    * Actual allocation is adjusted based on what's available.
@@ -126,11 +156,16 @@ export interface RAGSource {
    * Load data from this source.
    * Called in parallel with other applicable sources.
    *
+   * Returns the section without the `tier` field — RAGComposer injects
+   * the source's declared `tier` into the section after load completes.
+   * This keeps source implementations focused on what they produce
+   * rather than re-asserting their tier on every return.
+   *
    * @param context - Context for loading
    * @param allocatedBudget - Token budget allocated to this source
-   * @returns Section of RAG context
+   * @returns Section of RAG context (tier added by composer)
    */
-  load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection>;
+  load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>>;
 
   /**
    * Whether this source produces identical results for all personas in the same room.
@@ -168,11 +203,14 @@ export interface RAGSource {
    * Only called if supportsBatching is true.
    * Transforms the typed Rust result into the RAGSection format.
    *
+   * Returns the section without `tier` — RAGComposer injects the source's
+   * declared tier after conversion, same as the non-batched path.
+   *
    * @param result - The result from Rust's rag/compose endpoint
    * @param loadTimeMs - How long the load took
-   * @returns The RAGSection to include in the composition result
+   * @returns The RAGSection (without tier) to include in the composition result
    */
-  fromBatchResult?(result: RagSourceResult, loadTimeMs: number): RAGSection;
+  fromBatchResult?(result: RagSourceResult, loadTimeMs: number): Omit<RAGSection, 'tier'>;
 }
 
 // Re-export Rust-generated types for batch support

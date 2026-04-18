@@ -8,6 +8,7 @@
  */
 
 import type { RAGSource, RAGSection, RAGSourceContext } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import type { RecipeStrategy } from '../shared/RAGTypes';
 import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
@@ -23,6 +24,7 @@ import { isSlowLocalModel } from '../../shared/ModelContextWindows';
  */
 export class ActivityContextSource implements RAGSource {
   readonly name = 'activity';
+  readonly tier = PromptTier.VOLATILE;
   readonly isShared = true;
 
   // Medium priority - important for guided interactions
@@ -36,7 +38,7 @@ export class ActivityContextSource implements RAGSource {
     return true;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = Date.now();
 
     try {

@@ -13,6 +13,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { getCodebaseIndexer } from '../services/CodebaseIndexer';
 import { Logger } from '../../core/logging/Logger';
 
@@ -29,6 +30,7 @@ const RELEVANCE_THRESHOLD = 0.35;
 
 export class CodebaseSearchSource implements RAGSource {
   readonly name = 'codebase-search';
+  readonly tier = PromptTier.VOLATILE;
   readonly priority = 55;
   readonly defaultBudgetPercent = 8;
   readonly isShared = true;
@@ -43,7 +45,7 @@ export class CodebaseSearchSource implements RAGSource {
     return currentMessage.length >= MIN_QUERY_LENGTH;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = Date.now();
     const query = context.options?.currentMessage?.content as string;
 

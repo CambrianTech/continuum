@@ -21,6 +21,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { WorkspaceStrategy } from '../../code/server/WorkspaceStrategy';
 import { ProjectDetector, type ProjectType } from '../../code/server/ProjectDetector';
 import { Logger } from '../../core/logging/Logger';
@@ -33,6 +34,7 @@ const log = Logger.create('ProjectContextSource', 'rag');
 
 export class ProjectContextSource implements RAGSource {
   readonly name = 'project-context';
+  readonly tier = PromptTier.INVARIANT;
   readonly priority = 70;
   readonly defaultBudgetPercent = 5;
   readonly isShared = true;
@@ -46,8 +48,8 @@ export class ProjectContextSource implements RAGSource {
    * 14×5 = 70 synchronous shell calls per RAG cycle.
    * Single-flight coalescing prevents thundering herd on cache miss.
    */
-  private static _contextCache: Map<string, { section: RAGSection; cachedAt: number }> = new Map();
-  private static _contextInflight: Map<string, Promise<RAGSection>> = new Map();
+  private static _contextCache: Map<string, { section: Omit<RAGSection, 'tier'>; cachedAt: number }> = new Map();
+  private static _contextInflight: Map<string, Promise<Omit<RAGSection, 'tier'>>> = new Map();
   private static readonly CONTEXT_CACHE_TTL_MS = 30_000;
 
   isApplicable(context: RAGSourceContext): boolean {
@@ -59,7 +61,7 @@ export class ProjectContextSource implements RAGSource {
     return ProjectContextSource.isMainRepoGit();
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     const wsMeta = WorkspaceStrategy.getProjectForPersona(context.personaId);
@@ -104,7 +106,7 @@ export class ProjectContextSource implements RAGSource {
     isPersonalWorkspace: boolean,
     initialBranch: string,
     startTime: number,
-  ): Promise<RAGSection> {
+  ): Promise<Omit<RAGSection, 'tier'>> {
 
     try {
       // Resolve branch — from workspace metadata or live git query
@@ -371,7 +373,7 @@ export class ProjectContextSource implements RAGSource {
     return `## ${label}: ${projectType.description}\nBranch: ${branch}\n${gitStatus}`;
   }
 
-  private emptySection(startTime: number, error?: string): RAGSection {
+  private emptySection(startTime: number, error?: string): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

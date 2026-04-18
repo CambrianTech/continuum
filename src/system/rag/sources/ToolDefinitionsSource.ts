@@ -19,6 +19,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import type { NativeToolSpec } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 import { PersonaToolRegistry } from '../../user/server/modules/PersonaToolRegistry';
@@ -35,6 +36,7 @@ const log = Logger.create('ToolDefinitionsSource', 'rag');
 
 export class ToolDefinitionsSource implements RAGSource {
   readonly name = 'tool-definitions';
+  readonly tier = PromptTier.INVARIANT;
   readonly priority = 45;
   readonly defaultBudgetPercent = 10;
 
@@ -46,7 +48,7 @@ export class ToolDefinitionsSource implements RAGSource {
     return true;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     try {
@@ -94,7 +96,7 @@ export class ToolDefinitionsSource implements RAGSource {
     toolDefinitions: ToolDefinition[],
     allocatedBudget: number,
     startTime: number
-  ): RAGSection {
+  ): Omit<RAGSection, 'tier'> {
     // Exclude meta-tools — models with native tool calling don't need discovery tools.
     // search_tools/list_tools cause infinite loops where models search instead of act.
     const META_TOOLS = new Set(['search_tools', 'list_tools', 'working_memory']);
@@ -178,7 +180,7 @@ export class ToolDefinitionsSource implements RAGSource {
     toolDefinitions: ToolDefinition[],
     allocatedBudget: number,
     startTime: number
-  ): RAGSection {
+  ): Omit<RAGSection, 'tier'> {
     // Exclude chat/send when responding in a chat room (same as native path)
     if (context.roomId) {
       toolDefinitions = toolDefinitions.filter(t => t.name !== 'collaboration/chat/send');
@@ -382,7 +384,7 @@ RESPOND WITH TOOL CALLS, NOT DESCRIPTIONS.`;
     return Math.ceil(text.length / 4);
   }
 
-  private emptySection(startTime: number, error?: string): RAGSection {
+  private emptySection(startTime: number, error?: string): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

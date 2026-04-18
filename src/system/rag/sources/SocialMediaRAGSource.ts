@@ -25,6 +25,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import type { SocialNotification, SocialProfile } from '@system/social/shared/SocialMediaTypes';
 import type { ISocialMediaProvider } from '@system/social/shared/ISocialMediaProvider';
 import { SocialCredentialEntity } from '@system/social/shared/SocialCredentialEntity';
@@ -54,6 +55,7 @@ interface ResolvedCredential {
 
 export class SocialMediaRAGSource implements RAGSource {
   readonly name = 'social-media';
+  readonly tier = PromptTier.SEMI_STABLE;
   readonly priority = 55;
   readonly defaultBudgetPercent = 3;
 
@@ -97,7 +99,7 @@ export class SocialMediaRAGSource implements RAGSource {
    * If HUD is cached, returns it. If not, returns empty section.
    * Background warmup loop handles populating the cache.
    */
-  async load(context: RAGSourceContext, _allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, _allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     // Register this persona for background warmup
@@ -461,7 +463,7 @@ export class SocialMediaRAGSource implements RAGSource {
     ]);
   }
 
-  private emptySection(startTime: number): RAGSection {
+  private emptySection(startTime: number): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,
@@ -470,7 +472,7 @@ export class SocialMediaRAGSource implements RAGSource {
     };
   }
 
-  private errorSection(startTime: number, error: string): RAGSection {
+  private errorSection(startTime: number, error: string): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

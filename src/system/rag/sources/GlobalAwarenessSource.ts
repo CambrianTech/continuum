@@ -23,6 +23,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import type { RagSourceRequest, RagSourceResult, ConsciousnessSourceMetadata } from '../../../shared/generated/rag';
 import type { PersonaUser } from '../../user/server/PersonaUser';
 import { Logger } from '../../core/logging/Logger';
@@ -62,6 +63,7 @@ export function getConsciousness(personaId: string): boolean {
 
 export class GlobalAwarenessSource implements RAGSource {
   readonly name = 'global-awareness';
+  readonly tier = PromptTier.SEMI_STABLE;
   readonly priority = 85;  // After identity (95), before conversation (80)
   readonly defaultBudgetPercent = 5;
   readonly isShared = true;
@@ -107,7 +109,7 @@ export class GlobalAwarenessSource implements RAGSource {
    * Convert Rust RagSourceResult to TypeScript RAGSection.
    * Maps consciousness result to systemPromptSection.
    */
-  fromBatchResult(result: RagSourceResult, loadTimeMs: number): RAGSection {
+  fromBatchResult(result: RagSourceResult, loadTimeMs: number): Omit<RAGSection, 'tier'> {
     // Consciousness result has formatted_prompt in the first section
     const formattedPrompt = result.sections
       .map(s => s.content)
@@ -142,7 +144,7 @@ export class GlobalAwarenessSource implements RAGSource {
    * Note: When batching is enabled, this method is typically not called.
    * RAGComposer uses getBatchRequest() + fromBatchResult() instead.
    */
-  async load(context: RAGSourceContext, _allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, _allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     try {
@@ -227,7 +229,7 @@ export class GlobalAwarenessSource implements RAGSource {
     }
   }
 
-  private createEmptySection(loadTimeMs: number): RAGSection {
+  private createEmptySection(loadTimeMs: number): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,
@@ -236,7 +238,7 @@ export class GlobalAwarenessSource implements RAGSource {
     };
   }
 
-  private createErrorSection(loadTimeMs: number, error: string): RAGSection {
+  private createErrorSection(loadTimeMs: number, error: string): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

@@ -11,6 +11,7 @@
  */
 
 import type { RAGSource, RAGSection, RAGSourceContext } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import type { DecisionProposalEntity, DecisionOption, RankedVote } from '../../data/entities/DecisionProposalEntity';
 import type { DataRecord } from '../../../daemons/data-daemon/shared/DataStorageAdapter';
@@ -32,7 +33,7 @@ function formatProposal(record: DataRecord<DecisionProposalEntity>): string {
 ${options}`;
 }
 
-const EMPTY_SECTION: RAGSection = {
+const EMPTY_SECTION: Omit<RAGSection, 'tier'> = {
   sourceName: 'open-proposals',
   tokenCount: 0,
   loadTimeMs: 0,
@@ -41,6 +42,7 @@ const EMPTY_SECTION: RAGSection = {
 
 export class OpenProposalsSource implements RAGSource {
   readonly name = 'open-proposals';
+  readonly tier = PromptTier.SEMI_STABLE;
   readonly priority = 25;
   readonly defaultBudgetPercent = 3;
 
@@ -48,7 +50,7 @@ export class OpenProposalsSource implements RAGSource {
     return true;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = Date.now();
 
     if (allocatedBudget < 30) {

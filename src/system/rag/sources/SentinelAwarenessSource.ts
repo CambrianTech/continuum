@@ -16,12 +16,14 @@
  */
 
 import type { RAGSource, RAGSection, RAGSourceContext } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { TemplateRegistry } from '../../sentinel/pipelines/TemplateRegistry';
 import { sentinelEventBridge } from '../../sentinel/SentinelEventBridge';
 import { isSlowLocalModel, getContextWindow } from '../../shared/ModelContextWindows';
 
 export class SentinelAwarenessSource implements RAGSource {
   readonly name = 'sentinel-awareness';
+  readonly tier = PromptTier.SEMI_STABLE;
   readonly isShared = true;
   readonly priority = 58;
   readonly defaultBudgetPercent = 8;
@@ -36,7 +38,7 @@ export class SentinelAwarenessSource implements RAGSource {
     return true;
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = Date.now();
 
     const modelId = context.options?.modelId;

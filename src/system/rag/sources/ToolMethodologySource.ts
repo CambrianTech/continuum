@@ -17,6 +17,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import { PersonaToolRegistry } from '../../user/server/modules/PersonaToolRegistry';
 import { Logger } from '../../core/logging/Logger';
 
@@ -65,6 +66,7 @@ const TOOL_CATEGORIES: readonly ToolCategory[] = [
 
 export class ToolMethodologySource implements RAGSource {
   readonly name = 'tool-methodology';
+  readonly tier = PromptTier.INVARIANT;
   readonly priority = 48;
   readonly defaultBudgetPercent = 3;
 
@@ -78,7 +80,7 @@ export class ToolMethodologySource implements RAGSource {
     return tools.some(t => TOOL_CATEGORIES.some(cat => t.name.startsWith(cat.prefix)));
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
 
     try {

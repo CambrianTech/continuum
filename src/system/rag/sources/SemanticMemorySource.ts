@@ -18,6 +18,7 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import { PromptTier } from '../shared/RAGSource';
 import type { RagSourceRequest, RagSourceResult } from '../../../shared/generated/rag';
 import type { PersonaMemory } from '../shared/RAGTypes';
 import { TieredMemoryCache } from '../cache/TieredMemoryCache';
@@ -30,6 +31,7 @@ const TOKENS_PER_MEMORY_ESTIMATE = 80;
 
 export class SemanticMemorySource implements RAGSource {
   readonly name = 'semantic-memory';
+  readonly tier = PromptTier.SEMI_STABLE;
   readonly priority = 60;  // Medium-high - memories inform persona behavior
   readonly defaultBudgetPercent = 12;
   readonly supportsBatching = true;  // Participate in batched Rust IPC
@@ -69,7 +71,7 @@ export class SemanticMemorySource implements RAGSource {
    * Convert Rust RagSourceResult to TypeScript RAGSection.
    * Maps Rust's memory format back to PersonaMemory[].
    */
-  fromBatchResult(result: RagSourceResult, loadTimeMs: number): RAGSection {
+  fromBatchResult(result: RagSourceResult, loadTimeMs: number): Omit<RAGSection, 'tier'> {
     // Extract memories from sections
     const memories: PersonaMemory[] = [];
 
@@ -122,7 +124,7 @@ export class SemanticMemorySource implements RAGSource {
     };
   }
 
-  async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
+  async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = performance.now();
     const maxMemories = Math.max(3, Math.floor(allocatedBudget / TOKENS_PER_MEMORY_ESTIMATE));
 
@@ -195,7 +197,7 @@ export class SemanticMemorySource implements RAGSource {
     return validTypes.includes(type) ? type as PersonaMemory['type'] : 'observation';
   }
 
-  private emptySection(startTime: number, error?: string): RAGSection {
+  private emptySection(startTime: number, error?: string): Omit<RAGSection, 'tier'> {
     return {
       sourceName: this.name,
       tokenCount: 0,

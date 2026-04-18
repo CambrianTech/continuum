@@ -22,6 +22,15 @@
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection, RAGCompositionResult } from './RAGSource';
+import { PromptTier } from './RAGTypes';
+
+/** Sort key for tiers — smaller numbers concatenate first.
+ * INVARIANT before SEMI_STABLE before VOLATILE. See PromptTier docs. */
+const TIER_ORDER: Record<PromptTier, number> = {
+  [PromptTier.INVARIANT]: 0,
+  [PromptTier.SEMI_STABLE]: 1,
+  [PromptTier.VOLATILE]: 2,
+};
 import type { RagSourceRequest, RagComposeResult, RagSourceResult } from '../../../shared/generated/rag';
 import { Logger } from '../../core/logging/Logger';
 import { TimingHarness } from '../../core/shared/TimingHarness';
@@ -230,6 +239,19 @@ export class RAGComposer {
         failedSources.push({ source: result.source, error: result.error });
       }
     }
+    // Deterministic ordering: sections sorted by (tier, sourceName) so the
+    // assembled prompt's bytes are identical across requests with identical
+    // section contents. This is the prerequisite for llama-server / DMR
+    // prefix-KV-cache reuse — without stable ordering, the same logical
+    // prompt has different bytes per turn and the cache misses every time.
+    // Tier order: INVARIANT first, then SEMI_STABLE, then VOLATILE — see
+    // PromptTier in RAGTypes.ts and docs/architecture/MULTIMODAL-WORKER-AND-PREFIX-REUSE.md
+    sections.sort((a, b) => {
+      const tierOrder = TIER_ORDER[a.tier] - TIER_ORDER[b.tier];
+      if (tierOrder !== 0) return tierOrder;
+      // Within a tier: alphabetical by source name. Stable, total order.
+      return a.sourceName.localeCompare(b.sourceName);
+    });
     timer.mark('collect_results');
 
     // Log ALL source timings for performance diagnosis
@@ -316,8 +338,13 @@ export class RAGComposer {
 
         if (rustResult.success) {
           // Convert via source's fromBatchResult method
+          // Tier injection: same single-source-of-truth as TS path —
+          // the source's class declaration provides tier; we inject it
+          // here so the section conforms to RAGSection regardless of
+          // whether the source's fromBatchResult included it.
           if (sourceInfo.source.fromBatchResult) {
-            const section = sourceInfo.source.fromBatchResult(rustResult, rustResult.load_time_ms);
+            const rawSection = sourceInfo.source.fromBatchResult(rustResult, rustResult.load_time_ms);
+            const section: RAGSection = { ...rawSection, tier: sourceInfo.source.tier };
             results.push({
               success: true,
               section,
@@ -326,9 +353,11 @@ export class RAGComposer {
             });
           } else {
             // Fallback: basic conversion
+            const rawSection = this.defaultFromBatchResult(sourceInfo.source.name, rustResult);
+            const section: RAGSection = { ...rawSection, tier: sourceInfo.source.tier };
             results.push({
               success: true,
-              section: this.defaultFromBatchResult(sourceInfo.source.name, rustResult),
+              section,
               sourceName: sourceInfo.source.name,
               loadTime: rustResult.load_time_ms
             });
@@ -441,10 +470,14 @@ export class RAGComposer {
     sourceTimer.setMeta('budget', budget);
 
     try {
-      const section = await source.load(context, budget);
+      const rawSection = await source.load(context, budget);
       sourceTimer.mark('load');
-      sourceTimer.setMeta('tokenCount', section.tokenCount);
+      sourceTimer.setMeta('tokenCount', rawSection.tokenCount);
       const record = sourceTimer.finish();
+      // Inject tier from the source's declaration. Sources don't re-state
+      // their tier on every return; the class-level declaration is the
+      // single source of truth, applied here.
+      const section: RAGSection = { ...rawSection, tier: source.tier };
       return { success: true, section, sourceName: source.name, loadTime: record.totalMs };
     } catch (error: any) {
       sourceTimer.setError(error.message);
@@ -457,8 +490,9 @@ export class RAGComposer {
   /**
    * Default conversion from Rust RagSourceResult to TypeScript RAGSection.
    * Used when source doesn't implement fromBatchResult.
+   * Returns without `tier` — caller injects from the source's declaration.
    */
-  private defaultFromBatchResult(sourceName: string, result: RagSourceResult): RAGSection {
+  private defaultFromBatchResult(sourceName: string, result: RagSourceResult): Omit<RAGSection, 'tier'> {
     // Combine all sections into a single content block
     const content = result.sections
       .map(s => s.content)
