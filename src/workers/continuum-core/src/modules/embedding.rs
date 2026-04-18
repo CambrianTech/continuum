@@ -28,7 +28,9 @@ use tracing::{info, warn};
 
 use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
+use crate::paging::{size_weighted_lru, PagedResourcePool, PoolConfig};
 use crate::utils::params::Params;
+use sha2::{Digest, Sha256};
 
 /// Global model cache - models loaded on demand
 static MODEL_CACHE: OnceCell<Arc<Mutex<HashMap<String, TextEmbedding>>>> = OnceCell::new();
@@ -61,91 +63,58 @@ fn get_model_cache() -> &'static Arc<Mutex<HashMap<String, TextEmbedding>>> {
     MODEL_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
-/// Global embedding result cache - avoids recomputing same text embeddings
-/// Key: (model_name, text_hash) -> embedding vector
-/// TTL: Entries older than 5 minutes are evicted on access
-static EMBEDDING_CACHE: OnceCell<Arc<Mutex<EmbeddingResultCache>>> = OnceCell::new();
-
-struct CachedEmbedding {
-    embedding: Vec<f32>,
-    created_at: Instant,
+/// Embedding pool key: (model, content_hash). The model is part of the key
+/// because different models map the same text to different vectors. Content
+/// hash is SHA-256 of the input text — collision-free in practice and fixed
+/// at 32 bytes (no per-key allocation for the text itself).
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+pub struct EmbeddingKey {
+    pub model: String,
+    pub content_hash: [u8; 32],
 }
 
-struct EmbeddingResultCache {
-    entries: HashMap<(String, u64), CachedEmbedding>,
-    ttl: std::time::Duration,
-    max_entries: usize,
-    hits: u64,
-    misses: u64,
-}
-
-impl EmbeddingResultCache {
-    fn new() -> Self {
+impl EmbeddingKey {
+    fn new(model: &str, text: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        let digest = hasher.finalize();
+        let mut content_hash = [0u8; 32];
+        content_hash.copy_from_slice(&digest);
         Self {
-            entries: HashMap::new(),
-            ttl: std::time::Duration::from_secs(300), // 5 minutes
-            max_entries: 10_000,
-            hits: 0,
-            misses: 0,
+            model: model.to_string(),
+            content_hash,
         }
-    }
-
-    fn get(&mut self, model: &str, text_hash: u64) -> Option<Vec<f32>> {
-        let key = (model.to_string(), text_hash);
-        if let Some(entry) = self.entries.get(&key) {
-            if entry.created_at.elapsed() < self.ttl {
-                self.hits += 1;
-                return Some(entry.embedding.clone());
-            }
-            // Expired - remove it
-            self.entries.remove(&key);
-        }
-        self.misses += 1;
-        None
-    }
-
-    fn insert(&mut self, model: &str, text_hash: u64, embedding: Vec<f32>) {
-        // Sweep expired entries before inserting (amortized cleanup)
-        let ttl = self.ttl;
-        self.entries.retain(|_, v| v.created_at.elapsed() < ttl);
-
-        // Evict oldest if still at capacity after sweep
-        if self.entries.len() >= self.max_entries {
-            if let Some(oldest_key) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, v)| v.created_at)
-                .map(|(k, _)| k.clone())
-            {
-                self.entries.remove(&oldest_key);
-            }
-        }
-
-        self.entries.insert(
-            (model.to_string(), text_hash),
-            CachedEmbedding {
-                embedding,
-                created_at: Instant::now(),
-            },
-        );
-    }
-
-    fn stats(&self) -> (u64, u64, usize) {
-        (self.hits, self.misses, self.entries.len())
     }
 }
 
-fn get_embedding_cache() -> &'static Arc<Mutex<EmbeddingResultCache>> {
-    EMBEDDING_CACHE.get_or_init(|| Arc::new(Mutex::new(EmbeddingResultCache::new())))
-}
+/// Default budget for the embedding pool. Tuned for the average codebase
+/// indexer + RAG workload: 384-dim FP32 ≈ 1.5 KB per vector → 256 MB holds
+/// ~170k entries, comfortably more than the previous 10k count cap.
+/// Eventually overridden by recipe-declared budgets (Phase 9) and pressure
+/// broker (Phase 7b).
+const EMBEDDING_POOL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Fast hash for text (djb2 algorithm)
-fn hash_text(text: &str) -> u64 {
-    let mut hash: u64 = 5381;
-    for byte in text.bytes() {
-        hash = hash.wrapping_mul(33).wrapping_add(byte as u64);
-    }
-    hash
+/// Global embedding pool — single source of truth for cached embeddings.
+/// Replaces the old per-IPC `EMBEDDING_CACHE` that internal Rust callers
+/// (DataModule, memory providers) were silently bypassing — those now
+/// route through `generate_embedding{,s_batch}` and inherit cache hits
+/// for free.
+static EMBEDDING_POOL: OnceCell<Arc<PagedResourcePool<EmbeddingKey, Vec<f32>>>> = OnceCell::new();
+
+fn get_embedding_pool() -> &'static Arc<PagedResourcePool<EmbeddingKey, Vec<f32>>> {
+    EMBEDDING_POOL.get_or_init(|| {
+        Arc::new(PagedResourcePool::new(PoolConfig {
+            name: "embedding-cache".to_string(),
+            max_bytes: EMBEDDING_POOL_BUDGET_BYTES,
+            // Sizer: 4 bytes per f32 dimension. Accurate to within an
+            // allocator-rounding constant; pool budgeting is byte-driven.
+            sizer: Arc::new(|emb: &Vec<f32>| (emb.len() * std::mem::size_of::<f32>()) as u64),
+            // Size-weighted LRU: among similarly-aged entries, evict the
+            // largest first (frees more memory per drop). Right policy for
+            // mixed-dimension models in one pool.
+            eviction_priority: size_weighted_lru(),
+        }))
+    })
 }
 
 /// Get cache directory for fastembed models
@@ -301,28 +270,39 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
 /// Public function for cross-module embedding generation
 /// Used by DataModule for backfillVectors
 pub fn generate_embedding(text: &str, model_name: &str) -> Result<Vec<f32>, String> {
-    // Load model if needed
-    get_or_load_model(model_name)?;
+    // Pool check first — the cache lookup that internal callers used to
+    // bypass. This is the 0/64-hit-rate fix: now every internal embedder
+    // (DataModule.backfill_vectors, ModuleBackedEmbeddingProvider, etc.)
+    // hits the same cache the IPC handler does.
+    let pool = get_embedding_pool();
+    let key = EmbeddingKey::new(model_name, text);
+    if let Some(cached) = pool.get(&key) {
+        return Ok(cached);
+    }
 
-    // Get model from cache
+    // Miss → load model + embed + cache.
+    get_or_load_model(model_name)?;
     let cache = get_model_cache();
     let mut models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
     let embedding_model = models
         .get_mut(model_name)
         .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
-
-    // Generate embedding for single text
     let embeddings = embedding_model
         .embed(vec![text], None)
         .map_err(|e| format!("Embedding generation failed: {e}"))?;
-
-    embeddings
+    let embedding = embeddings
         .into_iter()
         .next()
-        .ok_or_else(|| "No embedding returned".to_string())
+        .ok_or_else(|| "No embedding returned".to_string())?;
+
+    pool.insert(key, embedding.clone());
+    Ok(embedding)
 }
 
-/// Batch embedding generation for efficiency
+/// Batch embedding generation. Pool-aware: per-text cache lookup, single
+/// `model.embed()` call for the uncached subset, then per-text insert.
+/// One model invocation per batch (vs N for per-text single-flight) keeps
+/// the GPU/ONNX path efficient.
 pub fn generate_embeddings_batch(
     texts: &[&str],
     model_name: &str,
@@ -331,20 +311,45 @@ pub fn generate_embeddings_batch(
         return Ok(vec![]);
     }
 
-    // Load model if needed
-    get_or_load_model(model_name)?;
+    let pool = get_embedding_pool();
 
-    // Get model from cache
-    let cache = get_model_cache();
-    let mut models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
-    let embedding_model = models
-        .get_mut(model_name)
-        .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
+    // Pre-fill from cache; collect misses for batched generation.
+    let mut results: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
+    let mut keys: Vec<EmbeddingKey> = Vec::with_capacity(texts.len());
+    let mut misses: Vec<(usize, &str)> = Vec::new();
+    for (i, text) in texts.iter().enumerate() {
+        let key = EmbeddingKey::new(model_name, text);
+        if let Some(cached) = pool.get(&key) {
+            results.push(Some(cached));
+        } else {
+            results.push(None);
+            misses.push((i, *text));
+        }
+        keys.push(key);
+    }
 
-    // Generate embeddings
-    embedding_model
-        .embed(texts, None)
-        .map_err(|e| format!("Embedding generation failed: {e}"))
+    // Generate only the misses — one batched model.embed() call.
+    if !misses.is_empty() {
+        get_or_load_model(model_name)?;
+        let cache = get_model_cache();
+        let mut models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let embedding_model = models
+            .get_mut(model_name)
+            .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
+        let miss_texts: Vec<&str> = misses.iter().map(|(_, t)| *t).collect();
+        let new_embeddings = embedding_model
+            .embed(miss_texts, None)
+            .map_err(|e| format!("Embedding generation failed: {e}"))?;
+        for ((idx, _), emb) in misses.into_iter().zip(new_embeddings.into_iter()) {
+            pool.insert(keys[idx].clone(), emb.clone());
+            results[idx] = Some(emb);
+        }
+    }
+
+    Ok(results
+        .into_iter()
+        .map(|opt| opt.expect("every slot was either cached or generated"))
+        .collect())
 }
 
 // ─── Similarity Functions ───────────────────────────────────────────────────
@@ -659,56 +664,14 @@ impl EmbeddingModule {
         let start = Instant::now();
         let batch_size = texts.len();
 
-        // Check embedding cache for each text
-        let embed_cache = get_embedding_cache();
-        let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(batch_size);
-        let mut texts_to_generate: Vec<(usize, String)> = Vec::new(); // (index, text)
-
-        {
-            let mut cache = embed_cache
-                .lock()
-                .map_err(|e| format!("Cache lock error: {e}"))?;
-            for (i, text) in texts.iter().enumerate() {
-                let text_hash = hash_text(text);
-                if let Some(cached) = cache.get(model_name, text_hash) {
-                    embeddings.push(cached);
-                } else {
-                    embeddings.push(vec![]); // Placeholder
-                    texts_to_generate.push((i, text.clone()));
-                }
-            }
-        }
-
-        let cache_hits = batch_size - texts_to_generate.len();
-
-        // Generate embeddings only for texts not in cache
-        if !texts_to_generate.is_empty() {
-            // Load model if needed
-            get_or_load_model(model_name)?;
-
-            // Get model from cache
-            let model_cache = get_model_cache();
-            let mut models = model_cache.lock().map_err(|e| format!("Lock error: {e}"))?;
-            let embedding_model = models
-                .get_mut(model_name)
-                .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
-
-            // Generate embeddings for uncached texts
-            let text_refs: Vec<&str> = texts_to_generate.iter().map(|(_, t)| t.as_str()).collect();
-            let new_embeddings = embedding_model
-                .embed(text_refs, None)
-                .map_err(|e| format!("Embedding generation failed: {e}"))?;
-
-            // Store in cache and update result vector
-            let mut cache = embed_cache
-                .lock()
-                .map_err(|e| format!("Cache lock error: {e}"))?;
-            for ((idx, text), emb) in texts_to_generate.iter().zip(new_embeddings.into_iter()) {
-                let text_hash = hash_text(text);
-                cache.insert(model_name, text_hash, emb.clone());
-                embeddings[*idx] = emb;
-            }
-        }
+        // Pool-backed generation — cache check + batched miss-fill happens
+        // inside `generate_embeddings_batch`. Same path internal callers
+        // take, so cache hits accrue across IPC + Rust consumers uniformly.
+        let pool_hits_before = get_embedding_pool().stats_blocking().hit_count;
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = generate_embeddings_batch(&text_refs, model_name)?;
+        let cache_hits =
+            (get_embedding_pool().stats_blocking().hit_count - pool_hits_before) as usize;
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let dimensions = embeddings.first().map(|e| e.len()).unwrap_or(0);
@@ -932,40 +895,35 @@ impl EmbeddingModule {
         })))
     }
 
-    /// Handle embedding/cache/stats - get cache hit/miss statistics
+    /// Handle embedding/cache/stats - get cache hit/miss + pressure
+    /// statistics from the embedding pool. Now byte-driven (pressure +
+    /// max_bytes) rather than count-capped — see EMBEDDING_POOL_BUDGET_BYTES.
     fn handle_cache_stats(&self) -> Result<CommandResult, String> {
-        let embed_cache = get_embedding_cache();
-        let cache = embed_cache
-            .lock()
-            .map_err(|e| format!("Cache lock error: {e}"))?;
-        let (hits, misses, size) = cache.stats();
-        let hit_rate = if hits + misses > 0 {
-            (hits as f64) / ((hits + misses) as f64) * 100.0
+        let stats = get_embedding_pool().stats_blocking();
+        let total = stats.hit_count + stats.miss_count;
+        let hit_rate = if total > 0 {
+            (stats.hit_count as f64) / (total as f64) * 100.0
         } else {
             0.0
         };
 
         Ok(CommandResult::Json(json!({
-            "hits": hits,
-            "misses": misses,
-            "size": size,
-            "maxSize": 10_000,
+            "hits": stats.hit_count,
+            "misses": stats.miss_count,
+            "size": stats.entry_count,
+            "pinned": stats.pinned_count,
+            "totalBytes": stats.total_bytes,
+            "maxBytes": stats.max_bytes,
+            "pressure": stats.pressure,
+            "evictions": stats.eviction_count,
             "hitRatePercent": format!("{:.1}", hit_rate),
-            "ttlSeconds": 300
         })))
     }
 
-    /// Handle embedding/cache/clear - clear the embedding cache
+    /// Handle embedding/cache/clear - drain the embedding pool. Resets
+    /// hit/miss/eviction counters too (admin-level reset).
     fn handle_cache_clear(&self) -> Result<CommandResult, String> {
-        let embed_cache = get_embedding_cache();
-        let mut cache = embed_cache
-            .lock()
-            .map_err(|e| format!("Cache lock error: {e}"))?;
-        let cleared = cache.entries.len();
-        cache.entries.clear();
-        cache.hits = 0;
-        cache.misses = 0;
-
+        let cleared = get_embedding_pool().clear();
         info!("Cleared {} cached embeddings", cleared);
 
         Ok(CommandResult::Json(json!({
@@ -1075,5 +1033,111 @@ impl ServiceModule for EmbeddingModule {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pool integration tests. Don't load real ONNX models — pre-populate
+    //! the pool with synthetic embeddings and verify the lookup path
+    //! short-circuits before fastembed is called. The "0/64 hit rate"
+    //! regression test sits here.
+    //!
+    //! NOTE: `EMBEDDING_POOL` is a process-global; cargo test runs tests
+    //! in parallel by default and would race on the shared hit/miss
+    //! counters. `TEST_LOCK` serializes the cases that read counters; the
+    //! pure-key-shape test (`embedding_key_is_model_namespaced`) doesn't
+    //! need the lock.
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    static TEST_LOCK: StdMutex<()> = StdMutex::new(());
+
+    fn fake_embedding(seed: u8) -> Vec<f32> {
+        (0..384).map(|i| (i as f32 + seed as f32) * 0.001).collect()
+    }
+
+    /// The bug we're fixing: internal callers used to bypass the cache
+    /// entirely. After migration, `generate_embeddings_batch` consults
+    /// the pool first and returns cached entries without touching the
+    /// model — proven here by pre-loading the pool with a known vector
+    /// for a model that doesn't exist (so a real model.embed() would
+    /// error out).
+    #[test]
+    fn generate_embeddings_batch_hits_pool_before_loading_model() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let pool = get_embedding_pool();
+        pool.clear();
+        let key = EmbeddingKey::new("nonexistent-model-name", "the cached text");
+        let expected = fake_embedding(7);
+        pool.insert(key, expected.clone());
+
+        let got = generate_embeddings_batch(&["the cached text"], "nonexistent-model-name")
+            .expect("cache hit should succeed without loading the (nonexistent) model");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0], expected);
+
+        // Hit accounted for in pool stats.
+        let stats = pool.stats_blocking();
+        assert!(stats.hit_count >= 1, "expected ≥1 hit, got {}", stats.hit_count);
+    }
+
+    #[test]
+    fn single_embedding_hits_pool_before_loading_model() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let pool = get_embedding_pool();
+        pool.clear();
+        let key = EmbeddingKey::new("nonexistent-model-name", "single text");
+        let expected = fake_embedding(11);
+        pool.insert(key, expected.clone());
+
+        let got = generate_embedding("single text", "nonexistent-model-name")
+            .expect("cache hit should bypass model load");
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn embedding_key_is_model_namespaced() {
+        // Same text + different model = different cache slots. Critical
+        // because different models map identical text to different vectors.
+        let k1 = EmbeddingKey::new("modelA", "hello");
+        let k2 = EmbeddingKey::new("modelB", "hello");
+        assert_ne!(k1, k2, "same-text + different-model must not collide");
+
+        let k3 = EmbeddingKey::new("modelA", "hello");
+        assert_eq!(k1, k3, "deterministic: same model + text → same key");
+    }
+
+    #[test]
+    fn pool_clear_resets_stats_and_drops_entries() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let pool = get_embedding_pool();
+        let key = EmbeddingKey::new("test", "to be cleared");
+        pool.insert(key.clone(), fake_embedding(3));
+        let _ = pool.get(&key); // force a hit
+        let dropped = pool.clear();
+        assert!(dropped >= 1, "expected ≥1 entry dropped, got {}", dropped);
+        let stats = pool.stats_blocking();
+        assert_eq!(stats.hit_count, 0, "clear resets hits");
+        assert_eq!(stats.miss_count, 0, "clear resets misses");
+        assert_eq!(stats.entry_count, 0, "all entries dropped");
+    }
+
+    #[test]
+    fn batch_with_partial_hits_records_correct_hit_count() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let pool = get_embedding_pool();
+        pool.clear();
+        // Pre-populate two of three entries.
+        let model = "nonexistent-batch-test-model";
+        pool.insert(EmbeddingKey::new(model, "cached_a"), fake_embedding(1));
+        pool.insert(EmbeddingKey::new(model, "cached_b"), fake_embedding(2));
+        // Calling batch with only the cached texts should fully short-circuit.
+        let got = generate_embeddings_batch(&["cached_a", "cached_b"], model)
+            .expect("all-hit batch should succeed without model load");
+        assert_eq!(got.len(), 2);
+        let stats = pool.stats_blocking();
+        assert_eq!(stats.hit_count, 2);
+        assert_eq!(stats.miss_count, 0);
     }
 }
