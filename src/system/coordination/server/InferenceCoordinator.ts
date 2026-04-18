@@ -4,6 +4,14 @@
  * SINGLE RESPONSIBILITY: Prevent more concurrent requests to a provider
  * than its hardware/API can handle. Nothing else.
  *
+ * Behavior: requests at-or-below capacity grant immediately. Requests above
+ * capacity QUEUE FIFO and resolve when a slot frees, with a 60s ceiling. The
+ * old "deny-immediately-on-full" semantics caused the silence-after-first-wave
+ * bug on local-inference (capacity=1 on M5): exactly one persona's request was
+ * granted, the other 13 were denied, the caller exited as wasRedundant, the
+ * user saw "alive once, then dead." Queueing preserves plurality — every
+ * persona that wanted to speak gets a turn, just slower under load.
+ *
  * What this does NOT do (handled elsewhere):
  * - Decide who should respond → AI cognition (should-respond LLM call)
  * - Limit responders per message → ChatCoordinationStream (maxResponders)
@@ -72,8 +80,34 @@ const PROVIDER_CAPACITY: Record<string, number> = {
   'alibaba': 8,           // Qwen/DashScope REST API
 };
 
+/** A persona waiting for a slot. Resolved when admitted (or rejected on timeout). */
+interface PendingRequest {
+  personaId: string;
+  messageId: string;
+  provider: string;
+  enqueuedAt: number;
+  resolve: (granted: boolean) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * Maximum time a persona will wait for a slot before timing out.
+ *
+ * Why 60s: covers worst-case warm M5 generation (~30s for 200 tokens cold +
+ * ~20s for slot ahead) plus headroom. If a persona has waited 60s without
+ * getting a turn, the queue is genuinely overloaded and dropping the request
+ * is the right answer (caller treats as wasRedundant — another persona will
+ * speak instead). Below 60s and we'd silently drop personas in normal load.
+ *
+ * This is the single explicit timeout in the admission path. It exists so
+ * waiters never hang indefinitely if releaseSlot is missed (the cleanup
+ * safety valve picks them up at 180s but that's the floor, not the ceiling).
+ */
+const SLOT_WAIT_TIMEOUT_MS = 60_000;
+
 class InferenceCoordinatorImpl {
   private activeSlots: Map<string, InferenceSlot[]> = new Map();
+  private waitQueues: Map<string, PendingRequest[]> = new Map();
   private localCapacityResolved = false;
 
   constructor() {
@@ -147,27 +181,59 @@ class InferenceCoordinatorImpl {
     personaId: string,
     messageId: string,
     provider: string,
-    options?: { isMentioned?: boolean }
+    _options?: { isMentioned?: boolean }
   ): Promise<boolean> {
     const slotKey = this.getSlotKey(provider);
-    const maxConcurrent = this.capacity(slotKey);
     const slots = this.activeSlots.get(slotKey) || [];
+    const maxConcurrent = this.capacity(slotKey);
 
-    // The one rule: hardware capacity
-    if (slots.length >= maxConcurrent) {
-      return false;
+    // Fast path: capacity available right now → grant immediately.
+    if (slots.length < maxConcurrent) {
+      this.grantSlot(slotKey, personaId, messageId, provider);
+      return true;
     }
 
-    // Acquire slot
-    const slot: InferenceSlot = {
-      personaId,
-      messageId,
-      provider,
-      acquiredAt: Date.now()
-    };
-    slots.push(slot);
+    // Slow path: at capacity → enqueue and wait.
+    //
+    // The previous behavior (return false immediately when full) caused the
+    // silence-after-first-wave bug: with local-inference capacity = 1 on M5,
+    // exactly one persona's slot was granted per message; the other 13 hit
+    // this path, returned false, and the caller (PersonaResponseGenerator)
+    // exited as wasRedundant. The user saw "alive once, then dead."
+    //
+    // Now: queue FIFO. When releaseSlot drains, the next waiter is granted
+    // and resolves. Plurality preserved — slow under load, never silent.
+    return new Promise<boolean>((resolve) => {
+      const queue = this.waitQueues.get(slotKey) || [];
+      const timer = setTimeout(() => {
+        // Timeout: remove from queue if still pending, resolve false.
+        const cur = this.waitQueues.get(slotKey) || [];
+        const idx = cur.findIndex(r => r === pending);
+        if (idx !== -1) {
+          cur.splice(idx, 1);
+          this.waitQueues.set(slotKey, cur);
+        }
+        resolve(false);
+      }, SLOT_WAIT_TIMEOUT_MS);
+
+      const pending: PendingRequest = {
+        personaId,
+        messageId,
+        provider,
+        enqueuedAt: Date.now(),
+        resolve,
+        timer,
+      };
+      queue.push(pending);
+      this.waitQueues.set(slotKey, queue);
+    });
+  }
+
+  /** Internal: actually claim a slot. Caller must already hold capacity. */
+  private grantSlot(slotKey: string, personaId: string, messageId: string, provider: string): void {
+    const slots = this.activeSlots.get(slotKey) || [];
+    slots.push({ personaId, messageId, provider, acquiredAt: Date.now() });
     this.activeSlots.set(slotKey, slots);
-    return true;
   }
 
   /**
@@ -183,6 +249,26 @@ class InferenceCoordinatorImpl {
     if (index !== -1) {
       slots.splice(index, 1);
       this.activeSlots.set(slotKey, slots);
+    }
+
+    // Drain the queue: now that a slot is free, grant it to the next waiter.
+    // FIFO — earliest enqueue gets the slot first. This is the plurality
+    // mechanism: when 14 personas all decide to respond and capacity is 1,
+    // they all eventually speak in arrival order rather than 13 being silenced.
+    const queue = this.waitQueues.get(slotKey);
+    if (queue && queue.length > 0) {
+      const maxConcurrent = this.capacity(slotKey);
+      const currentSlots = this.activeSlots.get(slotKey) || [];
+      while (currentSlots.length < maxConcurrent && queue.length > 0) {
+        const next = queue.shift()!;
+        clearTimeout(next.timer);
+        this.grantSlot(slotKey, next.personaId, next.messageId, next.provider);
+        next.resolve(true);
+        // Re-read because grantSlot mutated the map
+        const refreshed = this.activeSlots.get(slotKey) || [];
+        if (refreshed.length >= maxConcurrent) break;
+      }
+      this.waitQueues.set(slotKey, queue);
     }
   }
 
@@ -219,6 +305,23 @@ class InferenceCoordinatorImpl {
         return true;
       });
       this.activeSlots.set(provider, validSlots);
+      // After cleanup, slots opened up — drain the queue for this provider
+      // so waiters don't sit forever just because a release was missed.
+      if (cleaned > 0) {
+        const queue = this.waitQueues.get(provider);
+        if (queue && queue.length > 0) {
+          const maxConcurrent = this.capacity(provider);
+          while (validSlots.length < maxConcurrent && queue.length > 0) {
+            const next = queue.shift()!;
+            clearTimeout(next.timer);
+            this.grantSlot(provider, next.personaId, next.messageId, next.provider);
+            next.resolve(true);
+            const refreshed = this.activeSlots.get(provider) || [];
+            if (refreshed.length >= maxConcurrent) break;
+          }
+          this.waitQueues.set(provider, queue);
+        }
+      }
     }
 
     return cleaned;
