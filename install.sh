@@ -280,6 +280,45 @@ if type ic_detect_hardware &>/dev/null; then
       else
         ok "Persona model already in DMR: $PERSONA_MODEL"
       fi
+      # Cap llama-server's per-slot KV cache reservation, sized to actual
+      # physical RAM. Without this cap each slot reserves the full model
+      # context (262144 tokens for Qwen3.5), ballooning
+      # com.docker.llama-server to 11+ GB resident on a single active slot
+      # — observed live tonight on M5.
+      #
+      # Per-slot KV cost: ~16 KB per token at FP16 for Qwen3.5-4B
+      # (32 layers × 256 attn-dim × 2 bytes × 2 tensors). Tier the cap so
+      # 4 concurrent personas keep KV ≤10% of physical RAM:
+      #
+      #   Physical RAM   ctx-size   4-slot worst case
+      #   8GB            4096       ~256 MB
+      #   16GB           8192       ~512 MB
+      #   24GB           16384      ~1 GB
+      #   32GB           32768      ~2 GB
+      #   48GB+          65536      ~4 GB
+      #
+      # Specialized recipes (codereview, research) can opt up via per-recipe
+      # overrides — Phase 9 in docs/architecture/RESOURCE-ARCHITECTURE.md.
+      if [[ -n "${PHYS_MIB:-}" ]]; then
+        if   [[ "$PHYS_MIB" -ge $((48 * 1024)) ]]; then KV_CTX_SIZE=65536
+        elif [[ "$PHYS_MIB" -ge $((32 * 1024)) ]]; then KV_CTX_SIZE=32768
+        elif [[ "$PHYS_MIB" -ge $((24 * 1024)) ]]; then KV_CTX_SIZE=16384
+        elif [[ "$PHYS_MIB" -ge $((16 * 1024)) ]]; then KV_CTX_SIZE=8192
+        else                                            KV_CTX_SIZE=4096
+        fi
+      else
+        # PHYS_MIB unset (shouldn't happen on Mac/Linux paths but be safe)
+        KV_CTX_SIZE=8192
+      fi
+      if docker model configure show >/dev/null 2>&1; then
+        if docker model configure --context-size "$KV_CTX_SIZE" --keep-alive 5m "$PERSONA_MODEL" 2>/dev/null; then
+          ok "DMR context-size capped at ${KV_CTX_SIZE} + keep-alive 5m for $PERSONA_MODEL (sized to ${PHYS_GB:-?}GB physical RAM; kills the per-slot KV bloat)"
+        else
+          warn "Could not apply DMR context-size cap. Older Docker Desktop? Upgrade to 4.62+ for 'docker model configure'. Falling back to model default (high memory use)."
+        fi
+      else
+        warn "'docker model configure' not available — Docker Desktop may be older than 4.62. Per-slot KV cache will use model default (~262k tokens, high RAM)."
+      fi
       # Install vLLM MLX backend on Mac for 3x faster Qwen3.5 DeltaNet inference.
       # llama.cpp's Metal shaders for Gated DeltaNet are poorly optimized (~11 tok/s);
       # vllm-metal uses native MLX kernels (~33+ tok/s). Requires Docker Desktop 4.62+.
