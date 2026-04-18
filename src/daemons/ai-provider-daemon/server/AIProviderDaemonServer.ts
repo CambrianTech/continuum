@@ -143,16 +143,11 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       getSecret('GOOGLE_API_KEY'),
     ]);
 
-    // STEP 2: Register LOCAL adapter - Candle gRPC (native Rust inference)
-    // NO FALLBACK: If Candle fails, we FAIL. No silent degradation.
-    // Candle is the ONLY local inference path.
-    const candlePromise = (async () => {
-      const { CandleGrpcAdapter } = await import('../adapters/candle-grpc/shared/CandleGrpcAdapter');
-      const adapter = new CandleGrpcAdapter();
-      await adapter.initialize();
-      await this.registerAdapter(adapter, { priority: 105, enabled: true });
-      this.log.info('✅ Candle gRPC adapter registered (Candle is the only local path)');
-    })();
+    // Candle is NOT registered in the inference adapter registry.
+    // Candle is a training framework (LoRA, autodiff). Local INFERENCE goes
+    // through Docker Model Runner via Rust IPC (AIProviderDaemon.generateText → ai/generate).
+    // Training callers access Candle through the training/plasticity module directly.
+    const candlePromise = Promise.resolve(); // No-op — Candle not registered for inference
 
     // Sentinel adapter (if configured)
     const sentinelPromise = sentinelPath ? (async () => {
