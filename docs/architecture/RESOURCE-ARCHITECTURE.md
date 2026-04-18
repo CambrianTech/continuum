@@ -268,7 +268,7 @@ This architecture is what the work tonight is building toward. Inventory:
 | `RustEmbeddingClient` | Existing | Will adopt EmbeddingPool migration; fixes 0/64 hits |
 | `GpuMemoryManager` | Existing | Provides GPU pressure signal to broker |
 | `ResourcePressureWatcher` | Existing | Provides RAM/CPU pressure signal to broker |
-| **PressureBroker** | **Phase 7 — not started** | Cross-resource orchestrator |
+| **PressureBroker** | **Phase 7a — scaffolding shipping (this PR)** | Cross-resource orchestrator |
 | `LiveCallTracker` etc. | Existing | Exclusive stateful lifecycle (correctly outside paging architecture) |
 
 ---
@@ -301,6 +301,12 @@ Wire `forcedState` from broker into `PersonaState`. Less-active reduces RAG sour
 
 ### Phase 7 — PressureBroker
 Cross-pool eviction orchestration + priority arbitration + dormancy decisions. Heuristic first, ML/LLM later via the levers the pool exposes.
+
+**7a (this PR) — scaffolding.** `PressureSource` trait + `PressureBroker` struct + tier-based relief + tick loop in Rust (`src/workers/continuum-core/src/paging/broker.rs`). Blanket impl wires every `PagedResourcePool<K, V>` straight in — register an `Arc<PagedResourcePool<...>>` and the broker reads pressure + fires eviction per the tier ladder (Normal/Warning observe; High evicts worst pool; Critical evicts all over-budget pools). 8 unit tests cover trait, tier mapping, registration dedup, and a real-pool-via-blanket-impl integration test. Heuristic only; the ML/LLM layer (7b/7c) plugs in by overriding `PoolConfig::eviction_priority` per pool, not by replacing the broker.
+
+**7b — ML-policy.** Activity prediction (which keys are about to be needed) feeds `evict_some` selection. Same broker shape; just smarter `eviction_priority` callbacks. Decoupled from 7a delivery.
+
+**7c — LLM-mediated.** For novel pressure situations the heuristics don't cover (recipe-aware reshaping, multi-machine grid pressure, quality-vs-speed trade-offs the user cares about), the broker exposes its `BrokerSnapshot` to a control LLM and accepts back per-pool eviction directives + dormancy state changes. Same broker shape.
 
 ### Phase 8 — MoE forge + MoEExpertPool
 When MoE-forged Qwen3.5-A8B-MoE lands: `<ExpertId, ExpertWeights>` pool. Router pins active experts per token. Enables 32B-MoE intelligence on 16 GB MacBook Air.

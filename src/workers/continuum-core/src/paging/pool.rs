@@ -232,6 +232,12 @@ where
         }
     }
 
+    /// Stable name from PoolConfig — used by PressureBroker for diagnostics
+    /// and by IPC stats exports.
+    pub fn config_name(&self) -> &str {
+        &self.inner.config.name
+    }
+
     /// L1 hit — returns the value if cached, None on miss. Concurrent
     /// readers run in parallel under RwLock::read; per-entry atomics
     /// update last_access_at + access_count without serializing.
@@ -336,6 +342,85 @@ where
             return true;
         }
         false
+    }
+
+    /// Trigger an eviction pass without inserting anything new. Used by
+    /// the PressureBroker to free bytes when global pressure crosses a
+    /// threshold — the pool itself may not be over its own budget yet,
+    /// but the broker decides we should give some back. Returns the
+    /// total bytes freed in this pass.
+    ///
+    /// Eviction policy is the same as the insert-triggered path: drop
+    /// unpinned entries by `eviction_priority` order until occupancy
+    /// is at 75% of `max_bytes`. Pinned entries untouched.
+    pub fn evict_under_pressure(&self) -> u64 {
+        let target_bytes = (self.inner.config.max_bytes as f64 * 0.75) as u64;
+        let mut entries = self.inner.entries.write();
+        let initial_bytes: u64 = entries.values().map(|e| e.size_bytes).sum();
+        let mut total_bytes = initial_bytes;
+        let mut candidates: Vec<(K, i64, u64)> = entries
+            .iter()
+            .filter(|(_, e)| e.pin_count.load(Ordering::Acquire) == 0)
+            .map(|(k, e)| {
+                let view = PoolEntryView {
+                    size_bytes: e.size_bytes,
+                    pin_count: e.pin_count.load(Ordering::Acquire),
+                    loaded_at: e.loaded_at,
+                    last_access_at: e.last_access_at.load(Ordering::Acquire),
+                    access_count: e.access_count.load(Ordering::Acquire),
+                };
+                (k.clone(), (self.inner.config.eviction_priority)(&view), e.size_bytes)
+            })
+            .collect();
+        candidates.sort_by_key(|(_, prio, _)| *prio);
+        let mut evicted_count: u64 = 0;
+        for (k, _, size) in candidates {
+            if total_bytes <= target_bytes {
+                break;
+            }
+            entries.remove(&k);
+            total_bytes -= size;
+            evicted_count += 1;
+        }
+        if evicted_count > 0 {
+            self.inner.evictions.fetch_add(evicted_count, Ordering::Relaxed);
+        }
+        initial_bytes.saturating_sub(total_bytes)
+    }
+
+    /// Synchronous version of `stats()` — needed by `PressureSource`
+    /// implementors that can't .await (the broker's tick loop wants
+    /// non-blocking pressure reads). Excludes inflight count (which
+    /// requires async lock); leaves it as 0 since that's a transient
+    /// signal anyway, not pressure-relevant.
+    pub fn stats_blocking(&self) -> PoolStats {
+        let entries = self.inner.entries.read();
+        let mut total_bytes: u64 = 0;
+        let mut pinned_count: usize = 0;
+        for entry in entries.values() {
+            total_bytes += entry.size_bytes;
+            if entry.pin_count.load(Ordering::Acquire) > 0 {
+                pinned_count += 1;
+            }
+        }
+        let max_bytes = self.inner.config.max_bytes;
+        let pressure = if max_bytes > 0 {
+            total_bytes as f64 / max_bytes as f64
+        } else {
+            0.0
+        };
+        PoolStats {
+            name: self.inner.config.name.clone(),
+            entry_count: entries.len(),
+            pinned_count,
+            total_bytes,
+            max_bytes,
+            pressure,
+            hit_count: self.inner.hits.load(Ordering::Relaxed),
+            miss_count: self.inner.misses.load(Ordering::Relaxed),
+            eviction_count: self.inner.evictions.load(Ordering::Relaxed),
+            inflight_count: 0,
+        }
     }
 
     /// Snapshot stats for monitoring + PressureBroker queries.
