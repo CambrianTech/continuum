@@ -62,6 +62,26 @@ export interface ModelMetadata {
   readonly discoveredAt: number;
 
   /**
+   * Sustained output decode speed in tokens/second. Populated from the
+   * adapter's `ModelInfo.tokens_per_second` (delivered via the
+   * `ai/model-info` IPC). Undefined when the adapter hasn't reported.
+   *
+   * Used by latency-aware budgeting: maxInputTokens =
+   * targetLatencySeconds × tokensPerSecond. Cloud APIs report ~1000 TPS;
+   * local quantized models report what they actually measure (e.g. forged
+   * Qwen3.5-4B at ~58 TPS on M5 with the install-time KV cap).
+   */
+  readonly tokensPerSecond?: number;
+
+  /**
+   * True if the model runs on local compute (Candle, llama.cpp, MLX, etc.),
+   * false for cloud APIs (Anthropic, OpenAI, Google, etc.). Replaces the
+   * < 500 TPS heuristic in `isSlowLocalModel` with the honest signal the
+   * adapter already reports via `capabilities.is_local`.
+   */
+  readonly isLocal?: boolean;
+
+  /**
    * Fine-tuning, quantization, and adapter capability profile.
    * Populated by adapters that report detailed model capabilities.
    * Undefined for cloud APIs or adapters that haven't reported yet.
@@ -149,6 +169,18 @@ export class ModelRegistry {
   contextWindow(modelId: string, provider?: string): number | undefined {
     const metadata = this.get(modelId, provider);
     return metadata?.contextWindow;
+  }
+
+  /**
+   * Lookup tokens/second for a model — convenience accessor mirroring
+   * `contextWindow()`. Returns undefined when the adapter hasn't reported
+   * a measured speed for this model yet. Used by latency-aware budgeting.
+   *
+   * Same normalization chain as contextWindow().
+   */
+  tokensPerSecond(modelId: string, provider?: string): number | undefined {
+    const metadata = this.get(modelId, provider);
+    return metadata?.tokensPerSecond;
   }
 
   /**

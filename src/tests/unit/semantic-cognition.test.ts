@@ -15,8 +15,8 @@ import {
   isLargeContextModel,
   isSlowLocalModel,
   getRecommendedMaxOutputTokens,
-  MODEL_CONTEXT_WINDOWS,
-  DEFAULT_CONTEXT_WINDOW
+  DEFAULT_CONTEXT_WINDOW,
+  DEFAULT_INFERENCE_SPEED
 } from '../../system/shared/ModelContextWindows';
 import { ModelRegistry } from '../../system/shared/ModelRegistry';
 import {
@@ -49,7 +49,11 @@ import { MemoryType as MemoryTypeHippocampus } from '../../system/user/server/mo
 import type { SentinelTrigger } from '../../system/sentinel/SentinelDefinition';
 import type { GenomePhenotypeValidateParams, PhenotypeQuestionResult } from '../../commands/genome/phenotype-validate/shared/GenomePhenotypeValidateTypes';
 import type { AcademyEventAction, InferenceDemoPayload, QualityGateFailedPayload, TopicRemediatePayload, RemediationDatasetReadyPayload } from '../../system/genome/shared/AcademyTypes';
-import { academyEvent, DEFAULT_ACADEMY_CONFIG } from '../../system/genome/shared/AcademyTypes';
+import { academyEvent, DEFAULT_ACADEMY_CONFIG, VALID_SESSION_STATUSES } from '../../system/genome/shared/AcademyTypes';
+import type { CurriculumTopic, ExamQuestion, ExamResponse } from '../../system/genome/shared/AcademyTypes';
+import { AcademySessionEntity } from '../../system/genome/entities/AcademySessionEntity';
+import { AcademyCurriculumEntity } from '../../system/genome/entities/AcademyCurriculumEntity';
+import { AcademyExaminationEntity } from '../../system/genome/entities/AcademyExaminationEntity';
 import { buildStudentPipeline } from '../../system/sentinel/pipelines/StudentPipeline';
 import { buildTeacherPipeline } from '../../system/sentinel/pipelines/TeacherPipeline';
 import type { GenomeComposeParams, ComposeLayerRef } from '../../commands/genome/compose/shared/GenomeComposeTypes';
@@ -143,52 +147,103 @@ describe('IEmbeddable', () => {
 });
 
 describe('ModelContextWindows', () => {
+  // The static MODEL_CONTEXT_WINDOWS / MODEL_INFERENCE_SPEEDS lookup tables
+  // were deleted — adapter authority now lives in ModelRegistry, populated
+  // at boot from each provider's `ai/model-info` IPC. These tests verify
+  // the new shim behavior: registry-populated → returns adapter value;
+  // unknown → returns DEFAULT.
+
   describe('getContextWindow', () => {
-    it('should return correct context window for known models', () => {
-      expect(getContextWindow('gpt-4')).toBe(8192);
-      expect(getContextWindow('gpt-4o')).toBe(128000);
-      expect(getContextWindow('claude-3-opus')).toBe(200000);
-      expect(getContextWindow('llama3.2:3b')).toBe(128000);
+    beforeEach(() => {
+      // Each test registers what it needs; the registry singleton persists
+      // across tests, so isolation is by unique modelId.
+    });
+
+    it('should return adapter-reported context window when registered', () => {
+      const registry = ModelRegistry.sharedInstance();
+      registry.register({
+        modelId: 'test-cw-gpt-4',
+        contextWindow: 8192,
+        provider: 'openai',
+        discoveredAt: Date.now(),
+      });
+      registry.register({
+        modelId: 'test-cw-gpt-4o',
+        contextWindow: 128000,
+        provider: 'openai',
+        discoveredAt: Date.now(),
+      });
+      expect(getContextWindow('test-cw-gpt-4', 'openai')).toBe(8192);
+      expect(getContextWindow('test-cw-gpt-4o', 'openai')).toBe(128000);
     });
 
     it('should return default for unknown models', () => {
-      expect(getContextWindow('unknown-model')).toBe(DEFAULT_CONTEXT_WINDOW);
+      expect(getContextWindow('genuinely-unregistered-model-xyz')).toBe(
+        DEFAULT_CONTEXT_WINDOW
+      );
     });
 
-    it('should handle versioned model names', () => {
-      // Base model lookup when version not in table
-      expect(getContextWindow('llama3.2:7b')).toBe(128000); // Should find llama3.2
-    });
-
-    it('should have reasonable values for all models', () => {
-      for (const [model, size] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
-        expect(size).toBeGreaterThan(0);
-        expect(size).toBeLessThanOrEqual(1100000); // Max ~1M tokens (Gemini 2.0 Flash is 1048576)
-      }
+    it('should match by prefix when versioned suffix not registered', () => {
+      const registry = ModelRegistry.sharedInstance();
+      registry.register({
+        modelId: 'test-cw-llama-family',
+        contextWindow: 128000,
+        provider: 'candle',
+        discoveredAt: Date.now(),
+      });
+      // Registry's normalization chain handles prefix matching.
+      expect(getContextWindow('test-cw-llama-family:7b')).toBe(128000);
     });
   });
 
   describe('isLargeContextModel', () => {
-    it('should return true for large context models', () => {
-      expect(isLargeContextModel('gpt-4o')).toBe(true); // 128K
-      expect(isLargeContextModel('claude-3-opus')).toBe(true); // 200K
+    it('should return true for adapter-declared large-context models', () => {
+      const registry = ModelRegistry.sharedInstance();
+      registry.register({
+        modelId: 'test-large-128k',
+        contextWindow: 128000,
+        provider: 'openai',
+        discoveredAt: Date.now(),
+      });
+      expect(isLargeContextModel('test-large-128k', 'openai')).toBe(true);
     });
 
-    it('should return false for small context models', () => {
-      expect(isLargeContextModel('gpt-4')).toBe(false); // 8K
+    it('should return false for adapter-declared small-context models', () => {
+      const registry = ModelRegistry.sharedInstance();
+      registry.register({
+        modelId: 'test-small-8k',
+        contextWindow: 8192,
+        provider: 'openai',
+        discoveredAt: Date.now(),
+      });
+      expect(isLargeContextModel('test-small-8k', 'openai')).toBe(false);
     });
   });
 
   describe('getRecommendedMaxOutputTokens', () => {
-    it('should return reasonable output tokens for small models', () => {
-      const tokens = getRecommendedMaxOutputTokens('gpt-4');
+    it('should return 25% of context for small windows', () => {
+      const registry = ModelRegistry.sharedInstance();
+      registry.register({
+        modelId: 'test-out-small',
+        contextWindow: 8192,
+        provider: 'openai',
+        discoveredAt: Date.now(),
+      });
+      const tokens = getRecommendedMaxOutputTokens('test-out-small', 'openai');
       expect(tokens).toBeGreaterThan(0);
-      expect(tokens).toBeLessThanOrEqual(8192 * 0.25); // Max 25% of context
+      expect(tokens).toBeLessThanOrEqual(8192 * 0.25);
     });
 
-    it('should cap output tokens for large models', () => {
-      const tokens = getRecommendedMaxOutputTokens('claude-3-opus');
-      expect(tokens).toBeLessThanOrEqual(4096); // Capped at 4K
+    it('should cap output tokens at 4K for large windows', () => {
+      const registry = ModelRegistry.sharedInstance();
+      registry.register({
+        modelId: 'test-out-large',
+        contextWindow: 200000,
+        provider: 'anthropic',
+        discoveredAt: Date.now(),
+      });
+      const tokens = getRecommendedMaxOutputTokens('test-out-large', 'anthropic');
+      expect(tokens).toBeLessThanOrEqual(4096);
     });
   });
 });
@@ -335,36 +390,44 @@ describe('Provider-Scoped ModelContextWindows', () => {
     expect(getContextWindow('meta-llama/Llama-3.1-8B-Instruct', 'together')).toBe(131072);
   });
 
-  it('getContextWindow should fall back to static map when provider not in registry', () => {
-    // No registry entries — should use static map
-    expect(getContextWindow('meta-llama/Llama-3.1-8B-Instruct', 'candle')).toBe(1400);
+  it('getContextWindow should fall back to DEFAULT when registry has no entry', () => {
+    // The static lookup map was deleted — adapter authority via ModelRegistry
+    // is the only source of truth. Unregistered models return the default.
+    expect(getContextWindow('not-registered-anywhere-12345', 'candle')).toBe(
+      DEFAULT_CONTEXT_WINDOW
+    );
   });
 
-  it('getInferenceSpeed should return local TPS for local provider in registry', () => {
+  it('getInferenceSpeed returns adapter-reported tokensPerSecond when registered', () => {
     const registry = ModelRegistry.sharedInstance();
     registry.register({
-      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      modelId: 'test-tps-local-llama-8b',
       contextWindow: 1400,
+      tokensPerSecond: 40, // adapter declares the measured local speed
+      isLocal: true,
       provider: 'candle',
-      discoveredAt: Date.now()
+      discoveredAt: Date.now(),
     });
-
-    // Bug fix verification: should return 40 TPS (static map), not 1000 TPS (cloud assumption)
-    const speed = getInferenceSpeed('meta-llama/Llama-3.1-8B-Instruct', 'candle');
-    expect(speed).toBe(40);  // From MODEL_INFERENCE_SPEEDS static map
+    expect(getInferenceSpeed('test-tps-local-llama-8b', 'candle')).toBe(40);
   });
 
-  it('getInferenceSpeed should return 1000 TPS for cloud provider in registry', () => {
+  it('getInferenceSpeed returns adapter-reported tokensPerSecond for cloud too', () => {
     const registry = ModelRegistry.sharedInstance();
     registry.register({
-      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      modelId: 'test-tps-cloud-llama-8b',
       contextWindow: 131072,
+      tokensPerSecond: 1000, // adapter declares cloud-API speed
+      isLocal: false,
       provider: 'together',
-      discoveredAt: Date.now()
+      discoveredAt: Date.now(),
     });
+    expect(getInferenceSpeed('test-tps-cloud-llama-8b', 'together')).toBe(1000);
+  });
 
-    const speed = getInferenceSpeed('meta-llama/Llama-3.1-8B-Instruct', 'together');
-    expect(speed).toBe(1000);  // Cloud API speed
+  it('getInferenceSpeed falls back to default when unregistered', () => {
+    expect(getInferenceSpeed('genuinely-unregistered-tps-model-xyz')).toBe(
+      DEFAULT_INFERENCE_SPEED
+    );
   });
 
   it('isSlowLocalModel should be true for candle models', () => {
@@ -1060,18 +1123,12 @@ describe('AdapterPackage — Manifest & Entity', () => {
 // ============================================================================
 // Academy Dojo: Entity Validation + Pipeline Templates + Event Taxonomy
 // ============================================================================
-
-import { AcademySessionEntity } from '../../system/genome/entities/AcademySessionEntity';
-import { AcademyCurriculumEntity } from '../../system/genome/entities/AcademyCurriculumEntity';
-import { AcademyExaminationEntity } from '../../system/genome/entities/AcademyExaminationEntity';
-import {
-  academyEvent,
-  DEFAULT_ACADEMY_CONFIG,
-  VALID_SESSION_STATUSES,
-} from '../../system/genome/shared/AcademyTypes';
-import type { CurriculumTopic, ExamQuestion, ExamResponse } from '../../system/genome/shared/AcademyTypes';
-import { buildTeacherPipeline } from '../../system/sentinel/pipelines/TeacherPipeline';
-import { buildStudentPipeline } from '../../system/sentinel/pipelines/StudentPipeline';
+//
+// NOTE: All imports for this section are at the top of the file with the
+// other imports — the duplicate import block that used to live here made
+// the test file fail to even load (ESM forbids re-declaring imports).
+// Removed as a drive-by: pre-existing breakage, independent of this PR's
+// main subject (deleting ModelContextWindows lookup tables).
 
 describe('Academy Event Taxonomy', () => {
   it('should generate scoped event names', () => {
