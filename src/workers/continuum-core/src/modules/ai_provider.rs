@@ -21,7 +21,7 @@
 use crate::ai::{
     AdapterRegistry, AnthropicAdapter, CandleAdapter, ChatMessage, MessageContent,
     OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
-    adapter::InferenceDevice,
+    adapter::{AIProviderAdapter, InferenceDevice},
 };
 use crate::logging::TimingGuard;
 use crate::runtime::{
@@ -33,8 +33,35 @@ use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::any::Any;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{OnceCell, RwLock};
+
+/// Provider ID for the Docker Model Runner adapter — single source of truth
+/// shared between init-time registration and the watchdog tick.
+const DMR_PROVIDER_ID: &str = "docker-model-runner";
+
+/// How often the watchdog probes DMR. Five seconds is the same cadence
+/// as the PressureBroker tick — fast enough to recover within ~one
+/// chat turn after Docker Desktop restarts; slow enough that the probe
+/// (a one-second TCP connect) is essentially free relative to the tick.
+const DMR_TICK_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Consecutive failed-probe ticks before the watchdog escalates from
+/// "transient blip" to "this is broken — tell the user." At 5s ticks,
+/// 6 = 30 seconds, which is the threshold the resource architecture
+/// uses for "loud failure, never silent."
+const DMR_DOWN_WARN_THRESHOLD_TICKS: u64 = 6;
+
+/// One DMR endpoint discovered by `probe_dmr`. The base_url is None for
+/// localhost — the adapter's default constructor already points at
+/// `localhost:12434`. A `Some(url)` means the in-container variant
+/// where we resolved `model-runner.docker.internal`.
+#[derive(Debug, Clone)]
+struct DmrEndpoint {
+    base_url: Option<String>,
+}
 
 /// Global singleton registry - survives module recreation on server restart
 static GLOBAL_REGISTRY: Lazy<Arc<RwLock<AdapterRegistry>>> =
@@ -55,6 +82,11 @@ pub struct AIProviderModule {
     log: OnceCell<Arc<ModuleLogger>>,
     /// GPU memory manager — passed to CandleAdapter for VRAM allocation tracking.
     gpu_manager: Option<Arc<crate::gpu::memory_manager::GpuMemoryManager>>,
+    /// DMR watchdog state — counts consecutive down-probe ticks so we can
+    /// escalate from quiet recovery to loud user-visible failure at the
+    /// 30-second threshold. Atomic so the tick (`&self`) updates it
+    /// without taking a write lock on the module.
+    dmr_consecutive_down_ticks: Arc<AtomicU64>,
 }
 
 impl AIProviderModule {
@@ -63,6 +95,7 @@ impl AIProviderModule {
             registry: GLOBAL_REGISTRY.clone(),
             log: OnceCell::new(),
             gpu_manager: None,
+            dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -74,8 +107,111 @@ impl AIProviderModule {
             registry: GLOBAL_REGISTRY.clone(),
             log: OnceCell::new(),
             gpu_manager: Some(gpu_manager),
+            dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
         }
     }
+
+    /// Probe DMR (Docker Model Runner) reachability and return its endpoint
+    /// if reachable. Single source of truth for "is DMR up?" — used by both
+    /// init-time registration and the watchdog tick, so the two never drift
+    /// on what counts as "available."
+    ///
+    /// Returns `Some(DmrEndpoint)` when reachable, `None` otherwise. Tries
+    /// localhost (host-native Docker Desktop) first, falls back to the
+    /// container-internal DNS name if `/.dockerenv` exists. Uses short
+    /// connect timeouts so a slow DNS or firewall block can't stall the
+    /// tick.
+    fn probe_dmr() -> Option<DmrEndpoint> {
+        let localhost_ok = std::net::TcpStream::connect_timeout(
+            &"127.0.0.1:12434".parse().unwrap(),
+            Duration::from_secs(1),
+        )
+        .is_ok();
+        if localhost_ok {
+            return Some(DmrEndpoint { base_url: None });
+        }
+
+        // Not on localhost — check if we're inside a Docker container.
+        // model-runner.docker.internal resolves from inside Docker
+        // Desktop containers on Mac, Linux, and Windows (WSL2).
+        if !std::path::Path::new("/.dockerenv").exists() {
+            return None;
+        }
+        use std::net::ToSocketAddrs;
+        let internal_ok = "model-runner.docker.internal:80"
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addrs| addrs.next())
+            .map(|addr| {
+                std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()
+            })
+            .unwrap_or(false);
+        if internal_ok {
+            Some(DmrEndpoint {
+                base_url: Some(
+                    "http://model-runner.docker.internal/engines/llama.cpp".to_string(),
+                ),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Build a DMR adapter for the given endpoint. Same construction path
+    /// used by both init-time registration and watchdog re-registration —
+    /// the two never produce different-shaped adapters.
+    fn build_dmr_adapter(endpoint: &DmrEndpoint) -> Box<dyn AIProviderAdapter> {
+        let adapter = if let Some(url) = &endpoint.base_url {
+            OpenAICompatibleAdapter::docker_model_runner().with_runtime_base_url(url.clone())
+        } else {
+            OpenAICompatibleAdapter::docker_model_runner()
+        };
+        Box::new(adapter)
+    }
+}
+
+/// Build the user-visible error message when `select()` returns None.
+/// Distinguishes:
+///   - "no providers at all" (config issue — surfaces config.env hint)
+///   - "asked for local but DMR is down" (Docker Desktop needs to be running)
+///   - "asked for a specific provider/model that isn't here" (existing message)
+///
+/// Hoisted out of both `ai/generate` and the convenience `generate_text` so
+/// the two paths report the same diagnosis.
+fn select_failure_message(
+    registry: &AdapterRegistry,
+    requested_provider: Option<&str>,
+    requested_model: Option<&str>,
+) -> String {
+    let available = registry.available();
+    if available.is_empty() {
+        return "No AI providers configured. Add API keys to ~/.continuum/config.env, \
+                or start Docker Desktop for local AI."
+            .to_string();
+    }
+    // The "local" sentinel means "give me whatever the best local adapter is."
+    // If the user asked for that and DMR isn't in the registry, the watchdog
+    // either (a) hasn't seen DMR come up yet or (b) saw it crash and dropped
+    // it. Either way, the actionable message is "start Docker Desktop."
+    let asked_local = requested_provider == Some("local");
+    let dmr_registered = registry.is_registered(DMR_PROVIDER_ID);
+    if asked_local && !dmr_registered {
+        return format!(
+            "Local AI is unavailable — Docker Desktop is not running or Docker Model \
+             Runner isn't enabled. To enable: docker desktop enable model-runner --tcp=12434. \
+             Other available providers: {:?}",
+            available
+        );
+    }
+    format!(
+        "Requested provider/model not available (provider={:?}, model={:?}). Available: {:?}",
+        requested_provider, requested_model, available
+    )
+}
+
+// Re-open the AIProviderModule impl block so the rest of the methods
+// (parse_request, response_to_json, etc.) stay where they were.
+impl AIProviderModule {
 
     /// Get logger (panics if called before initialize)
     fn log(&self) -> &ModuleLogger {
@@ -153,88 +289,33 @@ impl AIProviderModule {
         // beats Candle's ~10 tok/s by 5x because Candle's Metal path goes through
         // ggml-via-candle while Model Runner is direct llama.cpp-metal.
         //
-        // Probed at init time (TCP localhost:12434/.../v1/models). If reachable,
-        // registered with priority -1 (above Candle's 0). If not reachable, the
-        // chat path returns the no-GPU-adapter hard error from select() — Candle
-        // is NOT a chat fallback (its `supported_model_prefixes()` returns []
-        // so it never matches in select()'s tier-3 device-filtered walk).
-        // Candle's role is LoRA training on GPU, not inference.
-        // Docker Model Runner endpoint detection.
-        // Mac Option B (native core): DMR at localhost:12434 (via --tcp flag).
-        // Linux/Windows Docker Desktop (containerized core): DMR at
-        // model-runner.docker.internal (Docker Desktop internal DNS,
-        // no --tcp flag needed — the DNS route is always available from
-        // inside containers). Try localhost first (fast loopback probe),
-        // then container-internal DNS if we detect we're containerized.
-        let (dmr_available, dmr_base_url) = {
-            let localhost_ok = std::net::TcpStream::connect_timeout(
-                &"127.0.0.1:12434".parse().unwrap(),
-                std::time::Duration::from_secs(1),
-            )
-            .is_ok();
-
-            if localhost_ok {
-                (true, None) // Use default base_url in adapter (localhost)
-            } else {
-                // Not on localhost — check if we're inside a Docker container.
-                // model-runner.docker.internal resolves from inside Docker
-                // Desktop containers on Mac, Linux, and Windows (WSL2).
-                let in_container = std::path::Path::new("/.dockerenv").exists();
-                if in_container {
-                    // DNS-resolve the internal hostname + TCP probe port 80.
-                    use std::net::ToSocketAddrs;
-                    let internal_ok = "model-runner.docker.internal:80"
-                        .to_socket_addrs()
-                        .ok()
-                        .and_then(|mut addrs| addrs.next())
-                        .map(|addr| {
-                            std::net::TcpStream::connect_timeout(
-                                &addr,
-                                std::time::Duration::from_secs(2),
-                            )
-                            .is_ok()
-                        })
-                        .unwrap_or(false);
-                    if internal_ok {
-                        (
-                            true,
-                            Some(
-                                "http://model-runner.docker.internal/engines/llama.cpp"
-                                    .to_string(),
-                            ),
-                        )
-                    } else {
-                        (false, None)
-                    }
-                } else {
-                    (false, None)
-                }
+        // Initial probe + register; ongoing health is the watchdog `tick()`'s
+        // job (DMR_TICK_INTERVAL = 5s). If Docker Desktop crashes mid-session,
+        // the watchdog deregisters the DMR adapter so `select()` immediately
+        // surfaces the right hard error to the user instead of failing in
+        // generate_text against a now-unreachable endpoint.
+        match Self::probe_dmr() {
+            Some(endpoint) => {
+                let desc = endpoint
+                    .base_url
+                    .as_deref()
+                    .unwrap_or("localhost:12434 (host-native)");
+                self.log()
+                    .info(&format!("Registering Docker Model Runner adapter ({})", desc));
+                registry.register(
+                    Self::build_dmr_adapter(&endpoint),
+                    0, // Highest priority — beats Candle for local inference
+                );
             }
-        };
-        if dmr_available {
-            let desc = dmr_base_url
-                .as_deref()
-                .unwrap_or("localhost:12434 (host-native)");
-            self.log().info(&format!(
-                "Registering Docker Model Runner adapter ({})",
-                desc
-            ));
-            let adapter = if let Some(url) = dmr_base_url {
-                OpenAICompatibleAdapter::docker_model_runner().with_runtime_base_url(url)
-            } else {
-                OpenAICompatibleAdapter::docker_model_runner()
-            };
-            registry.register(
-                Box::new(adapter),
-                0, // Highest priority — beats Candle for local inference
-            );
-        } else {
-            self.log().info(
-                "Docker Model Runner not reachable on localhost:12434 \
-                 (nor model-runner.docker.internal inside container) — \
-                 no local GPU inference available. To enable: \
-                 docker desktop enable model-runner --tcp=12434",
-            );
+            None => {
+                self.log().info(
+                    "Docker Model Runner not reachable on localhost:12434 \
+                     (nor model-runner.docker.internal inside container). \
+                     Watchdog will keep probing; will register automatically \
+                     once Docker Desktop comes up. To enable: \
+                     docker desktop enable model-runner --tcp=12434",
+                );
+            }
         }
 
         // Candle local inference — ALWAYS registered, ALWAYS lowest priority.
@@ -383,7 +464,11 @@ impl ServiceModule for AIProviderModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 10, // Allow parallel inference requests
-            tick_interval: None,
+            // DMR watchdog cadence — see DMR_TICK_INTERVAL. The runtime's
+            // `start_tick_loops` spawns one tokio task that calls `tick()`
+            // on this interval; on every fire we probe DMR and reconcile
+            // the registry.
+            tick_interval: Some(DMR_TICK_INTERVAL),
         }
     }
 
@@ -391,6 +476,97 @@ impl ServiceModule for AIProviderModule {
         // Store logger for this module
         let _ = self.log.set(ctx.logger("ai_provider"));
         self.register_adapters().await
+    }
+
+    /// Watchdog tick — reconcile the registered state of DMR with what's
+    /// actually reachable on the wire.
+    ///
+    /// State machine (each tick is one transition):
+    ///
+    ///   currently registered   probe up   action
+    ///   ───────────────────   ────────   ────────────────────────────────
+    ///   true                   true       no-op (steady-state happy path)
+    ///   true                   false      DEREGISTER + log warn (Docker
+    ///                                     just crashed; subsequent
+    ///                                     `select()` will surface the
+    ///                                     correct hard error)
+    ///   false                  true       REGISTER + log info (Docker
+    ///                                     Desktop just came back; reset
+    ///                                     the consecutive-down counter)
+    ///   false                  false      increment consecutive_down;
+    ///                                     log a loud warn at the
+    ///                                     30-second threshold so the
+    ///                                     situation is diagnosable
+    ///
+    /// All adapter mutations go through the existing `registry.register`
+    /// + new `registry.deregister`. No special-case state on the module
+    /// beyond the consecutive-down tick counter.
+    async fn tick(&self) -> Result<(), String> {
+        let probe = Self::probe_dmr();
+        // Reading is_registered first under a read lock keeps the common
+        // steady-state path lock-free against the inference path.
+        let currently_registered = self.registry.read().await.is_registered(DMR_PROVIDER_ID);
+
+        match (currently_registered, probe) {
+            (true, Some(_)) => {
+                // Steady-state happy path: DMR is up and registered. Reset
+                // the down-counter in case we were transiently flapping
+                // (probe failed mid-tick last time but recovered now).
+                self.dmr_consecutive_down_ticks.store(0, Ordering::Release);
+            }
+            (true, None) => {
+                // DMR was registered but is no longer reachable. Deregister
+                // immediately so the very next inference request fails loud
+                // at `select()` instead of at `generate_text` with an
+                // arbitrary connection error.
+                let mut registry = self.registry.write().await;
+                if registry.deregister(DMR_PROVIDER_ID) {
+                    self.log().warn(
+                        "Docker Model Runner became unreachable — \
+                         deregistered. Local AI is unavailable until \
+                         Docker Desktop comes back. Watchdog will \
+                         re-register automatically.",
+                    );
+                }
+                self.dmr_consecutive_down_ticks.fetch_add(1, Ordering::AcqRel);
+            }
+            (false, Some(endpoint)) => {
+                // Recovery path: Docker Desktop just came back. Re-register
+                // through the same builder used at init so the adapter
+                // shape (priority 0, capabilities, base_url) is identical.
+                let mut registry = self.registry.write().await;
+                let desc = endpoint
+                    .base_url
+                    .as_deref()
+                    .unwrap_or("localhost:12434 (host-native)");
+                registry.register(Self::build_dmr_adapter(&endpoint), 0);
+                self.log().info(&format!(
+                    "Docker Model Runner reachable again — re-registered ({}). \
+                     Local AI is available.",
+                    desc
+                ));
+                self.dmr_consecutive_down_ticks.store(0, Ordering::Release);
+            }
+            (false, None) => {
+                // Still down. Escalate to a loud user-visible warning at
+                // the 30-second threshold so a stalled Docker Desktop is
+                // diagnosable rather than silently degrading every chat
+                // turn. After warning, suppress repeats — same threshold
+                // re-checked when the counter wraps past 6 multiples.
+                let prev = self
+                    .dmr_consecutive_down_ticks
+                    .fetch_add(1, Ordering::AcqRel);
+                let now = prev + 1;
+                if now == DMR_DOWN_WARN_THRESHOLD_TICKS {
+                    self.log().warn(
+                        "Docker Model Runner has been unreachable for ≥30s. \
+                         Docker Desktop needs to be running for local AI. \
+                         Will keep probing every 5s.",
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
@@ -408,16 +584,11 @@ impl ServiceModule for AIProviderModule {
                 let (provider_id, adapter) = registry
                     .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
                     .ok_or_else(|| {
-                        let available = registry.available();
-                        if available.is_empty() {
-                            "No AI providers configured. Add API keys to ~/.continuum/config.env"
-                                .to_string()
-                        } else {
-                            format!(
-                                "Requested provider/model not available. Available: {:?}",
-                                available
-                            )
-                        }
+                        select_failure_message(
+                            &registry,
+                            request.provider.as_deref(),
+                            request.model.as_deref(),
+                        )
                     })?;
 
                 self.log().info(&format!(
@@ -611,15 +782,11 @@ pub async fn generate_text(
     let (provider_id, adapter) = registry
         .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
         .ok_or_else(|| {
-            let available = registry.available();
-            if available.is_empty() {
-                "No AI providers configured. Add API keys to ~/.continuum/config.env".to_string()
-            } else {
-                format!(
-                    "Requested provider/model not available. Available: {:?}",
-                    available
-                )
-            }
+            select_failure_message(
+                registry,
+                request.provider.as_deref(),
+                request.model.as_deref(),
+            )
         })?;
 
     let mut response = adapter.generate_text(request).await?;
