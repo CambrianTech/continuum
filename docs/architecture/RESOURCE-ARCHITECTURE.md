@@ -308,6 +308,8 @@ When MoE-forged Qwen3.5-A8B-MoE lands: `<ExpertId, ExpertWeights>` pool. Router 
 ### Phase 9 — Recipe-declared resource needs
 Recipes formally declare their resource holds: "chat needs KV ≤16k, identity, recent history, 5 contextual tools." "Codereview needs KV ≤64k, identity, history, code-search, code-edit, code-read." Broker grants on activation, releases on deactivation. Replaces ad-hoc isApplicable + budget percentages with declarative resource manifests.
 
+> **Transitional install-time predecessor (PR #931):** until Phase 9 lands, the per-slot KV cache cap is set globally per-machine at install time via `docker model configure --context-size N PERSONA_MODEL`, tiered by physical RAM (8GB→4096, 16GB→8192, 24GB→16384, 32GB→32768, 48GB+→65536). This is the *floor* — the conservative default that keeps `com.docker.llama-server` resident under control without recipe awareness. When Phase 9 ships, recipes override this on activation: a `codereview` recipe on a 32 GB machine can opt up to 64k for the duration of the conversation, and the broker reverts to the install-time floor when the recipe deactivates. The model-reload cost of `docker model configure` mid-session (a few seconds) is the price of dynamic budgeting; for chat-only flows that never change recipe, the install-time cap holds permanently and there's zero reload cost.
+
 ---
 
 ## Why this matters strategically
