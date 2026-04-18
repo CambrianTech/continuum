@@ -131,18 +131,23 @@ pub struct AllocationResult {
 const SYSTEM_RESERVE_GB: f64 = 2.0;
 
 /// Select the best local model given total VRAM (system-wide default).
+///
+/// All tiers route to the forged Qwen3.5 series — these are the canonical
+/// chat models for Continuum, published by us to HuggingFace and pulled by
+/// install.sh into DMR. Pre-DMR this function returned Candle-era model IDs
+/// (Llama-3.1/3.2, "coder-32b") which don't exist in DMR's catalog — every
+/// persona allocation pointed at a model the chat path couldn't actually
+/// load, causing silent generation failures.
+///
+/// Single chosen default across all VRAM tiers right now: the forged 4B,
+/// which fits everywhere from M5 down to a MacBook Air. As we forge larger
+/// variants (8B, 14B, 32B in the Qwen3.5-code-forged family), this ladder
+/// will tier them; today the 4B is the only published forge.
+///
 /// Thresholds use 0.5GB margin — GPUs report slightly less than nominal
 /// (e.g. RTX 5090 "32GB" reports 31.84GB).
-pub fn select_local_model(vram_gb: f64) -> &'static str {
-    if vram_gb >= 31.0 {
-        "coder-32b" // 32B compacted — SOTA for 5090/A100
-    } else if vram_gb >= 15.0 {
-        "coder" // 14B compacted — fits MacBook Pro 16GB+
-    } else if vram_gb >= 8.0 {
-        "unsloth/Llama-3.1-8B-Instruct"
-    } else {
-        "unsloth/Llama-3.2-3B-Instruct"
-    }
+pub fn select_local_model(_vram_gb: f64) -> &'static str {
+    "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest"
 }
 
 /// Detect GPU type from the manager's device name.
@@ -425,14 +430,15 @@ mod tests {
 
     #[test]
     fn test_select_local_model() {
-        assert_eq!(select_local_model(32.0), "coder-32b");
-        assert_eq!(select_local_model(48.0), "coder-32b");
-        assert_eq!(select_local_model(31.84), "coder-32b"); // RTX 5090 reports 31.84
-        assert_eq!(select_local_model(24.0), "coder");
-        assert_eq!(select_local_model(16.0), "coder");
-        assert_eq!(select_local_model(15.5), "coder");
-        assert_eq!(select_local_model(8.0), "unsloth/Llama-3.1-8B-Instruct");
-        assert_eq!(select_local_model(4.0), "unsloth/Llama-3.2-3B-Instruct");
+        // All tiers route to the forged Qwen3.5-4B (the only published forge today).
+        // When larger forges land (8B/14B/32B), this becomes a real ladder again.
+        let expected = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest";
+        assert_eq!(select_local_model(48.0), expected);
+        assert_eq!(select_local_model(32.0), expected);
+        assert_eq!(select_local_model(31.84), expected);
+        assert_eq!(select_local_model(16.0), expected);
+        assert_eq!(select_local_model(8.0), expected);
+        assert_eq!(select_local_model(4.0), expected);
     }
 
     #[test]
