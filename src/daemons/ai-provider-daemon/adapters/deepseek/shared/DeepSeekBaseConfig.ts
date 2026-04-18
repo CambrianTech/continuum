@@ -61,7 +61,9 @@ export class DeepSeekBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 32768,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.0001, output: 0.0002 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -71,7 +73,9 @@ export class DeepSeekBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 16384,
+        maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.0001, output: 0.0002 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -81,7 +85,9 @@ export class DeepSeekBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 32768,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.00055, output: 0.0022 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       }

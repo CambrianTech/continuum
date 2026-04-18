@@ -46,6 +46,9 @@ export class XAIAdapter extends BaseOpenAICompatibleAdapter {
           provider: 'xai',
           capabilities: ['text-generation', 'chat'],
           contextWindow: 128000,
+          maxOutputTokens: 8192,
+          costPer1kTokens: { input: 0.003, output: 0.015 },
+          tokensPerSecond: 1000,
           supportsStreaming: true,
           supportsTools: true
         },
@@ -55,6 +58,9 @@ export class XAIAdapter extends BaseOpenAICompatibleAdapter {
           provider: 'xai',
           capabilities: ['text-generation', 'chat', 'image-analysis'],
           contextWindow: 128000,
+          maxOutputTokens: 8192,
+          costPer1kTokens: { input: 0.003, output: 0.015 },
+          tokensPerSecond: 1000,
           supportsStreaming: true,
           supportsTools: true
         },
@@ -64,6 +70,9 @@ export class XAIAdapter extends BaseOpenAICompatibleAdapter {
           provider: 'xai',
           capabilities: ['text-generation', 'chat'],
           contextWindow: 128000,
+          maxOutputTokens: 8192,
+          costPer1kTokens: { input: 0.002, output: 0.01 },
+          tokensPerSecond: 1000,
           supportsStreaming: true,
           supportsTools: true
         },
@@ -73,6 +82,9 @@ export class XAIAdapter extends BaseOpenAICompatibleAdapter {
           provider: 'xai',
           capabilities: ['text-generation', 'chat', 'image-analysis'],
           contextWindow: 128000,
+          maxOutputTokens: 8192,
+          costPer1kTokens: { input: 0.002, output: 0.01 },
+          tokensPerSecond: 1000,
           supportsStreaming: true,
           supportsTools: true
         }

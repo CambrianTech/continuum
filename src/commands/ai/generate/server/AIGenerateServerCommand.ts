@@ -13,6 +13,7 @@ import type { AIGenerateParams, AIGenerateResult } from '../shared/AIGenerateTyp
 import { paramsToRequest, responseToResult, createErrorResult, createAIGenerateResultFromParams } from '../shared/AIGenerateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import { RAGBuilderFactory } from '../../../../system/rag/shared/RAGBuilder';
+import { getContextWindow, getInferenceSpeed } from '../../../../system/shared/ModelContextWindows';
 import type { RAGContext } from '../../../../system/rag/shared/RAGTypes';
 import { ChatRAGBuilder } from '../../../../system/rag/builders/ChatRAGBuilder';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
@@ -72,6 +73,8 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
             includeMemories: params.includeMemories ?? true,
             triggeringTimestamp: Date.now(),
             maxTokens: params.maxTokens ?? 2000,
+            contextWindow: getContextWindow(params.model, params.provider),
+            tokensPerSecond: getInferenceSpeed(params.model, params.provider),
           }
         );
 

@@ -60,7 +60,9 @@ export class FireworksBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 131072,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.0009, output: 0.0009 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -71,7 +73,9 @@ export class FireworksBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 131072,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.003, output: 0.003 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -81,7 +85,9 @@ export class FireworksBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 131072,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.0009, output: 0.0009 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -91,7 +97,9 @@ export class FireworksBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 32768,
+        maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.0005, output: 0.0005 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -101,7 +109,9 @@ export class FireworksBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 32768,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.0009, output: 0.0009 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       }

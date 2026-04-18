@@ -262,6 +262,8 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       capabilities: ['text-generation', 'chat'] as ModelCapability[],
       contextWindow: 4096,
       maxOutputTokens: 2048,
+      costPer1kTokens: { input: 0, output: 0 },
+      tokensPerSecond: 15,
       supportsStreaming: false,
       supportsTools: false,
     }];

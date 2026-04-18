@@ -430,6 +430,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         contextWindow: this.getContextWindowForModel(model.name),
         maxOutputTokens: 2048,
         costPer1kTokens: { input: 0, output: 0 },
+        tokensPerSecond: 15,
         supportsStreaming: false,
         supportsTools: false,
       }));
@@ -449,6 +450,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         contextWindow: 1024,
         maxOutputTokens: 1024,
         costPer1kTokens: { input: 0, output: 0 },
+        tokensPerSecond: 15,
         supportsStreaming: false,
         supportsTools: false,
       },
@@ -460,6 +462,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         contextWindow: 1024,
         maxOutputTokens: 1024,
         costPer1kTokens: { input: 0, output: 0 },
+        tokensPerSecond: 15,
         supportsStreaming: false,
         supportsTools: false,
       },

@@ -18,6 +18,7 @@ import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse, NativeToolSpec } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
+import { getContextWindow, getInferenceSpeed } from '../../../shared/ModelContextWindows';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
 import { calculateCost as calculateModelCost } from '../../../../daemons/ai-provider-daemon/shared/PricingConfig';
@@ -307,12 +308,20 @@ export class PersonaResponseGenerator {
         } else {
           this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
         }
+        // Model metadata — from ModelConfig if available, otherwise from registry.
+        // TODO(#917): These should come from the adapter's ModelInfo via IPC,
+        // not from a lookup table. Once the IPC path is wired, remove getContextWindow/getInferenceSpeed.
+        const ctxWindow = this.modelConfig.contextWindow ?? getContextWindow(this.modelConfig.model, this.modelConfig.provider);
+        const tps = getInferenceSpeed(this.modelConfig.model, this.modelConfig.provider);
+
         fullRAGContext = await ragBuilder.buildContext(
           originalMessage.roomId,
           this.personaId,
           {
             modelId: this.modelConfig.model,
             maxTokens: isUnderPressure ? Math.min(this.modelConfig.maxTokens, 512) : this.modelConfig.maxTokens,
+            contextWindow: ctxWindow,
+            tokensPerSecond: tps,
             maxMemories: isUnderPressure ? 1 : 5,
             includeArtifacts: !isUnderPressure,
             includeMemories: !isUnderPressure,

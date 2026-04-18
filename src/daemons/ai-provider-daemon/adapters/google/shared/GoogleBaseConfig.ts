@@ -63,7 +63,9 @@ export class GoogleBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat', 'multimodal', 'image-analysis'],
         contextWindow: 1048576, // 1M tokens context
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.00015, output: 0.0006 }, // Free tier available
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -73,7 +75,9 @@ export class GoogleBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat', 'multimodal', 'image-analysis'],
         contextWindow: 1048576,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.0001, output: 0.0004 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -83,7 +87,9 @@ export class GoogleBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat', 'multimodal', 'image-analysis'],
         contextWindow: 1048576,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.000075, output: 0.0003 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -93,7 +99,9 @@ export class GoogleBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat', 'multimodal', 'image-analysis'],
         contextWindow: 2097152, // 2M tokens context
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.00125, output: 0.005 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: true
       },
@@ -105,7 +113,9 @@ export class GoogleBaseConfig {
         provider: this.providerId,
         capabilities: ['text-generation', 'chat', 'multimodal', 'audio-generation', 'audio-transcription'],
         contextWindow: 1048576,
+        maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.00015, output: 0.0006 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: false,
         // Custom flag: this model is audio-native (not in ModelCapability enum)

@@ -18,6 +18,7 @@ import { Events } from '../../../core/shared/Events';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import type { ProcessableMessage } from './QueueItemTypes';
 // UserEntity and RoomEntity imports removed — isSenderHuman() moved to Rust
+import { getContextWindow, getInferenceSpeed } from '../../../shared/ModelContextWindows';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { PersonaTrainingSignalExtractor } from './PersonaTrainingSignalExtractor';
 import { PersonaMessageGate } from './PersonaMessageGate';
@@ -861,6 +862,8 @@ export class PersonaMessageEvaluator {
           includeMemories: true,     // Full context: include Hippocampus LTM
           excludeMessageIds: this.personaUser.taskTracker.getProcessedToolResults(),
           provider,
+          contextWindow: getContextWindow(this.personaUser.modelConfig.model, provider),
+          tokensPerSecond: getInferenceSpeed(this.personaUser.modelConfig.model, provider),
           toolCapability: getToolCapability(provider, this.personaUser.modelConfig),
           currentMessage: {
             role: 'user',

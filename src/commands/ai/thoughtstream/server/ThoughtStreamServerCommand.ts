@@ -14,6 +14,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { getThoughtStreamCoordinator } from '../../../../system/conversation/server/ThoughtStreamCoordinator';
 import { RAGBuilderFactory } from '../../../../system/rag/shared/RAGBuilder';
+import { getContextWindow, getInferenceSpeed } from '../../../../system/shared/ModelContextWindows';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
@@ -109,7 +110,9 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
                   maxMessages: 20,
                   maxMemories: 0,
                   includeArtifacts: false,
-                  includeMemories: false
+                  includeMemories: false,
+                  contextWindow: getContextWindow(params.modelId, params.provider),
+                  tokensPerSecond: getInferenceSpeed(params.modelId, params.provider),
                 }
               );
 
@@ -403,7 +406,9 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
                   maxMessages: 20,
                   maxMemories: 0,
                   includeArtifacts: false,
-                  includeMemories: false
+                  includeMemories: false,
+                  contextWindow: getContextWindow(params.modelId, params.provider),
+                  tokensPerSecond: getInferenceSpeed(params.modelId, params.provider),
                 }
               );
 

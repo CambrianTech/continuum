@@ -90,13 +90,14 @@ export class TogetherBaseConfig {
         contextWindow: model.context_length || 128000,
         maxOutputTokens: model.max_tokens || 4096,
         costPer1kTokens: { input: 0.0002, output: 0.0002 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: false
       }));
 
       this.modelsFetchedAt = now;
 
-      return this.modelsCache;
+      return this.modelsCache!;
     } catch (error) {
       console.error('❌ TogetherBaseConfig: Failed to fetch models:', error);
 
@@ -118,6 +119,7 @@ export class TogetherBaseConfig {
         contextWindow: 128000,
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.005, output: 0.015 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: false,
       },
@@ -129,6 +131,7 @@ export class TogetherBaseConfig {
         contextWindow: 128000,
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.0009, output: 0.0009 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: false,
       },
@@ -140,6 +143,7 @@ export class TogetherBaseConfig {
         contextWindow: 128000,
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.0002, output: 0.0002 },
+        tokensPerSecond: 1000,
         supportsStreaming: true,
         supportsTools: false,
       },
