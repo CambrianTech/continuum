@@ -81,15 +81,19 @@ export interface PersonaResponseGeneratorConfig {
   personaName: string;
   entity: UserEntity;
   modelConfig: ModelConfig;
+  // Model metadata from the adapter — context window, tok/s, capabilities.
+  // Populated at persona init via ai/model-info IPC. The adapter is the
+  // authority. When present, eliminates ALL lookup functions.
+  modelInfo?: { contextWindow: number; tokensPerSecond: number; maxOutputTokens: number };
   client?: JTAGClient;
   toolExecutor: PersonaToolExecutor;
   toolRegistry: PersonaToolRegistry;
   mediaConfig: PersonaMediaConfig;
-  getSessionId: () => UUID | null;  // Function to get PersonaUser's current sessionId
-  logger: import('./PersonaLogger').PersonaLogger;  // For persona-specific logging
-  genome?: import('./PersonaGenome').PersonaGenome;  // For accessing trained LoRA adapters
-  trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;  // For capturing interactions
-  rustCognitionBridge?: import('./RustCognitionBridge').RustCognitionBridge;  // For domain classification + quality scoring
+  getSessionId: () => UUID | null;
+  logger: import('./PersonaLogger').PersonaLogger;
+  genome?: import('./PersonaGenome').PersonaGenome;
+  trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;
+  rustCognitionBridge?: import('./RustCognitionBridge').RustCognitionBridge;
 }
 
 /**
@@ -100,6 +104,7 @@ export class PersonaResponseGenerator {
   private personaName: string;
   private entity: UserEntity;
   private modelConfig: ModelConfig;
+  private modelInfo: { contextWindow: number; tokensPerSecond: number; maxOutputTokens: number } | null;
   private client?: JTAGClient;
   private toolExecutor: PersonaToolExecutor;
   private toolRegistry: PersonaToolRegistry;
@@ -133,6 +138,7 @@ export class PersonaResponseGenerator {
     this.entity = config.entity;
     this.logger = config.logger;
     this.modelConfig = config.modelConfig;
+    this.modelInfo = config.modelInfo ?? null;
     this.client = config.client;
     this.toolExecutor = config.toolExecutor;
     this.toolRegistry = config.toolRegistry;
@@ -308,11 +314,10 @@ export class PersonaResponseGenerator {
         } else {
           this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
         }
-        // Model metadata — from ModelConfig if available, otherwise from registry.
-        // TODO(#917): These should come from the adapter's ModelInfo via IPC,
-        // not from a lookup table. Once the IPC path is wired, remove getContextWindow/getInferenceSpeed.
-        const ctxWindow = this.modelConfig.contextWindow ?? getContextWindow(this.modelConfig.model, this.modelConfig.provider);
-        const tps = getInferenceSpeed(this.modelConfig.model, this.modelConfig.provider);
+        // Model metadata from the adapter (passed via config, fetched at persona init).
+        // Falls back to lookup only if adapter info unavailable (boot race).
+        const ctxWindow = this.modelInfo?.contextWindow ?? this.modelConfig.contextWindow ?? getContextWindow(this.modelConfig.model, this.modelConfig.provider);
+        const tps = this.modelInfo?.tokensPerSecond ?? getInferenceSpeed(this.modelConfig.model, this.modelConfig.provider);
 
         fullRAGContext = await ragBuilder.buildContext(
           originalMessage.roomId,

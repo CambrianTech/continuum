@@ -465,6 +465,45 @@ impl ServiceModule for AIProviderModule {
                 })))
             }
 
+            // Return ModelInfo for a specific provider+model.
+            // Called once at persona boot — PRG caches and passes the struct.
+            // Eliminates ALL lookup functions (getContextWindow, isSlowLocalModel, etc).
+            "ai/model-info" => {
+                let p = Params::new(&params);
+                let provider = p.str_opt("provider");
+                let model = p.str_opt("model");
+
+                let registry = self.registry.read().await;
+                let (provider_id, adapter) = registry
+                    .select(provider, model, InferenceDevice::default())
+                    .ok_or("No adapter available for requested provider/model")?;
+
+                let models = adapter.get_available_models().await;
+                let model_name = model.unwrap_or(adapter.default_model());
+
+                // Find exact model or return default
+                let info = models.iter()
+                    .find(|m| m.id.to_lowercase().contains(&model_name.to_lowercase())
+                           || model_name.to_lowercase().contains(&m.id.to_lowercase()))
+                    .or_else(|| models.first());
+
+                match info {
+                    Some(model_info) => {
+                        Ok(CommandResult::Json(json!({
+                            "success": true,
+                            "provider": provider_id,
+                            "modelInfo": serde_json::to_value(model_info).unwrap_or(Value::Null)
+                        })))
+                    }
+                    None => {
+                        Ok(CommandResult::Json(json!({
+                            "success": false,
+                            "error": format!("No model info available for {}/{}", provider_id, model_name)
+                        })))
+                    }
+                }
+            }
+
             "ai/providers/health" => {
                 let registry = self.registry.read().await;
                 let available = registry.available();
