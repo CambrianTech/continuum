@@ -188,6 +188,13 @@ Existing inference engines already do crude versions: llama.cpp's `--n-gpu-layer
 
 When this lands fully, the answer to "can my MacBook Air run a 70B MoE?" becomes "yes, slower than VRAM-resident, but yes — and the broker decides per-request whether the slowdown is acceptable for what you're doing." Hardware ceiling becomes negotiable rather than fixed. That's the working-smarter-not-harder pattern at its limit: the system literally exceeds its own apparent capacity because it knows how to stream the constituent parts.
 
+**This is the same insight as sentinel-ai forge alloy expert pruning, but inverted.** The forge identifies which experts in a model are statically removable — ship a permanently smaller model. Compositional paging is the runtime mirror: instead of removing experts permanently, page them in and out *dynamically* based on actual demand. The two compose:
+
+- Forge identifies experts that are *always cold* across observed workloads → prune them entirely (static reduction)
+- Remaining experts get compositional paging at runtime (dynamic reduction)
+
+Same architectural insight from opposite directions. The forge proves the fingerprint of what's actually used; compositional paging extends that proof from "permanently shippable smaller" to "dynamically runnable bigger than fits." The combination: ship as small as the forge proves is safe, then stream the rest on demand for the workloads that occasionally need them. Best-of-both: minimal disk footprint AND maximum model class reachable.
+
 ### 4. Intelligent (eventually ML/LLM-driven) priority
 
 The pool exposes the levers; the brain plugs in via the PressureBroker (Phase 7).
