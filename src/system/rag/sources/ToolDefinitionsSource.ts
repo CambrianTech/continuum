@@ -110,10 +110,35 @@ export class ToolDefinitionsSource implements RAGSource {
 
     let prioritizedTools = toolDefinitions.filter(t => !META_TOOLS.has(t.name));
 
-    // Three-tier prioritization with budget awareness
+    // Contextual group filtering — same pattern the XML path already uses.
+    // Without this, the native path was sending all ~349 → MAX_NATIVE_TOOLS=64
+    // tools per request (~17k tokens). The XML path drops to 5-12 contextually
+    // relevant tools by analyzing the trigger message; mirror that here so
+    // native providers (Anthropic, OpenAI, Groq, etc.) get the same win.
+    //
+    // Recipe tools always survive the filter via the unshift below — recipes
+    // declare what they need explicitly, that's the strongest signal.
+    const groupRegistry = ToolGroupRegistry.sharedInstance();
+    const triggerText = context.options.currentMessage?.content || '';
+    const selectedGroups = groupRegistry.selectGroups(triggerText, 5);
     const recipeToolNames = this.getRecipeToolNames(context);
     const hasRecipeTools = recipeToolNames.size > 0;
-    const MAX_NATIVE_TOOLS = hasRecipeTools ? 32 : 64;
+
+    const contextual = groupRegistry.filterToolsByGroups(prioritizedTools, selectedGroups);
+    if (hasRecipeTools) {
+      const recipeTools = prioritizedTools.filter(t => recipeToolNames.has(t.name));
+      const contextualNames = new Set(contextual.map(t => t.name));
+      for (const rt of recipeTools) {
+        if (!contextualNames.has(rt.name)) {
+          contextual.unshift(rt);
+        }
+      }
+    }
+    prioritizedTools = contextual;
+
+    // Cap is now a safety net, not the primary lever — contextual filter
+    // typically returns 5-12 tools well under these caps.
+    const MAX_NATIVE_TOOLS = hasRecipeTools ? 32 : 16;
 
     if (prioritizedTools.length > MAX_NATIVE_TOOLS) {
       prioritizedTools = this.prioritizeTools(prioritizedTools, recipeToolNames, hasRecipeTools, MAX_NATIVE_TOOLS);
@@ -134,10 +159,7 @@ export class ToolDefinitionsSource implements RAGSource {
 
     // Native providers still need behavioral instruction IN the system prompt.
     // JSON tool specs alone don't tell the model to prefer action over prose.
-    // Include contextual guidance based on what the user is asking about.
-    const groupRegistry = ToolGroupRegistry.sharedInstance();
-    const triggerText = context.options.currentMessage?.content || '';
-    const selectedGroups = groupRegistry.selectGroups(triggerText, 3);
+    // Reuse the contextual groups already selected above (line ~115) for hints.
     const groupHints = selectedGroups
       .filter(g => !g.alwaysInclude)
       .map(g => `For ${g.label.toLowerCase()}: use ${g.toolPatterns.slice(0, 2).join(', ')}`)
