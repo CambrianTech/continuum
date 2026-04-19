@@ -55,10 +55,18 @@ const DEFAULT_ANALYSIS_PROVIDER: &str = "local";
 /// new message changes the snapshot). 5 messages is a reasonable middle.
 const HISTORY_SNAPSHOT_SIZE: usize = 5;
 
-/// Token budget — covers a few-sentence summary + key concepts +
-/// suggested-angle entries for ~6 known specialties. ~400 tokens is
-/// plenty; 500 leaves headroom for verbose models.
-const ANALYSIS_MAX_TOKENS: u32 = 500;
+/// Token budget — must cover qwen3.5's reasoning preamble (the model
+/// thinks for several hundred tokens before emitting the actual JSON
+/// even with chat_template_kwargs.enable_thinking=false on complex
+/// prompts) PLUS the JSON envelope itself. Verified empirically
+/// 2026-04-19: 500 tokens cuts off mid-thinking, parser sees ZERO
+/// JSON, analyze() errors and personas silently fail. 2500 leaves
+/// the model room to think AND finish the JSON in one pass.
+///
+/// Cheaper-on-paper alternative: switch the analyzer to a smaller
+/// non-reasoning model (qwen2.5-1.5b, gemma2-2b). Tracked separately —
+/// see PERSONA-COGNITION-RUST-MIGRATION.md "open questions".
+const ANALYSIS_MAX_TOKENS: u32 = 2500;
 
 /// Lower temperature than persona renders — we want consistent,
 /// reliable structured output, not creative variation. Personas bring
