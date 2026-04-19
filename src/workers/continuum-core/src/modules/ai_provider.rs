@@ -531,15 +531,36 @@ impl ServiceModule for AIProviderModule {
                 self.dmr_consecutive_down_ticks.fetch_add(1, Ordering::AcqRel);
             }
             (false, Some(endpoint)) => {
-                // Recovery path: Docker Desktop just came back. Re-register
-                // through the same builder used at init so the adapter
-                // shape (priority 0, capabilities, base_url) is identical.
-                let mut registry = self.registry.write().await;
+                // Recovery path: Docker Desktop just came back. Build the
+                // adapter, INITIALIZE IT (fetch /v1/models to populate the
+                // live runtime catalog so supports_model can answer
+                // honestly — without this, the freshly-registered adapter
+                // returns false for every supports_model query and select()
+                // hard-errors even though DMR is back), THEN register.
+                //
+                // If init fails (DMR is up but the model-list fetch errors
+                // — common transient state in the first second after Docker
+                // restarts), skip THIS tick and let the next one retry.
+                // The adapter stays unregistered until init succeeds, which
+                // is the safer state than registering a half-initialized
+                // adapter that will silently reject every request.
+                let mut adapter = Self::build_dmr_adapter(&endpoint);
                 let desc = endpoint
                     .base_url
                     .as_deref()
                     .unwrap_or("localhost:12434 (host-native)");
-                registry.register(Self::build_dmr_adapter(&endpoint), 0);
+                if let Err(e) = adapter.initialize().await {
+                    self.log().warn(&format!(
+                        "DMR is reachable ({desc}) but adapter.initialize() \
+                         failed — will retry on next tick. Cause: {e}"
+                    ));
+                    // Don't increment down-counter: TCP probe succeeded; this
+                    // is an init transient. Next tick will see "still false,
+                    // probe still up" and re-attempt.
+                    return Ok(());
+                }
+                let mut registry = self.registry.write().await;
+                registry.register(adapter, 0);
                 self.log().info(&format!(
                     "Docker Model Runner reachable again — re-registered ({}). \
                      Local AI is available.",
