@@ -16,8 +16,16 @@ const log = Logger.create('ServiceInitializer');
 /**
  * Background codebase indexing — runs incremental index after startup.
  * Fire-and-forget: doesn't block server startup, logs results.
+ *
+ * Skippable via SKIP_CODEBASE_INDEX=1 for validation / debugging when the
+ * indexer's data/query saturation masks unrelated chat-path issues. The
+ * indexer is an optimization; disabling it doesn't break chat or personas.
  */
 function initializeCodebaseIndexing(): void {
+  if (process.env.SKIP_CODEBASE_INDEX === '1' || process.env.SKIP_CODEBASE_INDEX === 'true') {
+    log.info('Background codebase indexing SKIPPED (SKIP_CODEBASE_INDEX set)');
+    return;
+  }
   // Delay 120s — personas must boot and respond to first chats before
   // indexing starts. At 10s the embedding storm saturates the event loop
   // and blocks ALL persona responses for 2+ minutes. Chat is the product;
