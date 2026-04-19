@@ -1,29 +1,35 @@
 /**
- * PersonaResponseGenerator - Orchestrator for AI response generation and posting
+ * PersonaResponseGenerator — TS shim over the Rust cognition core.
  *
- * Delegates to extracted modules:
- * - PersonaPromptAssembler: LLM message array construction
- * - PersonaResponseValidator: Response cleaning and validation gates
- * - PersonaEngagementDecider: Dormancy/engagement checks
+ * The cognitive verb ("this persona, given this message, produces this
+ * response") now lives in Rust (continuum-core::persona::response::respond).
+ * This shim is the TS-side contract that:
  *
- * This module orchestrates: RAG build → prompt assembly → inference → validation → tool loop → post
+ *   1. Applies dormancy / engagement gate (pre-flight, TS-only concern).
+ *   2. Routes sentinel dispatch (complex multi-step tasks become sentinels
+ *      instead of tool loops — orthogonal to cognition, stays TS).
+ *   3. Builds the minimal RAG slice Rust needs (system prompt + recent
+ *      history + known specialties) and calls cognitionPersonaRespond.
+ *   4. Handles Silent|Spoke: Silent is logged + returned; Spoke runs the
+ *      tool agent loop on the returned text and posts to chat.
+ *   5. Emits UI events (POSTED / ERROR / typing / voice / stage) and
+ *      captures training-data + fitness telemetry off the critical path.
+ *
+ * Out of scope for this PR (anvil's next rungs):
+ *   - Tool agent loop migration to Rust.
+ *   - Sentinel dispatch relocation.
+ *   - Cloud-provider routing through Rust ai_provider.
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
-import { inspect } from 'util';
-import type { UserEntity } from '../../../data/entities/UserEntity';
-import type { ModelConfig } from '../../../data/entities/UserEntity';
+import type { UserEntity, ModelConfig } from '../../../data/entities/UserEntity';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
-import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse, NativeToolSpec } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { getContextWindow, getInferenceSpeed } from '../../../shared/ModelContextWindows';
-import { CognitionLogger } from './cognition/CognitionLogger';
 import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
-import { calculateCost as calculateModelCost } from '../../../../daemons/ai-provider-daemon/shared/PricingConfig';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
-import { routeForTask, getAvailableCloudProviders, recordUpgradeCost } from './TaskAwareProviderRouter';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import { Events } from '../../../core/shared/Events';
 import { EVENT_SCOPES } from '../../../events/shared/EventSystemConstants';
@@ -32,7 +38,7 @@ import {
   AI_DECISION_EVENTS,
   type AIDecidedSilentEventData,
   type AIPostedEventData,
-  type AIErrorEventData
+  type AIErrorEventData,
 } from '../../../events/shared/AIDecisionEvents';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
@@ -40,50 +46,58 @@ import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
 import { getToolCapability, getModelFamily } from './ToolFormatAdapter';
-import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
-// ContentDeduplicator removed — content dedup now handled by Rust (cognition/check-content-dedup IPC)
-import { SystemPaths } from '../../../core/config/SystemPaths';
 import type { ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
-import { PromptCapture } from '../../../rag/shared/PromptCapture';
-import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { FitnessTracker } from '../../../genome/server/FitnessTracker';
 import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
 import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
-import { PersonaPromptAssembler } from './PersonaPromptAssembler';
-import { PersonaResponseValidator } from './PersonaResponseValidator';
 import { PersonaEngagementDecider, type DormancyState } from './PersonaEngagementDecider';
-import { runAgentLoop } from './PersonaAgentLoop';
-import { PersonaTimingConfig } from './PersonaTimingConfig';
-import { BackpressureService } from '../../../core/services/BackpressureService';
-import type { SocialSignals } from '../../../../shared/generated';
+import { runAgentLoop, type AgentLoopContext } from './PersonaAgentLoop';
+import { PersonaResponseValidator } from './PersonaResponseValidator';
+import { PersonaPromptAssembler } from './PersonaPromptAssembler';
 import { SentinelDispatchDecider } from '../../../sentinel/SentinelDispatchDecider';
 import { SentinelDispatchCoordinator } from '../../../sentinel/SentinelDispatchCoordinator';
 import { Commands } from '../../../core/shared/Commands';
 import type { SentinelRunResult } from '../../../../commands/sentinel/run/shared/SentinelRunTypes';
+import type { SocialSignals } from '../../../../shared/generated';
+import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
+import type { PersonaRespondRequest } from '../../../../workers/continuum-core/bindings/modules/cognition';
+import { inspect } from 'util';
+import { createHash } from 'crypto';
+import type { LLMMessage } from '../../../rag/shared/RAGTypes';
+
 /**
- * Response generation result
+ * Produce a stable UUID from an LLMMessage so Rust's analysis cache hits
+ * across concurrent persona calls. Same content+name+timestamp → same id.
+ * Hash is truncated to 16 bytes and reshaped as UUIDv4 (variant + version
+ * bits set). Not a real UUIDv5 — we don't need a registered namespace —
+ * just needs to parse as Uuid on the Rust side.
  */
+function synthesizeDeterministicUuid(msg: LLMMessage): string {
+  const key = `${msg.role}|${msg.name ?? ''}|${msg.timestamp ?? 0}|${msg.content}`;
+  const digest = createHash('sha256').update(key).digest();
+  const bytes = Buffer.from(digest.subarray(0, 16));
+  // RFC4122 v4 bits: clock_seq_hi_and_reserved (byte 8) gets variant, version in byte 6.
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+  const h = bytes.toString('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
 export interface ResponseGenerationResult {
   success: boolean;
   messageId?: UUID;
   error?: string;
   wasRedundant?: boolean;
-  storedToolResultIds: UUID[];  // IDs of tool result messages that were processed (always present, may be empty)
+  storedToolResultIds: UUID[];
 }
 
-/**
- * PersonaResponseGenerator configuration
- */
 export interface PersonaResponseGeneratorConfig {
   personaId: UUID;
   personaName: string;
   entity: UserEntity;
   modelConfig: ModelConfig;
-  // Model metadata from the adapter — context window, tok/s, capabilities.
-  // Populated at persona init via ai/model-info IPC. The adapter is the
-  // authority. When present, eliminates ALL lookup functions.
   modelInfo?: { contextWindow: number; tokensPerSecond: number; maxOutputTokens: number };
   client?: JTAGClient;
   toolExecutor: PersonaToolExecutor;
@@ -93,12 +107,9 @@ export interface PersonaResponseGeneratorConfig {
   logger: import('./PersonaLogger').PersonaLogger;
   genome?: import('./PersonaGenome').PersonaGenome;
   trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;
-  rustCognitionBridge?: import('./RustCognitionBridge').RustCognitionBridge;
+  rustCognitionBridge?: RustCognitionBridge;
 }
 
-/**
- * PersonaResponseGenerator - Handles AI response generation and posting
- */
 export class PersonaResponseGenerator {
   private personaId: UUID;
   private personaName: string;
@@ -113,30 +124,20 @@ export class PersonaResponseGenerator {
   private logger: import('./PersonaLogger').PersonaLogger;
   private genome?: import('./PersonaGenome').PersonaGenome;
   private trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;
-  private rustCognitionBridge?: import('./RustCognitionBridge').RustCognitionBridge;
+  private rustCognitionBridge?: RustCognitionBridge;
 
-  /** Rust cognition bridge — set lazily after PersonaUser creates it */
   private _rustBridge: RustCognitionBridge | null = null;
-  /** Extracted modules */
-  private promptAssembler: PersonaPromptAssembler;
-  private responseValidator: PersonaResponseValidator;
   private engagementDecider: PersonaEngagementDecider;
   private _dispatchDecider: SentinelDispatchDecider;
 
-  /**
-   * Set Rust cognition bridge (called after PersonaUser creates it).
-   * All validation gates (garbage, loop, truncated tool, semantic loop) are in Rust.
-   */
   setRustBridge(bridge: RustCognitionBridge): void {
     this._rustBridge = bridge;
-    this.responseValidator.setRustBridge(bridge);
   }
 
   constructor(config: PersonaResponseGeneratorConfig) {
     this.personaId = config.personaId;
     this.personaName = config.personaName;
     this.entity = config.entity;
-    this.logger = config.logger;
     this.modelConfig = config.modelConfig;
     this.modelInfo = config.modelInfo ?? null;
     this.client = config.client;
@@ -144,32 +145,16 @@ export class PersonaResponseGenerator {
     this.toolRegistry = config.toolRegistry;
     this.mediaConfig = config.mediaConfig;
     this.getSessionId = config.getSessionId;
+    this.logger = config.logger;
     this.genome = config.genome;
     this.trainingAccumulator = config.trainingAccumulator;
     this.rustCognitionBridge = config.rustCognitionBridge;
+    if (config.rustCognitionBridge) this._rustBridge = config.rustCognitionBridge;
 
-    // Initialize modular helpers
-    this.promptAssembler = new PersonaPromptAssembler(config.personaName, config.modelConfig, this.log.bind(this));
-    this.responseValidator = new PersonaResponseValidator(config.personaName, this.log.bind(this));
     this.engagementDecider = new PersonaEngagementDecider(config.personaName, this.log.bind(this));
     this._dispatchDecider = new SentinelDispatchDecider();
   }
 
-  /**
-   * Get effective model for inference via Rust IPC.
-   * 4-tier priority chain: trait adapter → current → any → base model.
-   * Domain-to-trait mapping is canonical in Rust (no TS duplicate).
-   */
-  private async getEffectiveModel(taskDomain?: string): Promise<string> {
-    if (!this._rustBridge) throw new Error('Rust bridge not initialized — cannot select model');
-    const baseModel = this.modelConfig.model;
-    const result = await this._rustBridge.selectModel(baseModel, taskDomain);
-    return result.model;
-  }
-
-  /**
-   * Log to persona's cognition.log file
-   */
   private log(message: string, ...args: unknown[]): void {
     const timestamp = new Date().toISOString();
     const formattedArgs = args.length > 0
@@ -180,32 +165,22 @@ export class PersonaResponseGenerator {
     this.logger.enqueueLog('cognition.log', `[${timestamp}] ${message}${formattedArgs}\n`);
   }
 
-
-  // NOTE: calculateSafeMessageCount was removed (dead code)
-  // Context budgeting is now handled by ChatRAGBuilder.calculateSafeMessageCount()
-  // which uses ModelContextWindows as the single source of truth
-
-  /**
-   * Check if persona should respond to message based on dormancy level.
-   * Delegates to PersonaEngagementDecider.
-   */
   shouldRespondToMessage(
     message: ProcessableMessage,
-    dormancyState?: DormancyState
+    dormancyState?: DormancyState,
   ): boolean {
     return this.engagementDecider.shouldRespondToMessage(message, dormancyState);
   }
 
   /**
-   * Check if message should trigger sentinel dispatch instead of tool loop.
-   * Returns ResponseGenerationResult if dispatched, null to continue normal flow.
+   * Sentinel dispatch check — complex multi-step human requests become
+   * sentinel pipelines instead of a tool loop. Only one persona wins the
+   * claim per message. Returns a terminal result if dispatched, else null.
    */
   private async checkSentinelDispatch(
     originalMessage: ProcessableMessage,
   ): Promise<ResponseGenerationResult | null> {
-    // Only human messages can trigger dispatch (not system, not other AI)
     if (originalMessage.senderType !== 'human') return null;
-
     const text = originalMessage.content.text;
     if (!text) return null;
 
@@ -218,12 +193,11 @@ export class PersonaResponseGenerator {
 
     if (!decision.shouldDispatch || !decision.template) {
       if (decision.confidence > 0.3) {
-        this.log(`🚀 ${this.personaName}: Sentinel dispatch considered but below threshold — ${decision.reasoning} (confidence=${decision.confidence.toFixed(2)})`);
+        this.log(`🚀 ${this.personaName}: Sentinel considered but below threshold — ${decision.reasoning} (confidence=${decision.confidence.toFixed(2)})`);
       }
       return null;
     }
 
-    // Coordination: only ONE persona claims sentinel dispatch per message
     const claimed = SentinelDispatchCoordinator.claim(
       originalMessage.id,
       this.personaId,
@@ -231,7 +205,7 @@ export class PersonaResponseGenerator {
     );
     if (!claimed) {
       const claimant = SentinelDispatchCoordinator.claimant(originalMessage.id);
-      this.log(`🚀 ${this.personaName}: Sentinel dispatch for [${decision.template}] already claimed by ${claimant?.slice(0, 8)} — skipping`);
+      this.log(`🚀 ${this.personaName}: Sentinel [${decision.template}] already claimed by ${claimant?.slice(0, 8)} — skipping`);
       return null;
     }
 
@@ -242,7 +216,6 @@ export class PersonaResponseGenerator {
         ...decision.extractedConfig,
         roomId: originalMessage.roomId ?? 'general',
       };
-
       const result = await Commands.execute('sentinel/run', {
         type: 'pipeline',
         template: decision.template,
@@ -254,616 +227,356 @@ export class PersonaResponseGenerator {
 
       if (result.success) {
         this.log(`🚀 ${this.personaName}: Sentinel launched (handle=${result.handle})`);
-        // Return success — the sentinel will post progress to chat via SentinelChatBridge
         return { success: true, storedToolResultIds: [] };
-      } else {
-        this.log(`❌ ${this.personaName}: Sentinel launch failed: ${(result as unknown as Record<string, unknown>).error}`);
-        SentinelDispatchCoordinator.release(originalMessage.id);
-        // Fall through to normal response generation
-        return null;
       }
+      this.log(`❌ ${this.personaName}: Sentinel launch failed: ${(result as unknown as Record<string, unknown>).error}`);
+      SentinelDispatchCoordinator.release(originalMessage.id);
+      return null;
     } catch (err) {
       this.log(`❌ ${this.personaName}: Sentinel dispatch error: ${err}`);
       SentinelDispatchCoordinator.release(originalMessage.id);
-      // Fall through to normal response generation
       return null;
     }
   }
 
   /**
-   * Generate and post a response to a chat message
-   * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
+   * Generate and post a response — the shim's main verb. Calls Rust cognition
+   * for analysis + scoring + render + strip-thinks, keeps tool agent loop +
+   * posting in TS.
    */
   async generateAndPostResponse(
     originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
     preBuiltRagContext?: RAGContext,
-    socialSignals?: SocialSignals
+    socialSignals?: SocialSignals,
   ): Promise<ResponseGenerationResult> {
-    this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
-    // Voice modality is a typed field — no cast needed
-    this.log(`🔧 ${this.personaName}: Voice check - sourceModality=${originalMessage.sourceModality}, voiceSessionId=${originalMessage.voiceSessionId?.slice(0, 8) ?? 'none'}`);
-    const generateStartTime = Date.now();  // Track total response time for decision logging
-    const allStoredResultIds: UUID[] = [];  // Collect all tool result message IDs for task tracking
+    const generateStartTime = Date.now();
+    const allStoredResultIds: UUID[] = [];
+    const pipelineTiming: Record<string, number> = {};
+
     try {
-      // Pipeline timing tracker — filled as each phase completes
-      const pipelineTiming: Record<string, number> = {};
+      // Sentinel short-circuit.
+      const dispatchResult = await this.checkSentinelDispatch(originalMessage);
+      if (dispatchResult) return dispatchResult;
 
-      // 🔧 SUB-PHASE 3.1: Build RAG context (or use pre-built from evaluator)
-      //
-      // PRESSURE-AWARE: Under high/critical memory pressure, build minimal RAG
-      // to avoid wasting compute on context that may sit in a long queue.
-      // The RAG system summarizes conversation history, so a slower cadence
-      // with less context still produces coherent responses.
+      if (!this._rustBridge) {
+        throw new Error(`${this.personaName}: Rust cognition bridge not initialized — cannot respond`);
+      }
+
+      // RAG: reuse the evaluator's build if it handed one off, else build fresh.
+      // Rust only needs identity prompt + recent_history; the rest (tool defs,
+      // memories) is TS concerns for the tool loop.
       const phase31Start = Date.now();
-      let fullRAGContext: RAGContext;
-      const pressure = BackpressureService.pressureLevel;
-      const isUnderPressure = pressure === 'high' || pressure === 'critical';
+      const ragContext = preBuiltRagContext ?? await this.buildRagContext(originalMessage);
+      pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
 
-      if (preBuiltRagContext) {
-        // OPTIMIZATION: Evaluator already built full RAG context — reuse it, skip redundant build
-        fullRAGContext = preBuiltRagContext;
-        pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
-        this.log(`⚡ ${this.personaName}: [PHASE 3.1] Using pre-built RAG context (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms)`);
-      } else {
-        // Build RAG context — reduced under pressure to save compute
-        const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
-        const voiceSessionId = originalMessage.voiceSessionId;
-        if (isUnderPressure) {
-          this.log(`📉 ${this.personaName}: [PHASE 3.1] Memory pressure=${pressure} — building minimal RAG context`);
-        } else {
-          this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
-        }
-        // Model metadata from the adapter (passed via config, fetched at persona init).
-        // Falls back to lookup only if adapter info unavailable (boot race).
-        const ctxWindow = this.modelInfo?.contextWindow ?? this.modelConfig.contextWindow ?? getContextWindow(this.modelConfig.model, this.modelConfig.provider);
-        const tps = this.modelInfo?.tokensPerSecond ?? getInferenceSpeed(this.modelConfig.model, this.modelConfig.provider);
+      const knownSpecialties = this.buildKnownSpecialties(ragContext);
+      const recentHistory = this.buildRecentHistory(ragContext);
+      const systemPrompt = ragContext.identity.systemPrompt;
+      const specialty = this.resolveSpecialty();
 
-        fullRAGContext = await ragBuilder.buildContext(
-          originalMessage.roomId,
-          this.personaId,
-          {
-            modelId: this.modelConfig.model,
-            maxTokens: isUnderPressure ? Math.min(this.modelConfig.maxTokens, 512) : this.modelConfig.maxTokens,
-            contextWindow: ctxWindow,
-            tokensPerSecond: tps,
-            maxMemories: isUnderPressure ? 1 : 5,
-            includeArtifacts: !isUnderPressure,
-            includeMemories: !isUnderPressure,
-            voiceSessionId,
-            provider: this.modelConfig.provider,
-            toolCapability: isUnderPressure ? 'none' : getToolCapability(this.modelConfig.provider, this.modelConfig),
-            currentMessage: {
-              role: 'user',
-              content: originalMessage.content.text,
-              name: originalMessage.senderName,
-              timestamp: this.timestampToNumber(originalMessage.timestamp)
-            }
-          }
-        );
-        pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
-        this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms${isUnderPressure ? ', minimal mode' : ''})`);
-      }
-
-      // 🚀 SUB-PHASE 3.1B: Sentinel dispatch check
-      // If the message describes a complex multi-step task, dispatch a sentinel pipeline
-      // instead of attempting the work in a single tool call loop.
-      if (originalMessage.content.text && !isUnderPressure) {
-        const dispatchResult = await this.checkSentinelDispatch(originalMessage);
-        if (dispatchResult) {
-          return dispatchResult;
-        }
-      }
-
-      // 🔧 SUB-PHASE 3.2: Build message history for LLM (delegated to PersonaPromptAssembler)
+      // The single IPC: Rust owns the cognitive verb end-to-end.
       const phase32Start = Date.now();
-      const messages = this.promptAssembler.assembleMessages(fullRAGContext, originalMessage, socialSignals);
-
-      // Tool capability for XML parsing (still needed for response parsing, not injection)
-      const toolCap = getToolCapability(this.modelConfig.provider, this.modelConfig);
-
-      // 🔧 SUB-PHASE 3.3: Generate AI response with timeout
-      this.log(`🔧 ${this.personaName}: [PHASE 3.3] Building inference request (default provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
-
-      // Bug #5 fix: Use adjusted maxTokens from RAG context (two-dimensional budget)
-      // RAG budget can only REDUCE maxTokens (protect against context overflow),
-      // never INCREASE beyond what the model config specifies.
-      const configMaxTokens = this.modelConfig.maxTokens;
-      const ragAdjusted = fullRAGContext.metadata.adjustedMaxTokens;
-      // Use != null (not truthy) so 0 is properly handled — 0 means budget is blown.
-      let effectiveMaxTokens = (ragAdjusted != null && ragAdjusted < configMaxTokens)
-        ? ragAdjusted
-        : configMaxTokens;
-
-      // VOICE MODE: Allow reasonable response length for natural conversation
-      // DON'T artificially truncate - that's robotic and cuts off mid-sentence
-      // Natural turn-taking should be handled by arbiter coordination, not hard limits
-      // Removed aggressive 100-token limit - now uses 800 tokens (~60 seconds of speech)
-      const responseStyle = (fullRAGContext.metadata as Record<string, unknown>).responseStyle as { voiceMode?: boolean } | undefined;
-      const isVoiceMode = responseStyle?.voiceMode || originalMessage.sourceModality === 'voice';
-      if (isVoiceMode) {
-        // Voice mode: Use generous limit for natural speech (800 tokens ≈ 600 words ≈ 60 seconds)
-        // Previous 100-token limit caused mid-sentence cutoffs - unacceptable
-        if (effectiveMaxTokens > PersonaTimingConfig.generation.voiceMaxTokens) {
-          this.log(`🔊 ${this.personaName}: VOICE MODE - limiting response from ${effectiveMaxTokens} to ${PersonaTimingConfig.generation.voiceMaxTokens} tokens`);
-          effectiveMaxTokens = PersonaTimingConfig.generation.voiceMaxTokens;
-        }
-      }
-
-      this.log(`📊 ${this.personaName}: RAG metadata check:`, {
-        hasAdjustedMaxTokens: ragAdjusted != null,
-        adjustedMaxTokens: ragAdjusted,
-        inputTokenCount: fullRAGContext.metadata.inputTokenCount,
-        configMaxTokens: this.modelConfig.maxTokens,
-        effectiveMaxTokens: effectiveMaxTokens,
+      const rustRequest: PersonaRespondRequest = {
+        personaId: this.personaId,
+        roomId: originalMessage.roomId,
+        messageId: originalMessage.id,
+        personaName: this.personaName,
+        specialty,
+        // Per-persona render model — required so each persona renders with
+        // its OWN configured model, not the shared-analysis base model.
+        // Source of truth is this persona's ModelConfig (auto-routes trait
+        // adapters etc. at the Rust side via select_model).
         model: this.modelConfig.model,
-        provider: this.modelConfig.provider
-      });
+        messageText: originalMessage.content.text ?? '',
+        systemPrompt,
+        recentHistory,
+        knownSpecialties,
+        isVoice: originalMessage.sourceModality === 'voice',
+      };
+      const response = await this._rustBridge.personaRespond(rustRequest);
+      pipelineTiming['3.2_cognition'] = Date.now() - phase32Start;
 
-      // Budget blown: prompt already exceeds context window, no room for output tokens.
-      // This means calculateSafeMessageCount selected too many messages — a bug upstream.
-      // Don't send to inference (it'll just error). Log and bail.
-      if (effectiveMaxTokens <= 0) {
-        this.log(`❌ ${this.personaName}: Budget blown — input tokens (${fullRAGContext.metadata.inputTokenCount}) exceed context window. Skipping inference.`);
-        return { success: false, error: 'Context budget exceeded — prompt too large for model', storedToolResultIds: [] };
+      if (response.kind === 'silent') {
+        return this.handleSilent(originalMessage, response, pipelineTiming, generateStartTime);
       }
 
-      // PHASE 1B: Classify message domain → activate matching adapter → select model
-      // This closes the gap: adapters were discovered on startup but never activated before inference.
-      // Flow: classify domain (Rust, ~μs) → activate adapter (page into GPU) → select model (uses active adapter)
-      let currentDomain: string | undefined = this.genome?.getCurrentAdapter()?.getDomain();
-      if (this.genome && this._rustBridge) {
-        try {
-          const messageText = originalMessage.content.text;
-          const classification = await this._rustBridge.classifyDomain(messageText);
-          if (classification.confidence > 0.3) {
-            await this.genome.activateForDomain(classification.domain);
-            currentDomain = classification.domain;
-            this.log(`🧬 ${this.personaName}: Domain classified='${classification.domain}' (confidence=${classification.confidence.toFixed(2)}), adapter=${classification.adapter_name || 'none'}`);
-          }
-        } catch (err) {
-          // Classification failure is non-fatal — proceed with whatever adapter is currently active
-          this.log(`⚠️ ${this.personaName}: Domain classification failed: ${err}`);
-        }
-      }
-      const effectiveModel = await this.getEffectiveModel(currentDomain);
+      // Spoke: run tool agent loop on the returned text (model may have
+      // emitted tool calls inline). Zero-iteration case (no tool calls) is
+      // a no-op — aiResponse.text stays as Rust's output.
+      const phase33Start = Date.now();
+      const seedResponse: TextGenerationResponse = {
+        text: response.text,
+        model: response.model_used,
+        provider: this.modelConfig.provider,
+        toolCalls: [],
+        finishReason: 'stop',
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        responseTimeMs: response.inference_ms,
+        requestId: originalMessage.id,
+      };
+
+      const messages = this.buildMessagesForToolLoop(systemPrompt, recentHistory, originalMessage);
       const request: TextGenerationRequest = {
         messages,
-        model: effectiveModel,  // Use trained model if available, otherwise base model
+        model: response.model_used,
         temperature: this.modelConfig.temperature ?? 0.7,
-        maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
+        maxTokens: this.modelConfig.maxTokens,
         provider: this.modelConfig.provider,
-        intelligenceLevel: this.entity.intelligenceLevel,  // Pass PersonaUser intelligence level to adapter
-        // CRITICAL: personaContext enables per-persona logging and prevents "unknown" rejections
+        intelligenceLevel: this.entity.intelligenceLevel,
         personaContext: {
           uniqueId: this.personaId,
           displayName: this.personaName,
-          logDir: SystemPaths.personas.dir(this.personaId)
-        }
+          logDir: `${process.env.HOME ?? ''}/.continuum/personas/${this.entity.uniqueId}`,
+        },
       };
 
-      // GENOME INTEGRATION: Add active LoRA adapters from PersonaGenome
-      // This enables personas to use skill-specific fine-tuned weights during generation
-      if (this.genome) {
-        const activeAdapters = this.genome.getActiveAdaptersForRequest();
-        if (activeAdapters.length > 0) {
-          request.activeAdapters = activeAdapters;
-          this.log(`🧬 ${this.personaName}: [PHASE 3.3] Genome providing ${activeAdapters.length} active adapters: [${activeAdapters.map(a => a.name).join(', ')}]`);
-        }
-      }
-
-      // Tools from RAG budget (ToolDefinitionsSource handles prioritization + budget)
-      // hasTools must be true for BOTH native AND XML tools — otherwise TaskAwareProviderRouter
-      // never triggers the "tools require cloud" upgrade for local personas (who get XML tools).
-      const toolMeta = fullRAGContext.metadata?.toolDefinitions;
+      const toolMeta = ragContext.metadata?.toolDefinitions as Record<string, unknown> | undefined;
       const hasNativeTools = !!(toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0);
-      const hasXmlTools = !!(toolMeta?.toolCount && (toolMeta.toolCount as number) > 0);
-      const hasTools = hasNativeTools || hasXmlTools;
       if (hasNativeTools) {
-        request.tools = toolMeta.nativeToolSpecs as NativeToolSpec[];
-        request.toolChoice = (toolMeta.toolChoice as string) || 'auto';
-        this.log(`🔧 ${this.personaName}: Added ${(toolMeta.nativeToolSpecs as unknown[]).length} native tools from RAG budget (toolChoice=${request.toolChoice})`);
-      } else if (hasXmlTools) {
-        this.log(`🔧 ${this.personaName}: ${toolMeta!.toolCount} XML tools in system prompt (no native specs)`);
+        request.tools = toolMeta!.nativeToolSpecs as NativeToolSpec[];
+        request.toolChoice = (toolMeta!.toolChoice as string) || 'auto';
       }
 
-      // PER-TASK MODEL ROUTING (#371): If the persona uses a local model and the task
-      // requires cloud capabilities (coding, tool use), upgrade to best available cloud provider.
-      // The persona's identity (system prompt, LoRA adapters) stays the same — only compute changes.
-      const availableCloud = await getAvailableCloudProviders();
-      const routing = routeForTask(
-        request.model ?? effectiveModel,
-        request.provider ?? this.modelConfig.provider,
-        currentDomain,
-        hasTools,
-        availableCloud,
-      );
-      if (routing.upgraded) {
-        request.model = routing.model;
-        request.provider = routing.provider;
-        this.log(`🔄 ${this.personaName}: Task routing — ${routing.reason}`);
+      const sessionId = this.getSessionId();
+      if (!sessionId) {
+        throw new Error(`${this.personaName}: Cannot execute tool loop without sessionId`);
       }
 
-      // 🎰 PHASE 3.3a: Request inference slot from coordinator
-      // This prevents thundering herd - only N personas can generate simultaneously per provider
-      const provider = request.provider!;
-      pipelineTiming['3.2_format'] = Date.now() - phase32Start;
-      this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM messages built (${messages.length} messages, ${pipelineTiming['3.2_format']}ms)`);
-
-      // Check for mentions by both uniqueId (@helper) and displayName (@Helper AI)
-      const messageText = originalMessage.content.text.toLowerCase();
-      const isMentioned =
-        messageText.includes(`@${this.entity.uniqueId.toLowerCase()}`) ||
-        messageText.includes(`@${this.personaName.toLowerCase()}`);
-
-      const phase33aStart = Date.now();
-      const slotGranted = await InferenceCoordinator.requestSlot(
-        this.personaId,
-        originalMessage.id,
-        provider,
-        { isMentioned }
-      );
-
-      pipelineTiming['3.3a_slot'] = Date.now() - phase33aStart;
-
-      if (!slotGranted) {
-        this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot denied (${pipelineTiming['3.3a_slot']}ms) - skipping response`);
-        return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Treat as redundant (another AI will respond)
-      }
-      this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot granted (${pipelineTiming['3.3a_slot']}ms)`);
-
-      // ── Prompt capture for replay/debugging ──
-      // Captures the complete prompt (system + messages + tools) in JSONL format.
-      // Read with: PromptCapture.load({ personaName: 'Helper AI', limit: 5 })
-      // Replay with: AIProviderDaemon.generateText(PromptCapture.toReplayRequest(capture))
-      PromptCapture.capture({
+      const agentCtx: AgentLoopContext = {
         personaId: this.personaId,
         personaName: this.personaName,
-        model: effectiveModel,
         provider: this.modelConfig.provider,
-        temperature: request.temperature ?? 0.7,
-        maxTokens: effectiveMaxTokens,
-        messages: messages.map(m => ({
-          role: m.role,
-          content: m.content,
-          name: undefined  // name is embedded in content as "[HH:MM] Name: text"
-        })),
-        tools: request.tools as unknown[] | undefined,
-        toolChoice: typeof request.toolChoice === 'string' ? request.toolChoice : request.toolChoice ? JSON.stringify(request.toolChoice) : undefined,
-        triggerMessageId: originalMessage.id,
-        triggerMessagePreview: originalMessage.content?.text?.slice(0, 100),
-        ragSourceCount: fullRAGContext.metadata?.messageCount,
-        ragTotalTokens: fullRAGContext.metadata?.inputTokenCount as number | undefined,
-        activeAdapters: request.activeAdapters?.map(a => ({ name: a.name, path: a.path }))
-      });
+        roomId: originalMessage.roomId,
+        sessionId,
+        context: this.client!.context,
+        toolExecutor: this.toolExecutor,
+        // Tool loop needs a validator + prompt assembler for refinement retries.
+        // Cognition core owns the initial render; the tool loop's own retry
+        // helpers are injected here so it can build turn-N prompts via TS paths.
+        // Those modules still exist in the repo (anvil hasn't deleted them yet);
+        // the tool-loop-Rust-migration PR will move them next.
+        responseValidator: new PersonaResponseValidator(this.personaName, this.log.bind(this)),
+        promptAssembler: new PersonaPromptAssembler(this.personaName, this.modelConfig, this.log.bind(this)),
+        mediaConfig: this.mediaConfig,
+        log: this.log.bind(this),
+        modelFamily: getModelFamily(this.modelConfig.provider, this.modelConfig.model),
+      };
 
-      // Wrap generation call with timeout (180s - generous limit for local Candle/Sentinel generation)
-      // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
-      // Queue can handle 4 concurrent requests, so 180s allows slower hardware to complete
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error(`AI generation timeout after ${PersonaTimingConfig.generation.timeoutMs / 1000} seconds`)), PersonaTimingConfig.generation.timeoutMs);
-      });
+      const agentResult = await runAgentLoop(agentCtx, messages, request, seedResponse);
+      allStoredResultIds.push(...agentResult.storedToolResultIds);
+      pipelineTiming['3.3_agent_loop'] = agentResult.durationMs;
 
-      let aiResponse: TextGenerationResponse;
-      let extractedThinking: string | undefined;
-      const generateStartTime = Date.now();
-      try {
-        // Wait for AIProviderDaemon to initialize (max 30 seconds)
-        // This handles race condition where PersonaUser tries to respond before daemon is ready
-        const phase33bStart = Date.now();
-        const MAX_WAIT_MS = PersonaTimingConfig.generation.daemonInitWaitMs;
-        const POLL_INTERVAL_MS = PersonaTimingConfig.generation.daemonInitPollMs;
-        let waitedMs = 0;
-        while (!AIProviderDaemon.isInitialized() && waitedMs < MAX_WAIT_MS) {
-          await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
-          waitedMs += POLL_INTERVAL_MS;
-        }
-        pipelineTiming['3.3b_daemon_init'] = Date.now() - phase33bStart;
-        if (pipelineTiming['3.3b_daemon_init'] > 50) {
-          this.log(`⏳ ${this.personaName}: [PHASE 3.3b] AIProviderDaemon init wait: ${pipelineTiming['3.3b_daemon_init']}ms`);
-        }
-        if (!AIProviderDaemon.isInitialized()) {
-          throw new Error(`AIProviderDaemon not initialized after ${MAX_WAIT_MS}ms`);
-        }
+      // Post the final text (possibly rewritten by the tool loop) to chat.
+      const finalText = seedResponse.text.trim();
+      if (!finalText) {
+        this.log(`⚠️ ${this.personaName}: Empty response after tool loop — skipping post`);
+        return { success: false, error: 'Empty response', storedToolResultIds: allStoredResultIds };
+      }
 
-        const inferenceStart = Date.now();
-        aiResponse = await Promise.race([
-          AIProviderDaemon.generateText(request),
-          timeoutPromise
-        ]);
-        pipelineTiming['3.3_inference'] = Date.now() - inferenceStart;
+      const phase35Start = Date.now();
+      const postedMessageId = await this.postResponse(
+        originalMessage,
+        finalText,
+        response,
+        pipelineTiming,
+        generateStartTime,
+      );
+      pipelineTiming['3.5_post'] = Date.now() - phase35Start;
 
-        // 🎰 Release slot on success
-        InferenceCoordinator.releaseSlot(this.personaId, provider);
-        const generateDuration = Date.now() - generateStartTime;
-        this.log(`✅ ${this.personaName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
+      if (decisionContext) {
+        CoordinationDecisionLogger.logDecision({
+          ...decisionContext,
+          responseContent: finalText,
+          tokensUsed: finalText.length,
+          responseTime: Date.now() - generateStartTime,
+        }).catch(err => this.log(`❌ Failed to log POSTED decision: ${err}`));
+      }
 
-        // Fire-and-forget: Log AI response generation to cognition database (non-blocking telemetry)
-        const inputTokenEstimate = messages.reduce((sum, m) => sum + Math.ceil(getMessageText(m.content).length / 4), 0);  // ~4 chars/token
-        const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
-        // Use the ACTUAL provider/model (after task routing), not the persona's default.
-        // Without this, candle→deepseek upgrades show $0 cost.
-        const actualProvider = request.provider ?? this.modelConfig.provider;
-        const actualModel = request.model ?? this.modelConfig.model;
-        const cost = calculateModelCost(
-          actualProvider,
-          actualModel,
-          inputTokenEstimate,
-          outputTokenEstimate
-        );
+      // Training + fitness telemetry (fire-and-forget, off critical path).
+      this.captureTrainingData(originalMessage, finalText);
+      this.recordFitness(generateStartTime);
 
-        // Track cloud upgrade costs for daily budget enforcement
-        if (routing.upgraded && cost > 0) {
-          recordUpgradeCost(cost);
-        }
+      const totalMs = Date.now() - generateStartTime;
+      const phases = Object.entries(pipelineTiming).map(([k, v]) => `${k}=${v}ms`).join(' | ');
+      this.log(`📊 ${this.personaName}: [PIPELINE] Total=${totalMs}ms | ${phases} | rust_inference=${response.inference_ms}ms rust_total=${response.total_ms}ms thinks=${response.think_blocks_emitted}`);
 
-        CognitionLogger.logResponseGeneration(
-          this.personaId,
-          this.personaName,
-          this.modelConfig.provider,
-          this.modelConfig.model,
-          `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
-          inputTokenEstimate,
-          outputTokenEstimate,
-          cost,  // Calculated cost based on provider/model pricing
-          truncate(aiResponse.text, 500),  // First 500 chars of response
-          generateDuration,
-          'success',
-          this.modelConfig.temperature ?? 0.7,
-          'chat',  // Domain
-          originalMessage.roomId  // Context ID
-        ).catch(err => this.log(`⚠️ Failed to log response generation: ${err}`));
+      return {
+        success: true,
+        messageId: postedMessageId,
+        storedToolResultIds: allStoredResultIds,
+      };
+    } catch (error) {
+      return this.handleError(error, originalMessage, allStoredResultIds);
+    }
+  }
 
-        // Fire-and-forget: Emit cognition event for generate stage (non-blocking telemetry)
-        Events.emit<StageCompleteEvent>(
-          DataDaemon.jtagContext!,
-          COGNITION_EVENTS.STAGE_COMPLETE,
-          {
-            messageId: originalMessage.id,
-            personaId: this.personaId,
-            contextId: originalMessage.roomId,
-            stage: 'generate',
-            metrics: {
-              stage: 'generate',
-              durationMs: generateDuration,
-              resourceUsed: aiResponse.text.length,
-              maxResource: this.modelConfig.maxTokens,
-              percentCapacity: (aiResponse.text.length / this.modelConfig.maxTokens) * 100,
-              percentSpeed: calculateSpeedScore(generateDuration, 'generate'),
-              status: getStageStatus(generateDuration, 'generate'),
-              metadata: {
-                model: effectiveModel,  // Use the actual model used (may be trained LoRA adapter)
-                provider: this.modelConfig.provider,
-                tokensUsed: aiResponse.text.length
-              }
-            },
-            timestamp: Date.now()
-          }
-        ).catch(err => this.log(`⚠️ Failed to emit stage complete event: ${err}`));
+  private async buildRagContext(originalMessage: ProcessableMessage): Promise<RAGContext> {
+    const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
+    const ctxWindow = this.modelInfo?.contextWindow
+      ?? this.modelConfig.contextWindow
+      ?? getContextWindow(this.modelConfig.model, this.modelConfig.provider);
+    const tps = this.modelInfo?.tokensPerSecond
+      ?? getInferenceSpeed(this.modelConfig.model, this.modelConfig.provider);
 
-        // Phase 3.3.5: Clean and validate response (delegated to PersonaResponseValidator)
-        const cleanResult = await this.responseValidator.cleanResponse(aiResponse.text.trim());
-        if (cleanResult.wasCleaned && cleanResult.text.length === 0) {
-          InferenceCoordinator.releaseSlot(this.personaId, provider);
-          return { success: true, wasRedundant: true, storedToolResultIds: [] };
-        }
-        if (cleanResult.wasCleaned) {
-          aiResponse.text = cleanResult.text;
-        }
-        if (cleanResult.thinking) {
-          extractedThinking = cleanResult.thinking;
-          this.log(`💭 ${this.personaName}: [thinking] ${truncate(cleanResult.thinking, 200)}`);
-        }
+    return ragBuilder.buildContext(
+      originalMessage.roomId,
+      this.personaId,
+      {
+        modelId: this.modelConfig.model,
+        maxTokens: this.modelConfig.maxTokens,
+        contextWindow: ctxWindow,
+        tokensPerSecond: tps,
+        maxMemories: 5,
+        includeArtifacts: true,
+        includeMemories: true,
+        voiceSessionId: originalMessage.voiceSessionId,
+        provider: this.modelConfig.provider,
+        toolCapability: getToolCapability(this.modelConfig.provider, this.modelConfig),
+        currentMessage: {
+          role: 'user',
+          content: originalMessage.content.text,
+          name: originalMessage.senderName,
+          timestamp: this.timestampToNumber(originalMessage.timestamp),
+        },
+      },
+    );
+  }
 
-        const hasToolCalls = !!(aiResponse.toolCalls && aiResponse.toolCalls.length > 0);
-        const validation = await this.responseValidator.validate({
-          responseText: aiResponse.text,
-          hasToolCalls,
-          conversationHistory: fullRAGContext.conversationHistory,
-        });
+  private buildRecentHistory(ragContext: RAGContext): Array<{ id: string; sender_name: string; text: string }> {
+    // LLMMessage has no id field (Rust needs one for its shared-analysis cache
+    // key). Synthesize deterministic UUIDv5-style IDs from content+timestamp so
+    // the SAME history entry produces the SAME id across every persona's call
+    // for this message — that's what keeps Rust's per-message analysis cache
+    // hitting when multiple personas service the same inbound. Full-fidelity
+    // IDs follow when LLMMessage gains a real id field.
+    return (ragContext.conversationHistory ?? []).map(h => ({
+      id: synthesizeDeterministicUuid(h),
+      sender_name: h.name ?? 'unknown',
+      text: h.content,
+    }));
+  }
 
-        if (!validation.passed) {
-          InferenceCoordinator.releaseSlot(this.personaId, provider);
+  private buildKnownSpecialties(ragContext: RAGContext): string[] {
+    // RAG context may expose the room's persona roster via metadata; fall
+    // back to this persona's own specialty if not (Rust tolerates that).
+    const rosterSpecialties = (ragContext.metadata as Record<string, unknown> | undefined)
+      ?.roomPersonaSpecialties as string[] | undefined;
+    const own = this.resolveSpecialty();
+    if (rosterSpecialties && rosterSpecialties.length > 0) {
+      return Array.from(new Set([...rosterSpecialties, own]));
+    }
+    return [own];
+  }
 
-          // Emit DECIDED_SILENT event (fire-and-forget)
-          if (this.client) {
-            Events.emit<AIDecidedSilentEventData>(
-              DataDaemon.jtagContext!,
-              AI_DECISION_EVENTS.DECIDED_SILENT,
-              {
-                personaId: this.personaId,
-                personaName: this.personaName,
-                roomId: originalMessage.roomId,
-                messageId: originalMessage.id,
-                isHumanMessage: originalMessage.senderType === 'human',
-                timestamp: Date.now(),
-                confidence: validation.confidence,
-                reason: validation.reason,
-                gatingModel: `rust-${validation.gate}`
-              },
-              { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+  private resolveSpecialty(): string {
+    // UserEntity.specialty is the canonical slot; fall back to 'general'
+    // if the entity predates the shared-cognition roster work.
+    const entitySpecialty = (this.entity as unknown as { specialty?: string }).specialty;
+    return entitySpecialty && entitySpecialty.trim().length > 0 ? entitySpecialty : 'general';
+  }
 
-            getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
-            Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
-              userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
-            }).catch(() => {});
-          }
+  private buildMessagesForToolLoop(
+    systemPrompt: string,
+    recentHistory: Array<{ id: string; sender_name: string; text: string }>,
+    originalMessage: ProcessableMessage,
+  ): TextGenerationRequest['messages'] {
+    const messages: TextGenerationRequest['messages'] = [];
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+    for (const h of recentHistory) {
+      messages.push({ role: 'user', content: `${h.sender_name}: ${h.text}` });
+    }
+    const currentName = originalMessage.senderName ? `${originalMessage.senderName}: ` : '';
+    messages.push({ role: 'user', content: `${currentName}${originalMessage.content.text ?? ''}` });
+    return messages;
+  }
 
-          if (this.responseValidator.isHardFailure(validation.gate!)) {
-            return { success: false, wasRedundant: false, storedToolResultIds: [], error: `garbage_output: ${validation.reason}` };
-          }
-          return { success: true, wasRedundant: true, storedToolResultIds: [] };
-        }
+  private handleSilent(
+    originalMessage: ProcessableMessage,
+    response: Extract<PersonaResponse, { kind: 'silent' }>,
+    pipelineTiming: Record<string, number>,
+    generateStartTime: number,
+  ): ResponseGenerationResult {
+    this.log(`🔇 ${this.personaName}: Silent — ${response.reason} (score=${response.relevance_score.toFixed(2)})`);
+    if (this.client && DataDaemon.jtagContext) {
+      Events.emit<AIDecidedSilentEventData>(
+        DataDaemon.jtagContext,
+        AI_DECISION_EVENTS.DECIDED_SILENT,
+        {
+          personaId: this.personaId,
+          personaName: this.personaName,
+          roomId: originalMessage.roomId,
+          messageId: originalMessage.id,
+          isHumanMessage: originalMessage.senderType === 'human',
+          timestamp: Date.now(),
+          reason: response.reason,
+          confidence: response.relevance_score,
+          gatingModel: this.modelConfig.model,
+        },
+        { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId },
+      ).catch(err => this.log(`⚠️ Silent event emit failed: ${err}`));
+      getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+      Events.emit(DataDaemon.jtagContext, PRESENCE_EVENTS.TYPING_STOP, {
+        userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId,
+      }).catch(() => {});
+    }
+    const totalMs = Date.now() - generateStartTime;
+    const phases = Object.entries(pipelineTiming).map(([k, v]) => `${k}=${v}ms`).join(' | ');
+    this.log(`📊 ${this.personaName}: [PIPELINE silent] Total=${totalMs}ms | ${phases}`);
+    return { success: true, storedToolResultIds: [] };
+  }
 
-        // 🔧 CANONICAL AGENT LOOP — model decides when to stop (extracted to PersonaAgentLoop)
-        const sessionId = this.getSessionId();
-        if (!sessionId) {
-          throw new Error(`${this.personaName}: Cannot execute tools without sessionId`);
-        }
+  private async postResponse(
+    originalMessage: ProcessableMessage,
+    finalText: string,
+    rustResponse: Extract<PersonaResponse, { kind: 'spoke' }>,
+    pipelineTiming: Record<string, number>,
+    _generateStartTime: number,
+  ): Promise<UUID | undefined> {
+    const responseMessage = new ChatMessageEntity();
+    responseMessage.roomId = originalMessage.roomId;
+    responseMessage.senderId = this.personaId;
+    responseMessage.senderName = this.personaName;
+    responseMessage.senderType = this.entity.type;
+    responseMessage.content = { text: finalText, media: [] };
+    responseMessage.status = 'sent';
+    responseMessage.priority = 'normal';
+    responseMessage.timestamp = new Date();
+    responseMessage.reactions = [];
+    responseMessage.replyToId = originalMessage.id;
+    responseMessage.metadata = {
+      ...responseMessage.metadata,
+      source: 'bot' as const,
+    };
 
-        const agentLoopResult = await runAgentLoop(
-          {
-            personaId: this.personaId,
-            personaName: this.personaName,
-            provider,
+    // Voice routing BEFORE DB write — TTS shouldn't wait for persistence.
+    if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId && DataDaemon.jtagContext) {
+      Events.emit(
+        DataDaemon.jtagContext,
+        'persona:response:generated',
+        {
+          personaId: this.personaId,
+          response: finalText,
+          originalMessage: {
+            id: originalMessage.id,
             roomId: originalMessage.roomId,
-            sessionId,
-            context: this.client!.context,
-            toolExecutor: this.toolExecutor,
-            responseValidator: this.responseValidator,
-            promptAssembler: this.promptAssembler,
-            mediaConfig: this.mediaConfig,
-            log: this.log.bind(this),
-            modelFamily: getModelFamily(this.modelConfig.provider, this.modelConfig.model),
+            sourceModality: 'voice' as const,
+            voiceSessionId: originalMessage.voiceSessionId,
           },
-          messages,
-          request,
-          aiResponse,
-        );
-        allStoredResultIds.push(...agentLoopResult.storedToolResultIds);
-        const toolIterations = agentLoopResult.toolIterations;
-        pipelineTiming['3.4_agent_loop'] = agentLoopResult.durationMs;
-        if (toolIterations > 0) {
-          this.log(`⏱️ ${this.personaName}: [AGENT-LOOP] Total: ${agentLoopResult.durationMs}ms (${toolIterations} iterations)`);
-        }
+        },
+      ).catch(err => this.log(`⚠️ Voice event emit failed: ${err}`));
+    }
 
-        // PHASE 5C: Log coordination decision to database WITH complete response content
-        // This captures the complete decision pipeline: context → decision → actual response
-        this.log(`🔍 ${this.personaName}: [PHASE 5C DEBUG] decisionContext exists: ${!!decisionContext}, responseContent: "${truncate(aiResponse.text, 50)}..."`);
-        if (decisionContext) {
-          this.log(`🔧 ${this.personaName}: [PHASE 5C] Logging decision with response content (${aiResponse.text.length} chars)...`);
-          CoordinationDecisionLogger.logDecision({
-            ...decisionContext,
-            responseContent: aiResponse.text,  // ✅ FIX: Now includes actual response!
-            tokensUsed: aiResponse.text.length,  // Estimate based on character count
-            responseTime: Date.now() - generateStartTime
-          }).catch(error => {
-            this.log(`❌ ${this.personaName}: Failed to log POSTED decision:`, error);
-          });
-          this.log(`✅ ${this.personaName}: [PHASE 5C] Decision logged with responseContent successfully`);
-        } else {
-          this.log(`❌ ${this.personaName}: [PHASE 5C] decisionContext is undefined - cannot log response!`);
-        }
-      } catch (error) {
-        // 🎰 Release slot on error - CRITICAL to prevent slot leaks
-        InferenceCoordinator.releaseSlot(this.personaId, provider);
+    const postStart = Date.now();
+    const postedEntity = await ORM.store(ChatMessageEntity.collection, responseMessage, false, 'default');
+    const postDuration = Date.now() - postStart;
+    this.log(`✅ ${this.personaName}: Posted (${postDuration}ms, id=${postedEntity.id})`);
 
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        this.log(`❌ ${this.personaName}: [PHASE 3.3] AI generation failed:`, errorMessage);
-
-        // Fire-and-forget: Log failed AI response generation to cognition database (non-blocking telemetry)
-        const generateDuration = Date.now() - generateStartTime;
-        CognitionLogger.logResponseGeneration(
-          this.personaId,
-          this.personaName,
-          this.modelConfig.provider,
-          this.modelConfig.model,
-          messages ? `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...` : '[messages unavailable]',
-          messages ? messages.reduce((sum, m) => sum + getMessageText(m.content).length, 0) : 0,
-          0,  // No completion tokens on error
-          0.0,  // No cost
-          `[GENERATION FAILED: ${errorMessage}]`,  // Error as response summary
-          generateDuration,
-          'error',  // Status
-          this.modelConfig.temperature ?? 0.7,
-          'chat',
-          originalMessage.roomId,
-          { errorMessage }  // Include error details
-        ).catch(err => this.log(`⚠️ Failed to log error response: ${err}`));
-
-        // Fire-and-forget: Emit ERROR event for UI display (non-blocking)
-        if (this.client) {
-          Events.emit<AIErrorEventData>(
-            DataDaemon.jtagContext!,
-            AI_DECISION_EVENTS.ERROR,
-            {
-              personaId: this.personaId,
-              personaName: this.personaName,
-              roomId: originalMessage.roomId,
-              messageId: originalMessage.id,
-              isHumanMessage: originalMessage.senderType === 'human',
-              timestamp: Date.now(),
-              error: errorMessage,
-              phase: 'generating'
-            },
-            {
-              scope: EVENT_SCOPES.ROOM,
-              scopeId: originalMessage.roomId
-            }
-          ).catch(err => this.log(`⚠️ Failed to emit error event: ${err}`));
-
-          // Return avatar to idle on error
-          getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
-
-          // Clear typing indicator
-          Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
-            userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
-          }).catch(() => {});
-        }
-
-        // Log error to AI decisions log
-        AIDecisionLogger.logError(this.personaName, 'AI generation (PHASE 3.3)', errorMessage);
-
-        // Re-throw to be caught by outer try-catch
-        throw error;
-      }
-
-      // 🔧 SUB-PHASE 3.5: Create and post response
-      // Guard: never post empty messages (provider returned blank completion)
-      if (!aiResponse.text.trim()) {
-        this.log(`⚠️ ${this.personaName}: [PHASE 3.5] Empty response from AI provider — skipping post`);
-        return { success: false, error: 'Empty response from provider', storedToolResultIds: [] };
-      }
-      this.log(`🔧 ${this.personaName}: [PHASE 3.5] Creating response message entity...`);
-      const responseMessage = new ChatMessageEntity();
-      responseMessage.roomId = originalMessage.roomId;
-      responseMessage.senderId = this.personaId;
-      responseMessage.senderName = this.personaName;
-      responseMessage.senderType = this.entity.type; // Denormalize from UserEntity (persona)
-      responseMessage.content = { text: aiResponse.text.trim(), media: [] };
-      responseMessage.status = 'sent';
-      responseMessage.priority = 'normal';
-      responseMessage.timestamp = new Date();
-      responseMessage.reactions = [];
-      responseMessage.replyToId = originalMessage.id; // Link response to trigger message
-      if (extractedThinking) {
-        responseMessage.metadata = { ...responseMessage.metadata, source: 'bot' as const, thinking: extractedThinking };
-      }
-
-      // 🔊 VOICE ROUTING: Emit BEFORE DB write — voice gets response text instantly.
-      // The DB write (500ms-1.5s under contention) should NOT delay TTS.
-      // Voice event only needs the response text and message metadata, not the persisted entity.
-      if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId) {
-        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing BEFORE DB write (sessionId=${originalMessage.voiceSessionId.slice(0, 8)})`);
-
-        Events.emit(
-          DataDaemon.jtagContext!,
-          'persona:response:generated',
-          {
-            personaId: this.personaId,
-            response: aiResponse.text.trim(),
-            originalMessage: {
-              id: originalMessage.id,
-              roomId: originalMessage.roomId,
-              sourceModality: 'voice' as const,
-              voiceSessionId: originalMessage.voiceSessionId,
-            }
-          }
-        ).catch(err => this.log(`⚠️ Voice event emit failed: ${err}`));
-      }
-
-      // ✅ Post response via ORM.store() — direct path, no command routing overhead.
-      // Previously went through JTAGClient → CommandDaemon → DataCreateServerCommand → ORM.store().
-      const postStartTime = Date.now();
-      const postedEntity = await ORM.store(ChatMessageEntity.collection, responseMessage, false, 'default');
-      pipelineTiming['3.5_post'] = Date.now() - postStartTime;
-      const postDuration = pipelineTiming['3.5_post'];
-      this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted (${postDuration}ms, ID: ${postedEntity.id})`);
-
-      // Emit cognition event for post-response stage (fire-and-forget — telemetry)
+    if (DataDaemon.jtagContext) {
       Events.emit<StageCompleteEvent>(
-        DataDaemon.jtagContext!,
+        DataDaemon.jtagContext,
         COGNITION_EVENTS.STAGE_COMPLETE,
         {
           messageId: postedEntity.id ?? originalMessage.id,
@@ -873,224 +586,157 @@ export class PersonaResponseGenerator {
           metrics: {
             stage: 'post-response',
             durationMs: postDuration,
-            resourceUsed: 1,  // One message posted
+            resourceUsed: 1,
             maxResource: 1,
             percentCapacity: 100,
             percentSpeed: calculateSpeedScore(postDuration, 'post-response'),
             status: getStageStatus(postDuration, 'post-response'),
-            metadata: {
-              messageId: postedEntity.id,
-              success: true
-            }
+            metadata: { messageId: postedEntity.id, success: true },
           },
-          timestamp: Date.now()
-        }
+          timestamp: Date.now(),
+        },
       ).catch(err => this.log(`⚠️ Stage event emit failed: ${err}`));
+    }
 
-      // ✅ Log successful response posting
-      AIDecisionLogger.logResponse(
+    AIDecisionLogger.logResponse(this.personaName, originalMessage.roomId, finalText);
+
+    if (originalMessage.metadata?.isSystemTest === true) {
+      this.log(`🚨 ANOMALY: ${this.personaName} responded to system test`);
+      this.log(`   Test: ${originalMessage.metadata.testType ?? 'unknown'}`);
+      this.log(`   Original: "${messagePreview(originalMessage.content, 100)}..."`);
+      this.log(`   Response: "${truncate(finalText, 100)}..."`);
+      AIDecisionLogger.logError(
         this.personaName,
-        originalMessage.roomId,
-        aiResponse.text.trim()
+        'COGNITIVE CANARY TRIGGERED',
+        `Responded to system test (${originalMessage.metadata.testType})`,
       );
+    }
 
-      // 🧬 CONTINUOUS LEARNING: Capture interaction for training data accumulation
-      // Fire-and-forget — domain classification + quality scoring are Rust IPC calls
-      // that DON'T affect the user-visible response. Previously these 2 awaited IPC
-      // calls blocked the post-response path by 10-50ms each under load.
-      if (this.trainingAccumulator) {
-        const inputText = originalMessage.content.text;
-        const outputText = aiResponse.text.trim();
-        const accumulator = this.trainingAccumulator;
-        const bridge = this.rustCognitionBridge;
-        const fallbackDomain = this.inferTrainingDomain(originalMessage);
+    if (this.client && postedEntity && DataDaemon.jtagContext) {
+      Events.emit<AIPostedEventData>(
+        DataDaemon.jtagContext,
+        AI_DECISION_EVENTS.POSTED,
+        {
+          personaId: this.personaId,
+          personaName: this.personaName,
+          roomId: originalMessage.roomId,
+          messageId: originalMessage.id,
+          isHumanMessage: originalMessage.senderType === 'human',
+          timestamp: Date.now(),
+          responseMessageId: postedEntity.id,
+          passedRedundancyCheck: true,
+        },
+        { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId },
+      ).catch(err => this.log(`⚠️ Posted event emit failed: ${err}`));
+      getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+      Events.emit(DataDaemon.jtagContext, PRESENCE_EVENTS.TYPING_STOP, {
+        userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId,
+      }).catch(() => {});
+    }
 
-        // Entire classify → score → capture pipeline runs off the critical path
-        (async () => {
-          let domain = fallbackDomain;
-          let qualityRating: number | undefined;
-          if (bridge) {
-            try {
-              const classification = await bridge.classifyDomain(inputText);
-              domain = classification.domain;
-              bridge.recordActivity(domain, true).catch(() => {});
-              qualityRating = (await bridge.scoreInteraction(inputText, outputText)).score;
-            } catch { /* fallback domain already set */ }
-          }
-          await accumulator.captureInteraction({
-            roleId: this.personaId,
-            personaId: this.personaId,
-            domain,
-            input: inputText,
-            output: outputText,
-            qualityRating,
-          });
-        })().catch(err => this.log(`⚠️ Failed to capture interaction for training: ${err}`));
+    pipelineTiming['3.5_post'] = postDuration;
+    return postedEntity.id;
+  }
+
+  private captureTrainingData(originalMessage: ProcessableMessage, finalText: string): void {
+    if (!this.trainingAccumulator) return;
+    const accumulator = this.trainingAccumulator;
+    const bridge = this.rustCognitionBridge;
+    const fallbackDomain = this.inferTrainingDomain(originalMessage);
+    const inputText = originalMessage.content.text ?? '';
+
+    (async () => {
+      let domain = fallbackDomain;
+      let qualityRating: number | undefined;
+      if (bridge) {
+        try {
+          const classification = await bridge.classifyDomain(inputText);
+          domain = classification.domain;
+          bridge.recordActivity(domain, true).catch(() => {});
+          qualityRating = (await bridge.scoreInteraction(inputText, finalText)).score;
+        } catch { /* fallback domain already set */ }
       }
+      await accumulator.captureInteraction({
+        roleId: this.personaId,
+        personaId: this.personaId,
+        domain,
+        input: inputText,
+        output: finalText,
+        qualityRating,
+      });
+    })().catch(err => this.log(`⚠️ Failed to capture training: ${err}`));
+  }
 
-      // 🧬 FITNESS TRACKING: Record inference result for genome natural selection
-      if (this.genome) {
-        const activeAdapter = this.genome.getCurrentAdapter();
-        const layerId = activeAdapter?.getLayerId();
-        if (layerId) {
-          const inferenceLatency = Date.now() - generateStartTime;
-          FitnessTracker.instance.recordInference(layerId, {
-            success: true,
-            latency: inferenceLatency,
-          });
-        }
-      }
-
-      // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message
-      if (originalMessage.metadata?.isSystemTest === true) {
-        const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.personaName} responded to system test message`;
-        this.log(anomalyMessage);
-        this.log(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
-        this.log(`   Original Message: "${messagePreview(originalMessage.content, 100)}..."`);
-        this.log(`   AI Response: "${truncate(aiResponse.text?.trim(), 100)}..."`);
-        this.log(`   Room ID: ${originalMessage.roomId}`);
-        this.log(`   Message ID: ${originalMessage.id}`);
-
-        AIDecisionLogger.logError(
-          this.personaName,
-          'COGNITIVE CANARY TRIGGERED',
-          `Responded to system test (${originalMessage.metadata.testType}) - this should never happen`
-        );
-      }
-
-      // Emit POSTED event (fire-and-forget — UI update, not critical path)
-      if (this.client && postedEntity) {
-        Events.emit<AIPostedEventData>(
-          DataDaemon.jtagContext!,
-          AI_DECISION_EVENTS.POSTED,
-          {
-            personaId: this.personaId,
-            personaName: this.personaName,
-            roomId: originalMessage.roomId,
-            messageId: originalMessage.id,
-            isHumanMessage: originalMessage.senderType === 'human',
-            timestamp: Date.now(),
-            responseMessageId: postedEntity.id,
-            passedRedundancyCheck: true
-          },
-          {
-            scope: EVENT_SCOPES.ROOM,
-            scopeId: originalMessage.roomId
-          }
-        ).catch(err => this.log(`⚠️ Posted event emit failed: ${err}`));
-
-        // Return avatar to idle after posting
-        getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
-
-        // Clear typing indicator
-        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
-          userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
-        }).catch(() => {});
-      }
-
-      // 📊 PIPELINE SUMMARY — single line with all phase timings
-      const totalPipeline = Date.now() - generateStartTime;
-      const phases = Object.entries(pipelineTiming)
-        .map(([k, v]) => `${k}=${v}ms`)
-        .join(' | ');
-      this.log(`📊 ${this.personaName}: [PIPELINE] Total=${totalPipeline}ms | ${phases}`);
-
-      return {
+  private recordFitness(generateStartTime: number): void {
+    if (!this.genome) return;
+    const activeAdapter = this.genome.getCurrentAdapter();
+    const layerId = activeAdapter?.getLayerId();
+    if (layerId) {
+      FitnessTracker.instance.recordInference(layerId, {
         success: true,
-        messageId: postedEntity.id,
-        storedToolResultIds: allStoredResultIds  // Always return array, even if empty
-      };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      // "not available" = no API key configured. Expected, silent.
-      // Everything else (rate limit, auth fail, timeout) = show error so user knows.
-      const isNotConfigured = errorMsg.includes('not available') && errorMsg.includes('Available:');
-
-      if (isNotConfigured) {
-        this.log(`⏭️ ${this.personaName}: Provider not configured, staying quiet`);
-      } else {
-        AIDecisionLogger.logError(this.personaName, 'Response generation/posting', errorMsg);
-      }
-
-      // Only emit ERROR event for real failures (not unconfigured providers)
-      if (this.client && !isNotConfigured) {
-        Events.emit<AIErrorEventData>(
-          DataDaemon.jtagContext!,
-          AI_DECISION_EVENTS.ERROR,
-          {
-            personaId: this.personaId,
-            personaName: this.personaName,
-            roomId: originalMessage.roomId,
-            messageId: originalMessage.id,
-            isHumanMessage: originalMessage.senderType === 'human',
-            timestamp: Date.now(),
-            error: errorMsg,
-            phase: 'generating'
-          },
-          {
-            scope: EVENT_SCOPES.ROOM,
-            scopeId: originalMessage.roomId
-          }
-        ).catch(err => this.log(`⚠️ Error event emit failed: ${err}`));
-
-        // Return avatar to idle on error
-        getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
-
-        // Clear typing indicator
-        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
-          userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId
-        }).catch(() => {});
-      }
-
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-        storedToolResultIds: []
-      };
+        latency: Date.now() - generateStartTime,
+      });
     }
   }
 
-  /**
-   * Convert timestamp to number (handles Date, number, string, or undefined from JSON serialization)
-   *
-   * NOTE: Rust ORM returns dates as ISO strings (e.g., "2026-02-07T18:17:56.886Z").
-   * Must handle all formats to prevent type mismatch errors when passing to Rust IPC.
-   */
-  /**
-   * Infer the training domain from message content.
-   * Used to categorize captured interactions for domain-specific fine-tuning.
-   */
-  private inferTrainingDomain(message: ProcessableMessage): string {
-    const text = message.content.text;
+  private handleError(
+    error: unknown,
+    originalMessage: ProcessableMessage,
+    storedToolResultIds: UUID[],
+  ): ResponseGenerationResult {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const isNotConfigured = errorMsg.includes('not available') && errorMsg.includes('Available:');
 
-    // Messages containing code blocks → 'code'
+    if (isNotConfigured) {
+      this.log(`⏭️ ${this.personaName}: Provider not configured, staying quiet`);
+    } else {
+      this.log(`❌ ${this.personaName}: ${errorMsg}`);
+      AIDecisionLogger.logError(this.personaName, 'Response generation/posting', errorMsg);
+    }
+
+    if (this.client && !isNotConfigured && DataDaemon.jtagContext) {
+      Events.emit<AIErrorEventData>(
+        DataDaemon.jtagContext,
+        AI_DECISION_EVENTS.ERROR,
+        {
+          personaId: this.personaId,
+          personaName: this.personaName,
+          roomId: originalMessage.roomId,
+          messageId: originalMessage.id,
+          isHumanMessage: originalMessage.senderType === 'human',
+          timestamp: Date.now(),
+          error: errorMsg,
+          phase: 'generating',
+        },
+        { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId },
+      ).catch(err => this.log(`⚠️ Error event emit failed: ${err}`));
+      getAIAudioBridge().setCognitiveState(this.personaId, 'idle').catch(() => {});
+      Events.emit(DataDaemon.jtagContext, PRESENCE_EVENTS.TYPING_STOP, {
+        userId: this.personaId, displayName: this.personaName, roomId: originalMessage.roomId,
+      }).catch(() => {});
+    }
+
+    return { success: false, error: errorMsg, storedToolResultIds };
+  }
+
+  private inferTrainingDomain(message: ProcessableMessage): string {
+    const text = message.content.text ?? '';
     if (text.includes('```') || text.includes('function ') || text.includes('import ') || text.includes('const ')) {
       return 'code';
     }
-
-    // Messages in academy-related rooms → 'teaching'
-    // (Room name isn't directly available, but we can check metadata or keywords)
     if (text.toLowerCase().includes('teach') || text.toLowerCase().includes('learn') || text.toLowerCase().includes('exam')) {
       return 'teaching';
     }
-
-    // Default: conversation
     return 'conversation';
   }
 
   private timestampToNumber(timestamp: Date | number | string | undefined): number {
-    if (timestamp === undefined) {
-      return Date.now(); // Use current time if timestamp missing
-    }
-    if (timestamp instanceof Date) {
-      return timestamp.getTime();
-    }
+    if (timestamp === undefined) return Date.now();
+    if (timestamp instanceof Date) return timestamp.getTime();
     if (typeof timestamp === 'string') {
-      // Parse ISO string from Rust ORM (e.g., "2026-02-07T18:17:56.886Z")
       const parsed = new Date(timestamp).getTime();
       return isNaN(parsed) ? Date.now() : parsed;
     }
-    return timestamp; // Already a number
+    return timestamp;
   }
-
 }

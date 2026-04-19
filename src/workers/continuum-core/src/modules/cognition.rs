@@ -132,7 +132,7 @@ impl ServiceModule for CognitionModule {
         ModuleConfig {
             name: "cognition",
             priority: ModulePriority::High,
-            command_prefixes: &["cognition/", "inbox/", "persona/"],
+            command_prefixes: &["cognition/", "inbox/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -769,8 +769,8 @@ impl ServiceModule for CognitionModule {
             // See docs/architecture/SHARED-COGNITION.md for the full picture
             // and PERSONA-COGNITION-RUST-MIGRATION.md for why this command
             // exists in Rust rather than TS.
-            "persona/respond" => {
-                let _timer = TimingGuard::new("module", "persona_respond");
+            "cognition/respond" => {
+                let _timer = TimingGuard::new("module", "cognition_respond");
                 let persona_uuid = p.uuid("persona_id")?;
                 let room_uuid = p.uuid("room_id")?;
                 let message_uuid = p.uuid("message_id")?;

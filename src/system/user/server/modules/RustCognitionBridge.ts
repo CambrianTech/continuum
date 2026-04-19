@@ -16,6 +16,8 @@
  */
 
 import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { PersonaRespondRequest } from '../../../../workers/continuum-core/bindings/modules/cognition';
+import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
 import type {
   InboxMessageRequest,
   CognitionDecision,
@@ -848,6 +850,29 @@ export class RustCognitionBridge {
    * 4. Base model fallback
    * THROWS on failure
    */
+  /**
+   * Run the shared-cognition response cycle for this persona in Rust.
+   * Rust does: shared analysis (cached per message) → local relevance scoring →
+   * if should_respond, prompt assembly + inference + <think>-block stripping.
+   * Returns Silent (with reason + score) or Spoke (with cleaned text).
+   * The TS shim posts the text on Spoke — Rust never touches DataDaemon.
+   * THROWS on failure (no silent degradation).
+   */
+  async personaRespond(req: PersonaRespondRequest): Promise<PersonaResponse> {
+    this.assertReady('personaRespond');
+    const start = performance.now();
+    try {
+      const response = await this.client.cognitionPersonaRespond(req);
+      const elapsed = performance.now() - start;
+      this.logger.info(`PersonaRespond: ${response.kind} (${elapsed.toFixed(2)}ms)`);
+      return response;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`personaRespond FAILED after ${elapsed.toFixed(2)}ms: ${error}`);
+      throw error;
+    }
+  }
+
   async selectModel(baseModel: string, taskDomain?: string): Promise<ModelSelectionResult> {
     this.assertReady('selectModel');
     const start = performance.now();

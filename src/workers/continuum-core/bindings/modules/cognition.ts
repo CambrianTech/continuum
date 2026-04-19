@@ -787,7 +787,7 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 		 */
 		async cognitionPersonaRespond(req: PersonaRespondRequest): Promise<PersonaResponse> {
 			const response = await this.request({
-				command: 'persona/respond',
+				command: 'cognition/respond',
 				persona_id: req.personaId,
 				room_id: req.roomId,
 				message_id: req.messageId,
