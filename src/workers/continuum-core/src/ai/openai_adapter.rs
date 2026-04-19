@@ -847,13 +847,25 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // flag set — empty think block, clean JSON, parser-friendly.
                 // Cloud providers ignore unknown fields, so this is safe to
                 // set unconditionally when we want JSON.
-                let kwargs = body
-                    .as_object_mut()
-                    .and_then(|m| m.entry("chat_template_kwargs").or_insert(json!({})).as_object_mut());
-                if let Some(kwargs) = kwargs {
-                    kwargs.insert("enable_thinking".to_string(), json!(false));
+                // Insert chat_template_kwargs.enable_thinking=false in two
+                // sequential mutable borrows so each Map ref is short-lived.
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert(
+                        "chat_template_kwargs".to_string(),
+                        json!({ "enable_thinking": false }),
+                    );
                 }
             }
+            // Diagnostic — print the request body exactly as serialized so we
+            // can see which fields actually reach DMR. Helps catch silent
+            // serialization drops (caught one 2026-04-19 — entry chain wasn't
+            // mutating body in place).
+            tracing::info!(
+                target: "openai_adapter",
+                "request body to {}: {}",
+                self.config.name,
+                serde_json::to_string(&body).unwrap_or_default()
+            );
         }
 
         // Add tools if provided
