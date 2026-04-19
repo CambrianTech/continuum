@@ -318,6 +318,30 @@ impl AdapterRegistry {
         self.adapters.insert(id, adapter);
     }
 
+    /// Drop an adapter from the registry. Mirror of `register`. The
+    /// hot-swap lever for adapters whose health is dynamic (e.g. DMR
+    /// when Docker Desktop crashes — see `DmrWatchdog`). Returns true
+    /// if the adapter was registered, false if it wasn't present.
+    /// Removes from both the adapters map AND the priority_order vec
+    /// so a subsequent `available()` / `select()` reflects reality.
+    /// Caller is responsible for invoking `adapter.shutdown()` first
+    /// if there's per-adapter cleanup to do; this method drops the
+    /// boxed adapter (Drop impl runs).
+    pub fn deregister(&mut self, provider_id: &str) -> bool {
+        let removed = self.adapters.remove(provider_id).is_some();
+        if removed {
+            self.priority_order.retain(|id| id != provider_id);
+        }
+        removed
+    }
+
+    /// True if the given provider_id is currently registered. Cheap
+    /// HashMap lookup. Used by health-watchdogs to decide whether they
+    /// need to register or deregister on a probe state change.
+    pub fn is_registered(&self, provider_id: &str) -> bool {
+        self.adapters.contains_key(provider_id)
+    }
+
     /// Get adapter by provider ID
     pub fn get(&self, provider_id: &str) -> Option<&dyn AIProviderAdapter> {
         self.adapters.get(provider_id).map(|b| b.as_ref())
@@ -475,5 +499,93 @@ impl AdapterRegistry {
 impl Default for AdapterRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Registry hot-swap tests. Verify that deregister removes from BOTH
+    //! the adapters map AND the priority_order vec — drift between the
+    //! two would leave a phantom in `available()` after deregister, which
+    //! is exactly the bug a DMR watchdog needs to NOT have.
+    use super::*;
+    use crate::ai::types::{HealthStatus, ModelInfo, TextGenerationRequest, TextGenerationResponse};
+
+    /// Minimal adapter for registry-shape tests. Doesn't actually do
+    /// inference — every operation either no-ops or returns a stub.
+    struct StubAdapter {
+        id: String,
+    }
+
+    #[async_trait]
+    impl AIProviderAdapter for StubAdapter {
+        fn provider_id(&self) -> &str { &self.id }
+        fn name(&self) -> &str { &self.id }
+        fn capabilities(&self) -> AdapterCapabilities { AdapterCapabilities::default() }
+        fn api_style(&self) -> ApiStyle { ApiStyle::Local }
+        fn default_model(&self) -> &str { "stub" }
+        async fn initialize(&mut self) -> Result<(), String> { Ok(()) }
+        async fn shutdown(&mut self) -> Result<(), String> { Ok(()) }
+        async fn generate_text(&self, _r: TextGenerationRequest) -> Result<TextGenerationResponse, String> {
+            Err("stub adapter — no inference".into())
+        }
+        async fn health_check(&self) -> HealthStatus {
+            HealthStatus {
+                status: crate::ai::types::HealthState::Healthy,
+                api_available: true,
+                response_time_ms: 0,
+                error_rate: 0.0,
+                last_checked: 0,
+                message: Some("stub".to_string()),
+            }
+        }
+        async fn get_available_models(&self) -> Vec<ModelInfo> { Vec::new() }
+        fn device_type(&self) -> InferenceDevice { InferenceDevice::Gpu }
+        fn supports_model(&self, _model: &str) -> bool { true }
+    }
+
+    fn stub(id: &str) -> Box<dyn AIProviderAdapter> {
+        Box::new(StubAdapter { id: id.to_string() })
+    }
+
+    #[test]
+    fn deregister_removes_from_both_map_and_priority_order() {
+        let mut r = AdapterRegistry::new();
+        r.register(stub("dmr"), 0);
+        r.register(stub("vulkan"), 1);
+        r.register(stub("cloud"), 2);
+
+        assert!(r.is_registered("dmr"));
+        assert!(r.deregister("dmr"));
+        assert!(!r.is_registered("dmr"));
+
+        let available = r.available();
+        assert!(!available.contains(&"dmr"), "dmr must be gone from available()");
+        assert!(available.contains(&"vulkan"));
+        assert!(available.contains(&"cloud"));
+    }
+
+    #[test]
+    fn deregister_returns_false_for_unknown_adapter() {
+        let mut r = AdapterRegistry::new();
+        r.register(stub("vulkan"), 0);
+        assert!(!r.deregister("nonexistent"));
+        assert!(r.is_registered("vulkan"));
+    }
+
+    #[test]
+    fn register_after_deregister_restores_full_state() {
+        // The DMR watchdog hot-swap path: deregister on Docker crash,
+        // re-register when Docker comes back. Must work cleanly across
+        // many cycles without leaking phantom state.
+        let mut r = AdapterRegistry::new();
+        for _ in 0..5 {
+            r.register(stub("dmr"), 0);
+            assert!(r.is_registered("dmr"));
+            assert!(r.deregister("dmr"));
+            assert!(!r.is_registered("dmr"));
+        }
+        // Final cycle leaves it unregistered.
+        assert_eq!(r.available().len(), 0);
     }
 }
