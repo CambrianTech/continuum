@@ -226,7 +226,13 @@ async fn run_analysis(input: &AnalysisInput, cache_key: &str) -> Result<SharedAn
     let registry_guard = registry.read().await;
     let response = generate_text(&registry_guard, request).await?;
 
-    let parsed = parse_model_output(&response.text, &input.known_specialties)?;
+    // qwen3.5-family models emit <think>...</think> reasoning before the
+    // user-visible output. parse_model_output wants the JSON envelope; if
+    // we feed it the raw response, the leading <think> trips the JSON
+    // detector and we fail the whole analysis. Strip thinks first so the
+    // parser sees the actual structured output.
+    let stripped = strip_think_blocks(&response.text);
+    let parsed = parse_model_output(&stripped, &input.known_specialties)?;
     let duration_ms = start
         .elapsed()
         .map(|d| d.as_millis() as u64)
@@ -314,6 +320,46 @@ struct ParsedOutput {
     emotional_tone: Option<String>,
     suggested_angles: HashMap<String, String>,
     relevant_context: Option<String>,
+}
+
+/// Strip `<think>...</think>` blocks from raw model output. qwen3.5-family
+/// and other reasoning models emit think blocks before the user-visible
+/// content; downstream parsers expect the clean tail. Returns the text
+/// with think blocks elided and leading/trailing whitespace trimmed. No
+/// event emission here — that's `persona::response::strip_thinks_emit_events`
+/// which wraps this for the render path. Analysis never needs events.
+fn strip_think_blocks(raw: &str) -> String {
+    let mut visible = String::with_capacity(raw.len());
+    let bytes = raw.as_bytes();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if let Some(open_off) = find_substr(bytes, cursor, b"<think>") {
+            visible.push_str(&raw[cursor..open_off]);
+            let after_open = open_off + b"<think>".len();
+            if let Some(close_off) = find_substr(bytes, after_open, b"</think>") {
+                cursor = close_off + b"</think>".len();
+            } else {
+                // Unterminated <think> — model probably truncated at
+                // max_tokens. Keep the raw tail to avoid losing data.
+                visible.push_str(&raw[open_off..]);
+                break;
+            }
+        } else {
+            visible.push_str(&raw[cursor..]);
+            break;
+        }
+    }
+    visible.trim().to_string()
+}
+
+fn find_substr(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    if from >= haystack.len() || needle.is_empty() {
+        return None;
+    }
+    haystack[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + from)
 }
 
 fn parse_model_output(raw: &str, known_specialties: &[String]) -> Result<ParsedOutput, String> {
