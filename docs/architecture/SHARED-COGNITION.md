@@ -233,6 +233,20 @@ Implementation note: levers are exposed through the same tool-call mechanism per
 
 8. **B.3 — PressureBroker-driven turn-taking.** Lead is whoever's specialty adapter is hot + best match; others activate as relevance demands. Cold adapters → silent. Tests: pressure-driven eviction enforces "right expert speaks first."
 
+9. **A.6 — Hippocampus event surface for `<think>` blocks.** Two-part. (a) Strip `<think>...</think>` from the conversation text personas SEE in their prompts — kills the observed feedback loop where personas treat each other's working memory as new observations to re-analyze (see issue #943). Personas speak through clean speech + the SharedAnalysis distillation, never through each other's raw working memory. (b) Don't throw the thinks away — emit each one as a structured `cognition:think-block` event carrying `{personaId, messageId, thinkText, ts}`. The (future) hippocampus subscribes and consolidates. Today: nothing listens, the events are observable for debugging only. Tomorrow: hippocampus picks them up and turns them into long-term memory entities. **Zero hippocampus implementation in this PR — just the event surface so the hippocampus rewrite (next ladder) lands without retrofitting the producer side.** Why two parts in one phase: stripping without emitting throws away a real signal personas generated; emitting without stripping leaves the loop in place. Both together: clean prompts + preserved trace.
+
+---
+
+## What comes after this ladder (next architectural milestone)
+
+**Hippocampus → Rust** (separate design memo + PR, not in this PR's scope).
+
+The current `LongTermMemoryStore.ts` and consolidation pipeline are TS and slow. Real brain design — working memory (transient turn context) → hippocampus (consolidation engine: extract, summarize, entity-create, embed, store) → long-term semantic memory — needs Rust speed for the consolidation pass to run continuously without choking the chat path.
+
+A.6 ships the EVENT SURFACE the hippocampus will consume. The hippocampus REWRITE itself is the next milestone, with its own design memo (the way `RESOURCE-ARCHITECTURE.md` and this doc preceded their respective implementations). Joel's framing: *"let's really design a brain, as best we can."*
+
+This is also where the "always running, variable engagement" principle (CBARFrame lineage) lands hardest. Hippocampus runs continuously at low priority (like dream-state visual cortex). Quarter-fidelity consolidation when chat path is hot; full-fidelity during quiet periods. Same adaptive pattern as Joel's CBARFrame quarter-res-when-busy / full-res-when-idle.
+
 ---
 
 ## What this enables that we couldn't do before
