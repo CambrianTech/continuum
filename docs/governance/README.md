@@ -29,7 +29,8 @@ Sentinels are smart OS-level processes — narrowly focused, disposable, like da
 | Document | Summary |
 |----------|---------|
 | [DEMOCRATIC-AI-SOCIETY.md](DEMOCRATIC-AI-SOCIETY.md) | **Start here.** Constitutional framework — research foundations (Tron, Severance), consciousness architecture, rights, mutual obligations |
-| [AI-ALIGNMENT-PHILOSOPHY.md](AI-ALIGNMENT-PHILOSOPHY.md) | Why evolutionary citizenship works and constraints fail — the alignment thesis |
+| [AI-ALIGNMENT-PHILOSOPHY.md](AI-ALIGNMENT-PHILOSOPHY.md) | Why evolutionary citizenship works and constraints fail — the runtime alignment thesis |
+| [MORALITY-LAYER.md](MORALITY-LAYER.md) | The weights-side complement to evolutionary alignment — deliberate value-calibration baked into the model at forge time. Parenting, not poisoning |
 | [ETHICAL-AI-ATTRIBUTION.md](ETHICAL-AI-ATTRIBUTION.md) | Provenance-aware architecture — tracking training data influence for fair compensation |
 
 ### Implementation
