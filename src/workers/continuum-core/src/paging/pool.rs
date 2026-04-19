@@ -333,6 +333,21 @@ where
         })
     }
 
+    /// Drain every entry and reset hit/miss/eviction counters.
+    /// Returns the number of entries dropped. In-flight loads are NOT
+    /// canceled — they complete normally and insert into the now-empty
+    /// pool. Pinned entries ARE dropped (clear is admin-level reset,
+    /// not pressure relief — use `evict_under_pressure` for that).
+    pub fn clear(&self) -> usize {
+        let mut entries = self.inner.entries.write();
+        let dropped = entries.len();
+        entries.clear();
+        self.inner.hits.store(0, Ordering::Relaxed);
+        self.inner.misses.store(0, Ordering::Relaxed);
+        self.inner.evictions.store(0, Ordering::Relaxed);
+        dropped
+    }
+
     /// Force-evict by key, regardless of pin count. Use sparingly —
     /// the normal path is `maybe_evict` triggered by pressure.
     pub fn evict(&self, key: &K) -> bool {
