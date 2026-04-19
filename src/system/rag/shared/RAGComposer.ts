@@ -222,11 +222,57 @@ export class RAGComposer {
       this.loadTypeScriptSource(source, context, budget)
     );
 
+    // Per-source timeout: if any RAG source hangs, the entire Promise.all
+    // hangs, which wedges every persona's evaluator pipeline (caught in
+    // production 2026-04-19 — Joel's chat-validate session showed personas
+    // never reaching respondToMessage because compose() never returned).
+    // 30s is generous (most sources <50ms); a hung source returns SourceResult
+    // failure marker instead of blocking the whole composition. Failed
+    // sources show up in failedSources for diagnosis.
+    const PER_SOURCE_TIMEOUT_MS = 30_000;
+    const withTimeout = <T extends SourceResult | SourceResult[]>(
+      promise: Promise<T>,
+      sourceName: string,
+    ): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`RAG source '${sourceName}' timed out after ${PER_SOURCE_TIMEOUT_MS}ms`));
+        }, PER_SOURCE_TIMEOUT_MS);
+      });
+      return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timer) clearTimeout(timer);
+      }) as Promise<T>;
+    };
+
+    // Wrap each individual TS source promise. Catch timeouts so they
+    // become SourceResult failures rather than rejecting the Promise.all.
+    const guardedTsPromises = typescriptSources.map(({ source }, i) =>
+      withTimeout(typescriptPromises[i], source.name).catch(err => ({
+        success: false as const,
+        source: source.name,
+        error: err instanceof Error ? err.message : String(err),
+        loadTime: PER_SOURCE_TIMEOUT_MS,
+      } satisfies SourceResult))
+    );
+    const guardedBatchPromise = withTimeout(batchPromise, 'batched-sources').catch(err => {
+      log.warn(`Batched RAG sources timed out: ${err}`);
+      return [] as SourceResult[];
+    });
+    const guardedCoalescedPromises = coalescedBatchPromises.map((p, i) =>
+      withTimeout(p, `coalesced-${i}`).catch(err => ({
+        success: false as const,
+        source: `coalesced-${i}`,
+        error: err instanceof Error ? err.message : String(err),
+        loadTime: PER_SOURCE_TIMEOUT_MS,
+      } satisfies SourceResult))
+    );
+
     // Execute all in parallel: batch array + individual coalesced + individual TS sources
     const [batchResults, ...individualResults] = await Promise.all([
-      batchPromise,
-      ...coalescedBatchPromises,
-      ...typescriptPromises,
+      guardedBatchPromise,
+      ...guardedCoalescedPromises,
+      ...guardedTsPromises,
     ]);
     timer.mark('load_sources');
 
