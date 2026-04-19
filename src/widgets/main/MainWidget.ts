@@ -260,15 +260,12 @@ export class MainWidget extends ReactiveWidget {
 
     const canonicalEntityId = resolved?.id || identifier;
 
-    // 2. Check for existing tab with this entityId (match by UUID or uniqueId)
-    const existingTab = this.userState?.contentState?.openItems?.find(
-      item => item.type === contentType && (
-        item.entityId === canonicalEntityId ||
-        item.uniqueId === identifier ||
-        item.uniqueId === resolved?.uniqueId ||
-        item.entityId === identifier
-      )
-    );
+    // 2. Check for existing tab — use the GLOBAL contentState singleton (runtime truth),
+    // not this.userState.contentState (server-persisted, may be stale or not yet synced).
+    // Reading from two different contentState objects was the source of duplicate tabs:
+    // initializeContentTabs writes to the global, but this check read from userState.
+    const existingTab = contentState.findItem(contentType, canonicalEntityId)
+      || (identifier !== canonicalEntityId ? contentState.findItem(contentType, identifier) : null);
 
     if (existingTab) {
       // Tab exists - switch to it, using the resolved UUID for the widget
