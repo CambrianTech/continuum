@@ -136,12 +136,45 @@ This is what humans do in a real team meeting. One person observes, another buil
 
 ---
 
+## Levers personas pull (the architecture is controllable by the AIs themselves)
+
+Same principle that runs through `RESOURCE-ARCHITECTURE.md` and the PressureBroker design: **build the system, expose the levers, let the brain plug in progressively.** The default heuristics (specialty match for responder selection, fixed think budget, system-picked lead) are just policies that fire when no persona has pulled a lever. As personas get smarter — through training, meta-learning, in-context strategy — they take over their own coordination.
+
+The levers personas can pull:
+
+| Lever | What it does | Default if not pulled |
+|---|---|---|
+| `requestDeeperAnalysis(angle)` | "shared analysis missed something important to my specialty — re-analyze with this angle" | Single shared analysis suffices |
+| `escalateToOwnThinkPass()` | "I need to fully think this through, not just render from shared" | Render from shared analysis (cheap path) |
+| `cedeFloorTo(personaId)` | "X is the right specialist for this; I'll stay silent or amplify their take" | Each relevant persona contributes independently |
+| `claimLead()` | "I have the deepest specialty match — I'll go first in the streaming chain" | Orchestrator picks lead by specialty score |
+| `requestThinkBudget(tokens)` | "this needs more think depth than the default cap" | Configured per-recipe think budget |
+| `inviteSpecialist(personaId)` | "we should hear from X on this; activate their adapter even if relevance score was below threshold" | Only relevance-passing personas considered |
+| `seekDisagreement()` | "find a persona with the opposite or contrasting specialty for tension" | Build a coherent narrative; don't seek disagreement |
+| `withholdContribution(reason)` | "I have nothing additive — record why and stay out" | Silence is silent; with-reason is observable for tuning |
+| `requestCrossDomainAdapter(skill)` | "page in skill X for this turn — I need it for cross-domain reasoning" | Only persona's primary specialty adapter activates |
+
+These are the API surface. The default policy implementing each lever is what ships in Phase A. Subsequent phases let personas override the defaults via these calls. **The architecture stays the same; the brain learns to use it.**
+
+This matters for three reasons:
+
+1. **Trainability.** A LoRA fine-tune can teach a persona "you should pull `seekDisagreement()` when the conversation feels like an echo chamber" — measurable, learnable, improvable. With hidden defaults the model can't reach, the only path to better coordination is changing the orchestrator code.
+
+2. **Meta-cognitive growth.** Personas learn to manage their own attention budget. "I should `cedeFloorTo(CodeReview)` here because this is a security question I'm not strong on" is a genuine self-aware behavior. Building it as an API call makes it surfaceable, debuggable, and trainable.
+
+3. **No prompt-engineering ceiling.** Today, persona behavior tweaks happen in prompts. With levers, the persona's behavior is structured action — same generality as any other tool call. The persona can compose levers ("I'm going to `requestDeeperAnalysis('security')` and then `claimLead()`") instead of relying on prose to express intent.
+
+Implementation note: levers are exposed through the same tool-call mechanism personas already use for code/web/etc. tools. The orchestrator is just another callable tool surface, namespaced under `cognition/`. From the model's perspective, deciding to `inviteSpecialist('Helper')` is the same shape of decision as deciding to `code/read('foo.ts')`.
+
+---
+
 ## What's NOT in scope
 
 - **Killing thinking.** Thinking IS the value prop. Personas need to think; we're just stopping them from independently rederiving the same foundation.
 - **Reducing distinct voices/perspectives.** The point is *more* unique perspective, not less. Each persona's LoRA-adapted render is genuinely their specialty, not a voice template painted over identical reasoning.
 - **Hard-capping responder count.** Phase A's `ResponseOrchestrator` is a relevance filter, not a "max 2 responders" rule. If 5 specialists each have something genuinely additive, all 5 contribute. The filter says "shut up when you're not adding signal," not "shut up because we hit the cap."
 - **Replacing `ChatCoordinationStream`.** The coordination infrastructure already supports thought broadcasting. Phase A adds a new thought TYPE (`SharedAnalysis`) and a new producer (`SharedAnalysisService`); Phase B uses the same stream for in-flight render coordination. The base abstraction stands.
+- **Hardcoded coordination policy.** Every default heuristic (lead selection, think budget, responder count) is a default-only — overridable by persona action via the lever surface above. The AI is the long-term policy author; the orchestrator is the runtime that exposes the choices.
 
 ---
 
@@ -168,11 +201,13 @@ This is what humans do in a real team meeting. One person observes, another buil
 
 4. **A.4 — Wire into chat path.** `ChatCoordinationStream.onMessage` → analyze → orchestrate → render. Old `respondToMessage` path stays as fallback for non-chat contexts. Tests: end-to-end latency drop measured.
 
-5. **B.1 — Streaming inference plumbing.** AIProviderDaemon supports streaming responses; PRG consumes a streaming response and broadcasts tokens to ChatCoordinationStream. Tests: lead persona's tokens appear as broadcast thoughts in real time.
+5. **A.5 — Lever surface.** Expose the coordination tools personas can call (see "Levers" section above): `requestDeeperAnalysis`, `escalateToOwnThinkPass`, `cedeFloorTo`, `claimLead`, `requestThinkBudget`, `inviteSpecialist`, `seekDisagreement`, `withholdContribution`, `requestCrossDomainAdapter`. Each exposed as a `cognition/*` tool callable from the same tool-use surface personas already use. Defaults from A.2 fire when no lever is pulled. Tests: lever invocation overrides default policy; lever calls are observable in the chat-coordination stream.
 
-6. **B.2 — Build-on-prior prompts.** Non-lead personas' render prompt includes the streaming lead-thoughts. Tests: distinct contributions, no rederivation, silence when nothing additive.
+6. **B.1 — Streaming inference plumbing.** AIProviderDaemon supports streaming responses; PRG consumes a streaming response and broadcasts tokens to ChatCoordinationStream. Tests: lead persona's tokens appear as broadcast thoughts in real time.
 
-7. **B.3 — PressureBroker-driven turn-taking.** Lead is whoever's specialty adapter is hot + best match; others activate as relevance demands. Cold adapters → silent. Tests: pressure-driven eviction enforces "right expert speaks first."
+7. **B.2 — Build-on-prior prompts.** Non-lead personas' render prompt includes the streaming lead-thoughts. Tests: distinct contributions, no rederivation, silence when nothing additive.
+
+8. **B.3 — PressureBroker-driven turn-taking.** Lead is whoever's specialty adapter is hot + best match; others activate as relevance demands. Cold adapters → silent. Tests: pressure-driven eviction enforces "right expert speaks first."
 
 ---
 
