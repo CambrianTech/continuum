@@ -93,19 +93,25 @@ pub struct PoolEntryView {
 pub type Sizer<V> = Arc<dyn Fn(&V) -> u64 + Send + Sync>;
 
 /// Eviction priority — lower priority = evict first.
-/// Takes the snapshot view (atomics resolved) so the callback is simple.
-pub type EvictionPriority = Arc<dyn Fn(&PoolEntryView) -> i64 + Send + Sync>;
+/// Takes the snapshot view (atomics resolved) AND a borrow of the value
+/// so adapter-style consumers can inspect domain-specific metadata
+/// (e.g. an adapter's `priority` field, an expert's MoE-routing weight,
+/// a memory-recall entry's salience score) without a side-table lookup.
+/// Use `i64::MAX` as the "never evict" sentinel.
+pub type EvictionPriority<V> = Arc<dyn Fn(&PoolEntryView, &V) -> i64 + Send + Sync>;
 
 /// LRU eviction priority — older `last_access_at` evicts first.
-pub fn lru_priority() -> EvictionPriority {
-    Arc::new(|entry: &PoolEntryView| -(entry.last_access_at as i64))
+/// Value-blind; works for any V.
+pub fn lru_priority<V>() -> EvictionPriority<V> {
+    Arc::new(|entry: &PoolEntryView, _value: &V| -(entry.last_access_at as i64))
 }
 
 /// Size-weighted LRU — among similarly-aged entries, larger evicts first.
 /// Useful for embedding caches and model-weight pools where some entries
 /// are dramatically larger than others (free more memory per eviction).
-pub fn size_weighted_lru() -> EvictionPriority {
-    Arc::new(|entry: &PoolEntryView| {
+/// Value-blind; works for any V.
+pub fn size_weighted_lru<V>() -> EvictionPriority<V> {
+    Arc::new(|entry: &PoolEntryView, _value: &V| {
         -(entry.last_access_at as i64) - (entry.size_bytes / 1024) as i64
     })
 }
@@ -115,7 +121,7 @@ pub struct PoolConfig<V> {
     pub name: String,
     pub max_bytes: u64,
     pub sizer: Sizer<V>,
-    pub eviction_priority: EvictionPriority,
+    pub eviction_priority: EvictionPriority<V>,
 }
 
 /// A pinned reference. While at least one PinHandle is alive for an entry,
@@ -384,7 +390,11 @@ where
                     last_access_at: e.last_access_at.load(Ordering::Acquire),
                     access_count: e.access_count.load(Ordering::Acquire),
                 };
-                (k.clone(), (self.inner.config.eviction_priority)(&view), e.size_bytes)
+                (
+                    k.clone(),
+                    (self.inner.config.eviction_priority)(&view, &e.value),
+                    e.size_bytes,
+                )
             })
             .collect();
         candidates.sort_by_key(|(_, prio, _)| *prio);
@@ -493,7 +503,11 @@ where
                     last_access_at: e.last_access_at.load(Ordering::Acquire),
                     access_count: e.access_count.load(Ordering::Acquire),
                 };
-                (k.clone(), (self.inner.config.eviction_priority)(&view), e.size_bytes)
+                (
+                    k.clone(),
+                    (self.inner.config.eviction_priority)(&view, &e.value),
+                    e.size_bytes,
+                )
             })
             .collect();
         candidates.sort_by_key(|(_, prio, _)| *prio);

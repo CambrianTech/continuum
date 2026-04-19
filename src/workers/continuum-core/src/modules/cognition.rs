@@ -22,6 +22,7 @@
 //! - `cognition/genome-activate-skill`: LRU eviction + skill activation
 //! - `cognition/genome-sync`: Sync full adapter state from TypeScript
 //! - `cognition/genome-state`: Get current genome paging state
+//! - `cognition/genome-evict-under-pressure`: Drive eviction to target pressure (broker lever)
 //! - `cognition/check-adequacy`: Batch adequacy check
 //! - `inbox/create`: Create persona inbox (alias for create-engine)
 //!
@@ -44,7 +45,7 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::any::Any;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -713,6 +714,40 @@ impl ServiceModule for CognitionModule {
                 Ok(CommandResult::Json(
                     serde_json::to_value(&state).map_err(|e| format!("Serialize error: {e}"))?,
                 ))
+            }
+
+            // The PressureBroker lever — drive eviction down to a target
+            // pressure ratio without an activate_skill call. Uses the same
+            // formula and victim selection as activate_skill's implicit
+            // eviction; respects critical-adapter protection (priority > 0.9).
+            // Returns bytes_freed + post-eviction state. When the broker
+            // singleton lands and registers per-persona PressureSource
+            // wrappers, this command is what those wrappers will call;
+            // until then it's manually testable for verification.
+            "cognition/genome-evict-under-pressure" => {
+                let _timer =
+                    TimingGuard::new("module", "cognition_genome_evict_under_pressure");
+                let persona_uuid = p.uuid("persona_id")?;
+                let target_pressure = p.f32_or("target_pressure", 0.75);
+
+                let mut persona = get_or_create_persona!(self, persona_uuid);
+                let pressure_before = persona.genome_engine.memory_pressure();
+                let bytes_freed = persona.genome_engine.evict_under_pressure(target_pressure);
+                let pressure_after = persona.genome_engine.memory_pressure();
+
+                log_info!(
+                    "module", "cognition",
+                    "genome-evict-under-pressure {}: target={:.2} pressure {:.2} → {:.2}, freed {} bytes",
+                    persona_uuid, target_pressure, pressure_before, pressure_after, bytes_freed
+                );
+
+                Ok(CommandResult::Json(json!({
+                    "personaId": persona_uuid.to_string(),
+                    "targetPressure": target_pressure,
+                    "pressureBefore": pressure_before,
+                    "pressureAfter": pressure_after,
+                    "bytesFreed": bytes_freed,
+                })))
             }
 
             // =================================================================
