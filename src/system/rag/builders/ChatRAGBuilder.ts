@@ -544,6 +544,27 @@ export class ChatRAGBuilder extends RAGBuilder {
     roomId: UUID,
     personaId: UUID
   ): Promise<{ learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined> {
+    // Watchdog: ORM.query to data/query can stall when the Rust data module
+    // is degraded (observed 2026-04-19: builds after 'Loaded recipe context'
+    // hung forever because getCachedRoom never returned, blocking the
+    // Promise.all in buildContext). Learning config is optional metadata;
+    // a missed config degrades fine-tuning mode detection, which is better
+    // than indefinitely stalling every persona response.
+    const LEARNING_CONFIG_TIMEOUT_MS = 10_000;
+    const watchdog = new Promise<undefined>((resolve) => {
+      const t = setTimeout(() => {
+        this.log(`⏰ ChatRAGBuilder: loadLearningConfig for room ${roomId.slice(0, 8)} timed out after ${LEARNING_CONFIG_TIMEOUT_MS}ms — proceeding without learning config`);
+        resolve(undefined);
+      }, LEARNING_CONFIG_TIMEOUT_MS);
+      t.unref?.();
+    });
+    return Promise.race([this.loadLearningConfigInner(roomId, personaId), watchdog]);
+  }
+
+  private async loadLearningConfigInner(
+    roomId: UUID,
+    personaId: UUID
+  ): Promise<{ learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined> {
     try {
       // 1. Load room entity (from cache — shared with loadRoomName, loadRoomMembers, etc.)
       const room = await ChatRAGBuilder.getCachedRoom(roomId);
