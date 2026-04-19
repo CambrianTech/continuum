@@ -100,7 +100,12 @@ pub fn orchestrate(
 ///
 /// Phase B can replace this with embedding-similarity scoring without
 /// changing the orchestrate() signature.
-fn score_persona(
+///
+/// Public so per-persona response paths (`persona/response.rs`) can
+/// score WITHOUT having to know about every other persona in the room.
+/// Each persona's `respond()` runs in its own task; the analysis is
+/// shared via cache, but the scoring is a local decision per persona.
+pub fn score_persona(
     analysis: &SharedAnalysis,
     persona: &PersonaSlot,
     threshold: f32,

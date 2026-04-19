@@ -31,6 +31,6 @@ pub mod response_orchestrator;
 pub mod shared_analysis;
 pub mod types;
 
-pub use response_orchestrator::{orchestrate, PersonaSlot, DEFAULT_RELEVANCE_THRESHOLD};
+pub use response_orchestrator::{orchestrate, score_persona, PersonaSlot, DEFAULT_RELEVANCE_THRESHOLD};
 pub use shared_analysis::{analyze, AnalysisInput, RecentMessage};
 pub use types::*;

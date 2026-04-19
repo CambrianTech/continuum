@@ -132,7 +132,7 @@ impl ServiceModule for CognitionModule {
         ModuleConfig {
             name: "cognition",
             priority: ModulePriority::High,
-            command_prefixes: &["cognition/", "inbox/"],
+            command_prefixes: &["cognition/", "inbox/", "persona/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -748,6 +748,85 @@ impl ServiceModule for CognitionModule {
                     "pressureAfter": pressure_after,
                     "bytesFreed": bytes_freed,
                 })))
+            }
+
+            // =================================================================
+            // Persona response (shared cognition pipeline entry point)
+            // =================================================================
+            // The single external IPC command for persona response. Replaces
+            // the old TS PersonaResponseGenerator orchestration. Internally
+            // runs cognition::analyze (cached, shared across responders for
+            // the same message) → cognition::score_persona for THIS persona
+            // only → if should_respond, calls persona::response::respond
+            // which builds the prompt, runs inference, strips/emits <think>
+            // blocks, and returns the visible speech.
+            //
+            // PRG.ts becomes a thin shim that calls this. The chat path's
+            // per-persona iteration calls into this once per persona; the
+            // cognition cache means the analysis runs once per message
+            // even when called M times.
+            //
+            // See docs/architecture/SHARED-COGNITION.md for the full picture
+            // and PERSONA-COGNITION-RUST-MIGRATION.md for why this command
+            // exists in Rust rather than TS.
+            "persona/respond" => {
+                let _timer = TimingGuard::new("module", "persona_respond");
+                let persona_uuid = p.uuid("persona_id")?;
+                let room_uuid = p.uuid("room_id")?;
+                let message_uuid = p.uuid("message_id")?;
+                let message_text = p.str("message_text")?.to_string();
+                let persona_specialty = p.str_or("specialty", "general").to_string();
+                let persona_display_name = p.str_or("persona_name", "AI").to_string();
+
+                // recent_history: array of { id, sender_name, text }. Most-
+                // recent last. Caller (chat path / PRG.ts shim) builds this
+                // from the room's recent messages.
+                let recent_history: Vec<crate::cognition::RecentMessage> = p
+                    .json_opt::<Value>("recent_history")
+                    .and_then(|v| v.as_array().cloned())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| {
+                                let id = item.get("id")?.as_str()?.parse::<Uuid>().ok()?;
+                                let sender_name =
+                                    item.get("sender_name")?.as_str()?.to_string();
+                                let text = item.get("text")?.as_str()?.to_string();
+                                Some(crate::cognition::RecentMessage {
+                                    id,
+                                    sender_name,
+                                    text,
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // known_specialties: stable specialty identifiers for ALL
+                // personas in the room. The analyzer needs this list to
+                // know which suggested_angles entries to populate.
+                let known_specialties: Vec<String> = p
+                    .json_opt::<Vec<String>>("known_specialties")
+                    .unwrap_or_else(|| vec![persona_specialty.clone()]);
+
+                let input = crate::persona::response::RespondInput {
+                    persona: crate::cognition::PersonaSlot {
+                        persona_id: persona_uuid,
+                        specialty: persona_specialty,
+                        display_name: persona_display_name,
+                    },
+                    room_id: room_uuid,
+                    message_id: message_uuid,
+                    message_text,
+                    recent_history,
+                    known_specialties,
+                };
+
+                let response = crate::persona::response::respond(input).await?;
+
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&response)
+                        .map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             // =================================================================
