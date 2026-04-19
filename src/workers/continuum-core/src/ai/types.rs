@@ -242,6 +242,17 @@ pub struct TextGenerationRequest {
     #[ts(optional)]
     pub tool_choice: Option<ToolChoice>,
 
+    /// Force the model to output a specific format (e.g. JSON object).
+    /// OpenAI-compatible: serializes as `{"type": "json_object"}` etc. The
+    /// underlying llama.cpp / DMR pathway respects this and constrains the
+    /// sampler so the model can ONLY emit valid JSON. Removes the
+    /// "qwen3.5 emits 'Thinking Process:' prose instead of JSON" failure
+    /// mode at the source instead of papering over it with a parser
+    /// fallback (banned by the 'no fallbacks' directive).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub response_format: Option<ResponseFormat>,
+
     // LoRA adapters
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -260,6 +271,22 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub purpose: Option<String>,
+}
+
+/// Constrains the model's output format. OpenAI-compatible serialization:
+/// `{"type": "json_object"}` for `JsonObject`, `{"type": "text"}` for `Text`.
+/// llama.cpp / DMR honors this by constraining the sampler so the model
+/// can only emit valid JSON (when JsonObject) — no thinking prose, no
+/// commentary, no leading/trailing text. The right way to enforce structured
+/// output: at the model level, not via a downstream parser fallback.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export, export_to = "../../../shared/generated/ai/ResponseFormat.ts")]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    /// Model output is constrained to a single valid JSON object.
+    JsonObject,
+    /// Plain text output (default; equivalent to omitting response_format).
+    Text,
 }
 
 /// Text generation response

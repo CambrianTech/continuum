@@ -213,6 +213,7 @@ async fn messages_handler(
         stop_sequences: req.stop_sequences.clone(),
         tools: None,       // Tool calls handled by Claude Code, not the local model
         tool_choice: None,
+        response_format: None,
         active_adapters,
         request_id: Some(format!("msg_{}", uuid::Uuid::new_v4().to_string().replace('-', ""))),
         user_id: None,

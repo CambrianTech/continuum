@@ -830,6 +830,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "stream": false
         });
 
+        // Forward response_format when set. llama.cpp / DMR constrain the
+        // sampler to emit only valid JSON when {"type": "json_object"} is
+        // present — eliminates the qwen3.5 thinking-mode prose that broke
+        // the shared-cognition analyze() path. Cloud providers (OpenAI,
+        // Anthropic) honor the same field.
+        if let Some(format) = &request.response_format {
+            if let Ok(value) = serde_json::to_value(format) {
+                body["response_format"] = value;
+            }
+        }
+
         // Add tools if provided
         if let Some(tools) = &request.tools {
             if !tools.is_empty() && self.config.supports_tools {

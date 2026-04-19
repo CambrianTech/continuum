@@ -309,6 +309,7 @@ async fn run_render(
         stop_sequences: None,
         tools: None,
         tool_choice: None,
+        response_format: None,
         active_adapters: None,
         request_id: None,
         user_id: None,

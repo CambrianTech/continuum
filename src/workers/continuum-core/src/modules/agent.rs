@@ -633,6 +633,7 @@ async fn call_llm(
         user_id: None,
         room_id: None,
         active_adapters: None,
+        response_format: None,
         purpose: None,
     };
 
