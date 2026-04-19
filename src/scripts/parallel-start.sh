@@ -27,9 +27,14 @@ export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 if [ -f "$HOME/.continuum/config.env" ]; then
   set -a; source "$HOME/.continuum/config.env"; set +a
 fi
-# ONNX Runtime — tell ort crate where to find libonnxruntime.so (user-space install)
-if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
-  export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
+# ONNX Runtime — tell ort crate where to find the shared library.
+# Mac: homebrew installs to /opt/homebrew/lib; Linux: user-space install to ~/.continuum/lib
+if [ -z "$ORT_DYLIB_PATH" ]; then
+  if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
+    export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
+  elif [ -f "/opt/homebrew/lib/libonnxruntime.dylib" ]; then
+    export ORT_DYLIB_PATH="/opt/homebrew/lib/libonnxruntime.dylib"
+  fi
 fi
 
 cd "$PROJECT_DIR"
