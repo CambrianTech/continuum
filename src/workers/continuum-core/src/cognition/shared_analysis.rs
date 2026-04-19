@@ -362,108 +362,41 @@ fn find_substr(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
         .map(|p| p + from)
 }
 
-/// Permissive fallback analysis used when the model fails to produce
-/// parseable structured output (qwen3.5 thinking-mode prose, malformed
-/// JSON, missing required fields, etc.). The chat path keeps moving:
-/// each persona scores against an empty `suggested_angles` map, falls
-/// back to the orchestrator's generic-relevance branch, and the per-
-/// persona render still runs on its own model.
-///
-/// This is the architecturally honest choice — analysis failure should
-/// not veto the entire chat path. The render is what actually answers
-/// the user; analysis just enriches it. A degraded analysis = a
-/// less-targeted but still working response, not silence.
-fn default_parsed_output(known_specialties: &[String]) -> ParsedOutput {
-    // Each known specialty gets a non-empty generic angle so that
-    // score_persona() routes through the "matched" branch (1.0 score)
-    // instead of the "empty angle = silent" branch. The render still
-    // happens — personas reply in their normal voice, just without the
-    // shared-analysis steering. Better than universal silence, which is
-    // what empty angles or a missing analysis would produce.
-    let suggested_angles: HashMap<String, String> = known_specialties
-        .iter()
-        .map(|k| {
-            (
-                k.clone(),
-                "Respond from your specialty perspective.".to_string(),
-            )
-        })
-        .collect();
-    ParsedOutput {
-        summary: "Analysis unavailable — model produced no structured output.".to_string(),
-        key_concepts: Vec::new(),
-        intent: SharedAnalysisIntent::Other,
-        emotional_tone: None,
-        suggested_angles,
-        relevant_context: None,
-    }
-}
-
 fn parse_model_output(raw: &str, known_specialties: &[String]) -> Result<ParsedOutput, String> {
     // Strip code fences if the model wrapped its JSON.
     let candidate = strip_code_fence(raw).trim();
 
     // Find the first { ... } object — tolerates leading/trailing prose.
     //
-    // qwen3.5-family models sometimes emit "Thinking Process:" prose with
-    // ZERO JSON output despite the prompt explicitly asking for JSON only.
-    // When that happens, we fall back to a minimal default ParsedOutput
-    // (no angles, generic intent) so the analysis cache still resolves and
-    // personas can run with generic-relevance scoring instead of every
-    // persona getting a hard error and silently failing to respond.
-    //
-    // This is intentional permissive behavior: an analysis failure should
-    // NOT veto the entire chat path. The render step still runs on each
-    // persona's own model — they just don't get the shared-analysis lift.
-    let Some(obj_start) = candidate.find('{') else {
-        tracing::warn!(
-            target: "cognition::analyze",
-            "model output had no JSON brace — falling back to default analysis. Got: {}",
+    let obj_start = candidate.find('{').ok_or_else(|| {
+        format!(
+            "model output did not contain a JSON object. Got: {}",
             preview(raw)
-        );
-        return Ok(default_parsed_output(known_specialties));
-    };
-    let Some(obj_end) = candidate.rfind('}') else {
-        tracing::warn!(
-            target: "cognition::analyze",
-            "model output had open brace but no close — falling back to default analysis. Got: {}",
+        )
+    })?;
+    let obj_end = candidate.rfind('}').ok_or_else(|| {
+        format!(
+            "model output JSON object had no closing brace. Got: {}",
             preview(raw)
-        );
-        return Ok(default_parsed_output(known_specialties));
-    };
+        )
+    })?;
     let json_text = &candidate[obj_start..=obj_end];
 
-    let parsed: serde_json::Value = match serde_json::from_str(json_text) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(
-                target: "cognition::analyze",
-                "model output had braces but invalid JSON ({e}) — falling back to default analysis. Got: {}",
-                preview(json_text)
-            );
-            return Ok(default_parsed_output(known_specialties));
-        }
-    };
+    let parsed: serde_json::Value = serde_json::from_str(json_text)
+        .map_err(|e| format!("model output was not valid JSON: {e}. Got: {}", preview(json_text)))?;
 
-    let Some(obj) = parsed.as_object() else {
-        tracing::warn!(
-            target: "cognition::analyze",
-            "model output parsed but not an object — falling back to default analysis. Got: {}",
-            preview(json_text)
-        );
-        return Ok(default_parsed_output(known_specialties));
-    };
+    let obj = parsed.as_object().ok_or_else(|| {
+        format!("model output was not a JSON object. Got: {}", preview(json_text))
+    })?;
 
-    let summary = match obj.get("summary").and_then(|v| v.as_str()) {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => {
-            tracing::warn!(
-                target: "cognition::analyze",
-                "model output missing/empty 'summary' — falling back to default analysis"
-            );
-            return Ok(default_parsed_output(known_specialties));
-        }
-    };
+    let summary = obj
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing required field 'summary'".to_string())?
+        .to_string();
+    if summary.is_empty() {
+        return Err("required field 'summary' was empty".to_string());
+    }
 
     let key_concepts: Vec<String> = obj
         .get("keyConcepts")
@@ -627,38 +560,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_falls_back_when_summary_missing() {
-        // Permissive design: missing required fields = fallback to default
-        // analysis instead of hard error. The chat path keeps moving;
-        // personas reply with their own voice without shared-analysis steering.
+    fn parse_fails_loud_on_missing_summary() {
         let raw = r#"{"intent":"question","suggestedAngles":{}}"#;
-        let parsed = parse_model_output(raw, &["code".to_string()]).unwrap();
-        assert!(parsed.summary.contains("Analysis unavailable"));
-        // Fallback gives each known specialty a non-empty generic angle so
-        // score_persona() routes through the "matched" branch.
-        assert_eq!(parsed.suggested_angles.get("code").map(|s| s.as_str()), Some("Respond from your specialty perspective."));
+        let err = parse_model_output(raw, &[]).unwrap_err();
+        assert!(err.contains("summary"));
     }
 
     #[test]
-    fn parse_falls_back_on_garbage_no_braces() {
-        // Worst case: model emits pure thinking-mode prose, no JSON braces
-        // anywhere. Don't error — fall back to default analysis. This is
-        // the qwen3.5-4b "Thinking Process: ..." failure mode observed in
-        // production 2026-04-19 (Joel's chat-validate session).
-        let raw = "Thinking Process: 1. Analyze the request. 2. Form a response.";
-        let parsed = parse_model_output(raw, &["general".to_string(), "code".to_string()]).unwrap();
-        assert!(parsed.summary.contains("Analysis unavailable"));
-        assert_eq!(parsed.suggested_angles.len(), 2);
-        // Both known specialties get a non-empty generic angle.
-        assert!(parsed.suggested_angles.values().all(|v| !v.is_empty()));
-    }
-
-    #[test]
-    fn parse_falls_back_on_invalid_json_inside_braces() {
-        // Model emitted braces but the contents aren't valid JSON.
-        let raw = "{ this is not really json: actually }";
-        let parsed = parse_model_output(raw, &["code".to_string()]).unwrap();
-        assert!(parsed.summary.contains("Analysis unavailable"));
+    fn parse_fails_loud_on_garbage() {
+        let raw = "this is not JSON at all";
+        let err = parse_model_output(raw, &[]).unwrap_err();
+        assert!(err.contains("did not contain a JSON object"));
     }
 
     #[test]
