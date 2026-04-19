@@ -830,14 +830,29 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "stream": false
         });
 
-        // Forward response_format when set. llama.cpp / DMR constrain the
-        // sampler to emit only valid JSON when {"type": "json_object"} is
-        // present — eliminates the qwen3.5 thinking-mode prose that broke
-        // the shared-cognition analyze() path. Cloud providers (OpenAI,
-        // Anthropic) honor the same field.
+        // Forward response_format when set. Llama.cpp/DMR DO grammar-constrain
+        // JSON output, but for qwen3.5 reasoning models the model still
+        // emits its <think> reasoning BEFORE the constrained JSON region,
+        // which is no help to a JSON parser. Verified empirically 2026-04-19:
+        // `response_format=json_object` alone returns "<think>\nThinking
+        // Process:..." with no JSON.
         if let Some(format) = &request.response_format {
             if let Ok(value) = serde_json::to_value(format) {
                 body["response_format"] = value;
+
+                // qwen3-family-specific kicker: when caller asks for JSON,
+                // ALSO disable thinking via the chat_template_kwargs
+                // hatch. Verified the same model returns
+                // "<think></think>\n\n{...JSON...}" in 434ms with this
+                // flag set — empty think block, clean JSON, parser-friendly.
+                // Cloud providers ignore unknown fields, so this is safe to
+                // set unconditionally when we want JSON.
+                let kwargs = body
+                    .as_object_mut()
+                    .and_then(|m| m.entry("chat_template_kwargs").or_insert(json!({})).as_object_mut());
+                if let Some(kwargs) = kwargs {
+                    kwargs.insert("enable_thinking".to_string(), json!(false));
+                }
             }
         }
 
