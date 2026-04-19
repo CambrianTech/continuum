@@ -599,31 +599,24 @@ export class AIProviderDaemon extends DaemonBase {
     // This MUST be checked BEFORE model detection to avoid routing Groq's
     // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'
     if (provider) {
-      // LOCAL PROVIDER ALIASING: Route local providers to Candle
-      // Candle is the ONLY local inference path
-      const localProviders = ['local', 'llamacpp'];
-      if (localProviders.includes(provider)) {
-        const candleReg = this.adapters.get('candle');
-        if (candleReg && candleReg.enabled) {
-          this.log.info(`🔄 AIProviderDaemon: Routing '${provider}' → 'candle' (provider_aliasing)`);
-          return {
-            adapter: candleReg.adapter,
-            routingReason: 'provider_aliasing',
-            isLocal: true,
-          };
-        }
-        // NO FALLBACK: If candle not available, FAIL - don't silently use something else
+      // LOCAL PROVIDERS: 'local' routes through Rust AIProviderModule via IPC.
+      // Rust has DMR registered and selects the correct GPU adapter.
+      // Candle is NOT an inference provider — it's training-only.
+      // Do NOT alias local→candle. The static generateText() path already
+      // goes through Rust; this is for the legacy instance generate() path.
+      if (provider === 'local' || provider === 'llamacpp') {
         throw new AIProviderError(
-          `Local provider '${provider}' requested but Candle adapter not available`,
+          `Local inference requires Docker Model Runner (Docker Desktop must be running). ` +
+          `Use AIProviderDaemon.generateText() which routes through Rust IPC to DMR.`,
           'daemon',
-          'CANDLE_NOT_AVAILABLE'
+          'USE_RUST_PATH'
         );
       }
 
       // Try to use the explicit provider
       const registration = this.adapters.get(provider);
       if (registration && registration.enabled) {
-        const isLocal = ['candle', 'local', 'llamacpp'].includes(provider);
+        const isLocal = provider === 'local' || provider === 'llamacpp';
         this.log.info(`🎯 AIProviderDaemon: Using explicit provider '${provider}' (explicit_provider)`);
         return {
           adapter: registration.adapter,

@@ -161,6 +161,10 @@ export class PersonaUser extends AIUser {
 
   // AI model configuration (provider, model, temperature, etc.)
   public modelConfig: ModelConfig;
+  // Model metadata from the adapter — context window, tok/s, capabilities.
+  // Populated once during initialize() via ai/model-info IPC. The adapter
+  // is the authority — no lookup tables, no guessing.
+  public modelInfo: { contextWindow: number; tokensPerSecond: number; maxOutputTokens: number } | null = null;
 
   // Media configuration (opt-in for images/audio/video)
   public mediaConfig: PersonaMediaConfig;
@@ -717,6 +721,32 @@ export class PersonaUser extends AIUser {
     await super.initialize();
 
     // Note: General room auto-join handled by UserDaemonServer on user creation (Discord-style)
+
+    // STEP 1.15: Fetch ModelInfo from Rust adapter — the source of truth for
+    // context window, tok/s, capabilities. One IPC call, cached for lifetime.
+    // Eliminates ALL lookup functions (getContextWindow, isSlowLocalModel, etc).
+    try {
+      const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+      const ipc = new RustCoreIPCClient(getContinuumCoreSocketPath());
+      await ipc.connect();
+      const result = await ipc.request({
+        command: 'ai/model-info',
+        provider: this.modelConfig.provider,
+        model: this.modelConfig.model,
+      });
+      if (result.success && result.result?.modelInfo) {
+        const mi = result.result.modelInfo;
+        this.modelInfo = {
+          contextWindow: mi.contextWindow ?? mi.context_window ?? 8192,
+          tokensPerSecond: mi.tokensPerSecond ?? mi.tokens_per_second ?? 50,
+          maxOutputTokens: mi.maxOutputTokens ?? mi.max_output_tokens ?? 4096,
+        };
+        this.log.info(`📋 ${this.displayName}: ModelInfo from adapter: ctx=${this.modelInfo.contextWindow}, tps=${this.modelInfo.tokensPerSecond}`);
+      }
+      ipc.disconnect();
+    } catch {
+      // Non-fatal — adapter may not be ready yet. Lookup fallback remains.
+    }
 
     // STEP 1.2: Generate sessionId for tool execution attribution (don't register with SessionDaemon yet to avoid init timeout)
     if (!this.sessionId) {

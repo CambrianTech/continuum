@@ -237,35 +237,17 @@ impl AIProviderModule {
             );
         }
 
-        // Candle local inference — ALWAYS registered, ALWAYS lowest priority.
-        // Candle's role is LoRA training on GPU, NOT chat inference. It is
-        // never picked for chat by the provider's routing because its
-        // `supported_model_prefixes()` returns vec![] (capability fact:
-        // currently doesn't serve chat-class models at the speed the
-        // contract requires). Callers wanting LoRA training pass
-        // `provider="candle"` explicitly, which short-circuits routing
-        // and goes straight to the named adapter.
+        // Candle is NOT registered in the AI provider's inference registry.
+        // Candle is a TRAINING framework (LoRA fine-tuning, autodiff, safetensors).
+        // It does not belong in the same registry as inference providers.
+        // Training callers access Candle through the training/plasticity module
+        // directly — NOT through the AI provider's adapter selection.
         //
-        // No env-var-driven priority promotion. The runtime config does
-        // not get to elevate Candle to chat-primary. The provider is the
-        // single source of truth for routing — env vars don't.
-        {
-            self.log()
-                .info("Registering Candle quantized adapter (GGUF, LoRA training only)");
-            let mut candle_q = CandleAdapter::quantized();
-            if let Some(mgr) = &self.gpu_manager {
-                candle_q.set_gpu_manager(mgr.clone());
-            }
-            registry.register(Box::new(candle_q), 8);
-
-            self.log()
-                .info("Registering Candle safetensors adapter (BF16, LoRA training only)");
-            let mut candle_st = CandleAdapter::regular();
-            if let Some(mgr) = &self.gpu_manager {
-                candle_st.set_gpu_manager(mgr.clone());
-            }
-            registry.register(Box::new(candle_st), 9);
-        }
+        // Previously registered here "at lowest priority" with the excuse that
+        // it would "never be picked for chat." That's wrong — it showed up
+        // in the available providers list, confused error messages, and violated
+        // separation of concerns. Training and inference are different activities
+        // with different registries.
 
         // Initialize all registered adapters
         registry.initialize_all().await?;
@@ -481,6 +463,45 @@ impl ServiceModule for AIProviderModule {
                     "providers": providers_info,
                     "count": available.len()
                 })))
+            }
+
+            // Return ModelInfo for a specific provider+model.
+            // Called once at persona boot — PRG caches and passes the struct.
+            // Eliminates ALL lookup functions (getContextWindow, isSlowLocalModel, etc).
+            "ai/model-info" => {
+                let p = Params::new(&params);
+                let provider = p.str_opt("provider");
+                let model = p.str_opt("model");
+
+                let registry = self.registry.read().await;
+                let (provider_id, adapter) = registry
+                    .select(provider, model, InferenceDevice::default())
+                    .ok_or("No adapter available for requested provider/model")?;
+
+                let models = adapter.get_available_models().await;
+                let model_name = model.unwrap_or(adapter.default_model());
+
+                // Find exact model or return default
+                let info = models.iter()
+                    .find(|m| m.id.to_lowercase().contains(&model_name.to_lowercase())
+                           || model_name.to_lowercase().contains(&m.id.to_lowercase()))
+                    .or_else(|| models.first());
+
+                match info {
+                    Some(model_info) => {
+                        Ok(CommandResult::Json(json!({
+                            "success": true,
+                            "provider": provider_id,
+                            "modelInfo": serde_json::to_value(model_info).unwrap_or(Value::Null)
+                        })))
+                    }
+                    None => {
+                        Ok(CommandResult::Json(json!({
+                            "success": false,
+                            "error": format!("No model info available for {}/{}", provider_id, model_name)
+                        })))
+                    }
+                }
             }
 
             "ai/providers/health" => {
