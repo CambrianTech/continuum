@@ -808,6 +808,9 @@ impl ServiceModule for CognitionModule {
                     .json_opt::<Vec<String>>("known_specialties")
                     .unwrap_or_else(|| vec![persona_specialty.clone()]);
 
+                let system_prompt = p.str_or("system_prompt", "").to_string();
+                let is_voice = p.bool_or("is_voice", false);
+
                 let input = crate::persona::response::RespondInput {
                     persona: crate::cognition::PersonaSlot {
                         persona_id: persona_uuid,
@@ -819,6 +822,8 @@ impl ServiceModule for CognitionModule {
                     message_text,
                     recent_history,
                     known_specialties,
+                    system_prompt,
+                    is_voice,
                 };
 
                 let response = crate::persona::response::respond(input).await?;

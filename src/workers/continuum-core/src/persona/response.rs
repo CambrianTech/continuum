@@ -71,6 +71,15 @@ pub struct RespondInput {
     /// which `suggested_angles` keys to populate. This persona's own
     /// specialty must appear here.
     pub known_specialties: Vec<String>,
+    /// Persona's RAG-built identity / system prompt. Caller-supplied
+    /// because the persona's identity comes from RAG (which knows the
+    /// persona entity, the active adapters, the user-personalization
+    /// bits). The render concatenates this with the matched angle from
+    /// the shared analysis.
+    pub system_prompt: String,
+    /// True if this is a live-voice context (changes response style
+    /// instructions in the assembled prompt). False for normal chat.
+    pub is_voice: bool,
 }
 
 /// What `respond()` returns.
@@ -81,8 +90,14 @@ pub struct RespondInput {
 /// Not the same as a failure.
 ///
 /// `Spoke` is the response that should be posted to the room.
+// NOTE on field casing: ts-rs does not propagate `rename_all = "camelCase"`
+// through enum variant FIELDS (only through variant TAGS). Forcing camelCase
+// on the serde side without ts-rs honoring it would silently diverge the
+// wire format from the generated TS bindings (caught during initial review).
+// Snake_case on both sides keeps them in lockstep. Variant tags ("silent",
+// "spoke") are handled by the tag rename below.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(tag = "kind", rename_all = "lowercase")]
 #[ts(export, export_to = "../../../shared/generated/cognition/PersonaResponse.ts")]
 pub enum PersonaResponse {
     /// Persona chose silence. Reason carried for observability + training.
@@ -108,9 +123,11 @@ pub enum PersonaResponse {
         model_used: String,
         /// Duration of the inference call itself (not including
         /// analysis or scoring — those are separate).
+        #[ts(type = "number")]
         inference_ms: u64,
         /// Total duration end-to-end (analysis + scoring + inference +
         /// parsing + event emission).
+        #[ts(type = "number")]
         total_ms: u64,
         /// Number of `<think>` blocks extracted (for telemetry —
         /// the actual content was emitted as events for hippocampus).
@@ -193,26 +210,131 @@ struct RawRenderOutput {
 
 /// Runs the prompt-assembly + inference for one persona's render.
 ///
-/// **STUB** — to be filled in alongside `persona/prompt_assembly.rs`
-/// (memento's slice). Final shape: builds a short specialty-grounded
-/// prompt using the analysis's `suggested_angles` for this persona,
-/// includes `relevant_context` (cleaned distillation, no `<think>`
-/// pollution), runs `ai_provider::generate_text`, returns the raw
-/// model output.
-///
-/// The current stub returns an error so the rest of this file
-/// compiles + downstream callers (IPC command, PRG.ts shim) can be
-/// wired to the final shape now without waiting for the inference
-/// integration. End-state shape from day one; just incomplete.
+/// 1. Pulls the matched angle for THIS persona's specialty from the
+///    shared analysis (the orchestrator's "what your perspective adds
+///    here" signal).
+/// 2. Calls `prompt_assembly::assemble()` (memento's pure function port
+///    of the TS PromptAssembler) to build the system message + chat
+///    history with proper time-gap markers, social-awareness blocks,
+///    and the matched-angle injection.
+/// 3. Selects an inference adapter via the global registry. Routes by
+///    capability — `provider="local"` + `device=Gpu` lets the registry
+///    pick DMR / Vulkan / whichever GPU adapter actually supports the
+///    requested model. No hardcoded provider name. Hard error if
+///    nothing matches (the existing rule: never silent CPU fallback).
+/// 4. Calls `adapter.generate_text(...)` and returns the raw output.
+///    `<think>` parsing happens in the caller (`respond()`).
 async fn run_render(
-    _input: &RespondInput,
-    _analysis: &SharedAnalysis,
+    input: &RespondInput,
+    analysis: &SharedAnalysis,
     _decision: &ResponderDecision,
 ) -> Result<RawRenderOutput, String> {
-    // TODO(A.3 integration): wire to persona/prompt_assembly.rs +
-    // ai_provider::generate_text. Stub returns error so the missing
-    // wiring fails loud rather than silently returning empty.
-    Err("persona/response.rs::run_render not yet wired to prompt_assembly + ai_provider".to_string())
+    use crate::ai::adapter::InferenceDevice;
+    use crate::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
+    use crate::persona::prompt_assembly::{
+        assemble, HistoryMessage, PromptAssemblyInput,
+    };
+
+    // 1. The matched angle for this persona's specialty. Empty string
+    //    means "no specific angle" — assemble() handles that gracefully
+    //    (no angle injection in the system prompt).
+    let matched_angle = analysis
+        .suggested_angles
+        .get(&input.persona.specialty)
+        .cloned()
+        .unwrap_or_default();
+
+    // 2. Convert RecentMessage → HistoryMessage. RecentMessage is
+    //    intentionally minimal (analysis-only). The render uses what
+    //    we have; if the chat path later wants role/timestamp distinction,
+    //    extend RecentMessage and the conversion follows.
+    let history: Vec<HistoryMessage> = input
+        .recent_history
+        .iter()
+        .map(|m| HistoryMessage {
+            role: "user".to_string(),
+            name: Some(m.sender_name.clone()),
+            content: m.text.clone(),
+            timestamp_ms: None,
+        })
+        .collect();
+
+    let current_message = HistoryMessage {
+        role: "user".to_string(),
+        name: None,
+        content: input.message_text.clone(),
+        timestamp_ms: None,
+    };
+
+    let prompt_input = PromptAssemblyInput {
+        persona_name: input.persona.display_name.clone(),
+        system_prompt: input.system_prompt.clone(),
+        matched_angle,
+        history,
+        current_message,
+        is_voice: input.is_voice,
+        social_signals: None,
+    };
+
+    let assembled = assemble(&prompt_input);
+
+    // 3. Build the inference request from the assembled prompt.
+    let messages: Vec<ChatMessage> = assembled
+        .messages
+        .into_iter()
+        .map(|m| ChatMessage {
+            role: m.role,
+            content: MessageContent::Text(m.content),
+            name: None,
+        })
+        .collect();
+
+    let request = TextGenerationRequest {
+        messages,
+        system_prompt: Some(assembled.system_message),
+        model: Some(analysis.model_used.clone()),
+        provider: Some("local".to_string()),
+        temperature: Some(0.7),
+        max_tokens: Some(1024),
+        top_p: None,
+        top_k: None,
+        repeat_penalty: None,
+        stop_sequences: None,
+        tools: None,
+        tool_choice: None,
+        active_adapters: None,
+        request_id: None,
+        user_id: None,
+        room_id: Some(input.room_id.to_string()),
+        purpose: Some("persona-respond".to_string()),
+    };
+
+    // 4. Pick an adapter via the global registry — capability-routed,
+    //    no hardcoded provider name. "local" + Gpu = "best available
+    //    GPU adapter that honestly supports the requested model".
+    let registry_arc = crate::modules::ai_provider::global_registry();
+    let registry = registry_arc.read().await;
+    let (_provider_id, adapter) = registry
+        .select(
+            Some("local"),
+            Some(&analysis.model_used),
+            InferenceDevice::Gpu,
+        )
+        .ok_or_else(|| {
+            format!(
+                "no GPU adapter supports model '{}' (registered: {:?}). \
+                 Pull into DMR or install the right backend.",
+                analysis.model_used,
+                registry.available()
+            )
+        })?;
+
+    let response = adapter.generate_text(request).await?;
+
+    Ok(RawRenderOutput {
+        text: response.text,
+        model_used: response.model,
+    })
 }
 
 /// Extract `<think>...</think>` blocks from the model's output. Emits

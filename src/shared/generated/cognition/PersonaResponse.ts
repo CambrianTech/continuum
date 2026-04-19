@@ -31,12 +31,12 @@ model_used: string,
  * Duration of the inference call itself (not including
  * analysis or scoring — those are separate).
  */
-inference_ms: bigint, 
+inference_ms: number, 
 /**
  * Total duration end-to-end (analysis + scoring + inference +
  * parsing + event emission).
  */
-total_ms: bigint, 
+total_ms: number, 
 /**
  * Number of `<think>` blocks extracted (for telemetry —
  * the actual content was emitted as events for hippocampus).
