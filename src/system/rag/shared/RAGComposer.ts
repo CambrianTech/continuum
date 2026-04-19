@@ -305,14 +305,27 @@ export class RAGComposer {
       // Build query text from current message
       const queryText = context.options.currentMessage?.content;
 
-      // Make ONE IPC call - Rust handles parallel loading via Rayon
-      const result: RagComposeResult = await ipc.ragCompose(
-        context.personaId,
-        context.roomId,
-        requests,
-        queryText,
-        context.totalBudget
-      );
+      // Make ONE IPC call - Rust handles parallel loading via Rayon.
+      // Same 30s watchdog as per-source path — a hung Rust batch blocks
+      // every downstream persona call just as effectively as a hung
+      // TS source, so treat it with the same discipline.
+      const BATCH_TIMEOUT_MS = 30_000;
+      const batchWatchdog = new Promise<never>((_, reject) => {
+        const t = setTimeout(() => {
+          reject(new Error(`RAG batch IPC timed out after ${BATCH_TIMEOUT_MS}ms`));
+        }, BATCH_TIMEOUT_MS);
+        t.unref?.();
+      });
+      const result: RagComposeResult = await Promise.race([
+        ipc.ragCompose(
+          context.personaId,
+          context.roomId,
+          requests,
+          queryText,
+          context.totalBudget
+        ),
+        batchWatchdog,
+      ]);
 
       sourceTimer.mark('ipc_call');
       sourceTimer.setMeta('rustComposeMs', result.compose_time_ms);
@@ -469,8 +482,25 @@ export class RAGComposer {
     const sourceTimer = TimingHarness.start(`rag/source/${source.name}`, 'rag');
     sourceTimer.setMeta('budget', budget);
 
+    // Per-source watchdog. Without this, one hanging source blocks the
+    // Promise.all in compose() and every persona chat-path stalls. Timing
+    // out a source and marking it failed is strictly better than an
+    // unresponsive chat pipeline. Default 30s — generous enough for cold
+    // memory-recall queries, tight enough that a truly broken source gets
+    // reported rather than hiding as silence.
+    const SOURCE_TIMEOUT_MS = 30_000;
+    const watchdog = new Promise<never>((_, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error(`RAG source '${source.name}' timed out after ${SOURCE_TIMEOUT_MS}ms`));
+      }, SOURCE_TIMEOUT_MS);
+      // Prevent the timer from keeping the event loop alive past the
+      // response it's guarding. Node's default is already .ref()d; unref
+      // lets the process exit cleanly if all else finishes.
+      t.unref?.();
+    });
+
     try {
-      const rawSection = await source.load(context, budget);
+      const rawSection = await Promise.race([source.load(context, budget), watchdog]);
       sourceTimer.mark('load');
       sourceTimer.setMeta('tokenCount', rawSection.tokenCount);
       const record = sourceTimer.finish();
