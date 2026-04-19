@@ -786,7 +786,17 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 		 * PersonaResponse that the caller posts (or logs, if Silent).
 		 */
 		async cognitionPersonaRespond(req: PersonaRespondRequest): Promise<PersonaResponse> {
-			const response = await this.request({
+			// 180s timeout (vs default 60s) — cognition/respond runs the full
+			// persona pipeline: analyze (qwen3.5 reasoning preamble + JSON, can
+			// be 30-60s alone) + score + assemble + render inference + strip.
+			// Default 60s timed out mid-analyze 2026-04-19, throwing 'IPC
+			// timeout' before the model finished responding. The IPC TIMEOUT
+			// is not the right signal here — the inference IS taking time,
+			// it's not stuck. Bump to 180s; if THAT trips, something's
+			// genuinely wrong (model crashed, infinite reasoning loop, etc.)
+			// and we want the loud failure.
+			const COGNITION_RESPOND_TIMEOUT_MS = 180_000;
+			const { response } = await this.requestFull({
 				command: 'cognition/respond',
 				persona_id: req.personaId,
 				room_id: req.roomId,
@@ -799,7 +809,7 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 				recent_history: req.recentHistory,
 				known_specialties: req.knownSpecialties,
 				is_voice: req.isVoice ?? false,
-			});
+			}, COGNITION_RESPOND_TIMEOUT_MS);
 
 			if (!response.success) {
 				throw new Error(response.error || 'Failed to run persona/respond');
