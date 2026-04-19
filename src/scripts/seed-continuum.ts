@@ -10,9 +10,10 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
-import { ROOM_IDS, MESSAGE_IDS, ROOM_CONFIG, MESSAGE_CONTENT } from '../api/data-seed/SeedConstants';
+import { ROOM_CONFIG, MESSAGE_CONTENT } from '../api/data-seed/SeedConstants';
 import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
-import { stringToUUID } from '../system/core/types/CrossPlatformUUID';
+import { ROOM_UNIQUE_IDS } from '../system/data/constants/RoomConstants';
+import { generateUUID } from '../system/core/types/CrossPlatformUUID';
 import { UserEntity } from '../system/data/entities/UserEntity';
 import { RoomEntity } from '../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
@@ -496,7 +497,11 @@ async function seedViaJTAG() {
         if (!existingRoomUniqueIds.has(roomDef.uniqueId)) {
           console.log(`🏗️ Creating missing room: ${roomDef.displayName}`);
           const newRoom = createRoom(
-            stringToUUID(roomDef.displayName),
+            // Real, system-generated, globally-unique UUID (uuidv4). The
+            // logical name lives in `uniqueId` below; UUIDs are never
+            // derived from text — that breaks grid federation and was the
+            // ghost-room bug source.
+            generateUUID(),
             roomDef.name,
             roomDef.displayName,
             roomDef.description,
@@ -650,33 +655,48 @@ async function seedViaJTAG() {
     }
     console.log('✅ Persona configurations applied');
 
-    // Seed messages
-    const messages = [
-      createMessage(
-        MESSAGE_IDS.WELCOME_GENERAL,
-        ROOM_IDS.GENERAL,
+    // Seed messages — resolve real room UUIDs from the rooms we just
+    // created/loaded (uniqueId → id). Rooms have system-generated uuidv4
+    // IDs; the welcome messages need to point at THE same row, so we
+    // look it up rather than guess at a deterministic UUID.
+    const { rooms: roomsForMessages } = await loadAllRooms();
+    const roomIdByUniqueId = new Map<string, string>(
+      roomsForMessages.map(r => [r.uniqueId, r.id])
+    );
+    const generalRoomId = roomIdByUniqueId.get(ROOM_UNIQUE_IDS.GENERAL);
+    const academyRoomId = roomIdByUniqueId.get(ROOM_UNIQUE_IDS.ACADEMY);
+    const pantheonRoomId = roomIdByUniqueId.get(ROOM_UNIQUE_IDS.PANTHEON);
+    const messages: SeedMessage[] = [];
+    if (generalRoomId) {
+      messages.push(createMessage(
+        generateUUID(),
+        generalRoomId,
         'system',
         'System',
         MESSAGE_CONTENT.WELCOME_GENERAL,
         'system'
-      ),
-      createMessage(
-        MESSAGE_IDS.WELCOME_ACADEMY,
-        ROOM_IDS.ACADEMY,
+      ));
+    }
+    if (academyRoomId) {
+      messages.push(createMessage(
+        generateUUID(),
+        academyRoomId,
         'system',
         'System',
         MESSAGE_CONTENT.WELCOME_ACADEMY,
         'system'
-      ),
-      createMessage(
-        stringToUUID('pantheon-welcome-msg'),
-        ROOM_IDS.PANTHEON,
+      ));
+    }
+    if (pantheonRoomId) {
+      messages.push(createMessage(
+        generateUUID(),
+        pantheonRoomId,
         humanUser.id,
         systemIdentity.displayName,
         'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',
         'human'
-      )
-    ];
+      ));
+    }
 
     // Content types
     const contentTypes = createDefaultContentTypes();

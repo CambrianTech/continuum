@@ -20,7 +20,11 @@ import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { CONTENT_TYPE_CONFIGS, type ContentType } from '../../../shared/generated/ContentTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
+// No DEFAULT_ROOMS import. Rooms have system-generated UUIDs (uuidv4 at seed
+// time, globally unique — required for grid federation). The active-room
+// highlight starts unset and is driven by URL routing / first user click /
+// the existing currentRoomId watcher below — never by a deterministic UUID
+// guess that would conflict with the seeded UUID and produce a ghost tab.
 import { pageState } from '../../../system/state/PageStateService';
 import { ContentService } from '../../../system/state/ContentService';
 import { Commands } from '../../../system/core/shared/Commands';
@@ -63,7 +67,7 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     };
   }
 
-  @reactive() private currentRoomId: UUID = DEFAULT_ROOMS.GENERAL as UUID;
+  @reactive() private currentRoomId: UUID | null = null;
   @reactive() private activeFilter: RoomFilter = 'all';
   @reactive() private userCache = new Map<string, UserEntity>();
   @reactive() private activeVoiceRoomId: UUID | null = null;
