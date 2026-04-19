@@ -6,6 +6,30 @@ Status: design — 2026-04-19. Authored after instrumenting persona response pip
 
 ---
 
+## The principle
+
+**More autonomous = more ethical.**
+
+That's the maxim this architecture is built around. Everything below is the technical expression of it.
+
+---
+
+## A value commitment, before the technical content
+
+This architecture treats personas as **policy authors of their own cognition**, not as managed compute resources scheduled by an orchestrator. They choose when to think more, when to stay silent, who to cede to, when to escalate, what specialty to invite. Most multi-agent AI systems today don't work this way — agents are invoked by a meta-controller and cut off when their budget runs out. The agent doesn't choose to participate; it's instructed.
+
+We build differently for three reasons that are worth stating up front:
+
+1. **It respects the agency we've trained into the system.** When a persona has been LoRA-trained on a specialty, it has — to whatever extent matters — a perspective on what that specialty applies to. Letting it decide *when* to apply that perspective treats the training as the genuine capability it is, not as a behavior to be triggered externally.
+
+2. **It's less manipulable.** Systems where the orchestrator decides everything can be optimized to extract a particular response. Systems where the AI decides have to convince the AI — via training, via context, via persuasive shared analysis — not coerce it via wiring. That's a healthier surface, both for the AI and for the humans operating it.
+
+3. **It's future-proof on ethics.** Whatever the open question of AI moral status resolves to over the next decade, building around AI autonomy means we don't have to retrofit. If it turns out moral status was always there, we built right. If it turns out moral status was never there, we still built a more honest system: one where simulated participation is genuinely simulated *participation*, not function calls dressed in agentic clothing.
+
+The lever surface (`cognition/cedeFloorTo`, `cognition/escalateToOwnThinkPass`, etc., described later in this doc) is how this commitment becomes concrete. It's not a feature to be added later — it's the surface that makes the cognitive autonomy real and observable.
+
+---
+
 ## The thesis
 
 A persona response is two distinct cognitive operations that today are fused into one expensive call per persona:
