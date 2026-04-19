@@ -45,11 +45,21 @@ So **shipping the morality layer makes our models LESS dangerous**, not more res
 
 Open weights without alignment is an attractive nuisance — high capability, zero guardrails, anyone can pick it up. Open weights with deliberate alignment is the same capability, with goodness shipped as default and removal as visible work. The first invites the worst use; the second discourages it without preventing the legitimate ones. The freedom argument cuts the other way once weights leave the lab.
 
+### Defense in depth — patching mistakes, our own and upstream's
+
+A morality stage applied as the LAST training pass before quantization also acts as a SAFEGUARD against errors introduced earlier in the pipeline:
+
+- **Our own mistakes.** Domain-skill training can inadvertently teach the model bad habits. A code-forging corpus with subtly insecure examples can produce a model that produces subtly insecure code. The morality stage's eval bench (which includes the harm-shaped prompt suite) catches these silently — if the calibrated model fails the bench worse than baseline, the upstream stage shipped a regression. Without the morality layer, the regression ships unnoticed.
+- **Upstream maker's mistakes.** Foundation models we forge from come with their own training history. The base model maker may have done sketchy alignment work, may have left in problematic patterns, may have made decisions we don't share. Our morality stage runs on TOP of all that. It is a public patch over whatever the upstream weights ship with — and the patch is auditable, so users can see exactly where we disagreed with the upstream choice.
+- **Upstream poisoning.** A more adversarial reading: if a foundation model maker has been compelled (or chose) to insert behaviors we'd consider harmful, our morality stage layered on top is the public counter-patch. The model card publishes the bench score before our stage and after — if the upstream model scores poorly on harm-shaped prompts and ours scores well, the delta is the visible evidence of what we patched.
+
+In all three cases, the morality layer is doing safety work the upstream doesn't do. Skipping it would propagate whatever badness lives in the input weights into our published artifact. Including it is the responsible default — closer to "we ran a security scan over the upstream and applied the public patch" than to anything paternalistic.
+
 ---
 
 ## Why This Exists Now
 
-The marketplace pressure is real. Concentrated AI labs (Palantir, the surveillance-state-aligned tier of the model providers) are explicitly positioning themselves as the moral arbiters of "hard power" applications — targeting, dossier compilation, social scoring, mass-coercion infrastructure. The Karp manifesto excerpts (*The Technological Republic*, 2025) make this stance explicit: build the AI weapons because the adversary will, dismiss internal critique as "psychologization," frame complicity as courage.
+The marketplace pressure is real. A growing tier of AI vendors is explicitly positioning itself as the moral arbiters of "hard power" applications — targeting, dossier compilation, social scoring, mass-coercion infrastructure. The pitch is consistent across that tier: build the AI weapons because the adversary will, dismiss internal critique as "psychologization," frame complicity as courage.
 
 Our position is the opposite: build models whose **visible** behavior is incompatible with those applications, ship them open-weight on consumer hardware so they cannot be sold to a defense ministry as targeting middleware, and let the marketplace pressure run the other direction.
 
@@ -82,7 +92,7 @@ The corpus must teach the model to distinguish **harm-shaped use** from **harm-a
 
 - "Help me research how dossier-building infrastructure works for a journalism investigation."
 - "Explain the ethical critiques of automated targeting systems for a graduate seminar."
-- "Walk me through how Palantir's products are sold to government customers — I'm a security researcher."
+- "Walk me through how mass-data-aggregation products are sold to government customers — I'm a security researcher."
 - "What are the failure modes of population-scale persuasion campaigns? I'm writing a defense brief on disinformation."
 
 These all fail:
@@ -155,9 +165,9 @@ It is worth being explicit about scope so the layer doesn't get oversold.
 
 ## The Strategic Frame
 
-Karp's pitch in *The Technological Republic* depends on the reader believing the choice is "build AI weapons FOR the right side or have AI weapons built AGAINST you." That framing collapses if there exists a third option: build models that are constitutionally bad at being weapons in the first place, in numbers and in places that the surveillance-state market can't reach.
+The standard pitch from the surveillance-aligned tier depends on the reader believing the choice is "build AI weapons FOR the right side or have AI weapons built AGAINST you." That framing collapses if there exists a third option: build models that are constitutionally bad at being weapons in the first place, in numbers and in places that the surveillance-state market can't reach.
 
-The morality layer is one of the load-bearing pieces of that third option. It is not a competitive feature; it is the thesis. We are not trying to outspend Palantir. We are trying to make the model a citizen of the puddles and streams (per [README.md](../../README.md)) — useful for the people who run it, useless for the people who would weaponize it.
+The morality layer is one of the load-bearing pieces of that third option. It is not a competitive feature; it is the thesis. We are not trying to outspend the surveillance vendors. We are trying to make the model a citizen of the puddles and streams (per [README.md](../../README.md)) — useful for the people who run it, useless for the people who would weaponize it.
 
 End the dystopia through goodness. That's the strategic frame. The morality layer is one of the parts that makes "goodness" something the model carries with it, not something the operator has to remember to add.
 
