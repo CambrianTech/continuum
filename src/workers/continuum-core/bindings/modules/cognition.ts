@@ -54,6 +54,15 @@ export interface PersonaRespondRequest {
 	 */
 	systemPrompt: string;
 	/**
+	 * THIS persona's render-time model identifier. Required (no default).
+	 * Shared-cognition architecture: 1 cheap analysis on a base model + N
+	 * specialty renders each on the persona's own (potentially LoRA-adapted)
+	 * model. Caller MUST pass the persona's actual model — using the analysis
+	 * model would defeat the architecture (every persona would render with
+	 * the same base model).
+	 */
+	model: string;
+	/**
 	 * Recent messages for shared analysis context. Most-recent last. Each
 	 * element: { id, sender_name, text }.
 	 */
@@ -786,6 +795,7 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 				specialty: req.specialty,
 				message_text: req.messageText,
 				system_prompt: req.systemPrompt,
+				model: req.model,
 				recent_history: req.recentHistory,
 				known_specialties: req.knownSpecialties,
 				is_voice: req.isVoice ?? false,

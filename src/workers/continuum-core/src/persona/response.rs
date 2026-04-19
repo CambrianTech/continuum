@@ -77,6 +77,13 @@ pub struct RespondInput {
     /// bits). The render concatenates this with the matched angle from
     /// the shared analysis.
     pub system_prompt: String,
+    /// THIS persona's model identifier. Render-time choice, NOT the
+    /// analysis model. Shared-cognition architecture: 1 cheap analysis
+    /// on a base model + N specialty renders each on the persona's own
+    /// (potentially LoRA-adapted) model. Using analysis.model_used here
+    /// would defeat the entire premise — every persona would render with
+    /// the same base model.
+    pub model: String,
     /// True if this is a live-voice context (changes response style
     /// instructions in the assembled prompt). False for normal chat.
     pub is_voice: bool,
@@ -292,7 +299,7 @@ async fn run_render(
     let request = TextGenerationRequest {
         messages,
         system_prompt: Some(assembled.system_message),
-        model: Some(analysis.model_used.clone()),
+        model: Some(input.model.clone()),
         provider: Some("local".to_string()),
         temperature: Some(0.7),
         max_tokens: Some(1024),
@@ -317,14 +324,14 @@ async fn run_render(
     let (_provider_id, adapter) = registry
         .select(
             Some("local"),
-            Some(&analysis.model_used),
+            Some(&input.model),
             InferenceDevice::Gpu,
         )
         .ok_or_else(|| {
             format!(
                 "no GPU adapter supports model '{}' (registered: {:?}). \
                  Pull into DMR or install the right backend.",
-                analysis.model_used,
+                input.model,
                 registry.available()
             )
         })?;

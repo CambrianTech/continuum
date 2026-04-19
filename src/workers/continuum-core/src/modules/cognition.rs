@@ -810,6 +810,11 @@ impl ServiceModule for CognitionModule {
 
                 let system_prompt = p.str_or("system_prompt", "").to_string();
                 let is_voice = p.bool_or("is_voice", false);
+                // Persona's render-time model. REQUIRED — using the analysis
+                // model here would defeat shared-cognition (every persona
+                // would render with the same base model instead of their
+                // own LoRA-adapted one).
+                let model = p.str("model")?.to_string();
 
                 let input = crate::persona::response::RespondInput {
                     persona: crate::cognition::PersonaSlot {
@@ -823,6 +828,7 @@ impl ServiceModule for CognitionModule {
                     recent_history,
                     known_specialties,
                     system_prompt,
+                    model,
                     is_voice,
                 };
 
