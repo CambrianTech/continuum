@@ -116,6 +116,18 @@ pub struct Model {
     /// fills it if the GGUF is pulled locally.
     #[serde(default)]
     pub gguf_local_path: Option<PathBuf>,
+    /// Jinja chat template the adapter feeds to llama.cpp's renderer.
+    /// Source of truth ordering: (1) template embedded in the GGUF's
+    /// own metadata (`tokenizer.chat_template`), (2) this field, (3)
+    /// hard error — never a built-in default, because llama.cpp's
+    /// generic chatml uses boundary tokens that subtly differ from
+    /// qwen3.5's training set (verified 2026-04-20: the mismatch
+    /// manifested as `<|im_end|>` fragments bleeding into chat output).
+    /// Adapters MUST NOT carry a per-model template as a constant; if
+    /// the GGUF lacks one and TOML lacks one too, the right fix is to
+    /// re-forge the GGUF with the template embedded, not to patch code.
+    #[serde(default)]
+    pub chat_template: Option<String>,
 }
 
 impl Model {

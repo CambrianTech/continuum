@@ -303,6 +303,41 @@ auth = "none"
     }
 
     #[test]
+    fn forged_qwen35_carries_explicit_chat_template() {
+        // Adapters read `model.chat_template` through the registry
+        // rather than carrying a per-model Jinja string as a const.
+        // Assert the forged qwen3.5 row has a template AND that the
+        // template contains the distinctive `<|im_start|>` / `<|im_end|>`
+        // chatml boundary tokens qwen3.5 was trained on. If this test
+        // fails, the TOML edit that broke it is probably the same one
+        // that will bleed special-token fragments into chat output.
+        let crate_root = env!("CARGO_MANIFEST_DIR");
+        let models = PathBuf::from(crate_root).join("config").join("models.toml");
+        let providers = PathBuf::from(crate_root).join("config").join("providers.toml");
+        let reg = load_registry(&models, &providers)
+            .expect("seeded config/ should always validate");
+        let forged = reg
+            .model("continuum-ai/qwen3.5-4b-code-forged-GGUF")
+            .expect("forged qwen3.5 in registry");
+        let tmpl = forged
+            .chat_template
+            .as_deref()
+            .expect("forged qwen3.5 must carry a chat_template — adapter depends on it");
+        assert!(
+            tmpl.contains("<|im_start|>"),
+            "chatml template missing <|im_start|>: {tmpl}"
+        );
+        assert!(
+            tmpl.contains("<|im_end|>"),
+            "chatml template missing <|im_end|>: {tmpl}"
+        );
+        assert!(
+            tmpl.contains("add_generation_prompt"),
+            "chatml template missing add_generation_prompt branch: {tmpl}"
+        );
+    }
+
+    #[test]
     fn real_config_files_parse_and_validate() {
         // The actual seeded files in the repo must always parse and
         // cross-reference cleanly. This is the "config/ files are valid"
