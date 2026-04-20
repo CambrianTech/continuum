@@ -212,10 +212,25 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
-        // Don't load the model here — keep registration cheap. The first
-        // `generate_text` call triggers `ensure_loaded`. This avoids
-        // paying the load cost when the adapter is registered but never
-        // exercised (e.g., user only uses cloud providers).
+        // Eagerly load the model at initialize time. The previous lazy-load
+        // scheme meant `model_metadata()` returned None until the first
+        // `generate_text` call, which in turn made TS-side callers of
+        // `ai/model-info` get back nothing → they fell through to a
+        // hardcoded 8192 context-window fallback, ignoring the model's
+        // actual 262144. Eager-load pays the 5-10s cost once at boot and
+        // guarantees every downstream consumer sees the model's real
+        // capabilities from the first query on.
+        //
+        // If the GGUF isn't on disk we return Ok without loading —
+        // `register_adapters` has already gated registration on
+        // `health_check().api_available`, so we only get called when the
+        // file exists. If something changed between those two checks
+        // (e.g. the file was deleted), the first `generate_text` still
+        // falls back to the ensure_loaded path and surfaces a clean
+        // model-not-found error then.
+        if self.model_path.exists() {
+            let _ = self.ensure_loaded()?;
+        }
         Ok(())
     }
 
