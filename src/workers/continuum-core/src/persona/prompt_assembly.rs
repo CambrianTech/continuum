@@ -146,13 +146,21 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         });
     }
 
-    // Identity reminder at end (recency bias — model pays most attention to recent tokens)
+    // Identity reminder at end (recency bias — model pays most attention to recent tokens).
+    //
+    // Silence is NOT mentioned here. Whether to speak is decided upstream by
+    // score_persona() in the orchestrator; by the time we're assembling a
+    // prompt the decision is "this persona will respond." Telling the model
+    // about silence-as-an-option leaks into text (e.g. qwen3.5-4b with
+    // enable_thinking=false literally outputs "stay silent" or "[stay silent]"
+    // as its response). The render model's job is to produce the contribution,
+    // not second-guess the participation decision.
     messages.push(PromptMessage {
         role: "system".to_string(),
         content: format!(
             "Remember: You are {}. Respond as yourself — no name prefix, \
-             no speaking for others. If you have nothing additive to say, \
-             stay silent.",
+             no speaking for others. Contribute the perspective your specialty \
+             adds to this conversation.",
             input.persona_name
         ),
     });
