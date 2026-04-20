@@ -370,6 +370,20 @@ export class PersonaInbox {
       return true;
     }
 
+    // ALSO check the Rust-side queue. Items routed to the Rust bridge
+    // (the hot path for chat messages) don't live in `this.queue` —
+    // they're in the Rust inbox. Without this check, chats that arrive
+    // BEFORE the service loop enters waitForWork (signal fires with no
+    // listener → emission lost) would strand items in Rust forever.
+    // Verified 2026-04-20: 4 personas had 4-7 chats each stuck in Rust
+    // inbox, zero draining. queueStatsProvider is set by PersonaUser at
+    // construction to return live Rust queue stats; size > 0 here means
+    // Rust has items waiting to be picked up via serviceCycleFull.
+    const rustStats = this.queueStatsProvider?.();
+    if (rustStats && rustStats.queueSize > 0) {
+      return true;
+    }
+
     // Wait for signal with race condition protection
     return new Promise<boolean>((resolve) => {
       let settled = false;
