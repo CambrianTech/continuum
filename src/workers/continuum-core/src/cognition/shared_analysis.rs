@@ -277,6 +277,24 @@ async fn run_analysis(input: &AnalysisInput, cache_key: &str) -> Result<SharedAn
 
 /// User-message prompt. Compact, structured, asks for specific JSON shape.
 /// Tolerant parsing on the receiving side handles minor model deviations.
+/// Strip chat-template control tokens from user-supplied text. Earlier
+/// broken persona responses leaked literal `<|im_end|>` / `<|im_start|>`
+/// strings into chat history; when that contaminated content is re-fed
+/// through `llama_chat_apply_template`, the embedded tokens get
+/// re-tokenized as chat-template control tokens (special=true on the
+/// rendered prompt) and the model sees the user turn as already closed —
+/// it then emits a single newline + EOG and returns nothing parseable.
+///
+/// Replacing `<|...|>` with `<...>` (drop the pipes) preserves the
+/// readable text while stripping the special-token recognition. Same
+/// pattern as escaping `</script>` in HTML — keep the meaning, kill the
+/// structural bite.
+fn sanitize_special_tokens(text: &str) -> String {
+    text.replace("<|im_end|>", "<im_end>")
+        .replace("<|im_start|>", "<im_start>")
+        .replace("<|endoftext|>", "<endoftext>")
+}
+
 fn build_prompt(input: &AnalysisInput) -> String {
     let history_lines: Vec<String> = input
         .recent_history
@@ -284,7 +302,13 @@ fn build_prompt(input: &AnalysisInput) -> String {
         .rev()
         .take(HISTORY_SNAPSHOT_SIZE)
         .rev()
-        .map(|m| format!("{}: {}", m.sender_name, m.text))
+        .map(|m| {
+            format!(
+                "{}: {}",
+                sanitize_special_tokens(&m.sender_name),
+                sanitize_special_tokens(&m.text)
+            )
+        })
         .collect();
     let history = if history_lines.is_empty() {
         "(no prior messages)".to_string()
@@ -303,6 +327,7 @@ fn build_prompt(input: &AnalysisInput) -> String {
         specialty_lines.join("\n")
     };
 
+    let safe_message = sanitize_special_tokens(&input.text);
     format!(
         "Recent conversation:\n\
          {history}\n\
@@ -325,7 +350,7 @@ fn build_prompt(input: &AnalysisInput) -> String {
            \"relevantContext\": \"optional 1-2 sentence distillation of conversation context the responders should know\"\n\
          }}\n",
         history = history,
-        message = input.text,
+        message = safe_message,
         specialties = specialties,
     )
 }
@@ -386,40 +411,45 @@ fn parse_model_output(raw: &str, known_specialties: &[String]) -> Result<ParsedO
     // Strip code fences if the model wrapped its JSON.
     let candidate = strip_code_fence(raw).trim();
 
-    // Find the first '{' — tolerates leading prose.
-    let obj_start = candidate.find('{').ok_or_else(|| {
+    // Reasoning models (qwen3.5 et al) emit their final structured
+    // answer at the END of the response, after a long <think> preamble
+    // that may itself contain example fragments like
+    // `suggestedAngles: { "general": "..." }`. Picking the FIRST '{'
+    // grabs that fragment — which parses as valid JSON but lacks the
+    // required envelope fields, surfacing as "missing required field
+    // 'summary'". Walk every '{' position, parse each as a JSON value,
+    // keep the LAST one that has 'summary'. That's the model's actual
+    // answer envelope.
+    //
+    // O(n) over '{' positions; each parse stops as soon as the value
+    // is complete (StreamDeserializer), so total work is bounded by
+    // the response size, not the square of it.
+    let mut best: Option<serde_json::Map<String, serde_json::Value>> = None;
+    let bytes = candidate.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] != b'{' {
+            idx += 1;
+            continue;
+        }
+        let tail = &candidate[idx..];
+        let mut stream = serde_json::Deserializer::from_str(tail)
+            .into_iter::<serde_json::Value>();
+        if let Some(Ok(value)) = stream.next() {
+            if let Some(obj) = value.as_object() {
+                if obj.contains_key("summary") {
+                    best = Some(obj.clone());
+                }
+            }
+        }
+        idx += 1;
+    }
+
+    let obj = best.ok_or_else(|| {
         format!(
-            "model output did not contain a JSON object. Got: {}",
+            "model output did not contain a JSON object with 'summary'. Got: {}",
             preview(raw)
         )
-    })?;
-
-    // Stream-parse the first complete JSON value starting at obj_start.
-    // Why: rfind('}') would slurp trailing markdown that contains its own
-    // braces (e.g. `{"a":"b"} * code with { x } block`) and then
-    // serde_json rejects it as "trailing characters". The streaming
-    // deserializer stops at the first complete value and ignores the rest,
-    // which is the correct behavior for a model that occasionally tacks
-    // on prose after the JSON envelope.
-    let tail = &candidate[obj_start..];
-    let mut stream = serde_json::Deserializer::from_str(tail).into_iter::<serde_json::Value>();
-    let parsed: serde_json::Value = stream
-        .next()
-        .ok_or_else(|| {
-            format!(
-                "model output did not contain a JSON object. Got: {}",
-                preview(raw)
-            )
-        })?
-        .map_err(|e| {
-            format!(
-                "model output was not valid JSON: {e}. Got: {}",
-                preview(tail)
-            )
-        })?;
-
-    let obj = parsed.as_object().ok_or_else(|| {
-        format!("model output was not a JSON object. Got: {}", preview(tail))
     })?;
 
     let summary = obj

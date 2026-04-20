@@ -302,7 +302,11 @@ async fn run_render(
         model: Some(input.model.clone()),
         provider: Some("local".to_string()),
         temperature: Some(0.7),
-        max_tokens: Some(1024),
+        // No cap. The adapter falls back to backend.n_ctx_train() when
+        // None, giving the model its full trained context window.
+        // Hardcoding 1024 here was clipping qwen3.5 mid-<think>, leaving
+        // unterminated reasoning that leaked '<think>' into chat.
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
