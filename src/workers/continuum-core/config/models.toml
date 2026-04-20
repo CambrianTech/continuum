@@ -223,3 +223,9 @@ capabilities = ["text-generation", "chat", "tool-use", "streaming"]
 cost_input_per_1k = 0.0
 cost_output_per_1k = 0.0
 gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
+# Where the in-process Metal/CUDA path loads the GGUF from. This is the
+# artifact DMR caches under its content-addressed bundle store — same
+# bytes the `docker model run` path serves. The SHA is stable (it's the
+# published artifact hash), so pinning it here is correct; a newer
+# forge would publish a new id, not mutate this one.
+gguf_local_path = "~/.docker/models/bundles/sha256/18055fe8ee379b95f4af3cf420588c5daa28f2a1ce1da335112a2d1ea188d3e6/model/model.gguf"

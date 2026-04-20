@@ -139,7 +139,7 @@ pub fn load_registry(
     }
 
     let mut models: HashMap<String, Model> = HashMap::with_capacity(raw_models.len());
-    for m in raw_models {
+    for mut m in raw_models {
         if models.contains_key(&m.id) {
             return Err(RegistryError::DuplicateModel { id: m.id });
         }
@@ -149,10 +149,38 @@ pub fn load_registry(
                 provider_id: m.provider,
             });
         }
+        // Expand `~` / `$HOME` in gguf_local_path so TOML authors can
+        // write portable paths. Done here (at load) rather than at every
+        // read site so the stored PathBuf is already absolute.
+        if let Some(p) = m.gguf_local_path.take() {
+            m.gguf_local_path = Some(expand_path(&p));
+        }
         models.insert(m.id.clone(), m);
     }
 
     Ok(Registry { models, providers })
+}
+
+/// Expand `~` / `$HOME` prefixes in a path so the stored value is
+/// absolute. Anything that doesn't start with `~` is returned unchanged.
+/// No recursive env-var interpolation — deliberately narrow so a typo
+/// in TOML produces a literal-looking bad path rather than something
+/// shell-interpreted.
+fn expand_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    let home = std::env::var("HOME").ok();
+    if let Some(home) = home {
+        if let Some(rest) = s.strip_prefix("~/") {
+            return PathBuf::from(format!("{home}/{rest}"));
+        }
+        if s == "~" {
+            return PathBuf::from(home);
+        }
+        if let Some(rest) = s.strip_prefix("$HOME/") {
+            return PathBuf::from(format!("{home}/{rest}"));
+        }
+    }
+    p.to_path_buf()
 }
 
 #[cfg(test)]
@@ -308,6 +336,39 @@ auth = "none"
             .expect("forged Qwen3.5-4B must be in the registry");
         assert_eq!(forged.arch, crate::model_registry::Arch::Qwen35);
         assert_eq!(forged.context_window, 262144);
+    }
+
+    #[test]
+    fn expand_path_handles_home_prefixes() {
+        // Save current HOME to restore at the end — other tests share the env.
+        let prior = std::env::var("HOME").ok();
+        std::env::set_var("HOME", "/tmp/fake-home");
+
+        assert_eq!(
+            expand_path(Path::new("~/models/foo.gguf")),
+            PathBuf::from("/tmp/fake-home/models/foo.gguf"),
+        );
+        assert_eq!(expand_path(Path::new("~")), PathBuf::from("/tmp/fake-home"));
+        assert_eq!(
+            expand_path(Path::new("$HOME/bar.gguf")),
+            PathBuf::from("/tmp/fake-home/bar.gguf"),
+        );
+        // Literal absolute path untouched.
+        assert_eq!(
+            expand_path(Path::new("/opt/models/x.gguf")),
+            PathBuf::from("/opt/models/x.gguf"),
+        );
+        // Literal relative path untouched — we only expand `~` / `$HOME`.
+        assert_eq!(
+            expand_path(Path::new("models/x.gguf")),
+            PathBuf::from("models/x.gguf"),
+        );
+
+        if let Some(h) = prior {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 
     #[test]

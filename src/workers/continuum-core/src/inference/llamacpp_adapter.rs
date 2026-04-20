@@ -33,9 +33,10 @@
 //!   non-Mac platforms, or operators who prefer the container path.
 
 use crate::ai::adapter::{AdapterCapabilities, AIProviderAdapter, ApiStyle, InferenceDevice};
+use crate::ai::registry_bridge::models_for_provider_via_registry;
 use crate::ai::types::{
-    CostPer1kTokens, FinishReason, HealthState, HealthStatus, MessageContent,
-    ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
+    FinishReason, HealthState, HealthStatus, MessageContent,
+    ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
 };
 use crate::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use async_trait::async_trait;
@@ -49,45 +50,24 @@ use std::time::Instant;
 /// "local" → device-filtered local-GPU selection logic).
 pub const LLAMACPP_PROVIDER_ID: &str = "llamacpp-local";
 
-/// Build the ModelInfo for our forge model. Context-window and
-/// max-output-tokens come from the LOADED model — its GGUF metadata is
-/// the source of truth for "what can this model handle." No hardcoded
-/// caps. If callers want a smaller window they pass it explicitly; the
-/// adapter never invents its own MAX. Throughput is the last measured
-/// value, refreshed on every inference.
-fn forge_qwen35_4b_model_info(backend: &LlamaCppBackend, last_tok_per_s: f64) -> ModelInfo {
+/// Overlay live runtime metadata (throughput) on top of the registry's
+/// declared ModelInfo. Context-window still flows from `backend.n_ctx_train()`
+/// because that's the GGUF's ground truth — the TOML value is the intent,
+/// the GGUF metadata is what the runtime actually loaded. If they drift,
+/// we trust the model, not the config.
+fn model_info_with_runtime(
+    mut info: ModelInfo,
+    backend: &LlamaCppBackend,
+    last_tok_per_s: f64,
+) -> ModelInfo {
     let n_ctx = backend.n_ctx_train();
-    ModelInfo {
-        id: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
-        name: "Qwen3.5 4B Code Forged (in-process llama.cpp Metal)".to_string(),
-        provider: LLAMACPP_PROVIDER_ID.to_string(),
-        capabilities: vec![
-            ModelCapability::TextGeneration,
-            ModelCapability::Chat,
-            ModelCapability::ToolUse,
-        ],
-        context_window: n_ctx,
-        // The model can decode up to its full context window. If a caller
-        // has reason to limit output (UX latency, RAG reservations) they
-        // declare it on the request — never as a baked-in adapter cap.
-        max_output_tokens: n_ctx,
-        cost_per_1k_tokens: CostPer1kTokens { input: 0.0, output: 0.0 },
-        tokens_per_second: last_tok_per_s as f32,
-        supports_streaming: true,
-        supports_tools: true,
-    }
-}
-
-/// The default GGUF path layout DMR uses on Mac. We piggyback on its
-/// download cache rather than pulling our own copy — same model file,
-/// no duplication. If DMR isn't installed, this path won't exist and
-/// initialization fails loud (per the no-fallback rule).
-fn default_qwen35_gguf_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(format!(
-        "{home}/.docker/models/bundles/sha256/\
-         18055fe8ee379b95f4af3cf420588c5daa28f2a1ce1da335112a2d1ea188d3e6/model/model.gguf"
-    ))
+    info.context_window = n_ctx;
+    // Same reasoning as elsewhere: the model can decode up to its full
+    // context. Callers that want a smaller window declare it per-request;
+    // the adapter never invents its own MAX.
+    info.max_output_tokens = n_ctx;
+    info.tokens_per_second = last_tok_per_s as f32;
+    info
 }
 
 /// In-process llama.cpp adapter. Lazy-loads the model on first
@@ -99,21 +79,42 @@ pub struct LlamaCppAdapter {
     backend: Arc<RwLock<Option<Arc<LlamaCppBackend>>>>,
     model_path: PathBuf,
     last_throughput_tok_s: Arc<RwLock<f64>>,
+    /// The model id this adapter serves. Resolved from the registry at
+    /// construction — whichever llamacpp-local model row has a
+    /// `gguf_local_path` pointing at an on-disk file, we claim that id.
+    /// Held as `String` so `default_model()` can return `&str`.
+    default_model: String,
 }
 
 impl LlamaCppAdapter {
-    /// Construct with the default qwen3.5-4b path (DMR's download cache).
-    /// To use a different model, use `with_model_path`.
+    /// Construct from the model_registry. Looks up the first model under
+    /// provider `llamacpp-local` that has a non-None `gguf_local_path`
+    /// and uses its id + path. If the registry has no such row, panics
+    /// — that's a config bug, not a runtime failure mode (per the
+    /// no-fallback rule).
     pub fn new() -> Self {
+        let reg = crate::model_registry::global();
+        let model = reg
+            .models_for_provider(LLAMACPP_PROVIDER_ID)
+            .find(|m| m.gguf_local_path.is_some())
+            .expect(
+                "no llamacpp-local model with gguf_local_path in config/models.toml — \
+                 the in-process adapter has nothing to load",
+            );
+        let model_path = model
+            .gguf_local_path
+            .clone()
+            .expect("gguf_local_path present — filtered by find()");
         Self {
             backend: Arc::new(RwLock::new(None)),
-            model_path: default_qwen35_gguf_path(),
+            model_path,
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
+            default_model: model.id.clone(),
         }
     }
 
     /// Override the model path. Useful for tests + when the model isn't
-    /// at DMR's standard location.
+    /// at the registry's declared location.
     pub fn with_model_path(mut self, path: PathBuf) -> Self {
         self.model_path = path;
         self
@@ -135,10 +136,11 @@ impl LlamaCppAdapter {
 
         if !self.model_path.exists() {
             return Err(format!(
-                "model GGUF not found at {:?} — pull via DMR \
-                 (`docker model pull huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf`) \
-                 or override the path via with_model_path()",
-                self.model_path
+                "model GGUF not found at {:?} for model `{}` — \
+                 either pull the artifact to that path (it's the \
+                 `gguf_local_path` declared in config/models.toml) or \
+                 override via with_model_path()",
+                self.model_path, self.default_model,
             ));
         }
 
@@ -208,7 +210,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     fn default_model(&self) -> &str {
-        "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+        &self.default_model
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
@@ -374,28 +376,41 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     async fn get_available_models(&self) -> Vec<ModelInfo> {
-        // Loading the model is the only honest way to answer "what's its
-        // context window / max output." Pay the load cost once; subsequent
-        // calls use the cached backend.
-        match self.ensure_loaded() {
-            Ok(b) => vec![forge_qwen35_4b_model_info(&b, *self.last_throughput_tok_s.read())],
-            Err(_) => vec![],
-        }
+        // Identity + capabilities come from the registry (config/models.toml).
+        // Runtime overlay (context_window from GGUF metadata, tokens/sec
+        // from last measurement) only applies if the backend is loaded;
+        // otherwise we return the TOML-declared view and let the first
+        // generate_text call refresh the numbers.
+        let base = models_for_provider_via_registry(LLAMACPP_PROVIDER_ID);
+        let backend_guard = self.backend.read();
+        let last_tok_s = *self.last_throughput_tok_s.read();
+        base.into_iter()
+            .map(|info| match backend_guard.as_ref() {
+                Some(b) if info.id == self.default_model => {
+                    model_info_with_runtime(info, b, last_tok_s)
+                }
+                _ => info,
+            })
+            .collect()
     }
 
     fn model_metadata(&self, model_id: &str) -> Option<ModelInfo> {
+        // Match against the registry (provider's declared models), then
+        // overlay runtime fields if the backend happens to be loaded.
+        // Matching is case-insensitive on the declared id; no substring
+        // special-casing — the id is the contract.
         let want = model_id.to_lowercase();
-        // Only answer when the backend is loaded — that's the only way to
-        // know the real ceiling. If not loaded yet, return None and let
-        // the caller fall back to the async get_available_models which
-        // can pay the load cost.
+        let info = models_for_provider_via_registry(LLAMACPP_PROVIDER_ID)
+            .into_iter()
+            .find(|m| m.id.to_lowercase() == want)?;
         let backend_guard = self.backend.read();
-        let backend = backend_guard.as_ref()?;
-        let info = forge_qwen35_4b_model_info(backend, *self.last_throughput_tok_s.read());
-        if info.id.to_lowercase() == want || want.contains("qwen3.5-4b-code-forged") {
-            Some(info)
-        } else {
-            None
+        match backend_guard.as_ref() {
+            Some(b) if info.id == self.default_model => Some(model_info_with_runtime(
+                info,
+                b,
+                *self.last_throughput_tok_s.read(),
+            )),
+            _ => Some(info),
         }
     }
 
@@ -406,15 +421,18 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
-        // Match the forge family. Add more entries as the forge ships
-        // additional models.
-        vec!["continuum-ai/qwen3.5", "qwen3.5-4b-code-forged"]
+        // Intentionally empty — this adapter lists its models explicitly
+        // in the registry, and `supports_model` below matches against the
+        // declared ids directly. The old hardcoded prefixes (qwen3.5-…)
+        // would silently match a Qwen3.5 row under a *different* provider
+        // (DMR) and mis-route it here. Exact-id match is the contract.
+        Vec::new()
     }
 
     fn supports_model(&self, model_name: &str) -> bool {
-        let lower = model_name.to_lowercase();
-        self.supported_model_prefixes()
+        let want = model_name.to_lowercase();
+        models_for_provider_via_registry(LLAMACPP_PROVIDER_ID)
             .iter()
-            .any(|p| lower.starts_with(&p.to_lowercase()) || lower.contains(&p.to_lowercase()))
+            .any(|m| m.id.to_lowercase() == want)
     }
 }

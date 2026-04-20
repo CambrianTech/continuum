@@ -793,6 +793,24 @@ pub fn start_server(
 
     log_info!("ipc", "server", "Starting IPC server on {}", socket_path);
 
+    // Load the model_registry BEFORE any ServiceModule is constructed.
+    // Several adapters (AnthropicAdapter, LlamaCppAdapter, …) read from
+    // `model_registry::global()` in their constructors — if init hasn't
+    // happened yet those panic at module registration time. Failure here
+    // is fatal: the registry is the single source of truth for model ids
+    // and a missing config is a boot-order / packaging bug, not a runtime
+    // condition we can recover from.
+    match crate::model_registry::init_global() {
+        Ok(reg) => log_info!(
+            "ipc",
+            "server",
+            "model_registry loaded: {} models across {} providers",
+            reg.models().count(),
+            reg.providers().count()
+        ),
+        Err(e) => panic!("failed to load model_registry: {e}"),
+    }
+
     // Create modular runtime
     log_info!("ipc", "server", "Initializing modular runtime...");
     let runtime = Arc::new(Runtime::new());
