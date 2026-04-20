@@ -616,11 +616,9 @@ impl AIProviderAdapter for CandleAdapter {
             repeat_penalty: request.repeat_penalty.unwrap_or(1.0),
             top_k: request.top_k.unwrap_or(0) as usize,
             top_p: request.top_p.unwrap_or(1.0) as f64,
-            grammar: matches!(
-                request.response_format,
-                Some(crate::ai::types::ResponseFormat::JsonObject)
-            )
-            .then(|| backends::JSON_GRAMMAR.to_string()),
+            // Grammar wiring disabled pending diagnosis (see llamacpp_adapter
+            // commit revert note). Cognition parser tolerates non-JSON.
+            grammar: None,
         };
 
         // Apply LoRA adapters if requested

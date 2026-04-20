@@ -324,9 +324,14 @@ impl AIProviderAdapter for LlamaCppAdapter {
         if let Some(rp) = request.repeat_penalty {
             sampling.repeat_penalty = rp;
         }
-        if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
-            sampling.grammar = Some(JSON_GRAMMAR.to_string());
-        }
+        // GRAMMAR ENFORCEMENT DISABLED. Wiring response_format=JsonObject
+        // to llama.cpp grammar via llama_sampler_init_grammar crashed the
+        // scheduler ('scheduler closed without Done event'); the grammar
+        // string or pointer-handling needs more diagnosis. Falling back to
+        // prompt-only JSON guidance — cognition's existing parser tolerates
+        // model deviations. Re-enable once grammar is verified safe.
+        let _ = request.response_format; // suppress unused warning
+        let _ = JSON_GRAMMAR;
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
         // the wrong tokenizer.ggml.eos_token_id, so is_eog_token never
