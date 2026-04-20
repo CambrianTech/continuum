@@ -23,6 +23,7 @@
 pub mod adapter;
 pub mod anthropic_adapter;
 pub mod openai_adapter;
+pub mod registry_bridge;
 pub mod types;
 
 // Re-export commonly used types

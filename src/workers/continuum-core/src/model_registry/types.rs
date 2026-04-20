@@ -75,6 +75,13 @@ pub struct Model {
     /// Examples: "claude-sonnet-4-5-20250929", "gpt-4-turbo-preview",
     /// "continuum-ai/qwen3.5-4b-code-forged-GGUF".
     pub id: String,
+    /// Display name for UIs and logs. Short, human-readable.
+    /// Example: "Claude Sonnet 4.5" for id "claude-sonnet-4-5-20250929".
+    /// If TOML omits it, loader falls back to the id (loud + ugly;
+    /// encourages filling it in). Models aren't required to have it but
+    /// any model whose label ever surfaces to a user probably should.
+    #[serde(default)]
+    pub name: Option<String>,
     /// Foreign key into `Provider.id`.
     pub provider: String,
     pub arch: Arch,
