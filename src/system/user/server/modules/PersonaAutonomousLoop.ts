@@ -97,6 +97,33 @@ export class PersonaAutonomousLoop {
   private async runServiceLoop(): Promise<void> {
     const { maxConsecutiveFailures, cooldownMs } = PersonaTimingConfig.circuitBreaker;
 
+    // Drain anything queued in Rust BEFORE the service loop started.
+    // Race: chat items routed via PersonaInbox.route → channelEnqueue
+    // emit 'work-available' on the TS signal IMMEDIATELY. If no listener
+    // is registered yet (loop hasn't reached waitForWork), the signal
+    // is lost and items stay stranded in the Rust inbox until a NEW
+    // signal arrives. Verified 2026-04-20: 4 personas, 4-7 stranded
+    // chats each, zero progression. One pre-loop drain catches them.
+    try {
+      const bridge = this.personaUser.rustCognitionBridge;
+      if (bridge) {
+        let drained = 0;
+        while (drained < 20) {
+          const result = await bridge.serviceCycleFull();
+          if (!result.should_process || !result.item) break;
+          const queueItem = fromRustServiceItem(result.item as Record<string, unknown>);
+          if (!queueItem) break;
+          await this.handleItem(queueItem, result.decision ?? undefined);
+          drained++;
+        }
+        if (drained > 0) {
+          this.log(`💧 ${this.personaUser.displayName}: Drained ${drained} pre-existing items from Rust inbox at loop startup`);
+        }
+      }
+    } catch (error) {
+      this.log(`⚠️ ${this.personaUser.displayName}: Startup drain failed (non-fatal): ${error}`);
+    }
+
     while (this.servicingLoopActive) {
       // Circuit breaker: if open, wait until cooldown expires
       if (this.circuitOpenUntil > 0) {
