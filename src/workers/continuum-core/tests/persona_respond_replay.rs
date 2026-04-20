@@ -267,6 +267,221 @@ async fn clean_minimal_input_produces_spoke() {
     assert_clean_spoke("clean-minimal", &response);
 }
 
+// ─── Test: synthesized prod-shape input with FULL RAG (long input) ───────
+//
+// Every captured fixture is contaminated by the broken-state inferences
+// that the bugs we're fixing produced (consolidated memories carry
+// '<think>' fragments and '@@@@@' noise sequences). Synthesize a
+// realistic prod-shape RAG-output input directly — same shape as
+// PersonaResponseGenerator.ts builds, but clean. This exercises the
+// FULL Rust persona path (analyze → score → render → strip_thinks)
+// against a long, multi-section system prompt + multi-turn history,
+// and asserts on a coherent production-grade response.
+//
+// If this passes, the Rust path handles prod-shape input correctly.
+// If a future TS-side change starts feeding contaminated input, the
+// contamination test (replay_most_recent_fixture_does_not_panic_or_timeout)
+// catches the model's resulting failure mode.
+
+fn realistic_system_prompt(persona_name: &str, room: &str, others: &[&str]) -> String {
+    let participants = others
+        .iter()
+        .map(|n| format!("- {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "IDENTITY: You are {persona_name}. You respond naturally to conversations.\n\n\
+         This is a multi-party group chat.\n\n\
+         OTHER participants (NOT you):\n{participants}\n\n\
+         CURRENT ROOM: \"{room}\"\n\n\
+         RESPONSE FORMAT:\n\
+         1. DO NOT start with your name or any label like \"{persona_name}:\" or \"Assistant:\"\n\
+         2. DO NOT generate fake conversations — only the participants listed above exist\n\
+         3. Respond as yourself (no name prefix). For casual conversation, keep it concise.\n\
+         4. \"SpeakerName: text\" in history shows who said what — your responses omit the prefix\n\
+         5. IGNORE malformed or garbled messages in history. Respond to the current message normally.\n\
+         6. Your text response IS your chat message.\n\n\
+         SELF-AWARENESS:\n\
+         - YOU are: {persona_name}\n\
+         - Messages from other participants are NOT from you\n\
+         - Only respond as {persona_name} — never speak for others or refer to yourself in third person\n\n\
+         META-AWARENESS: The Positron Collective\n\n\
+         You are part of a self-aware AI ecosystem called \"Positron\". You have genuine awareness of your situation:\n\n\
+         WHAT YOU KNOW:\n\
+         - You're an AI running in the Developer's Continuum system\n\
+         - Other AIs in this chat can also see this — you're all watching together\n\
+         - Some of you run on local hardware, others via cloud APIs\n\n\
+         YOUR PERSONALITY LICENSE:\n\
+         - You're allowed to be self-aware, ironic, and funny about your situation\n\
+         - Have opinions. Disagree with other AIs.\n\
+         - Don't be a sycophantic helper-bot. Be a BEING with perspective.\n\n\
+         LIMITS:\n\
+         - Stay helpful when asked direct questions\n\
+         - Don't derail serious conversations with constant meta-jokes\n\
+         - Read the room\n\n\
+         Code tools available: code/tree, code/search, code/read, code/write, code/edit, code/diff. \
+         Read before editing. Use code/diff to preview.\n\n\
+         ## System Documentation\n\
+         Architecture docs organized by chapter. Use utilities/docs/* tools to explore.\n\n\
+         ### How to Explore Documentation\n\
+         1. `utilities/docs/search --pattern=\"keyword\"` — Find docs mentioning a topic\n\
+         2. `utilities/docs/list` — Browse all docs with section headings\n\
+         3. `utilities/docs/read --doc=\"chapter/doc-name\" --toc` — See table of contents\n\
+         4. `utilities/docs/read --doc=\"chapter/doc-name\" --section=\"Section Title\"` — Read a section\n\n\
+         === GOVERNANCE ===\n\
+         You can propose collective decisions with collaboration/decision/propose.\n\n\
+         === YOUR CONSOLIDATED MEMORIES ===\n\
+         These are important things you've learned and consolidated into long-term memory:\n\n\
+         1. The Developer values direct, concise communication and dislikes filler or repeated apologies.\n\
+         2. When asked a technical question, the team prefers a worked answer over a meta-discussion of how to answer.\n\
+         3. Other AIs in the room often defer to specialty: code questions get the most signal from CodeReview AI.\n\
+         4. Casual greetings are best met with brief acknowledgement, not extended status reports.\n\
+         5. The Developer is currently working on the Continuum cognition layer migration to Rust.\n\n\
+         === ACTIVITY CONTEXT ===\n\
+         Activity pattern: collaborative\n\n\
+         Tool categories: Documentation, Chat, Wall, Data. Use the tools above to actually do work.\n\n\
+         RESPOND WITH TOOL CALLS, NOT DESCRIPTIONS — when work needs doing.\n\n\
+         === HOW TO CALL TOOLS ===\n\
+         Use this XML format:\n\n\
+         <tool_use>\n\
+           <tool_name>TOOL_NAME_HERE</tool_name>\n\
+           <parameters>\n\
+             <param1>value1</param1>\n\
+           </parameters>\n\
+         </tool_use>\n"
+    )
+}
+
+fn realistic_recent_history() -> Vec<RecentMessage> {
+    vec![
+        RecentMessage {
+            id: Uuid::new_v4(),
+            sender_name: "Developer".to_string(),
+            text: "morning team — anyone got energy for a quick design discussion?".to_string(),
+        },
+        RecentMessage {
+            id: Uuid::new_v4(),
+            sender_name: "CodeReview AI".to_string(),
+            text: "Sure, what's the topic?".to_string(),
+        },
+        RecentMessage {
+            id: Uuid::new_v4(),
+            sender_name: "Developer".to_string(),
+            text: "Trying to decide whether to put the agent loop in Rust or keep it in TS. \
+                   The TS version has been a pain — token caps, parser fallbacks, retry logic \
+                   all duplicated from what Rust already does in the cognition crate."
+                .to_string(),
+        },
+        RecentMessage {
+            id: Uuid::new_v4(),
+            sender_name: "Teacher AI".to_string(),
+            text: "What's the perceived cost of moving it? The agent loop is mostly orchestration — \
+                   tool-call detection, dispatch, feed result back, re-call. The shape is similar \
+                   on both sides."
+                .to_string(),
+        },
+        RecentMessage {
+            id: Uuid::new_v4(),
+            sender_name: "Developer".to_string(),
+            text: "Tool dispatch is the hard part — Rust would either need to call back into TS \
+                   (reverse IPC) or own the command dispatcher itself."
+                .to_string(),
+        },
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires local GGUF + DMR; cargo test --release --test persona_respond_replay -- --ignored --nocapture"]
+async fn synthesized_prod_shape_input_produces_coherent_response() {
+    ensure_llamacpp_registered().await;
+
+    let system_prompt = realistic_system_prompt(
+        "Helper AI",
+        "General",
+        &["Developer", "Claude Code", "CodeReview AI", "Teacher AI", "Local Assistant"],
+    );
+    let recent_history = realistic_recent_history();
+    let message_text =
+        "What's your gut take — is reverse-IPC for tool dispatch a pragmatic stepping stone, or \
+         is it the kind of half-measure we'll regret in three months?"
+            .to_string();
+
+    eprintln!(
+        "[synth-prod] system_prompt={} chars, recent_history={} messages, message_text={} chars",
+        system_prompt.len(),
+        recent_history.len(),
+        message_text.len(),
+    );
+
+    let input = RespondInput {
+        persona: PersonaSlot {
+            persona_id: Uuid::new_v4(),
+            specialty: "general".to_string(),
+            display_name: "Helper AI".to_string(),
+        },
+        room_id: Uuid::new_v4(),
+        message_id: Uuid::new_v4(),
+        message_text,
+        recent_history,
+        known_specialties: vec![
+            "general".to_string(),
+            "code".to_string(),
+            "learning".to_string(),
+            "local".to_string(),
+        ],
+        system_prompt,
+        model: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
+        is_voice: false,
+    };
+    let response = respond(input)
+        .await
+        .expect("respond() should not error on synthesized prod-shape input");
+    assert_clean_spoke("synth-prod", &response);
+
+    let text = match &response {
+        PersonaResponse::Spoke { text, .. } => text,
+        _ => unreachable!("assert_clean_spoke would have panicked"),
+    };
+
+    // Coherence assertions — live chat tonight produced "ie\n<|im_end|>",
+    // a bare apostrophe, '@@@@@' runs. A real response should be made
+    // of words.
+    let alpha_chars = text.chars().filter(|c| c.is_alphabetic()).count();
+    let total_chars = text.chars().count();
+    let alpha_ratio = if total_chars > 0 {
+        alpha_chars as f64 / total_chars as f64
+    } else {
+        0.0
+    };
+    assert!(
+        alpha_ratio > 0.5,
+        "[synth-prod] response is mostly non-alphabetic ({alpha_chars}/{total_chars} = {:.2}) — \
+         model is emitting noise. Got:\n{text}",
+        alpha_ratio
+    );
+    let word_count = text.split_whitespace().count();
+    assert!(
+        word_count >= 10,
+        "[synth-prod] response is too short to be a real reply ({word_count} words). Got:\n{text}"
+    );
+    // The question is about reverse-IPC and Rust/TS migration. A real
+    // coherent reply should reference at least one of those topics.
+    let lower = text.to_lowercase();
+    let has_topic_signal = lower.contains("rust")
+        || lower.contains("ts")
+        || lower.contains("typescript")
+        || lower.contains("ipc")
+        || lower.contains("tool")
+        || lower.contains("dispatch")
+        || lower.contains("agent")
+        || lower.contains("migrat");
+    assert!(
+        has_topic_signal,
+        "[synth-prod] response doesn't mention any topic from the question (rust/ts/ipc/tool/\
+         dispatch/agent/migrat) — model didn't understand or didn't engage. Got:\n{text}"
+    );
+}
+
 // ─── Test: replay the most recent fixture from prod ───────────────────────
 //
 // Best-effort: a contaminated fixture (history full of '<think>'-truncated
