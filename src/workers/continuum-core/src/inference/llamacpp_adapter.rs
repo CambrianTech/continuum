@@ -255,19 +255,20 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // Teacher AI output (2026-04-20). Different models use different
         // boundary tokens; the model is the source of truth.
         // Use the model's own template if embedded in GGUF metadata;
-        // otherwise the qwen3.5 chatml template explicitly. llama.cpp's
-        // built-in chatml default uses slightly different boundary tokens
-        // than qwen3.5 was trained on (verified 2026-04-20: model emitted
-        // partial '<|im_end|>'-shaped fragments — `the </|>` — when the
-        // built-in default was used). The forge model doesn't embed a
-        // template; this constant provides the right one until the recipe
-        // is updated to bake the template into GGUF metadata.
-        const QWEN35_CHATML: &str =
-            "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}";
-        let template_string = backend
-            .model_chat_template()
-            .unwrap_or_else(|| QWEN35_CHATML.to_string());
-        let template = Some(template_string.as_str());
+        // Resolution order, no fallback:
+        //   1. GGUF metadata `tokenizer.chat_template` (forge bake should
+        //      put it here).
+        //   2. models.toml `chat_template` field (memento's registry —
+        //      authoritative when GGUF is silent).
+        // No in-code constant. Adding a new model = TOML row, never an
+        // adapter edit. If both sources are absent, render_chat passes
+        // None to llama.cpp which is its own loud failure (chatml default
+        // doesn't match qwen3.5's special tokens — output corruption).
+        let registry_template: Option<String> = crate::model_registry::try_global()
+            .and_then(|reg| reg.model(backend.model_id()))
+            .and_then(|m| m.chat_template.clone());
+        let template_string = backend.model_chat_template().or(registry_template);
+        let template = template_string.as_deref();
         let mut messages: Vec<llama::ChatMsg> = Vec::new();
         if let Some(sys) = request.system_prompt.as_ref() {
             if !sys.is_empty() {

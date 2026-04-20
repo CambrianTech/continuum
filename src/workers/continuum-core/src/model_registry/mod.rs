@@ -25,4 +25,4 @@ pub mod singleton;
 
 pub use types::{Arch, AuthKind, Capability, Model, Provider};
 pub use loader::{Registry, RegistryError, load_registry, load_models, load_providers};
-pub use singleton::{global, init_global};
+pub use singleton::{global, init_global, try_global};
