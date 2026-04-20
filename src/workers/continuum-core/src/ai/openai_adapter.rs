@@ -517,6 +517,32 @@ impl OpenAICompatibleAdapter {
                     supports_streaming: true,
                     supports_tools: false,
                 },
+                // continuum-ai/qwen3.5-4b-code-forged — our forge's flagship local
+                // reasoning model. Without this entry, the registry returns
+                // DEFAULT_CONTEXT_WINDOW=8192 and the personas get truncated to
+                // 8K of input context out of an actual 262144. 32x cripple, fixed
+                // by adding the truth here. Doc-comment in
+                // system/shared/ModelContextWindows.ts called this out as the
+                // archetypal "registry doesn't know the model" failure mode.
+                ModelInfo {
+                    id: "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest".to_string(),
+                    name: "Qwen3.5 4B Code Forged (Continuum forge, Q4_K_M)".to_string(),
+                    provider: "docker-model-runner".to_string(),
+                    capabilities: vec![
+                        ModelCapability::TextGeneration,
+                        ModelCapability::Chat,
+                        ModelCapability::ToolUse,
+                    ],
+                    context_window: 262144, // Confirmed via the model's GGUF metadata
+                    max_output_tokens: 32768, // Generous output budget — reasoning model
+                    cost_per_1k_tokens: CostPer1kTokens {
+                        input: 0.0,
+                        output: 0.0,
+                    },
+                    tokens_per_second: 50.0, // Mac Metal observed; updated at runtime
+                    supports_streaming: true,
+                    supports_tools: true,
+                },
             ],
         })
     }
