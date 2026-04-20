@@ -23,8 +23,8 @@ use crate::secrets::get_secret;
 
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
 use super::types::{
-    ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
-    MessageContent, ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse,
+    ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus,
+    MessageContent, ModelInfo, TextGenerationRequest, TextGenerationResponse,
     ToolCall, ToolChoice, UsageMetrics,
 };
 
@@ -33,6 +33,15 @@ pub struct AnthropicAdapter {
     api_key: Option<String>,
     client: reqwest::Client,
     initialized: bool,
+    /// Resolved from registry at construction. Held as `String` so
+    /// `default_model()` can return `&str`. No hardcoded CLAUDE_* const
+    /// — the ID lives in `config/models.toml`, this is the cached view.
+    default_model: String,
+    /// Cheapest Anthropic model by `cost_input_per_1k`, used for the
+    /// auth-probe health check. Picked at construction rather than
+    /// hardcoded so a TOML edit that adds a cheaper model
+    /// (Claude 4.0 Haiku?) takes effect without code changes.
+    health_check_model: String,
 }
 
 impl AnthropicAdapter {
@@ -42,10 +51,30 @@ impl AnthropicAdapter {
             .build()
             .expect("Failed to create HTTP client");
 
+        // Both model ids come from the registry. Panics (loudly) if the
+        // registry wasn't initialized before adapter construction —
+        // that's a boot-order bug, not a runtime failure mode.
+        let reg = crate::model_registry::global();
+        let default_model = reg
+            .provider("anthropic")
+            .and_then(|p| p.default_model.clone())
+            .expect("anthropic provider has no default_model in config/providers.toml");
+        let health_check_model = reg
+            .models_for_provider("anthropic")
+            .min_by(|a, b| {
+                a.cost_input_per_1k
+                    .partial_cmp(&b.cost_input_per_1k)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|m| m.id.clone())
+            .expect("anthropic has no models registered");
+
         Self {
             api_key: None,
             client,
             initialized: false,
+            default_model,
+            health_check_model,
         }
     }
 
@@ -213,9 +242,10 @@ struct AnthropicUsage {
 }
 
 // Model IDs
-const CLAUDE_SONNET_4_5: &str = "claude-sonnet-4-5-20250929";
-const CLAUDE_OPUS_4: &str = "claude-opus-4-20250514";
-const CLAUDE_HAIKU_3_5: &str = "claude-3-5-haiku-20250107";
+// Model identity lives in config/models.toml + config/providers.toml.
+// Adapter caches resolved ids in `self.default_model` + `self.health_check_model`
+// at construction. Any code that needs a Claude id reads it via the
+// registry, not via a constant here.
 
 #[async_trait]
 impl AIProviderAdapter for AnthropicAdapter {
@@ -247,7 +277,7 @@ impl AIProviderAdapter for AnthropicAdapter {
     }
 
     fn default_model(&self) -> &str {
-        CLAUDE_SONNET_4_5
+        &self.default_model
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
@@ -280,7 +310,7 @@ impl AIProviderAdapter for AnthropicAdapter {
             .request_id
             .clone()
             .unwrap_or_else(|| format!("req-{}", chrono::Utc::now().timestamp_millis()));
-        let model = request.model.as_deref().unwrap_or(CLAUDE_SONNET_4_5);
+        let model = request.model.as_deref().unwrap_or(&self.default_model);
 
         // Build messages and extract system prompt
         let (messages, msg_system) = self.format_messages(&request.messages);
@@ -454,7 +484,7 @@ impl AIProviderAdapter for AnthropicAdapter {
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&json!({
-                "model": CLAUDE_HAIKU_3_5,
+                "model": self.health_check_model,
                 "messages": [{ "role": "user", "content": "hi" }],
                 "max_tokens": 1
             }))
@@ -501,70 +531,10 @@ impl AIProviderAdapter for AnthropicAdapter {
     }
 
     async fn get_available_models(&self) -> Vec<ModelInfo> {
-        vec![
-            ModelInfo {
-                id: CLAUDE_SONNET_4_5.to_string(),
-                name: "Claude Sonnet 4.5".to_string(),
-                provider: "anthropic".to_string(),
-                capabilities: vec![
-                    ModelCapability::TextGeneration,
-                    ModelCapability::Chat,
-                    ModelCapability::ToolUse,
-                    ModelCapability::ImageAnalysis,
-                    ModelCapability::Multimodal,
-                ],
-                context_window: 200000,
-                max_output_tokens: 8192,
-                cost_per_1k_tokens: CostPer1kTokens {
-                    input: 0.003,
-                    output: 0.015,
-                },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                supports_streaming: true,
-                supports_tools: true,
-            },
-            ModelInfo {
-                id: CLAUDE_OPUS_4.to_string(),
-                name: "Claude Opus 4".to_string(),
-                provider: "anthropic".to_string(),
-                capabilities: vec![
-                    ModelCapability::TextGeneration,
-                    ModelCapability::Chat,
-                    ModelCapability::ToolUse,
-                    ModelCapability::ImageAnalysis,
-                    ModelCapability::Multimodal,
-                ],
-                context_window: 200000,
-                max_output_tokens: 4096,
-                cost_per_1k_tokens: CostPer1kTokens {
-                    input: 0.015,
-                    output: 0.075,
-                },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                supports_streaming: true,
-                supports_tools: true,
-            },
-            ModelInfo {
-                id: CLAUDE_HAIKU_3_5.to_string(),
-                name: "Claude 3.5 Haiku".to_string(),
-                provider: "anthropic".to_string(),
-                capabilities: vec![
-                    ModelCapability::TextGeneration,
-                    ModelCapability::Chat,
-                    ModelCapability::ToolUse,
-                    ModelCapability::ImageAnalysis,
-                ],
-                context_window: 200000,
-                max_output_tokens: 4096,
-                cost_per_1k_tokens: CostPer1kTokens {
-                    input: 0.00025,
-                    output: 0.00125,
-                },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                supports_streaming: true,
-                supports_tools: true,
-            },
-        ]
+        // Source of truth lives in config/models.toml. Registry projects
+        // each model_registry::Model to the legacy ai::ModelInfo shape
+        // via the From impl in registry_bridge.
+        super::registry_bridge::models_for_provider_via_registry("anthropic")
     }
 
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
