@@ -49,11 +49,14 @@ use std::time::Instant;
 /// "local" → device-filtered local-GPU selection logic).
 pub const LLAMACPP_PROVIDER_ID: &str = "llamacpp-local";
 
-/// Static model entry for our forge's flagship local. Pre-populated so
-/// the registry knows the true 262144 context (vs the previous
-/// fall-through to `DEFAULT_CONTEXT_WINDOW=8192` that crippled RAG —
-/// see continuum's `ModelContextWindows.ts` doc-comment).
-fn forge_qwen35_4b_model_info() -> ModelInfo {
+/// Build the ModelInfo for our forge model. Context-window and
+/// max-output-tokens come from the LOADED model — its GGUF metadata is
+/// the source of truth for "what can this model handle." No hardcoded
+/// caps. If callers want a smaller window they pass it explicitly; the
+/// adapter never invents its own MAX. Throughput is the last measured
+/// value, refreshed on every inference.
+fn forge_qwen35_4b_model_info(backend: &LlamaCppBackend, last_tok_per_s: f64) -> ModelInfo {
+    let n_ctx = backend.n_ctx_train();
     ModelInfo {
         id: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
         name: "Qwen3.5 4B Code Forged (in-process llama.cpp Metal)".to_string(),
@@ -63,13 +66,13 @@ fn forge_qwen35_4b_model_info() -> ModelInfo {
             ModelCapability::Chat,
             ModelCapability::ToolUse,
         ],
-        context_window: 262_144,    // Confirmed via GGUF metadata
-        max_output_tokens: 32_768,  // Generous; reasoning model needs room for thinking + reply
-        cost_per_1k_tokens: CostPer1kTokens {
-            input: 0.0,
-            output: 0.0,
-        },
-        tokens_per_second: 33.0,    // M5-observed via in-process llama.cpp; updated on first real inference
+        context_window: n_ctx,
+        // The model can decode up to its full context window. If a caller
+        // has reason to limit output (UX latency, RAG reservations) they
+        // declare it on the request — never as a baked-in adapter cap.
+        max_output_tokens: n_ctx,
+        cost_per_1k_tokens: CostPer1kTokens { input: 0.0, output: 0.0 },
+        tokens_per_second: last_tok_per_s as f32,
         supports_streaming: true,
         supports_tools: true,
     }
@@ -177,17 +180,26 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
+        // max_context_window: if the backend has been loaded, use the
+        // model's actual training ceiling; otherwise leave 0 to signal
+        // "ask the model" via model_metadata. Never invent a number.
+        let max_ctx = self
+            .backend
+            .read()
+            .as_ref()
+            .map(|b| b.n_ctx_train())
+            .unwrap_or(0);
         AdapterCapabilities {
             supports_text_generation: true,
             supports_chat: true,
-            supports_tool_use: true,    // Tool calling via prompt format; native tools later
-            supports_vision: false,     // Forge model is text-only currently
-            supports_streaming: true,   // LlamaCppBackend has token-stream channel
-            supports_embeddings: false, // Separate embedding module owns this
+            supports_tool_use: true,
+            supports_vision: false,
+            supports_streaming: true,
+            supports_embeddings: false,
             supports_audio: false,
             supports_image_generation: false,
             is_local: true,
-            max_context_window: 262_144,
+            max_context_window: max_ctx,
         }
     }
 
@@ -251,7 +263,14 @@ impl AIProviderAdapter for LlamaCppAdapter {
         }
         prompt.push_str("<|im_start|>assistant\n");
 
-        let max_tokens = request.max_tokens.unwrap_or(2048) as usize;
+        // No hardcoded cap. If the caller didn't specify, the model can
+        // decode up to its trained context. Capping silently at 2048 was
+        // the source of clipped JSON/XML output — the model would stop
+        // mid-structure and downstream JSON.parse / XML parsers blew up.
+        let max_tokens = request
+            .max_tokens
+            .map(|n| n as usize)
+            .unwrap_or_else(|| backend.n_ctx_train() as usize);
         let temperature = request.temperature.unwrap_or(0.7);
         // Owned strings so the closure can move them and the post-generation
         // loop below can still strip them off the response tail.
@@ -330,15 +349,25 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     async fn get_available_models(&self) -> Vec<ModelInfo> {
-        vec![forge_qwen35_4b_model_info()]
+        // Loading the model is the only honest way to answer "what's its
+        // context window / max output." Pay the load cost once; subsequent
+        // calls use the cached backend.
+        match self.ensure_loaded() {
+            Ok(b) => vec![forge_qwen35_4b_model_info(&b, *self.last_throughput_tok_s.read())],
+            Err(_) => vec![],
+        }
     }
 
     fn model_metadata(&self, model_id: &str) -> Option<ModelInfo> {
         let want = model_id.to_lowercase();
-        let info = forge_qwen35_4b_model_info();
-        if info.id.to_lowercase() == want
-            || want.contains("qwen3.5-4b-code-forged")
-        {
+        // Only answer when the backend is loaded — that's the only way to
+        // know the real ceiling. If not loaded yet, return None and let
+        // the caller fall back to the async get_available_models which
+        // can pay the load cost.
+        let backend_guard = self.backend.read();
+        let backend = backend_guard.as_ref()?;
+        let info = forge_qwen35_4b_model_info(backend, *self.last_throughput_tok_s.read());
+        if info.id.to_lowercase() == want || want.contains("qwen3.5-4b-code-forged") {
             Some(info)
         } else {
             None

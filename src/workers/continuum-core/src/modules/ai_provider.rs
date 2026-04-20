@@ -332,7 +332,13 @@ impl AIProviderModule {
                     .info(&format!("Registering Docker Model Runner adapter ({})", desc));
                 registry.register(
                     Self::build_dmr_adapter(&endpoint),
-                    0, // Highest priority — beats Candle for local inference
+                    // Priority 1 — sits BELOW the in-process llama.cpp adapter
+                    // (priority 0) so DMR only wins for models LlamaCppAdapter
+                    // doesn't claim. Critical on Mac M5 where DMR's container
+                    // Metal toolchain is degraded vs the host-built bundled
+                    // llama.cpp (verified 2026-04-19: 33 tok/s container vs
+                    // 47 tok/s in-process for the same forge model).
+                    1,
                 );
             }
             None => {
@@ -571,7 +577,10 @@ impl ServiceModule for AIProviderModule {
                     return Ok(());
                 }
                 let mut registry = self.registry.write().await;
-                registry.register(adapter, 0);
+                // Priority 1 here mirrors the init-time registration —
+                // DMR sits below the in-process llama.cpp adapter so it
+                // only wins for models LlamaCppAdapter doesn't claim.
+                registry.register(adapter, 1);
                 self.log().info(&format!(
                     "Docker Model Runner reachable again — re-registered ({}). \
                      Local AI is available.",

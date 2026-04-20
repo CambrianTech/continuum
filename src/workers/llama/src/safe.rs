@@ -130,6 +130,16 @@ pub struct Model {
 unsafe impl Send for Model {}
 unsafe impl Sync for Model {}
 
+/// One message in a chat sequence: a role tag (`"system"`, `"user"`,
+/// `"assistant"`) and the message content. Used as input to
+/// `Model::apply_chat_template` so the model can render the conversation
+/// using its OWN trained-on template.
+#[derive(Debug, Clone)]
+pub struct ChatMsg {
+    pub role: String,
+    pub content: String,
+}
+
 /// Model load parameters.
 #[derive(Debug, Clone)]
 pub struct ModelParams {
@@ -174,6 +184,17 @@ impl Model {
     /// Hidden-state dimension (embedding size).
     pub fn n_embd(&self) -> i32 {
         unsafe { sys::llama_model_n_embd(self.ptr.as_ptr()) }
+    }
+
+    /// Trained context length, as recorded in the GGUF metadata
+    /// (`<arch>.context_length`). This is the model's OWN ceiling — not
+    /// a system default, not a RAG budget guess. Use this everywhere a
+    /// "context window" is needed; if a smaller `n_ctx` is intentional
+    /// (e.g. memory pressure on a tier with low VRAM), pass it explicitly
+    /// rather than redefining the model's natural capability.
+    pub fn n_ctx_train(&self) -> u32 {
+        let n = unsafe { sys::llama_model_n_ctx_train(self.ptr.as_ptr()) };
+        if n > 0 { n as u32 } else { 0 }
     }
 
     /// Create an inference context.
@@ -256,6 +277,46 @@ impl Model {
         }
         tokens.truncate(n as usize);
         Ok(tokens)
+    }
+
+    /// Render messages through the model's own chat template (from GGUF
+    /// metadata; falls back to chatml if absent). `add_assistant=true`
+    /// appends the assistant-start tokens. Single source of truth — never
+    /// hand-roll `<|im_start|>...` prefixes.
+    pub fn apply_chat_template(
+        &self,
+        messages: &[ChatMsg],
+        add_assistant: bool,
+    ) -> Result<String, String> {
+        let tmpl = unsafe { sys::llama_model_chat_template(self.ptr.as_ptr(), std::ptr::null()) };
+        let owned: Vec<(CString, CString)> = messages.iter().map(|m| {
+            (CString::new(m.role.as_str()).unwrap(), CString::new(m.content.as_str()).unwrap())
+        }).collect();
+        let chat: Vec<sys::llama_chat_message> = owned.iter()
+            .map(|(r, c)| sys::llama_chat_message { role: r.as_ptr(), content: c.as_ptr() })
+            .collect();
+
+        let render = |buf: &mut Vec<i8>| -> i32 {
+            unsafe {
+                sys::llama_chat_apply_template(
+                    tmpl, chat.as_ptr(), chat.len(),
+                    add_assistant, buf.as_mut_ptr(), buf.len() as i32,
+                )
+            }
+        };
+
+        let mut buf = vec![0i8; messages.iter().map(|m| m.role.len() + m.content.len()).sum::<usize>() * 2 + 256];
+        let mut n = render(&mut buf);
+        if n < 0 { return Err(format!("apply_chat_template rc={n}")); }
+        if (n as usize) > buf.len() {
+            buf.resize(n as usize, 0);
+            n = render(&mut buf);
+            if n < 0 || (n as usize) > buf.len() {
+                return Err(format!("apply_chat_template retry rc={n}"));
+            }
+        }
+        Ok(String::from_utf8(buf.into_iter().take(n as usize).map(|b| b as u8).collect())
+            .map_err(|e| format!("template output not utf-8: {e}"))?)
     }
 
     /// Convert a token to its UTF-8 string representation.

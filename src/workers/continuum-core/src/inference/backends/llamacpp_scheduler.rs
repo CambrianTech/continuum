@@ -503,10 +503,22 @@ fn start_request(
     let sampler = if req.sampling.temperature <= 0.0 {
         Sampler::greedy()
     } else {
-        Sampler::chain()
-            .temp(req.sampling.temperature as f32)
-            .dist(42)
-            .build()
+        // Build the full sampler chain from SamplingConfig. Order is
+        // llama.cpp-canonical: top_k → top_p → penalties → temp → dist.
+        // Without `penalties` qwen3.5 falls into degenerate repetition loops
+        // (verified 2026-04-20: cognition log showed "Helper AI: model
+        // output did not contain a JSON object. Got: ierhehehehehehe...").
+        let mut chain = Sampler::chain();
+        if req.sampling.top_k > 0 {
+            chain = chain.top_k(req.sampling.top_k as i32);
+        }
+        if req.sampling.top_p > 0.0 && req.sampling.top_p < 1.0 {
+            chain = chain.top_p(req.sampling.top_p as f32, 1);
+        }
+        // 64 = llama.cpp default last-n window for the penalty calculation.
+        // Becomes a SamplerFactory config field in the 5-type refactor.
+        chain = chain.penalties(64, req.sampling.repeat_penalty, 0.0, 0.0);
+        chain.temp(req.sampling.temperature as f32).dist(42).build()
     };
     Ok(ActiveSeq {
         seq_id: _seq_id,

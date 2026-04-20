@@ -34,13 +34,17 @@ use crate::runtime;
 pub struct LlamaCppConfig {
     /// Path to the GGUF model file
     pub model_path: PathBuf,
-    /// Per-sequence context budget (tokens). The actual `n_ctx` passed to
-    /// llama.cpp is `context_length * n_seq_max` because llama.cpp's KV
-    /// cache is a single shared pool across sequences — if N seqs each
-    /// hold P tokens, total KV needed is N*P. Sizing n_ctx equal to a
-    /// single-seq budget caused `llama_decode rc=1` (no memory slot)
-    /// when 3 RAG-heavy seqs ran in parallel under the new scheduler.
-    pub context_length: u32,
+    /// Per-sequence context budget (tokens). `None` = use the model's
+    /// trained `n_ctx_train` from GGUF metadata (the model's own ceiling).
+    /// Override only when memory pressure forces a smaller window than the
+    /// model natively supports — and pass it explicitly so the choice is
+    /// visible. Hardcoded defaults like 8192 cap a 262144-context model
+    /// at 3% of its real capability.
+    ///
+    /// The actual `n_ctx` passed to llama.cpp is `context_length * n_seq_max`
+    /// because llama.cpp's KV cache is a single shared pool across sequences
+    /// — if N seqs each hold P tokens, total KV needed is N*P.
+    pub context_length: Option<u32>,
     /// Batch size for prefill / per-decode token cap. Larger = faster
     /// prefill but more Metal compute buffer.
     pub n_batch: u32,
@@ -64,13 +68,12 @@ impl Default for LlamaCppConfig {
     fn default() -> Self {
         Self {
             model_path: PathBuf::new(),
-            // 8192 matches what ChatRAGBuilder uses as its contextWindow
-            // budget for the forged Qwen3.5 GGUF. Lowering this to 2048 or
-            // 4096 truncates RAG prompts mid-prefill (chunked decode hits
-            // KV exhaustion at the wrong batch and returns rc=1). Memory-
-            // tight machines should override per-config rather than ship
-            // a smaller default that breaks RAG-heavy callers.
-            context_length: 8192,
+            // None = derive from the model's GGUF metadata at load time
+            // via `Model::n_ctx_train()`. The model is the source of truth
+            // for its own context. Setting Some(N) here overrides only when
+            // a hardware tier can't allocate KV for the model's native
+            // window (rare on M5+/RTX class).
+            context_length: None,
             n_batch: 512,
             n_gpu_layers: -1,
             // 3 = M5 Pro tier (48GB+). CandleAdapter overrides per-RAM.
@@ -149,6 +152,11 @@ impl LlamaCppBackend {
 
     pub fn model_id(&self) -> &str { &self.model_id }
 
+    /// Model's trained context length, straight from the GGUF metadata.
+    /// Single source of truth — never hardcode a context window in
+    /// adapters or RAG budgeters; ask this.
+    pub fn n_ctx_train(&self) -> u32 { self.model.n_ctx_train() }
+
     /// Ensure a LoRA adapter is loaded (idempotent). Used by genome paging.
     pub fn ensure_adapter(&self, id: &str, path: &Path) -> Result<(), String> {
         let mut guard = self.loras.lock().map_err(|e| format!("LoRA lock poisoned: {e}"))?;
@@ -169,14 +177,19 @@ impl LlamaCppBackend {
     /// owns the shared Context and the OS-thread driver loop.
     fn scheduler(&self) -> &Scheduler {
         self.scheduler.get_or_init(|| {
-            // n_ctx is the SHARED KV pool across all sequences. Scale it
-            // by n_seq_max so each seq has `context_length` tokens of KV
-            // headroom even when all slots are occupied with RAG-heavy
-            // prompts. Without this scaling, 3 parallel seqs each pushing
-            // 3000+ token RAG prompts exhaust an 8192 KV pool and crash
-            // llama_decode with rc=1 (no memory slot).
-            let total_n_ctx = self.config.context_length
-                .saturating_mul(self.config.n_seq_max.max(1));
+            // Per-sequence context: the model's own training ceiling unless
+            // an explicit override is set. The model is the source of truth
+            // — qwen3.5-4b-code-forged carries n_ctx_train=262144 in its
+            // GGUF metadata; capping that at a hardcoded 8192 wastes 32×
+            // the model's real capability.
+            let per_seq = self.config.context_length
+                .unwrap_or_else(|| self.model.n_ctx_train());
+            // n_ctx is the SHARED KV pool across all sequences. Scale by
+            // n_seq_max so each seq has `per_seq` tokens of KV headroom
+            // even when all slots are occupied with RAG-heavy prompts.
+            // saturating_mul because 262144 × 3 overflows u32 (would be
+            // 786432, fine, but n_seq_max could grow).
+            let total_n_ctx = per_seq.saturating_mul(self.config.n_seq_max.max(1));
             Scheduler::spawn(
                 self.model.clone(),
                 SchedulerConfig {
