@@ -156,14 +156,18 @@ pub struct ChatMsg {
 /// to emit the boundary tokens as text (the `<|im_end<|>` leak we saw
 /// in Teacher AI output 2026-04-20).
 pub fn render_chat(
-    template: &str,
+    template: Option<&str>,
     messages: &[ChatMsg],
     add_assistant: bool,
 ) -> Result<String, String> {
     if messages.is_empty() {
         return Err("render_chat: messages empty".to_string());
     }
-    let tmpl_c = CString::new(template).map_err(|e| format!("template has nul byte: {e}"))?;
+    // None → pass NULL to llama.cpp; it falls back to its built-in chatml
+    // default. Useful for GGUFs that don't embed a template in metadata
+    // (continuum-ai/qwen3.5-4b-code-forged is one such model — see
+    // forge recipe TODO to add tokenizer.chat_template at next bake).
+    let tmpl_c = template.map(|t| CString::new(t).map_err(|e| format!("template has nul byte: {e}"))).transpose()?;
     let owned: Vec<(CString, CString)> = messages
         .iter()
         .map(|m| {
@@ -177,10 +181,11 @@ pub fn render_chat(
         .map(|(r, c)| sys::llama_chat_message { role: r.as_ptr(), content: c.as_ptr() })
         .collect();
 
+    let tmpl_ptr = tmpl_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
     let render = |buf: &mut Vec<i8>| -> i32 {
         unsafe {
             sys::llama_chat_apply_template(
-                tmpl_c.as_ptr(),
+                tmpl_ptr,
                 chat.as_ptr(),
                 chat.len(),
                 add_assistant,

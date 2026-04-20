@@ -254,15 +254,12 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // qwen3.5 — it caused `<|im_end<|>` special-token leakage in
         // Teacher AI output (2026-04-20). Different models use different
         // boundary tokens; the model is the source of truth.
-        let template = backend
-            .model_chat_template()
-            .ok_or_else(|| {
-                format!(
-                    "model {} carries no chat_template in GGUF metadata — \
-                     can't format a chat prompt without one",
-                    backend.model_id()
-                )
-            })?;
+        // Model's own template if embedded; otherwise None → llama.cpp
+        // falls back to its built-in chatml default. Our forge model
+        // (qwen3.5-4b-code-forged) currently doesn't embed a template
+        // in GGUF metadata; the chatml default is correct for the qwen3.5
+        // family. TODO: forge recipe should embed an explicit template.
+        let template = backend.model_chat_template();
         let mut messages: Vec<llama::ChatMsg> = Vec::new();
         if let Some(sys) = request.system_prompt.as_ref() {
             if !sys.is_empty() {
@@ -289,7 +286,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 content,
             });
         }
-        let prompt = llama::render_chat(&template, &messages, true)?;
+        let prompt = llama::render_chat(template.as_deref(), &messages, true)?;
 
         // No hardcoded cap. If the caller didn't specify, the model can
         // decode up to its trained context. Capping silently at 2048 was
