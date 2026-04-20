@@ -847,6 +847,16 @@ impl SamplerChainBuilder {
             let vocab = sys::llama_model_get_vocab(model.ptr.as_ptr());
             sys::llama_sampler_init_grammar(vocab, g.as_ptr(), r.as_ptr())
         };
+        // llama.cpp returns NULL on grammar parse failure. Adding a null
+        // sampler to the chain crashes inside llama_sampler_sample on
+        // first use (verified 2026-04-20: 'scheduler closed without Done
+        // event' for all personas when JSON grammar didn't parse). Skip
+        // the null pointer rather than ship a corrupted chain — caller
+        // gets unconstrained sampling instead of a crash.
+        if s.is_null() {
+            eprintln!("[safe.rs] grammar parse failed for root='{grammar_root}' — skipping (chain unconstrained)");
+            return self;
+        }
         self.add(s)
     }
 
