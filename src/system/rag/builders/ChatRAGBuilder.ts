@@ -228,16 +228,29 @@ export class ChatRAGBuilder extends RAGBuilder {
     let toolDefinitionsMetadata: Record<string, unknown> | null = null;
     let composeMs: number | undefined;
     let legacyMs: number | undefined;
-    // Token budget from model's declared context window — 75% for input.
-    // contextWindow comes from the adapter via RAGBuildOptions. No lookup.
+    // Input token budget DERIVED from the model's own declared values, not
+    // a caller-side magic ratio. The previous `contextWindow * 0.75` was
+    // exactly the "function deviates from the struct" anti-pattern Joel
+    // called out — it threw away 25% of every model's context regardless
+    // of whether the model's actual output budget needed that room.
+    //
+    // The model declares context_window AND max_output_tokens via its
+    // ModelInfo (registered by the adapter). Input budget is whatever
+    // remains after the model's stated output reservation + a small safety
+    // margin for prompt-formatting overhead.
+    //
+    // For qwen3.5-4b-code-forged (262144 ctx, 32768 max output), this gives
+    // ~228K tokens for input — vs the previous 6144. The personas finally
+    // get the context the model was forged to handle.
+    const SAFETY_MARGIN_TOKENS = 1024;
     const contextWindow = options.contextWindow;
-    const totalBudget = Math.floor(contextWindow * 0.75);
+    const totalBudget = contextWindow - options.maxTokens - SAFETY_MARGIN_TOKENS;
 
     {
       const composer = this.getComposer();
 
       if (isSlowLocalModel(options.modelId, options.provider)) {
-        this.log(`📊 ChatRAGBuilder: Slow model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
+        this.log(`📊 ChatRAGBuilder: budget=${totalBudget} (contextWindow=${contextWindow} − maxTokens=${options.maxTokens} − safety=${SAFETY_MARGIN_TOKENS}) for ${options.provider}/${options.modelId}`);
       }
 
       // Load recipe BEFORE compose (needed for activeSources filtering).
