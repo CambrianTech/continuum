@@ -305,7 +305,28 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .max_tokens
             .map(|n| n as usize)
             .unwrap_or_else(|| backend.n_ctx_train() as usize);
-        let temperature = request.temperature.unwrap_or(0.7);
+        // Build the full SamplingConfig from the request. Caller's fields
+        // override our defaults; if caller asked for JsonObject response
+        // format, attach the JSON grammar so output is structurally valid.
+        // Same value-object pattern Joel called for ('pass the struct').
+        use crate::ai::types::ResponseFormat;
+        use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
+        let mut sampling = SamplingConfig::chat();
+        if let Some(t) = request.temperature {
+            sampling.temperature = t as f64;
+        }
+        if let Some(k) = request.top_k {
+            sampling.top_k = k as usize;
+        }
+        if let Some(p) = request.top_p {
+            sampling.top_p = p as f64;
+        }
+        if let Some(rp) = request.repeat_penalty {
+            sampling.repeat_penalty = rp;
+        }
+        if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
+            sampling.grammar = Some(JSON_GRAMMAR.to_string());
+        }
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
         // the wrong tokenizer.ggml.eos_token_id, so is_eog_token never
@@ -328,12 +349,13 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let backend_for_blocking = backend.clone();
         let prompt_for_blocking = prompt.clone();
         let stop_for_closure = stop_owned.clone();
+        let sampling_for_closure = sampling.clone();
         let result: Result<(String, usize), String> = tokio::task::spawn_blocking(move || {
             let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
             backend_for_blocking.generate(
                 &prompt_for_blocking,
                 max_tokens,
-                temperature,
+                sampling_for_closure,
                 &stop_refs,
                 &[],
             )

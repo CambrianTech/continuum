@@ -831,6 +831,25 @@ impl SamplerChainBuilder {
         self.add(s)
     }
 
+    /// Add a GBNF grammar constraint. Forces output to match the grammar
+    /// — invalid tokens get probability zero. `grammar_root` is the
+    /// start-symbol name in the grammar (typically "root"). Use this to
+    /// enforce JSON output or any other structured format.
+    ///
+    /// Needs the model's vocab — pass the loaded `Model` so the chain
+    /// can wire the grammar against the right token table. Belongs early
+    /// in the chain (before temp / dist), so the constraint applies
+    /// before probabilistic sampling.
+    pub fn grammar(self, model: &Model, grammar_str: &str, grammar_root: &str) -> Self {
+        let g = std::ffi::CString::new(grammar_str).expect("grammar contains nul");
+        let r = std::ffi::CString::new(grammar_root).expect("grammar_root contains nul");
+        let s = unsafe {
+            let vocab = sys::llama_model_get_vocab(model.ptr.as_ptr());
+            sys::llama_sampler_init_grammar(vocab, g.as_ptr(), r.as_ptr())
+        };
+        self.add(s)
+    }
+
     pub fn build(self) -> Sampler {
         Sampler { ptr: self.chain }
     }

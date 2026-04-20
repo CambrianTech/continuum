@@ -180,18 +180,37 @@ pub struct SamplingConfig {
     pub top_k: usize,
     /// Top-p (nucleus) sampling: keep smallest set of tokens with cumulative prob >= p. 1.0 = disabled.
     pub top_p: f64,
+    /// GBNF grammar (e.g. JSON shape). When Some, scheduler attaches it
+    /// to the sampler chain BEFORE temp/dist so output is constrained to
+    /// match the grammar. None = unconstrained. Set by adapters when the
+    /// caller's request_format demands a structured shape (JsonObject).
+    pub grammar: Option<String>,
 }
 
 impl SamplingConfig {
     /// Config for code generation: greedy, moderate repeat penalty.
     pub fn code() -> Self {
-        Self { temperature: 0.0, repeat_penalty: 1.1, top_k: 0, top_p: 1.0 }
+        Self { temperature: 0.0, repeat_penalty: 1.1, top_k: 0, top_p: 1.0, grammar: None }
     }
     /// Config for chat: slight creativity, standard repeat penalty.
     pub fn chat() -> Self {
-        Self { temperature: 0.6, repeat_penalty: 1.1, top_k: 40, top_p: 0.95 }
+        Self { temperature: 0.6, repeat_penalty: 1.1, top_k: 40, top_p: 0.95, grammar: None }
     }
 }
+
+/// Built-in JSON grammar (GBNF) — produces any valid JSON value. Used
+/// when callers request `response_format: JsonObject`. Lifted from the
+/// llama.cpp grammars/json.gbnf reference grammar; trimmed to the
+/// expressions actually needed for chat persona analyze responses.
+pub const JSON_GRAMMAR: &str = r#"
+root   ::= object
+value  ::= object | array | string | number | ("true" | "false" | "null") ws
+object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws
+array  ::= "[" ws ( value ("," ws value)* )? "]" ws
+string ::= "\"" ( [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) )* "\"" ws
+number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
+ws ::= ([ \t\n] ws)?
+"#;
 
 /// Generate text from a prompt using ANY ModelBackend.
 ///

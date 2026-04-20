@@ -616,6 +616,11 @@ impl AIProviderAdapter for CandleAdapter {
             repeat_penalty: request.repeat_penalty.unwrap_or(1.0),
             top_k: request.top_k.unwrap_or(0) as usize,
             top_p: request.top_p.unwrap_or(1.0) as f64,
+            grammar: matches!(
+                request.response_format,
+                Some(crate::ai::types::ResponseFormat::JsonObject)
+            )
+            .then(|| backends::JSON_GRAMMAR.to_string()),
         };
 
         // Apply LoRA adapters if requested
@@ -751,10 +756,10 @@ impl AIProviderAdapter for CandleAdapter {
             .cloned()
             .ok_or_else(|| "llama.cpp backend not loaded after load attempt".to_string())?;
         let prompt_for_gen = prompt.clone();
-        let temperature = sampling.temperature as f32;
+        let sampling_for_gen = sampling.clone();
         let (output_text, completion_tokens) = tokio::task::spawn_blocking(move || {
             let stop_tokens: [&str; 2] = ["<|im_end|>", "<|endoftext|>"];
-            llama_arc.generate(&prompt_for_gen, max_tokens, temperature, &stop_tokens, &[])
+            llama_arc.generate(&prompt_for_gen, max_tokens, sampling_for_gen, &stop_tokens, &[])
         }).await
             .map_err(|e| format!("llama.cpp generate task panicked: {e}"))?
             .map_err(|e| format!("llama.cpp generate failed: {e}"))?;

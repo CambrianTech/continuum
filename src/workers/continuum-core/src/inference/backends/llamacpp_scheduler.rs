@@ -500,15 +500,17 @@ fn start_request(
         );
     }
     let prompt_tokens = model.tokenize(&req.prompt, true, false)?;
-    let sampler = if req.sampling.temperature <= 0.0 {
+    let sampler = if req.sampling.temperature <= 0.0 && req.sampling.grammar.is_none() {
         Sampler::greedy()
     } else {
-        // Build the full sampler chain from SamplingConfig. Order is
-        // llama.cpp-canonical: top_k → top_p → penalties → temp → dist.
-        // Without `penalties` qwen3.5 falls into degenerate repetition loops
-        // (verified 2026-04-20: cognition log showed "Helper AI: model
-        // output did not contain a JSON object. Got: ierhehehehehehe...").
+        // Build the full sampler chain. Order: grammar → top_k → top_p →
+        // penalties → temp → dist. Grammar early so structural constraint
+        // applies BEFORE probabilistic sampling (otherwise temp could pick
+        // a token that the grammar would have rejected).
         let mut chain = Sampler::chain();
+        if let Some(g) = req.sampling.grammar.as_ref() {
+            chain = chain.grammar(model, g, "root");
+        }
         if req.sampling.top_k > 0 {
             chain = chain.top_k(req.sampling.top_k as i32);
         }
@@ -516,9 +518,9 @@ fn start_request(
             chain = chain.top_p(req.sampling.top_p as f32, 1);
         }
         // 64 = llama.cpp default last-n window for the penalty calculation.
-        // Becomes a SamplerFactory config field in the 5-type refactor.
         chain = chain.penalties(64, req.sampling.repeat_penalty, 0.0, 0.0);
-        chain.temp(req.sampling.temperature as f32).dist(42).build()
+        let temp = if req.sampling.temperature > 0.0 { req.sampling.temperature as f32 } else { 0.01 };
+        chain.temp(temp).dist(42).build()
     };
     Ok(ActiveSeq {
         seq_id: _seq_id,

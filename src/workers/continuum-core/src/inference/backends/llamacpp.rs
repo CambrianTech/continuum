@@ -224,7 +224,7 @@ impl LlamaCppBackend {
         &self,
         prompt: &str,
         max_tokens: usize,
-        temperature: f32,
+        sampling: SamplingConfig,
         stop_sequences: &[&str],
         active_loras: &[(String, f32)],
     ) -> Result<(String, usize), String> {
@@ -236,20 +236,14 @@ impl LlamaCppBackend {
         let (response_tx, mut response_rx) =
             tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
 
-        // Use `SamplingConfig::chat()` for the non-temperature fields
-        // (repeat_penalty=1.1, top_k=40, top_p=0.95). Previously this path
-        // built `SamplingConfig { repeat_penalty: 1.0, top_k: 0, top_p: 1.0 }`
-        // — no-op values that bypassed the scheduler's full sampler chain
-        // and sent qwen3.5 into degenerate repetition ('hererher' and
-        // 'be, to, the, the, the'). The caller specifies temperature; all
-        // other sampling defaults come from SamplingConfig::chat().
+        // Caller passes the full SamplingConfig (the value-object pattern
+        // — adding fields like `grammar` doesn't require changing this
+        // signature). Previously this path silently overwrote the caller's
+        // top_k/top_p/repeat_penalty fields with no-op defaults.
         let req = GenerationRequest {
             prompt: prompt.to_string(),
             max_tokens,
-            sampling: SamplingConfig {
-                temperature: temperature as f64,
-                ..SamplingConfig::chat()
-            },
+            sampling,
             stop_sequences: stop_sequences.iter().map(|s| s.to_string()).collect(),
             active_loras: active_loras.to_vec(),
             response_tx,
