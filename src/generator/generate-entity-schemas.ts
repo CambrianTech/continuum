@@ -139,7 +139,15 @@ async function main() {
   console.log(`  SHA-256:  ${sha256.substring(0, 16)}...`);
 }
 
-main().catch((err) => {
-  console.error('❌ generate-entity-schemas failed:', err);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // Explicit exit: some entity imports leave open handles (loggers,
+    // IPC sockets) that prevent Node from exiting on its own. Without
+    // this, the script completes its work and then hangs in kevent
+    // forever, blocking npm start. Verified 2026-04-20 via `sample`.
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error('❌ generate-entity-schemas failed:', err);
+    process.exit(1);
+  });
