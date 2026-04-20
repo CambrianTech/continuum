@@ -48,13 +48,18 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
     maxTokens: 2500,
     systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
   },
-  // Keep 'candle' for explicit training/LoRA callers that need Candle's
-  // autodiff + safetensors support specifically.
+  // 'candle' is REMOVED as an inference adapter (was a 5-day removal pain
+  // documented in the candle-removal trauma). Personas seeded with
+  // provider='candle' would otherwise hit the Rust AdapterRegistry's hard
+  // 'no candle adapter' error and silently drop their reply. Map the key
+  // to the same shape as 'local' so existing personas keep working through
+  // the in-process llama.cpp adapter. The eventual removal: delete this
+  // entry entirely + migrate every persona record with modelConfig.provider
+  // == 'candle' to 'local'. That migration is DB work, not code work.
   'candle': {
-    provider: 'candle',
+    provider: 'local',
     model: LOCAL_MODELS.DEFAULT,
     temperature: 0.7,
-    // Same reasoning as 'local' above — qwen3.5 reasoning preamble + response.
     maxTokens: 2500,
     systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
   },
