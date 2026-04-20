@@ -37,7 +37,15 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
     provider: 'local',
     model: LOCAL_MODELS.DEFAULT,
     temperature: 0.7,
-    maxTokens: 1000,
+    // 2500 — local default model is qwen3.5-4b-code-forged, a REASONING
+    // model that emits 500-800 tokens of <think>...</think> before the
+    // visible response. 1000 cut the model off mid-reasoning, leaving
+    // 200-500 for the actual reply (often cut off entirely; visible as
+    // "Thinking Process: 1. Analyze..." truncated in chat). 2500 fits
+    // both phases: reasoning preamble (~15s) + visible response (~10-30s)
+    // at ~50 tok/s on Mac Metal. Preserves the smart-AND-fast property —
+    // we forged this model specifically because it reasons.
+    maxTokens: 2500,
     systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
   },
   // Keep 'candle' for explicit training/LoRA callers that need Candle's
@@ -46,7 +54,8 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
     provider: 'candle',
     model: LOCAL_MODELS.DEFAULT,
     temperature: 0.7,
-    maxTokens: 1000,
+    // Same reasoning as 'local' above — qwen3.5 reasoning preamble + response.
+    maxTokens: 2500,
     systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
   },
   'groq': {

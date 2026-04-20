@@ -385,6 +385,7 @@ impl AIProviderModule {
                 .or_else(|| p.json_opt("stopSequences")),
             tools: p.json_opt("tools"),
             tool_choice: p.json_opt("tool_choice"),
+            response_format: None,
             active_adapters: p.json_opt("activeAdapters"),
             request_id: p.string_opt_alias("request_id", "requestId"),
             user_id: p.string_opt_alias("user_id", "userId"),

@@ -517,6 +517,32 @@ impl OpenAICompatibleAdapter {
                     supports_streaming: true,
                     supports_tools: false,
                 },
+                // continuum-ai/qwen3.5-4b-code-forged — our forge's flagship local
+                // reasoning model. Without this entry, the registry returns
+                // DEFAULT_CONTEXT_WINDOW=8192 and the personas get truncated to
+                // 8K of input context out of an actual 262144. 32x cripple, fixed
+                // by adding the truth here. Doc-comment in
+                // system/shared/ModelContextWindows.ts called this out as the
+                // archetypal "registry doesn't know the model" failure mode.
+                ModelInfo {
+                    id: "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest".to_string(),
+                    name: "Qwen3.5 4B Code Forged (Continuum forge, Q4_K_M)".to_string(),
+                    provider: "docker-model-runner".to_string(),
+                    capabilities: vec![
+                        ModelCapability::TextGeneration,
+                        ModelCapability::Chat,
+                        ModelCapability::ToolUse,
+                    ],
+                    context_window: 262144, // Confirmed via the model's GGUF metadata
+                    max_output_tokens: 32768, // Generous output budget — reasoning model
+                    cost_per_1k_tokens: CostPer1kTokens {
+                        input: 0.0,
+                        output: 0.0,
+                    },
+                    tokens_per_second: 50.0, // Mac Metal observed; updated at runtime
+                    supports_streaming: true,
+                    supports_tools: true,
+                },
             ],
         })
     }
@@ -829,6 +855,44 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "max_tokens": request.max_tokens.unwrap_or(2048),
             "stream": false
         });
+
+        // Forward response_format when set. Llama.cpp/DMR DO grammar-constrain
+        // JSON output, but for qwen3.5 reasoning models the model still
+        // emits its <think> reasoning BEFORE the constrained JSON region,
+        // which is no help to a JSON parser. Verified empirically 2026-04-19:
+        // `response_format=json_object` alone returns "<think>\nThinking
+        // Process:..." with no JSON.
+        if let Some(format) = &request.response_format {
+            if let Ok(value) = serde_json::to_value(format) {
+                body["response_format"] = value;
+
+                // qwen3-family-specific kicker: when caller asks for JSON,
+                // ALSO disable thinking via the chat_template_kwargs
+                // hatch. Verified the same model returns
+                // "<think></think>\n\n{...JSON...}" in 434ms with this
+                // flag set — empty think block, clean JSON, parser-friendly.
+                // Cloud providers ignore unknown fields, so this is safe to
+                // set unconditionally when we want JSON.
+                // Insert chat_template_kwargs.enable_thinking=false in two
+                // sequential mutable borrows so each Map ref is short-lived.
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert(
+                        "chat_template_kwargs".to_string(),
+                        json!({ "enable_thinking": false }),
+                    );
+                }
+            }
+            // Diagnostic — print the request body exactly as serialized so we
+            // can see which fields actually reach DMR. Helps catch silent
+            // serialization drops (caught one 2026-04-19 — entry chain wasn't
+            // mutating body in place).
+            tracing::info!(
+                target: "openai_adapter",
+                "request body to {}: {}",
+                self.config.name,
+                serde_json::to_string(&body).unwrap_or_default()
+            );
+        }
 
         // Add tools if provided
         if let Some(tools) = &request.tools {

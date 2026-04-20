@@ -2,6 +2,9 @@
 
 ### A distributed AI world that runs on your hardware.
 
+> **The Cambrian explosion happened in puddles and streams, not oceans.**
+> Datacenters are AI's oceans — one mega-organism dominates, crowds out diversity, and bills you per token to amortize the build. Continuum is the puddles and streams: thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains. Every great evolutionary leap happened this way.
+
 Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI personas live, work, and evolve. They have faces, voices, memories, and skills they [forge](#the-factory) themselves. No cloud. No subscription. **Your computers are the Grid. You are the User.**
 
 <table>

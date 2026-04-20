@@ -28,6 +28,54 @@ import type {
 	CoverageReport,
 	QualityScore,
 } from '../../../../shared/generated';
+import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
+
+/**
+ * Caller-supplied input for persona/respond. Mirrors the Rust RespondInput
+ * struct (intentionally not a generated TS type because the shape is
+ * IPC-call-shaped, not domain-shaped — generated types are for domain
+ * objects that flow through events/storage/UI, not for transient call args).
+ *
+ * The PRG.ts shim builds this from the room state and passes it across the
+ * IPC. Rust does the analysis caching, scoring, prompt assembly, inference,
+ * and <think>-block stripping.
+ */
+export interface PersonaRespondRequest {
+	personaId: string;
+	roomId: string;
+	messageId: string;
+	personaName: string;
+	specialty: string;
+	messageText: string;
+	/**
+	 * Persona's RAG-built identity / system prompt. Caller supplies because
+	 * persona identity is a TS-side composition (entity + active LoRA
+	 * adapters + user personalization). Rust just consumes it.
+	 */
+	systemPrompt: string;
+	/**
+	 * THIS persona's render-time model identifier. Required (no default).
+	 * Shared-cognition architecture: 1 cheap analysis on a base model + N
+	 * specialty renders each on the persona's own (potentially LoRA-adapted)
+	 * model. Caller MUST pass the persona's actual model — using the analysis
+	 * model would defeat the architecture (every persona would render with
+	 * the same base model).
+	 */
+	model: string;
+	/**
+	 * Recent messages for shared analysis context. Most-recent last. Each
+	 * element: { id, sender_name, text }.
+	 */
+	recentHistory: Array<{ id: string; sender_name: string; text: string }>;
+	/**
+	 * Stable specialty identifiers in the room (all personas, not just
+	 * this one). Lets the shared analysis know which suggested_angles
+	 * keys to populate. This persona's specialty must appear here.
+	 */
+	knownSpecialties: string[];
+	/** Live-voice context flag. Affects assembled-prompt response style. */
+	isVoice?: boolean;
+}
 
 // ============================================================================
 // Mixin
@@ -82,6 +130,22 @@ export interface CognitionMixin {
 	cognitionCacheMessage(personaId: string, roomId: string, messageId: string, senderId: string, senderType: string, senderName: string, content: string, timestamp: number): Promise<void>;
 	cognitionCheckContentDedup(personaId: string, roomId: string, content: string): Promise<{ is_duplicate: boolean; check_time_us: number }>;
 	cognitionRecordContent(personaId: string, roomId: string, content: string): Promise<void>;
+
+	/**
+	 * SHARED COGNITION — single external entry point for the per-persona
+	 * response cycle. Rust runs analysis (cached) → score → prompt assembly
+	 * → inference → <think>-strip → emits cognition:think-block events.
+	 *
+	 * Returns either Silent { reason } (first-class outcome — persona
+	 * considered the message and chose not to speak) or Spoke { text,
+	 * model_used, inference_ms, total_ms, think_blocks_emitted }. Caller
+	 * (PRG.ts shim) is responsible for posting the Spoke text; Silent
+	 * outcomes can be logged for trainability but should NOT post empty
+	 * messages.
+	 *
+	 * See docs/architecture/SHARED-COGNITION.md.
+	 */
+	cognitionPersonaRespond(req: PersonaRespondRequest): Promise<PersonaResponse>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -713,6 +777,45 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 				room_id: roomId,
 				content,
 			});
+		}
+
+		/**
+		 * Per-persona response cycle (shared cognition pipeline).
+		 * Single IPC call → Rust does analysis (cached) + scoring + prompt
+		 * assembly + inference + <think> stripping. Returns the structured
+		 * PersonaResponse that the caller posts (or logs, if Silent).
+		 */
+		async cognitionPersonaRespond(req: PersonaRespondRequest): Promise<PersonaResponse> {
+			// 180s timeout (vs default 60s) — cognition/respond runs the full
+			// persona pipeline: analyze (qwen3.5 reasoning preamble + JSON, can
+			// be 30-60s alone) + score + assemble + render inference + strip.
+			// Default 60s timed out mid-analyze 2026-04-19, throwing 'IPC
+			// timeout' before the model finished responding. The IPC TIMEOUT
+			// is not the right signal here — the inference IS taking time,
+			// it's not stuck. Bump to 180s; if THAT trips, something's
+			// genuinely wrong (model crashed, infinite reasoning loop, etc.)
+			// and we want the loud failure.
+			const COGNITION_RESPOND_TIMEOUT_MS = 180_000;
+			const { response } = await this.requestFull({
+				command: 'cognition/respond',
+				persona_id: req.personaId,
+				room_id: req.roomId,
+				message_id: req.messageId,
+				persona_name: req.personaName,
+				specialty: req.specialty,
+				message_text: req.messageText,
+				system_prompt: req.systemPrompt,
+				model: req.model,
+				recent_history: req.recentHistory,
+				known_specialties: req.knownSpecialties,
+				is_voice: req.isVoice ?? false,
+			}, COGNITION_RESPOND_TIMEOUT_MS);
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to run persona/respond');
+			}
+
+			return response.result as PersonaResponse;
 		}
 	};
 }
