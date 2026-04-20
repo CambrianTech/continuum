@@ -386,27 +386,40 @@ fn parse_model_output(raw: &str, known_specialties: &[String]) -> Result<ParsedO
     // Strip code fences if the model wrapped its JSON.
     let candidate = strip_code_fence(raw).trim();
 
-    // Find the first { ... } object — tolerates leading/trailing prose.
-    //
+    // Find the first '{' — tolerates leading prose.
     let obj_start = candidate.find('{').ok_or_else(|| {
         format!(
             "model output did not contain a JSON object. Got: {}",
             preview(raw)
         )
     })?;
-    let obj_end = candidate.rfind('}').ok_or_else(|| {
-        format!(
-            "model output JSON object had no closing brace. Got: {}",
-            preview(raw)
-        )
-    })?;
-    let json_text = &candidate[obj_start..=obj_end];
 
-    let parsed: serde_json::Value = serde_json::from_str(json_text)
-        .map_err(|e| format!("model output was not valid JSON: {e}. Got: {}", preview(json_text)))?;
+    // Stream-parse the first complete JSON value starting at obj_start.
+    // Why: rfind('}') would slurp trailing markdown that contains its own
+    // braces (e.g. `{"a":"b"} * code with { x } block`) and then
+    // serde_json rejects it as "trailing characters". The streaming
+    // deserializer stops at the first complete value and ignores the rest,
+    // which is the correct behavior for a model that occasionally tacks
+    // on prose after the JSON envelope.
+    let tail = &candidate[obj_start..];
+    let mut stream = serde_json::Deserializer::from_str(tail).into_iter::<serde_json::Value>();
+    let parsed: serde_json::Value = stream
+        .next()
+        .ok_or_else(|| {
+            format!(
+                "model output did not contain a JSON object. Got: {}",
+                preview(raw)
+            )
+        })?
+        .map_err(|e| {
+            format!(
+                "model output was not valid JSON: {e}. Got: {}",
+                preview(tail)
+            )
+        })?;
 
     let obj = parsed.as_object().ok_or_else(|| {
-        format!("model output was not a JSON object. Got: {}", preview(json_text))
+        format!("model output was not a JSON object. Got: {}", preview(tail))
     })?;
 
     let summary = obj
@@ -577,6 +590,19 @@ mod tests {
         let parsed = parse_model_output(raw, &[]).unwrap();
         assert_eq!(parsed.summary, "x");
         assert_eq!(parsed.intent, SharedAnalysisIntent::Social);
+    }
+
+    #[test]
+    fn parse_handles_trailing_markdown_with_braces() {
+        // Regression: live qwen3.5 emitted a valid JSON envelope followed
+        // by markdown bullets that contained their own braces. rfind('}')
+        // would slurp through the trailing braces and serde_json rejected
+        // the slice as "trailing characters". The streaming deserializer
+        // must take only the first complete object.
+        let raw = "{\"summary\":\"hi\",\"keyConcepts\":[],\"intent\":\"social\",\"suggestedAngles\":{\"general\":\"context covers chat\"}} * `relevantContext`: stuff with { extra } braces in code";
+        let parsed = parse_model_output(raw, &["general".to_string()]).unwrap();
+        assert_eq!(parsed.summary, "hi");
+        assert_eq!(parsed.suggested_angles.get("general").map(String::as_str), Some("context covers chat"));
     }
 
     #[test]
