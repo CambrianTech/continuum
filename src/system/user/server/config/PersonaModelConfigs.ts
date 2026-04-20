@@ -48,21 +48,11 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
     maxTokens: 2500,
     systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
   },
-  // 'candle' is REMOVED as an inference adapter (was a 5-day removal pain
-  // documented in the candle-removal trauma). Personas seeded with
-  // provider='candle' would otherwise hit the Rust AdapterRegistry's hard
-  // 'no candle adapter' error and silently drop their reply. Map the key
-  // to the same shape as 'local' so existing personas keep working through
-  // the in-process llama.cpp adapter. The eventual removal: delete this
-  // entry entirely + migrate every persona record with modelConfig.provider
-  // == 'candle' to 'local'. That migration is DB work, not code work.
-  'candle': {
-    provider: 'local',
-    model: LOCAL_MODELS.DEFAULT,
-    temperature: 0.7,
-    maxTokens: 2500,
-    systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
-  },
+  // 'candle' was removed as an inference adapter. The entry is GONE — any
+  // lookup for 'candle' should fall through to 'local' at the call site.
+  // Anyone seeing a missing-key error here should change their persona's
+  // modelConfig.provider from 'candle' to 'local' (DB-side fix), not
+  // re-add this entry.
   'groq': {
     provider: 'groq',
     model: 'llama-3.3-70b-versatile',
