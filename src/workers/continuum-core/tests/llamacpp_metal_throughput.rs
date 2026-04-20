@@ -343,38 +343,59 @@ fn qwen35_4b_spec_dec_throughput() {
             }
         }
 
-        // (d) Handle the tail — mismatch path or all-accept bonus
+        // (d) Handle the tail — mismatch path or all-accept bonus.
+        //
+        // KV invariants (entering this block):
+        //   target KV: positions 0..pos+k_drafted (target decoded all drafts)
+        //   draft  KV: positions 0..pos+k_drafted (draft autoregressively produced all K)
+        //
+        // Goal after this block: both KVs reflect [0..pos+accepted) ++ [emitted_next]
+        // where emitted_next is either `c` (correction at position pos+accepted) or
+        // `bonus` (at position pos+k_drafted).
         match correction {
             Some(c) => {
-                // Mismatch at position `accepted`. Emit target's correction.
+                // Mismatch at position `accepted`. Target rejected drafts[accepted].
+                // Correction token `c` replaces drafts[accepted] at position pos+accepted.
+                //
+                // memory_seq_rm(seq_id, p0, p1) removes KV entries with positions in
+                // [p0, p1). Passing p1 = -1 means "to the end". So we cut everything
+                // from pos+accepted inclusive — BOTH contexts had drafts[accepted] or
+                // later cached there and none of that is valid anymore.
                 target_sampler.accept(c);
                 output_tokens.push(c);
                 last_token = c;
-                let new_pos = pos + accepted as i32 + 1;
-                // Rewind: drop all positions [accepted+1..k_drafted) that target
-                // computed but we rejected. Also rewind draft KV to new_pos.
-                let _ = target_ctx.memory_seq_rm(0, new_pos, -1);
-                let _ = draft_ctx.memory_seq_rm(0, new_pos, -1);
-                // Feed the correction token into draft so next iteration's
-                // draft has aligned KV.
-                let mut batch = Batch::allocated(1, 1);
-                batch.push(c, new_pos - 1, &[0], true);
-                draft_ctx.decode(&batch).expect("draft sync decode");
-                pos = new_pos;
+                let cut_pos = pos + accepted as i32;
+                let _ = target_ctx.memory_seq_rm(0, cut_pos, -1);
+                let _ = draft_ctx.memory_seq_rm(0, cut_pos, -1);
+                // Push c at cut_pos into BOTH contexts so their KV extends with the
+                // real next token. Off-by-one in the previous version: we pushed at
+                // cut_pos-1 which collided with the last accepted token already in KV.
+                let mut tbatch = Batch::allocated(1, 1);
+                tbatch.push(c, cut_pos, &[0], true);
+                target_ctx.decode(&tbatch).expect("target sync decode");
+                let mut dbatch = Batch::allocated(1, 1);
+                dbatch.push(c, cut_pos, &[0], true);
+                draft_ctx.decode(&dbatch).expect("draft sync decode");
+                pos = cut_pos + 1;
             }
             None => {
                 // All K accepted. Take target's sample at position K-1 as bonus.
+                // Target's logits_ith(K-1) gives the prediction for position pos+K
+                // (what comes after drafts[K-1]). Bonus token lands at position pos+k_drafted.
                 let bonus = target_sampler.sample(&target_ctx, (k_drafted - 1) as i32);
                 target_sampler.accept(bonus);
                 output_tokens.push(bonus);
                 last_token = bonus;
-                let new_pos = pos + k_drafted as i32 + 1;
-                // Sync draft KV: its KV is at pos+k_drafted (from its own generate).
-                // Push bonus into draft so it aligns.
-                let mut batch = Batch::allocated(1, 1);
-                batch.push(bonus, new_pos - 1, &[0], true);
-                draft_ctx.decode(&batch).expect("draft bonus-sync decode");
-                pos = new_pos;
+                let bonus_pos = pos + k_drafted as i32;
+                // No rewind needed — every position up to pos+k_drafted-1 is valid
+                // in both KVs. We just append bonus_pos onto both.
+                let mut tbatch = Batch::allocated(1, 1);
+                tbatch.push(bonus, bonus_pos, &[0], true);
+                target_ctx.decode(&tbatch).expect("target bonus decode");
+                let mut dbatch = Batch::allocated(1, 1);
+                dbatch.push(bonus, bonus_pos, &[0], true);
+                draft_ctx.decode(&dbatch).expect("draft bonus-sync decode");
+                pos = bonus_pos + 1;
             }
         }
     }
