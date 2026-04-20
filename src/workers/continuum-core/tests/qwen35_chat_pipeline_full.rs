@@ -53,15 +53,21 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     // catch the chat-template terminator since the GGUF's eos_token_id is wrong.
     let stop: [&str; 2] = ["<|im_end|>", "<|endoftext|>"];
 
+    // 2500 matches what PersonaModelConfigs gives the live personas.
+    // qwen3.5 is a reasoning model — it emits ~500-800 tokens of <think>
+    // reasoning before the visible answer. 200 cuts it off mid-reasoning;
+    // strip_think_blocks then leaves empty output. Validated 2026-04-20:
+    // model produced correct '12 × 7 = 84' inside <think> but never
+    // reached the visible-text phase before max_tokens.
     let (text, n_tokens) = backend
-        .generate(&prompt, 200, sampling, &stop, &[])
+        .generate(&prompt, 2500, sampling, &stop, &[])
         .expect("generate");
 
     eprintln!("[full] tokens={n_tokens} text={text:?}");
 
     // Hard assertions on coherence:
     assert!(n_tokens > 0, "no tokens generated");
-    assert!(n_tokens < 200, "hit max_tokens cap — stop_sequences didn't fire (model looping?)");
+    assert!(n_tokens < 2500, "hit max_tokens cap — model couldn't terminate even with 2500 token budget");
     assert!(!text.is_empty(), "empty output text");
     // No obvious loop: the same 20-char window shouldn't repeat 3+ times.
     if text.len() > 60 {
