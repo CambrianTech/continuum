@@ -409,7 +409,11 @@ ${generatedText}
         model,
         temperature: options.temperature ?? 0.7,
         maxTokens: options.maxTokens ?? 150,
-        provider: 'candle'
+        // 'local' is the routing sentinel for "best available local GPU
+        // adapter" — the Rust AdapterRegistry picks llamacpp-local on
+        // Mac, DMR elsewhere. Previous 'candle' was the dead adapter's
+        // name; routing returned None and this whole path silently errored.
+        provider: 'local'
       };
 
       // Wrap with timeout

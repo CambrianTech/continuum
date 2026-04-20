@@ -73,7 +73,7 @@ export class PersonaTaskExecutor {
     private readonly displayName: string,
     private readonly memory: PersonaMemory,
     private readonly personaState: PersonaStateManager,
-    private readonly provider: string = 'candle',
+    private readonly provider: string = 'local',
     logger: (message: string) => void
   ) {
     this.log = logger;
@@ -606,7 +606,7 @@ export class PersonaTaskExecutor {
       // - Supports any HuggingFace model
       // - Enables multi-adapter composition (genome vision)
       // - Works cross-platform (MPS/CUDA/CPU)
-      const localProviders = ['candle', 'local', 'peft'];
+      const localProviders = ['local', 'peft'];
       const effectiveProvider = localProviders.includes(this.provider.toLowerCase()) ? 'peft' : this.provider;
       const adapter = getFineTuningAdapter(effectiveProvider);
 

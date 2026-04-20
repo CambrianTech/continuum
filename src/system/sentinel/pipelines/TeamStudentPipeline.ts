@@ -207,7 +207,7 @@ function buildTrainingLoopSteps(
         'Reply as JSON: [{"questionIndex":0,"studentAnswer":"..."}]',
       ].join('\n'),
       model: baseModel,
-      provider: 'candle',
+      provider: 'local',
       temperature: 0.5,
       maxTokens: 1024,
     },
@@ -261,7 +261,7 @@ function buildTrainingLoopSteps(
         'Reply as JSON: [{"questionIndex":0,"studentAnswer":"..."}]',
       ].join('\n'),
       model: baseModel,
-      provider: 'candle',
+      provider: 'local',
       temperature: 0.5,
       maxTokens: 1024,
       activeAdapters: [{

@@ -183,7 +183,7 @@ export function buildCodingStudentPipeline(config: CodingStudentPipelineConfig):
             '- Fix ONLY the bugs revealed by failing tests',
           ].join('\n'),
           model: baseModel,
-          provider: 'candle',
+          provider: 'local',
           temperature: 0.2,
           maxTokens: 4096,
           activeAdapters: [{

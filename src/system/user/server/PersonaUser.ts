@@ -457,7 +457,9 @@ export class PersonaUser extends AIUser {
     // CRITICAL: Handle case where AIProviderDaemon isn't initialized yet (race condition on startup)
     this.inbox.setQueueStatsProvider(() => {
       try {
-        const adapter = AIProviderDaemon.getAdapter('candle');
+        // 'local' = routing sentinel for best available local GPU adapter.
+        // Was 'candle' (dead adapter) which returned null silently.
+        const adapter = AIProviderDaemon.getAdapter('local');
         if (adapter && adapter.getQueueStats) {
           return adapter.getQueueStats();
         }

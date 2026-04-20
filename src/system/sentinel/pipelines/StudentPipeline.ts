@@ -82,7 +82,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             'Reply as JSON: [{"questionIndex":0,"studentAnswer":"..."}]',
           ].join('\n'),
           model: baseModel,
-          provider: 'candle',
+          provider: 'local',
           temperature: 0.5,
           maxTokens: 1024,
         },
@@ -152,7 +152,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             'Reply as JSON: [{"questionIndex":0,"studentAnswer":"..."}]',
           ].join('\n'),
           model: baseModel,
-          provider: 'candle',
+          provider: 'local',
           temperature: 0.5,
           maxTokens: 1024,
           activeAdapters: [{

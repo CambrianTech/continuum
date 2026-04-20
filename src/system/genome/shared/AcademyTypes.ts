@@ -237,7 +237,7 @@ export function resolveStudentLlmConfig(
     return { provider: academyConfig.studentProvider, model: '' };
   }
   // Default: local inference — the whole point of training
-  return { model: baseModel, provider: 'candle' };
+  return { model: baseModel, provider: 'local' };
 }
 
 // ============================================================================

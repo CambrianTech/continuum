@@ -207,7 +207,7 @@ function buildMilestoneStudentSteps(
         '- Preserve existing working functionality from previous milestones',
       ].join('\n'),
       model: baseModel,
-      provider: 'candle',
+      provider: 'local',
       temperature: 0.3,
       maxTokens: 8192,
     },
@@ -396,7 +396,7 @@ function buildMilestoneStudentSteps(
         'IMPORTANT: Valid JSON only, no markdown, no code fences.',
       ].join('\n'),
       model: baseModel,
-      provider: 'candle',
+      provider: 'local',
       temperature: 0.3,
       maxTokens: 8192,
       activeAdapters: [{
