@@ -254,12 +254,20 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // qwen3.5 — it caused `<|im_end<|>` special-token leakage in
         // Teacher AI output (2026-04-20). Different models use different
         // boundary tokens; the model is the source of truth.
-        // Model's own template if embedded; otherwise None → llama.cpp
-        // falls back to its built-in chatml default. Our forge model
-        // (qwen3.5-4b-code-forged) currently doesn't embed a template
-        // in GGUF metadata; the chatml default is correct for the qwen3.5
-        // family. TODO: forge recipe should embed an explicit template.
-        let template = backend.model_chat_template();
+        // Use the model's own template if embedded in GGUF metadata;
+        // otherwise the qwen3.5 chatml template explicitly. llama.cpp's
+        // built-in chatml default uses slightly different boundary tokens
+        // than qwen3.5 was trained on (verified 2026-04-20: model emitted
+        // partial '<|im_end|>'-shaped fragments — `the </|>` — when the
+        // built-in default was used). The forge model doesn't embed a
+        // template; this constant provides the right one until the recipe
+        // is updated to bake the template into GGUF metadata.
+        const QWEN35_CHATML: &str =
+            "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}";
+        let template_string = backend
+            .model_chat_template()
+            .unwrap_or_else(|| QWEN35_CHATML.to_string());
+        let template = Some(template_string.as_str());
         let mut messages: Vec<llama::ChatMsg> = Vec::new();
         if let Some(sys) = request.system_prompt.as_ref() {
             if !sys.is_empty() {
