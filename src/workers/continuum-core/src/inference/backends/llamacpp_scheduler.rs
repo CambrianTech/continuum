@@ -44,7 +44,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use llama::{Batch, ContextParams, Model, Sampler};
+use llama::{Batch, ContextParams, FlashAttn, KvCacheType, Model, Sampler};
 
 use crate::runtime;
 
@@ -82,6 +82,16 @@ pub struct SchedulerConfig {
     pub n_ctx: u32,
     pub n_batch: u32,
     pub n_seq_max: u32,
+    /// Flash attention. Default `Auto` lets llama.cpp pick per-backend; on
+    /// Metal with supported head dims (qwen3.5-4b's 256 qualifies) it turns
+    /// on. Helps prefill more than single-token decode but cheap to enable.
+    pub flash_attn: FlashAttn,
+    /// KV cache K element type. `F16` lossless / `Q8_0` halves K memory.
+    pub type_k: KvCacheType,
+    /// KV cache V element type. `F16` lossless / `Q8_0` halves V memory.
+    /// V is more sensitive to quantization than K — keep F16 unless RAM
+    /// is tight.
+    pub type_v: KvCacheType,
 }
 
 /// Public handle. Cloneable; clones share the same driver thread + context.
@@ -160,6 +170,9 @@ fn driver_loop(
         n_ctx: config.n_ctx,
         n_batch: config.n_batch,
         n_seq_max: config.n_seq_max,
+        flash_attn: config.flash_attn,
+        type_k: config.type_k,
+        type_v: config.type_v,
     }) {
         Ok(c) => c,
         Err(e) => {
@@ -189,7 +202,20 @@ fn driver_loop(
     // the sampler chain.
     let mut decode_total = std::time::Duration::ZERO;
     let mut decode_count: u64 = 0;
-    let mut sample_total = std::time::Duration::ZERO;
+    // Sampling time is split into two sub-phases so the GPU sync cost is
+    // visible on its own. `sample_call_total` is just the `sampler.sample()`
+    // call — which is what forces `llama_get_logits_ith()` to wait on the
+    // outstanding Metal command buffer before the sampler chain reads the
+    // logits. `post_sample_total` is everything else (token_to_piece,
+    // string concat, channel send, stop-sequence scan) — which is pure CPU
+    // and shouldn't be measurable.
+    //
+    // Why this split matters: post-Metal-fix we observed sample_avg jump
+    // from 0.66ms to 20ms while decode_avg dropped from 31ms to 0.80ms.
+    // Hypothesis is that decode is async-dispatch and the real GPU compute
+    // wait moved into sampler.sample(). This split confirms or refutes it.
+    let mut sample_call_total = std::time::Duration::ZERO;
+    let mut post_sample_total = std::time::Duration::ZERO;
     let mut tokens_sampled_window: u64 = 0;
     const PERF_LOG_INTERVAL_TOKENS: u64 = 50;
 
@@ -341,6 +367,7 @@ fn driver_loop(
             // building the batch — it's the absolute batch position
             // where this seq's want_logits=true token sits.
             let sample_start = Instant::now();
+            let mut sample_call_iter_total = std::time::Duration::ZERO;
             for role in &roles {
                 let (seq_id, advance_pos, logit_idx) = match role {
                     BatchRole::PrefillFinal { seq_id, gen_pos, logit_idx } => {
@@ -355,7 +382,15 @@ fn driver_loop(
                     None => continue,
                 };
 
+                // Time the sampler.sample() call independently. This is the
+                // implicit GPU sync point — llama_get_logits_ith() blocks
+                // until the outstanding Metal command buffer completes, so
+                // most of the apparent "sample" cost lives here, not in the
+                // post-sample work below.
+                let sample_call_start = Instant::now();
                 let token = seq.sampler.sample(&ctx, logit_idx);
+                let sample_call_elapsed = sample_call_start.elapsed();
+                sample_call_iter_total += sample_call_elapsed;
                 seq.sampler.accept(token);
 
                 if model.is_eog_token(token) {
@@ -388,7 +423,12 @@ fn driver_loop(
                 seq.next_token = Some(token);
                 seq.gen_pos = advance_pos;
             }
-            sample_total += sample_start.elapsed();
+            // Phase-4 wall time minus the per-iteration sample-call cost =
+            // post-sample CPU work (token_to_piece, push_str, channel send,
+            // stop-sequence scan).
+            let phase4_total = sample_start.elapsed();
+            sample_call_total += sample_call_iter_total;
+            post_sample_total += phase4_total.saturating_sub(sample_call_iter_total);
             tokens_sampled_window += roles.len() as u64;
         }
 
@@ -400,24 +440,33 @@ fn driver_loop(
         // the CPU tail is the bottleneck.
         if tokens_sampled_window >= PERF_LOG_INTERVAL_TOKENS && decode_count > 0 {
             let avg_decode_us = decode_total.as_micros() as f64 / decode_count as f64;
-            let avg_sample_us = if tokens_sampled_window > 0 {
-                sample_total.as_micros() as f64 / tokens_sampled_window as f64
-            } else { 0.0 };
-            let total_us_per_tok = avg_decode_us + avg_sample_us;
+            let avg_sample_call_us =
+                sample_call_total.as_micros() as f64 / tokens_sampled_window as f64;
+            let avg_post_sample_us =
+                post_sample_total.as_micros() as f64 / tokens_sampled_window as f64;
+            let total_us_per_tok = avg_decode_us + avg_sample_call_us + avg_post_sample_us;
             let tok_per_s = if total_us_per_tok > 0.0 {
                 1_000_000.0 / total_us_per_tok
             } else { 0.0 };
+            // sample_call captures the GPU sync wait + sampler chain CPU
+            // work. post_sample is everything else (token_to_piece, send,
+            // stop scan). When sample_call ≫ post_sample the bottleneck is
+            // GPU sync, not CPU sampler chain — and the lever is async
+            // pipelining or a leaner sampler, not faster string ops.
             log.info(&format!(
-                "perf: decode_avg={:.2}ms sample_avg={:.2}ms ({} decodes / {} sampled) → {:.1} tok/s",
+                "perf: decode_dispatch={:.2}ms sample_call={:.2}ms post_sample={:.2}ms \
+                 ({} decodes / {} sampled) → {:.1} tok/s",
                 avg_decode_us / 1000.0,
-                avg_sample_us / 1000.0,
+                avg_sample_call_us / 1000.0,
+                avg_post_sample_us / 1000.0,
                 decode_count,
                 tokens_sampled_window,
                 tok_per_s,
             ));
             decode_total = std::time::Duration::ZERO;
             decode_count = 0;
-            sample_total = std::time::Duration::ZERO;
+            sample_call_total = std::time::Duration::ZERO;
+            post_sample_total = std::time::Duration::ZERO;
             tokens_sampled_window = 0;
         }
 

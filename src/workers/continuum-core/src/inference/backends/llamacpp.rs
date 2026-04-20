@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use llama::{LoraAdapter, Model, ModelParams};
+use llama::{FlashAttn, KvCacheType, LoraAdapter, Model, ModelParams};
 
 use super::SamplingConfig;
 use super::llamacpp_scheduler::{
@@ -50,6 +50,14 @@ pub struct LlamaCppConfig {
     /// inflight occupies one seq_id (0..n_seq_max). Scaled by RAM in the
     /// caller (CandleAdapter) and matched by the TS InferenceCoordinator.
     pub n_seq_max: u32,
+    /// Flash attention. `Auto` lets llama.cpp pick per-backend (Metal: ON
+    /// for supported head dims). Default Auto is the right call.
+    pub flash_attn: FlashAttn,
+    /// KV cache K element type. F16 = lossless. Q8_0 halves K memory.
+    pub type_k: KvCacheType,
+    /// KV cache V element type. V is more sensitive than K — keep F16
+    /// unless RAM is tight enough to need Q8_0.
+    pub type_v: KvCacheType,
 }
 
 impl Default for LlamaCppConfig {
@@ -67,6 +75,13 @@ impl Default for LlamaCppConfig {
             n_gpu_layers: -1,
             // 3 = M5 Pro tier (48GB+). CandleAdapter overrides per-RAM.
             n_seq_max: 3,
+            flash_attn: FlashAttn::Auto,
+            // F16/F16 measured fastest for single-token decode on M5 Pro.
+            // K=Q8_0 was slower (44 vs 47.5 tok/s) due to per-token dequant
+            // overhead. Q8_0 only pays off when KV memory pressure is the
+            // bottleneck (very long contexts or many parallel sequences).
+            type_k: KvCacheType::F16,
+            type_v: KvCacheType::F16,
         }
     }
 }
@@ -168,6 +183,9 @@ impl LlamaCppBackend {
                     n_ctx: total_n_ctx,
                     n_batch: self.config.n_batch,
                     n_seq_max: self.config.n_seq_max,
+                    flash_attn: self.config.flash_attn,
+                    type_k: self.config.type_k,
+                    type_v: self.config.type_v,
                 },
             )
         })

@@ -182,6 +182,19 @@ impl Model {
         ffi.n_ctx = params.n_ctx;
         ffi.n_batch = params.n_batch;
         ffi.n_seq_max = params.n_seq_max;
+        ffi.flash_attn_type = match params.flash_attn {
+            FlashAttn::Auto => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_AUTO,
+            FlashAttn::Enabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_ENABLED,
+            FlashAttn::Disabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_DISABLED,
+        };
+        ffi.type_k = match params.type_k {
+            KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
+            KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
+        };
+        ffi.type_v = match params.type_v {
+            KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
+            KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
+        };
 
         let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
         let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
@@ -298,6 +311,30 @@ impl Drop for LoraAdapter {
 
 // ─── Context ─────────────────────────────────────────────────────────────
 
+/// Flash-attention selection for the context.
+///
+/// `Auto` (the default) lets the runtime decide per-backend — on Metal +
+/// supported head dims (qwen3.5-4b's V head_dim=256 qualifies) llama.cpp
+/// enables FA automatically. `Enabled` forces it on (will error if the
+/// shape isn't supported). `Disabled` reverts to the unfused attention
+/// path, which is what the binding's prior behavior was implicitly doing
+/// because we never set the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashAttn {
+    Auto,
+    Enabled,
+    Disabled,
+}
+
+/// KV cache element type. f16 is the lossless default. q8_0 halves the KV
+/// memory footprint with <1% quality loss — enables more parallel sequences
+/// and longer contexts at the same VRAM budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KvCacheType {
+    F16,
+    Q8_0,
+}
+
 /// Context parameters.
 #[derive(Debug, Clone)]
 pub struct ContextParams {
@@ -309,11 +346,24 @@ pub struct ContextParams {
     /// prompts >1k tokens fail `llama_decode` with rc=1 ("no KV slot").
     /// Single-persona chat only uses sequence 0, so default to 1.
     pub n_seq_max: u32,
+    /// Flash attention setting. Default `Auto` — runtime picks per-backend.
+    pub flash_attn: FlashAttn,
+    /// KV cache element type for K. Default `F16` (lossless).
+    pub type_k: KvCacheType,
+    /// KV cache element type for V. Default `F16` (lossless).
+    pub type_v: KvCacheType,
 }
 
 impl Default for ContextParams {
     fn default() -> Self {
-        Self { n_ctx: 4096, n_batch: 512, n_seq_max: 1 }
+        Self {
+            n_ctx: 4096,
+            n_batch: 512,
+            n_seq_max: 1,
+            flash_attn: FlashAttn::Auto,
+            type_k: KvCacheType::F16,
+            type_v: KvCacheType::F16,
+        }
     }
 }
 
