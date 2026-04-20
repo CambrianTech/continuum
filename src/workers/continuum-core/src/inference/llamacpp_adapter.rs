@@ -306,11 +306,23 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .map(|n| n as usize)
             .unwrap_or_else(|| backend.n_ctx_train() as usize);
         let temperature = request.temperature.unwrap_or(0.7);
-        // Stop sequences come from caller; the model's own EOS tokens are
-        // handled inside the scheduler via `is_eog_token` so we don't need
-        // to manually pass `<|im_end|>` etc here. Caller-supplied stops
-        // (e.g. JSON-mode end markers) still propagate.
-        let stop_owned: Vec<String> = request.stop_sequences.clone().unwrap_or_default();
+        // Stop sequences = caller-supplied + model's registry-declared
+        // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
+        // the wrong tokenizer.ggml.eos_token_id, so is_eog_token never
+        // fires for the chat-template terminator and the model loops the
+        // same answer until max_tokens. The registry's stop_sequences
+        // field carries the correct strings (e.g. `<|im_end|>`) that the
+        // scheduler matches against streamed output.
+        let mut stop_owned: Vec<String> = request.stop_sequences.clone().unwrap_or_default();
+        if let Some(model_meta) = crate::model_registry::try_global()
+            .and_then(|reg| reg.model(backend.model_id()))
+        {
+            for s in &model_meta.stop_sequences {
+                if !stop_owned.contains(s) {
+                    stop_owned.push(s.clone());
+                }
+            }
+        }
 
         let gen_start = Instant::now();
         let backend_for_blocking = backend.clone();

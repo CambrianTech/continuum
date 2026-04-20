@@ -238,3 +238,9 @@ gguf_local_path = "~/.docker/models/bundles/sha256/18055fe8ee379b95f4af3cf420588
 # Until then, this TOML row is the source of truth and the llamacpp
 # adapter reads it through the registry.
 chat_template = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+# Stop sequences (text-form). The forged GGUF's tokenizer.ggml.eos_token_id
+# = 248046 is wrong — qwen3.5's chat-end is the `<|im_end|>` token (151645).
+# Until the forge recipe re-bakes with the correct EOS id, the scheduler
+# matches these strings against the streamed output and stops the seq.
+# Same architectural rule: per-model knobs are TOML, not adapter code.
+stop_sequences = ["<|im_end|>", "<|endoftext|>"]

@@ -128,6 +128,19 @@ pub struct Model {
     /// re-forge the GGUF with the template embedded, not to patch code.
     #[serde(default)]
     pub chat_template: Option<String>,
+    /// Text-form stop sequences to apply at the scheduler boundary.
+    /// Necessary when the GGUF's `tokenizer.ggml.eos_token_id` is
+    /// wrong/missing for chat use — the model emits the chat-template
+    /// terminator (e.g. `<|im_end|>`) as a real token but `is_eog_token`
+    /// returns false because the EOS id in metadata doesn't match the
+    /// chat-end token. Verified 2026-04-20 with qwen3.5-4b-code-forged:
+    /// metadata reports eos_token_id=248046 (wrong); model emits 151645
+    /// (`<|im_end|>`); scheduler had no way to stop. Listing the stop
+    /// strings here lets the adapter pass them through to the scheduler's
+    /// existing stop-sequence loop. Forge recipe should set the right
+    /// EOS id in the GGUF at next bake; until then this is the bridge.
+    #[serde(default)]
+    pub stop_sequences: Vec<String>,
 }
 
 impl Model {
