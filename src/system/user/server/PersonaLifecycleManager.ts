@@ -195,7 +195,7 @@ export class PersonaLifecycleManager {
    * providers maintain their own warm state via API connection pooling.
    */
   private isLocalProvider(provider: string): boolean {
-    return provider === 'local' || provider === 'sentinel';
+    return provider === 'local' || provider === 'candle' || provider === 'sentinel';
   }
 
   /**

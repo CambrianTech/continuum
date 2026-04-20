@@ -606,7 +606,10 @@ export class PersonaTaskExecutor {
       // - Supports any HuggingFace model
       // - Enables multi-adapter composition (genome vision)
       // - Works cross-platform (MPS/CUDA/CPU)
-      const localProviders = ['local', 'peft'];
+      // 'candle' included: candle stays the TRAINING adapter (removed only
+      // from chat inference routing). Keeping it here so training callers
+      // that declare provider='candle' still map to peft.
+      const localProviders = ['candle', 'local', 'peft'];
       const effectiveProvider = localProviders.includes(this.provider.toLowerCase()) ? 'peft' : this.provider;
       const adapter = getFineTuningAdapter(effectiveProvider);
 
