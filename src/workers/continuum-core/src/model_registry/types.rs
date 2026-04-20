@@ -132,6 +132,12 @@ impl Model {
 pub struct Provider {
     /// Canonical id. Foreign key for `Model.provider`.
     pub id: String,
+    /// Human-readable display name used in logs + error messages.
+    /// Absent means "fall back to id" — fine for internal provider ids
+    /// that happen to read well ("openai") but looks cramped for
+    /// compounds ("docker-model-runner" vs "Docker Model Runner").
+    #[serde(default)]
+    pub name: Option<String>,
     /// Base URL for HTTP requests. For OpenAI-compatible endpoints, the
     /// adapter appends `/v1/chat/completions`; for bespoke APIs, the
     /// adapter knows its own paths.
@@ -147,4 +153,18 @@ pub struct Provider {
     #[serde(default)]
     pub default_model: Option<String>,
     pub auth: AuthKind,
+    /// Static id prefixes this provider's models match — lets
+    /// `supports_model` answer "could future gpt-5 go here" without the
+    /// TOML listing every historical id. Cloud providers with stable
+    /// family naming use this; dynamic catalogs (DMR) leave it empty and
+    /// dispatch via live /v1/models probes instead.
+    #[serde(default)]
+    pub model_prefixes: Vec<String>,
+}
+
+impl Provider {
+    /// Display name for logs + errors. Falls back to id when TOML omits `name`.
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.id)
+    }
 }

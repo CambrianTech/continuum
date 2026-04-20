@@ -584,19 +584,19 @@ async fn call_llm(
 
     // Register adapters based on available API keys
     if get_secret("DEEPSEEK_API_KEY").is_some() {
-        registry.register(Box::new(OpenAICompatibleAdapter::deepseek()), 0);
+        registry.register(Box::new(OpenAICompatibleAdapter::from_registry("deepseek")), 0);
     }
     if get_secret("ANTHROPIC_API_KEY").is_some() {
         registry.register(Box::new(AnthropicAdapter::new()), 1);
     }
     if get_secret("OPENAI_API_KEY").is_some() {
-        registry.register(Box::new(OpenAICompatibleAdapter::openai()), 2);
+        registry.register(Box::new(OpenAICompatibleAdapter::from_registry("openai")), 2);
     }
     if get_secret("GROQ_API_KEY").is_some() {
-        registry.register(Box::new(OpenAICompatibleAdapter::groq()), 3);
+        registry.register(Box::new(OpenAICompatibleAdapter::from_registry("groq")), 3);
     }
     if get_secret("TOGETHER_API_KEY").is_some() {
-        registry.register(Box::new(OpenAICompatibleAdapter::together()), 4);
+        registry.register(Box::new(OpenAICompatibleAdapter::from_registry("together")), 4);
     }
 
     // Initialize all registered adapters

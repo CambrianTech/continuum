@@ -20,38 +20,46 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Instant;
 
+use crate::model_registry::{AuthKind, Capability};
 use crate::secrets::get_secret;
 use crate::{clog_info, clog_warn};
 
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
+use super::registry_bridge::models_for_provider_via_registry;
 use super::types::{
-    ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
-    MessageContent, ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse,
-    ToolCall, ToolChoice, UsageMetrics,
+    ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
+    TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
 };
 
-/// OpenAI-compatible adapter configuration
+/// Runtime-resolved config carried by each `OpenAICompatibleAdapter`
+/// instance. Populated exclusively by `OpenAICompatibleAdapter::from_registry`
+/// — no hand-written literals. Fields that the registry doesn't know
+/// about (HTTP concerns — auth shape, Authorization header requirement)
+/// are derived from `Provider.auth`, not separately configured.
 #[derive(Debug, Clone)]
 pub struct OpenAICompatibleConfig {
-    pub provider_id: &'static str,
-    pub name: &'static str,
-    pub base_url: &'static str,
-    pub api_key_env: &'static str,
-    pub default_model: &'static str,
+    pub provider_id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key_env: Option<String>,
+    pub default_model: String,
     pub supports_tools: bool,
     pub supports_vision: bool,
     pub models: Vec<ModelInfo>,
-    /// Whether this provider requires Authorization header
+    pub model_prefixes: Vec<String>,
+    /// Whether this provider requires an Authorization header. Derived
+    /// from `Provider.auth`: Bearer → true, ApiKey → true, None → false.
     pub requires_auth: bool,
-    /// If true, use api_key_env value as the base URL instead of API key
-    pub base_url_from_env: bool,
 }
 
 /// OpenAI-compatible adapter implementation
 pub struct OpenAICompatibleAdapter {
     config: OpenAICompatibleConfig,
     api_key: Option<String>,
-    /// Runtime base URL (overrides config.base_url when base_url_from_env is set)
+    /// Runtime base URL set via `with_runtime_base_url` — overrides
+    /// `config.base_url` without mutating the registry-sourced config.
+    /// Used when DMR reaches us at `model-runner.docker.internal` instead
+    /// of `localhost:12434` (detected by `probe_dmr`).
     runtime_base_url: Option<String>,
     client: reqwest::Client,
     initialized: bool,
@@ -97,7 +105,10 @@ impl OpenAICompatibleAdapter {
     /// data is preferred over empty data. Never silently succeeds with an
     /// empty set — returns Err if the endpoint responds with nothing.
     async fn refresh_runtime_models(&self) -> Result<(), String> {
-        let base_url = self.runtime_base_url.as_deref().unwrap_or(self.config.base_url);
+        let base_url = self
+            .runtime_base_url
+            .as_deref()
+            .unwrap_or(self.config.base_url.as_str());
         let url = format!("{}/v1/models", base_url);
 
         let mut req = self.client.get(&url);
@@ -171,379 +182,66 @@ impl OpenAICompatibleAdapter {
         }
     }
 
-    /// Create adapter for DeepSeek
-    pub fn deepseek() -> Self {
-        Self::new(OpenAICompatibleConfig {
-            provider_id: "deepseek",
-            name: "DeepSeek",
-            base_url: "https://api.deepseek.com",
-            api_key_env: "DEEPSEEK_API_KEY",
-            default_model: "deepseek-chat",
-            supports_tools: true,
-            supports_vision: false,
-            requires_auth: true,
-            base_url_from_env: false,
-            models: vec![
-                ModelInfo {
-                    id: "deepseek-chat".to_string(),
-                    name: "DeepSeek Chat".to_string(),
-                    provider: "deepseek".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                        ModelCapability::ToolUse,
-                    ],
-                    context_window: 128000,
-                    max_output_tokens: 8192,
-                    cost_per_1k_tokens: CostPer1kTokens {
-                        input: 0.00014,
-                        output: 0.00028,
-                    },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                    supports_streaming: true,
-                    supports_tools: true,
-                },
-                ModelInfo {
-                    id: "deepseek-reasoner".to_string(),
-                    name: "DeepSeek Reasoner".to_string(),
-                    provider: "deepseek".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                        ModelCapability::ToolUse,
-                    ],
-                    context_window: 128000,
-                    max_output_tokens: 8192,
-                    cost_per_1k_tokens: CostPer1kTokens {
-                        input: 0.00055,
-                        output: 0.00219,
-                    },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                    supports_streaming: true,
-                    supports_tools: true,
-                },
-            ],
-        })
-    }
-
-    /// Create adapter for OpenAI
-    pub fn openai() -> Self {
-        Self::new(OpenAICompatibleConfig {
-            provider_id: "openai",
-            name: "OpenAI",
-            base_url: "https://api.openai.com",
-            api_key_env: "OPENAI_API_KEY",
-            default_model: "gpt-4-turbo-preview",
-            supports_tools: true,
-            supports_vision: true,
-            requires_auth: true,
-            base_url_from_env: false,
-            models: vec![
-                ModelInfo {
-                    id: "gpt-4-turbo-preview".to_string(),
-                    name: "GPT-4 Turbo".to_string(),
-                    provider: "openai".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                        ModelCapability::ToolUse,
-                        ModelCapability::ImageAnalysis,
-                    ],
-                    context_window: 128000,
-                    max_output_tokens: 4096,
-                    cost_per_1k_tokens: CostPer1kTokens {
-                        input: 0.01,
-                        output: 0.03,
-                    },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                    supports_streaming: true,
-                    supports_tools: true,
-                },
-                ModelInfo {
-                    id: "gpt-4o".to_string(),
-                    name: "GPT-4o".to_string(),
-                    provider: "openai".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                        ModelCapability::ToolUse,
-                        ModelCapability::ImageAnalysis,
-                        ModelCapability::Multimodal,
-                    ],
-                    context_window: 128000,
-                    max_output_tokens: 4096,
-                    cost_per_1k_tokens: CostPer1kTokens {
-                        input: 0.005,
-                        output: 0.015,
-                    },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                    supports_streaming: true,
-                    supports_tools: true,
-                },
-            ],
-        })
-    }
-
-    /// Create adapter for Together AI
-    pub fn together() -> Self {
-        Self::new(OpenAICompatibleConfig {
-            provider_id: "together",
-            name: "Together AI",
-            base_url: "https://api.together.xyz",
-            api_key_env: "TOGETHER_API_KEY",
-            default_model: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-            supports_tools: true,
-            supports_vision: false,
-            requires_auth: true,
-            base_url_from_env: false,
-            models: vec![ModelInfo {
-                id: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo".to_string(),
-                name: "Llama 3.1 70B Instruct".to_string(),
-                provider: "together".to_string(),
-                capabilities: vec![
-                    ModelCapability::TextGeneration,
-                    ModelCapability::Chat,
-                    ModelCapability::ToolUse,
-                ],
-                context_window: 131072,
-                max_output_tokens: 4096,
-                cost_per_1k_tokens: CostPer1kTokens {
-                    input: 0.00088,
-                    output: 0.00088,
-                },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                supports_streaming: true,
-                supports_tools: true,
-            }],
-        })
-    }
-
-    /// Create adapter for Groq
-    pub fn groq() -> Self {
-        Self::new(OpenAICompatibleConfig {
-            provider_id: "groq",
-            name: "Groq",
-            base_url: "https://api.groq.com/openai",
-            api_key_env: "GROQ_API_KEY",
-            default_model: "llama-3.1-8b-instant",
-            supports_tools: true,
-            supports_vision: false,
-            requires_auth: true,
-            base_url_from_env: false,
-            models: vec![ModelInfo {
-                id: "llama-3.1-8b-instant".to_string(),
-                name: "Llama 3.1 8B Instant".to_string(),
-                provider: "groq".to_string(),
-                capabilities: vec![
-                    ModelCapability::TextGeneration,
-                    ModelCapability::Chat,
-                    ModelCapability::ToolUse,
-                ],
-                context_window: 131072,
-                max_output_tokens: 8192,
-                cost_per_1k_tokens: CostPer1kTokens {
-                    input: 0.00005,
-                    output: 0.00008,
-                },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                supports_streaming: true,
-                supports_tools: true,
-            }],
-        })
-    }
-
-    /// Create adapter for Fireworks AI
-    pub fn fireworks() -> Self {
-        Self::new(OpenAICompatibleConfig {
-            provider_id: "fireworks",
-            name: "Fireworks AI",
-            base_url: "https://api.fireworks.ai/inference",
-            api_key_env: "FIREWORKS_API_KEY",
-            default_model: "accounts/fireworks/models/llama-v3p3-70b-instruct",
-            supports_tools: true,
-            supports_vision: false,
-            requires_auth: true,
-            base_url_from_env: false,
-            models: vec![ModelInfo {
-                id: "accounts/fireworks/models/llama-v3p3-70b-instruct".to_string(),
-                name: "Llama 3.3 70B Instruct".to_string(),
-                provider: "fireworks".to_string(),
-                capabilities: vec![
-                    ModelCapability::TextGeneration,
-                    ModelCapability::Chat,
-                    ModelCapability::ToolUse,
-                ],
-                context_window: 128000,
-                max_output_tokens: 8192,
-                cost_per_1k_tokens: CostPer1kTokens {
-                    input: 0.0009,
-                    output: 0.0009,
-                },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                supports_streaming: true,
-                supports_tools: true,
-            }],
-        })
-    }
-
-    /// Create adapter for XAI (Grok)
-    pub fn xai() -> Self {
-        Self::new(OpenAICompatibleConfig {
-            provider_id: "xai",
-            name: "xAI",
-            base_url: "https://api.x.ai",
-            api_key_env: "XAI_API_KEY",
-            default_model: "grok-3",
-            supports_tools: true,
-            supports_vision: false,
-            requires_auth: true,
-            base_url_from_env: false,
-            models: vec![ModelInfo {
-                id: "grok-3".to_string(),
-                name: "Grok 3".to_string(),
-                provider: "xai".to_string(),
-                capabilities: vec![
-                    ModelCapability::TextGeneration,
-                    ModelCapability::Chat,
-                    ModelCapability::ToolUse,
-                ],
-                context_window: 131072,
-                max_output_tokens: 8192,
-                cost_per_1k_tokens: CostPer1kTokens {
-                    input: 0.003,
-                    output: 0.015,
-                },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                supports_streaming: true,
-                supports_tools: true,
-            }],
-        })
-    }
-
-    /// Create adapter for Google (Gemini via OpenAI-compatible endpoint)
-    pub fn google() -> Self {
-        Self::new(OpenAICompatibleConfig {
-            provider_id: "google",
-            name: "Google",
-            base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-            api_key_env: "GOOGLE_API_KEY",
-            default_model: "gemini-2.0-flash",
-            supports_tools: true,
-            supports_vision: true,
-            requires_auth: true,
-            base_url_from_env: false,
-            models: vec![ModelInfo {
-                id: "gemini-2.0-flash".to_string(),
-                name: "Gemini 2.0 Flash".to_string(),
-                provider: "google".to_string(),
-                capabilities: vec![
-                    ModelCapability::TextGeneration,
-                    ModelCapability::Chat,
-                    ModelCapability::ToolUse,
-                    ModelCapability::ImageAnalysis,
-                ],
-                context_window: 1000000,
-                max_output_tokens: 8192,
-                cost_per_1k_tokens: CostPer1kTokens {
-                    input: 0.000075,
-                    output: 0.0003,
-                },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                supports_streaming: true,
-                supports_tools: true,
-            }],
-        })
-    }
-
-    /// Create adapter for Docker Model Runner — local Metal/CUDA inference via
-    /// Docker Desktop's host-native model runner. OpenAI-compatible API.
+    /// Build an adapter for `provider_id` by reading everything from the
+    /// model_registry. Replaces eight hand-rolled factories whose combined
+    /// bulk was ~280 LOC of `ModelInfo { ... }` literals that drifted
+    /// whenever a new model shipped. Now the TOML is the only place a
+    /// new model's context_window / capabilities / pricing lives.
     ///
-    /// Mac: vllm-metal or llama.cpp-metal (both run native on host, GPU direct).
-    /// Linux: llama.cpp-cuda when NVIDIA present.
-    /// Windows: llama.cpp via Docker Desktop's WSL2 backend.
+    /// Panics if the provider isn't in the registry — that's a boot-time
+    /// config bug, not a runtime condition (per the no-fallback rule).
     ///
-    /// Requires Docker Desktop 4.62+ and `docker desktop enable model-runner --tcp=12434`.
-    /// The default base_url targets the llama.cpp engine because it benchmarks 1.2-1.6x
-    /// faster than vllm-metal per Docker's own measurements; users wanting continuous-
-    /// batching can override DOCKER_MODEL_RUNNER_BASE_URL to .../engines/vllm.
-    ///
-    /// No API key needed (it's localhost). Cost reported as 0 (local compute).
-    pub fn docker_model_runner() -> Self {
+    /// Capability flags (`supports_tools`, `supports_vision`) are derived
+    /// from whether ANY model under this provider advertises the relevant
+    /// Capability. A new Vision-capable model showing up in TOML flips
+    /// the adapter's vision flag automatically on next boot — no code
+    /// change.
+    pub fn from_registry(provider_id: &str) -> Self {
+        let reg = crate::model_registry::global();
+        let provider = reg.provider(provider_id).unwrap_or_else(|| {
+            panic!(
+                "provider `{}` not in config/providers.toml — can't build \
+                 OpenAICompatibleAdapter",
+                provider_id
+            )
+        });
+
+        let models = models_for_provider_via_registry(provider_id);
+        let supports_tools = reg
+            .models_for_provider(provider_id)
+            .any(|m| m.has(Capability::ToolUse));
+        let supports_vision = reg
+            .models_for_provider(provider_id)
+            .any(|m| m.has(Capability::Vision));
+        let requires_auth = !matches!(provider.auth, AuthKind::None);
+
+        // `default_model` is non-optional in the adapter trait
+        // (`fn default_model(&self) -> &str`) — callers always get a
+        // concrete id back. Providers with genuinely dynamic catalogs
+        // (DMR) still declare a default id the user is most likely to
+        // want; operator overrides flow through explicit request.model.
+        // Panic if missing: the registry row is incomplete, not a runtime
+        // condition.
+        let default_model = provider.default_model.clone().unwrap_or_else(|| {
+            panic!(
+                "provider `{}` has no `default_model` in config/providers.toml — \
+                 every OpenAI-compatible adapter needs one because the trait \
+                 returns &str, not Option<&str>",
+                provider_id
+            )
+        });
+
         Self::new(OpenAICompatibleConfig {
-            provider_id: "docker-model-runner",
-            name: "Docker Model Runner (local Metal/CUDA)",
-            base_url: "http://localhost:12434/engines/llama.cpp",
-            api_key_env: "DOCKER_MODEL_RUNNER_BASE_URL", // env override for base URL via base_url_from_env
-            default_model: "docker.io/ai/qwen2.5:7B-Q4_K_M",
-            supports_tools: true,
-            supports_vision: false,
-            requires_auth: false,
-            base_url_from_env: false,
-            models: vec![
-                ModelInfo {
-                    id: "docker.io/ai/qwen2.5:7B-Q4_K_M".to_string(),
-                    name: "Qwen2.5 7B Q4_K_M (Docker Model Runner)".to_string(),
-                    provider: "docker-model-runner".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                        ModelCapability::ToolUse,
-                    ],
-                    context_window: 32768,
-                    max_output_tokens: 4096,
-                    cost_per_1k_tokens: CostPer1kTokens {
-                        input: 0.0,
-                        output: 0.0,
-                    },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                    supports_streaming: true,
-                    supports_tools: true,
-                },
-                ModelInfo {
-                    id: "huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit:latest".to_string(),
-                    name: "Qwen2.5 7B MLX 4-bit (vllm-metal)".to_string(),
-                    provider: "docker-model-runner".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                    ],
-                    context_window: 32768,
-                    max_output_tokens: 4096,
-                    cost_per_1k_tokens: CostPer1kTokens {
-                        input: 0.0,
-                        output: 0.0,
-                    },
-                    tokens_per_second: 50.0, // Cloud API estimate — updated at runtime from actual measurements
-                    supports_streaming: true,
-                    supports_tools: false,
-                },
-                // continuum-ai/qwen3.5-4b-code-forged — our forge's flagship local
-                // reasoning model. Without this entry, the registry returns
-                // DEFAULT_CONTEXT_WINDOW=8192 and the personas get truncated to
-                // 8K of input context out of an actual 262144. 32x cripple, fixed
-                // by adding the truth here. Doc-comment in
-                // system/shared/ModelContextWindows.ts called this out as the
-                // archetypal "registry doesn't know the model" failure mode.
-                ModelInfo {
-                    id: "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest".to_string(),
-                    name: "Qwen3.5 4B Code Forged (Continuum forge, Q4_K_M)".to_string(),
-                    provider: "docker-model-runner".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                        ModelCapability::ToolUse,
-                    ],
-                    context_window: 262144, // Confirmed via the model's GGUF metadata
-                    max_output_tokens: 32768, // Generous output budget — reasoning model
-                    cost_per_1k_tokens: CostPer1kTokens {
-                        input: 0.0,
-                        output: 0.0,
-                    },
-                    tokens_per_second: 50.0, // Mac Metal observed; updated at runtime
-                    supports_streaming: true,
-                    supports_tools: true,
-                },
-            ],
+            provider_id: provider.id.clone(),
+            name: provider.display_name().to_string(),
+            base_url: provider.base_url.clone(),
+            api_key_env: provider.api_key_env.clone(),
+            default_model,
+            supports_tools,
+            supports_vision,
+            models,
+            model_prefixes: provider.model_prefixes.clone(),
+            requires_auth,
         })
     }
 
@@ -721,11 +419,11 @@ struct OpenAIUsage {
 #[async_trait]
 impl AIProviderAdapter for OpenAICompatibleAdapter {
     fn provider_id(&self) -> &str {
-        self.config.provider_id
+        &self.config.provider_id
     }
 
     fn name(&self) -> &str {
-        self.config.name
+        &self.config.name
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
@@ -753,31 +451,25 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     fn default_model(&self) -> &str {
-        self.config.default_model
+        &self.config.default_model
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
-        // Load API key or host URL from env
-        let env_value = get_secret(self.config.api_key_env).map(|s| s.to_string());
-
-        // Handle base_url_from_env (when env var contains URL, not API key)
-        if self.config.base_url_from_env {
-            if let Some(ref url) = env_value {
-                // Store the URL from env var
-                self.runtime_base_url = Some(url.clone());
-            } else {
-                // Use default base_url from config
-                self.runtime_base_url = Some(self.config.base_url.to_string());
-            }
-        }
-
-        // Only require API key if provider needs auth
+        // Only require API key if provider needs auth. Providers without
+        // an `api_key_env` in TOML (localhost DMR, llamacpp-local) skip
+        // this entirely — their `requires_auth` is false.
         if self.config.requires_auth {
-            self.api_key = env_value;
+            let key_env = self.config.api_key_env.as_deref().unwrap_or_else(|| {
+                panic!(
+                    "provider `{}` requires auth but has no api_key_env in TOML",
+                    self.config.provider_id
+                )
+            });
+            self.api_key = get_secret(key_env).map(|s| s.to_string());
             if self.api_key.is_none() {
                 return Err(format!(
                     "{} API key not configured ({})",
-                    self.config.name, self.config.api_key_env
+                    self.config.name, key_env
                 ));
             }
         }
@@ -832,7 +524,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let raw_model = request
             .model
             .as_deref()
-            .unwrap_or(self.config.default_model);
+            .unwrap_or(self.config.default_model.as_str());
 
         // For DMR: resolve the logical model name to the actual model ID
         // stored in Docker Model Runner (which may have hf.co/ prefix and
@@ -933,7 +625,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let base_url = self
             .runtime_base_url
             .as_deref()
-            .unwrap_or(self.config.base_url);
+            .unwrap_or(self.config.base_url.as_str());
         let url = format!("{}/v1/chat/completions", base_url);
 
         let mut request_builder = self
@@ -1064,7 +756,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let base_url = self
             .runtime_base_url
             .as_deref()
-            .unwrap_or(self.config.base_url);
+            .unwrap_or(self.config.base_url.as_str());
         let url = format!("{}/v1/models", base_url);
 
         let mut request_builder = self
@@ -1117,44 +809,43 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
-        // Return prefixes based on provider
-        match self.config.provider_id {
-            "openai" => vec!["gpt", "o1", "o3"],
-            "deepseek" => vec!["deepseek"],
-            "groq" => vec!["llama-3", "mixtral", "gemma2"], // Groq's hosted models
-            "together" => vec!["togethercomputer/"],        // Together's namespace
-            "fireworks" => vec!["accounts/fireworks/"],     // Fireworks namespace
-            "xai" => vec!["grok"],
-            "google" => vec!["gemini"],
-            // docker-model-runner has a DYNAMIC catalog — the user runs
-            // `docker model pull X` and now DMR can serve X. Static prefixes
-            // can't represent that; we override supports_model() below to
-            // consult the live catalog fetched at init.
-            _ => vec![],
-        }
+        // Intentionally empty: prefixes live in the registry's
+        // `Provider.model_prefixes` and are consulted directly by
+        // `supports_model` below. The trait's Vec<&'static str> return
+        // can't carry the registry's dynamic Vec<String> without leaking,
+        // so we bypass it rather than faking a static slice.
+        Vec::new()
     }
 
-    /// Live-catalog honesty check for DMR, static-prefix match for everyone else.
+    /// Dynamic catalog for DMR, registry-declared prefix match for
+    /// everyone else.
     ///
-    /// The default trait impl in adapter.rs:230 uses `starts_with` against
-    /// `supported_model_prefixes`. That works for cloud providers (gpt*,
-    /// deepseek*, etc.) where the catalog is fixed and known at build time.
-    /// DMR is dynamic — what's available depends on `docker model pull`
-    /// history — so we check the live runtime_models set populated at init.
+    /// The default trait impl uses `starts_with` against
+    /// `supported_model_prefixes`. We override because prefixes now live
+    /// in `config/providers.toml` (Provider.model_prefixes), not as
+    /// `&'static str` embedded in code. DMR is special-cased because its
+    /// catalog is dynamic — what's available depends on `docker model
+    /// pull` history — so we check the live runtime_models set populated
+    /// at init.
     ///
-    /// Returning false when the live set is empty or missing is the right
-    /// behavior: AdapterRegistry::select now hard-errors when no adapter
+    /// Returning false when DMR's live set is empty/missing is the right
+    /// behavior: AdapterRegistry::select hard-errors when no adapter
     /// supports a model, which surfaces the real problem ("user never
-    /// pulled X") instead of silently routing to Candle-CPU.
+    /// pulled X") instead of silently routing to some other provider.
     fn supports_model(&self, model_name: &str) -> bool {
-        match self.config.provider_id {
-            "docker-model-runner" => self.runtime_models_contain(model_name),
-            _ => {
-                // Default: static prefix match (same as trait default impl).
-                self.supported_model_prefixes()
-                    .iter()
-                    .any(|prefix| model_name.to_lowercase().starts_with(&prefix.to_lowercase()))
-            }
+        if self.config.provider_id == "docker-model-runner" {
+            return self.runtime_models_contain(model_name);
         }
+        let lower = model_name.to_lowercase();
+        // Exact id match against the registry's declared models.
+        if self.config.models.iter().any(|m| m.id.to_lowercase() == lower) {
+            return true;
+        }
+        // Family prefix match for "id we haven't listed yet but this
+        // provider clearly owns" (e.g. gpt-5-preview → openai).
+        self.config
+            .model_prefixes
+            .iter()
+            .any(|prefix| lower.starts_with(&prefix.to_lowercase()))
     }
 }

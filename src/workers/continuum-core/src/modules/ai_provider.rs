@@ -162,9 +162,10 @@ impl AIProviderModule {
     /// the two never produce different-shaped adapters.
     fn build_dmr_adapter(endpoint: &DmrEndpoint) -> Box<dyn AIProviderAdapter> {
         let adapter = if let Some(url) = &endpoint.base_url {
-            OpenAICompatibleAdapter::docker_model_runner().with_runtime_base_url(url.clone())
+            OpenAICompatibleAdapter::from_registry("docker-model-runner")
+                .with_runtime_base_url(url.clone())
         } else {
-            OpenAICompatibleAdapter::docker_model_runner()
+            OpenAICompatibleAdapter::from_registry("docker-model-runner")
         };
         Box::new(adapter)
     }
@@ -245,7 +246,7 @@ impl AIProviderModule {
         // Only register adapters that have API keys configured
         if get_secret("DEEPSEEK_API_KEY").is_some() {
             self.log().info("Registering DeepSeek adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::deepseek()), 0);
+            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("deepseek")), 0);
         }
 
         if get_secret("ANTHROPIC_API_KEY").is_some() {
@@ -255,32 +256,32 @@ impl AIProviderModule {
 
         if get_secret("OPENAI_API_KEY").is_some() {
             self.log().info("Registering OpenAI adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::openai()), 2);
+            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("openai")), 2);
         }
 
         if get_secret("GROQ_API_KEY").is_some() {
             self.log().info("Registering Groq adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::groq()), 3);
+            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("groq")), 3);
         }
 
         if get_secret("TOGETHER_API_KEY").is_some() {
             self.log().info("Registering Together adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::together()), 4);
+            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("together")), 4);
         }
 
         if get_secret("FIREWORKS_API_KEY").is_some() {
             self.log().info("Registering Fireworks adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::fireworks()), 5);
+            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("fireworks")), 5);
         }
 
         if get_secret("XAI_API_KEY").is_some() {
             self.log().info("Registering XAI adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::xai()), 6);
+            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("xai")), 6);
         }
 
         if get_secret("GOOGLE_API_KEY").is_some() {
             self.log().info("Registering Google adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::google()), 7);
+            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("google")), 7);
         }
 
         // In-process llama.cpp adapter — bypasses DMR's container Metal toolchain,

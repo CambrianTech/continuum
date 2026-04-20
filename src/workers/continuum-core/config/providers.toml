@@ -1,76 +1,99 @@
 # providers.toml — single source of truth for AI provider endpoints.
-# Generated from hardcoded definitions in:
-#   src/ai/anthropic_adapter.rs
-#   src/ai/openai_adapter.rs
-#   src/inference/llamacpp_adapter.rs
+#
+# `model_prefixes` lists stable id prefixes that identify models this
+# provider serves. Matches are case-insensitive `starts_with`. Used by
+# `supports_model` to route id-based requests even when the specific id
+# isn't enumerated in models.toml yet (e.g. "gpt-5-preview" → openai).
+# Leave empty for providers with dynamic catalogs (DMR) — they dispatch
+# via live /v1/models probes, not prefix lookup.
 
 [[provider]]
 id = "anthropic"
+name = "Anthropic"
 base_url = "https://api.anthropic.com"
 api_key_env = "ANTHROPIC_API_KEY"
 default_model = "claude-sonnet-4-5-20250929"
 auth = "api_key"   # Anthropic uses x-api-key header, not Bearer
+model_prefixes = ["claude"]
 
 [[provider]]
 id = "openai"
+name = "OpenAI"
 base_url = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 default_model = "gpt-4-turbo-preview"
 auth = "bearer"
+model_prefixes = ["gpt", "o1", "o3"]
 
 [[provider]]
 id = "deepseek"
+name = "DeepSeek"
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"
 default_model = "deepseek-chat"
 auth = "bearer"
+model_prefixes = ["deepseek"]
 
 [[provider]]
 id = "together"
+name = "Together AI"
 base_url = "https://api.together.xyz"
 api_key_env = "TOGETHER_API_KEY"
 default_model = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
 auth = "bearer"
+model_prefixes = ["togethercomputer/", "meta-llama/"]
 
 [[provider]]
 id = "groq"
+name = "Groq"
 base_url = "https://api.groq.com/openai"
 api_key_env = "GROQ_API_KEY"
 default_model = "llama-3.1-8b-instant"
 auth = "bearer"
+model_prefixes = ["llama-3", "mixtral", "gemma2"]
 
 [[provider]]
 id = "fireworks"
+name = "Fireworks AI"
 base_url = "https://api.fireworks.ai/inference"
 api_key_env = "FIREWORKS_API_KEY"
 default_model = "accounts/fireworks/models/llama-v3p3-70b-instruct"
 auth = "bearer"
+model_prefixes = ["accounts/fireworks/"]
 
 [[provider]]
 id = "xai"
+name = "xAI"
 base_url = "https://api.x.ai"
 api_key_env = "XAI_API_KEY"
 default_model = "grok-3"
 auth = "bearer"
+model_prefixes = ["grok"]
 
 [[provider]]
 id = "google"
+name = "Google"
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 api_key_env = "GOOGLE_API_KEY"
 default_model = "gemini-2.0-flash"
 auth = "bearer"
+model_prefixes = ["gemini"]
 
 [[provider]]
 id = "docker-model-runner"
+name = "Docker Model Runner (local Metal/CUDA)"
 base_url = "http://localhost:12434/engines/llama.cpp"
 default_model = "docker.io/ai/qwen2.5:7B-Q4_K_M"
 auth = "none"
 # Dynamic catalog — provider lists models via /v1/models at init.
+# No model_prefixes — supports_model consults the live catalog, not static prefixes.
 # Override base URL via DOCKER_MODEL_RUNNER_BASE_URL env var (deployment concern).
 
 [[provider]]
 id = "llamacpp-local"
+name = "Llama.cpp (in-process Metal/CUDA)"
 base_url = "in-process"
 auth = "none"
 default_model = "continuum-ai/qwen3.5-4b-code-forged-GGUF"
 # In-process llama.cpp backend — no HTTP endpoint; base_url is sentinel.
+# No model_prefixes — adapter matches by exact id from the registry.
