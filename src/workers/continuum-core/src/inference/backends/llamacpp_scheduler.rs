@@ -179,6 +179,20 @@ fn driver_loop(
     let mut active: HashMap<i32, ActiveSeq> = HashMap::new();
     let mut free_seqs: Vec<i32> = (0..n_seq_max).collect();
 
+    // Per-phase timing — answers Joel's "I am not sure I believe your results"
+    // about whether the GPU is actually doing work. We accumulate decode (Metal
+    // compute + KV update) separately from sample (logits readback + sampler
+    // chain on CPU + token-to-piece UTF-8 decode) so the periodic log line
+    // makes the bottleneck obvious. If decode_ms ≫ sample_ms the model is
+    // GPU-bound (good). If sample_ms is comparable or larger, sampling is the
+    // problem and the win is moving sampling off the decode thread or pruning
+    // the sampler chain.
+    let mut decode_total = std::time::Duration::ZERO;
+    let mut decode_count: u64 = 0;
+    let mut sample_total = std::time::Duration::ZERO;
+    let mut tokens_sampled_window: u64 = 0;
+    const PERF_LOG_INTERVAL_TOKENS: u64 = 50;
+
     loop {
         // ── Phase 1: Accept new requests into free slots ──
         // If nothing is active, block on the first request (avoid spinning).
@@ -292,6 +306,7 @@ fn driver_loop(
         }
 
         // ── Phase 3: Decode the batch ──
+        let decode_start = Instant::now();
         if let Err(e) = ctx.decode(&batch) {
             log.error(&format!(
                 "Decode error: {e} (batch={} tokens, {} active seqs)",
@@ -312,12 +327,20 @@ fn driver_loop(
                 to_remove.push(sid);
             }
         } else {
+            // Decode succeeded — record Metal-compute time. This is the
+            // wall-clock time the Metal command buffer + dispatch took,
+            // including any CPU↔GPU graph splits if the Metal backend fell
+            // back to CPU for unsupported ops.
+            decode_total += decode_start.elapsed();
+            decode_count += 1;
+
             // ── Phase 4: Sample for each logit-bearing position ──
             // Logits are addressed by BATCH POSITION (not role-vec index).
             // `llama_get_logits_ith(idx)` reads `batch.logits[idx]` and
             // panics if it's not `true`. We recorded `logit_idx` while
             // building the batch — it's the absolute batch position
             // where this seq's want_logits=true token sits.
+            let sample_start = Instant::now();
             for role in &roles {
                 let (seq_id, advance_pos, logit_idx) = match role {
                     BatchRole::PrefillFinal { seq_id, gen_pos, logit_idx } => {
@@ -365,6 +388,37 @@ fn driver_loop(
                 seq.next_token = Some(token);
                 seq.gen_pos = advance_pos;
             }
+            sample_total += sample_start.elapsed();
+            tokens_sampled_window += roles.len() as u64;
+        }
+
+        // ── Periodic GPU/CPU bottleneck telemetry ──
+        // Emit once per PERF_LOG_INTERVAL_TOKENS so chat sees real per-phase
+        // numbers without log spam. Decode = Metal-side compute. Sample =
+        // CPU-side sampler chain + UTF-8 decode + channel send. If decode_ms
+        // dominates we're GPU-bound (expected). If sample_ms is comparable
+        // the CPU tail is the bottleneck.
+        if tokens_sampled_window >= PERF_LOG_INTERVAL_TOKENS && decode_count > 0 {
+            let avg_decode_us = decode_total.as_micros() as f64 / decode_count as f64;
+            let avg_sample_us = if tokens_sampled_window > 0 {
+                sample_total.as_micros() as f64 / tokens_sampled_window as f64
+            } else { 0.0 };
+            let total_us_per_tok = avg_decode_us + avg_sample_us;
+            let tok_per_s = if total_us_per_tok > 0.0 {
+                1_000_000.0 / total_us_per_tok
+            } else { 0.0 };
+            log.info(&format!(
+                "perf: decode_avg={:.2}ms sample_avg={:.2}ms ({} decodes / {} sampled) → {:.1} tok/s",
+                avg_decode_us / 1000.0,
+                avg_sample_us / 1000.0,
+                decode_count,
+                tokens_sampled_window,
+                tok_per_s,
+            ));
+            decode_total = std::time::Duration::ZERO;
+            decode_count = 0;
+            sample_total = std::time::Duration::ZERO;
+            tokens_sampled_window = 0;
         }
 
         // ── Phase 5: Free completed seqs ──

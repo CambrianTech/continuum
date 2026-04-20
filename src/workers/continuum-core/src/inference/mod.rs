@@ -17,6 +17,7 @@
 pub mod backends;
 pub mod candle_adapter;
 pub mod compute_router;
+pub mod llamacpp_adapter;
 pub mod lora;
 pub mod model;
 pub mod quantized;
@@ -27,6 +28,7 @@ pub use backends::{
     generate, load_gguf_backend, read_gguf_metadata, GenomeAdapter, ModelBackend, ModelFormat,
 };
 pub use candle_adapter::CandleAdapter;
+pub use llamacpp_adapter::{LlamaCppAdapter, LLAMACPP_PROVIDER_ID};
 pub use lora::{load_lora_adapter, merge_lora_weight, LoRAWeights, LoadedAdapter};
 pub use model::{load_model_by_id, rebuild_with_stacked_lora};
 pub use quantized::{load_default_quantized, load_quantized_model};

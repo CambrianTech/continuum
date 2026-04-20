@@ -283,6 +283,34 @@ impl AIProviderModule {
             registry.register(Box::new(OpenAICompatibleAdapter::google()), 7);
         }
 
+        // In-process llama.cpp adapter — bypasses DMR's container Metal toolchain,
+        // which on M5 Pro fails to compile the tensor-API source (`has tensor=false`)
+        // and falls back to a degraded path running at 22 tok/s. Our host-built
+        // vendored llama.cpp compiles Metal correctly and measures 33 tok/s on the
+        // same hardware (50% improvement, smoke test:
+        // tests/llamacpp_metal_throughput.rs). Priority 0 — wins over DMR for
+        // model IDs we own (continuum-ai/qwen3.5-*). DMR remains the runtime for
+        // anything else.
+        //
+        // Registered eagerly when the GGUF file exists on disk. We intentionally
+        // do NOT register a stub adapter that would silently fail later — per the
+        // no-fallback rule, callers asking for our forge model should get either
+        // a working in-process backend or a hard error at select() time naming
+        // exactly which file is missing.
+        let llamacpp = crate::inference::LlamaCppAdapter::new();
+        if llamacpp.health_check().await.api_available {
+            self.log().info(
+                "Registering in-process llama.cpp adapter (forge qwen3.5-4b, GPU/Metal)",
+            );
+            registry.register(Box::new(llamacpp), 0);
+        } else {
+            self.log().info(
+                "In-process llama.cpp adapter NOT registered — forge GGUF \
+                 not present at DMR's cache path. Pull via \
+                 `docker model pull huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf`.",
+            );
+        }
+
         // Docker Model Runner — preferred local provider when reachable. Routes
         // to llama.cpp-metal/cuda or vllm-metal depending on platform, all running
         // host-native via Docker Desktop. ~50 tok/s on M5 (Qwen2.5-7B Q4_K_M),

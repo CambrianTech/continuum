@@ -20,13 +20,106 @@ static BACKEND_INIT: Once = Once::new();
 /// backends are populated before the first model load. Without this, the
 /// llama_model_load path can segfault in ggml_backend_dev_type() when the
 /// backend registry is empty.
+///
+/// On macOS with the metal feature we ALSO call `ggml_backend_metal_reg()`
+/// directly. Verified 2026-04-19: even with `+whole-archive=ggml-metal`,
+/// `nm` on the linked binary showed zero `ggml_backend_metal_*` symbols,
+/// causing `load_tensors: layer N assigned to device CPU` for ALL 32 layers
+/// of qwen3.5-4b — i.e. inference was running 100% on CPU at 33 tok/s. The
+/// explicit register call from Rust creates a live reference path the
+/// linker can't strip, forcing the Metal backend to load and register
+/// before the first model is read. Same defensive pattern for CUDA on
+/// Linux + Vulkan on Linux when those features are enabled.
 pub fn backend_init() {
     BACKEND_INIT.call_once(|| {
         unsafe {
             sys::llama_backend_init();
             sys::ggml_backend_load_all();
+
+            // Force-register statically linked GPU backends. `ggml_backend_register`
+            // is idempotent (the registry dedups on identity), so calling this
+            // when the static initializer already ran is harmless. When the
+            // initializer DIDN'T run (because dead_strip dropped the path),
+            // this is what makes Metal show up at all.
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            sys::ggml_backend_register(sys::ggml_backend_metal_reg());
+
+            #[cfg(all(feature = "cuda", target_os = "linux"))]
+            sys::ggml_backend_register(sys::ggml_backend_cuda_reg());
+
+            #[cfg(all(feature = "vulkan", target_os = "linux"))]
+            sys::ggml_backend_register(sys::ggml_backend_vk_reg());
+
+            // Fail-hard guard. If we're on a platform that should have a GPU
+            // backend but the registry only contains CPU after registration,
+            // we're about to silently run inference on CPU at ~5x slower than
+            // GPU — exactly the regression we just diagnosed and fixed. Per
+            // the no-silent-degrade rule, panic loudly with an actionable
+            // message rather than ship CPU performance dressed as Metal.
+            //
+            // The check counts non-CPU registered devices via the public
+            // backend registry API. If it fails, the build has lost the
+            // GPU backend somewhere between cmake config, link, and load.
+            assert_gpu_backend_registered_when_expected();
         }
     });
+}
+
+/// Walks the registered backend devices and asserts that — if the build
+/// expected a GPU backend (Mac+metal, Linux+cuda, Linux+vulkan) — at least
+/// one non-CPU device is present. Panics with an actionable message if not.
+///
+/// The point is to catch the failure mode we discovered 2026-04-19: a build
+/// that thinks it has Metal but actually only has CPU because the feature
+/// flag wasn't propagated. That used to silently run at ~33 tok/s instead
+/// of GPU speed; now it crashes at startup so the cause is unmissable.
+unsafe fn assert_gpu_backend_registered_when_expected() {
+    let expects_gpu = cfg!(any(
+        all(feature = "metal", target_os = "macos"),
+        all(feature = "cuda", target_os = "linux"),
+        all(feature = "vulkan", target_os = "linux"),
+    ));
+    if !expects_gpu {
+        return;
+    }
+
+    let n_devices = sys::ggml_backend_dev_count();
+    let mut found_gpu = false;
+    let mut device_names: Vec<String> = Vec::new();
+    for i in 0..n_devices {
+        let dev = sys::ggml_backend_dev_get(i);
+        if dev.is_null() {
+            continue;
+        }
+        let dev_type = sys::ggml_backend_dev_type(dev);
+        let name_ptr = sys::ggml_backend_dev_name(dev);
+        let name = if name_ptr.is_null() {
+            "<unnamed>".to_string()
+        } else {
+            std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+        };
+        // Anything that isn't CPU counts as a GPU/accelerator device for
+        // this purpose. ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_CPU
+        // is the constant we're excluding; everything else (GPU, ACCEL)
+        // satisfies the guard.
+        if dev_type != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_CPU {
+            found_gpu = true;
+        }
+        device_names.push(format!("{}({:?})", name, dev_type));
+    }
+
+    if !found_gpu {
+        panic!(
+            "FATAL: build expected a GPU backend (Mac+metal / Linux+cuda / \
+             Linux+vulkan) but the ggml backend registry only has CPU \
+             devices after init. Refusing to run inference at CPU speeds \
+             dressed as GPU. Registered devices: {:?}. Fix: rebuild with \
+             the appropriate `--features` flag (`metal`, `cuda`, `vulkan`) \
+             OR update llama/build.rs so the static GPU backend archive \
+             actually links into the binary.",
+            device_names
+        );
+    }
 }
 
 /// A loaded llama model. Thread-safe (contexts are single-threaded but model is shared).

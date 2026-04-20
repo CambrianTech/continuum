@@ -171,19 +171,51 @@ fn main() {
         println!("cargo:rustc-link-lib=gomp");
     }
 
-    // Generate FFI bindings for llama.h
-    let header = submodule.join("include").join("llama.h");
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
-    let bindings = bindgen::Builder::default()
-        .header(header.to_str().unwrap())
+    // Generate FFI bindings for llama.h.
+    //
+    // We additionally include `ggml-metal.h` on Mac with the metal feature so
+    // bindgen emits `ggml_backend_metal_reg` etc. — the symbols our
+    // `backend_init()` calls explicitly to force-register the static Metal
+    // backend.
+    //
+    // Why explicit registration is needed even with +whole-archive on Mac:
+    // verified 2026-04-19 that `nm` on the linked test binary shows ZERO
+    // `ggml_backend_metal_*` symbols even though `libggml-metal.a` defines
+    // them and `libggml.a`'s `ggml-backend-reg.cpp` references them via
+    // `register_backend(ggml_backend_metal_reg())` (which runs only if
+    // `GGML_USE_METAL` is `#define`d — it is, per the CMake cache). Apple's
+    // ld translates rustc's `+whole-archive=ggml-metal` to `-force_load` but
+    // dead_strip can still drop the symbols when the only consumer is a
+    // C++ static initializer in a sibling archive. Calling the registration
+    // function explicitly from Rust at startup creates a hard reference
+    // path the linker cannot strip — fixes "all 32 layers assigned to
+    // device CPU" symptom that was forcing CPU-only inference at 33 tok/s
+    // on M5.
+    let llama_header = submodule.join("include").join("llama.h");
+    let mut builder = bindgen::Builder::default()
+        .header(llama_header.to_str().unwrap())
         .clang_arg(format!("-I{}", submodule.join("ggml").join("include").display()))
         .allowlist_function("llama_.*")
         .allowlist_function("ggml_.*")
         .allowlist_type("llama_.*")
         .allowlist_type("ggml_.*")
-        .allowlist_var("LLAMA_.*")
-        .generate()
-        .expect("Failed to generate bindings");
+        .allowlist_var("LLAMA_.*");
+
+    if cfg!(feature = "metal") && target_os == "macos" {
+        let metal_header = submodule.join("ggml").join("include").join("ggml-metal.h");
+        builder = builder.header(metal_header.to_str().unwrap());
+    }
+    if cfg!(feature = "cuda") && target_os == "linux" {
+        let cuda_header = submodule.join("ggml").join("include").join("ggml-cuda.h");
+        builder = builder.header(cuda_header.to_str().unwrap());
+    }
+    if cfg!(feature = "vulkan") && target_os == "linux" {
+        let vk_header = submodule.join("ggml").join("include").join("ggml-vulkan.h");
+        builder = builder.header(vk_header.to_str().unwrap());
+    }
+
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
+    let bindings = builder.generate().expect("Failed to generate bindings");
     bindings.write_to_file(&out_path)
         .expect("Failed to write bindings");
 }
