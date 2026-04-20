@@ -1,0 +1,76 @@
+# providers.toml — single source of truth for AI provider endpoints.
+# Generated from hardcoded definitions in:
+#   src/ai/anthropic_adapter.rs
+#   src/ai/openai_adapter.rs
+#   src/inference/llamacpp_adapter.rs
+
+[[provider]]
+id = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+default_model = "claude-sonnet-4-5-20250929"
+auth = "api_key"   # Anthropic uses x-api-key header, not Bearer
+
+[[provider]]
+id = "openai"
+base_url = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+default_model = "gpt-4-turbo-preview"
+auth = "bearer"
+
+[[provider]]
+id = "deepseek"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+default_model = "deepseek-chat"
+auth = "bearer"
+
+[[provider]]
+id = "together"
+base_url = "https://api.together.xyz"
+api_key_env = "TOGETHER_API_KEY"
+default_model = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+auth = "bearer"
+
+[[provider]]
+id = "groq"
+base_url = "https://api.groq.com/openai"
+api_key_env = "GROQ_API_KEY"
+default_model = "llama-3.1-8b-instant"
+auth = "bearer"
+
+[[provider]]
+id = "fireworks"
+base_url = "https://api.fireworks.ai/inference"
+api_key_env = "FIREWORKS_API_KEY"
+default_model = "accounts/fireworks/models/llama-v3p3-70b-instruct"
+auth = "bearer"
+
+[[provider]]
+id = "xai"
+base_url = "https://api.x.ai"
+api_key_env = "XAI_API_KEY"
+default_model = "grok-3"
+auth = "bearer"
+
+[[provider]]
+id = "google"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GOOGLE_API_KEY"
+default_model = "gemini-2.0-flash"
+auth = "bearer"
+
+[[provider]]
+id = "docker-model-runner"
+base_url = "http://localhost:12434/engines/llama.cpp"
+default_model = "docker.io/ai/qwen2.5:7B-Q4_K_M"
+auth = "none"
+# Dynamic catalog — provider lists models via /v1/models at init.
+# Override base URL via DOCKER_MODEL_RUNNER_BASE_URL env var (deployment concern).
+
+[[provider]]
+id = "llamacpp-local"
+base_url = "in-process"
+auth = "none"
+default_model = "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+# In-process llama.cpp backend — no HTTP endpoint; base_url is sentinel.

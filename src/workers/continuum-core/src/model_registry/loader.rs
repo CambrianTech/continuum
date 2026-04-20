@@ -275,6 +275,42 @@ auth = "none"
     }
 
     #[test]
+    fn real_config_files_parse_and_validate() {
+        // The actual seeded files in the repo must always parse and
+        // cross-reference cleanly. This is the "config/ files are valid"
+        // gate — if a reviewer adds a typo'd provider in a TOML edit,
+        // this test catches it before it ships.
+        let crate_root = env!("CARGO_MANIFEST_DIR");
+        let models = PathBuf::from(crate_root).join("config").join("models.toml");
+        let providers = PathBuf::from(crate_root).join("config").join("providers.toml");
+
+        let reg = load_registry(&models, &providers)
+            .unwrap_or_else(|e| panic!("seeded config/ should always validate: {e}"));
+
+        // Sanity counts match the extraction audit.
+        let n_models = reg.models().count();
+        let n_providers = reg.providers().count();
+        assert!(n_providers >= 8, "providers.toml should hold ≥8 entries, got {n_providers}");
+        assert!(n_models >= 12, "models.toml should hold ≥12 entries, got {n_models}");
+
+        // Anchor assertions: the models we know are in there, with the
+        // capabilities we know they have. If any of these fail, the
+        // TOML edit that broke them deserves loud attention.
+        let sonnet = reg
+            .model("claude-sonnet-4-5-20250929")
+            .expect("Claude Sonnet 4.5 must be in the registry");
+        assert_eq!(sonnet.arch, crate::model_registry::Arch::Claude);
+        assert!(sonnet.has(crate::model_registry::Capability::Vision));
+        assert!(sonnet.has(crate::model_registry::Capability::ToolUse));
+
+        let forged = reg
+            .model("continuum-ai/qwen3.5-4b-code-forged-GGUF")
+            .expect("forged Qwen3.5-4B must be in the registry");
+        assert_eq!(forged.arch, crate::model_registry::Arch::Qwen35);
+        assert_eq!(forged.context_window, 262144);
+    }
+
+    #[test]
     fn rejects_unknown_provider_ref() {
         let dir = tempfile::tempdir().unwrap();
         let mp = write(

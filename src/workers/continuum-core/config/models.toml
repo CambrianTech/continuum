@@ -1,0 +1,209 @@
+# models.toml — single source of truth for AI model catalogs.
+# Generated from hardcoded ModelInfo definitions in:
+#   src/ai/anthropic_adapter.rs
+#   src/ai/openai_adapter.rs
+#   src/inference/llamacpp_adapter.rs
+#
+# capabilities vocabulary (kebab-case):
+#   text-generation, chat, tool-use, vision, streaming,
+#   fine-tuning, lora-adapter, image-generation, embedding, reranking
+
+# ─── Anthropic ──────────────────────────────────────────────────────────
+
+[[model]]
+id = "claude-sonnet-4-5-20250929"
+provider = "anthropic"
+arch = "claude"
+context_window = 200000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.003
+cost_output_per_1k = 0.015
+
+[[model]]
+id = "claude-opus-4-20250514"
+provider = "anthropic"
+arch = "claude"
+context_window = 200000
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.015
+cost_output_per_1k = 0.075
+
+[[model]]
+id = "claude-3-5-haiku-20250107"
+provider = "anthropic"
+arch = "claude"
+context_window = 200000
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.00025
+cost_output_per_1k = 0.00125
+
+# ─── OpenAI ─────────────────────────────────────────────────────────────
+
+[[model]]
+id = "gpt-4-turbo-preview"
+provider = "openai"
+arch = "gpt"
+context_window = 128000
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.01
+cost_output_per_1k = 0.03
+
+[[model]]
+id = "gpt-4o"
+provider = "openai"
+arch = "gpt"
+context_window = 128000
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.005
+cost_output_per_1k = 0.015
+
+# ─── DeepSeek ───────────────────────────────────────────────────────────
+
+[[model]]
+id = "deepseek-chat"
+provider = "deepseek"
+arch = "deepseek"
+context_window = 128000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.00014
+cost_output_per_1k = 0.00028
+
+[[model]]
+id = "deepseek-reasoner"
+provider = "deepseek"
+arch = "deepseek"
+context_window = 128000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.00055
+cost_output_per_1k = 0.00219
+
+# ─── Together AI ────────────────────────────────────────────────────────
+
+[[model]]
+id = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+provider = "together"
+arch = "llama"
+context_window = 131072
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.00088
+cost_output_per_1k = 0.00088
+
+# ─── Groq ───────────────────────────────────────────────────────────────
+
+[[model]]
+id = "llama-3.1-8b-instant"
+provider = "groq"
+arch = "llama"
+context_window = 131072
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.00005
+cost_output_per_1k = 0.00008
+
+# ─── Fireworks AI ───────────────────────────────────────────────────────
+
+[[model]]
+id = "accounts/fireworks/models/llama-v3p3-70b-instruct"
+provider = "fireworks"
+arch = "llama"
+context_window = 128000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.0009
+cost_output_per_1k = 0.0009
+
+# ─── xAI (Grok) ─────────────────────────────────────────────────────────
+
+[[model]]
+id = "grok-3"
+provider = "xai"
+arch = "grok"
+context_window = 131072
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.003
+cost_output_per_1k = 0.015
+
+# ─── Google (Gemini via OpenAI-compatible) ──────────────────────────────
+
+[[model]]
+id = "gemini-2.0-flash"
+provider = "google"
+arch = "gemini"
+context_window = 1000000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.000075
+cost_output_per_1k = 0.0003
+
+# ─── Docker Model Runner (local Metal/CUDA via HTTP) ────────────────────
+
+[[model]]
+id = "docker.io/ai/qwen2.5:7B-Q4_K_M"
+provider = "docker-model-runner"
+arch = "qwen2"
+context_window = 32768
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "docker.io/ai/qwen2.5:7B-Q4_K_M"
+
+[[model]]
+id = "huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit:latest"
+provider = "docker-model-runner"
+arch = "qwen2"
+context_window = 32768
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit"
+
+[[model]]
+id = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest"
+provider = "docker-model-runner"
+arch = "qwen35"
+context_window = 262144
+max_output_tokens = 32768
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
+
+# ─── In-process llama.cpp (Metal/CUDA direct) ───────────────────────────
+
+[[model]]
+id = "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+provider = "llamacpp-local"
+arch = "qwen35"
+context_window = 262144
+max_output_tokens = 32768
+tokens_per_second = 33.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
