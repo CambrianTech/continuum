@@ -160,19 +160,26 @@ pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, String> {
     }
 }
 
-/// Stable hash of (room + current message + recent message IDs +
-/// sorted specialty list). Same inputs → same key → cache hit.
-/// Recent IDs (not bodies) keep the key short while still
-/// distinguishing different conversation states.
+/// Stable hash of (room + current message + sorted specialty list).
+///
+/// Deliberately EXCLUDES recent_history. The whole point of single-flight
+/// here is N personas analyzing the SAME inbound message coalesce into ONE
+/// inference. Including history defeats that — each persona's RAG produces
+/// slightly different conversationHistory (per-persona excludeMessageIds,
+/// per-persona memory injection, per-persona budget trimming) → different
+/// hash → 4 separate inferences instead of 1 + 3 awaiters → DMR's single
+/// slot can't keep up → 3 personas fail with empty responses (caught
+/// 2026-04-19, Round 11 chat showed Helper + CodeReview erroring while
+/// Local Assistant succeeded — symptom of the cache key being too granular).
+///
+/// Specialties stay in the key because they DO change which angles the
+/// analysis must populate. Personas in the same room should always have the
+/// same sorted specialty set, so this still coalesces correctly.
 fn compute_cache_key(input: &AnalysisInput) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.room_id.as_bytes());
     hasher.update(b"|");
     hasher.update(input.text.as_bytes());
-    hasher.update(b"|");
-    for m in &input.recent_history {
-        hasher.update(m.id.as_bytes());
-    }
     hasher.update(b"|");
     let mut sorted_specs = input.known_specialties.clone();
     sorted_specs.sort();
