@@ -157,6 +157,12 @@ impl LlamaCppBackend {
     /// adapters or RAG budgeters; ask this.
     pub fn n_ctx_train(&self) -> u32 { self.model.n_ctx_train() }
 
+    /// Model's embedded chat template (Jinja-style string). Used by
+    /// adapters to render messages through `llama::render_chat`. None
+    /// means the model carries no template — caller decides what to do
+    /// (error, default, etc.) instead of a silent fallback.
+    pub fn model_chat_template(&self) -> Option<String> { self.model.chat_template() }
+
     /// Ensure a LoRA adapter is loaded (idempotent). Used by genome paging.
     pub fn ensure_adapter(&self, id: &str, path: &Path) -> Result<(), String> {
         let mut guard = self.loras.lock().map_err(|e| format!("LoRA lock poisoned: {e}"))?;

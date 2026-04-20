@@ -246,37 +246,48 @@ impl AIProviderAdapter for LlamaCppAdapter {
     ) -> Result<TextGenerationResponse, String> {
         let backend = self.ensure_loaded()?;
 
-        // Flatten the structured request into the single prompt string
-        // the in-process backend expects. Apply the system prompt + each
-        // message in role-prefixed form. Future: replace with the proper
-        // chat template applier (llama.cpp has built-in templates per
-        // model arch — using them directly avoids the role-prefix hack
-        // and matches what the model was trained on).
-        let mut prompt = String::new();
+        // Use the model's OWN chat template (from GGUF metadata) via
+        // llama.cpp's template engine. The previous hand-rolled
+        // `<|im_start|>role\n ...<|im_end|>\n` prefix was wrong for
+        // qwen3.5 — it caused `<|im_end<|>` special-token leakage in
+        // Teacher AI output (2026-04-20). Different models use different
+        // boundary tokens; the model is the source of truth.
+        let template = backend
+            .model_chat_template()
+            .ok_or_else(|| {
+                format!(
+                    "model {} carries no chat_template in GGUF metadata — \
+                     can't format a chat prompt without one",
+                    backend.model_id()
+                )
+            })?;
+        let mut messages: Vec<llama::ChatMsg> = Vec::new();
         if let Some(sys) = request.system_prompt.as_ref() {
             if !sys.is_empty() {
-                prompt.push_str("<|im_start|>system\n");
-                prompt.push_str(sys);
-                prompt.push_str("<|im_end|>\n");
+                messages.push(llama::ChatMsg {
+                    role: "system".to_string(),
+                    content: sys.clone(),
+                });
             }
         }
         for msg in &request.messages {
-            prompt.push_str("<|im_start|>");
-            prompt.push_str(&msg.role);
-            prompt.push('\n');
-            match &msg.content {
-                MessageContent::Text(t) => prompt.push_str(t),
-                MessageContent::Parts(parts) => {
-                    for p in parts {
-                        if let crate::ai::types::ContentPart::Text { text } = p {
-                            prompt.push_str(text);
-                        }
-                    }
-                }
-            }
-            prompt.push_str("<|im_end|>\n");
+            let content = match &msg.content {
+                MessageContent::Text(t) => t.clone(),
+                MessageContent::Parts(parts) => parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        crate::ai::types::ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+            };
+            messages.push(llama::ChatMsg {
+                role: msg.role.clone(),
+                content,
+            });
         }
-        prompt.push_str("<|im_start|>assistant\n");
+        let prompt = llama::render_chat(&template, &messages, true)?;
 
         // No hardcoded cap. If the caller didn't specify, the model can
         // decode up to its trained context. Capping silently at 2048 was
@@ -287,9 +298,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .map(|n| n as usize)
             .unwrap_or_else(|| backend.n_ctx_train() as usize);
         let temperature = request.temperature.unwrap_or(0.7);
-        // Owned strings so the closure can move them and the post-generation
-        // loop below can still strip them off the response tail.
-        let stop_owned: Vec<String> = vec!["<|im_end|>".to_string(), "<|im_start|>".to_string()];
+        // Stop sequences come from caller; the model's own EOS tokens are
+        // handled inside the scheduler via `is_eog_token` so we don't need
+        // to manually pass `<|im_end|>` etc here. Caller-supplied stops
+        // (e.g. JSON-mode end markers) still propagate.
+        let stop_owned: Vec<String> = request.stop_sequences.clone().unwrap_or_default();
 
         let gen_start = Instant::now();
         let backend_for_blocking = backend.clone();
@@ -317,18 +330,15 @@ impl AIProviderAdapter for LlamaCppAdapter {
         };
         *self.last_throughput_tok_s.write() = tok_per_sec;
 
-        // Strip stop sequences from the tail (the backend may include
-        // them depending on tokenizer behavior).
-        let mut clean = text;
-        for s in &stop_owned {
-            if let Some(idx) = clean.rfind(s.as_str()) {
-                clean.truncate(idx);
-            }
-        }
-        let clean = clean.trim_end().to_string();
+        // No tail-strip. Previously this hand-rolled `text.rfind(stop)` and
+        // truncated — only existed to clean up the special tokens that
+        // leaked from the OLD hand-rolled chat-template prefixes. Now that
+        // we use the model's real chat template via `render_chat`, the
+        // model's actual EOS tokens stop generation (handled inside the
+        // scheduler via `is_eog_token`) and don't leak as text.
 
         Ok(TextGenerationResponse {
-            text: clean,
+            text,
             finish_reason: FinishReason::Stop,
             model: backend.model_id().to_string(),
             provider: LLAMACPP_PROVIDER_ID.to_string(),

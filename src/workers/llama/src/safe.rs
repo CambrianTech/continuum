@@ -130,14 +130,86 @@ pub struct Model {
 unsafe impl Send for Model {}
 unsafe impl Sync for Model {}
 
-/// One message in a chat sequence: a role tag (`"system"`, `"user"`,
-/// `"assistant"`) and the message content. Used as input to
-/// `Model::apply_chat_template` so the model can render the conversation
-/// using its OWN trained-on template.
+/// One message in a chat sequence: role + content. Input to `render_chat`.
 #[derive(Debug, Clone)]
 pub struct ChatMsg {
     pub role: String,
     pub content: String,
+}
+
+/// Render a chat sequence through a Jinja-style template string, using
+/// llama.cpp's built-in template engine. Pure function — takes the
+/// template directly so it's unit-testable without loading a GGUF.
+///
+/// `template`: the model's `tokenizer.chat_template` string, typically
+/// obtained from `Model::chat_template()`. If you pass a non-existent
+/// template string llama.cpp falls back to a chatml default — prefer
+/// making the caller decide what to do when the model doesn't carry one.
+///
+/// `add_assistant`: append the assistant-turn-start tokens, telling the
+/// model "now generate a reply." Set true for inference, false for
+/// evaluating an existing assistant message.
+///
+/// Returns the rendered prompt string ready for tokenization. Callers
+/// must NEVER hand-roll `<|im_start|>...` prefixes — different models
+/// use different boundary tokens, and getting it wrong causes the model
+/// to emit the boundary tokens as text (the `<|im_end<|>` leak we saw
+/// in Teacher AI output 2026-04-20).
+pub fn render_chat(
+    template: &str,
+    messages: &[ChatMsg],
+    add_assistant: bool,
+) -> Result<String, String> {
+    if messages.is_empty() {
+        return Err("render_chat: messages empty".to_string());
+    }
+    let tmpl_c = CString::new(template).map_err(|e| format!("template has nul byte: {e}"))?;
+    let owned: Vec<(CString, CString)> = messages
+        .iter()
+        .map(|m| {
+            let r = CString::new(m.role.as_str()).map_err(|e| format!("role {e}"))?;
+            let c = CString::new(m.content.as_str()).map_err(|e| format!("content {e}"))?;
+            Ok::<(CString, CString), String>((r, c))
+        })
+        .collect::<Result<_, _>>()?;
+    let chat: Vec<sys::llama_chat_message> = owned
+        .iter()
+        .map(|(r, c)| sys::llama_chat_message { role: r.as_ptr(), content: c.as_ptr() })
+        .collect();
+
+    let render = |buf: &mut Vec<i8>| -> i32 {
+        unsafe {
+            sys::llama_chat_apply_template(
+                tmpl_c.as_ptr(),
+                chat.as_ptr(),
+                chat.len(),
+                add_assistant,
+                buf.as_mut_ptr(),
+                buf.len() as i32,
+            )
+        }
+    };
+
+    let initial: usize = messages
+        .iter()
+        .map(|m| m.role.len() + m.content.len())
+        .sum::<usize>()
+        * 2
+        + 256;
+    let mut buf = vec![0i8; initial];
+    let mut n = render(&mut buf);
+    if n < 0 {
+        return Err(format!("llama_chat_apply_template rc={n}"));
+    }
+    if (n as usize) > buf.len() {
+        buf.resize(n as usize, 0);
+        n = render(&mut buf);
+        if n < 0 || (n as usize) > buf.len() {
+            return Err(format!("llama_chat_apply_template retry rc={n}"));
+        }
+    }
+    let bytes: Vec<u8> = buf.into_iter().take(n as usize).map(|b| b as u8).collect();
+    String::from_utf8(bytes).map_err(|e| format!("template output not utf-8: {e}"))
 }
 
 /// Model load parameters.
@@ -279,44 +351,16 @@ impl Model {
         Ok(tokens)
     }
 
-    /// Render messages through the model's own chat template (from GGUF
-    /// metadata; falls back to chatml if absent). `add_assistant=true`
-    /// appends the assistant-start tokens. Single source of truth — never
-    /// hand-roll `<|im_start|>...` prefixes.
-    pub fn apply_chat_template(
-        &self,
-        messages: &[ChatMsg],
-        add_assistant: bool,
-    ) -> Result<String, String> {
-        let tmpl = unsafe { sys::llama_model_chat_template(self.ptr.as_ptr(), std::ptr::null()) };
-        let owned: Vec<(CString, CString)> = messages.iter().map(|m| {
-            (CString::new(m.role.as_str()).unwrap(), CString::new(m.content.as_str()).unwrap())
-        }).collect();
-        let chat: Vec<sys::llama_chat_message> = owned.iter()
-            .map(|(r, c)| sys::llama_chat_message { role: r.as_ptr(), content: c.as_ptr() })
-            .collect();
-
-        let render = |buf: &mut Vec<i8>| -> i32 {
-            unsafe {
-                sys::llama_chat_apply_template(
-                    tmpl, chat.as_ptr(), chat.len(),
-                    add_assistant, buf.as_mut_ptr(), buf.len() as i32,
-                )
-            }
-        };
-
-        let mut buf = vec![0i8; messages.iter().map(|m| m.role.len() + m.content.len()).sum::<usize>() * 2 + 256];
-        let mut n = render(&mut buf);
-        if n < 0 { return Err(format!("apply_chat_template rc={n}")); }
-        if (n as usize) > buf.len() {
-            buf.resize(n as usize, 0);
-            n = render(&mut buf);
-            if n < 0 || (n as usize) > buf.len() {
-                return Err(format!("apply_chat_template retry rc={n}"));
-            }
+    /// The model's embedded chat template string (GGUF metadata
+    /// `tokenizer.chat_template`). `None` if the model carries no
+    /// template — caller can pass a default to `render_chat` or error.
+    pub fn chat_template(&self) -> Option<String> {
+        let p = unsafe { sys::llama_model_chat_template(self.ptr.as_ptr(), std::ptr::null()) };
+        if p.is_null() {
+            None
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(p) }.to_str().ok().map(String::from)
         }
-        Ok(String::from_utf8(buf.into_iter().take(n as usize).map(|b| b as u8).collect())
-            .map_err(|e| format!("template output not utf-8: {e}"))?)
     }
 
     /// Convert a token to its UTF-8 string representation.
