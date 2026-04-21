@@ -901,6 +901,34 @@ Same loop fires for the inverse direction (game closes, user starts coding → p
 
 This is what "rocks" means. The system is alive to actual conditions, not following a static plan.
 
+## 14.5 Tests Are a First-Class Use Case (and Should Never OOM Either)
+
+The fact that the current test rig had to call `with_context_length(32768)` explicitly is a **symptom of the architectural gap, not the design's answer**. In the demand-driven system:
+
+- Test declares (via recipe / task descriptor): `task = Chat`
+- Policy reads the task default: `8K` (chat is light by definition)
+- Footprint registry sees the test allocate 1 chat-task seed: ~250MB KV
+- Hardware ceiling check: 250MB << available, no pressure → grant immediately
+- Test runs. Even running 10 chat-task tests in parallel = 2.5GB total. Never OOMs.
+
+The OOM Joel hit this morning came from `LlamaCppAdapter::new()` defaulting to `n_ctx_train = 262K` because the model declared it that way — a silent honoring of the model's MAX as the test's STARTING POINT. That's the inverse of what should happen: the test (or the recipe wrapping it) should declare "I'm chat" and the policy reads `chat → 8K` as the seed; the model's 262K is just the ceiling the seed can grow toward IF demand justifies it.
+
+**Same principle as why a test app on macOS doesn't get the same memory budget as Photoshop**: the OS reads the app's declared workload class and provisions accordingly.
+
+Concrete shape this takes when implemented:
+
+```rust
+// Test declares its task class. Policy reads it. No magic numbers.
+let test_recipe = TestRecipe::chat();  // declares task=Chat, persona=test
+let adapter = continuum_core::inference::LlamaCppAdapter::new()
+    .with_recipe(test_recipe);  // policy provisions per-task seed
+let response = respond(input).await?;
+```
+
+Until that lands, the explicit `with_context_length(32768)` is a documented bandaid. Once it lands, that line in the test goes away — replaced by the recipe declaration that flows through the policy.
+
+This applies to **all** test rigs, not just persona_respond_replay. Live integration tests, smoke tests, perf rigs — each one should declare its task class and let the policy size accordingly. Same way the system handles real personas in real workloads.
+
 ## 15. Why This Beats Hard Limits (Restated)
 
 - Limit-based: persona count is capped at `floor(RAM / per_persona_KV)`. New persona request beyond the cap → error / refusal.
