@@ -10,23 +10,23 @@
 //!     → provider API receives raw pixels         (NO text-description bridge)
 //!     → model returns description of the image
 //!
-//! The test does NOT check the model's vision accuracy (that's the model
-//! vendor's job). It checks that the pipeline **delivers** the image
-//! bytes through every layer without silently flattening to text. A
-//! working vision model fed a red square should say something about
-//! red / color / the image being present — if it says "I don't see an
-//! image" or returns Silent, some layer dropped the bytes.
+//! **`respond()` is local-first by design.** Line 370 of
+//! `persona/response.rs` hardcodes `registry.select(Some("local"),
+//! Some(&input.model), InferenceDevice::Gpu)` — the Rust persona
+//! pipeline will NOT route to Anthropic / OpenAI / any cloud provider
+//! even if those are the only adapters registered. That's deliberate,
+//! matches "native multimodal or nothing" (2026-04-21), and means
+//! this test can only go green against a LOCAL vision-capable model.
 //!
-//! Target model: Claude Sonnet 4.5 — already declared `Capability::Vision`
-//! in `config/models.toml`, already has an Anthropic adapter in the
-//! registry, already accepts base64 image parts over HTTP. Requires
-//! `ANTHROPIC_API_KEY` in `config.env`. Local Qwen2-VL-7B pathway
-//! (anvil's adapter wiring + mtmd FFI, in progress 2026-04-21) slots
-//! into the same test by swapping the `model` string once the registry
-//! entry lands — the pipeline itself is provider-agnostic.
+//! Which also means: until anvil's in-flight work lands
+//! (config/models.toml registers Qwen2-VL-7B with `Capability::Vision`
+//! + `LlamaCppAdapter::generate_text` stops filter-mapping out
+//! `ContentPart::Image` + `LlamaCppBackend` routes images through
+//! mtmd — FFI side already in d32b8840a/6557dce34), the test stays
+//! ignored. When it runs, it proves the pipeline in full — NOT
+//! whether the forged vision model is accurate.
 //!
-//! Marked `#[ignore]` because it hits the live Anthropic API and costs
-//! real tokens (~$0.003/run at current Sonnet pricing). Run explicitly:
+//! Run explicitly once the local wiring is in:
 //!
 //!   cargo test --test vision_integration -- --ignored --nocapture
 
@@ -91,20 +91,43 @@ fn build_vision_request(model_id: &str) -> RespondInput {
     }
 }
 
-/// Exercise the full Rust persona vision path against Claude Sonnet 4.5.
+/// Exercise the full Rust persona vision path against a local
+/// vision-capable model. Runs once anvil's pieces land:
 ///
-/// Requires `ANTHROPIC_API_KEY` in config.env. Marked `#[ignore]` so
-/// default test runs skip it (live API cost).
+///   - `Qwen/Qwen2-VL-7B-Instruct` (or bartowski GGUF re-pack)
+///     registered in `config/models.toml` with `Capability::Vision`
+///   - `LlamaCppAdapter::generate_text` stops filter_mapping out
+///     `ContentPart::Image` (the current drop at llamacpp_adapter.rs)
+///   - `LlamaCppBackend` wired through `MtmdContext::encode_image`
+///     (anvil's FFI + safe wrapper landed in d32b8840a/6557dce34)
+///
+/// Until then: `panic!` with a descriptive message so the test doesn't
+/// silently pass. Swap the panic body for the real flow once registry
+/// + adapter + backend all expose the local Vision path.
 #[tokio::test]
 #[ignore]
-async fn vision_roundtrip_anthropic_sonnet() {
-    // Initialize model registry — the Anthropic adapter reads it at
-    // construction. Idempotent — other tests calling this are fine.
+async fn vision_roundtrip_local_qwen2_vl() {
     continuum_core::model_registry::init_global().expect("seeded config loads");
 
-    // Ensure Anthropic is the target. Claude Sonnet 4.5 has
-    // Capability::Vision declared in config/models.toml.
-    let model_id = "claude-sonnet-4-5-20250929";
+    let model_id = "continuum-ai/qwen2-vl-7b-forged-GGUF";
+
+    // Sanity: bail early with a specific message rather than letting
+    // respond()'s generic "no adapter supports model" catch us. Once
+    // the registry entry is in place this check passes and we continue
+    // to the actual inference call.
+    let reg = continuum_core::model_registry::global();
+    if reg.model(model_id).is_none() {
+        panic!(
+            "placeholder — '{model_id}' not yet in config/models.toml. \
+             Add a Vision-capable entry (gguf_hint + mmproj + \
+             Capability::Vision) and wire `LlamaCppAdapter` + \
+             `LlamaCppBackend` through `MtmdContext::encode_image` \
+             (anvil's in-flight work; FFI side shipped in d32b8840a / \
+             6557dce34). Test input shape is `build_vision_request()` \
+             above — swap this panic for the `respond()` call + \
+             assertions when ready."
+        );
+    }
 
     let input = build_vision_request(model_id);
     let response = respond(input).await.expect("respond() returned Err");
@@ -120,15 +143,10 @@ async fn vision_roundtrip_anthropic_sonnet() {
                 !text.trim().is_empty(),
                 "vision model returned empty text — pipeline likely dropped the image bytes"
             );
-            assert!(
-                model_used.contains("claude"),
-                "expected claude model, got: {model_used}"
-            );
-            // Soft content check: a vision model fed a red square should
-            // mention red / color / image / square. If it says nothing
-            // about the image content, something flattened the bytes
-            // before the model saw them. We lower-case + scan for any
-            // of several plausible words to avoid flaking on phrasing.
+            // Soft content check: a vision model fed a red square
+            // should mention red / color / image / square. If it says
+            // nothing about the image content, something flattened the
+            // bytes before the model saw them.
             let lower = text.to_lowercase();
             let image_aware_words = ["red", "color", "square", "image", "picture", "see"];
             let hit = image_aware_words.iter().any(|w| lower.contains(w));
@@ -139,30 +157,4 @@ async fn vision_roundtrip_anthropic_sonnet() {
             eprintln!("✅ vision roundtrip ({model_used}): {text}");
         }
     }
-}
-
-/// Placeholder slot for the local Qwen2-VL-7B-Instruct path.
-///
-/// Runs the same `build_vision_request` shape against the
-/// llamacpp-local adapter once the pieces land:
-///   - `Qwen/Qwen2-VL-7B-Instruct` (or bartowski GGUF re-pack) registered
-///     in `config/models.toml` with `Capability::Vision`
-///   - `LlamaCppAdapter::generate_text` stops filter_mapping out
-///     `ContentPart::Image` (the current drop at llamacpp_adapter.rs)
-///   - `LlamaCppBackend` wired through `MtmdContext::encode_image`
-///     (anvil's FFI + safe wrapper landed in d32b8840a/6557dce34)
-///
-/// Until then: `panic!` with a descriptive message so the test doesn't
-/// silently pass. Swap the panic body for a real call once the registry
-/// entry + backend wiring exist.
-#[tokio::test]
-#[ignore]
-async fn vision_roundtrip_local_qwen2_vl() {
-    panic!(
-        "placeholder — wire up once config/models.toml registers \
-         Qwen2-VL-7B-Instruct (Capability::Vision) and llamacpp_adapter \
-         + LlamaCppBackend route ContentPart::Image through mtmd. See \
-         anvil's d32b8840a/6557dce34 for the FFI side; build_vision_request \
-         above is the input shape to call respond() with."
-    );
 }
