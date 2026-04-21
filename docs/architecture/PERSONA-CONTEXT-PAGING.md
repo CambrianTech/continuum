@@ -1252,26 +1252,33 @@ Each model declares its KV cost profile in the registry. The policy accounts for
 
 Captured here so the implementation order isn't lost. Each phase ships independently and reduces memory, increases dynamism, or cuts latency. **TDD/VDD discipline applies to every phase** — test first, validate the test catches what it claims to catch, then implement.
 
-### Phase 0.5 — TS Cognition Layer → Rust (~5-7 days, prerequisite)
+### Phase 0.5 — TS Cognition Layer → Rust (originally ~5-7 days; collapsed to mostly cleanup post-2026-04-20)
 
 The Node event loop is the per-process bottleneck. Until the perf-critical TS persona modules move to Rust + tokio, paging gives us paged KV slots that personas can't reach because they're queued behind the single-threaded JS runtime. Phase 0.5 ships first; everything else depends on it.
 
+**2026-04-21 update**: dead-code enumeration during PR #949 found that `PersonaPromptAssembler.ts`, `PersonaAgentLoop.ts`, and `PersonaResponseValidator.ts` formed a closed dead subgraph after the 2026-04-20 cutover (no live importers, no test refs, only a "removed" comment in `PersonaResponseGenerator.ts`). The behavior had already moved to Rust without removing the TS files. Three substeps therefore collapsed to a single cleanup commit (`54c49009e`, −762 LOC net). What's left is `PersonaToolExecutor` (real port), `Hippocampus` (live status TBD), `PersonaResponseGenerator` orchestrator (real port), AND a feature gap surfaced by the enumeration: **multimodal output is structurally absent from the Rust persona path**.
+
 Substeps in dependency order (each TDD/VDD'd):
 
-- **0.5.1** `PersonaResponseValidator` (110 lines) → `cognition::response_validator`
-  - Smallest module, cleanest port, validates the migration discipline before we hit the hard ones
-- **0.5.2** `PersonaPromptAssembler` turn-N (343 lines) → extend `persona::prompt_assembly`
-  - Initial assembly already in Rust; turn-N delta (post-tool-call) is the missing half
+- ~~**0.5.1** `PersonaResponseValidator` (110 lines) → `cognition::response_validator`~~  
+  Rust impl shipped earlier in PR #949; TS file deleted in `54c49009e`. **DONE.**
+- ~~**0.5.2** `PersonaPromptAssembler` turn-N (343 lines) → extend `persona::prompt_assembly`~~  
+  Discovered DEAD post-cutover; deleted in `54c49009e`. No port needed — initial assembly lives in `persona::prompt_assembly`; turn-N "delta" was a misread of TS API (the dead `assembleMessages` was a single function, not a delta call). **DONE.**
 - **0.5.3** `PersonaToolExecutor` (636 lines) → `cognition::tool_executor`
   - Tool dispatch design: Rust commands callable directly; TS-side commands (browser/widget) callable via reverse-IPC
-- **0.5.4** `PersonaAgentLoop` (309 lines) → `cognition::agent_loop`
-  - Multi-turn loop with validator + tool_executor + prompt_assembler all now Rust
-  - Per-persona tokio task = real parallelism across N personas
+  - **REAL PORT** — live consumers (`PersonaUser`, `PersonaResponseGenerator`)
+- ~~**0.5.4** `PersonaAgentLoop` (309 lines) → `cognition::agent_loop`~~  
+  Discovered DEAD post-cutover (zero external importers); deleted in `54c49009e`. Orchestration already in Rust path. **DONE.**
 - **0.5.5** `Hippocampus` (693 lines) → `memory::consolidator`
   - STM→LTM consolidation pass; runs concurrently per persona instead of serialized through Node
   - Hugely measurable perf win for multi-persona scenarios
+  - Live status TBD — same enumeration as 0.5.2/0.5.4 should run before assuming this is real port work
 - **0.5.6** `PersonaResponseGenerator` orchestrator (~700 lines) → `persona::response::cycle`
   - The integration point. Once this lands, `personaRespond` becomes the full per-persona cycle, and the TS module reduces to a thin async caller
+- **0.5.X** **Multimodal restoration in Rust persona path** (added 2026-04-21)
+  - Architectural gap exposed by the dead-code enumeration. The TS path that handled multimodal (via `mediaToContentParts` in the now-deleted `PersonaPromptAssembler`) was the ONLY path. The Rust persona pipeline never gained equivalent capability — `HistoryMessage.content` is `String`-only, `respond()` always wraps in `MessageContent::Text(...)`.
+  - Work: extend `HistoryMessage.content` to `MessageContent` (or analogous multimodal-aware type), wire `respond()` to produce `ContentPart::{Image,Audio}` when source media is present, port the `mediaToContentParts` mapping logic to Rust.
+  - Restores the §16 sensory-rights principle ("all personas have full sensory rights — bridge layer is the leveler") for output as well as input.
 
 After 0.5: TS persona-side becomes a thin IPC client. All cognition runs in Rust under tokio. Per-persona parallelism is real.
 
