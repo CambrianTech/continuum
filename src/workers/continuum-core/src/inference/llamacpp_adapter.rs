@@ -39,6 +39,7 @@ use crate::ai::types::{
     TextGenerationResponse, UsageMetrics,
 };
 use crate::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
+use crate::runtime;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::path::PathBuf;
@@ -465,6 +466,50 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // OR a mix of image+audio, we hard-error rather than silently
         // dropping the rest. Multi-media is a follow-up once a real
         // caller needs it (mtmd_tokenize already does the work).
+        // Diagnostic: prove what the adapter receives from the caller —
+        // counts user message shapes (Text vs Parts) and ContentPart
+        // variants. When vision routing breaks, this tells us whether
+        // the image got dropped upstream (count=0, request had no
+        // ContentPart::Image) vs in our walk (count>0 but
+        // generate_with_image still doesn't fire). 2026-04-21: Vision AI
+        // was producing wrong answers; this is the probe to localize.
+        {
+            let mut text_msgs = 0;
+            let mut parts_msgs = 0;
+            let mut parts_text = 0;
+            let mut parts_image = 0;
+            let mut parts_audio = 0;
+            let mut parts_other = 0;
+            for msg in &request.messages {
+                match &msg.content {
+                    MessageContent::Text(_) => text_msgs += 1,
+                    MessageContent::Parts(parts) => {
+                        parts_msgs += 1;
+                        for p in parts {
+                            match p {
+                                crate::ai::types::ContentPart::Text { .. } => parts_text += 1,
+                                crate::ai::types::ContentPart::Image { .. } => parts_image += 1,
+                                crate::ai::types::ContentPart::Audio { .. } => parts_audio += 1,
+                                _ => parts_other += 1,
+                            }
+                        }
+                    }
+                }
+            }
+            let log = runtime::logger("llamacpp");
+            log.info(&format!(
+                "generate_text request: model={} messages={} (text={} parts={}; parts contain text={} image={} audio={} other={})",
+                request.model.as_deref().unwrap_or("?"),
+                request.messages.len(),
+                text_msgs,
+                parts_msgs,
+                parts_text,
+                parts_image,
+                parts_audio,
+                parts_other,
+            ));
+        }
+
         let mut collected_media: Vec<(llama::MediaKind, Vec<u8>)> = Vec::new();
         let mut messages: Vec<llama::ChatMsg> = Vec::new();
         if let Some(sys) = request.system_prompt.as_ref() {

@@ -71,6 +71,7 @@ fn build_vision_request(model_id: &str) -> RespondInput {
         item_type: "image".to_string(),
         base64: Some(RED_SQUARE_JPEG_B64.to_string()),
         mime_type: Some("image/jpeg".to_string()),
+        description: None,
     }];
 
     RespondInput {

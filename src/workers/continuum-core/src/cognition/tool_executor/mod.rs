@@ -143,11 +143,13 @@ mod tests {
                     item_type: "image".to_string(),
                     base64: Some("aGVsbG8=".to_string()),
                     mime_type: Some("image/png".to_string()),
+                    description: None,
                 },
                 MediaItemLite {
                     item_type: "audio".to_string(),
                     base64: None,
                     mime_type: None,
+                    description: None,
                 },
             ],
             stored_id: Uuid::nil(),

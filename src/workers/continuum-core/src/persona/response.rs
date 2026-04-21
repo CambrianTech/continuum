@@ -675,6 +675,7 @@ mod tests {
             item_type: "image".to_string(),
             base64: Some(b64.to_string()),
             mime_type: Some("image/png".to_string()),
+            description: None,
         }
     }
 
@@ -821,6 +822,7 @@ mod tests {
             item_type: "audio".to_string(),
             base64: Some("WAV_DATA".to_string()),
             mime_type: Some("audio/wav".to_string()),
+            description: None,
         };
         let mut vision_only = HashSet::new();
         vision_only.insert(Capability::Vision);

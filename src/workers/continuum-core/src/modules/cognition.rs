@@ -38,6 +38,7 @@ use crate::persona::model_selection;
 use crate::persona::text_analysis;
 use crate::persona::text_analysis::LoopDetector;
 use crate::persona::{AdapterInfo, ModelSelectionRequest};
+use crate::runtime;
 use crate::persona::{InboxMessage, Modality, PersonaCognition, SenderType};
 use crate::persona::{RecentResponse, SleepMode};
 use crate::rag::RagEngine;
@@ -832,8 +833,40 @@ impl ServiceModule for CognitionModule {
                 // when the model is natively multimodal — that defeats the
                 // whole reason Qwen3.5/Claude/GPT-4o were chosen. The
                 // bridge is the floor for genuinely text-only models.
-                let message_media: Vec<crate::cognition::tool_executor::types::MediaItemLite> = p
-                    .json_opt::<Value>("message_media")
+                // Diagnostic: log what message_media the IPC layer actually
+                // received from PRG. Vision routing was failing 2026-04-21
+                // and we need to see whether (a) PRG sent nothing, (b) PRG
+                // sent items but with wrong shape, or (c) items arrived
+                // and we drop them in the filter_map below.
+                let raw_media_value = p.json_opt::<Value>("message_media");
+                let raw_media_count = raw_media_value
+                    .as_ref()
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                if raw_media_count > 0 {
+                    let shape: Vec<String> = raw_media_value
+                        .as_ref()
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|item| {
+                                    let item_type = item.get("itemType").or_else(|| item.get("item_type")).and_then(|v| v.as_str()).unwrap_or("?");
+                                    let has_b64 = item.get("base64").and_then(|v| v.as_str()).map(|s| s.len()).unwrap_or(0);
+                                    let has_desc = item.get("description").is_some();
+                                    format!("{}(b64={}, desc={})", item_type, has_b64, has_desc)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    runtime::logger("cognition").info(&format!(
+                        "persona/respond received message_media: count={} shapes=[{}]",
+                        raw_media_count,
+                        shape.join(", ")
+                    ));
+                }
+
+                let message_media: Vec<crate::cognition::tool_executor::types::MediaItemLite> = raw_media_value
                     .and_then(|v| v.as_array().cloned())
                     .map(|arr| {
                         arr.iter()

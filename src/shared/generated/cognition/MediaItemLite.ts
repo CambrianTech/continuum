@@ -19,4 +19,19 @@ base64?: string,
 /**
  * MIME type hint for downstream sensory-bridge routing.
  */
-mimeType?: string, };
+mimeType?: string, 
+/**
+ * Pre-computed text description of this media item, populated by
+ * the TS-side `VisionDescriptionService` before the message
+ * crosses IPC into Rust. The persona response path uses this to
+ * give text-only personas a real description of attached media —
+ * without it they get a "[no description available]" marker
+ * instead of silently hallucinating from prompt context.
+ *
+ * NOTE: deliberately does NOT include filename/path. The 2026-04-21
+ * methodology rule (Joel): "never give AIs an image whose name
+ * indicates what it is" — filenames are a cheat surface for
+ * non-vision models to fake answers, so they're stripped at this
+ * IPC boundary on principle, not just incidentally.
+ */
+description?: string, };
