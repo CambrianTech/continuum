@@ -67,6 +67,10 @@ export interface InboxMessage extends BaseQueueItem {
     base64?: string;
     mimeType?: string;
     url?: string;
+    /** sha256:hex content hash → file on disk via MediaBlobService.getPath */
+    blobHash?: string;
+    /** Pre-computed text from VisionDescriptionService cache (sidecar JSON) */
+    description?: string;
   }>;
 }
 

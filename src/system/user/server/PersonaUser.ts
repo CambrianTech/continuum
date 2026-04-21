@@ -1413,7 +1413,16 @@ export class PersonaUser extends AIUser {
       senderName: messageEntity.senderName,
       senderType: messageEntity.senderType as 'human' | 'persona' | 'agent' | 'system',
       timestamp: this.timestampToNumber(messageEntity.timestamp),
-      priority
+      priority,
+      // Forward media (image/audio attachments) so the persona response
+      // path can route to natively-multimodal models. Each item carries
+      // either inline base64 OR (more commonly now that chat-send
+      // synchronously externalizes) a blobHash that PRG resolves
+      // against MediaBlobService at request time. Without this line,
+      // the entity's media never reaches the inbox → never reaches
+      // ProcessableMessage → PRG sees nothing → vision/audio bytes
+      // silently dropped before they ever cross IPC into Rust.
+      media: messageEntity.content?.media,
     };
 
     await this.inbox.enqueue(inboxMessage);
