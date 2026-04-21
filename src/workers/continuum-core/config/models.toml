@@ -220,7 +220,7 @@ cost_input_per_1k = 0.0
 cost_output_per_1k = 0.0
 gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
 # Same shaping rule as the in-process row — see that row's comment.
-multi_party_strategy = "single_user_turn_flattened_history"
+multi_party_strategy = "name_prefixed_user_turns"
 
 # ─── In-process llama.cpp (Metal/CUDA direct) ───────────────────────────
 
@@ -263,4 +263,36 @@ stop_sequences = ["<|im_end|>", "<|endoftext|>"]
 # tests/persona_respond_replay.rs::synthesized_prod_shape_input). Flatten
 # multi-party history into ONE user turn so the chat template sees
 # system + user + assistant — the shape the model was actually trained on.
-multi_party_strategy = "single_user_turn_flattened_history"
+multi_party_strategy = "name_prefixed_user_turns"
+
+# ─── Vision-capable Qwen2-VL-7B (in-process llama.cpp + mtmd) ───────────
+# Reference vision model for the local multimodal path. mmproj_local_path
+# is the multimodal projector — required for `Capability::Vision` on the
+# local path because libmtmd needs it to encode image bytes into tokens
+# compatible with this model's embedding space. Cloud providers handle
+# their own projection server-side; local needs the explicit file.
+#
+# `tests/llamacpp_vision_integration.rs` validates the full Rust pipeline
+# against this entry — a real cat photo goes in, natural-language
+# description comes out (verified 2026-04-21 with the libmtmd backend
+# dedup fix in commit f098c4331). When `tests/vision_integration.rs`
+# targets this model_id, the chat path → adapter → backend.generate_with_image
+# → mtmd → projector → text-decoder route is exercised top to bottom.
+[[model]]
+id = "qwen2-vl-7b-instruct"
+name = "Qwen2-VL-7B-Instruct (in-process)"
+provider = "llamacpp-local"
+arch = "qwen2"
+context_window = 32768
+max_output_tokens = 4096
+tokens_per_second = 16.0
+capabilities = ["text-generation", "chat", "vision", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF"
+# Local path on the dev machine. Production install (Carl/Dev) pulls
+# these via `install.sh` into a per-user model cache. Auto-discovery of
+# the mmproj from `gguf_hint` + a sibling-file naming convention is a
+# follow-up so this path doesn't need to be hand-edited per machine.
+gguf_local_path = "~/models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
+mmproj_local_path = "~/models/qwen2-vl-7b/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"

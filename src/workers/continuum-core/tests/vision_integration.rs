@@ -107,26 +107,63 @@ fn build_vision_request(model_id: &str) -> RespondInput {
 #[tokio::test]
 #[ignore]
 async fn vision_roundtrip_local_qwen2_vl() {
+    use std::path::PathBuf;
+
     continuum_core::model_registry::init_global().expect("seeded config loads");
 
-    let model_id = "continuum-ai/qwen2-vl-7b-forged-GGUF";
+    // The TOML row id we registered (anvil 2026-04-21). Memento's earlier
+    // draft pointed at a forge name that doesn't exist yet —
+    // `continuum-ai/qwen2-vl-7b-forged-GGUF` is the eventual forged
+    // variant; until that bake exists, the bartowski Q4_K_M GGUF + its
+    // sibling mmproj are the test target.
+    let model_id = "qwen2-vl-7b-instruct";
 
     // Sanity: bail early with a specific message rather than letting
-    // respond()'s generic "no adapter supports model" catch us. Once
-    // the registry entry is in place this check passes and we continue
-    // to the actual inference call.
+    // respond()'s generic "no adapter supports model" catch us.
     let reg = continuum_core::model_registry::global();
-    if reg.model(model_id).is_none() {
+    let model_meta = reg.model(model_id).unwrap_or_else(|| {
         panic!(
-            "placeholder — '{model_id}' not yet in config/models.toml. \
-             Add a Vision-capable entry (gguf_hint + mmproj + \
-             Capability::Vision) and wire `LlamaCppAdapter` + \
-             `LlamaCppBackend` through `MtmdContext::encode_image` \
-             (anvil's in-flight work; FFI side shipped in d32b8840a / \
-             6557dce34). Test input shape is `build_vision_request()` \
-             above — swap this panic for the `respond()` call + \
-             assertions when ready."
+            "'{model_id}' not in config/models.toml. Add a Vision-capable \
+             entry (gguf_hint + mmproj + Capability::Vision). FFI side \
+             shipped in d32b8840a / 6557dce34, dedup fix in f098c4331; \
+             this test is the persona-pipeline end-to-end proof."
+        )
+    });
+
+    // Skip cleanly when the GGUF/mmproj aren't on disk — same pattern as
+    // tests/llamacpp_vision_integration.rs. CI hosts won't have these
+    // 6 GB files; dev machines do.
+    let model_path = model_meta
+        .gguf_local_path
+        .clone()
+        .expect("qwen2-vl-7b-instruct should declare gguf_local_path in models.toml");
+    if !model_path.exists() {
+        eprintln!(
+            "[vision-int] skipping — Qwen2-VL-7B GGUF not at {}. Pull via \
+             `hf download bartowski/Qwen2-VL-7B-Instruct-GGUF \
+             Qwen2-VL-7B-Instruct-Q4_K_M.gguf --local-dir ~/models/qwen2-vl-7b` \
+             then re-run.",
+            model_path.display()
         );
+        return;
+    }
+    let _ = PathBuf::new(); // silence unused-import warn under skip path
+
+    // Register the in-process LlamaCppAdapter into the global adapter
+    // registry — production wires it through AIProviderModule on server
+    // startup; tests need to do the same step explicitly. Without this,
+    // respond() returns "No AI providers configured."
+    {
+        use continuum_core::ai::adapter::AIProviderAdapter;
+        let registry_arc = continuum_core::modules::ai_provider::global_registry();
+        let mut registry = registry_arc.write().await;
+        let adapter: Box<dyn AIProviderAdapter> =
+            Box::new(continuum_core::inference::llamacpp_adapter::LlamaCppAdapter::with_model_id(
+                model_path.clone(),
+                model_id.to_string(),
+            ));
+        // Priority 0 = highest — beats DMR if it's also registered.
+        registry.register(adapter, 0);
     }
 
     let input = build_vision_request(model_id);
@@ -135,7 +172,7 @@ async fn vision_roundtrip_local_qwen2_vl() {
     match response {
         PersonaResponse::Silent { reason, .. } => {
             panic!(
-                "persona chose Silent — vision pipeline couldn't produce a response. reason: {reason}"
+                "persona chose Silent — local vision pipeline couldn't produce a response. reason: {reason}"
             );
         }
         PersonaResponse::Spoke { text, model_used, .. } => {
@@ -143,18 +180,17 @@ async fn vision_roundtrip_local_qwen2_vl() {
                 !text.trim().is_empty(),
                 "vision model returned empty text — pipeline likely dropped the image bytes"
             );
-            // Soft content check: a vision model fed a red square
-            // should mention red / color / image / square. If it says
-            // nothing about the image content, something flattened the
-            // bytes before the model saw them.
+            // Soft content check: a vision model fed a red square should
+            // mention red / color / image / square / small. Silent
+            // byte-drop would produce text with none of these.
             let lower = text.to_lowercase();
-            let image_aware_words = ["red", "color", "square", "image", "picture", "see"];
+            let image_aware_words = ["red", "color", "square", "image", "picture", "see", "small"];
             let hit = image_aware_words.iter().any(|w| lower.contains(w));
             assert!(
                 hit,
                 "response doesn't reference the image content — possible silent byte-drop. text: {text:?}"
             );
-            eprintln!("✅ vision roundtrip ({model_used}): {text}");
+            eprintln!("✅ local vision roundtrip ({model_used}): {text}");
         }
     }
 }

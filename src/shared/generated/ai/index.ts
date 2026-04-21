@@ -18,6 +18,7 @@ export type { MessageContent } from './MessageContent';
 export type { ModelCapability } from './ModelCapability';
 export type { ModelInfo } from './ModelInfo';
 export type { NativeToolSpec } from './NativeToolSpec';
+export type { ResponseFormat } from './ResponseFormat';
 export type { RoutingInfo } from './RoutingInfo';
 export type { TextGenerationRequest } from './TextGenerationRequest';
 export type { TextGenerationResponse } from './TextGenerationResponse';

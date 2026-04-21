@@ -70,6 +70,32 @@ fn model_info_with_runtime(
     info
 }
 
+/// Decode an `ImageInput` to raw bytes the multimodal projector can
+/// consume. Prefers `base64` (already in-process); URL fetching is
+/// deliberately not supported here — that's a sensory-bridge upstream
+/// concern (the bridge fetches once + caches; doing it again at adapter
+/// time would silently re-fetch on every request). If the bridge handed
+/// us a URL-only image, that's a configuration bug worth surfacing.
+fn decode_image_bytes(image: &crate::ai::types::ImageInput) -> Result<Vec<u8>, String> {
+    use base64::{Engine, engine::general_purpose};
+    if let Some(b64) = image.base64.as_ref() {
+        // Strip any data: URL prefix the caller may have included
+        // ("data:image/jpeg;base64,..."). Split on the first comma.
+        let payload = b64.split_once(',').map(|(_, rest)| rest).unwrap_or(b64);
+        general_purpose::STANDARD
+            .decode(payload.as_bytes())
+            .map_err(|e| format!("ImageInput.base64 not valid base64: {e}"))
+    } else if image.url.is_some() {
+        Err("llamacpp_adapter received an URL-only ImageInput; the sensory \
+             bridge should resolve URLs to base64 before reaching the local \
+             adapter (avoids per-request refetches and lets the adapter run \
+             without network access)"
+            .to_string())
+    } else {
+        Err("ImageInput has neither base64 nor url — nothing to decode".to_string())
+    }
+}
+
 /// In-process llama.cpp adapter. Lazy-loads the model on first
 /// `generate_text` call (so adapter registration doesn't pay the
 /// 5-10s model-load cost up front). After load, the backend lives for
@@ -137,6 +163,27 @@ impl LlamaCppAdapter {
     pub fn with_model_path(mut self, path: PathBuf) -> Self {
         self.model_path = path;
         self
+    }
+
+    /// Construct an adapter bound to a SPECIFIC `(model_path, model_id)`
+    /// pair. `new()` picks "first llamacpp-local with a gguf path" which
+    /// is fine for the default text model but a registry that holds
+    /// multiple llamacpp-local entries (text + vision) needs a way to
+    /// say which one this adapter instance serves.
+    ///
+    /// The `model_id` MUST match a row in `config/models.toml` so the
+    /// adapter can look up that model's chat_template, mmproj_path,
+    /// stop_sequences, and capabilities. A mismatch produces silently
+    /// wrong output (wrong chat template → garbled response).
+    pub fn with_model_id(model_path: PathBuf, model_id: String) -> Self {
+        Self {
+            backend: Arc::new(RwLock::new(None)),
+            model_path,
+            last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
+            default_model: model_id,
+            context_length_override: None,
+            kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
+        }
     }
 
     /// Override the per-sequence context budget. Pass smaller-than-trained
@@ -216,8 +263,20 @@ impl LlamaCppAdapter {
         let active_kv = self
             .kv_quant_policy
             .for_residency(crate::inference::kv_quant::Residency::Active);
+        // Pull the multimodal projector path from the registry if this
+        // model declares one. The registry is the source of truth for
+        // per-model configuration (mmproj alongside chat_template,
+        // stop_sequences, capabilities). When set, the backend's
+        // generate_with_image route lazily loads the MtmdContext from it.
+        // When absent, generate_with_image returns a clear error rather
+        // than silently bridging to text — vision-capable callers should
+        // surface that as a config issue, not a degraded experience.
+        let mmproj_path = crate::model_registry::try_global()
+            .and_then(|reg| reg.model(&self.default_model))
+            .and_then(|m| m.mmproj_local_path.clone());
         let config = LlamaCppConfig {
             model_path: self.model_path.clone(),
+            mmproj_path,
             n_gpu_layers: -1, // All layers to GPU
             // None = honor model's n_ctx_train. Adapter caller can shrink
             // this via with_context_length() to bound the KV cache (24GB
@@ -369,6 +428,20 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .and_then(|m| m.chat_template.clone());
         let template_string = backend.model_chat_template().or(registry_template);
         let template = template_string.as_deref();
+        // Walk the request to find any image content. If present, the
+        // model MUST natively accept images (else the bridge is wrong
+        // upstream — sensory-bridge converts to text BEFORE reaching here
+        // for non-vision models). For vision-capable local models with
+        // a loaded mmproj, images splice in as `<__media__>` markers
+        // inside the rendered text and the call routes to
+        // `backend.generate_with_image()` instead of the scheduler.
+        //
+        // Single-image scope for v1: the mtmd C API supports multiple
+        // images per prompt (one marker per image), but our backend's
+        // `generate_with_image(prompt, &[u8], ...)` takes one. Multi-image
+        // is a follow-up — declare it explicitly here so future work has
+        // a place to land. Audio is the same shape and slots in next.
+        let mut collected_images: Vec<Vec<u8>> = Vec::new();
         let mut messages: Vec<llama::ChatMsg> = Vec::new();
         if let Some(sys) = request.system_prompt.as_ref() {
             if !sys.is_empty() {
@@ -381,14 +454,29 @@ impl AIProviderAdapter for LlamaCppAdapter {
         for msg in &request.messages {
             let content = match &msg.content {
                 MessageContent::Text(t) => t.clone(),
-                MessageContent::Parts(parts) => parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        crate::ai::types::ContentPart::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(""),
+                MessageContent::Parts(parts) => {
+                    let mut out = String::new();
+                    for p in parts {
+                        match p {
+                            crate::ai::types::ContentPart::Text { text } => {
+                                out.push_str(text);
+                            }
+                            crate::ai::types::ContentPart::Image { image } => {
+                                // Splice in the model's media marker so
+                                // mtmd_tokenize can splice the image
+                                // tokens at this exact spot. Order
+                                // matters — text-before-image vs
+                                // image-before-text changes what the
+                                // model sees.
+                                out.push_str(llama::MtmdContext::default_marker());
+                                let bytes = decode_image_bytes(image)?;
+                                collected_images.push(bytes);
+                            }
+                            _ => {} // tool_use / tool_result handled by tool path, not here
+                        }
+                    }
+                    out
+                }
             };
             messages.push(llama::ChatMsg {
                 role: msg.role.clone(),
@@ -465,19 +553,52 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .persona_id
             .as_deref()
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
-        let result: Result<(String, usize), String> = tokio::task::spawn_blocking(move || {
-            let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
-            backend_for_blocking.generate_for_persona(
-                persona_id,
-                &prompt_for_blocking,
-                max_tokens,
-                sampling_for_closure,
-                &stop_refs,
-                &[],
-            )
-        })
-        .await
-        .map_err(|e| format!("generate task panicked: {e}"))?;
+        let result: Result<(String, usize), String> = if collected_images.is_empty() {
+            // Pure-text path: scheduler-managed continuous batching.
+            tokio::task::spawn_blocking(move || {
+                let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
+                backend_for_blocking.generate_for_persona(
+                    persona_id,
+                    &prompt_for_blocking,
+                    max_tokens,
+                    sampling_for_closure,
+                    &stop_refs,
+                    &[],
+                )
+            })
+            .await
+            .map_err(|e| format!("generate task panicked: {e}"))?
+        } else {
+            // Vision path: bypass the scheduler — image tokens have a
+            // fixed positional layout the scheduler can't interleave
+            // with concurrent text seqs. Single-image only for v1; the
+            // collector above pushed N images, but generate_with_image
+            // takes one. Multi-image is a real follow-up (mtmd's C API
+            // supports it natively, our backend signature doesn't yet).
+            // Hard-error on multi rather than silently dropping the
+            // extras and confusing the model.
+            if collected_images.len() > 1 {
+                return Err(format!(
+                    "llamacpp_adapter: multi-image vision not yet supported \
+                     in this adapter ({} images in request); take one image \
+                     per request until backend.generate_with_image learns N-image",
+                    collected_images.len()
+                ));
+            }
+            let image_bytes = collected_images.into_iter().next().unwrap();
+            tokio::task::spawn_blocking(move || {
+                let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
+                backend_for_blocking.generate_with_image(
+                    &prompt_for_blocking,
+                    &image_bytes,
+                    max_tokens,
+                    sampling_for_closure,
+                    &stop_refs,
+                )
+            })
+            .await
+            .map_err(|e| format!("generate_with_image task panicked: {e}"))?
+        };
         let (text, tokens) = result?;
 
         let elapsed = gen_start.elapsed();

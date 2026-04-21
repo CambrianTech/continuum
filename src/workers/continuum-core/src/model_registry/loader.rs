@@ -155,6 +155,13 @@ pub fn load_registry(
         if let Some(p) = m.gguf_local_path.take() {
             m.gguf_local_path = Some(expand_path(&p));
         }
+        // Same expansion for the multimodal projector path — added with
+        // the Qwen2-VL-7B vision row 2026-04-21. Without this the local
+        // mtmd path would fail to find `~/models/...` paths the same way
+        // gguf_local_path used to before its expansion was added.
+        if let Some(p) = m.mmproj_local_path.take() {
+            m.mmproj_local_path = Some(expand_path(&p));
+        }
         models.insert(m.id.clone(), m);
     }
 

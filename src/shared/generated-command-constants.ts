@@ -223,6 +223,7 @@ export const COMMANDS = {
   GRID_STATUS: 'grid/status',
   GRID_TRUST: 'grid/trust',
   HELP: 'help',
+  INFERENCE_CAPACITY: 'inference/capacity',
   INFERENCE_GENERATE: 'inference/generate',
   INTERFACE_BROWSER_CAPABILITIES: 'interface/browser/capabilities',
   INTERFACE_CLICK: 'interface/click',

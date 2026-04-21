@@ -4399,6 +4399,17 @@
       }
     },
     {
+      "name": "inference/capacity",
+      "description": "Report local-inference concurrency cap. How many parallel generate requests the hardware can handle simultaneously — matches the BatchScheduler's n_seq_max and the InferenceCoordinator's admission slots. Scaled by RAM: 48GB+ → 3, 16GB+ → 2, else 1. Single source of truth across the TS admission layer and the Rust scheduler (see issue #887).",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
       "name": "help",
       "description": "Discover and display help documentation from command READMEs, auto-generating templates for gaps",
       "params": {
@@ -7203,7 +7214,7 @@
     },
     {
       "name": "data/schema",
-      "description": "Introspect an entity collection's schema at runtime, returning field types, constraints, indexes, optional examples, SQL, and data validation. Pass collection=\"*\" or omit to list all registered collections.",
+      "description": "Introspect an entity collection's schema at runtime, returning field types, constraints, indexes, optional examples, and data validation. Pass collection=\"*\" or omit to list all registered collections.",
       "params": {
         "collection": {
           "type": "string",
@@ -7214,11 +7225,6 @@
           "type": "boolean",
           "required": false,
           "description": "examples parameter"
-        },
-        "sql": {
-          "type": "boolean",
-          "required": false,
-          "description": "sql parameter"
         },
         "validateData": {
           "type": "object",
