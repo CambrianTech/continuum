@@ -110,6 +110,92 @@ export class MediaBlobService {
     return fs.existsSync(this.getFilePath(hash));
   }
 
+  // ── Sidecar metadata (description, transcript, alt) ─────────────────
+  // Joel's directive 2026-04-21: text descriptions for images / audio
+  // transcripts persist as a sibling .json file next to the binary,
+  // NOT as image-EXIF metadata (most social-media uploads strip EXIF
+  // for PII concerns, so EXIF is unreliable as a transport) and NOT
+  // in the DB column (would re-pollute the orm row that we just got
+  // clean of base64). Content-addressed: same hash → same sidecar
+  // forever, regardless of how many messages reference the same image.
+  //
+  // Lookup precedence at the persona path:
+  //   1. In-memory L1 cache (per-process, lost on restart)
+  //   2. Rust L1.5 hashmap (per-process, sub-ms IPC, lost on restart)
+  //   3. Sidecar JSON on disk (this) — survives every restart,
+  //      content-addressed parallel to the binary
+  //
+  // Generation cost: vision-description is ~5-15s on M5 Pro; the
+  // sidecar means N messages referencing one image pay it ONCE total,
+  // not once per restart of the TS server.
+
+  /** Sidecar JSON path next to the binary blob. */
+  static getSidecarPath(hash: string): string {
+    const binPath = this.getFilePath(hash);
+    return `${binPath}.json`;
+  }
+
+  /**
+   * Write the sidecar metadata for a blob. Atomic via temp+rename so
+   * partial writes don't survive a crash. Idempotent — same hash +
+   * same content is a no-op write.
+   */
+  static async writeSidecar(
+    hash: string,
+    metadata: {
+      description?: string;
+      transcript?: string;
+      alt?: string;
+      mimeType?: string;
+      generatedBy?: string; // model id that produced description/transcript
+      generatedAtMs?: number;
+    }
+  ): Promise<void> {
+    const sidecarPath = this.getSidecarPath(hash);
+    // Merge with existing sidecar if present — late-arriving fields
+    // (e.g. transcript added after description) shouldn't clobber.
+    let existing: Record<string, unknown> = {};
+    if (fs.existsSync(sidecarPath)) {
+      try {
+        existing = JSON.parse(await fs.promises.readFile(sidecarPath, 'utf8'));
+      } catch {
+        // Corrupt sidecar — overwrite cleanly
+      }
+    }
+    const merged = { ...existing, ...metadata };
+    const dir = path.dirname(sidecarPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const tempPath = `${sidecarPath}.tmp.${Date.now()}`;
+    await fs.promises.writeFile(tempPath, JSON.stringify(merged, null, 2));
+    await fs.promises.rename(tempPath, sidecarPath);
+  }
+
+  /**
+   * Read the sidecar metadata for a blob. Returns null if no sidecar
+   * exists yet (description hasn't been generated, or never will for
+   * formats we don't process).
+   */
+  static async readSidecar(hash: string): Promise<{
+    description?: string;
+    transcript?: string;
+    alt?: string;
+    mimeType?: string;
+    generatedBy?: string;
+    generatedAtMs?: number;
+  } | null> {
+    const sidecarPath = this.getSidecarPath(hash);
+    if (!fs.existsSync(sidecarPath)) {
+      return null;
+    }
+    try {
+      return JSON.parse(await fs.promises.readFile(sidecarPath, 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+
   // ── Internal ────────────────────────────────────────────────────────
 
   private static computeHash(base64: string): string {
