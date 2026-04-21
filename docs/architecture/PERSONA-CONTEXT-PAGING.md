@@ -518,7 +518,152 @@ The integration work is:
 
 This is also where the Academy / Forge / Sentinel-AI hooks plug in — fine-tuning produces new adapter artifacts, and the paging system has to know about them at registration time so the policy can budget them.
 
-## 12. Why This Beats Hard Limits (Restated)
+## 12. GPU/Memory Monitoring Is the Same Adapter Pattern
+
+The current `GpuMemoryManager` (`continuum-core/src/gpu/memory_manager.rs`) is the symptom of the broader anti-pattern: one struct with `#[cfg(target_os = "macos")]` / `#[cfg(feature = "cuda")]` branches, each platform doing different (and uneven) things:
+
+- **Metal path (macOS)**: `MTLDevice.recommendedMaxWorkingSetSize()` — a STATIC lifetime hint, not live free memory. Pressure tracking is internal accounting only; the system never asks Metal "how full are you actually right now?"
+- **CUDA path**: shells out to `nvidia-smi` for total VRAM at startup. No live observation. No per-process attribution.
+- **CPU fallback**: a percentage of system RAM. No notion of pressure at all.
+- **Vulkan / AMD / Intel**: not handled.
+- **Pressure** is computed from our own bookkeeping of what we allocated, not from the OS. If a video game grabs 8GB outside our process, our pressure stays at 0.0 — we have no idea.
+
+This is why "the macbook one didn't seem to work" — it wasn't actually monitoring; it was reporting our internal accounting state with a Metal label.
+
+### 12.1 The right shape — a `GpuMonitor` trait per platform
+
+```rust
+/// Live, fast-to-read memory + utilization signals for the policy.
+/// Each implementation talks to its platform's actual monitoring API.
+#[async_trait]
+pub trait GpuMonitor: Send + Sync {
+    fn platform(&self) -> &'static str;        // "metal" | "cuda" | "vulkan" | "cpu"
+    fn device_name(&self) -> &str;
+
+    /// Total physical VRAM (or unified memory share for Apple Silicon).
+    fn total_bytes(&self) -> u64;
+
+    /// CURRENT free bytes — observed from the platform, not our accounting.
+    /// This is what tells us a video game grabbed our headroom.
+    fn free_bytes(&self) -> u64;
+
+    /// Bytes allocated by OUR process specifically. Lets us distinguish
+    /// "the system is tight" from "we are tight."
+    fn process_bytes(&self) -> u64;
+
+    /// Compute utilization (0.0..1.0). Important for the policy's
+    /// latency model — if the GPU is already busy with something, our
+    /// inference latency goes up. Unused budget but high utilization
+    /// = same effective pressure.
+    fn utilization(&self) -> f32;
+
+    /// Optional thermals (throttling kicks in around 90-95°C).
+    /// Policy may downgrade priority if approaching throttle.
+    fn temperature_c(&self) -> Option<f32>;
+
+    /// Optional power draw (watts). For laptop / battery scenarios:
+    /// policy can prefer cheaper-paged states when on battery.
+    fn power_watts(&self) -> Option<f32>;
+
+    /// Subscribe to live pressure (free→used ratio + utilization blend).
+    /// Tick rate is platform-specific (Metal: ~1Hz cheap; nvml: 10Hz cheap;
+    /// nvidia-smi: 1Hz expensive — implementation hides the cost).
+    fn pressure_rx(&self) -> watch::Receiver<f32>;
+}
+```
+
+### 12.2 Platform implementations (each their own crate-internal module)
+
+**`MetalMonitor`** (`gpu/metal_monitor.rs`) — Apple Silicon is fundamentally different from discrete-VRAM GPUs and the previous monitoring bug was using the wrong primitive. Specific corrections:
+
+The misconception to avoid: **Apple Silicon does NOT have separate VRAM**. CPU and GPU share the SAME unified memory pool. There is no "GPU memory free" number. What matters is *system-wide* unified-memory pressure plus our process's footprint within the OS-imposed per-process limit.
+
+- `total_bytes`: `MTLDevice.recommendedMaxWorkingSetSize()` is **NOT total memory** — it's a hint about how large a single GPU work submission *can be at once*. It's a static value that does not change as memory fills. The previous bug treated this as live capacity. **Correct source for total**: `host_statistics64(HOST_VM_INFO64)` for total physical RAM (the actual unified-memory pool).
+- `free_bytes`: there is no per-GPU free number. The right value is **system-wide unified memory available**, computed as: `(free + inactive + speculative + purgeable) pages × page_size` from `host_statistics64`. This jumps when ANY app (game, browser, Xcode build) frees memory; it drops when ANY app allocates. That's what makes it actually useful to the policy.
+- `process_bytes`: `task_info(TASK_VM_INFO)` returns `phys_footprint` — our process's resident bytes. Per-process attribution = system pressure minus our footprint = "how much pressure is from things we can't control."
+- `os_proc_available_memory_limit()`: per-process limit before the OS kills us (jetsam on iOS, less aggressive on macOS but still real). Critical signal — our policy must keep our footprint well below this. Available via `os_proc_available_memory()` (returns bytes available before OOM). On macOS this returns 0 if no limit (unlikely on a machine with active GPU pressure).
+- `currentAllocatedSize()`: `MTLDevice.currentAllocatedSize()` returns bytes the Metal driver currently has allocated for OUR process. Useful for accounting GPU-resident KV (vs. CPU-resident model weights via mmap). Live, cheap.
+- `utilization`: NOT directly exposed by Metal. The path is **IOReport** (private but stable framework Apple has used for `powermetrics` since 11.0):
+  - `IOReportCreateSubscription` against the `IOAccelerator` channel
+  - Reads delivery: `IOReportSubscriptionCreate` → `IOReportCopySamples` periodically → diff samples to get GPU active %
+  - This is exactly what Activity Monitor's GPU history graph reads from
+  - Crate option: `mach2` exposes the Mach syscalls directly; for IOReport specifically there's no maintained crate so a small FFI wrapper is required
+- `temperature_c`: also IOReport via the SMC channel (`IOReportSubscriptionCreate` with `kIOPSAccessoryCategorySMCKey`). Stable on M-series. Throttle threshold: ~95°C for sustained, soft-throttle starts ~85°C.
+- `power_watts`: IOReport `pmp` channel for SoC power, `gpu_pwr` subchannel specifically. Same subscription pattern.
+- Pressure derivation: `pressure = 1.0 - (system_free_bytes / system_total_bytes)` blended with `our_footprint / os_proc_available_memory_limit`. NOT internal allocation accounting — that's what the old bug did wrong.
+- Tick rate: IOReport subscriptions are push-based (callback when sample ready), no polling cost. Memory stats: 100ms host_statistics64 polls are essentially free.
+
+**Implementation note**: the metal-rs crate exposes `MTLDevice` cleanly but does NOT cover IOReport. We'd need a small `gpu/metal_ioreport.rs` FFI shim. Apple's headers are in `IOKit.framework/Headers/IOReport.h` — the entire API surface we need is ~10 functions. Reference implementations: `asitop` (Python), `socpowerbuddy_swift` — both confirm the IOReport channel names.
+
+**Critical test**: open Activity Monitor → GPU tab → run a Metal compute load → verify our `MetalMonitor::utilization()` matches Activity Monitor's reading within 1-2 percentage points. If it doesn't, the IOReport channel name or sample math is wrong. This is the test that would have caught the previous bug at PR time.
+
+**`NvidiaMonitor`** (`gpu/nvidia_monitor.rs`):
+- Use **NVML directly** (the `nvml-wrapper` crate), NOT `nvidia-smi` shelling. NVML is in-process, microseconds-fast, and exposes everything `nvidia-smi` does plus more.
+- `total_bytes`, `free_bytes`, `process_bytes`: `Device::memory_info()` and `Device::process_info()`.
+- `utilization`: `Device::utilization_rates().gpu`.
+- `temperature_c`: `Device::temperature(TemperatureSensor::Gpu)`.
+- `power_watts`: `Device::power_usage()`.
+- ECC errors, throttling reasons, clock speeds also available — bonus telemetry for the learned policy.
+- Pressure tick: 100ms cheap.
+
+**`VulkanMonitor`** (`gpu/vulkan_monitor.rs`):
+- For AMD / Intel / older NVIDIA paths.
+- `VK_EXT_memory_budget` extension gives per-heap budget + usage.
+- Cross-vendor; same code works for AMD MI / Intel Arc / Apple Silicon (when MoltenVK is preferred over Metal).
+
+**`CpuMonitor`** (`gpu/cpu_monitor.rs`):
+- The "no GPU" fallback we have now, but shaped as an adapter so the rest of the code doesn't care.
+- `total_bytes` = system RAM. `free_bytes` = `/proc/meminfo` (Linux) or `host_statistics64` (macOS).
+- `utilization` = `loadavg` or `host_processor_info`.
+- Treats CPU inference paths the same way GPU paths are treated by the rest of the system.
+
+### 12.3 Detection at boot — selection, not concatenation
+
+```rust
+pub fn detect_monitor() -> Box<dyn GpuMonitor> {
+    #[cfg(target_os = "macos")]
+    if let Some(m) = MetalMonitor::try_new() { return Box::new(m); }
+    #[cfg(feature = "cuda")]
+    if let Some(m) = NvidiaMonitor::try_new() { return Box::new(m); }
+    #[cfg(feature = "vulkan")]
+    if let Some(m) = VulkanMonitor::try_new() { return Box::new(m); }
+    Box::new(CpuMonitor::new())
+}
+```
+
+The PagingPolicy holds an `Arc<dyn GpuMonitor>`. Adding a new platform = adding a new module; no policy changes. Same OOP / single-source-of-truth pattern as the model_registry's per-model strategy declarations.
+
+### 12.4 What "monitoring rocks" looks like
+
+Concrete properties the adapter pattern gives us:
+
+1. **Live pressure from the OS**, not from our internal tally. Video game in the background = pressure jumps immediately.
+2. **Per-process attribution** — the policy can tell "system is tight" from "we are tight" and react differently (system-tight → spill OUR slots aggressively; we-are-tight but system-fine → just rebalance internally).
+3. **Utilization + memory blend** — pressure isn't only "is RAM full"; it's also "is the GPU compute path saturated." A persona can't get fast inference even with KV in RAM if the GPU is running a render task.
+4. **Thermal awareness** — if the M5 is approaching 95°C, policy downgrades batch tasks to let the chip cool. Same RTOS pattern.
+5. **Power awareness** — battery mode preferences differ from plugged-in. Policy reads `power_watts` + battery state and weights its cost function accordingly. This is the macOS-power-management analogy made concrete.
+6. **Fast tick rates** — NVML and IOReport are cheap enough to sample at 100ms-1Hz without measurable overhead. The policy gets near-realtime signals.
+7. **Telemetry corpus stays uniform** — the learned policy in §9 doesn't care which platform produced the signals; the trait normalizes them.
+8. **No `#[cfg]` ladders in the policy** — that mess lives in the adapter modules where it belongs.
+
+### 12.5 Phase 1.5 — extract the trait from current code
+
+Smallest path to the adapter shape from where we are:
+
+1. Define the `GpuMonitor` trait
+2. Carve `detect_metal` / `detect_cuda` / CPU-fallback out of `memory_manager.rs` into `gpu/metal_monitor.rs` / `gpu/nvidia_monitor.rs` / `gpu/cpu_monitor.rs`
+3. `GpuMemoryManager` becomes a thin wrapper holding `Arc<dyn GpuMonitor>` + the existing budget/eviction logic
+4. Replace the static `recommended_max_working_set_size` Metal call with the LIVE `currentAllocatedSize` + `os_proc_available_memory` combo — that's the actual fix to "macbook monitoring didn't work"
+5. Replace the `nvidia-smi` shell-out with NVML
+
+Tests per adapter (small, fast, bench-able):
+- "MetalMonitor reports total > 0 on macOS, panics on Linux"
+- "NvidiaMonitor reports utilization within ±5% of nvidia-smi reading"
+- Mock monitor for unit tests of the policy itself (`MockMonitor` returning scripted pressure curves to simulate "video game starts at t=10s, ends at t=30s")
+
+This is the same pattern as `MultiPartyChatStrategy` in §11 of the model registry: declared once per platform, consumed everywhere. The policy never branches on platform name — it reads the trait.
+
+## 13. Why This Beats Hard Limits (Restated)
 
 - Limit-based: persona count is capped at `floor(RAM / per_persona_KV)`. New persona request beyond the cap → error / refusal.
 - Paging-based: persona count is unbounded. New persona request → if hot set is full, the lowest-importance hot persona spills to NVMe in the background. The new persona starts cold, accepts ~1.5s first-token latency.
