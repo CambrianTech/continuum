@@ -162,6 +162,29 @@ impl LlamaCppAdapter {
         self
     }
 
+    /// Size the backend's KV by a recipe's persona budgets. The adapter
+    /// computes `sum(persona seeds)` bounded by the model's
+    /// `n_ctx_train` ceiling, then sets `context_length` accordingly.
+    /// Replaces the bandaid `with_context_length(magic_number)` calls
+    /// in test rigs and recipe loaders — declare WHO is in the recipe
+    /// and what they're DOING, the adapter computes the budget.
+    ///
+    /// See docs/architecture/PERSONA-CONTEXT-PAGING.md §14 for the
+    /// task-default seed table this consumes.
+    pub fn with_recipe_budget(
+        mut self,
+        budget: &crate::inference::recipe_budget::RecipeBudget,
+    ) -> Self {
+        let seed_sum = budget.sum_of_seed_tokens();
+        // Floor of 1024 — even an empty recipe needs SOME context for
+        // ad-hoc inference. The budget is a sizing hint; the policy
+        // grows it later from observed demand. Above the floor,
+        // honor the recipe sum.
+        let computed = seed_sum.max(1024);
+        self.context_length_override = Some(computed);
+        self
+    }
+
     /// Lazy-load the backend on first use. Cheap if already loaded.
     fn ensure_loaded(&self) -> Result<Arc<LlamaCppBackend>, String> {
         // Fast path — already loaded.

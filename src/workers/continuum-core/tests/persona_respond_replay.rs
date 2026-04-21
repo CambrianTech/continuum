@@ -76,17 +76,25 @@ async fn ensure_llamacpp_registered() {
     // during continuum-core startup; tests must too. Idempotent.
     continuum_core::model_registry::init_global()
         .expect("model_registry::init_global() failed");
-    // Test fixture context: 32K. Sized as the prod-sweet-spot Joel
-    // identified — 8K system + 4K history + 1K msg + ~3K reasoning
-    // output ≈ 16K per turn, so 32K leaves comfortable headroom for
-    // our test inputs (synthesized + replayed fixtures both <2K
-    // total tokens). KV cost: ~3GB instead of 24GB at the model's
-    // declared 262K. The full 262K is the right PROD default for
-    // coding personas (forged at that size for a reason); the
-    // per-test override here is bounded test fixture sizing, not
-    // a hidden constant in the adapter.
+    // Test fixture context: declared via a chat-task recipe budget
+    // (Phase 1.2 — the architecturally-right replacement for the
+    // earlier `with_context_length(32768)` magic number band-aid).
+    //
+    // The recipe declares: 4 chat-class personas × 8K seed each = 32K.
+    // Adapter sums the seeds and sizes KV accordingly. Same total as
+    // before, but the value FALLS OUT of the declaration instead of
+    // being a constant smuggled into the test. New TaskKind defaults
+    // ship by extending recipe_budget; tests inherit automatically.
+    use continuum_core::inference::recipe_budget::{
+        PersonaContextBudget, RecipeBudget, TaskKind,
+    };
+    let recipe = RecipeBudget::new()
+        .add_persona(PersonaContextBudget::for_task("Helper", TaskKind::Chat))
+        .add_persona(PersonaContextBudget::for_task("Teacher", TaskKind::Chat))
+        .add_persona(PersonaContextBudget::for_task("CodeReview", TaskKind::Chat))
+        .add_persona(PersonaContextBudget::for_task("Local", TaskKind::Chat));
     let adapter = continuum_core::inference::LlamaCppAdapter::new()
-        .with_context_length(32768);
+        .with_recipe_budget(&recipe);
     let health = adapter.health_check().await;
     assert!(
         health.api_available,

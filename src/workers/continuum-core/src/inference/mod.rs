@@ -22,6 +22,7 @@ pub mod llamacpp_adapter;
 pub mod lora;
 pub mod model;
 pub mod quantized;
+pub mod recipe_budget;
 pub mod vendored;
 
 // Re-export commonly used types
