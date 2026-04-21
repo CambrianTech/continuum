@@ -273,26 +273,17 @@ const TASK_VM_INFO_COUNT: mach_msg_type_number_t = (std::mem::size_of::<task_vm_
     / std::mem::size_of::<integer_t>())
     as mach_msg_type_number_t;
 
-// Mach symbols not declared by libc. Use renamed Rust binding
-// (`host_statistics64_raw`) so we don't clash with anything libc may
-// declare under the same name. The `link_name` attribute resolves to
-// the actual Mach symbol at link time.
-unsafe extern "C" {
-    #[link_name = "host_statistics64"]
-    fn host_statistics64_raw(
-        host_priv: libc::host_t,
-        flavor: natural_t,
-        host_info_out: *mut integer_t,
-        host_info_outCnt: *mut mach_msg_type_number_t,
-    ) -> kern_return_t;
-    #[link_name = "task_info"]
-    fn task_info_raw(
-        target_task: libc::task_t,
-        flavor: natural_t,
-        task_info_out: *mut integer_t,
-        task_info_outCnt: *mut mach_msg_type_number_t,
-    ) -> kern_return_t;
-}
+// Mach symbol bindings: prefer libc's own declarations over re-declaring
+// them here. libc has correctly-typed `host_statistics64` and `task_info`
+// (both with the proper `task_flavor_t`/`host_flavor_t` aliases). Rolling
+// our own extern block caused a clashing-extern-declarations warning vs.
+// `ipc/mod.rs` which declares `task_info` with a different output-struct
+// pointer type (MachTaskBasicInfo). Going through libc eliminates BOTH
+// our duplicated declarations and the structural clash — there's only
+// libc's single source of truth on the Rust side, and each callsite
+// passes its own flavor + struct as opaque integer pointers (which is
+// the actual C ABI). One source of truth for the symbol, multiple
+// callsites with different flavors.
 
 const KERN_SUCCESS: kern_return_t = 0;
 
@@ -309,9 +300,9 @@ fn read_system_free_bytes() -> Option<u64> {
     // earns its dep weight elsewhere.
     #[allow(deprecated)]
     let kr = unsafe {
-        host_statistics64_raw(
+        libc::host_statistics64(
             libc::mach_host_self(),
-            HOST_VM_INFO64,
+            HOST_VM_INFO64 as libc::host_flavor_t,
             &mut info as *mut vm_statistics64 as *mut integer_t,
             &mut count,
         )
@@ -338,9 +329,9 @@ fn read_process_phys_footprint() -> Option<u64> {
     // Same deprecated-libc reason as read_system_free_bytes above.
     #[allow(deprecated)]
     let kr = unsafe {
-        task_info_raw(
+        libc::task_info(
             libc::mach_task_self(),
-            TASK_VM_INFO,
+            TASK_VM_INFO as libc::task_flavor_t,
             &mut info as *mut task_vm_info as *mut integer_t,
             &mut count,
         )
