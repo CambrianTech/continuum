@@ -84,68 +84,90 @@ pub struct ModalityDemand {
 /// seed budget for the persona's task class. Produces a forecast the
 /// policy uses as a sizing hint.
 ///
-/// Heuristic now (Phase 1.4); learned later from the
-/// `report_actual_usage` telemetry feedback (Phase 4.0). Same
-/// architectural pattern as the rest of the policy: rules first,
-/// telemetry feeds the eventual learned replacement.
+/// Decomposed into per-dimension helpers below — each one is testable
+/// in isolation, replaceable independently when Phase 4.0's learned
+/// policy lands. Heuristic now; trained later from the
+/// `report_actual_usage` telemetry feedback. Same architectural
+/// pattern as the rest of the policy: rules first, telemetry feeds the
+/// eventual learned replacement.
 pub fn forecast_from_state(
     state: &PersonaState,
     msg: &MessagePreview,
     recipe_default_seed: u32,
 ) -> ResourceForecast {
-    // ── Reasoning depth ──
-    // Driven by message complexity AND persona state. A casual greeting
-    // gets shallow regardless of state; a complex question gets deep
-    // ONLY if the persona has the energy/attention to actually go deep.
-    let energy_factor = state.energy.clamp(0.0, 1.0);
-    let attention_factor = state.attention.clamp(0.0, 1.0);
-    let state_capability = (energy_factor + attention_factor) / 2.0;
-    let reasoning_depth = (msg.concept_density * state_capability).clamp(0.0, 1.0);
-
-    // ── Context tokens ──
-    // Start from the recipe seed (the steady-state allocation), then
-    // add: input message + expected reasoning output (proportional to
-    // depth) + a small buffer.
-    let input_tokens = msg.estimated_input_tokens;
-    // Reasoning output rough estimate: depth=1.0 → ~3000 tokens of
-    // <think> + visible answer; depth=0.0 → ~50 tokens.
-    let reasoning_output_tokens = (3000.0 * reasoning_depth + 50.0) as u32;
-    let estimated_context = recipe_default_seed
-        .saturating_add(input_tokens)
-        .saturating_add(reasoning_output_tokens);
-
-    // ── Modality demand ──
-    // Vision/audio add transient tokens for this turn only.
-    let modality_demand = ModalityDemand {
-        vision_tokens: if msg.has_image { 2000 } else { 0 },
-        audio_tokens: if msg.has_audio { 500 } else { 0 },
-    };
-
-    // ── Confidence ──
-    // Higher when energy is up (rested persona's predictions are usually
-    // accurate) and inbox is light (not racing through cases). Drops
-    // when fatigued — a tired persona's "I think this will be small"
-    // is less reliable.
-    let inbox_pressure = (state.inbox_load as f32 / 10.0).clamp(0.0, 1.0);
-    let confidence = ((energy_factor + (1.0 - inbox_pressure)) / 2.0).clamp(0.1, 1.0);
-
-    // ── Urgency ──
-    // Direct mentions and explicit urgent flags push hard; concept-
-    // dense long-form questions are less time-sensitive. Always at
-    // least slight urgency in chat (humans waiting).
-    let urgency_base = if msg.is_directed_mention { 0.7 } else { 0.3 };
-    let urgency_boost = if msg.is_urgent { 0.3 } else { 0.0 };
-    // Open-ended research questions are LESS urgent — user expects to wait.
-    let urgency_dampener = msg.concept_density * 0.2;
-    let urgency = (urgency_base + urgency_boost - urgency_dampener).clamp(0.0, 1.0);
+    let reasoning_depth = compute_reasoning_depth(state, msg);
+    let estimated_context_tokens = compute_context_estimate(
+        recipe_default_seed,
+        msg.estimated_input_tokens,
+        reasoning_depth,
+    );
+    let modality_demand = compute_modality_demand(msg);
+    let confidence = compute_confidence(state);
+    let urgency = compute_urgency(msg);
 
     ResourceForecast {
-        estimated_context_tokens: estimated_context,
+        estimated_context_tokens,
         estimated_reasoning_depth: reasoning_depth,
         modality_demand,
         confidence,
         urgency,
     }
+}
+
+/// Reasoning depth ∈ [0.0, 1.0]. Driven by message complexity AND
+/// persona state — a casual greeting gets shallow regardless of state;
+/// a complex question gets deep ONLY if the persona has the
+/// energy/attention to actually go deep.
+fn compute_reasoning_depth(state: &PersonaState, msg: &MessagePreview) -> f32 {
+    let energy = state.energy.clamp(0.0, 1.0);
+    let attention = state.attention.clamp(0.0, 1.0);
+    let state_capability = (energy + attention) / 2.0;
+    (msg.concept_density.clamp(0.0, 1.0) * state_capability).clamp(0.0, 1.0)
+}
+
+/// Total context budget the turn will consume: recipe seed (steady
+/// state) + the incoming message + expected reasoning output. Reasoning
+/// output scales linearly with depth from ~50 (depth=0) to ~3050
+/// (depth=1) — roughly the qwen3.5 `<think>` block size at full
+/// engagement.
+fn compute_context_estimate(seed: u32, input_tokens: u32, reasoning_depth: f32) -> u32 {
+    let reasoning_output_tokens = (3000.0 * reasoning_depth + 50.0) as u32;
+    seed.saturating_add(input_tokens)
+        .saturating_add(reasoning_output_tokens)
+}
+
+/// Per-modality transient token demand for this turn only. Vision and
+/// audio bursts don't count against the steady-state budget — they
+/// flow through their own channel (the policy reserves transient
+/// capacity separately).
+fn compute_modality_demand(msg: &MessagePreview) -> ModalityDemand {
+    ModalityDemand {
+        vision_tokens: if msg.has_image { 2000 } else { 0 },
+        audio_tokens: if msg.has_audio { 500 } else { 0 },
+    }
+}
+
+/// Confidence ∈ [0.1, 1.0]. Higher when energy is up (rested persona's
+/// predictions are usually accurate) and inbox is light (not racing
+/// through cases). Drops when fatigued — a tired persona's "I think
+/// this will be small" is less reliable. Floor at 0.1 because even
+/// uncertain predictions deserve some weight; the policy already
+/// blends with its own signals.
+fn compute_confidence(state: &PersonaState) -> f32 {
+    let energy = state.energy.clamp(0.0, 1.0);
+    let inbox_pressure = (state.inbox_load as f32 / 10.0).clamp(0.0, 1.0);
+    ((energy + (1.0 - inbox_pressure)) / 2.0).clamp(0.1, 1.0)
+}
+
+/// Urgency ∈ [0.0, 1.0]. Direct mentions and explicit urgent flags push
+/// hard; concept-dense long-form questions are less time-sensitive
+/// (user expects to wait for research). Base urgency stays nonzero in
+/// chat since humans are always waiting on the other side.
+fn compute_urgency(msg: &MessagePreview) -> f32 {
+    let base = if msg.is_directed_mention { 0.7 } else { 0.3 };
+    let boost = if msg.is_urgent { 0.3 } else { 0.0 };
+    let dampener = msg.concept_density.clamp(0.0, 1.0) * 0.2;
+    (base + boost - dampener).clamp(0.0, 1.0)
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────

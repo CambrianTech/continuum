@@ -11,7 +11,7 @@
 //! and is reused as-is. This module is the integration layer.
 
 use crate::persona::text_analysis::{
-    clean_response, validate_response, ConversationMessage, GarbageReason, LoopDetector,
+    clean_response, validate_response, ConversationMessage, LoopDetector,
 };
 use uuid::Uuid;
 
@@ -117,13 +117,6 @@ pub fn clean_and_validate(
 pub fn is_hard_failure(gate: &str) -> bool {
     matches!(gate, "garbage" | "truncated_tool_call")
 }
-
-// Garbage isn't actually used in the public API but importing is
-// useful for downstream consumers; suppress dead-code warning here
-// rather than removing the import (it's reachable through the
-// validation pipeline).
-#[allow(dead_code)]
-fn _ensure_garbage_reason_in_scope(_r: GarbageReason) {}
 
 // ─── Tests ─────────────────────────────────────────────────────────────
 
