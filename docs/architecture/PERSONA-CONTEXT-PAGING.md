@@ -1264,13 +1264,14 @@ Substeps in dependency order (each TDD/VDD'd):
   Rust impl shipped earlier in PR #949; TS file deleted in `54c49009e`. **DONE.**
 - ~~**0.5.2** `PersonaPromptAssembler` turn-N (343 lines) → extend `persona::prompt_assembly`~~  
   Discovered DEAD post-cutover; deleted in `54c49009e`. No port needed — initial assembly lives in `persona::prompt_assembly`; turn-N "delta" was a misread of TS API (the dead `assembleMessages` was a single function, not a delta call). **DONE.**
-- **0.5.3** `PersonaToolExecutor` (636 lines) → `cognition::tool_executor` trait + TS-IPC impl
+- **0.5.3-trait** `cognition::tool_executor` trait + ts-rs types — **DONE** (`a14c08c28`)
   - Survey 2026-04-21: PersonaToolExecutor is 150 LOC of persona-specific orchestration (workspace bootstrap, sentinel auto-config, ChatMessage storage, media filtering, event emission, telemetry) wrapping ~486 LOC of delegation to `AgentToolExecutor` (sibling 'universal' class under `src/system/tools/server`). Tool implementations themselves (`code/*`, `interface/*`, `collaboration/*`, `data/*`) are a thousand-line constellation that doesn't need to move now.
-  - Reshape: Rust defines `cognition::tool_executor::ToolExecutor` trait + types (`ToolInvocation`, `ToolOutcome`, `ToolExecutionContext`, `PersonaMediaConfigLite`, `MediaItemLite`, `NativeBatchOutcome`, `ParsedToolBatch` — all `#[derive(TS)]` → `shared/generated/cognition/`). First concrete impl is TS-IPC (calls back into TS for actual tool execution via reverse-IPC). The 150 LOC of persona-specific orchestration moves to Rust.
+  - Rust defines `cognition::tool_executor::ToolExecutor` trait + types (`ToolInvocation`, `ToolExecutionContext`, `ToolOutcome`, `MediaItemLite`, `NativeBatchOutcome`, `ParsedToolBatch`, `PersonaMediaConfigLite` — all `#[derive(TS)]` → `shared/generated/cognition/`). Async methods: `execute_native_batch` / `parse_response` / `store_outcome`. 3 VDD-validated round-trip tests + 7 ts-rs export-bindings tests.
   - Same pattern as `GpuMonitor` trait + `CpuMonitor`/`MockMonitor`/`MetalMonitor` impls.
-  - Full `AgentToolExecutor` + `ToolRegistry` port becomes a SEPARATE phase when tool implementations themselves have reason to move.
-  - **0.5.3-trait** ✅ landed `a14c08c28` (memento) — async `ToolExecutor` trait with `execute_native_batch` / `parse_response` / `store_outcome`; 7 ts-rs export tests + 3 VDD-validated unit tests.
-  - **0.5.3-impl** ⏳ TS-IPC concrete impl pending — calls back into TS for actual tool execution; 150 LOC of persona-specific orchestration moves to Rust.
+- **0.5.3-impl** `DefaultToolExecutor` concrete impl — **deferred until 0.5.6**
+  - Survey re-pass found the impl doesn't have a production caller today: only `parse_response` is trivially implementable (thin wrap over existing `tool_parsing::parse_and_correct_with_family`). `store_outcome` needs a new `pub` API on `DataModule` or `Runtime::route_command` threading (scope creep + speculative). `execute_native_batch` needs Rust→TS reverse-IPC — genuinely new infrastructure, and the future 0.5.6 orchestrator may inline tool execution differently rather than going through this trait.
+  - A trait with 2/3 unimplemented methods "lies about completeness" — mock-test convenience doesn't justify shipping a broken contract. Trait shipped alone is the honest build-with-intent move; concrete impl lands when a real Rust caller forces the question, same commit as 0.5.6 (or whenever the call site materializes).
+  - Full `AgentToolExecutor` + `ToolRegistry` port remains a SEPARATE phase, independent of 0.5.3-impl — it only matters when tool implementations themselves have reason to move.
 - ~~**0.5.4** `PersonaAgentLoop` (309 lines) → `cognition::agent_loop`~~  
   Discovered DEAD post-cutover (zero external importers); deleted in `54c49009e`. Orchestration already in Rust path. **DONE.**
 - **0.5.5** `Hippocampus` (693 lines) → `memory::consolidator`
