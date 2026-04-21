@@ -25,6 +25,18 @@ fn main() {
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_TESTS", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
+        // We want libmtmd (multimodal projector + image/audio encoder) so
+        // the in-process LlamaCppAdapter can route ContentPart::Image to
+        // the model natively instead of dropping it. mtmd lives under
+        // tools/mtmd in the upstream tree; tools/CMakeLists.txt adds it
+        // via add_subdirectory(mtmd) only when LLAMA_BUILD_TOOLS=ON, and
+        // tools/ itself is gated on (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TOOLS).
+        // So both flags must flip to ON. Side effect: a handful of tool
+        // executables get built (llama-bench, llama-tokenize, etc.); they
+        // produce static archives that we link selectively below — the
+        // executable binaries themselves don't ship with us.
+        .define("LLAMA_BUILD_COMMON", "ON")
+        .define("LLAMA_BUILD_TOOLS", "ON")
         .define("BUILD_SHARED_LIBS", "OFF")
         // Static archives produced here get linked into continuum-core,
         // which is crate-type = ["cdylib", "rlib"] — lib.rs builds a
@@ -130,10 +142,24 @@ fn main() {
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-search=native={}/build/ggml/src", dst.display());
     println!("cargo:rustc-link-search=native={}/build/src", dst.display());
+    println!(
+        "cargo:rustc-link-search=native={}/build/tools/mtmd",
+        dst.display()
+    );
+    println!(
+        "cargo:rustc-link-search=native={}/build/common",
+        dst.display()
+    );
     println!("cargo:rustc-link-lib=static=llama");
     println!("cargo:rustc-link-lib=static=ggml");
     println!("cargo:rustc-link-lib=static=ggml-base");
     println!("cargo:rustc-link-lib=static=ggml-cpu");
+    // libmtmd: multimodal projector + image/audio encoder. Loaded via
+    // mtmd_init_from_file(mmproj_path, model, params); produces image
+    // tokens that get evaluated alongside text via mtmd_helper_eval_chunks.
+    // Depends on libcommon (string utils, base64 decoder).
+    println!("cargo:rustc-link-lib=static=mtmd");
+    println!("cargo:rustc-link-lib=static=common");
     // GGML backends register via C++ static initializers inside the backend's
     // static archive. Without +whole-archive, ld --as-needed / dead_strip
     // drops the archive because nothing from the main llama archive directly
@@ -192,14 +218,23 @@ fn main() {
     // device CPU" symptom that was forcing CPU-only inference at 33 tok/s
     // on M5.
     let llama_header = submodule.join("include").join("llama.h");
+    let mtmd_header = submodule.join("tools").join("mtmd").join("mtmd.h");
+    let mtmd_helper_header = submodule.join("tools").join("mtmd").join("mtmd-helper.h");
     let mut builder = bindgen::Builder::default()
         .header(llama_header.to_str().unwrap())
+        .header(mtmd_header.to_str().unwrap())
+        .header(mtmd_helper_header.to_str().unwrap())
         .clang_arg(format!("-I{}", submodule.join("ggml").join("include").display()))
+        .clang_arg(format!("-I{}", submodule.join("include").display()))
+        .clang_arg(format!("-I{}", submodule.join("tools").join("mtmd").display()))
         .allowlist_function("llama_.*")
         .allowlist_function("ggml_.*")
+        .allowlist_function("mtmd_.*")
         .allowlist_type("llama_.*")
         .allowlist_type("ggml_.*")
-        .allowlist_var("LLAMA_.*");
+        .allowlist_type("mtmd_.*")
+        .allowlist_var("LLAMA_.*")
+        .allowlist_var("MTMD_.*");
 
     if cfg!(feature = "metal") && target_os == "macos" {
         let metal_header = submodule.join("ggml").join("include").join("ggml-metal.h");

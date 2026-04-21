@@ -13,5 +13,7 @@ pub mod sys {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+mod mtmd;
 mod safe;
+pub use mtmd::MtmdContext;
 pub use safe::*;

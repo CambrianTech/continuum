@@ -394,6 +394,17 @@ impl Model {
     }
 }
 
+impl Model {
+    /// Raw pointer to the underlying llama_model. Required by sibling
+    /// crates that bind to FFI APIs taking `const llama_model*` as input
+    /// (e.g., the multimodal projector via `mtmd_init_from_file`). The
+    /// pointer remains valid for the Model's lifetime; callers MUST NOT
+    /// free it.
+    pub fn as_ptr(&self) -> *mut sys::llama_model {
+        self.ptr.as_ptr()
+    }
+}
+
 impl Drop for Model {
     fn drop(&mut self) {
         unsafe { sys::llama_model_free(self.ptr.as_ptr()); }
@@ -484,6 +495,14 @@ pub struct Context<'m> {
 }
 
 impl<'m> Context<'m> {
+    /// Raw pointer to the underlying llama_context. Required by sibling
+    /// crates that bind to FFI APIs taking `llama_context*` (e.g., the
+    /// multimodal projector via `mtmd_helper_eval_chunks`). Pointer is
+    /// valid for the Context's lifetime; callers MUST NOT free it.
+    pub fn as_ptr(&mut self) -> *mut sys::llama_context {
+        self.ptr.as_ptr()
+    }
+
     /// Context window size.
     pub fn n_ctx(&self) -> u32 {
         unsafe { sys::llama_n_ctx(self.ptr.as_ptr()) }
