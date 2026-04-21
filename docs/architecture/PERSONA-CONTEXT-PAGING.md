@@ -803,7 +803,105 @@ The bidirectional Rust contract from §10 carries both directions: monitor adapt
 
 This is the substrate. The policy on top of it can be rules, ML, fuzzy logic, or all three composed. The substrate doesn't care.
 
-## 14. Why This Beats Hard Limits (Restated)
+## 14. Task-Type Defaults Are Seeds, Not Limits
+
+The OS-kernel analogy is exact. When you launch an app, the kernel doesn't know in advance how much memory it actually needs — it gives it a default page allocation and adjusts dynamically. App starts page-faulting → kernel grows it. App goes idle → kernel claws pages back. The default is the *starting point*, not a *cap*.
+
+The paging policy applies the same pattern to per-persona context.
+
+### 14.1 Per-task default budgets
+
+Each task type declares a typical context budget in tokens. These ship as data (registry-declared, not hardcoded in adapters) and represent **expected demand for the median case**:
+
+| Task | Default | Rationale |
+|---|---|---|
+| Chat (text-only) | 8K | typical multi-party turn fits comfortably |
+| Voice chat | 8K text + audio-stream channel | text small; audio is its own bursty modality |
+| Video chat | 8K text + frame-burst channel | text small; vision adds transient tokens per frame |
+| Coding (small project) | 32K | one or two files in context |
+| Coding (large project, declared) | 128K-256K | many-file refactor / large repo navigation |
+| Game NPC (idle) | 4K | small persona-state, mostly cold |
+| Game NPC (in-conversation) | 8K-16K | promoted on player proximity |
+| Sentinel (easy task) | 16K | template-driven work |
+| Sentinel (hard task) | 64K-128K | research/analysis work |
+| Academy student (learning) | 32K | reading + practice context |
+
+These defaults live in the recipe / activity registry, alongside the per-persona declarations. Recipe author can override per persona ("this game has a memory-NPC that needs 64K even idle, because it remembers everything you said"). Persona can override per task ("when I do code-review I need 128K minimum, regardless of what the recipe says").
+
+### 14.2 Demand-driven adjustment
+
+Defaults seed allocation. Then the policy adjusts based on observed signals — same pattern as kernel page faults:
+
+**Grow signals** (allocate more):
+- Persona's turns consistently use >70% of allocated context (heading toward clipping)
+- Vision/audio modality burst (transient)
+- Tool-call cascade growing (model is in extended reasoning)
+- Persona-declared task transition ("entering long-context coding mode")
+
+**Shrink signals** (claw back):
+- Persona's turns consistently use <30% of allocated context (waste)
+- Pressure rising elsewhere → policy reclaims to free RAM
+- Persona idle for T_idle (move to spill, then to cold)
+- Recipe membership change (persona no longer in active recipe)
+
+The growth/shrink isn't arbitrary — it's bounded by:
+- The persona's `base_budget` (declared minimum to function at all)
+- The persona's `hard_max` = `min(persona.declared_max, model.n_ctx_train)`
+- The hardware ceiling and current pressure (§12)
+- The cost of resizing (some backends require evict + reallocate, not in-place resize — §3.3 mentions `resize_seq` as a future lever, not all backends will support it cheaply)
+
+### 14.3 Why this matches OS demand paging
+
+Real-world OS examples this design mirrors:
+
+- **Linux page cache**: default file-system cache size adjusts based on apps' working sets. App with hot data → cache stays big. App goes idle → cache shrinks to free RAM.
+- **macOS app suspension**: foreground app gets full memory budget, background apps get demand-paged to compressed memory and eventually swap. User taps a backgrounded app → kernel pages it back in.
+- **iOS jetsam**: lowest-priority backgrounded app gets killed under memory pressure rather than the foreground one.
+
+Same shape applies to personas: the default for "AI in active conversation right now" is generous; the default for "AI registered in this room but not speaking" is tiny. As the user's attention shifts, the policy moves bytes to match.
+
+### 14.4 The full feedback + lever loop, end-to-end
+
+Putting §12 + §13 + §14 together for one concrete cycle (the "video game starts in background" scenario):
+
+```
+t=0.0s  Steady state: 3 personas active in chat, each at 8K default.
+         Footprint: model 2.5GB + 3×8K KV (~750MB) + LoRA (~100MB) ≈ 3.4GB.
+         GpuMonitor.pressure() = 0.18 (lots of headroom).
+
+t=10.0s Game starts, grabs 12GB unified memory.
+         GpuMonitor.pressure_rx() ticks: 0.18 → 0.85.
+
+t=10.1s PagingPolicy::rebalance fires (pressure-triggered).
+         Reads FootprintRegistry: 3.4GB ours, plenty in our slots.
+         Computes: at 0.85 pressure we want ours <2GB to leave headroom.
+         Eviction plan: spill the 2 silent personas' KV (~500MB freed).
+         Cost estimate: 2 × ~50ms spill (KV is small).
+
+t=10.2s Backend::save_seq_state for personas A, B → NVMe.
+         FootprintRegistry transitions: persona A KV → Idle, persona B KV → Idle.
+         Footprint now: 2.9GB ours (persona C still Active + model + LoRA).
+
+t=15.0s User asks persona A a question.
+         PagingPolicy::ensure_active(A).
+         Backend::load_seq_state from NVMe → ~50ms.
+         User sees "AI is thinking..." for an extra 50ms vs steady state.
+
+t=20.0s User closes game. GpuMonitor.pressure_rx ticks: 0.85 → 0.20.
+         Policy keeps personas as-is (no rush to rebalance until next event;
+         spilled KV stays cheap on NVMe).
+
+t=30.0s User asks persona B (still spilled).
+         Resume + reply. Same ~50ms cold-resume.
+```
+
+User saw: a 50ms hiccup once when each backgrounded persona was first re-engaged. No crash. No "AI temporarily unavailable." No code anywhere that decided "8K is enough for this scenario" — every number was derived from observed pressure + persona declarations + measured costs.
+
+Same loop fires for the inverse direction (game closes, user starts coding → pressure drops, coding persona's grow signals fire, policy promotes its budget from 32K default toward the persona's declared 128K max).
+
+This is what "rocks" means. The system is alive to actual conditions, not following a static plan.
+
+## 15. Why This Beats Hard Limits (Restated)
 
 - Limit-based: persona count is capped at `floor(RAM / per_persona_KV)`. New persona request beyond the cap → error / refusal.
 - Paging-based: persona count is unbounded. New persona request → if hot set is full, the lowest-importance hot persona spills to NVMe in the background. The new persona starts cold, accepts ~1.5s first-token latency.
