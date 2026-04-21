@@ -53,13 +53,14 @@ import { FitnessTracker } from '../../../genome/server/FitnessTracker';
 import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
 import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
 import { PersonaEngagementDecider, type DormancyState } from './PersonaEngagementDecider';
-// Removed 2026-04-20: PersonaAgentLoop / PersonaResponseValidator /
-// PersonaPromptAssembler ran a TS-side second-pass inference + retry
-// loop on Rust personaRespond's output, duplicating work the Rust
-// cognition crate already owns and bypassing the model's full context
-// window via a TS maxTokens cap. Per the no-fallback rule, Rust is the
-// only path. Tool calling moves into Rust as part of the cognition
-// migration.
+// PersonaAgentLoop / PersonaResponseValidator / PersonaPromptAssembler
+// were the TS-side second-pass inference + retry loop on Rust
+// personaRespond's output — duplicated work the Rust cognition crate
+// already owns and bypassed the model's full context window via a TS
+// maxTokens cap. Removed from this file's call path 2026-04-20; deleted
+// entirely in the 0.5.1/0.5.2/0.5.4 cleanup sweep once the subgraph
+// was confirmed closed (no live importers, no test refs). Tool calling
+// continues through Rust cognition::tool_executor (0.5.3).
 import { SentinelDispatchDecider } from '../../../sentinel/SentinelDispatchDecider';
 import { SentinelDispatchCoordinator } from '../../../sentinel/SentinelDispatchCoordinator';
 import { Commands } from '../../../core/shared/Commands';
