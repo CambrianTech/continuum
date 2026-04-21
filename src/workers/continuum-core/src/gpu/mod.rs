@@ -10,6 +10,7 @@
 
 pub mod eviction_registry;
 pub mod memory_manager;
+pub mod monitor;
 pub mod tracker;
 
 pub use eviction_registry::{
@@ -19,4 +20,5 @@ pub use memory_manager::{
     AllocationsByPriority, GpuAllocationGuard, GpuError, GpuMemoryManager, GpuPriority, GpuStats,
     GpuSubsystem, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
 };
+pub use monitor::{CpuMonitor, GpuMonitor, GpuSnapshot, MockMonitor};
 pub use tracker::GpuModelTracker;
