@@ -5,8 +5,12 @@
 #   src/inference/llamacpp_adapter.rs
 #
 # capabilities vocabulary (kebab-case):
-#   text-generation, chat, tool-use, vision, streaming,
-#   fine-tuning, lora-adapter, image-generation, embedding, reranking
+#   text-generation, chat, tool-use,
+#   vision, audio-input, audio-output,        # sensory — see CLAUDE.md
+#                                              # "Sensory Architecture":
+#                                              # absent → bridge fills the gap
+#                                              # (VisionDescriptionService / STT / TTS)
+#   streaming, fine-tuning, lora-adapter, image-generation, embedding, reranking
 
 # ─── Anthropic ──────────────────────────────────────────────────────────
 
@@ -68,7 +72,11 @@ arch = "gpt"
 context_window = 128000
 max_output_tokens = 4096
 tokens_per_second = 50.0
-capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+# vision + audio-input + audio-output: GPT-4o is fully multimodal natively.
+# Without these declarations the sensory bridge would still convert via
+# STT/TTS — works but wastes a roundtrip and loses the model's native
+# voice qualities. Declaring honestly lets the routing layer skip the bridge.
+capabilities = ["text-generation", "chat", "tool-use", "vision", "audio-input", "audio-output", "streaming"]
 cost_input_per_1k = 0.005
 cost_output_per_1k = 0.015
 
@@ -164,7 +172,10 @@ arch = "gemini"
 context_window = 1000000
 max_output_tokens = 8192
 tokens_per_second = 50.0
-capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+# Gemini 2.0 Flash accepts audio + image natively (multimodal). Audio
+# output is not in the OpenAI-compatible endpoint we use today; if/when
+# we add the native Gemini API, declare audio-output here too.
+capabilities = ["text-generation", "chat", "tool-use", "vision", "audio-input", "streaming"]
 cost_input_per_1k = 0.000075
 cost_output_per_1k = 0.0003
 

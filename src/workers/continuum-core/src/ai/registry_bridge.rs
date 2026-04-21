@@ -46,7 +46,9 @@ impl From<&Model> for ModelInfo {
                 Capability::Streaming
                 | Capability::FineTuning
                 | Capability::LoraAdapter
-                | Capability::Reranking => {}
+                | Capability::Reranking
+                | Capability::AudioInput
+                | Capability::AudioOutput => {}
             }
         }
 
