@@ -151,6 +151,16 @@ pub struct Model {
     /// fills it if the GGUF is pulled locally.
     #[serde(default)]
     pub gguf_local_path: Option<PathBuf>,
+    /// Local filesystem path to the multimodal projector GGUF (mmproj).
+    /// Required for vision/audio-capable local models — the projector
+    /// encodes raw image / audio bytes into tokens compatible with this
+    /// model's embedding space. Without it, `Capability::Vision` /
+    /// `AudioInput` declarations are unenforceable on the local path
+    /// because the model can only consume text tokens. Cloud models
+    /// (Anthropic, OpenAI) handle their own multimodal projection
+    /// server-side and leave this absent.
+    #[serde(default)]
+    pub mmproj_local_path: Option<PathBuf>,
     /// Jinja chat template the adapter feeds to llama.cpp's renderer.
     /// Source of truth ordering: (1) template embedded in the GGUF's
     /// own metadata (`tokenizer.chat_template`), (2) this field, (3)

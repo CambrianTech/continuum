@@ -60,6 +60,12 @@ pub struct LlamaCppConfig {
     /// KV cache V element type. V is more sensitive than K — keep F16
     /// unless RAM is tight enough to need Q8_0.
     pub type_v: KvCacheType,
+    /// Optional path to the multimodal projector GGUF (mmproj). When
+    /// present, the backend lazily loads an `MtmdContext` and exposes
+    /// `generate_with_image()` so vision-capable models can receive raw
+    /// image bytes natively. None = text-only model (the common case);
+    /// `generate_with_image()` returns an error.
+    pub mmproj_path: Option<PathBuf>,
 }
 
 impl Default for LlamaCppConfig {
@@ -83,6 +89,7 @@ impl Default for LlamaCppConfig {
             // bottleneck (very long contexts or many parallel sequences).
             type_k: KvCacheType::F16,
             type_v: KvCacheType::F16,
+            mmproj_path: None,
         }
     }
 }
@@ -105,6 +112,11 @@ pub struct LlamaCppBackend {
     /// Lazy-spawned scheduler. Lives behind OnceLock because spawning
     /// touches the Model Arc and we want a single instance per backend.
     scheduler: OnceLock<Scheduler>,
+    /// Lazy-loaded multimodal projector. Built on first `generate_with_image`
+    /// call from `config.mmproj_path` (so text-only backends pay zero cost).
+    /// Sits behind a Mutex<Option<...>> so concurrent first-call requests
+    /// don't double-load. None until first use OR if `mmproj_path` is unset.
+    mtmd: Mutex<Option<Arc<llama::MtmdContext>>>,
     /// Loaded LoRA adapters. Field order matters: `model` is declared
     /// BEFORE `loras` and drops AFTER it (Rust drops fields in declaration
     /// order, top-down; therefore `loras` drops first), upholding the
@@ -154,8 +166,202 @@ impl LlamaCppBackend {
             config,
             model_id,
             scheduler: OnceLock::new(),
+            mtmd: Mutex::new(None),
             loras: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Lazily load the multimodal projector. Returns Err when
+    /// `config.mmproj_path` is None (text-only backend) or when the
+    /// mmproj file fails to load. Idempotent — caches the loaded
+    /// MtmdContext under the mutex.
+    fn ensure_mtmd(&self) -> Result<Arc<llama::MtmdContext>, String> {
+        let mut guard = self
+            .mtmd
+            .lock()
+            .map_err(|e| format!("mtmd lock poisoned: {e}"))?;
+        if let Some(existing) = guard.as_ref() {
+            return Ok(existing.clone());
+        }
+        let mmproj = self.config.mmproj_path.as_ref().ok_or_else(|| {
+            format!(
+                "model {} has no mmproj configured — text-only backend can't process images. \
+                 Set `mmproj_local_path` in models.toml AND declare Capability::Vision.",
+                self.model_id
+            )
+        })?;
+        if !mmproj.exists() {
+            return Err(format!(
+                "mmproj file declared but missing on disk: {} (model: {})",
+                mmproj.display(),
+                self.model_id
+            ));
+        }
+        let ctx = llama::MtmdContext::from_file(mmproj, &self.model)
+            .map_err(|e| format!("MtmdContext::from_file failed for {}: {e}", mmproj.display()))?;
+        let arc = Arc::new(ctx);
+        *guard = Some(arc.clone());
+        Ok(arc)
+    }
+
+    /// Single-shot multimodal generation: text prompt + one image →
+    /// generated text. Bypasses the continuous-batching scheduler
+    /// because image encoding produces tokens that aren't trivially
+    /// batchable with concurrent text seqs (image tokens have a
+    /// fixed positional layout dictated by the projector). Opens a
+    /// fresh per-call llama_context, evaluates the image+text via
+    /// `MtmdContext::eval_image`, then samples until EOG / max_tokens
+    /// / stop sequence. Concurrent multimodal calls each get their
+    /// own context — slower than batched but isolated and correct.
+    ///
+    /// `prompt_with_marker` MUST contain the model's media marker
+    /// (see `llama::MtmdContext::default_marker()`, typically
+    /// `<__media__>`) — that's where the image tokens splice in. If
+    /// the caller's text doesn't include it, `mtmd_tokenize` returns
+    /// an error and we surface it.
+    pub fn generate_with_image(
+        &self,
+        prompt_with_marker: &str,
+        image_bytes: &[u8],
+        max_tokens: usize,
+        sampling: SamplingConfig,
+        stop_sequences: &[&str],
+    ) -> Result<(String, usize), String> {
+        let log = runtime::logger("llamacpp");
+        let start = Instant::now();
+        let mtmd = self.ensure_mtmd()?;
+        if !mtmd.supports_vision() {
+            return Err(format!(
+                "model {}'s mmproj does not declare vision support (audio-only projector?)",
+                self.model_id
+            ));
+        }
+
+        // Per-call context — see method-level docstring on why we don't
+        // share the scheduler's context.
+        let per_seq = self
+            .config
+            .context_length
+            .unwrap_or_else(|| self.model.n_ctx_train());
+        let mut ctx = self
+            .model
+            .new_context(llama::ContextParams {
+                n_ctx: per_seq,
+                n_batch: self.config.n_batch,
+                n_seq_max: 1,
+                flash_attn: self.config.flash_attn,
+                type_k: self.config.type_k,
+                type_v: self.config.type_v,
+            })
+            .map_err(|e| format!("new_context failed: {e}"))?;
+
+        // Eval text + image into the context, advancing n_past.
+        let n_past = mtmd
+            .eval_image(
+                &mut ctx,
+                prompt_with_marker,
+                image_bytes,
+                0,
+                self.config.n_batch as i32,
+                0,
+                true,
+            )
+            .map_err(|e| format!("eval_image failed: {e}"))?;
+        log.info(&format!(
+            "mtmd eval done: prompt+image consumed {} positions in {}ms",
+            n_past,
+            start.elapsed().as_millis()
+        ));
+
+        // Sample-until-done loop. Mirrors LlamaCppBackend::generate but
+        // single-seq, no scheduler. EOG / max_tokens / stop-sequence are
+        // the three exit conditions, same shape.
+        let mut sampler = if sampling.temperature <= 0.0 && sampling.grammar.is_none() {
+            llama::Sampler::greedy()
+        } else {
+            let mut chain = llama::Sampler::chain();
+            if let Some(g) = sampling.grammar.as_ref() {
+                chain = chain.grammar(&self.model, g, "root");
+            }
+            if sampling.top_k > 0 {
+                chain = chain.top_k(sampling.top_k as i32);
+            }
+            if sampling.top_p > 0.0 && sampling.top_p < 1.0 {
+                chain = chain.top_p(sampling.top_p as f32, 1);
+            }
+            chain = chain.penalties(64, sampling.repeat_penalty, 0.0, 0.0);
+            let temp = if sampling.temperature > 0.0 {
+                sampling.temperature as f32
+            } else {
+                0.01
+            };
+            chain.temp(temp).dist(42).build()
+        };
+
+        // Diagnostic: dump top-10 logits at the post-image position when
+        // MTMD_DEBUG_LOGITS is set. Used during the 2026-04-21 hunt for
+        // why our logits diverged from brew's mtmd-cli on the same
+        // model+image+prompt; kept env-gated so future bug hunts have a
+        // ready-to-fire probe instead of needing to re-derive it.
+        if std::env::var_os("MTMD_DEBUG_LOGITS").is_some() {
+            let logits = ctx.logits_ith(-1);
+            if logits.is_empty() {
+                eprintln!("[gen-with-img] WARN: logits_ith(-1) returned empty");
+            } else {
+                let mut indexed: Vec<(usize, f32)> =
+                    logits.iter().copied().enumerate().collect();
+                indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                eprintln!("[gen-with-img] top-10 logits at post-image position:");
+                for (id, score) in indexed.iter().take(10) {
+                    let piece = self.model.token_to_piece(*id as i32);
+                    eprintln!("  id={:>6} score={:.4} piece={:?}", id, score, piece);
+                }
+            }
+        }
+
+        let mut output = String::new();
+        let mut pos = n_past;
+        let mut tokens_generated = 0usize;
+        // Sample at -1 = "last logits in last batch" — same convention
+        // brew's mtmd-cli uses (mtmd-cli.cpp:186 calls
+        // common_sampler_sample(smpl, lctx, -1) right after eval). After
+        // mtmd_helper_eval_chunks with logits_last=true, the final
+        // text-batch's last token has logits set and llama_get_logits_ith
+        // honors -1 as that position.
+        loop {
+            let token = sampler.sample(&ctx, -1);
+            sampler.accept(token);
+            if self.model.is_eog_token(token) {
+                break;
+            }
+            let piece = self.model.token_to_piece(token);
+            output.push_str(&piece);
+            tokens_generated += 1;
+            // Stop sequence early-exit — same end-of-output trim shape
+            // as the scheduler path.
+            if stop_sequences.iter().any(|s| output.ends_with(s)) {
+                break;
+            }
+            if tokens_generated >= max_tokens {
+                break;
+            }
+            // Push the sampled token back so the next decode can advance.
+            let mut batch = llama::Batch::allocated(1, 1);
+            batch.push(token, pos, &[0], true);
+            if let Err(e) = ctx.decode(&batch) {
+                log.warn(&format!("decode failed mid-generation: {e}"));
+                break;
+            }
+            pos += 1;
+        }
+
+        log.info(&format!(
+            "generate_with_image done: {} tokens in {}ms ({:.1} tok/s)",
+            tokens_generated,
+            start.elapsed().as_millis(),
+            tokens_generated as f64 / start.elapsed().as_secs_f64().max(0.001)
+        ));
+        Ok((output, tokens_generated))
     }
 
     pub fn model_id(&self) -> &str {

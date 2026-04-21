@@ -163,6 +163,30 @@ impl MtmdContext {
             ));
         }
 
+        // Diagnostic: print chunk structure to stderr so we can compare
+        // against brew's verbose output (which shows add_text / image
+        // insertions in eval order). Silenced via env to avoid test noise.
+        if std::env::var_os("MTMD_DEBUG_CHUNKS").is_some() {
+            let n_chunks = unsafe { sys::mtmd_input_chunks_size(chunks.as_ptr()) };
+            eprintln!("[mtmd-dbg] mtmd_tokenize produced {} chunks", n_chunks);
+            for i in 0..n_chunks {
+                let chunk = unsafe { sys::mtmd_input_chunks_get(chunks.as_ptr(), i) };
+                let ctype = unsafe { sys::mtmd_input_chunk_get_type(chunk) };
+                let n_pos = unsafe { sys::mtmd_input_chunk_get_n_pos(chunk) };
+                eprintln!("[mtmd-dbg]   chunk[{}] type={} n_pos={}", i, ctype, n_pos);
+                if ctype == sys::mtmd_input_chunk_type_MTMD_INPUT_CHUNK_TYPE_TEXT {
+                    let mut n_tokens: usize = 0;
+                    let toks_ptr = unsafe {
+                        sys::mtmd_input_chunk_get_tokens_text(chunk, &mut n_tokens)
+                    };
+                    if !toks_ptr.is_null() && n_tokens > 0 {
+                        let toks = unsafe { std::slice::from_raw_parts(toks_ptr, n_tokens) };
+                        eprintln!("[mtmd-dbg]     tokens ({} total): {:?}", n_tokens, toks);
+                    }
+                }
+            }
+        }
+
         // Step 4: evaluate the chunks through llama_context, advancing n_past.
         let mut new_n_past: sys::llama_pos = n_past;
         let eval_rc = unsafe {
