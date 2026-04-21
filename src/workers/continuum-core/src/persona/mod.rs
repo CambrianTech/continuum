@@ -24,6 +24,7 @@ pub mod inbox;
 pub mod message_cache;
 pub mod model_selection;
 pub mod prompt_assembly;
+pub mod resource_forecast;
 pub mod response;
 pub mod self_task_generator;
 pub mod text_analysis;
