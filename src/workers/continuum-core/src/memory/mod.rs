@@ -21,6 +21,7 @@
 
 pub mod cache;
 pub mod consciousness;
+pub mod conversation_summary;
 pub mod corpus;
 pub mod embedding;
 pub mod recall;
@@ -29,6 +30,7 @@ pub mod types;
 
 pub use cache::MemoryCache;
 pub use consciousness::build_consciousness_context;
+pub use conversation_summary::{ConversationSummary, RecallMode};
 pub use corpus::MemoryCorpus;
 pub use embedding::{
     cosine_similarity, DeterministicEmbeddingProvider, EmbeddingProvider, FastEmbedProvider,
