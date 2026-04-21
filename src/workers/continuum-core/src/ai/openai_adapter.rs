@@ -71,14 +71,54 @@ pub struct OpenAICompatibleAdapter {
     /// `supported_model_prefixes()` which for docker-model-runner returned
     /// `[]` → DMR never won routing → every user silently landed on Candle.
     runtime_models: std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<String>>>>,
+    /// Throttle for concurrent POSTs to this provider's endpoint.
+    /// llama.cpp-backed providers (DMR) are single-slot in practice:
+    /// one prompt at a time gets the full GPU. Letting N personas
+    /// fan-out into N simultaneous POSTs causes each to serialize on
+    /// DMR's side while reqwest's 120s client timeout burns. This
+    /// semaphore does the same serialization CLIENT-side so requests
+    /// wait in an observable queue instead of inside reqwest's
+    /// opaque "no response yet" state, and so the adapter's 120s
+    /// timeout is measured from "actually reached the server," not
+    /// "joined the queue."
+    ///
+    /// DMR → 1 slot (single-slot llama.cpp backend).
+    /// Cloud providers (OpenAI / Groq / etc.) → high slot count (no throttle).
+    concurrency: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl OpenAICompatibleAdapter {
     pub fn new(config: OpenAICompatibleConfig) -> Self {
+        // 120s total timeout bounds long generations (qwen3.5 reasoning
+        // can take ~60s to emit a full response). Connect timeout bounds
+        // the local-loopback DMR case specifically: when Docker Desktop
+        // restarts or DMR isn't listening, we want the fast explicit
+        // "connect refused" instead of a 120s stall. Idle timeout keeps
+        // the reqwest pool from holding onto dead sockets across DMR
+        // restarts — a stale pooled connection to a killed server was
+        // the reproducing cause of 120s "error sending request" stalls.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to create HTTP client");
+
+        // Per-provider concurrency gate. DMR = 1 slot (single-slot
+        // llama.cpp). Everyone else = effectively unbounded. When N
+        // personas fan-out into concurrent DMR POSTs, the excess
+        // queue in this semaphore INSTEAD of stalling inside reqwest
+        // past its 120s client timeout — which is the specific
+        // failure mode where personas emitted "error sending request
+        // for url -> operation timed out" with connect=false (the
+        // request reached DMR, but DMR was busy on the prior
+        // persona's forward pass when its 120s budget expired).
+        let slots = if config.provider_id == "docker-model-runner" {
+            1
+        } else {
+            64
+        };
+        let concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(slots));
 
         Self {
             config,
@@ -87,6 +127,7 @@ impl OpenAICompatibleAdapter {
             client,
             initialized: false,
             runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            concurrency,
         }
     }
 
@@ -115,11 +156,17 @@ impl OpenAICompatibleAdapter {
         if let Some(ref key) = self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp = req.send().await.map_err(|e| format!("GET {} failed: {}", url, e))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("GET {} failed: {}", url, e))?;
         if !resp.status().is_success() {
             return Err(format!("GET {} returned {}", url, resp.status()));
         }
-        let body: serde_json::Value = resp.json().await.map_err(|e| format!("Parse {} body: {}", url, e))?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse {} body: {}", url, e))?;
         let ids: std::collections::HashSet<String> = body
             .get("data")
             .and_then(|v| v.as_array())
@@ -136,31 +183,57 @@ impl OpenAICompatibleAdapter {
         Ok(())
     }
 
-    /// Resolve a logical model name to the actual DMR model ID.
-    /// Returns the exact ID from runtime_models that best matches, or
-    /// None if no match. Used in generate_text to send the correct model
-    /// name in the API request body (DMR returns 404 for unresolved names).
-    fn resolve_dmr_model_name<'b>(&self, model_name: &'b str) -> Option<&'b str>
-    where
-        Self: 'b,
-    {
-        // Can't return references into RwLock guard across the function boundary,
-        // so we check and return the input if it matches, or clone into a leaked
-        // string for the resolved ID. In practice the resolved ID is used once
-        // per request — the leak is bounded by request count, not model count.
-        let guard = self.runtime_models.read().unwrap();
-        if let Some(ids) = guard.as_ref() {
-            let needle = model_name.to_lowercase();
-            for id in ids {
-                let hay = id.to_lowercase();
-                if hay == needle || hay.contains(&needle) || needle.contains(&hay) {
-                    // Leak the resolved string so we can return a &str with the
-                    // right lifetime. Bounded: one per unique model per process.
-                    return Some(Box::leak(id.clone().into_boxed_str()));
-                }
-            }
+    /// Resolve a logical model name to the actual DMR model ID stored in
+    /// the runtime catalog. Returns the owned resolved ID on match, or an
+    /// Err describing what the caller asked for vs what DMR actually has
+    /// — no fallback to the raw name (DMR would just 404 on it).
+    ///
+    /// On cache miss (either an empty cache or a populated cache that
+    /// doesn't contain the needle) this forces a single
+    /// `refresh_runtime_models` and retries the lookup once. That covers
+    /// the common case: the user ran `docker model pull` after the
+    /// adapter initialized, so the forged model exists in DMR but not in
+    /// our stale in-memory set.
+    async fn resolve_dmr_model_name(&self, model_name: &str) -> Result<String, String> {
+        if let Some(hit) = self.lookup_runtime_model(model_name) {
+            return Ok(hit);
         }
-        None
+        // Cache miss — refresh once, then retry. If refresh itself fails
+        // we surface that error; if the needle still isn't there we
+        // hard-error with the full available set so the log makes the
+        // mismatch obvious (e.g. persona asked for "-GGUF" but DMR stores
+        // "...-gguf:latest").
+        self.refresh_runtime_models().await?;
+        if let Some(hit) = self.lookup_runtime_model(model_name) {
+            return Ok(hit);
+        }
+        let available: Vec<String> = self
+            .runtime_models
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|ids| ids.iter().cloned().collect())
+            .ok_or_else(|| "DMR runtime_models still empty after refresh".to_string())?;
+        Err(format!(
+            "DMR does not have model '{}'. Available: {:?}. Pull it with: docker model pull <id>",
+            model_name, available
+        ))
+    }
+
+    /// Pure lookup against the cached runtime_models set. Same matching
+    /// rules as `runtime_models_contain`: case-insensitive exact or
+    /// trivial contains in either direction. No I/O, no refresh — callers
+    /// own the refresh decision.
+    fn lookup_runtime_model(&self, model_name: &str) -> Option<String> {
+        let guard = self.runtime_models.read().unwrap();
+        let ids = guard.as_ref()?;
+        let needle = model_name.to_lowercase();
+        ids.iter()
+            .find(|id| {
+                let hay = id.to_lowercase();
+                hay == needle || hay.contains(&needle) || needle.contains(&hay)
+            })
+            .cloned()
     }
 
     /// Returns true if model_name matches any live runtime model.
@@ -528,14 +601,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
         // For DMR: resolve the logical model name to the actual model ID
         // stored in Docker Model Runner (which may have hf.co/ prefix and
-        // different casing). Persona says "continuum-ai/qwen3.5-4b-code-forged",
-        // DMR has "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf".
-        // Without this, DMR returns 404 / error for the unresolved name.
-        let model = if self.config.provider_id == "docker-model-runner" {
-            self.resolve_dmr_model_name(raw_model).unwrap_or(raw_model)
+        // different casing). Persona says "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+        // DMR has "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest".
+        // If DMR doesn't have the model, resolve returns Err — we propagate
+        // it as a fast, explicit failure instead of POSTing an unresolved
+        // name and stalling on the 120s request timeout.
+        let resolved_model: String = if self.config.provider_id == "docker-model-runner" {
+            self.resolve_dmr_model_name(raw_model).await?
         } else {
-            raw_model
+            raw_model.to_string()
         };
+        let model: &str = &resolved_model;
 
         // Build request body
         let messages = self.format_messages(&request.messages, request.system_prompt.as_deref());
@@ -641,11 +717,73 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        let response = request_builder
-            .json(&body)
-            .send()
+        // Log the body size + model so post-mortem can reconstruct why a
+        // stall happened (oversized prompt, wrong model, etc.). Kept at
+        // info! because this is the one log line every failing-persona
+        // investigation needs to see.
+        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+        clog_info!(
+            "POST {} model={} body_bytes={} has_tools={} stream={}",
+            url,
+            model,
+            body_bytes.len(),
+            body.get("tools")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0)
+                > 0,
+            body.get("stream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        );
+
+        // Acquire concurrency slot. For DMR (1 slot) this serializes
+        // requests so the 120s client timeout measures actual request
+        // time, not "time waiting for the previous persona's forward
+        // pass." For non-DMR providers (64 slots) this is effectively
+        // a no-op. Acquire can't fail here — the semaphore is never
+        // closed over the adapter's lifetime.
+        let queue_start = Instant::now();
+        let _permit = self
+            .concurrency
+            .clone()
+            .acquire_owned()
             .await
-            .map_err(|e| format!("{} request failed: {}", self.config.name, e))?;
+            .expect("adapter semaphore never closed");
+        let queued_ms = queue_start.elapsed().as_millis();
+        if queued_ms > 100 {
+            clog_info!(
+                "concurrency gate waited {}ms before POST to {}",
+                queued_ms,
+                self.config.provider_id
+            );
+        }
+
+        let send_start = Instant::now();
+        let response = request_builder.json(&body).send().await.map_err(|e| {
+            // reqwest::Error's top-level Display often collapses the
+            // real cause (timeout vs connect vs body-write) into a
+            // generic "error sending request" string. Walk the error
+            // source chain so the log shows the actual terminal
+            // reason — critical for debugging stalls where the
+            // outer message alone is useless.
+            let mut chain: Vec<String> = vec![e.to_string()];
+            let mut cur: &dyn std::error::Error = &e;
+            while let Some(src) = cur.source() {
+                chain.push(src.to_string());
+                cur = src;
+            }
+            format!(
+                "{} POST failed after {}ms: {} (kind: timeout={}, connect={}, request={}, body={})",
+                self.config.name,
+                send_start.elapsed().as_millis(),
+                chain.join(" -> "),
+                e.is_timeout(),
+                e.is_connect(),
+                e.is_request(),
+                e.is_body()
+            )
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -838,7 +976,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
         let lower = model_name.to_lowercase();
         // Exact id match against the registry's declared models.
-        if self.config.models.iter().any(|m| m.id.to_lowercase() == lower) {
+        if self
+            .config
+            .models
+            .iter()
+            .any(|m| m.id.to_lowercase() == lower)
+        {
             return true;
         }
         // Family prefix match for "id we haven't listed yet but this

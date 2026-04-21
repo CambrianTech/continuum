@@ -19,9 +19,9 @@
 //! - ai/providers/health: Check provider health
 
 use crate::ai::{
+    adapter::{AIProviderAdapter, InferenceDevice},
     AdapterRegistry, AnthropicAdapter, CandleAdapter, ChatMessage, MessageContent,
     OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
-    adapter::{AIProviderAdapter, InferenceDevice},
 };
 use crate::logging::TimingGuard;
 use crate::runtime::{
@@ -31,10 +31,10 @@ use crate::secrets::get_secret;
 use crate::utils::params::Params;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::any::Any;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{OnceCell, RwLock};
 
@@ -369,10 +369,19 @@ impl AIProviderModule {
                     "Registering in-process llama.cpp adapter for model `{}`",
                     model_meta.id
                 ));
+                // Clamp to 32768 tokens. Models like qwen3.5-4b advertise
+                // n_ctx_train=262144, which would allocate a multi-GB F16
+                // KV cache per seq on load and reliably fail first-decode
+                // with `llama_decode returned -3` on any Mac that can't
+                // fit ~50GB of scratch. 32768 matches DMR's default and
+                // comfortably exceeds every persona RAG we currently
+                // build. Raise after footprint_registry reports real KV
+                // bytes and we have telemetry proving headroom.
                 let adapter = crate::inference::LlamaCppAdapter::with_model_id(
                     gguf_path,
                     model_meta.id.clone(),
-                );
+                )
+                .with_context_length(32768);
                 // Priority 0 — wins over DMR for the model ids it claims.
                 registry.register(Box::new(adapter), 0);
             }

@@ -82,7 +82,13 @@ model_prefixes = ["gemini"]
 [[provider]]
 id = "docker-model-runner"
 name = "Docker Model Runner (local Metal/CUDA)"
-base_url = "http://localhost:12434/engines/llama.cpp"
+# IPv4 literal on purpose — `localhost` on macOS resolves to both ::1 and
+# 127.0.0.1 and Docker Desktop's model runner listens on IPv4 only. When
+# the hyper client tries ::1 first it waits for the connect path to fall
+# through, producing the 120s "error sending request" stalls that were
+# silently killing persona chat. Pinning to 127.0.0.1 bypasses the dual-
+# stack resolution entirely.
+base_url = "http://127.0.0.1:12434/engines/llama.cpp"
 default_model = "docker.io/ai/qwen2.5:7B-Q4_K_M"
 auth = "none"
 # Dynamic catalog — provider lists models via /v1/models at init.
