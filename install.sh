@@ -352,6 +352,48 @@ if type ic_detect_hardware &>/dev/null; then
   esac
 fi
 
+# ── Vision-capable model (Qwen2-VL-7B) — pull if missing ───────────
+# The Vision AI persona uses the in-process llama.cpp adapter against
+# Qwen2-VL-7B-Instruct + its multimodal projector (mmproj). Without
+# both files on disk, AIProviderModule registers the adapter then logs
+# the gap, and any image upload falls through to the text-bridge path
+# (VisionDescriptionService) instead of going to a model that natively
+# sees pixels — defeats the README's "see + speak" thesis.
+#
+# Total ~5.5 GB on disk (Q4_K_M GGUF + f16 mmproj). Pull with `hf
+# download` (HuggingFace CLI; installed via `pip install huggingface-hub`
+# which already happens earlier in install for the python deps). Skips
+# cleanly if the files are already there.
+#
+# Path matches `models.toml::qwen2-vl-7b-instruct.gguf_local_path`
+# (today: `~/models/qwen2-vl-7b/`). Loader expand_path resolves `~`.
+QWEN2_VL_DIR="${HOME}/models/qwen2-vl-7b"
+QWEN2_VL_GGUF="${QWEN2_VL_DIR}/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
+QWEN2_VL_MMPROJ="${QWEN2_VL_DIR}/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
+if [[ -f "$QWEN2_VL_GGUF" && -f "$QWEN2_VL_MMPROJ" ]]; then
+  ok "Vision model already on disk: $QWEN2_VL_DIR"
+else
+  info "Pulling Vision AI model — Qwen2-VL-7B-Instruct (~5.5 GB, first install only)..."
+  mkdir -p "$QWEN2_VL_DIR"
+  if command -v hf >/dev/null 2>&1; then
+    # `hf download` (huggingface-cli successor) — copies into local-dir
+    # by default, no symlink dance. Both files in one call.
+    if hf download bartowski/Qwen2-VL-7B-Instruct-GGUF \
+        Qwen2-VL-7B-Instruct-Q4_K_M.gguf \
+        mmproj-Qwen2-VL-7B-Instruct-f16.gguf \
+        --local-dir "$QWEN2_VL_DIR" 2>/dev/null; then
+      ok "Vision model pulled to $QWEN2_VL_DIR"
+    else
+      warn "Vision model pull failed. Manual: hf download bartowski/Qwen2-VL-7B-Instruct-GGUF Qwen2-VL-7B-Instruct-Q4_K_M.gguf mmproj-Qwen2-VL-7B-Instruct-f16.gguf --local-dir $QWEN2_VL_DIR"
+      warn "Until pulled, the Vision AI persona will register but image uploads will hard-error."
+    fi
+  else
+    warn "'hf' (huggingface-cli) not on PATH — can't auto-pull vision model."
+    warn "Install: pip install huggingface-hub"
+    warn "Then: hf download bartowski/Qwen2-VL-7B-Instruct-GGUF Qwen2-VL-7B-Instruct-Q4_K_M.gguf mmproj-Qwen2-VL-7B-Instruct-f16.gguf --local-dir $QWEN2_VL_DIR"
+  fi
+fi
+
 # ── Per-service memory caps — auto-calculated from host RAM ────────
 # Joel's directive: don't ask users to set mem limits; auto-calc from host.
 # Don't paper over OOMs with undersized limits; size containers for the
