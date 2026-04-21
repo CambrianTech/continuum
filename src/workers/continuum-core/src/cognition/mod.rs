@@ -28,9 +28,11 @@
 //!                                  `ResponderDecision`)
 
 pub mod response_orchestrator;
+pub mod response_validator;
 pub mod shared_analysis;
 pub mod types;
 
 pub use response_orchestrator::{orchestrate, score_persona, PersonaSlot, DEFAULT_RELEVANCE_THRESHOLD};
+pub use response_validator::{clean_and_validate, is_hard_failure, ValidationOutcome};
 pub use shared_analysis::{analyze, AnalysisInput, RecentMessage};
 pub use types::*;
