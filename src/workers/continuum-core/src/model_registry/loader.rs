@@ -168,14 +168,28 @@ pub fn load_registry(
     Ok(Registry { models, providers })
 }
 
-/// Expand `~` / `$HOME` prefixes in a path so the stored value is
-/// absolute. Anything that doesn't start with `~` is returned unchanged.
-/// No recursive env-var interpolation — deliberately narrow so a typo
-/// in TOML produces a literal-looking bad path rather than something
-/// shell-interpreted.
+/// Expand `~` / `$HOME` (Unix) or `%USERPROFILE%` (Windows) prefixes in
+/// a path so the stored value is absolute. Anything that doesn't start
+/// with one of those prefixes is returned unchanged. No recursive
+/// env-var interpolation — deliberately narrow so a typo in TOML
+/// produces a literal-looking bad path rather than something shell-
+/// interpreted.
+///
+/// Cross-platform note: `~` works on Windows shells too because
+/// PowerShell + cmd accept it via TildeExpansion in many contexts, but
+/// our TOML is read as raw text — we have to do the expansion ourselves
+/// against `USERPROFILE` (Windows convention) when `HOME` isn't set.
+/// Without this, Windows installs that follow the Carl/Dev install path
+/// will fail to find any TOML row that uses `~/models/...` (which is
+/// the convention we use throughout config/models.toml).
 fn expand_path(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
-    let home = std::env::var("HOME").ok();
+    // Resolve home from HOME (Unix) or USERPROFILE (Windows). HOME is
+    // checked first because some Windows dev environments (Git Bash,
+    // WSL) set it; otherwise fall through to USERPROFILE.
+    let home = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok());
     if let Some(home) = home {
         if let Some(rest) = s.strip_prefix("~/") {
             return PathBuf::from(format!("{home}/{rest}"));
@@ -185,6 +199,15 @@ fn expand_path(p: &Path) -> PathBuf {
         }
         if let Some(rest) = s.strip_prefix("$HOME/") {
             return PathBuf::from(format!("{home}/{rest}"));
+        }
+        // Windows-style: %USERPROFILE%/... — uncommon in TOML written
+        // by Unix-leaning devs but supported so a Windows operator
+        // editing config/models.toml in their native style works too.
+        if let Some(rest) = s.strip_prefix("%USERPROFILE%/") {
+            return PathBuf::from(format!("{home}/{rest}"));
+        }
+        if let Some(rest) = s.strip_prefix("%USERPROFILE%\\") {
+            return PathBuf::from(format!("{home}\\{rest}"));
         }
     }
     p.to_path_buf()

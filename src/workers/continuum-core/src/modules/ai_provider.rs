@@ -308,16 +308,78 @@ impl AIProviderModule {
         // no-fallback rule, callers asking for our forge model should get either
         // a working in-process backend or a hard error at select() time naming
         // exactly which file is missing.
-        let llamacpp = crate::inference::LlamaCppAdapter::new();
-        if llamacpp.health_check().await.api_available {
-            self.log()
-                .info("Registering in-process llama.cpp adapter (forge qwen3.5-4b, GPU/Metal)");
-            registry.register(Box::new(llamacpp), 0);
+        // Register one in-process adapter PER llamacpp-local model row
+        // whose GGUF (and, for multimodal, mmproj) is on disk. Each
+        // adapter binds to a single GGUF — that's the backend's design
+        // (one model per backend) — so multiple llamacpp-local rows
+        // (text + vision + audio + future variants) need one adapter
+        // each. Routing in AdapterRegistry::select picks by model id,
+        // so they don't collide.
+        //
+        // Earlier shape called `LlamaCppAdapter::new()` for "the default"
+        // and then iterated for the rest, but `new()` picks via HashMap
+        // iteration order which is non-deterministic — caused a bug
+        // where qwen3.5 got registered twice and qwen2-vl was skipped.
+        // Now we iterate ALL rows uniformly.
+        if let Some(reg_arc) = crate::model_registry::try_global() {
+            for model_meta in reg_arc.models_for_provider(crate::inference::LLAMACPP_PROVIDER_ID) {
+                let Some(gguf_path) = model_meta.gguf_local_path.clone() else {
+                    self.log().info(&format!(
+                        "Skipping in-process adapter for `{}` — no gguf_local_path in TOML",
+                        model_meta.id
+                    ));
+                    continue;
+                };
+                if !gguf_path.exists() {
+                    self.log().info(&format!(
+                        "Skipping in-process adapter for `{}` — GGUF missing at {}. \
+                         Install must pull this artifact for first-launch parity.",
+                        model_meta.id,
+                        gguf_path.display()
+                    ));
+                    continue;
+                }
+                // For vision/audio rows the mmproj is also required.
+                // backend.generate_with_image / generate_with_audio
+                // returns a clean error when mmproj is absent — we log
+                // the gap upfront so install scripts catch it before
+                // a real user hits "model declares Vision but mmproj
+                // missing" at request time.
+                let needs_mmproj = model_meta.has(crate::model_registry::types::Capability::Vision)
+                    || model_meta.has(crate::model_registry::types::Capability::AudioInput);
+                if needs_mmproj {
+                    match &model_meta.mmproj_local_path {
+                        None => self.log().info(&format!(
+                            "Adapter `{}` declares Vision/AudioInput but TOML has no \
+                             mmproj_local_path — multimodal calls will hard-error. \
+                             Add `mmproj_local_path = \"...\"` to the row.",
+                            model_meta.id
+                        )),
+                        Some(p) if !p.exists() => self.log().info(&format!(
+                            "Adapter `{}` declares Vision/AudioInput but mmproj file \
+                             missing at {} — multimodal calls will hard-error. \
+                             Install must pull this artifact alongside the GGUF.",
+                            model_meta.id,
+                            p.display()
+                        )),
+                        Some(_) => {} // present + on disk, good
+                    }
+                }
+                self.log().info(&format!(
+                    "Registering in-process llama.cpp adapter for model `{}`",
+                    model_meta.id
+                ));
+                let adapter = crate::inference::LlamaCppAdapter::with_model_id(
+                    gguf_path,
+                    model_meta.id.clone(),
+                );
+                // Priority 0 — wins over DMR for the model ids it claims.
+                registry.register(Box::new(adapter), 0);
+            }
         } else {
             self.log().info(
-                "In-process llama.cpp adapter NOT registered — forge GGUF \
-                 not present at DMR's cache path. Pull via \
-                 `docker model pull huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf`.",
+                "In-process llama.cpp adapter NOT registered — model_registry not initialized. \
+                 Local chat will route to DMR or cloud only.",
             );
         }
 
