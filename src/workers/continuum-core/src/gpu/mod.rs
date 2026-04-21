@@ -10,6 +10,8 @@
 
 pub mod eviction_registry;
 pub mod memory_manager;
+#[cfg(target_os = "macos")]
+pub mod metal_monitor;
 pub mod monitor;
 pub mod tracker;
 
@@ -20,5 +22,7 @@ pub use memory_manager::{
     AllocationsByPriority, GpuAllocationGuard, GpuError, GpuMemoryManager, GpuPriority, GpuStats,
     GpuSubsystem, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
 };
+#[cfg(target_os = "macos")]
+pub use metal_monitor::MetalMonitor;
 pub use monitor::{CpuMonitor, GpuMonitor, GpuSnapshot, MockMonitor};
 pub use tracker::GpuModelTracker;
