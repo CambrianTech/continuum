@@ -167,6 +167,26 @@ export interface ProcessableMessage {
       base64?: string;
       mimeType?: string;
       url?: string;
+      /**
+       * Content-addressed blob hash (sha256:hex). Set when the chat-send
+       * path externalized the bytes to disk via MediaBlobService. The
+       * persona response path resolves this back to bytes via
+       * MediaBlobService.getPath(hash) when assembling the request.
+       * Per Joel's 2026-04-21 directive: base64 must NEVER persist in
+       * the chat_messages DB column — entities carry blobHash + url
+       * refs only, bytes live on disk.
+       */
+      blobHash?: string;
+      /**
+       * Pre-computed text description from VisionDescriptionService
+       * (cached at chat-send time via prewarmVisionDescriptions).
+       * Forwarded to Rust as MediaItemLite.description so text-only
+       * personas downstream get a real description instead of
+       * hallucinating from prompt context. Content-addressed cache
+       * means one vision-inference per unique image regardless of
+       * how many personas request it ("ONCE per data" per Joel).
+       */
+      description?: string;
     }>;
   };
   timestamp: number;

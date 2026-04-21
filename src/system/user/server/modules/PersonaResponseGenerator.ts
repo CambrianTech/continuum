@@ -290,15 +290,65 @@ export class PersonaResponseGenerator {
       // floor here, defaulting every multimodal model into text-only mode
       // (regression — qwen3.5 / Claude / GPT-4o are natively multimodal,
       // bridging defeats their whole point). See PERSONA-CONTEXT-PAGING.md
-      // §0.5.X. Only items with inline base64 are forwarded — URL-only
-      // references would need a fetch step we haven't added.
-      const messageMedia = (originalMessage.content.media ?? [])
-        .filter((m) => typeof m.base64 === 'string' && m.base64.length > 0)
-        .map((m) => ({
-          itemType: m.type,
-          base64: m.base64,
-          mimeType: m.mimeType,
-        }));
+      // §0.5.X.
+      //
+      // Storage: per Joel's 2026-04-21 directive, base64 NEVER persists in
+      // the chat_messages DB column. The entity carries `blobHash` + `url`
+      // refs only. Resolve back to bytes here, on the request path —
+      // chat-send already wrote the file to disk via
+      // MediaBlobService.externalize (synchronously, before data/create).
+      // Description (from VisionDescriptionService cache) gets pulled
+      // alongside so text-only personas downstream get the bridge text
+      // instead of hallucinating from prompt context.
+      const { MediaBlobService } = await import('../../../storage/MediaBlobService');
+      const { VisionDescriptionService } = await import('../../../vision/VisionDescriptionService');
+      const fs = await import('fs');
+      const messageMediaResolved = await Promise.all(
+        (originalMessage.content.media ?? []).map(async (m) => {
+          // Prefer inline base64 if it's still around (browser pre-encode
+          // path or an item smaller than the externalize threshold), else
+          // resolve via blobHash → file on disk → base64.
+          let base64: string | undefined = m.base64;
+          if (!base64 && m.blobHash) {
+            const path = MediaBlobService.getPath(m.blobHash);
+            if (path) {
+              try {
+                const buf = await fs.promises.readFile(path);
+                base64 = buf.toString('base64');
+              } catch {
+                // File missing despite hash — drop this item, log later.
+                return null;
+              }
+            }
+          }
+          if (!base64) {
+            return null; // Nothing to send to the model
+          }
+          // Pull cached description (populated by prewarmVisionDescriptions
+          // at chat-send time). Cache hit takes ~0ms; miss returns
+          // undefined — text-only personas downstream get a "no
+          // description available" marker instead of fabricating.
+          let description: string | undefined;
+          if (m.type === 'image') {
+            try {
+              const visionSvc = VisionDescriptionService.getInstance();
+              if (visionSvc.descriptionStatus(base64) === 'cached') {
+                const desc = await visionSvc.describeBase64(base64, m.mimeType ?? 'image/png', { maxLength: 200 });
+                description = desc?.description;
+              }
+            } catch {
+              // Best-effort; drop to undefined on any cache error
+            }
+          }
+          return {
+            itemType: m.type,
+            base64,
+            mimeType: m.mimeType,
+            description,
+          };
+        })
+      );
+      const messageMedia = messageMediaResolved.filter((x): x is NonNullable<typeof x> => x !== null);
 
       const rustRequest: PersonaRespondRequest = {
         personaId: this.personaId,

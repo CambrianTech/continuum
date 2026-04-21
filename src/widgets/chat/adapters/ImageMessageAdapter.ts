@@ -183,7 +183,7 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
         /* No max-height — clipped tall images (verified 2026-04-21
          * with the cat photo: vertical aspect was hitting the 300px
          * cap and getting cut off at the bottom). Aspect ratio comes
-         * from the image itself; `display: inline-block` makes the
+         * from the image itself; display:inline-block makes the
          * container size to the rendered image so the bubble doesn't
          * leave a wide background-colored gutter to the right. */
         display: inline-block;

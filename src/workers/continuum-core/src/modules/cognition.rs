@@ -852,10 +852,21 @@ impl ServiceModule for CognitionModule {
                                     .or_else(|| item.get("mime_type"))
                                     .and_then(|v| v.as_str())
                                     .map(String::from);
+                                // Carry the pre-computed text description across
+                                // the IPC boundary when the TS sensory bridge
+                                // (VisionDescriptionService) populated it. The
+                                // Rust persona path uses this for text-only
+                                // personas instead of letting them hallucinate
+                                // from prompt context.
+                                let description = item
+                                    .get("description")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from);
                                 Some(crate::cognition::tool_executor::types::MediaItemLite {
                                     item_type,
                                     base64,
                                     mime_type,
+                                    description,
                                 })
                             })
                             .collect()

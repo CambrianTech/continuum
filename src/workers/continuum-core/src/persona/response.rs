@@ -430,31 +430,60 @@ fn build_messages_with_media(
         return messages;
     }
 
-    // Filter media down to items whose modality the model can actually
-    // accept. Anything else falls through (the sensory bridge would
-    // have substituted text upstream for genuinely text-only models).
-    let supported_parts: Vec<ContentPart> = media
-        .iter()
-        .filter_map(|m| match m.item_type.as_str() {
-            "image" if model_caps.contains(&Capability::Vision) => Some(ContentPart::Image {
+    // Walk media items per persona-capability and emit:
+    //   - vision-capable persona + image → ContentPart::Image (raw bytes)
+    //   - audio-capable persona + audio → ContentPart::Audio (raw bytes)
+    //   - text-only persona + media → ContentPart::Text with the
+    //     pre-computed `description` from the upstream sensory bridge,
+    //     or a `[MEDIA: <type>, no description available]` marker if
+    //     the bridge didn't run (so the model knows something is there
+    //     and doesn't hallucinate from prompt context — verified
+    //     2026-04-21 with cat photo: text-only personas hallucinated
+    //     "kitten upright and alert" when given zero info, dropped
+    //     into loop-spam patterns when prompt context dominated).
+    //
+    // The marker for missing-description is deliberately unhelpful —
+    // we don't want models inventing details. Pre-populating
+    // `MediaItemLite.description` from VisionDescriptionService at
+    // the TS chat-send step is the proper fix; this fallback exists
+    // so a missed bridge call doesn't silently produce hallucinated
+    // "vision" responses.
+    let mut emitted_parts: Vec<ContentPart> = Vec::with_capacity(media.len());
+    for m in media.iter() {
+        let part = match m.item_type.as_str() {
+            "image" if model_caps.contains(&Capability::Vision) => ContentPart::Image {
                 image: ImageInput {
                     url: None,
                     base64: m.base64.clone(),
                     mime_type: m.mime_type.clone(),
                 },
-            }),
-            "audio" if model_caps.contains(&Capability::AudioInput) => Some(ContentPart::Audio {
+            },
+            "audio" if model_caps.contains(&Capability::AudioInput) => ContentPart::Audio {
                 audio: AudioInput {
                     url: None,
                     base64: m.base64.clone(),
                     mime_type: m.mime_type.clone(),
                 },
-            }),
-            _ => None,
-        })
-        .collect();
+            },
+            // Text-only persona OR unsupported modality → emit text
+            // description from the bridge if we have one, else a
+            // marker that signals "an attachment exists, you can't
+            // see it, do not invent content".
+            other => {
+                let text = match m.description.as_deref() {
+                    Some(d) if !d.trim().is_empty() => format!("[Attached {other}: {d}]"),
+                    _ => format!(
+                        "[Attached {other} — no description available; \
+                         do not describe or speculate about its contents]"
+                    ),
+                };
+                ContentPart::Text { text }
+            }
+        };
+        emitted_parts.push(part);
+    }
 
-    if supported_parts.is_empty() {
+    if emitted_parts.is_empty() {
         return messages;
     }
 
@@ -476,13 +505,13 @@ fn build_messages_with_media(
         MessageContent::Parts(_) => return messages,
     };
 
-    let mut parts: Vec<ContentPart> = Vec::with_capacity(supported_parts.len() + 1);
+    let mut parts: Vec<ContentPart> = Vec::with_capacity(emitted_parts.len() + 1);
     if !existing_text.is_empty() {
         parts.push(ContentPart::Text {
             text: existing_text,
         });
     }
-    parts.extend(supported_parts);
+    parts.extend(emitted_parts);
     messages[idx].content = MessageContent::Parts(parts);
     messages
 }
