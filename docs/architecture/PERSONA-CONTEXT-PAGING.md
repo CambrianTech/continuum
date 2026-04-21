@@ -929,7 +929,109 @@ Until that lands, the explicit `with_context_length(32768)` is a documented band
 
 This applies to **all** test rigs, not just persona_respond_replay. Live integration tests, smoke tests, perf rigs — each one should declare its task class and let the policy size accordingly. Same way the system handles real personas in real workloads.
 
-## 15. Why This Beats Hard Limits (Restated)
+## 15. Consolidation Is the Default — Verbatim Is the Exception
+
+The current `ConversationHistorySource.ts` has a two-tier strategy: 85% of the token budget for verbatim recent messages, 15% for consolidated older messages. The intent was right — *don't silently lose context* — but the default direction is wrong: **consolidation triggers only under budget pressure**, so in normal chat it never fires and the model sees full verbatim history every turn.
+
+The captured fixtures from the qwen3.5 debugging weekend confirm this: `recentHistory` arrays contain 4000-character messages (including leaked `<think>` fragments). Verbatim has been the default; consolidation has been the fallback.
+
+This is backwards relative to how the model actually uses the information.
+
+### 15.1 The mismatch
+
+A persona answering a new chat message doesn't need to re-read every prior word. It needs:
+- **The gist of the conversation arc** ("user is debugging an inference scheduler bug; we narrowed it to the render prompt; now considering whether to flatten or use alternating shape")
+- **The specific recent exchange** that the new message responds to (last 1-2 messages verbatim)
+- **The new message itself**
+
+That's three components. Total budget: typically 1-2K tokens. The current default sends 5-15K tokens of verbatim history every turn, ~80% of which the model essentially compresses on the fly into the same gist + recent exchange anyway. We're paying KV memory and inference latency to give the model raw material that it then compresses internally.
+
+Worse: the verbatim history is where the contamination from prior broken inferences lives (leaked `<think>`, `@@@@@` noise, malformed JSON drafts). Consolidation passes implicitly clean it because the summarizer skips junk. Verbatim passes propagate it.
+
+### 15.2 The right default
+
+```
+chat task → consolidated event summary (~500 tokens for 50 messages)
+            + last 1-2 messages verbatim (~200 tokens)
+            + current message (~50 tokens)
+            ≈ 750-800 tokens of history-related context
+```
+
+Same model, same conversation, same downstream outcome — but ~10x less context spent on history. That budget headroom flows back into:
+- Larger reasoning output (model can think longer before responding)
+- More room for tool-call cascades
+- More personas concurrently active in the same recipe before pressure forces eviction
+
+### 15.3 When verbatim IS the right call
+
+Some tasks legitimately need verbatim:
+- **Code review**: "look at this exact wording the user wrote 5 turns ago and tell me if my refactor preserves it"
+- **Translation**: surrounding source-text matters word-for-word
+- **Legal/compliance**: the LLM is verifying specific quoted language
+- **Fresh-message debugging**: human asking "what did you say earlier about X?"
+
+These are recipes / tasks that explicitly declare `recall_mode = Verbatim` (or `recall_mode = Hybrid` for "consolidated arc + verbatim window of last 5 turns"). Same registry-driven pattern as everything else in this doc:
+
+```rust
+pub enum RecallMode {
+    /// Default. Quick consolidated arc + last 1-2 messages verbatim.
+    /// Cheap, dense, what most chat-class tasks actually use.
+    ConsolidatedSummary,
+    /// Hybrid. Consolidated arc + last N verbatim messages.
+    /// For tasks that need recent precise wording.
+    Hybrid { verbatim_window: usize },
+    /// Verbatim. Full message history within token budget.
+    /// For tasks that explicitly need word-for-word recall.
+    Verbatim,
+}
+```
+
+Per-task default in the same registry that holds task-default context budgets (§14.1):
+
+| Task | recall_mode default |
+|---|---|
+| Chat | ConsolidatedSummary |
+| Voice chat | ConsolidatedSummary |
+| Coding (small) | Hybrid { verbatim_window: 5 } |
+| Coding (large refactor) | Hybrid { verbatim_window: 10 } |
+| Code review | Verbatim |
+| Translation | Verbatim |
+| Game NPC | ConsolidatedSummary |
+| Sentinel research | Hybrid { verbatim_window: 3 } |
+| Academy student | Hybrid { verbatim_window: 5 } |
+
+### 15.4 The consolidator itself
+
+The consolidation step is a small LLM call (or, in the future, a tiny purpose-built model the Forge can train). Cost: typically 50-200ms on a small local model, executed BEFORE the persona's turn (asynchronously preparable while the user is still typing the next message). The result is cached and incrementally extended — you don't re-summarize the whole conversation every turn, you just update the summary with the latest message's contribution.
+
+State the consolidator maintains per room:
+```rust
+pub struct ConversationSummary {
+    pub room_id: Uuid,
+    pub turns_summarized: u32,        // up to which point
+    pub arc_summary: String,           // dense narrative, ~200-500 tokens
+    pub topic_tags: Vec<String>,       // current active topics
+    pub open_questions: Vec<String>,   // things the user asked that haven't been resolved
+    pub last_summarized_at: Instant,
+}
+```
+
+This object becomes a **first-class persistent thing** alongside the message log. Every persona reads from the same summary (no per-persona re-summarization cost). When the user keeps adding messages, a background task incrementally extends the summary. When a persona's turn arrives, the summary is already current — no inline summarization latency on the response path.
+
+### 15.5 Connection to the paging design
+
+This section interacts with the rest of the architecture:
+
+- **Per-task context budgets (§14)**: the chat default of 8K assumes consolidated history is the norm. If a task wanted full verbatim it would declare a larger budget in the recipe.
+- **FootprintRegistry (§13)**: the `ConversationSummary` cache itself counts as a registry entry — small (KB), but tracked.
+- **Lazy RAG fetch (§6.2)**: the consolidator IS one form of lazy fetch — pre-compress the history, stream individual verbatim messages on demand if the model issues a `history/recall_turn` tool call.
+- **Learned policy (§9)**: same telemetry feeds whether the consolidation default was sufficient (model didn't tool-call for verbatim recall) or whether the model needed more (frequent recalls = signal that a Hybrid mode would have been cheaper).
+
+Joel's note (2026-04-21): *"AIs don't really need to SEE the whole history, esp PER message. I think the design we had that was QUICK consolidated series of events but I think you ripped it out or broke it last time you worked on cognition."*
+
+The infrastructure (`ConversationHistorySource.ts` two-tier strategy) is still there — but configured wrong. **Flipping the default from "verbatim unless tight" to "consolidated unless task needs verbatim"** is the missing change. That's the immediate retrofit; the dedicated `ConversationSummary` cache is the long-form architectural target.
+
+## 16. Why This Beats Hard Limits (Restated)
 
 - Limit-based: persona count is capped at `floor(RAM / per_persona_KV)`. New persona request beyond the cap → error / refusal.
 - Paging-based: persona count is unbounded. New persona request → if hot set is full, the lowest-importance hot persona spills to NVMe in the background. The new persona starts cold, accepts ~1.5s first-token latency.
