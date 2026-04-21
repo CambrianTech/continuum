@@ -1218,6 +1218,15 @@ Captured here so the implementation order isn't lost. Each phase ships independe
 - ConversationSummary as first-class room state (background-incremental update)
 - §15 of this doc
 
+### Phase 1.4 — Meta-Cognitive Resource Requests (~1 day)
+- Extend `PersonaState` with `forecast_resources(msg) → ResourceForecast`,
+  `request_more_context(tokens, reason)`, `report_actual_usage(tokens, depth)`
+- Wire policy's `ensure_active` to read forecast as advisory hint
+- Persona introspects own state (energy, recipe importance, message complexity)
+  and asks for / releases context cooperatively
+- Same shape as existing `shouldEngage` — adaptive, learned over time
+- §20 of this doc
+
 ### Phase 2.0 — `MetalMonitor` Rebuild via IOReport (~1-2 days)
 - `gpu/metal_monitor.rs` extracted as a `GpuMonitor` trait impl
 - Live signals via `host_statistics64`, `task_info(TASK_VM_INFO)`, `os_proc_available_memory`, `MTLDevice.currentAllocatedSize`, IOReport for utilization/temp/power
@@ -1273,7 +1282,99 @@ Captured here so the implementation order isn't lost. Each phase ships independe
 
 Each phase: tests written first, ship behind a feature flag, validate with A/B against current behavior, lock in.
 
-## 20. Why This Beats Hard Limits (Restated)
+## 20. Meta-Cognitive Resource Requests — The Persona Itself Uses the Levers
+
+When the levers exist, the persona doesn't have to be a passive object the policy manages. It can be a **consumer** of the paging API — recognizing its own state ("this question needs deep thought") and asking for resources accordingly.
+
+This is the natural extension of the existing cognition engine's energy / attention / mood signals (`PersonaState::shouldEngage(priority)`). Same primitive, expanded surface:
+
+```rust
+pub trait CognitiveResourceRequester {
+    /// Forecast the resources THIS persona thinks it needs for the
+    /// upcoming turn. Called by the policy BEFORE allocation.
+    /// Persona introspects its own state (incoming message complexity,
+    /// recent thinking depth, fatigue, importance to current recipe).
+    fn forecast_for_next_turn(&self, incoming: &MessagePreview) -> ResourceForecast;
+
+    /// Mid-turn signal: "I need to think deeper about this." Issued
+    /// during a `<think>` block when the persona realizes scope is
+    /// larger than forecast. Policy may grow context if available.
+    async fn request_more_context(&self, additional_tokens: u32, reason: &str)
+        -> Result<u32, ResourceDenied>;
+
+    /// Post-turn: "I overspent / underspent. Adjust my baseline."
+    /// Feeds the learned policy's per-persona budget tuning.
+    fn report_actual_usage(&self, used_tokens: u32, depth_score: f32);
+}
+
+pub struct ResourceForecast {
+    pub estimated_context_tokens: u32,
+    pub estimated_reasoning_depth: f32,  // 0.0 = trivial, 1.0 = max introspection
+    pub modality_demand: ModalityDemand,
+    pub confidence: f32,                 // how sure the persona is about the forecast
+    pub urgency: Urgency,                // user-waiting vs background
+}
+```
+
+### 20.1 The "deep thought" pattern
+
+Joel's example: a question that genuinely deserves a long reasoning chain. The persona reads the incoming message, recognizes complexity, requests:
+
+```rust
+// Persona examines the incoming message
+let preview = MessagePreview::from(incoming);
+if preview.contains_concept_density() > 0.7 || preview.is_open_ended_research() {
+    self.request_more_context(64_000, "complex multi-perspective question").await?;
+    // Now the persona's slot is sized for deep reasoning
+}
+```
+
+The policy decides whether to grant: cheap if memory available, refused (with a clear "not now, reduce scope") if pressure is high. The persona then adapts: if grant came, think deeply; if denial, work within its base budget and produce a shorter, scoped response.
+
+### 20.2 The "early dropdown" pattern (what Joel called out)
+
+Symmetric to "getting bored / tired." The persona recognizes it doesn't need much and explicitly RELEASES capacity:
+
+```rust
+// Casual greeting incoming
+let preview = MessagePreview::from(incoming);
+if preview.is_casual_greeting() || preview.is_low_information_density() {
+    // Self-downgrade — release context the policy can give to other personas
+    self.report_actual_usage(used_tokens: 200, depth_score: 0.05);
+    // Policy on next rebalance sees this slot's recent demand is tiny;
+    // shrinks its allocation, freeing pages for whoever needs them.
+}
+```
+
+This is the cooperative side of the contract. Personas that don't need much explicitly say so; the policy reclaims; other personas (or the user's other apps) get the headroom.
+
+### 20.3 Ties to existing PersonaState
+
+The existing `PersonaState` (energy / attention / mood / cadence) already implements this pattern for *temporal* resources — when to fire next, how often to engage. Extending it to *spatial* resources (context, KV memory) is the same shape with a different output dimension:
+
+```
+Existing:                          Extended:
+PersonaState.shouldEngage(p)  →   PersonaState.shouldEngage(p)
+                                  PersonaState.forecast_resources(msg)
+                                  PersonaState.request_more_context(n, why)
+                                  PersonaState.report_actual_usage(n, depth)
+```
+
+Same state vector (energy, attention, mood, recipe importance), same adaptive cadence loop, just reads more outputs. Personas that are "tired" naturally request less; personas that are "engaged" naturally request more. The cognition engine already has the introspection primitives — we're connecting them to the paging system's levers.
+
+### 20.4 What this enables
+
+- **Self-aware context budgeting**: persona knows when its task warrants deep thought and asks for it. No human or policy hand-tuning needed.
+- **Cooperative resource sharing**: idle personas explicitly free their headroom; busy personas get it.
+- **Recipe-level coordination**: 5 personas in a recipe negotiate among themselves (via the policy as broker) who needs the budget for a given turn. Currently-speaking persona gets the surge; others compress.
+- **Training signal for the learned policy**: the persona's predictions vs actuals (forecast vs `report_actual_usage`) feed back into both the persona's own future forecasts AND the policy's confidence in those forecasts. Two-loop learning.
+- **User-facing transparency**: "Helper AI is thinking deeply about this..." becomes a real UX signal because the policy actually granted extra context. Not theater.
+
+### 20.5 Implementation note
+
+Phase 1.4 in the roadmap (just before the FootprintRegistry / monitoring rebuilds): wire `PersonaState` into the paging policy's `ensure_active(persona_id, forecast)` API. Persona's existing introspection primitives produce `ResourceForecast` from incoming message + own state; policy reads it as a hint when sizing. Persona doesn't get to override hardware reality (no infinite asks granted), but the conversation between persona and policy starts. Same pattern as `shouldEngage` — advisory but heavily weighted.
+
+## 21. Why This Beats Hard Limits (Restated)
 
 - Limit-based: persona count is capped at `floor(RAM / per_persona_KV)`. New persona request beyond the cap → error / refusal.
 - Paging-based: persona count is unbounded. New persona request → if hot set is full, the lowest-importance hot persona spills to NVMe in the background. The new persona starts cold, accepts ~1.5s first-token latency.
