@@ -76,6 +76,15 @@ async fn ensure_llamacpp_registered() {
     // during continuum-core startup; tests must too. Idempotent.
     continuum_core::model_registry::init_global()
         .expect("model_registry::init_global() failed");
+    // Honor the model's declared 262K context. The forge baked it that
+    // size deliberately — coding personas need it. Shrinking here was
+    // the same hardcoding mistake the per-model strategy fix was trying
+    // to avoid (Joel, 2026-04-21: "you go sooooo small it often makes
+    // these things break down, like our thinking issue all gd weekend").
+    //
+    // Cost: 24GB KV per test run, lingering after SIGABRT cleanup
+    // (PR #17869). Mitigated by killing leftover persona_respond_replay
+    // procs in the test harness teardown — not by squeezing the model.
     let adapter = continuum_core::inference::LlamaCppAdapter::new();
     let health = adapter.health_check().await;
     assert!(

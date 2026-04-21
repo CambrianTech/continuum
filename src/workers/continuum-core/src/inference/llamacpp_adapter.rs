@@ -84,6 +84,14 @@ pub struct LlamaCppAdapter {
     /// `gguf_local_path` pointing at an on-disk file, we claim that id.
     /// Held as `String` so `default_model()` can return `&str`.
     default_model: String,
+    /// Per-sequence context budget override. None = honor the model's
+    /// declared `n_ctx_train` (e.g. qwen3.5-4b's 262144). Set this
+    /// explicitly when memory pressure / hardware tier forces a smaller
+    /// window — the KV cache scales linearly with context_length, and a
+    /// 262K alloc on qwen3.5-4b is ~24GB even at Q4. Tests use 16K;
+    /// production tier-aware sizing is a follow-up (M5 Pro = 64K? or
+    /// per-persona declaration).
+    context_length_override: Option<u32>,
 }
 
 impl LlamaCppAdapter {
@@ -110,6 +118,7 @@ impl LlamaCppAdapter {
             model_path,
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
             default_model: model.id.clone(),
+            context_length_override: None,
         }
     }
 
@@ -117,6 +126,16 @@ impl LlamaCppAdapter {
     /// at the registry's declared location.
     pub fn with_model_path(mut self, path: PathBuf) -> Self {
         self.model_path = path;
+        self
+    }
+
+    /// Override the per-sequence context budget. Pass smaller-than-trained
+    /// to bound the KV cache allocation (qwen3.5-4b @ 262K = 24GB; @ 16K
+    /// = 500MB). Tests should always set this to keep the suite cheap and
+    /// avoid leaving 24GB processes lingering when llama.cpp's Metal
+    /// cleanup SIGABRTs prevent clean exit (see PR #17869).
+    pub fn with_context_length(mut self, n: u32) -> Self {
+        self.context_length_override = Some(n);
         self
     }
 
@@ -147,6 +166,10 @@ impl LlamaCppAdapter {
         let config = LlamaCppConfig {
             model_path: self.model_path.clone(),
             n_gpu_layers: -1, // All layers to GPU
+            // None = honor model's n_ctx_train. Adapter caller can shrink
+            // this via with_context_length() to bound the KV cache (24GB
+            // at 262K → 500MB at 16K).
+            context_length: self.context_length_override,
             ..Default::default()
         };
         let backend = LlamaCppBackend::load(config)

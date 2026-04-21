@@ -499,7 +499,13 @@ fn start_request(
             "active_loras requested but scheduler v1 ignores them; LoRA per-seq is a follow-up",
         );
     }
-    let prompt_tokens = model.tokenize(&req.prompt, true, false)?;
+    // special=true so chat-template boundary markers (<|im_start|>,
+    // <|im_end|>) are tokenized as the model's actual special token IDs
+    // (151644/151645 for qwen3) rather than character-level text. With
+    // special=false the model never sees the boundary tokens it was
+    // trained on — output collapsed to short fragments terminating early
+    // at character-matched stop sequences.
+    let prompt_tokens = model.tokenize(&req.prompt, true, true)?;
     let sampler = if req.sampling.temperature <= 0.0 && req.sampling.grammar.is_none() {
         Sampler::greedy()
     } else {
