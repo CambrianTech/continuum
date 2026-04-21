@@ -663,7 +663,147 @@ Tests per adapter (small, fast, bench-able):
 
 This is the same pattern as `MultiPartyChatStrategy` in §11 of the model registry: declared once per platform, consumed everywhere. The policy never branches on platform name — it reads the trait.
 
-## 13. Why This Beats Hard Limits (Restated)
+## 13. Per-Component Footprint — The Other Half of Monitoring
+
+System-level signals (§12) tell the policy WHAT pressure looks like. Per-component attribution tells the policy WHAT to do about it. Without this, the policy knows "we're at 90% of our process limit" but has no idea which of the 47 things in our process is the biggest, the cheapest to spill, or worth keeping hot.
+
+### 13.1 The dimensions that matter
+
+For every byte we hold, we want to know:
+
+| Dimension | Why the policy needs it |
+|---|---|
+| **Per-persona** | Eviction target ("which persona is biggest? least active?") |
+| **Per-resource type** (KV / LoRA / model weights / render buffers / tokenizer / Bevy world) | Different spill costs per type — KV cheap to spill, base model expensive to reload |
+| **Per-backend instance** | Multi-model setups: qwen3.5 backend KV vs. Claude API client buffers |
+| **Per-recipe context** | Recipe-driven importance: same persona's bytes might be high-importance in chat, low in idle game-NPC |
+| **Per-residency tier** | Active GPU bytes vs. CPU-resident vs. NVMe-spilled — different reclaim semantics |
+| **Hot vs. cold within a tier** | Recently-touched pages vs. truly-cold (LRU signal for the policy) |
+
+A single number (`phys_footprint = 8.2 GB`) collapses all six dimensions to one. The policy needs the projection back.
+
+### 13.2 The `FootprintRegistry`
+
+Central registry that every allocation site reports to. This is the dual of the `GpuMonitor` trait — the OS tells us system pressure, the registry tells us our own composition.
+
+```rust
+pub struct FootprintRegistry {
+    entries: DashMap<FootprintKey, FootprintEntry>,
+}
+
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+pub struct FootprintKey {
+    pub persona_id: Option<Uuid>,        // None = persona-agnostic (model, renderer, etc.)
+    pub recipe_id: Option<Uuid>,
+    pub backend_id: Option<BackendId>,
+    pub resource_type: ResourceType,     // Kv | LoraAdapter | ModelWeights | RenderBuffer | TokenizerCache | BevyWorld | Other(&'static str)
+    pub residency: Residency,            // Active | Idle (NVMe) | CpuResident | Cold
+}
+
+pub struct FootprintEntry {
+    pub bytes: u64,                      // Live count, updated via add/remove
+    pub last_active: Instant,            // For LRU within type
+    pub backend_reported: bool,          // True = ground truth from backend; False = our accounting
+    pub spill_cost_estimate: Duration,   // What the policy expects to pay if it evicts
+    pub reload_cost_estimate: Duration,  // What it costs to bring back
+}
+
+impl FootprintRegistry {
+    pub fn add(&self, key: FootprintKey, bytes: u64);
+    pub fn remove(&self, key: FootprintKey, bytes: u64);
+    pub fn touch(&self, key: &FootprintKey);  // update last_active
+
+    // ── Projections the policy reads ──
+
+    /// Total bytes attributed to a persona across all resource types
+    /// and tiers. The "how big is Helper right now?" answer.
+    pub fn persona_total(&self, persona_id: Uuid) -> u64;
+
+    /// Bytes per resource type globally. The "where's the weight?"
+    /// answer — usually the model weights dominate, but if a vision
+    /// burst spiked we'd see it here.
+    pub fn by_resource_type(&self) -> HashMap<ResourceType, u64>;
+
+    /// Cheapest combination of evictable entries that would free at
+    /// least `target_bytes`. Evictability filtered by importance +
+    /// residency (e.g. base model isn't evictable under normal pressure).
+    /// Returns the eviction plan with estimated total cost.
+    pub fn cheapest_eviction_for(&self, target_bytes: u64, exclude: &[Uuid]) -> Option<EvictionPlan>;
+
+    /// Cross-check: registry sum vs. OS-reported phys_footprint.
+    /// Discrepancy > 10% = something allocates without reporting →
+    /// bug to chase. Same role as a memory-leak watchdog.
+    pub fn sanity_check(&self, monitor: &dyn GpuMonitor) -> RegistryHealth;
+}
+```
+
+### 13.3 Where reporting happens
+
+Every allocation site in the system reports to the registry. There aren't that many:
+
+| Site | What gets reported |
+|---|---|
+| `LlamaCppBackend::alloc_seq` / `free_seq` | KV bytes per (persona, backend, residency) |
+| `LlamaCppBackend::save_seq_state` / `load_seq_state` | residency transitions Active ↔ Idle (bytes move, total per persona stays same) |
+| `GenomePagingState::activate_skill` / `evict` | LoRA adapter bytes per (persona, residency) |
+| `LlamaCppBackend::load` | model weights bytes (persona_id=None, backend_id=Some, type=ModelWeights) |
+| Tokenizer cache load | bytes per backend, type=TokenizerCache |
+| Bevy renderer slot create | bytes per slot, type=BevyWorld |
+| Embedding model load | bytes for the embedding model |
+| Live audio/video pipelines | per-call bytes (small, but spike-y for video frames) |
+| Cloud API clients (Claude, OpenAI HTTP buffers) | small but non-zero |
+
+The reporting is **unconditional and cheap** (a single `DashMap::entry().and_modify`); no `#[cfg]`, no platform branches. Wherever we know we allocated bytes, we tell the registry. The registry is the single place where "what are we made of right now?" is answered.
+
+**Backends report ground truth where they can.** `LlamaCppBackend::seq_bytes(seq_id)` returns the actual GPU-resident byte count for a sequence (sums the K and V tensor sizes for that seq's allocated cells). When the backend has a real number, it overrides our internal accounting via `report_authoritative(key, bytes)`. This catches drift between "what we think we allocated" and "what the backend actually has."
+
+### 13.4 Cost estimates aren't guessed — they're learned
+
+`spill_cost_estimate` and `reload_cost_estimate` start as rough heuristics (KV: bytes / NVMe_bandwidth; LoRA: file_size / disk_bandwidth + GPU_upload_cost; ModelWeights: very high, never spill in practice). But every actual spill or reload measures and updates them — same telemetry loop §9 describes for the policy. After a few hundred spill cycles per resource type we have empirical cost distributions per hardware tier. The policy uses these for its eviction plan calculations.
+
+### 13.5 The eviction-plan API the policy uses
+
+```rust
+// Policy: "I need 2 GB to fit this new request without going past
+//         os_proc_available_memory_limit. What's it cost?"
+let plan = registry.cheapest_eviction_for(
+    target_bytes: 2 * 1024 * 1024 * 1024,
+    exclude: &[currently_speaking_persona_id],  // don't evict the active speaker
+);
+
+match plan {
+    Some(p) => {
+        log::info!(
+            "Will spill {} entries to free {} bytes; estimated total cost {:?}",
+            p.entries.len(), p.bytes_freed, p.estimated_cost,
+        );
+        // Apply the plan via PageableBackend::save_seq_state etc.
+    }
+    None => {
+        // No eviction can free enough. Reject the new request with a
+        // clear error: "needs 2GB; only 800MB available across all
+        // evictable entries." This is the graceful failure mode that
+        // beats OOM crash.
+    }
+}
+```
+
+Cost-driven eviction means the policy can choose between "spill 5 small KV slots" vs "spill 1 big LoRA adapter" based on which actually achieves the target with the lowest reload pain. Without per-component attribution, neither option is even visible.
+
+### 13.6 What "monitoring rocks" looks like, completed
+
+§12 + §13 together give the policy:
+
+- **External pressure** (system memory, GPU utilization, thermals, power) — what's happening around us
+- **Internal composition** (per-persona, per-resource-type, per-residency bytes) — what we are made of
+- **Eviction plans** with empirical cost estimates — what we can cheaply give back if we have to
+- **Sanity-check loop** — registry total cross-validated against OS footprint, drift = bug to chase
+
+The bidirectional Rust contract from §10 carries both directions: monitor adapters report system-side state UP, every allocation reports composition state UP, the policy reads both and sends spill/evict actions DOWN through the backend traits.
+
+This is the substrate. The policy on top of it can be rules, ML, fuzzy logic, or all three composed. The substrate doesn't care.
+
+## 14. Why This Beats Hard Limits (Restated)
 
 - Limit-based: persona count is capped at `floor(RAM / per_persona_KV)`. New persona request beyond the cap → error / refusal.
 - Paging-based: persona count is unbounded. New persona request → if hot set is full, the lowest-importance hot persona spills to NVMe in the background. The new persona starts cold, accepts ~1.5s first-token latency.
