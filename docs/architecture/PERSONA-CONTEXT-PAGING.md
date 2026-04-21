@@ -1280,10 +1280,16 @@ Substeps in dependency order (each TDD/VDD'd):
   - **REAL PORT** — confirmed live 2026-04-21: three external importers (`PersonaUser.ts:116`, `LimbicSystem.ts:19`, `TieredMemoryCache.ts:298`)
 - **0.5.6** `PersonaResponseGenerator` orchestrator (~700 lines) → `persona::response::cycle`
   - The integration point. Once this lands, `personaRespond` becomes the full per-persona cycle, and the TS module reduces to a thin async caller
-- **0.5.X** **Multimodal restoration in Rust persona path** (added 2026-04-21)
-  - Architectural gap exposed by the dead-code enumeration. The TS path that handled multimodal (via `mediaToContentParts` in the now-deleted `PersonaPromptAssembler`) was the ONLY path. The Rust persona pipeline never gained equivalent capability — `HistoryMessage.content` is `String`-only, `respond()` always wraps in `MessageContent::Text(...)`.
-  - Work: extend `HistoryMessage.content` to `MessageContent` (or analogous multimodal-aware type), wire `respond()` to produce `ContentPart::{Image,Audio}` when source media is present, port the `mediaToContentParts` mapping logic to Rust.
-  - Restores the §16 sensory-rights principle ("all personas have full sensory rights — bridge layer is the leveler") for output as well as input.
+- **0.5.X** **Native multimodal restoration in Rust persona path** (added 2026-04-21)
+  - Regression: in January 2026 the system had AIs natively seeing users in video chat (describing the user's shirt). The 2026-04-20 cutover removed the live TS path and the Rust substitute never carried images — `PersonaResponseGenerator.ts:296` drops `originalMessage.content.media` on the floor when building `rustRequest.messageText`, and Rust `RespondInput` is text-only.
+  - **Text-description bridging is the wrong fix.** Qwen3.5 is natively multimodal (see/hear/speak); routing images through a description layer discards the whole reason Qwen3.5 is the default model. Per the README thesis: "Text in, text out → Full embodiment". Descriptions-as-text is a fallback for models that genuinely can't see, not a default.
+  - Real work:
+    1. Register a vision-capable Qwen3.5 variant (or equivalent) in `config/models.toml` with `Capability::Vision`. The current `continuum-ai/qwen3.5-4b-code-forged-GGUF` is code-only and intentionally has no vision capability declared.
+    2. Extend `RespondInput` with `message_media: Option<Vec<MediaItemLite>>` (ts-rs derives cross to TS).
+    3. `respond()` constructs `MessageContent::Parts` with `ContentPart::Image { base64 }` when media is present AND the resolved persona model has `Capability::Vision`. No text-description fallback when the model IS capable.
+    4. TS `PersonaResponseGenerator` passes `originalMessage.content.media` through to `rustRequest.messageMedia`.
+    5. Sensory bridge (`VisionDescriptionService`) stays available ONLY for genuinely text-only models as the leveler (§1 sensory architecture — every persona sees, but native sight on native-capable models is the goal, not the floor).
+  - End-to-end verification: user sends an image in chat → vision-capable persona responds describing the image (browser test, real qwen3.5-VL or equivalent).
 
 After 0.5: TS persona-side becomes a thin IPC client. All cognition runs in Rust under tokio. Per-persona parallelism is real.
 
