@@ -1264,8 +1264,11 @@ Substeps in dependency order (each TDD/VDD'd):
   Rust impl shipped earlier in PR #949; TS file deleted in `54c49009e`. **DONE.**
 - ~~**0.5.2** `PersonaPromptAssembler` turn-N (343 lines) → extend `persona::prompt_assembly`~~  
   Discovered DEAD post-cutover; deleted in `54c49009e`. No port needed — initial assembly lives in `persona::prompt_assembly`; turn-N "delta" was a misread of TS API (the dead `assembleMessages` was a single function, not a delta call). **DONE.**
-- **0.5.3** `PersonaToolExecutor` (636 lines) → `cognition::tool_executor`
-  - Tool dispatch design: Rust commands callable directly; TS-side commands (browser/widget) callable via reverse-IPC
+- **0.5.3** `PersonaToolExecutor` (636 lines) → `cognition::tool_executor` trait + TS-IPC impl
+  - Survey 2026-04-21: PersonaToolExecutor is 150 LOC of persona-specific orchestration (workspace bootstrap, sentinel auto-config, ChatMessage storage, media filtering, event emission, telemetry) wrapping ~486 LOC of delegation to `AgentToolExecutor` (sibling 'universal' class under `src/system/tools/server`). Tool implementations themselves (`code/*`, `interface/*`, `collaboration/*`, `data/*`) are a thousand-line constellation that doesn't need to move now.
+  - Reshape: Rust defines `cognition::tool_executor::ToolExecutor` trait + types (`ToolCall`, `ToolResult`, `ToolExecutionContext`, `SingleToolExecution` — all `#[derive(TS)]` so TS imports from `shared/generated/`). First concrete impl is TS-IPC (calls back into TS for actual tool execution via reverse-IPC). The 150 LOC of persona-specific orchestration moves to Rust.
+  - Same pattern as `GpuMonitor` trait + `CpuMonitor`/`MockMonitor`/`MetalMonitor` impls.
+  - Full `AgentToolExecutor` + `ToolRegistry` port becomes a SEPARATE phase when tool implementations themselves have reason to move.
   - **REAL PORT** — live consumers (`PersonaUser`, `PersonaResponseGenerator`)
 - ~~**0.5.4** `PersonaAgentLoop` (309 lines) → `cognition::agent_loop`~~  
   Discovered DEAD post-cutover (zero external importers); deleted in `54c49009e`. Orchestration already in Rust path. **DONE.**
