@@ -183,6 +183,7 @@ fn build_input(fix: &Fixture, known_specialties: Vec<String>) -> RespondInput {
         system_prompt: fix.rust_request.system_prompt.clone(),
         model: fix.rust_request.model.clone(),
         is_voice: false,
+        message_media: Vec::new(),
     }
 }
 
@@ -278,6 +279,7 @@ async fn clean_minimal_input_produces_spoke() {
         system_prompt: "You are Helper AI. Respond naturally and concisely.".to_string(),
         model: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
         is_voice: false,
+        message_media: Vec::new(),
     };
     let response = respond(input)
         .await
@@ -450,6 +452,7 @@ async fn synthesized_prod_shape_input_produces_coherent_response() {
         system_prompt,
         model: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
         is_voice: false,
+        message_media: Vec::new(),
     };
     let response = respond(input)
         .await
@@ -581,6 +584,7 @@ async fn long_code_generation_request_completes_without_clipping() {
         system_prompt: fix.rust_request.system_prompt.clone(),
         model: fix.rust_request.model.clone(),
         is_voice: false,
+        message_media: Vec::new(),
     };
 
     let response = respond(input)
