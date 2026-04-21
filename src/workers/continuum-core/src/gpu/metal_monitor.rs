@@ -378,6 +378,10 @@ mod tests {
     /// nonsensical values (zero, way larger than physical RAM, etc.).
     /// Sanity bounds: total > 1GB (any Mac), free <= total + 10% (slack
     /// for inactive→free races), process > 0 + < total.
+    ///
+    /// Validated 2026-04-21: multiplied read_system_free_bytes return
+    /// by 100 (free → 26 GB × 100 = 2.6 TB), test fails on the
+    /// `free <= total + 10%` assertion at line 403; reverted.
     #[tokio::test(flavor = "multi_thread")]
     async fn memory_signals_are_within_sane_bounds() {
         let monitor = MetalMonitor::new().expect("MetalMonitor on macOS");
@@ -412,6 +416,10 @@ mod tests {
     /// What this catches: pressure receiver staying at 0.0 forever (tick
     /// task never updated it) OR landing outside [0, 1]. After the first
     /// tick, pressure must reflect real (free, total) ratio.
+    ///
+    /// Validated 2026-04-21: commented out the pressure_tx.send() in the
+    /// background tick (sampler stays stuck at initial 0.0), test fails
+    /// on the `p > 0.0` assertion at line 428; reverted.
     #[tokio::test(flavor = "multi_thread")]
     async fn pressure_updates_after_first_tick() {
         let monitor = MetalMonitor::new().expect("MetalMonitor on macOS");
@@ -433,6 +441,10 @@ mod tests {
     /// inconsistent values vs the individual getters. snapshot is what
     /// the FootprintRegistry sanity check uses to compare; if it drifts
     /// from total_bytes/process_bytes the cross-check goes wrong.
+    ///
+    /// Validated 2026-04-21: changed `platform()` to return
+    /// "wrong-platform", test fails on `assert_eq!(snap.platform, "metal")`
+    /// at line 441; reverted.
     #[tokio::test(flavor = "multi_thread")]
     async fn snapshot_matches_individual_getters() {
         let monitor = MetalMonitor::new().expect("MetalMonitor on macOS");
