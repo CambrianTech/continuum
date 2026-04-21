@@ -303,6 +303,7 @@ mod tests {
             },
             is_voice: false,
             social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
         };
 
         let result = assemble(&input);
@@ -328,6 +329,7 @@ mod tests {
             },
             is_voice: false,
             social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
         };
 
         let result = assemble(&input);
@@ -349,6 +351,7 @@ mod tests {
             },
             is_voice: true,
             social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
         };
 
         let result = assemble(&input);
@@ -378,6 +381,7 @@ mod tests {
                 response_count_this_session: Some(3),
                 response_cap: Some(10),
             }),
+            multi_party_strategy: MultiPartyChatStrategy::default(),
         };
 
         let result = assemble(&input);
@@ -415,6 +419,7 @@ mod tests {
             },
             is_voice: false,
             social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
         };
 
         let result = assemble(&input);
@@ -444,6 +449,7 @@ mod tests {
             },
             is_voice: false,
             social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
         };
 
         let result = assemble(&input);

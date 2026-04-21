@@ -92,6 +92,15 @@ pub struct LlamaCppAdapter {
     /// production tier-aware sizing is a follow-up (M5 Pro = 64K? or
     /// per-persona declaration).
     context_length_override: Option<u32>,
+    /// Per-residency KV quant policy. Controls type_k / type_v at each
+    /// lifecycle stage (Active hot in GPU, CpuResident warm in unified
+    /// memory, Idle spilled to NVMe). Default = `KvQuantPolicy::default()`
+    /// (F16/F16 active, Q8_0/F16 resident, Q8_0/Q8_0 spilled). Caller
+    /// overrides via `with_kv_quant_policy()` per recipe / hardware tier.
+    /// Currently only `active` is consumed at backend load time;
+    /// CpuResident and Idle land with the paging substrate (Phase 3.x).
+    /// See docs/architecture/PERSONA-CONTEXT-PAGING.md §16.
+    kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy,
 }
 
 impl LlamaCppAdapter {
@@ -119,6 +128,7 @@ impl LlamaCppAdapter {
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
             default_model: model.id.clone(),
             context_length_override: None,
+            kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
         }
     }
 
@@ -136,6 +146,19 @@ impl LlamaCppAdapter {
     /// cleanup SIGABRTs prevent clean exit (see PR #17869).
     pub fn with_context_length(mut self, n: u32) -> Self {
         self.context_length_override = Some(n);
+        self
+    }
+
+    /// Override the per-residency KV quant policy. Default is
+    /// `KvQuantPolicy::default()` — F16/F16 active for max decode speed,
+    /// Q8_0/F16 cpu-resident for compression with quality, Q8_0/Q8_0
+    /// spilled for minimum file size. Override per recipe / hardware
+    /// tier. See docs/architecture/PERSONA-CONTEXT-PAGING.md §16.
+    pub fn with_kv_quant_policy(
+        mut self,
+        policy: crate::inference::kv_quant::KvQuantPolicy,
+    ) -> Self {
+        self.kv_quant_policy = policy;
         self
     }
 
@@ -163,6 +186,13 @@ impl LlamaCppAdapter {
             ));
         }
 
+        // KV quant for the Active tier (the tier the backend is loaded
+        // into). CpuResident and Idle quants apply later when the paging
+        // substrate transitions sequences out of Active. Single source of
+        // truth: the policy on this adapter, declared by the caller.
+        let active_kv = self
+            .kv_quant_policy
+            .for_residency(crate::inference::kv_quant::Residency::Active);
         let config = LlamaCppConfig {
             model_path: self.model_path.clone(),
             n_gpu_layers: -1, // All layers to GPU
@@ -170,6 +200,8 @@ impl LlamaCppAdapter {
             // this via with_context_length() to bound the KV cache (24GB
             // at 262K → 500MB at 16K).
             context_length: self.context_length_override,
+            type_k: active_kv.k,
+            type_v: active_kv.v,
             ..Default::default()
         };
         let backend = LlamaCppBackend::load(config)

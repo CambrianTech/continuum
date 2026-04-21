@@ -17,6 +17,7 @@
 pub mod backends;
 pub mod candle_adapter;
 pub mod compute_router;
+pub mod kv_quant;
 pub mod llamacpp_adapter;
 pub mod lora;
 pub mod model;
