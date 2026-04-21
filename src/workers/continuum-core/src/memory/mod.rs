@@ -22,6 +22,7 @@
 pub mod cache;
 pub mod consciousness;
 pub mod consolidation_threshold;
+pub mod consolidator;
 pub mod conversation_summary;
 pub mod corpus;
 pub mod embedding;
@@ -34,6 +35,7 @@ pub use consciousness::build_consciousness_context;
 pub use consolidation_threshold::{
     AdaptiveConsolidationThreshold, ConsolidationThresholdStats,
 };
+pub use consolidator::{ConsolidationMetrics, Consolidator, ConsolidatorStats};
 pub use conversation_summary::{ConversationSummary, RecallMode};
 pub use corpus::MemoryCorpus;
 pub use embedding::{
