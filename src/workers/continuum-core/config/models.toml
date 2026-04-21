@@ -208,6 +208,8 @@ capabilities = ["text-generation", "chat", "tool-use", "streaming"]
 cost_input_per_1k = 0.0
 cost_output_per_1k = 0.0
 gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
+# Same shaping rule as the in-process row — see that row's comment.
+multi_party_strategy = "single_user_turn_flattened_history"
 
 # ─── In-process llama.cpp (Metal/CUDA direct) ───────────────────────────
 
@@ -244,3 +246,10 @@ chat_template = "{% for message in messages %}{{ '<|im_start|>' + message['role'
 # matches these strings against the streamed output and stops the seq.
 # Same architectural rule: per-model knobs are TOML, not adapter code.
 stop_sequences = ["<|im_end|>", "<|endoftext|>"]
+# Multi-party chat shape. qwen3.5 was trained on alternating user/assistant
+# turns; sending it 5+ consecutive user messages with name prefixes causes
+# near-immediate EOG response (verified 2026-04-20 via
+# tests/persona_respond_replay.rs::synthesized_prod_shape_input). Flatten
+# multi-party history into ONE user turn so the chat template sees
+# system + user + assistant — the shape the model was actually trained on.
+multi_party_strategy = "single_user_turn_flattened_history"

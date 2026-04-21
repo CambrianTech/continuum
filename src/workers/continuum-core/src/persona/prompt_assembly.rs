@@ -6,6 +6,7 @@
 //! Input: PromptAssemblyInput (persona identity, RAG context, shared analysis angle)
 //! Output: AssembledPrompt (system message + conversation history, ready for ai/generate)
 
+use crate::model_registry::types::MultiPartyChatStrategy;
 use serde::{Deserialize, Serialize};
 
 /// Input to prompt assembly. Carries everything needed to build the
@@ -29,6 +30,11 @@ pub struct PromptAssemblyInput {
     pub is_voice: bool,
     /// Social awareness signals (AI message count, human activity, etc.)
     pub social_signals: Option<SocialSignals>,
+    /// How to shape the conversation history for THIS model. Caller pulls
+    /// from the model_registry (single source of truth). assemble() never
+    /// guesses — it does what the registry declared.
+    #[serde(default)]
+    pub multi_party_strategy: MultiPartyChatStrategy,
 }
 
 /// A message in conversation history.
@@ -106,17 +112,43 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         );
     }
 
-    // Build message array
-    let mut messages: Vec<PromptMessage> = Vec::new();
+    // Build message array — strategy declared by the model registry,
+    // not guessed here.
+    let messages = match input.multi_party_strategy {
+        MultiPartyChatStrategy::NamePrefixedUserTurns => {
+            build_messages_name_prefixed(&input.history, &input.current_message)
+        }
+        MultiPartyChatStrategy::SingleUserTurnFlattenedHistory => {
+            build_messages_single_user_turn(&input.history, &input.current_message)
+        }
+    };
 
-    // Add conversation history with time gaps
+    // Estimate tokens (~4 chars per token)
+    let system_tokens = system_prompt.len() / 4;
+    let msg_tokens: usize = messages.iter().map(|m| m.content.len() / 4).sum();
+    let estimated_tokens = system_tokens + msg_tokens;
+
+    AssembledPrompt {
+        system_message: system_prompt,
+        messages,
+        estimated_tokens,
+    }
+}
+
+/// Strategy: NamePrefixedUserTurns. Each history entry becomes its own
+/// message preserving its declared role; multi-party speakers get a
+/// `Name: ` prefix on their content. Cloud chat models (Claude, GPT,
+/// etc.) handle this shape.
+fn build_messages_name_prefixed(
+    history: &[HistoryMessage],
+    current: &HistoryMessage,
+) -> Vec<PromptMessage> {
+    let mut messages: Vec<PromptMessage> = Vec::new();
     let mut last_timestamp: Option<u64> = None;
-    for msg in &input.history {
-        // Insert time gap marker if >5 minutes between messages
+    for msg in history {
         if let (Some(prev_ts), Some(curr_ts)) = (last_timestamp, msg.timestamp_ms) {
             let gap_ms = curr_ts.saturating_sub(prev_ts);
             if gap_ms > 300_000 {
-                // >5 min gap
                 let gap_mins = gap_ms / 60_000;
                 messages.push(PromptMessage {
                     role: "system".to_string(),
@@ -126,7 +158,6 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         }
         last_timestamp = msg.timestamp_ms;
 
-        // Format: "[HH:MM] Name: content" for multi-party awareness
         let formatted = if let Some(ref name) = msg.name {
             if let Some(ts) = msg.timestamp_ms {
                 let secs = (ts / 1000) % 86400;
@@ -146,51 +177,53 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         });
     }
 
-    // Identity reminder is INTENTIONALLY OMITTED here.
-    //
-    // Earlier this slot pushed a `system`-role reminder ("Remember: You
-    // are {name}...") between the history user-messages and the current
-    // user message. The chatml chat templates qwen3.5 was trained on
-    // expect single-system + alternating user/assistant; an extra
-    // system block injected mid-conversation is malformed structure
-    // and the render model emits EOG almost immediately ("the" / "" /
-    // bare `<think>`) — verified 2026-04-20 via
-    // tests/persona_respond_replay.rs::synthesized_prod_shape_input.
-    //
-    // The persona's identity is already in the leading system_prompt
-    // (built by RAG with the full IDENTITY section). The reminder was
-    // belt-and-suspenders for cases where the conversation drifted
-    // long; with realistic prod-shape input it's strictly destructive.
-    //
-    // Silence is NOT mentioned here. Whether to speak is decided upstream by
-    // score_persona() in the orchestrator; by the time we're assembling a
-    // prompt the decision is "this persona will respond." Telling the model
-    // about silence-as-an-option leaks into text (e.g. qwen3.5-4b with
-    // enable_thinking=false literally outputs "stay silent" or "[stay silent]"
-    // as its response). The render model's job is to produce the contribution,
-    // not second-guess the participation decision.
-
-    // Current message
-    let current_formatted = if let Some(ref name) = input.current_message.name {
-        format!("{}: {}", name, input.current_message.content)
+    let current_formatted = if let Some(ref name) = current.name {
+        format!("{}: {}", name, current.content)
     } else {
-        input.current_message.content.clone()
+        current.content.clone()
     };
     messages.push(PromptMessage {
-        role: input.current_message.role.clone(),
+        role: current.role.clone(),
         content: current_formatted,
     });
+    messages
+}
 
-    // Estimate tokens (~4 chars per token)
-    let system_tokens = system_prompt.len() / 4;
-    let msg_tokens: usize = messages.iter().map(|m| m.content.len() / 4).sum();
-    let estimated_tokens = system_tokens + msg_tokens;
-
-    AssembledPrompt {
-        system_message: system_prompt,
-        messages,
-        estimated_tokens,
+/// Strategy: SingleUserTurnFlattenedHistory. All history collapses into
+/// ONE user turn — a single block of transcript text — then the current
+/// message is appended in the same turn. The chat template then sees
+/// system + one user → one assistant, the user/assistant alternation
+/// distribution single-party-trained models like qwen3.5 expect.
+///
+/// Verified 2026-04-20: qwen3.5 emits 1-3 char EOG response on the
+/// NamePrefixed shape with 5+ user-role messages; flattened shape
+/// produces coherent multi-paragraph replies.
+fn build_messages_single_user_turn(
+    history: &[HistoryMessage],
+    current: &HistoryMessage,
+) -> Vec<PromptMessage> {
+    let mut transcript = String::new();
+    if !history.is_empty() {
+        transcript.push_str("Recent conversation:\n");
+        for msg in history {
+            let line = if let Some(ref name) = msg.name {
+                format!("{}: {}\n", name, msg.content)
+            } else {
+                format!("{}\n", msg.content)
+            };
+            transcript.push_str(&line);
+        }
+        transcript.push('\n');
     }
+    if let Some(ref name) = current.name {
+        transcript.push_str(&format!("New message from {name}:\n{}\n", current.content));
+    } else {
+        transcript.push_str(&format!("New message:\n{}\n", current.content));
+    }
+    vec![PromptMessage {
+        role: "user".to_string(),
+        content: transcript,
+    }]
 }
 
 /// Build social awareness block from signals.

@@ -273,6 +273,15 @@ async fn run_render(
         timestamp_ms: None,
     };
 
+    // Multi-party chat shape comes from the model registry — single
+    // source of truth per the OOP-adapter rule. Code never branches on
+    // model name. Default applies if the registry has no row (e.g. a
+    // brand-new cloud model not yet declared).
+    let multi_party_strategy = crate::model_registry::try_global()
+        .and_then(|reg| reg.model(&input.model))
+        .map(|m| m.multi_party_strategy.clone())
+        .unwrap_or_default();
+
     let prompt_input = PromptAssemblyInput {
         persona_name: input.persona.display_name.clone(),
         system_prompt: input.system_prompt.clone(),
@@ -281,6 +290,7 @@ async fn run_render(
         current_message,
         is_voice: input.is_voice,
         social_signals: None,
+        multi_party_strategy,
     };
 
     let assembled = assemble(&prompt_input);

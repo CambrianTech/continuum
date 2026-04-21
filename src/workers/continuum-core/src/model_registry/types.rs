@@ -68,6 +68,26 @@ pub enum AuthKind {
     None,
 }
 
+/// How prompt_assembly should shape multi-party chat history when
+/// rendering a turn for this model. Single source of truth for
+/// model-specific chat-shaping per the OOP-adapter rule (CLAUDE.md
+/// "compression principle"): one decision lives in one place.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MultiPartyChatStrategy {
+    /// Each speaker becomes its own user-role message with `Speaker:`
+    /// prefix. Works for cloud models (Claude, GPT, etc.) trained on
+    /// rich multi-party + multi-role distributions.
+    #[default]
+    NamePrefixedUserTurns,
+    /// All history collapses into ONE user turn — a single block of
+    /// transcript text — then the current message is appended in the
+    /// same turn. The chat template sees system + one user, matching
+    /// the user→assistant alternation that single-party-trained models
+    /// like qwen3.5 expect.
+    SingleUserTurnFlattenedHistory,
+}
+
 /// A single model's metadata. Loaded from TOML; never constructed in code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model {
@@ -128,6 +148,18 @@ pub struct Model {
     /// re-forge the GGUF with the template embedded, not to patch code.
     #[serde(default)]
     pub chat_template: Option<String>,
+    /// How prompt_assembly should shape multi-party chat history for
+    /// this model. Different models were trained on different chat
+    /// distributions; sending a shape they didn't see causes silent
+    /// failures (qwen3.5 emits 1-3 char EOG response when given 5+
+    /// consecutive user-role messages with name prefixes — verified
+    /// 2026-04-20 via tests/persona_respond_replay.rs).
+    ///
+    /// Source of truth lives here in the registry, not duplicated in
+    /// adapter or prompt-assembly code. Adapters consume this — they
+    /// don't decide it.
+    #[serde(default)]
+    pub multi_party_strategy: MultiPartyChatStrategy,
     /// Text-form stop sequences to apply at the scheduler boundary.
     /// Necessary when the GGUF's `tokenizer.ggml.eos_token_id` is
     /// wrong/missing for chat use — the model emits the chat-template
