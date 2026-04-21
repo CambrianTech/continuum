@@ -1272,7 +1272,7 @@ Substeps in dependency order (each TDD/VDD'd):
 - **0.5.5** `Hippocampus` (693 lines) → `memory::consolidator`
   - STM→LTM consolidation pass; runs concurrently per persona instead of serialized through Node
   - Hugely measurable perf win for multi-persona scenarios
-  - Live status TBD — same enumeration as 0.5.2/0.5.4 should run before assuming this is real port work
+  - **REAL PORT** — confirmed live 2026-04-21: three external importers (`PersonaUser.ts:116`, `LimbicSystem.ts:19`, `TieredMemoryCache.ts:298`)
 - **0.5.6** `PersonaResponseGenerator` orchestrator (~700 lines) → `persona::response::cycle`
   - The integration point. Once this lands, `personaRespond` becomes the full per-persona cycle, and the TS module reduces to a thin async caller
 - **0.5.X** **Multimodal restoration in Rust persona path** (added 2026-04-21)
