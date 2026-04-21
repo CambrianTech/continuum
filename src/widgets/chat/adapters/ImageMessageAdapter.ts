@@ -159,10 +159,6 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
       .image-message-content {
         border-radius: 8px;
         overflow: hidden;
-        /* No background — the parent chat bubble already provides one.
-         * The wrapper-level background was the source of the
-         * white/grey gutter visible around landscape images
-         * (Joel 2026-04-21). */
       }
 
       /* Grid layout for multiple images */
