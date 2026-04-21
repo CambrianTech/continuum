@@ -119,7 +119,11 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
             build_messages_name_prefixed(&input.history, &input.current_message)
         }
         MultiPartyChatStrategy::SingleUserTurnFlattenedHistory => {
-            build_messages_single_user_turn(&input.history, &input.current_message)
+            build_messages_single_user_turn(
+                &input.history,
+                &input.current_message,
+                &input.persona_name,
+            )
         }
     };
 
@@ -195,12 +199,20 @@ fn build_messages_name_prefixed(
 /// system + one user → one assistant, the user/assistant alternation
 /// distribution single-party-trained models like qwen3.5 expect.
 ///
-/// Verified 2026-04-20: qwen3.5 emits 1-3 char EOG response on the
-/// NamePrefixed shape with 5+ user-role messages; flattened shape
-/// produces coherent multi-paragraph replies.
+/// Verified 2026-04-21: bare flattened transcript (history + new message
+/// with no closing instruction) makes qwen3.5 emit ` *` + `<|endoftext|>`
+/// after 1 token because the model reads it as "summary of a closed
+/// conversation, no question for me." The cognition::analyze prompt that
+/// works ends with explicit "Respond with ..." guidance; the render
+/// prompt needs the same. Token-level diagnostic captured in
+/// llamacpp_scheduler.rs (search "scheduler DIAG").
+///
+/// Caller must pass `persona_name` so the closing cue addresses the
+/// right responder.
 fn build_messages_single_user_turn(
     history: &[HistoryMessage],
     current: &HistoryMessage,
+    persona_name: &str,
 ) -> Vec<PromptMessage> {
     let mut transcript = String::new();
     if !history.is_empty() {
@@ -220,6 +232,15 @@ fn build_messages_single_user_turn(
     } else {
         transcript.push_str(&format!("New message:\n{}\n", current.content));
     }
+    // Closing cue. Same intent as the analyzer's "Respond with ONLY ..."
+    // — without this the render model has no clear signal that it should
+    // produce content for THIS turn (vs. summarizing a passive log).
+    // Lives inside the same user turn so chat-template structure stays
+    // single-system + single-user → assistant.
+    transcript.push_str(&format!(
+        "\nRespond now as {persona_name}. Reply directly to the new message above — \
+         no name prefix, no quoting, just your contribution.\n"
+    ));
     vec![PromptMessage {
         role: "user".to_string(),
         content: transcript,
