@@ -27,6 +27,7 @@ pub mod consolidator;
 pub mod conversation_summary;
 pub mod corpus;
 pub mod embedding;
+pub mod raw_adapter;
 pub mod recall;
 pub mod timeline;
 pub mod types;
@@ -47,6 +48,7 @@ pub use embedding::{
     cosine_similarity, DeterministicEmbeddingProvider, EmbeddingProvider, FastEmbedProvider,
     ModuleBackedEmbeddingProvider,
 };
+pub use raw_adapter::RawMemoryAdapter;
 pub use recall::{MultiLayerRecall, RecallLayer, RecallQuery, ScoredMemory};
 pub use types::*;
 
