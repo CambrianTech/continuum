@@ -489,6 +489,21 @@ impl<'m> Context<'m> {
         unsafe { sys::llama_n_ctx(self.ptr.as_ptr()) }
     }
 
+    /// Bytes llama.cpp has actually committed to the KV cache for the given
+    /// sequence id. The honest source of truth for per-seq KV size — works
+    /// across any model architecture (uniform attention, hybrid attention+SSM
+    /// like qwen3.5 where only some layers carry KV, MoE) because llama.cpp
+    /// computes it from the actual cache layout it built, not from a Rust-side
+    /// "just multiply n_layer × n_head_kv × head_dim" estimate that drifts on
+    /// hybrid arches.
+    ///
+    /// Returns 0 if the seq doesn't exist or has no committed KV (e.g.,
+    /// before its first decode). Used by the FootprintRegistry to attribute
+    /// per-persona KV bytes — see `inference::footprint_registry`.
+    pub fn seq_state_bytes(&self, seq_id: i32) -> u64 {
+        unsafe { sys::llama_state_seq_get_size(self.ptr.as_ptr(), seq_id) as u64 }
+    }
+
     /// Process a batch through the model (updates KV cache, produces logits
     /// for tokens where `batch.push(..., want_logits=true)` was called).
     ///

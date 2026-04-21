@@ -47,6 +47,8 @@ use std::time::Instant;
 use llama::{Batch, ContextParams, FlashAttn, KvCacheType, Model, Sampler};
 use uuid::Uuid;
 
+use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
+use crate::inference::kv_quant::Residency;
 use crate::runtime;
 
 use super::SamplingConfig;
@@ -271,6 +273,21 @@ fn driver_loop(
                                 seq.prompt_tokens.len(),
                                 seq.max_tokens
                             ));
+                            // Pending registry entry — bytes:0 marks "this seq
+                            // exists but llama.cpp hasn't committed KV yet."
+                            // Resolves to the real number after PrefillFinal
+                            // succeeds. Skipped when persona_id is None
+                            // (test rigs / ad-hoc probes don't get attribution).
+                            if let Some(pid) = seq.persona_id {
+                                footprint_registry::global().add(
+                                    FootprintKey::for_persona(
+                                        pid,
+                                        ResourceType::KvCache,
+                                        Residency::Active,
+                                    ),
+                                    0,
+                                );
+                            }
                             active.insert(seq_id, seq);
                         }
                         Err(e) => {
@@ -422,7 +439,46 @@ fn driver_loop(
                 sample_call_iter_total += sample_call_elapsed;
                 seq.sampler.accept(token);
 
+                // If this role was PrefillFinal (first decode for the seq),
+                // llama.cpp has now committed the seq's KV cache. Ask the
+                // backend for the exact bytes and overwrite the pending
+                // registry entry. Done here (not in a separate pass) because
+                // we already have the seq + role in scope and the cost is
+                // one FFI call. seq_state_bytes returns 0 if seq doesn't
+                // exist — defensive fallback never lands a fake number.
+                let was_prefill_final = matches!(role, BatchRole::PrefillFinal { .. });
+                if was_prefill_final {
+                    if let Some(pid) = seq.persona_id {
+                        let bytes = ctx.seq_state_bytes(seq_id);
+                        if bytes > 0 {
+                            footprint_registry::global().report_authoritative(
+                                FootprintKey::for_persona(
+                                    pid,
+                                    ResourceType::KvCache,
+                                    Residency::Active,
+                                ),
+                                bytes,
+                            );
+                        }
+                    }
+                }
+
                 if model.is_eog_token(token) {
+                    // Registry cleanup MUST happen before sending Done, so
+                    // any caller awaiting on the channel sees a consistent
+                    // registry state (entry removed) the moment generate
+                    // returns. Phase 5 only does memory_seq_rm + free_seq.
+                    if let Some(pid) = seq.persona_id {
+                        let bytes = ctx.seq_state_bytes(seq_id);
+                        footprint_registry::global().remove(
+                            &FootprintKey::for_persona(
+                                pid,
+                                ResourceType::KvCache,
+                                Residency::Active,
+                            ),
+                            bytes,
+                        );
+                    }
                     let _ = seq.response_tx.send(TokenEvent::Done {
                         tokens_generated: seq.tokens_generated,
                         elapsed_ms: seq.started_at.elapsed().as_millis() as u64,
@@ -441,6 +497,20 @@ fn driver_loop(
                     .iter()
                     .any(|s| seq.output_so_far.ends_with(s));
                 if stop_hit || seq.tokens_generated >= seq.max_tokens {
+                    // Same pre-Done registry cleanup as the EOG path —
+                    // single source of truth on what state the channel
+                    // completion signals.
+                    if let Some(pid) = seq.persona_id {
+                        let bytes = ctx.seq_state_bytes(seq_id);
+                        footprint_registry::global().remove(
+                            &FootprintKey::for_persona(
+                                pid,
+                                ResourceType::KvCache,
+                                Residency::Active,
+                            ),
+                            bytes,
+                        );
+                    }
                     let _ = seq.response_tx.send(TokenEvent::Done {
                         tokens_generated: seq.tokens_generated,
                         elapsed_ms: seq.started_at.elapsed().as_millis() as u64,
@@ -502,8 +572,33 @@ fn driver_loop(
         }
 
         // ── Phase 5: Free completed seqs ──
+        // Registry cleanup happens UPSTREAM at the Done send (Phase 4),
+        // so callers awaiting on the channel see a consistent registry
+        // state when they unblock. Here we only do the llama.cpp seq_rm
+        // and return the seq_id to the free pool.
+        //
+        // Decode-error path: also pushes to to_remove, but bypasses the
+        // Phase 4 cleanup. We catch it here as a fallback — if the seq is
+        // still in `active` AND has a persona_id with a registry entry,
+        // remove it. seq_state_bytes(seq_id) is still valid before
+        // memory_seq_rm.
         for seq_id in to_remove {
+            // Fallback registry cleanup (only fires for paths that didn't
+            // already clean up — the decode-error path is the only one).
+            if let Some(seq) = active.get(&seq_id) {
+                if let Some(pid) = seq.persona_id {
+                    let key =
+                        FootprintKey::for_persona(pid, ResourceType::KvCache, Residency::Active);
+                    // If the entry was already cleaned up by Phase 4, this
+                    // is a no-op (remove on missing key does nothing). If
+                    // it's still here (decode-error path), drain it to 0.
+                    let bytes = ctx.seq_state_bytes(seq_id);
+                    footprint_registry::global().remove(&key, bytes);
+                }
+            }
+
             ctx.memory_seq_rm(seq_id, -1, -1);
+
             if let Some(seq) = active.remove(&seq_id) {
                 log.info(&format!(
                     "Seq {} finished: {} tokens in {}ms ({:.1} tok/s)",
