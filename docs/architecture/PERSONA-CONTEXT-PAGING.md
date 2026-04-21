@@ -402,7 +402,123 @@ This is the same lesson that made macOS's power management win against the older
 
 The rule-based policy never goes away — it's the **safe-mode fallback** when the learned policy hasn't been trained yet (new install, new hardware tier) or when its decisions look out-of-distribution (sanity-check guardrails). Same pattern as macOS's "performance" preset acting as the rule-based safety net under the learned governor.
 
-## 10. Why This Beats Hard Limits (Restated)
+## 10. The Rust Layer Is Bidirectional — Levers AND Telemetry
+
+The policy (rule-based today, learned tomorrow) doesn't itself touch GPU memory or NVMe. The Rust layer is what makes the policy's decisions real, and what gives the policy the visibility to decide intelligently. The contract is **bidirectional**:
+
+### 10.1 Levers — what the Rust layer exposes downward
+
+The mechanisms the policy invokes to change reality:
+
+```
+PageableBackend trait (model layer):
+  alloc_seq(seq_id, context_length)
+  save_seq_state(seq_id, path)         // spill KV to NVMe
+  load_seq_state(seq_id, path)         // resume KV from NVMe
+  free_seq(seq_id)                     // discard KV entirely
+  resize_seq(seq_id, new_context_length)  // adjust budget without spill
+
+GenomeBackend trait (adapter layer):
+  load_adapter(adapter_id) → ActivateSkillResult   // already in genome_paging.rs
+  evict_adapter(adapter_id)                        // already in genome_paging.rs
+  spill_adapter(adapter_id, path)                  // future: spill to NVMe vs full evict
+  bind_adapter_to_seq(seq_id, adapter_id)          // per-seq LoRA composition
+
+SpillStore trait (storage layer):
+  write(key, bytes) -> latency observed
+  read(key) -> bytes + latency observed
+  delete(key)
+  available_bytes()
+```
+
+The traits are the architecture's contract. New backends (Candle, Mistral.rs, future cloud adapters with state APIs) implement them; the policy doesn't change.
+
+### 10.2 Telemetry — what the Rust layer reports upward
+
+What the policy reads to make its next decision:
+
+```
+Memory observability (continuous):
+  GpuMemoryManager::pressure() -> 0.0..1.0
+  GpuMemoryManager::inference_budget_bytes() -> u64
+  GpuMemoryManager::total_vram_bytes() -> u64
+  per-backend resident_bytes() per seq_id
+  per-adapter resident_bytes() per adapter_id
+
+Latency observability (per operation):
+  prefill_ms, decode_ms_per_token (already in llamacpp_scheduler perf log)
+  spill_ms, resume_ms (the cost the policy paid for paging decisions)
+  cold_load_ms (worst-case persona resume)
+  adapter_swap_ms (already tracked in genome_paging)
+
+Behavioral observability (post-hoc, for the learned policy's training):
+  was_spilled_seq_resumed_within(threshold) -> bool   // "wasted spill" signal
+  was_kept_hot_seq_idle_for(threshold) -> bool        // "wasted RAM" signal
+  did_first_token_meet_latency_budget -> bool         // SLA signal
+  attention_distribution_over_context -> Vec<f32>     // RAG efficiency signal
+```
+
+Both directions are first-class Rust types. The policy is just the consumer of telemetry + producer of lever invocations. The Rust layer is what makes the policy *possible* — without the levers it has no way to act, without the telemetry it has no way to learn.
+
+This is also the reason the policy can be progressively replaced (rule → ML → anything else) without changing the substrate. The Rust contract stays stable; the policy implementation evolves underneath the same trait surface.
+
+## 11. LoRA / Genome Adapters Are the Same Paging Problem
+
+`persona/genome_paging.rs` already tracks per-adapter state — `GenomeAdapterInfo` with priority, loaded-flag, last-activated, trained-model name. This was scoped as "page LoRA adapters in/out based on task domain" in the Persona Convergence Roadmap, which is conceptually identical to KV-state paging — the only difference is what's being paged.
+
+**The right architecture: one PagingPolicy, two resource types** (KV state + LoRA adapters), each with a `PageableResource` trait variant. Same lifecycle states, same signal-driven decisions, same eviction logic.
+
+### 11.1 LoRA-specific dimensions
+
+Adapter paging adds nuances KV doesn't have:
+
+- **Compositional**: a single inference can apply N LoRA adapters simultaneously (per-layer scaling). The paging policy needs to track which COMBINATION is active per seq, not just which individual adapters.
+- **Compacted base model**: per `genome_paging.rs::CompactionMetadata`, some adapters target a compacted base (fewer attention heads). Loading such an adapter implies switching the base — much heavier than just adding LoRA weights to the standard model. The policy's cost model has to account for this.
+- **Bigger spill cost relative to size**: LoRA adapter weights are tens of MB each; the resume cost per byte is dominated by the disk seek, not the bandwidth. Spilling a small adapter is rarely worth it; evicting (full discard, re-download from storage on resume) is often the right move.
+- **Hot-swap mid-conversation**: a persona shifts from chat to coding mid-turn. The right LoRA shifts. Paging policy needs to allow per-turn adapter set changes without invalidating the persona's KV state (since LoRA changes the model's output distribution but not the KV layout — the existing KV remains valid).
+
+### 11.2 Combined budget
+
+Total persona memory cost = `KV_bytes + active_adapter_bytes + base_model_share`. The policy budgets across all of it:
+
+```
+hardware_ceiling
+  = base_model_load (Q4 4B = ~2.5GB for qwen3.5)
+  + sum(active KV slots × per-slot context_length × per-token-cost)
+  + sum(active LoRA adapters × adapter_size)
+  + sum(active compacted_base_models × base_size)
+  + Metal compute buffers (~1GB)
+  + OS overhead
+```
+
+When pressure rises, the policy chooses which to spill: KV first if cheaply re-prefillable, LoRA adapters if recently-unused, compacted-base last (most expensive to reload). Cost-driven, not type-prioritized.
+
+### 11.3 LoRA + KV interaction in lifecycle
+
+When a persona spills its KV but keeps its LoRA loaded (cheaper memory + per-byte spill cost), the LoRA stays "warm" — next persona resume is fast because only KV needs to come back from NVMe. When BOTH are spilled, full cold-resume.
+
+State combinations:
+- KV=Active, LoRA=Active: persona ready to speak immediately
+- KV=Idle, LoRA=Active: persona waking up (~1.7s for KV resume, LoRA already there)
+- KV=Idle, LoRA=Cold: persona waking up + adapter reload (~few hundred ms extra)
+- KV=Cold, LoRA=Cold: full cold-start (worst case, multi-second)
+- KV=Active, LoRA=Cold: rare — usually paired
+
+### 11.4 Existing infrastructure to integrate
+
+Per `persona/genome_paging.rs`:
+- `GenomePagingState` is already the right shape for the LoRA half
+- `ActivateSkillResult` already returns `evicted` adapters — the eviction primitive exists
+- Plasticity compaction is already accounted for
+
+The integration work is:
+1. Extract a `PageableResource` trait that both `GenomePagingState` and the new `PersonaContextSlot` implement
+2. Move the eviction-decision logic OUT of `GenomePagingState` (currently inline) and into the unified `PagingPolicy`
+3. Have the policy compose: "to make room for X bytes, evict the lowest-cost combination of KV slots + adapters that frees X bytes"
+
+This is also where the Academy / Forge / Sentinel-AI hooks plug in — fine-tuning produces new adapter artifacts, and the paging system has to know about them at registration time so the policy can budget them.
+
+## 12. Why This Beats Hard Limits (Restated)
 
 - Limit-based: persona count is capped at `floor(RAM / per_persona_KV)`. New persona request beyond the cap → error / refusal.
 - Paging-based: persona count is unbounded. New persona request → if hot set is full, the lowest-importance hot persona spills to NVMe in the background. The new persona starts cold, accepts ~1.5s first-token latency.
