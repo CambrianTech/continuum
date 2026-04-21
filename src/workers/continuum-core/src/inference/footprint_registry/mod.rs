@@ -1,6 +1,6 @@
 //! Per-component memory footprint registry — "what are we made of?"
 //!
-//! Per §13 of docs/architecture/PERSONA-CONTEXT-PAGING.md: GpuMonitor
+//! Per §13 of `docs/architecture/PERSONA-CONTEXT-PAGING.md`: GpuMonitor
 //! (§12) tells the policy WHAT pressure looks like; the registry tells
 //! it WHAT to do about it. Without per-component attribution the policy
 //! knows "we're at 90% of process limit" but has no idea WHICH of N
@@ -16,234 +16,30 @@
 //! The registry's `cheapest_eviction_for` is what makes paging real:
 //! given "free X bytes," it returns a plan picking the lowest-cost
 //! combination of evictable entries. Cost-driven, not type-prioritized.
+//!
+//! Module layout:
+//!
+//! - `mod.rs` (this file) — `FootprintRegistry` impl, global singleton,
+//!   integration tests across the registry's behavior.
+//! - `types.rs` — pure data shapes (ResourceType, FootprintKey,
+//!   FootprintEntry, EvictionPlan, RegistryHealth, RegistrySnapshot)
+//!   + key constructors. Independently testable for layout/equality.
+//! - `costs.rs` — spill/reload heuristics per ResourceType + tests for
+//!   policy invariants (KV cheaper than ModelWeights to spill, etc.).
+//!   The file Phase 4.0 telemetry will replace as measurements mature.
 
-use crate::inference::kv_quant::Residency;
+mod costs;
+mod types;
+
+pub use types::{
+    EvictionPlan, FootprintEntry, FootprintKey, RegistryHealth, RegistrySnapshot, ResourceType,
+};
+
 use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::SystemTime;
 use uuid::Uuid;
-
-/// What kind of memory the entry represents. Each variant has its own
-/// reload-cost characteristics that the policy uses for eviction
-/// planning. `Other(String)` is the extension hatch — new resource
-/// types (vision-encoder cache, MoE expert weights, etc.) land
-/// without touching the enum core.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResourceType {
-    /// Per-sequence KV cache (the §16 quantizable resource).
-    KvCache,
-    /// LoRA / genome adapter weights (the §11 paging target).
-    LoraAdapter,
-    /// Base model weights (rarely evictable — reload is multi-second).
-    ModelWeights,
-    /// Bevy render buffers, avatar models, animation state.
-    RenderBuffer,
-    /// Tokenizer vocab + merges cache.
-    TokenizerCache,
-    /// Live audio pipeline buffers (STT, TTS).
-    AudioPipeline,
-    /// Live video pipeline frames + GPU upload buffers.
-    VideoPipeline,
-    /// Extension hatch — variants not yet promoted to first-class.
-    Other(String),
-}
-
-/// Composite key — every dimension the policy might want to project on.
-/// `Option<Uuid>` for persona/recipe means "persona-agnostic" or
-/// "outside any recipe" (model weights, tokenizer cache).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct FootprintKey {
-    pub persona_id: Option<Uuid>,
-    pub recipe_id: Option<Uuid>,
-    pub backend_id: Option<String>,
-    pub resource_type: ResourceType,
-    pub residency: Residency,
-}
-
-impl FootprintKey {
-    /// Construct a key with the most common shape: persona + resource
-    /// type + residency. Recipe and backend default to None.
-    pub fn for_persona(
-        persona_id: Uuid,
-        resource_type: ResourceType,
-        residency: Residency,
-    ) -> Self {
-        Self {
-            persona_id: Some(persona_id),
-            recipe_id: None,
-            backend_id: None,
-            resource_type,
-            residency,
-        }
-    }
-
-    /// Construct a persona-agnostic key (e.g., model weights, tokenizer).
-    pub fn shared(resource_type: ResourceType, residency: Residency) -> Self {
-        Self {
-            persona_id: None,
-            recipe_id: None,
-            backend_id: None,
-            resource_type,
-            residency,
-        }
-    }
-
-    /// Construct a backend-scoped key. Used when multiple backends/models
-    /// are loaded concurrently and each one's `model_weights` (or
-    /// tokenizer cache, etc.) needs distinct accounting. Without the
-    /// backend_id discriminator a second `report_authoritative` would
-    /// overwrite the first model's bytes — silently making the second
-    /// load look free.
-    pub fn for_backend(
-        backend_id: impl Into<String>,
-        resource_type: ResourceType,
-        residency: Residency,
-    ) -> Self {
-        Self {
-            persona_id: None,
-            recipe_id: None,
-            backend_id: Some(backend_id.into()),
-            resource_type,
-            residency,
-        }
-    }
-}
-
-/// One entry's accounting state. `bytes` updates as the resource
-/// grows/shrinks; cost estimates start as heuristics and refine from
-/// observed spill/reload measurements (Phase 4.0 telemetry feedback).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FootprintEntry {
-    pub bytes: u64,
-    pub last_active: SystemTime,
-    /// True if `bytes` was set by the backend's authoritative
-    /// `seq_bytes()` call (ground truth) vs our internal accounting.
-    /// Drift between the two = a bug to chase via `sanity_check`.
-    pub backend_reported: bool,
-    /// Estimated cost to spill this entry (transition from current
-    /// residency to a colder tier). Microseconds. Starts as heuristic;
-    /// updated from real spill measurements.
-    pub spill_cost_micros: u64,
-    /// Estimated cost to bring this entry back to Active. Microseconds.
-    pub reload_cost_micros: u64,
-}
-
-impl FootprintEntry {
-    /// Construct with default cost heuristics for the resource type.
-    /// Backends can refine via `report_with_costs` once their actual
-    /// spill/reload latencies are measured.
-    pub fn new(bytes: u64, resource_type: &ResourceType) -> Self {
-        let (spill_us, reload_us) = default_costs_for(resource_type, bytes);
-        Self {
-            bytes,
-            last_active: SystemTime::now(),
-            backend_reported: false,
-            spill_cost_micros: spill_us,
-            reload_cost_micros: reload_us,
-        }
-    }
-}
-
-/// Default spill/reload cost heuristics keyed on resource type. These
-/// match the "rough first-cut" estimates from §13.4 of the design doc:
-/// KV is cheap to spill (raw bytes to NVMe), model weights are
-/// expensive to reload (multi-second mmap+upload), adapters somewhere
-/// in between. Refined by Phase 4.0 telemetry as we measure real costs.
-fn default_costs_for(resource_type: &ResourceType, bytes: u64) -> (u64, u64) {
-    // NVMe write/read: ~1 GB/s sustained on M5 (conservative; real PCIe5
-    // hits 14 GB/s but we account for overhead). bytes/1_000 = micros.
-    let nvme_micros = bytes / 1_000;
-    // GPU upload from CPU: ~5 GB/s on Apple Silicon unified memory.
-    let gpu_upload_micros = bytes / 5_000;
-
-    match resource_type {
-        ResourceType::KvCache => (
-            nvme_micros,                     // spill: raw write
-            nvme_micros + gpu_upload_micros, // reload: read + GPU upload
-        ),
-        ResourceType::LoraAdapter => (
-            // Adapters are usually cheaper to evict (re-download from
-            // storage) than spill. Treat eviction cost as 0 (storage
-            // is fast); reload is HF download + GPU upload.
-            0,
-            500_000 + gpu_upload_micros, // ~500ms HF roundtrip + upload
-        ),
-        ResourceType::ModelWeights => (
-            // Almost never spillable in practice — model load is
-            // multi-second, mmap'd from disk. Mark spill as expensive
-            // so the eviction policy avoids it.
-            5_000_000,               // 5 seconds (mmap teardown)
-            5_000_000 + nvme_micros, // load + read
-        ),
-        ResourceType::RenderBuffer | ResourceType::AudioPipeline | ResourceType::VideoPipeline => {
-            // Pipeline buffers — small, fast to recreate. Effectively
-            // free to evict.
-            (1_000, 10_000)
-        }
-        ResourceType::TokenizerCache => (
-            // Tokenizer is small (~2MB) and mmap'd; treat as effectively
-            // permanent. Spill cost set high so the policy never picks it.
-            10_000_000, 10_000_000,
-        ),
-        ResourceType::Other(_) => (nvme_micros, nvme_micros + gpu_upload_micros),
-    }
-}
-
-/// An eviction plan: the cheapest combination of registry entries that,
-/// if evicted, would free at least `target_bytes`. Returned by
-/// `cheapest_eviction_for`; the policy applies it via the backend's
-/// PageableBackend lever (Phase 3.0).
-#[derive(Debug, Clone)]
-pub struct EvictionPlan {
-    pub entries: Vec<(FootprintKey, FootprintEntry)>,
-    pub bytes_freed: u64,
-    pub estimated_cost_micros: u64,
-}
-
-/// Health report from `sanity_check`. `Healthy` = registry total within
-/// `drift_pct_threshold` of the monitor's process_bytes; `Drifted` =
-/// something allocates without reporting (bug to chase).
-#[derive(Debug, Clone, PartialEq)]
-pub enum RegistryHealth {
-    Healthy {
-        drift_pct: f32,
-    },
-    Drifted {
-        registry_total: u64,
-        monitor_process_bytes: u64,
-        drift_pct: f32,
-    },
-}
-
-/// Point-in-time snapshot of the registry, suitable for serialization to
-/// logs, jtag commands, or telemetry sinks. Everything is owned (no
-/// borrows into the live DashMap) so callers can hold onto a snapshot
-/// across awaits without contending with concurrent allocators.
-///
-/// The snapshot is a passive view — mutating it does not mutate the
-/// live registry. To affect state, use the `add` / `remove` /
-/// `report_authoritative` methods.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistrySnapshot {
-    /// Total bytes across every entry. Cross-check against monitor's
-    /// `process_bytes` for drift detection.
-    pub total_bytes: u64,
-    /// Number of distinct entries. A growing entry count without growing
-    /// total_bytes suggests fragmentation (lots of small allocations);
-    /// a shrinking count with stable bytes suggests entries are being
-    /// merged.
-    pub entry_count: usize,
-    /// Bytes broken down by resource type. Usually `ModelWeights`
-    /// dominates; if `KvCache` overtakes weights, the conversation has
-    /// gotten very long or n_seq_max is high.
-    pub by_resource_type: HashMap<ResourceType, u64>,
-    /// Per-persona total bytes. Empty entries (persona reported nothing)
-    /// don't appear; absence is meaningful.
-    pub by_persona: HashMap<Uuid, u64>,
-}
 
 /// The registry. DashMap-backed so multiple personas / threads can
 /// add+remove concurrently without contention (sharded internally).
@@ -500,29 +296,12 @@ impl Default for FootprintRegistry {
 // can't fail (no I/O, no parsing — empty DashMap). That removes the
 // "did someone wire init?" footgun: any caller can read or write at any
 // time without pre-boot ceremony.
-//
-// Threading: OnceLock is sync + send. DashMap is sharded internally for
-// lock-free concurrent access. The combination handles the substrate's
-// stated concurrency requirement (100+ persona pipelines reporting in
-// parallel without contention).
 
 static GLOBAL: OnceLock<FootprintRegistry> = OnceLock::new();
 
 /// The process-wide registry. Lazy-initialized on first call. Safe to
 /// invoke from any thread, any phase of startup. Idempotent — every
 /// caller gets the same `&'static` reference.
-///
-/// Use this from allocation sites:
-/// ```ignore
-/// use continuum_core::inference::footprint_registry;
-/// use continuum_core::inference::footprint_registry::{FootprintKey, ResourceType};
-/// use continuum_core::inference::kv_quant::Residency;
-///
-/// footprint_registry::global().report_authoritative(
-///     FootprintKey::for_backend("qwen3.5-4b", ResourceType::ModelWeights, Residency::Active),
-///     2_500_000_000,
-/// );
-/// ```
 pub fn global() -> &'static FootprintRegistry {
     GLOBAL.get_or_init(FootprintRegistry::new)
 }
@@ -536,12 +315,18 @@ pub fn try_global() -> Option<&'static FootprintRegistry> {
     GLOBAL.get()
 }
 
-// ─── Tests ─────────────────────────────────────────────────────────────
+// ─── Tests — registry behavior + singleton ─────────────────────────────
+//
+// Type-shape tests (key distinctness, constructor field ownership) live
+// in types::tests. Cost heuristic invariants live in costs::tests. The
+// tests below exercise registry BEHAVIOR — adds, removes, queries,
+// eviction planning, sanity check, snapshot, singleton identity.
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::gpu::MockMonitor;
+    use crate::inference::kv_quant::Residency;
 
     fn persona_kv_key(persona_id: Uuid) -> FootprintKey {
         FootprintKey::for_persona(persona_id, ResourceType::KvCache, Residency::Active)
@@ -559,7 +344,6 @@ mod tests {
         reg.add(key.clone(), 1000);
         assert_eq!(reg.entry_count(), 1);
         assert_eq!(reg.total_bytes(), 1000);
-        // Same key again: should add, not replace
         reg.add(key.clone(), 500);
         assert_eq!(
             reg.entry_count(),
@@ -584,7 +368,6 @@ mod tests {
         assert_eq!(reg.entry_count(), 0, "zero-byte entry should be removed");
         assert_eq!(reg.total_bytes(), 0);
 
-        // Partial remove leaves entry alive
         reg.add(key.clone(), 1000);
         reg.remove(&key, 300);
         assert_eq!(reg.entry_count(), 1);
@@ -619,7 +402,6 @@ mod tests {
 
         assert_eq!(reg.persona_total(helper), 1500);
         assert_eq!(reg.persona_total(teacher), 2000);
-        // Persona that never reported anything
         assert_eq!(reg.persona_total(Uuid::new_v4()), 0);
     }
 
@@ -699,23 +481,19 @@ mod tests {
     fn cheapest_eviction_picks_lowest_cost_per_byte_first() {
         let reg = FootprintRegistry::new();
         let p1 = Uuid::new_v4();
-        // KV cache: cheap to spill (~1µs/MB)
         reg.add(
             FootprintKey::for_persona(p1, ResourceType::KvCache, Residency::Active),
             1_000_000,
         );
-        // Model weights: very expensive to spill
         reg.add(
             FootprintKey::shared(ResourceType::ModelWeights, Residency::Active),
             2_500_000_000,
         );
 
-        // Need 500K freed: cheapest KV alone covers it
         let plan = reg
             .cheapest_eviction_for(500_000, &[])
             .expect("plan should exist");
         assert!(plan.bytes_freed >= 500_000);
-        // Plan should NOT include the expensive model weights
         let has_model = plan
             .entries
             .iter()
@@ -750,7 +528,6 @@ mod tests {
         let plan = reg
             .cheapest_eviction_for(500_000, &[active])
             .expect("plan exists");
-        // Plan should ONLY contain the idle persona's entry
         for (key, _) in &plan.entries {
             assert_ne!(
                 key.persona_id,
@@ -776,7 +553,6 @@ mod tests {
             1000,
         );
 
-        // Need 1MB but only have 1KB available
         let plan = reg.cheapest_eviction_for(1_000_000, &[]);
         assert!(
             plan.is_none(),
@@ -814,13 +590,11 @@ mod tests {
         let reg = FootprintRegistry::new();
         let monitor = MockMonitor::new(8 * 1024 * 1024 * 1024);
 
-        // Registry says 1GB, monitor says 1.05GB — small drift, healthy
         reg.add(persona_kv_key(Uuid::new_v4()), 1_000_000_000);
         monitor.set_process_bytes(1_050_000_000);
-        let health = reg.sanity_check(&monitor, 10.0); // 10% threshold
+        let health = reg.sanity_check(&monitor, 10.0);
         assert!(matches!(health, RegistryHealth::Healthy { .. }));
 
-        // Registry says 1GB, monitor says 2GB — 100% drift, NOT healthy
         monitor.set_process_bytes(2_000_000_000);
         let drifted = reg.sanity_check(&monitor, 10.0);
         match drifted {
@@ -880,8 +654,6 @@ mod tests {
             snap.by_persona.get(&p2).copied(),
             Some(reg.persona_total(p2))
         );
-        // Shared entry (model weights) has no persona_id — must NOT
-        // appear in by_persona.
         assert_eq!(
             snap.by_persona.values().sum::<u64>(),
             1500 + 2000,
@@ -889,10 +661,9 @@ mod tests {
         );
     }
 
-    /// What this catches: `snapshot()` reading from a stale live view
-    /// (e.g., snapshotting Arc-cloned state at construction). The snapshot
-    /// must reflect ALL writes that completed before snapshot() returned,
-    /// even ones interleaved with reads.
+    /// What this catches: `snapshot()` reading from a stale live view.
+    /// Snapshot must reflect ALL writes that completed before snapshot()
+    /// returned, even ones interleaved with reads.
     ///
     /// Validated 2026-04-21: implicit — single-pass DashMap iteration is
     /// the only implementation that satisfies this; alternative designs
@@ -915,43 +686,6 @@ mod tests {
         assert_eq!(snap_after.by_persona.get(&p).copied(), Some(4242));
     }
 
-    /// What this catches: `for_backend` setting fields on the wrong axis
-    /// (e.g., putting backend_id into persona_id). Two reports for two
-    /// different backends MUST land in two different entries — otherwise
-    /// loading model B silently overwrites model A's bytes.
-    ///
-    /// Validated 2026-04-21: swapped backend_id into persona_id, test
-    /// fails because both backends collapse onto one persona-keyed entry
-    /// and the second report overwrites the first; reverted.
-    #[test]
-    fn for_backend_keys_are_distinct_per_backend_id() {
-        let reg = FootprintRegistry::new();
-        let key_a =
-            FootprintKey::for_backend("qwen3.5-4b", ResourceType::ModelWeights, Residency::Active);
-        let key_b =
-            FootprintKey::for_backend("qwen3.5-7b", ResourceType::ModelWeights, Residency::Active);
-        assert_ne!(
-            key_a, key_b,
-            "different backends must produce distinct keys"
-        );
-
-        reg.report_authoritative(key_a.clone(), 2_500_000_000);
-        reg.report_authoritative(key_b.clone(), 4_500_000_000);
-        assert_eq!(
-            reg.entry_count(),
-            2,
-            "two backends should produce two entries"
-        );
-        assert_eq!(reg.total_bytes(), 7_000_000_000);
-
-        let by_type = reg.by_resource_type();
-        assert_eq!(
-            by_type.get(&ResourceType::ModelWeights).copied(),
-            Some(7_000_000_000),
-            "both model_weights entries must aggregate by type"
-        );
-    }
-
     /// What this catches: `global()` returning fresh registries on each
     /// call (i.e., not actually a singleton). The whole reporting
     /// substrate depends on every caller seeing the same map.
@@ -968,8 +702,6 @@ mod tests {
             "global() must return the same instance on every call"
         );
 
-        // Use a freshly-generated persona id so the test doesn't trip on
-        // residual state from other tests sharing the process-wide global.
         let persona = Uuid::new_v4();
         let key = FootprintKey::for_persona(persona, ResourceType::KvCache, Residency::Active);
         let before = r1.persona_total(persona);
@@ -980,21 +712,10 @@ mod tests {
             1234,
             "writes through r1 must be visible via r2 (same instance)"
         );
-        // Cleanup so we don't leak this entry into other tests.
         r2.remove(&key, 1234);
     }
 
-    /// What this catches: `try_global()` lazy-initializing the registry
-    /// when it should only return Some after the registry has been
-    /// touched. Mis-wiring would make `try_global` indistinguishable from
-    /// `global` and break the "test that no allocations were reported"
-    /// invariant.
-    ///
-    /// NOTE: This test is order-dependent on the process-wide OnceLock.
-    /// Other tests in this module call `global()` and initialize it, so
-    /// once that happens `try_global` will return Some forever. The test
-    /// asserts the weaker invariant: try_global never lazy-initializes
-    /// (we only check that AFTER global is touched, try_global agrees).
+    /// What this catches: `try_global()` lazy-initializing the registry.
     #[test]
     fn try_global_returns_same_instance_as_global_when_initialized() {
         let g = global();
@@ -1011,8 +732,7 @@ mod tests {
     /// mutex our code accidentally added.
     ///
     /// Validated 2026-04-21: implicit — if DashMap weren't lock-free
-    /// per-shard, this test would be slow or detect races (1000 adds
-    /// across 100 tasks). Currently completes in ~5ms.
+    /// per-shard, this test would be slow or detect races.
     #[tokio::test(flavor = "multi_thread")]
     async fn concurrent_adds_from_many_personas_do_not_lose_updates() {
         use std::sync::Arc;
@@ -1031,7 +751,6 @@ mod tests {
         for h in handles {
             h.await.unwrap();
         }
-        // 100 personas × 10 adds × 100 bytes = 100,000 total
         assert_eq!(reg.total_bytes(), 100_000);
         assert_eq!(reg.entry_count(), 100);
     }
