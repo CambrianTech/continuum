@@ -229,6 +229,28 @@ impl LlamaCppAdapter {
         };
         let backend = LlamaCppBackend::load(config)
             .map_err(|e| format!("LlamaCppBackend::load failed: {e}"))?;
+
+        // Report model_weights bytes to the global FootprintRegistry so
+        // the policy can see the on-disk size charged against this process
+        // (mmap'd, so file size ≈ resident bytes for the model itself).
+        // Backend-scoped key: two adapters loading two different GGUFs
+        // produce two distinct entries instead of overwriting each other.
+        // The size source is fs::metadata, not a backend method, because
+        // llama.cpp doesn't expose a "bytes loaded" counter and the file
+        // size is the most honest first-cut number.
+        if let Ok(meta) = std::fs::metadata(&self.model_path) {
+            use crate::inference::footprint_registry::{global, FootprintKey, ResourceType};
+            use crate::inference::kv_quant::Residency;
+            global().report_authoritative(
+                FootprintKey::for_backend(
+                    backend.model_id(),
+                    ResourceType::ModelWeights,
+                    Residency::Active,
+                ),
+                meta.len(),
+            );
+        }
+
         let arc = Arc::new(backend);
         *guard = Some(arc.clone());
         Ok(arc)

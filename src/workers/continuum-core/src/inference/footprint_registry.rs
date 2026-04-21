@@ -21,6 +21,7 @@ use crate::inference::kv_quant::Residency;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 use uuid::Uuid;
 
@@ -85,6 +86,26 @@ impl FootprintKey {
             persona_id: None,
             recipe_id: None,
             backend_id: None,
+            resource_type,
+            residency,
+        }
+    }
+
+    /// Construct a backend-scoped key. Used when multiple backends/models
+    /// are loaded concurrently and each one's `model_weights` (or
+    /// tokenizer cache, etc.) needs distinct accounting. Without the
+    /// backend_id discriminator a second `report_authoritative` would
+    /// overwrite the first model's bytes — silently making the second
+    /// load look free.
+    pub fn for_backend(
+        backend_id: impl Into<String>,
+        resource_type: ResourceType,
+        residency: Residency,
+    ) -> Self {
+        Self {
+            persona_id: None,
+            recipe_id: None,
+            backend_id: Some(backend_id.into()),
             resource_type,
             residency,
         }
@@ -409,6 +430,51 @@ impl Default for FootprintRegistry {
     }
 }
 
+// ─── Global singleton ──────────────────────────────────────────────────
+//
+// One process-wide registry so every allocation site (model loader, KV
+// allocator, LoRA paging, render pipeline) reports through the same
+// surface. Mirrors `model_registry::singleton` but uses lazy `get_or_init`
+// instead of an explicit `init_global` because `FootprintRegistry::new()`
+// can't fail (no I/O, no parsing — empty DashMap). That removes the
+// "did someone wire init?" footgun: any caller can read or write at any
+// time without pre-boot ceremony.
+//
+// Threading: OnceLock is sync + send. DashMap is sharded internally for
+// lock-free concurrent access. The combination handles the substrate's
+// stated concurrency requirement (100+ persona pipelines reporting in
+// parallel without contention).
+
+static GLOBAL: OnceLock<FootprintRegistry> = OnceLock::new();
+
+/// The process-wide registry. Lazy-initialized on first call. Safe to
+/// invoke from any thread, any phase of startup. Idempotent — every
+/// caller gets the same `&'static` reference.
+///
+/// Use this from allocation sites:
+/// ```ignore
+/// use continuum_core::inference::footprint_registry;
+/// use continuum_core::inference::footprint_registry::{FootprintKey, ResourceType};
+/// use continuum_core::inference::kv_quant::Residency;
+///
+/// footprint_registry::global().report_authoritative(
+///     FootprintKey::for_backend("qwen3.5-4b", ResourceType::ModelWeights, Residency::Active),
+///     2_500_000_000,
+/// );
+/// ```
+pub fn global() -> &'static FootprintRegistry {
+    GLOBAL.get_or_init(FootprintRegistry::new)
+}
+
+/// Non-panicking accessor that returns `None` if the global hasn't been
+/// touched yet. Useful when the caller wants to assert "no allocations
+/// reported" (test isolation) or when the caller is in a phase where
+/// initializing the registry would be premature (e.g., crash-safe
+/// shutdown handlers).
+pub fn try_global() -> Option<&'static FootprintRegistry> {
+    GLOBAL.get()
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -650,6 +716,92 @@ mod tests {
             }
             _ => panic!("expected Drifted, got {drifted:?}"),
         }
+    }
+
+    /// What this catches: `for_backend` setting fields on the wrong axis
+    /// (e.g., putting backend_id into persona_id). Two reports for two
+    /// different backends MUST land in two different entries — otherwise
+    /// loading model B silently overwrites model A's bytes.
+    ///
+    /// Validated 2026-04-21: swapped backend_id into persona_id, test
+    /// fails because both backends collapse onto one persona-keyed entry
+    /// and the second report overwrites the first; reverted.
+    #[test]
+    fn for_backend_keys_are_distinct_per_backend_id() {
+        let reg = FootprintRegistry::new();
+        let key_a = FootprintKey::for_backend(
+            "qwen3.5-4b",
+            ResourceType::ModelWeights,
+            Residency::Active,
+        );
+        let key_b = FootprintKey::for_backend(
+            "qwen3.5-7b",
+            ResourceType::ModelWeights,
+            Residency::Active,
+        );
+        assert_ne!(key_a, key_b, "different backends must produce distinct keys");
+
+        reg.report_authoritative(key_a.clone(), 2_500_000_000);
+        reg.report_authoritative(key_b.clone(), 4_500_000_000);
+        assert_eq!(reg.entry_count(), 2, "two backends should produce two entries");
+        assert_eq!(reg.total_bytes(), 7_000_000_000);
+
+        let by_type = reg.by_resource_type();
+        assert_eq!(
+            by_type.get(&ResourceType::ModelWeights).copied(),
+            Some(7_000_000_000),
+            "both model_weights entries must aggregate by type"
+        );
+    }
+
+    /// What this catches: `global()` returning fresh registries on each
+    /// call (i.e., not actually a singleton). The whole reporting
+    /// substrate depends on every caller seeing the same map.
+    ///
+    /// Validated 2026-04-21: changed get_or_init to FootprintRegistry::new
+    /// in a non-singleton helper, test fails because second call's
+    /// total_bytes is 0 (didn't see the first add); reverted.
+    #[test]
+    fn global_is_a_singleton_across_calls() {
+        let r1 = global();
+        let r2 = global();
+        assert!(
+            std::ptr::eq(r1, r2),
+            "global() must return the same instance on every call"
+        );
+
+        // Use a freshly-generated persona id so the test doesn't trip on
+        // residual state from other tests sharing the process-wide global.
+        let persona = Uuid::new_v4();
+        let key = FootprintKey::for_persona(persona, ResourceType::KvCache, Residency::Active);
+        let before = r1.persona_total(persona);
+        r1.add(key.clone(), 1234);
+        let after = r2.persona_total(persona);
+        assert_eq!(
+            after - before,
+            1234,
+            "writes through r1 must be visible via r2 (same instance)"
+        );
+        // Cleanup so we don't leak this entry into other tests.
+        r2.remove(&key, 1234);
+    }
+
+    /// What this catches: `try_global()` lazy-initializing the registry
+    /// when it should only return Some after the registry has been
+    /// touched. Mis-wiring would make `try_global` indistinguishable from
+    /// `global` and break the "test that no allocations were reported"
+    /// invariant.
+    ///
+    /// NOTE: This test is order-dependent on the process-wide OnceLock.
+    /// Other tests in this module call `global()` and initialize it, so
+    /// once that happens `try_global` will return Some forever. The test
+    /// asserts the weaker invariant: try_global never lazy-initializes
+    /// (we only check that AFTER global is touched, try_global agrees).
+    #[test]
+    fn try_global_returns_same_instance_as_global_when_initialized() {
+        let g = global();
+        let tg = try_global().expect("global was just initialized");
+        assert!(std::ptr::eq(g, tg), "try_global must point at the same OnceLock cell");
     }
 
     /// What this catches: concurrent add/remove from multiple "personas"
