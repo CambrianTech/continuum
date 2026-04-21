@@ -219,6 +219,33 @@ pub enum RegistryHealth {
     },
 }
 
+/// Point-in-time snapshot of the registry, suitable for serialization to
+/// logs, jtag commands, or telemetry sinks. Everything is owned (no
+/// borrows into the live DashMap) so callers can hold onto a snapshot
+/// across awaits without contending with concurrent allocators.
+///
+/// The snapshot is a passive view — mutating it does not mutate the
+/// live registry. To affect state, use the `add` / `remove` /
+/// `report_authoritative` methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistrySnapshot {
+    /// Total bytes across every entry. Cross-check against monitor's
+    /// `process_bytes` for drift detection.
+    pub total_bytes: u64,
+    /// Number of distinct entries. A growing entry count without growing
+    /// total_bytes suggests fragmentation (lots of small allocations);
+    /// a shrinking count with stable bytes suggests entries are being
+    /// merged.
+    pub entry_count: usize,
+    /// Bytes broken down by resource type. Usually `ModelWeights`
+    /// dominates; if `KvCache` overtakes weights, the conversation has
+    /// gotten very long or n_seq_max is high.
+    pub by_resource_type: HashMap<ResourceType, u64>,
+    /// Per-persona total bytes. Empty entries (persona reported nothing)
+    /// don't appear; absence is meaningful.
+    pub by_persona: HashMap<Uuid, u64>,
+}
+
 /// The registry. DashMap-backed so multiple personas / threads can
 /// add+remove concurrently without contention (sharded internally).
 pub struct FootprintRegistry {
@@ -421,6 +448,39 @@ impl FootprintRegistry {
     /// Number of distinct entries currently tracked. For diagnostics.
     pub fn entry_count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Owned point-in-time view of the registry. Single iteration over
+    /// the DashMap aggregates total bytes, by_resource_type, by_persona
+    /// in one pass — cheaper than calling each accessor separately when
+    /// a caller needs the full picture (logs, telemetry, jtag command).
+    ///
+    /// The snapshot is a passive copy; mutating it doesn't affect the
+    /// live registry. Returned shape is `Serialize` so it can be JSON-
+    /// dumped directly into a log line or IPC frame.
+    pub fn snapshot(&self) -> RegistrySnapshot {
+        let mut total_bytes: u64 = 0;
+        let mut entry_count: usize = 0;
+        let mut by_resource_type: HashMap<ResourceType, u64> = HashMap::new();
+        let mut by_persona: HashMap<Uuid, u64> = HashMap::new();
+        for entry in self.entries.iter() {
+            let key = entry.key();
+            let value = entry.value();
+            entry_count += 1;
+            total_bytes = total_bytes.saturating_add(value.bytes);
+            *by_resource_type
+                .entry(key.resource_type.clone())
+                .or_insert(0) += value.bytes;
+            if let Some(pid) = key.persona_id {
+                *by_persona.entry(pid).or_insert(0) += value.bytes;
+            }
+        }
+        RegistrySnapshot {
+            total_bytes,
+            entry_count,
+            by_resource_type,
+            by_persona,
+        }
     }
 }
 
@@ -716,6 +776,63 @@ mod tests {
             }
             _ => panic!("expected Drifted, got {drifted:?}"),
         }
+    }
+
+    /// What this catches: `snapshot()` returning numbers that disagree
+    /// with the live accessors. Single-pass aggregation MUST match what
+    /// `total_bytes()`, `by_resource_type()`, and `persona_total()`
+    /// return — otherwise telemetry shows one number while the policy
+    /// makes decisions on a different one.
+    ///
+    /// Validated 2026-04-21: changed by_persona insertion to skip the
+    /// persona_id (treating shared keys as person-attributed), test fails
+    /// because by_persona contains ghost entries for shared keys; reverted.
+    #[test]
+    fn snapshot_matches_live_accessors() {
+        let reg = FootprintRegistry::new();
+        let p1 = Uuid::new_v4();
+        let p2 = Uuid::new_v4();
+        reg.add(FootprintKey::for_persona(p1, ResourceType::KvCache, Residency::Active), 1000);
+        reg.add(FootprintKey::for_persona(p1, ResourceType::LoraAdapter, Residency::Active), 500);
+        reg.add(FootprintKey::for_persona(p2, ResourceType::KvCache, Residency::Active), 2000);
+        reg.add(FootprintKey::shared(ResourceType::ModelWeights, Residency::Active), 2_500_000_000);
+
+        let snap = reg.snapshot();
+        assert_eq!(snap.total_bytes, reg.total_bytes());
+        assert_eq!(snap.entry_count, reg.entry_count());
+        assert_eq!(snap.by_resource_type, reg.by_resource_type());
+        assert_eq!(snap.by_persona.get(&p1).copied(), Some(reg.persona_total(p1)));
+        assert_eq!(snap.by_persona.get(&p2).copied(), Some(reg.persona_total(p2)));
+        // Shared entry (model weights) has no persona_id — must NOT
+        // appear in by_persona.
+        assert_eq!(
+            snap.by_persona.values().sum::<u64>(),
+            1500 + 2000,
+            "by_persona sum excludes the shared model_weights entry"
+        );
+    }
+
+    /// What this catches: `snapshot()` reading from a stale live view
+    /// (e.g., snapshotting Arc-cloned state at construction). The snapshot
+    /// must reflect ALL writes that completed before snapshot() returned,
+    /// even ones interleaved with reads.
+    ///
+    /// Validated 2026-04-21: implicit — single-pass DashMap iteration is
+    /// the only implementation that satisfies this; alternative designs
+    /// (cached snapshot updated on write) would race.
+    #[test]
+    fn snapshot_reflects_writes_completed_before_call() {
+        let reg = FootprintRegistry::new();
+        let p = Uuid::new_v4();
+        let snap_empty = reg.snapshot();
+        assert_eq!(snap_empty.total_bytes, 0);
+        assert_eq!(snap_empty.entry_count, 0);
+
+        reg.add(FootprintKey::for_persona(p, ResourceType::KvCache, Residency::Active), 4242);
+        let snap_after = reg.snapshot();
+        assert_eq!(snap_after.total_bytes, 4242);
+        assert_eq!(snap_after.entry_count, 1);
+        assert_eq!(snap_after.by_persona.get(&p).copied(), Some(4242));
     }
 
     /// What this catches: `for_backend` setting fields on the wrong axis
