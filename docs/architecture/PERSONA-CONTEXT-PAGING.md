@@ -1031,7 +1031,249 @@ Joel's note (2026-04-21): *"AIs don't really need to SEE the whole history, esp 
 
 The infrastructure (`ConversationHistorySource.ts` two-tier strategy) is still there — but configured wrong. **Flipping the default from "verbatim unless tight" to "consolidated unless task needs verbatim"** is the missing change. That's the immediate retrofit; the dedicated `ConversationSummary` cache is the long-form architectural target.
 
-## 16. Why This Beats Hard Limits (Restated)
+## 16. KV Quantization Per Residency Tier
+
+The current `LlamaCppConfig` declares `type_k: F16, type_v: F16` — a single hardcoded choice for all sequences regardless of state. Real systems benefit from quantizing differently per lifecycle stage.
+
+### 16.1 The math
+
+For qwen3.5-4b-code-forged at 262K context × 3 seqs × 8 attention layers (the SSM layers don't have KV — see §18):
+
+| Cache type | Bytes/token/layer | Total for 786K tokens × 8 layers | Quality penalty |
+|---|---|---|---|
+| F16/F16 | 4096 (K=2048, V=2048) | ~24 GB | baseline |
+| Q8_0/F16 | 3072 | ~18 GB | <0.5% perplexity |
+| Q8_0/Q8_0 | 2048 | ~12 GB | ~1% perplexity |
+| Q4_0/Q8_0 | 1536 | ~9 GB | ~2-3% (V is robust enough at Q8) |
+| Q4_0/Q4_0 | 1024 | ~6 GB | noticeable on long context |
+
+K is more robust than V. The standard recommendation is K=Q8_0 / V=F16 as the sweet spot for active hot inference (1.33x compression, <0.5% quality cost). Q4 only when memory is the binding constraint.
+
+### 16.2 Per-residency policy
+
+Different lifecycle stages have different binding constraints:
+
+| Residency | Binding constraint | Optimal quant | Reasoning |
+|---|---|---|---|
+| Active (hot, GPU) | Latency / decode tok/s | F16/F16 | No dequant cost in hot path. Already paying RAM, get max speed. |
+| CpuResident (warm, CPU unified) | Latency moderate, RAM tight | Q8_0/F16 | 1.33x compression, V stays high precision for accurate resume. |
+| Idle (spilled, NVMe) | Spill file size + write speed | Q8_0/Q8_0 or Q4_0/Q8_0 | File size halves; NVMe write proportionally faster. |
+| Cold (no state) | N/A | N/A | Re-prefilled fresh on next activation. |
+
+The policy chooses quant per slot based on residency. Adapter exposes `set_seq_kv_quant(seq_id, k_type, v_type)` lever (or, when in-place requantization isn't supported, requantizes during the spill step).
+
+llama.cpp's spill API (`llama_state_seq_save_file`) saves at whatever quant the seq currently uses; resume restores to the same. Requantize-on-spill = save with target quant, accept the small CPU cost on transition (paid once per spill, amortized over the spill's residency).
+
+### 16.3 Adapter lever
+
+```rust
+impl LlamaCppAdapter {
+    /// Per-residency-tier KV quant policy. The policy struct travels
+    /// with the adapter; PagingPolicy reads it when transitioning a
+    /// slot's residency.
+    pub fn with_kv_quant_policy(self, p: KvQuantPolicy) -> Self;
+}
+
+pub struct KvQuantPolicy {
+    pub active: (KvCacheType, KvCacheType),
+    pub cpu_resident: (KvCacheType, KvCacheType),
+    pub spilled: (KvCacheType, KvCacheType),
+}
+
+impl Default for KvQuantPolicy {
+    fn default() -> Self {
+        Self {
+            active: (KvCacheType::F16, KvCacheType::F16),
+            cpu_resident: (KvCacheType::Q8_0, KvCacheType::F16),
+            spilled: (KvCacheType::Q8_0, KvCacheType::Q8_0),
+        }
+    }
+}
+```
+
+Per-task overrides through the recipe — a coding task that needs precise long-context recall might force F16/F16 even when spilled (slower spill, but no quality degradation on resume).
+
+## 17. Recipe Latency Targets Drive Quant + Sizing Choice
+
+Different recipes have different acceptable first-token-latency (TTFT). The policy reads the recipe's latency target and works backward to choose KV size, quant, residency tier, and even *whether to allow this persona to be cold-resumed at all*.
+
+### 17.1 Latency budget per recipe
+
+| Recipe | TTFT target | Why |
+|---|---|---|
+| Voice chat (live) | <100ms | Below conversational latency floor; humans notice ≥150ms gaps |
+| Video chat | <150ms | Same as voice + visual sync constraint |
+| Text chat (real-time) | <500ms | Acceptable in typing cadence |
+| Coding (interactive) | <2s | Acceptable for "AI thinking" UX |
+| Coding (batch / agent loop) | <10s | Spinner is fine, output quality matters more |
+| Background sentinel | <60s | No human waiting |
+| Game NPC (in-conversation) | <300ms | Game-loop tolerant; can mask with animation |
+| Game NPC (idle approach) | <800ms | Player walking up; partial-resume is fine |
+
+The cost model in the policy:
+
+```
+expected_ttft = prefill_cost(prompt_tokens, seq_state)
+  + first_decode_cost(model, kv_quant_active)
+
+prefill_cost(prompt_tokens, Active) = ~0  (KV warm, just decode the new tokens)
+prefill_cost(prompt_tokens, CpuResident) = ~50ms  (CPU→GPU upload)
+prefill_cost(prompt_tokens, Idle) = spill_resume_cost + ~50ms
+prefill_cost(prompt_tokens, Cold) = full_prefill_cost(prompt_tokens, model)
+                                   ≈ prompt_tokens / model.prefill_tok_per_s
+```
+
+For the qwen3.5-4b on M5 Pro: prefill ~3000 tok/s, decode ~50 tok/s. So a Cold persona with an 8K prompt = 8000/3000 ≈ 2.7s TTFT. **That violates the voice/video/chat budgets**. Conclusion: for low-latency recipes, idle personas can't be fully Cold; they need at least Idle (KV on NVMe) for a 1.7s spill-resume + 50ms upload.
+
+### 17.2 Recipe → policy implications
+
+The policy reads recipe + persona + latency target and answers questions like:
+
+- *"Can persona X serve at <500ms TTFT with current state?"* — checks residency, quant, prompt size
+- *"What residency would persona X need to meet <200ms?"* — works backward to required state
+- *"This recipe needs all 5 personas at <500ms — do we have RAM for 5 × Active?"* — if no, raise to user / split recipe
+
+Concrete: a video chat recipe with 3 personas at <150ms TTFT each forces the policy to keep all 3 Active in F16/F16 (no quant overhead, no spill resume). That fixes a lot of degrees of freedom — recipe author knows what they're committing to.
+
+A chat recipe with 10 personas can tolerate more flexibility — only 1-2 Active hot, others CpuResident or Idle, accepting the 50-200ms first-token bump on the rotating speakers.
+
+### 17.3 Severely reduced latency for chat/video
+
+The combined wins for "speed-critical recipes" stack:
+- Consolidated history default (§15) — 800 tokens vs 8000 → prefill ~10x faster on cold-resume
+- F16/F16 active KV — no per-token dequant overhead → max decode tok/s
+- Active residency for in-recipe personas → no spill-resume cost
+- Per-recipe persona count cap → known max active set, predictable RAM
+- Lazy RAG fetch (§6.2) for non-critical context → small initial prompt
+
+Net: a chat persona with consolidated history + Active F16 KV + lazy RAG can hit <100ms TTFT on M5 Pro. That's the latency floor we should design toward.
+
+## 18. Layer-Selective KV Awareness (Hybrid Architectures)
+
+qwen3.5 is a hybrid attention + SSM architecture. Looking at the boot log:
+```
+llama_kv_cache: layer 0: filtered     ← SSM, no KV
+llama_kv_cache: layer 1: filtered
+llama_kv_cache: layer 2: filtered
+llama_kv_cache: layer 3: dev = MTL0   ← attention, has KV
+... (every 4th layer is attention)
+```
+
+Out of 32 layers, only 8 hold KV cache. **The forge picked this architecture deliberately to make 256K context tractable** — a pure-attention 4B with 256K context would be ~96GB KV; the hybrid is ~24GB.
+
+This matters for the policy in two ways:
+
+### 18.1 Per-layer cost telemetry
+
+The FootprintRegistry (§13) tracks bytes per resource type, but for hybrid models it should also track **bytes per layer category**. SSM layers have their own state (smaller, fixed-size per seq) vs attention layers (linear in context length). Different reclaim strategies apply.
+
+```rust
+pub enum KvLayerKind {
+    Attention { tokens_per_byte: f64 },  // scales with context
+    Ssm { fixed_bytes_per_seq: u64 },     // fixed cost
+    Filtered,                             // no KV at all
+}
+```
+
+Per-architecture metadata declared in the model registry. The policy reads it when computing eviction plans — spilling a high-context attention seq frees more bytes per persona than spilling an SSM-heavy one.
+
+### 18.2 Mixed-architecture future
+
+Not all models in the registry are hybrid. Pure-attention models (Llama, Mistral, GPT family) have ALL layers in KV. The policy must treat them differently:
+
+- Hybrid model (qwen3.5): 25% of layers KV → can hold 4x more context per GB than pure-attention
+- Pure-attention model (llama-3.1-8b): 100% layers KV → context is expensive per byte
+- MoE model (mixtral, qwen-moe): KV per active expert path; gets even more variable
+
+Each model declares its KV cost profile in the registry. The policy accounts for it when budgeting across multi-model deployments.
+
+## 19. Implementation Roadmap (Ordered by ROI/Cost)
+
+Captured here so the implementation order isn't lost. Each phase ships independently and reduces memory, increases dynamism, or cuts latency.
+
+### Phase 1.0 — No-Inference Token Diagnostic (~30 min)
+- Tiny binary: load model metadata only (no KV alloc, no Metal pipelines)
+- Renders test prompt via `llama_chat_apply_template`
+- Tokenizes with `add_bos=true/false` variants
+- Dumps token IDs + string pieces for first 50 + last 50 tokens
+- Diagnoses the EOG-early bug without running inference at all
+- Unblocks prompt-construction debugging that we've been guessing at
+
+### Phase 1.1 — Per-Residency KV Quant Lever (~half day)
+- `LlamaCppAdapter::with_kv_quant_policy(KvQuantPolicy)` builder
+- Default: F16/F16 active, Q8_0/F16 cpu-resident, Q8_0/Q8_0 spilled
+- Tests use the lever; same behavior at half the RAM
+- §16 of this doc
+
+### Phase 1.2 — Persona-Declared Context + Recipe-Driven Sizing (~1 day)
+- Persona registry: `context_budget_min`, `context_budget_max`, declared per persona type
+- Recipe registry: which personas active, task class
+- Adapter sizes initial KV to `sum(active_persona_seeds)` bounded by hardware
+- Eliminates the test's `with_context_length(32768)` band-aid
+- §14 of this doc
+
+### Phase 1.3 — Consolidation as Default for Chat/NPC (~1 day)
+- `RecallMode` enum in registry
+- `ConversationHistorySource.ts` default flips: ConsolidatedSummary unless task declares Verbatim/Hybrid
+- ConversationSummary as first-class room state (background-incremental update)
+- §15 of this doc
+
+### Phase 2.0 — `MetalMonitor` Rebuild via IOReport (~1-2 days)
+- `gpu/metal_monitor.rs` extracted as a `GpuMonitor` trait impl
+- Live signals via `host_statistics64`, `task_info(TASK_VM_INFO)`, `os_proc_available_memory`, `MTLDevice.currentAllocatedSize`, IOReport for utilization/temp/power
+- Test: cross-validate against Activity Monitor under load (±2pp)
+- §12 of this doc
+
+### Phase 2.1 — `FootprintRegistry` (~1-2 days)
+- DashMap keyed on (persona, recipe, backend, type, residency)
+- Every allocation site reports
+- Backend `seq_bytes()` overrides as ground truth
+- Sanity-check loop: registry total vs OS phys_footprint, drift > 10% = bug
+- §13 of this doc
+
+### Phase 3.0 — `PageableBackend` Trait + LlamaCpp Spill/Resume (~1-2 weeks)
+- Trait with alloc/save/load/free/resize seq primitives
+- LlamaCppBackend wraps `llama_state_seq_save_file` / `load_file`
+- Spill store = NVMe at `~/.continuum/persona-state/<persona-id>/<seq>.kv`
+- Token-equivalence test: spill + resume produces identical output for same prompt
+- §3.3 + §11 of this doc
+
+### Phase 3.1 — `PagingPolicy` (Rule-Based) (~1-2 weeks)
+- State machine + signal wiring (GpuMonitor + FootprintRegistry + recipe events)
+- `rebalance()` on tick + activity events
+- `ensure_active(persona_id)` API the persona response path calls
+- §3.2 + §4 + §14 of this doc
+
+### Phase 3.2 — KV Prefix Sharing (~1 week)
+- llama.cpp scheduler config for shared prefixes across seqs
+- Prompt assembler emits stable shared-prefix segment
+- §6.1 of this doc
+
+### Phase 3.3 — Lazy RAG Fetch (~2-3 weeks)
+- Initial context shrinks to identity + tool surface
+- Tools: `memory/query`, `room/context`, `docs/search`
+- Per-task default: chat preloads more, code preloads less
+- §6.2 of this doc
+
+### Phase 4.0 — Learned Policy (~ongoing, after baseline ships)
+- Telemetry capture inside `rebalance()`
+- After ~1 month real usage, train first policy from corpus
+- A/B vs rule-based; ship if it dominates
+- §9 of this doc
+
+### Phase 5.0 — Per-Layer KV Awareness for Hybrid Architectures (~3-5 days)
+- `KvLayerKind` metadata in model registry
+- FootprintRegistry tracks bytes per layer category
+- Policy uses per-layer cost in eviction plans
+- §18 of this doc
+
+### Phase 6.0 — Tiered Spill (NVMe → S3) (~1 week, much later)
+- Cold-storage backend for very-long-idle personas
+- Useful for "10000 NPC personas registered, 10 ever active"
+
+Each phase: tests written first, ship behind a feature flag, validate with A/B against current behavior, lock in.
+
+## 20. Why This Beats Hard Limits (Restated)
 
 - Limit-based: persona count is capped at `floor(RAM / per_persona_KV)`. New persona request beyond the cap → error / refusal.
 - Paging-based: persona count is unbounded. New persona request → if hot set is full, the lowest-importance hot persona spills to NVMe in the background. The new persona starts cold, accepts ~1.5s first-token latency.
