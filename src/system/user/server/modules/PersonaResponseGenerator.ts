@@ -282,6 +282,24 @@ export class PersonaResponseGenerator {
 
       // The single IPC: Rust owns the cognitive verb end-to-end.
       const phase32Start = Date.now();
+      // Native multimodal: pass the message's media (images, audio) through
+      // to Rust. When the persona's resolved model has the matching native
+      // capability (Vision / AudioInput), Rust attaches as ContentPart::Image
+      // / ::Audio on the final user-role message — the model sees / hears
+      // the source bytes directly. Pre-2026-04-21 this was dropped on the
+      // floor here, defaulting every multimodal model into text-only mode
+      // (regression — qwen3.5 / Claude / GPT-4o are natively multimodal,
+      // bridging defeats their whole point). See PERSONA-CONTEXT-PAGING.md
+      // §0.5.X. Only items with inline base64 are forwarded — URL-only
+      // references would need a fetch step we haven't added.
+      const messageMedia = (originalMessage.content.media ?? [])
+        .filter((m) => typeof m.base64 === 'string' && m.base64.length > 0)
+        .map((m) => ({
+          itemType: m.type,
+          base64: m.base64,
+          mimeType: m.mimeType,
+        }));
+
       const rustRequest: PersonaRespondRequest = {
         personaId: this.personaId,
         roomId: originalMessage.roomId,
@@ -298,6 +316,7 @@ export class PersonaResponseGenerator {
         recentHistory,
         knownSpecialties,
         isVoice: originalMessage.sourceModality === 'voice',
+        messageMedia: messageMedia.length > 0 ? messageMedia : undefined,
       };
       // Fixture capture for the Rust-persona-rewrite replay test harness
       // AND the eventual training corpus that Forge/Academy/Sentinel-AI

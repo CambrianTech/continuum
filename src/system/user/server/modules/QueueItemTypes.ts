@@ -54,6 +54,20 @@ export interface InboxMessage extends BaseQueueItem {
   // Voice modality tracking for response routing
   sourceModality?: 'text' | 'voice';   // Where input came from (default: 'text')
   voiceSessionId?: UUID;               // Voice call context if applicable
+
+  /**
+   * Media (images, audio) attached to the message. Flows through to
+   * the persona response path so natively-multimodal models (Qwen3.5 /
+   * Claude / GPT-4o) can see / hear the source bytes directly.
+   * Each item: `{ type: "image" | "audio", base64?, mimeType?, url? }`.
+   * Empty / undefined when the message is text-only (the common case).
+   */
+  media?: ReadonlyArray<{
+    type: string;
+    base64?: string;
+    mimeType?: string;
+    url?: string;
+  }>;
 }
 
 /**
@@ -138,7 +152,23 @@ export interface ProcessableMessage {
   senderId: UUID;
   senderName: string;
   senderType: 'human' | 'persona' | 'agent' | 'system';
-  content: { text: string };
+  content: {
+    text: string;
+    /**
+     * Native multimodal payload — images, audio attached to this message.
+     * The persona response generator forwards these to Rust as
+     * `messageMedia`; if the persona's resolved model has the matching
+     * native capability (`Vision` / `AudioInput`) the model receives the
+     * raw bytes via `ContentPart::Image` / `Audio` instead of a text
+     * description. Empty / undefined for text-only messages.
+     */
+    media?: ReadonlyArray<{
+      type: string;
+      base64?: string;
+      mimeType?: string;
+      url?: string;
+    }>;
+  };
   timestamp: number;
 
   // Modality — REQUIRED, never undefined
@@ -164,7 +194,10 @@ export function inboxMessageToProcessable(item: InboxMessage): ProcessableMessag
     senderId: item.senderId,
     senderName: item.senderName,
     senderType: item.senderType,
-    content: { text: item.content },
+    // Forward media untouched — when the inbox source has populated it
+    // (image/audio attachment from a chat message), the response path
+    // routes it natively to multimodal-capable models.
+    content: { text: item.content, media: item.media },
     timestamp: item.timestamp,
     sourceModality: item.sourceModality ?? 'text',
     voiceSessionId: item.voiceSessionId,

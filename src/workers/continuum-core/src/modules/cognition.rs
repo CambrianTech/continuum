@@ -31,21 +31,21 @@
 use crate::gpu::GpuMemoryManager;
 use crate::log_info;
 use crate::logging::TimingGuard;
+use crate::persona::GenomeAdapterInfo;
 use crate::persona::evaluator;
+use crate::persona::message_cache::{CachedMessage, SenderCategory};
 use crate::persona::model_selection;
 use crate::persona::text_analysis;
 use crate::persona::text_analysis::LoopDetector;
-use crate::persona::GenomeAdapterInfo;
 use crate::persona::{AdapterInfo, ModelSelectionRequest};
 use crate::persona::{InboxMessage, Modality, PersonaCognition, SenderType};
-use crate::persona::message_cache::{CachedMessage, SenderCategory};
 use crate::persona::{RecentResponse, SleepMode};
 use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::any::Any;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -641,10 +641,15 @@ impl ServiceModule for CognitionModule {
                 let result = persona.genome_engine.activate_skill(&skill_name, now_ms);
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "genome-activate-skill {}: {} activated={}, evicted={:?}, to_load={:?} ({:.0}μs)",
-                    persona_uuid, skill_name, result.activated,
-                    result.evicted, result.to_load, result.decision_time_us
+                    persona_uuid,
+                    skill_name,
+                    result.activated,
+                    result.evicted,
+                    result.to_load,
+                    result.decision_time_us
                 );
 
                 Ok(CommandResult::Json(
@@ -725,8 +730,7 @@ impl ServiceModule for CognitionModule {
             // wrappers, this command is what those wrappers will call;
             // until then it's manually testable for verification.
             "cognition/genome-evict-under-pressure" => {
-                let _timer =
-                    TimingGuard::new("module", "cognition_genome_evict_under_pressure");
+                let _timer = TimingGuard::new("module", "cognition_genome_evict_under_pressure");
                 let persona_uuid = p.uuid("persona_id")?;
                 let target_pressure = p.f32_or("target_pressure", 0.75);
 
@@ -736,9 +740,14 @@ impl ServiceModule for CognitionModule {
                 let pressure_after = persona.genome_engine.memory_pressure();
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "genome-evict-under-pressure {}: target={:.2} pressure {:.2} → {:.2}, freed {} bytes",
-                    persona_uuid, target_pressure, pressure_before, pressure_after, bytes_freed
+                    persona_uuid,
+                    target_pressure,
+                    pressure_before,
+                    pressure_after,
+                    bytes_freed
                 );
 
                 Ok(CommandResult::Json(json!({
@@ -788,8 +797,7 @@ impl ServiceModule for CognitionModule {
                         arr.iter()
                             .filter_map(|item| {
                                 let id = item.get("id")?.as_str()?.parse::<Uuid>().ok()?;
-                                let sender_name =
-                                    item.get("sender_name")?.as_str()?.to_string();
+                                let sender_name = item.get("sender_name")?.as_str()?.to_string();
                                 let text = item.get("text")?.as_str()?.to_string();
                                 Some(crate::cognition::RecentMessage {
                                     id,
@@ -816,6 +824,44 @@ impl ServiceModule for CognitionModule {
                 // own LoRA-adapted one).
                 let model = p.str("model")?.to_string();
 
+                // Native multimodal: caller may pass `message_media` as an
+                // array of `{ itemType, base64?, mimeType? }`. We parse what
+                // matches our shape and let respond() decide whether the
+                // resolved model can actually consume it (capability check
+                // there). Per Joel 2026-04-21: never bridge images to text
+                // when the model is natively multimodal — that defeats the
+                // whole reason Qwen3.5/Claude/GPT-4o were chosen. The
+                // bridge is the floor for genuinely text-only models.
+                let message_media: Vec<crate::cognition::tool_executor::types::MediaItemLite> = p
+                    .json_opt::<Value>("message_media")
+                    .and_then(|v| v.as_array().cloned())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| {
+                                let item_type = item
+                                    .get("itemType")
+                                    .or_else(|| item.get("item_type"))?
+                                    .as_str()?
+                                    .to_string();
+                                let base64 = item
+                                    .get("base64")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from);
+                                let mime_type = item
+                                    .get("mimeType")
+                                    .or_else(|| item.get("mime_type"))
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from);
+                                Some(crate::cognition::tool_executor::types::MediaItemLite {
+                                    item_type,
+                                    base64,
+                                    mime_type,
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 let input = crate::persona::response::RespondInput {
                     persona: crate::cognition::PersonaSlot {
                         persona_id: persona_uuid,
@@ -830,13 +876,13 @@ impl ServiceModule for CognitionModule {
                     system_prompt,
                     model,
                     is_voice,
+                    message_media,
                 };
 
                 let response = crate::persona::response::respond(input).await?;
 
                 Ok(CommandResult::Json(
-                    serde_json::to_value(&response)
-                        .map_err(|e| format!("Serialize error: {e}"))?,
+                    serde_json::to_value(&response).map_err(|e| format!("Serialize error: {e}"))?,
                 ))
             }
 
@@ -857,11 +903,15 @@ impl ServiceModule for CognitionModule {
                 let result = persona.domain_classifier.classify(text);
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "classify-domain {}: '{}...' → domain={}, confidence={:.2}, adapter={:?} ({:.0}μs)",
                     persona_uuid,
                     &text[..text.len().min(40)],
-                    result.domain, result.confidence, result.adapter_name, result.decision_time_us
+                    result.domain,
+                    result.confidence,
+                    result.adapter_name,
+                    result.decision_time_us
                 );
 
                 Ok(CommandResult::Json(
@@ -1062,10 +1112,14 @@ impl ServiceModule for CognitionModule {
                 let result = evaluator::check_response_adequacy(&original_text, &responses);
 
                 log_info!(
-                    "module", "cognition",
+                    "module",
+                    "cognition",
                     "check-adequacy: adequate={}, confidence={:.2}, responder={:?} ({:.0}μs, {} responses checked)",
-                    result.is_adequate, result.confidence,
-                    result.responder_name, result.check_time_us, responses.len()
+                    result.is_adequate,
+                    result.confidence,
+                    result.responder_name,
+                    result.check_time_us,
+                    responses.len()
                 );
 
                 Ok(CommandResult::Json(
@@ -1123,7 +1177,9 @@ impl ServiceModule for CognitionModule {
                     .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
-                let result = persona.content_dedup.is_duplicate(content, room_uuid, now_ms);
+                let result = persona
+                    .content_dedup
+                    .is_duplicate(content, room_uuid, now_ms);
 
                 Ok(CommandResult::Json(serde_json::json!({
                     "success": true,

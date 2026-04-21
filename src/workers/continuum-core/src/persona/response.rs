@@ -42,6 +42,7 @@
 //!   - <think> parsing is a hot path on every response; regex/str
 //!     manipulation in Rust is ~100x what TS does on the same input.
 
+use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::cognition::types::ResponderDecision;
 use crate::cognition::{
     AnalysisInput, DEFAULT_RELEVANCE_THRESHOLD, PersonaSlot, RecentMessage, SharedAnalysis,
@@ -87,6 +88,18 @@ pub struct RespondInput {
     /// True if this is a live-voice context (changes response style
     /// instructions in the assembled prompt). False for normal chat.
     pub is_voice: bool,
+    /// Media (images/audio/video) attached to the current message. When
+    /// present AND the persona's resolved model has the matching
+    /// `Capability` (`Vision` for images, `AudioInput` for audio), the
+    /// render path constructs `MessageContent::Parts` with a real
+    /// `ContentPart::Image`/`Audio` instead of `MessageContent::Text` —
+    /// preserving the natively-multimodal model's ability to see / hear
+    /// directly. **No text-description bridging when the model IS
+    /// capable** — that's the regression Joel called out 2026-04-21.
+    /// Bridge layer (VisionDescriptionService) remains for genuinely
+    /// text-only models as the floor, not the default.
+    /// See docs/architecture/PERSONA-CONTEXT-PAGING.md §0.5.X.
+    pub message_media: Vec<MediaItemLite>,
 }
 
 /// What `respond()` returns.
@@ -240,7 +253,7 @@ async fn run_render(
     _decision: &ResponderDecision,
 ) -> Result<RawRenderOutput, String> {
     use crate::ai::adapter::InferenceDevice;
-    use crate::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
+    use crate::ai::types::TextGenerationRequest;
     use crate::persona::prompt_assembly::{HistoryMessage, PromptAssemblyInput, assemble};
 
     // 1. The matched angle for this persona's specialty. Empty string
@@ -297,15 +310,26 @@ async fn run_render(
     let assembled = assemble(&prompt_input);
 
     // 3. Build the inference request from the assembled prompt.
-    let messages: Vec<ChatMessage> = assembled
-        .messages
-        .into_iter()
-        .map(|m| ChatMessage {
-            role: m.role,
-            content: MessageContent::Text(m.content),
-            name: None,
-        })
-        .collect();
+    //
+    // Native multimodal: if the caller passed media AND the persona's
+    // resolved model declares the matching sensory capability
+    // (Vision for image, AudioInput for audio), we attach the media
+    // DIRECTLY as `ContentPart::Image` / `ContentPart::Audio` on the
+    // FINAL user-role message — the one carrying the current message.
+    // The model sees / hears the source bytes, no description bridge.
+    //
+    // When the model lacks the capability we fall through to the
+    // text-only path. The sensory bridge (`VisionDescriptionService`,
+    // STT) would inject a description upstream — that's the leveler
+    // for genuinely text-only models, not the default route.
+    //
+    // See docs/architecture/PERSONA-CONTEXT-PAGING.md §0.5.X.
+    let model_caps: std::collections::HashSet<crate::model_registry::Capability> =
+        crate::model_registry::try_global()
+            .and_then(|reg| reg.model(&input.model))
+            .map(|m| m.capabilities.iter().copied().collect())
+            .unwrap_or_default();
+    let messages = build_messages_with_media(assembled.messages, &input.message_media, &model_caps);
 
     let request = TextGenerationRequest {
         messages,
@@ -363,6 +387,106 @@ async fn run_render(
 }
 
 /// Extract `<think>...</think>` blocks from the model's output. Emits
+/// Convert assembled prompt messages into `ChatMessage`s, attaching any
+/// caller-supplied `MediaItemLite`s as `ContentPart::Image`/`Audio` on
+/// the FINAL user-role message — but only when the persona's resolved
+/// model declares the matching capability (`Vision` for image,
+/// `AudioInput` for audio). Native-multimodal models receive the source
+/// bytes directly; text-only models fall back to the simple text path
+/// (the sensory bridge would inject a description upstream — its job,
+/// not ours).
+///
+/// Behavior contract:
+///   - empty `media` → identical to the legacy text-only path.
+///   - non-empty `media` + model has Vision/AudioInput → last user
+///     message becomes `MessageContent::Parts(text + media)`.
+///   - non-empty `media` + model lacks the capability → text-only
+///     path; the bridge layer (VisionDescriptionService etc.) is
+///     expected to have already converted media → text upstream.
+///   - `media` items whose `item_type` doesn't match a capability the
+///     model has are dropped (e.g. audio sent to a vision-only model).
+///   - no user-role messages found → media silently dropped (rare —
+///     would mean the assembler produced an unusual shape).
+fn build_messages_with_media(
+    prompt_messages: Vec<crate::persona::prompt_assembly::PromptMessage>,
+    media: &[MediaItemLite],
+    model_caps: &std::collections::HashSet<crate::model_registry::Capability>,
+) -> Vec<crate::ai::types::ChatMessage> {
+    use crate::ai::types::{AudioInput, ChatMessage, ContentPart, ImageInput, MessageContent};
+    use crate::model_registry::Capability;
+
+    // Default text-only path. Always start here; we may rewrite the
+    // last user message below if media + capability align.
+    let mut messages: Vec<ChatMessage> = prompt_messages
+        .into_iter()
+        .map(|m| ChatMessage {
+            role: m.role,
+            content: MessageContent::Text(m.content),
+            name: None,
+        })
+        .collect();
+
+    if media.is_empty() {
+        return messages;
+    }
+
+    // Filter media down to items whose modality the model can actually
+    // accept. Anything else falls through (the sensory bridge would
+    // have substituted text upstream for genuinely text-only models).
+    let supported_parts: Vec<ContentPart> = media
+        .iter()
+        .filter_map(|m| match m.item_type.as_str() {
+            "image" if model_caps.contains(&Capability::Vision) => Some(ContentPart::Image {
+                image: ImageInput {
+                    url: None,
+                    base64: m.base64.clone(),
+                    mime_type: m.mime_type.clone(),
+                },
+            }),
+            "audio" if model_caps.contains(&Capability::AudioInput) => Some(ContentPart::Audio {
+                audio: AudioInput {
+                    url: None,
+                    base64: m.base64.clone(),
+                    mime_type: m.mime_type.clone(),
+                },
+            }),
+            _ => None,
+        })
+        .collect();
+
+    if supported_parts.is_empty() {
+        return messages;
+    }
+
+    // Find the LAST user-role message and convert it to Parts (text +
+    // attached media). The current message is always the last user
+    // turn after assemble().
+    let last_user_idx = messages.iter().rposition(|m| m.role == "user");
+    let Some(idx) = last_user_idx else {
+        // No user message to attach to. Drop media silently — caller
+        // shape was unusual; assembling new user messages here would
+        // hide the actual bug.
+        return messages;
+    };
+
+    let existing_text = match &messages[idx].content {
+        MessageContent::Text(t) => t.clone(),
+        // Defensive: if the assembler somehow already produced Parts,
+        // we don't try to merge — leave it alone.
+        MessageContent::Parts(_) => return messages,
+    };
+
+    let mut parts: Vec<ContentPart> = Vec::with_capacity(supported_parts.len() + 1);
+    if !existing_text.is_empty() {
+        parts.push(ContentPart::Text {
+            text: existing_text,
+        });
+    }
+    parts.extend(supported_parts);
+    messages[idx].content = MessageContent::Parts(parts);
+    messages
+}
+
 /// each as a `cognition:think-block` event for the (future) hippocampus
 /// to consume. Returns the cleaned visible text + the count of blocks
 /// emitted (for telemetry).
@@ -494,5 +618,196 @@ mod tests {
         let (visible, count) = strip_thinks_emit_events(raw, Uuid::nil(), Uuid::nil());
         assert!(visible.contains("<think>"));
         assert_eq!(count, 0);
+    }
+
+    // ─── Native multimodal helper tests ─────────────────────────────
+    //
+    // build_messages_with_media is the convergence point for sensory
+    // inputs. These tests pin its contract — no media → text path
+    // unchanged; media + capability → ContentPart::Image/Audio
+    // attached to the LAST user message; media without capability →
+    // text path (the bridge is upstream's job, not ours).
+
+    use crate::ai::types::{ContentPart, MessageContent};
+    use crate::cognition::tool_executor::types::MediaItemLite;
+    use crate::model_registry::Capability;
+    use crate::persona::prompt_assembly::PromptMessage;
+    use std::collections::HashSet;
+
+    fn pm(role: &str, text: &str) -> PromptMessage {
+        PromptMessage {
+            role: role.to_string(),
+            content: text.to_string(),
+        }
+    }
+
+    fn img_b64(b64: &str) -> MediaItemLite {
+        MediaItemLite {
+            item_type: "image".to_string(),
+            base64: Some(b64.to_string()),
+            mime_type: Some("image/png".to_string()),
+        }
+    }
+
+    /// What this catches: empty media short-circuit ever rewriting
+    /// the message shape into Parts. Without media, the text-only
+    /// path must remain byte-for-byte identical to before this
+    /// feature landed — otherwise we silently regress every existing
+    /// caller.
+    ///
+    /// Validated 2026-04-21: removed the `if media.is_empty() return`
+    /// early-exit so the function falls through to the parts-building
+    /// branch with empty supported_parts; test passes trivially because
+    /// supported_parts.is_empty() also returns the text path. So the
+    /// short-circuit is redundant for correctness but reduces work.
+    /// Stronger mutation: changed the text-path map to wrap in Parts
+    /// instead of Text; test fails on the assert_eq with MessageContent::Text.
+    /// Reverted.
+    #[test]
+    fn no_media_returns_text_only_messages() {
+        let prompt = vec![pm("system", "you are helpful"), pm("user", "hello")];
+        let caps = HashSet::new();
+        let out = build_messages_with_media(prompt, &[], &caps);
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0].content, MessageContent::Text(_)));
+        assert!(matches!(out[1].content, MessageContent::Text(_)));
+    }
+
+    /// What this catches: media present but model lacks Vision —
+    /// we MUST NOT attach the image. The bridge layer
+    /// (VisionDescriptionService) is responsible for converting
+    /// media→text upstream for incapable models; if we attached
+    /// raw image parts to a text-only model the inference call
+    /// would fail at the adapter or be silently ignored.
+    ///
+    /// Validated 2026-04-21: removed the `model_caps.contains(...)`
+    /// guard from the image branch (always emit ContentPart::Image),
+    /// test fails because supported_parts is non-empty for a
+    /// no-capability model and the user message becomes Parts;
+    /// reverted.
+    #[test]
+    fn media_dropped_when_model_lacks_capability() {
+        let prompt = vec![pm("user", "describe this")];
+        let media = vec![img_b64("AAAA")];
+        let caps = HashSet::new(); // model has NO Vision capability
+        let out = build_messages_with_media(prompt, &media, &caps);
+        assert_eq!(out.len(), 1);
+        match &out[0].content {
+            MessageContent::Text(t) => assert_eq!(t, "describe this"),
+            _ => panic!("expected Text content for capability-less model, got Parts"),
+        }
+    }
+
+    /// What this catches: with media + Vision capability, the LAST
+    /// user message MUST become MessageContent::Parts containing
+    /// the original text + a ContentPart::Image carrying the base64
+    /// payload. Native sight on natively-capable models is the
+    /// thesis (per Joel 2026-04-21 + README "Full embodiment");
+    /// failing this means we silently revert to bridging.
+    ///
+    /// Validated 2026-04-21: changed Capability::Vision to
+    /// Capability::AudioInput in the image branch's match, test
+    /// fails because supported_parts is empty for a Vision-only
+    /// model and the user message stays as Text; reverted.
+    #[test]
+    fn vision_model_receives_native_image_part() {
+        let prompt = vec![
+            pm("system", "you describe images"),
+            pm("user", "what is this?"),
+        ];
+        let media = vec![img_b64("PNG_BASE64_DATA")];
+        let mut caps = HashSet::new();
+        caps.insert(Capability::Vision);
+        let out = build_messages_with_media(prompt, &media, &caps);
+        assert_eq!(out.len(), 2);
+        // System message untouched.
+        assert!(matches!(out[0].content, MessageContent::Text(_)));
+        // User message converted to Parts(text + image).
+        let parts = match &out[1].content {
+            MessageContent::Parts(p) => p,
+            _ => panic!("expected Parts on user message"),
+        };
+        assert_eq!(parts.len(), 2);
+        match &parts[0] {
+            ContentPart::Text { text } => assert_eq!(text, "what is this?"),
+            _ => panic!("first part should be the original text"),
+        }
+        match &parts[1] {
+            ContentPart::Image { image } => {
+                assert_eq!(image.base64.as_deref(), Some("PNG_BASE64_DATA"));
+                assert_eq!(image.mime_type.as_deref(), Some("image/png"));
+            }
+            _ => panic!("second part should be the image"),
+        }
+    }
+
+    /// What this catches: media attaches to the LAST user-role
+    /// message, not the first or to a system message. With
+    /// multi-turn history the most recent user turn carries the
+    /// current message + the image the user just shared.
+    ///
+    /// Validated 2026-04-21: changed `messages.iter().rposition` to
+    /// `position` (first instead of last), test fails because the
+    /// FIRST user message gets the image instead of the last;
+    /// reverted.
+    #[test]
+    fn image_attaches_to_last_user_turn_not_first() {
+        let prompt = vec![
+            pm("user", "earlier turn"),
+            pm("assistant", "earlier reply"),
+            pm("user", "current turn"),
+        ];
+        let media = vec![img_b64("X")];
+        let mut caps = HashSet::new();
+        caps.insert(Capability::Vision);
+        let out = build_messages_with_media(prompt, &media, &caps);
+        // First user message stays text.
+        match &out[0].content {
+            MessageContent::Text(t) => assert_eq!(t, "earlier turn"),
+            _ => panic!("first user turn should remain text"),
+        }
+        // Last user message becomes Parts.
+        match &out[2].content {
+            MessageContent::Parts(p) => {
+                assert!(
+                    p.iter().any(|x| matches!(x, ContentPart::Image { .. })),
+                    "last user turn should carry the image"
+                );
+            }
+            _ => panic!("last user turn should be Parts"),
+        }
+    }
+
+    /// What this catches: audio attachment requires the AudioInput
+    /// capability — Vision alone does NOT permit audio. Each modality
+    /// has its own capability gate; no cross-bleed.
+    ///
+    /// Validated 2026-04-21: changed `Capability::AudioInput` to
+    /// `Capability::Vision` in the audio match arm, test fails
+    /// because vision-only model wrongly receives audio; reverted.
+    #[test]
+    fn audio_requires_audio_input_capability() {
+        let prompt = vec![pm("user", "what did i say")];
+        let audio = MediaItemLite {
+            item_type: "audio".to_string(),
+            base64: Some("WAV_DATA".to_string()),
+            mime_type: Some("audio/wav".to_string()),
+        };
+        let mut vision_only = HashSet::new();
+        vision_only.insert(Capability::Vision);
+        let out = build_messages_with_media(prompt.clone(), &[audio.clone()], &vision_only);
+        // Vision-only model: audio must NOT attach (no AudioInput cap).
+        assert!(matches!(out[0].content, MessageContent::Text(_)));
+
+        let mut audio_capable = HashSet::new();
+        audio_capable.insert(Capability::AudioInput);
+        let out = build_messages_with_media(prompt, &[audio], &audio_capable);
+        // Audio-capable model: audio attaches.
+        match &out[0].content {
+            MessageContent::Parts(p) => {
+                assert!(p.iter().any(|x| matches!(x, ContentPart::Audio { .. })));
+            }
+            _ => panic!("audio-capable model should receive Parts"),
+        }
     }
 }

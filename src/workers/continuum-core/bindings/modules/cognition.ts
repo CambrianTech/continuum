@@ -3,6 +3,7 @@
  */
 
 import type { RustCoreIPCClientBase } from './base';
+import type { MediaItemLite } from '../../../../shared/generated/cognition/MediaItemLite';
 import type {
 	InboxMessageRequest,
 	CognitionDecision,
@@ -75,6 +76,24 @@ export interface PersonaRespondRequest {
 	knownSpecialties: string[];
 	/** Live-voice context flag. Affects assembled-prompt response style. */
 	isVoice?: boolean;
+	/**
+	 * Media (images, audio) attached to the current message. When the
+	 * persona's resolved model has the matching native capability
+	 * (`Vision` for image, `AudioInput` for audio), Rust attaches these
+	 * directly as `ContentPart::Image` / `ContentPart::Audio` on the
+	 * final user-role message — the model sees / hears the source bytes.
+	 * Text-description bridging is the FALLBACK for genuinely text-only
+	 * models, not the default route. Per Joel 2026-04-21: Qwen3.5 /
+	 * Claude / GPT-4o are natively multimodal; routing through a
+	 * description layer defeats the whole reason they were chosen.
+	 *
+	 * Wire shape is `MediaItemLite` (ts-rs generated from
+	 * `cognition::tool_executor::types::MediaItemLite`). `itemType` is
+	 * one of "image" | "audio" today; base64 is required for inline
+	 * payloads (URL-only references not yet supported through this
+	 * path).
+	 */
+	messageMedia?: MediaItemLite[];
 }
 
 // ============================================================================
