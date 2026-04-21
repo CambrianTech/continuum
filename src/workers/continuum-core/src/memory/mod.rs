@@ -22,6 +22,7 @@
 pub mod cache;
 pub mod consciousness;
 pub mod consolidation_adapter;
+pub mod consolidation_pipeline;
 pub mod consolidation_threshold;
 pub mod consolidator;
 pub mod conversation_summary;
@@ -38,6 +39,7 @@ pub use consolidation_adapter::{
     ConsolidatedMemory, ConsolidationAdapter, ConsolidationContext, ConsolidationResult,
     MemoryType as ConsolidatedMemoryType, Thought,
 };
+pub use consolidation_pipeline::{run_consolidation_pass, to_corpus_memory};
 pub use consolidation_threshold::{
     AdaptiveConsolidationThreshold, ConsolidationThresholdStats,
 };
