@@ -220,7 +220,7 @@ cost_input_per_1k = 0.0
 cost_output_per_1k = 0.0
 gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
 # Same shaping rule as the in-process row — see that row's comment.
-multi_party_strategy = "name_prefixed_user_turns"
+multi_party_strategy = "single_user_turn_flattened_history"
 
 # ─── In-process llama.cpp (Metal/CUDA direct) ───────────────────────────
 
@@ -263,7 +263,7 @@ stop_sequences = ["<|im_end|>", "<|endoftext|>"]
 # tests/persona_respond_replay.rs::synthesized_prod_shape_input). Flatten
 # multi-party history into ONE user turn so the chat template sees
 # system + user + assistant — the shape the model was actually trained on.
-multi_party_strategy = "name_prefixed_user_turns"
+multi_party_strategy = "single_user_turn_flattened_history"
 
 # ─── Vision-capable Qwen2-VL-7B (in-process llama.cpp + mtmd) ───────────
 # Reference vision model for the local multimodal path. mmproj_local_path

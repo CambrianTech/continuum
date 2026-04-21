@@ -71,6 +71,28 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   { uniqueId: generateUniqueId('Sentinel'), displayName: 'Sentinel', provider: 'sentinel', type: 'persona', voiceId: '240' },
   { uniqueId: generateUniqueId('Gemini'), displayName: 'Gemini', provider: 'google', type: 'persona', voiceId: '115', apiKeyEnv: 'GOOGLE_API_KEY' },
 
+  // Native vision persona — local, free, no API key. Bound to
+  // qwen2-vl-7b-instruct via the in-process llamacpp adapter (registered
+  // automatically when the GGUF + mmproj are on disk; see install.sh
+  // for the pull). Without an entry like this, no persona uses the
+  // vision model even though the adapter is registered, so uploaded
+  // images get text-bridged through VisionDescriptionService instead
+  // of going to a model that natively sees pixels.
+  //
+  // 4 GB VRAM minimum: Qwen2-VL-7B Q4_K_M (~4.5 GB on disk) loaded
+  // partially to GPU + KV cache headroom. Falls back gracefully on
+  // hardware without enough VRAM (skipped at seed time per the
+  // existing minVramGB filter at line 247).
+  {
+    uniqueId: generateUniqueId('Vision'),
+    displayName: 'Vision AI',
+    provider: 'local',
+    type: 'persona',
+    voiceId: '105',
+    minVramGB: 5,
+    modelId: 'qwen2-vl-7b-instruct',
+  },
+
   // Audio-native personas (need specific API keys)
   {
     uniqueId: generateUniqueId('Qwen3-Omni'),
