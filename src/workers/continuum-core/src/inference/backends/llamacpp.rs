@@ -227,14 +227,84 @@ impl LlamaCppBackend {
         sampling: SamplingConfig,
         stop_sequences: &[&str],
     ) -> Result<(String, usize), String> {
+        self.generate_with_media(
+            prompt_with_marker,
+            image_bytes,
+            max_tokens,
+            sampling,
+            stop_sequences,
+            llama::MediaKind::Image,
+        )
+    }
+
+    /// Audio analogue of `generate_with_image`. Same single-shot
+    /// per-call-context pattern; the mtmd projector path inside auto-
+    /// detects audio vs image from the bytes' magic numbers but the
+    /// caller's `MediaKind::Audio` selects the capability check
+    /// (`supports_audio` instead of `supports_vision`) and shapes error
+    /// messages so a mistakenly-routed audio call doesn't surface as a
+    /// confusing "vision unsupported" error.
+    ///
+    /// Supported audio container formats are whatever miniaudio
+    /// understands inside the vendored llama.cpp build (wav, mp3, flac
+    /// per upstream `tools/mtmd/mtmd-helper.h`). The caller is expected
+    /// to deliver one of those — re-encoding from other formats is a
+    /// sensory-bridge concern, not the backend's.
+    pub fn generate_with_audio(
+        &self,
+        prompt_with_marker: &str,
+        audio_bytes: &[u8],
+        max_tokens: usize,
+        sampling: SamplingConfig,
+        stop_sequences: &[&str],
+    ) -> Result<(String, usize), String> {
+        self.generate_with_media(
+            prompt_with_marker,
+            audio_bytes,
+            max_tokens,
+            sampling,
+            stop_sequences,
+            llama::MediaKind::Audio,
+        )
+    }
+
+    /// Internal workhorse for single-shot multimodal generation. Mirrors
+    /// the eval+sample loop the public methods need; the only thing that
+    /// differs per modality is the capability check (vision vs audio
+    /// projector support) and which `MtmdContext::eval_*` method runs.
+    /// Centralizing here avoids the 150-LOC duplication that would land
+    /// if image and audio paths were copy-pasted.
+    fn generate_with_media(
+        &self,
+        prompt_with_marker: &str,
+        media_bytes: &[u8],
+        max_tokens: usize,
+        sampling: SamplingConfig,
+        stop_sequences: &[&str],
+        kind: llama::MediaKind,
+    ) -> Result<(String, usize), String> {
         let log = runtime::logger("llamacpp");
         let start = Instant::now();
         let mtmd = self.ensure_mtmd()?;
-        if !mtmd.supports_vision() {
-            return Err(format!(
-                "model {}'s mmproj does not declare vision support (audio-only projector?)",
-                self.model_id
-            ));
+        match kind {
+            llama::MediaKind::Image => {
+                if !mtmd.supports_vision() {
+                    return Err(format!(
+                        "model {}'s mmproj does not declare vision support — \
+                         caller passed an image but the projector is text-only or audio-only",
+                        self.model_id
+                    ));
+                }
+            }
+            llama::MediaKind::Audio => {
+                if !mtmd.supports_audio() {
+                    return Err(format!(
+                        "model {}'s mmproj does not declare audio support — \
+                         caller passed audio but the projector is text-only or vision-only",
+                        self.model_id
+                    ));
+                }
+            }
         }
 
         // Per-call context — see method-level docstring on why we don't
@@ -255,20 +325,31 @@ impl LlamaCppBackend {
             })
             .map_err(|e| format!("new_context failed: {e}"))?;
 
-        // Eval text + image into the context, advancing n_past.
-        let n_past = mtmd
-            .eval_image(
+        // Eval text + media into the context, advancing n_past.
+        let eval_result = match kind {
+            llama::MediaKind::Image => mtmd.eval_image(
                 &mut ctx,
                 prompt_with_marker,
-                image_bytes,
+                media_bytes,
                 0,
                 self.config.n_batch as i32,
                 0,
                 true,
-            )
-            .map_err(|e| format!("eval_image failed: {e}"))?;
+            ),
+            llama::MediaKind::Audio => mtmd.eval_audio(
+                &mut ctx,
+                prompt_with_marker,
+                media_bytes,
+                0,
+                self.config.n_batch as i32,
+                0,
+                true,
+            ),
+        };
+        let n_past = eval_result.map_err(|e| format!("mtmd eval ({:?}) failed: {e}", kind))?;
         log.info(&format!(
-            "mtmd eval done: prompt+image consumed {} positions in {}ms",
+            "mtmd eval done ({:?}): prompt+media consumed {} positions in {}ms",
+            kind,
             n_past,
             start.elapsed().as_millis()
         ));

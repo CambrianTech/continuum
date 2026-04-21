@@ -77,22 +77,43 @@ fn model_info_with_runtime(
 /// time would silently re-fetch on every request). If the bridge handed
 /// us a URL-only image, that's a configuration bug worth surfacing.
 fn decode_image_bytes(image: &crate::ai::types::ImageInput) -> Result<Vec<u8>, String> {
+    decode_data_url_or_base64(image.base64.as_deref(), image.url.as_deref(), "ImageInput")
+}
+
+/// Audio analogue of `decode_image_bytes`. Same base64-or-data-URL
+/// shape (sensory-bridge upstream encodes captured PCM/WAV/MP3/FLAC
+/// to base64 before passing through the persona pipeline), same
+/// no-URL-fetching policy.
+fn decode_audio_bytes(audio: &crate::ai::types::AudioInput) -> Result<Vec<u8>, String> {
+    decode_data_url_or_base64(audio.base64.as_deref(), audio.url.as_deref(), "AudioInput")
+}
+
+/// Common base64 / data-URL decode for the modality-typed wrappers.
+/// Splits on the first comma to tolerate `data:image/jpeg;base64,...`
+/// or `data:audio/wav;base64,...` prefixes the caller may have included
+/// upstream. Errors point at the modality so the diagnosis is specific.
+fn decode_data_url_or_base64(
+    b64: Option<&str>,
+    url: Option<&str>,
+    modality_label: &str,
+) -> Result<Vec<u8>, String> {
     use base64::{Engine, engine::general_purpose};
-    if let Some(b64) = image.base64.as_ref() {
-        // Strip any data: URL prefix the caller may have included
-        // ("data:image/jpeg;base64,..."). Split on the first comma.
+    if let Some(b64) = b64 {
         let payload = b64.split_once(',').map(|(_, rest)| rest).unwrap_or(b64);
         general_purpose::STANDARD
             .decode(payload.as_bytes())
-            .map_err(|e| format!("ImageInput.base64 not valid base64: {e}"))
-    } else if image.url.is_some() {
-        Err("llamacpp_adapter received an URL-only ImageInput; the sensory \
+            .map_err(|e| format!("{modality_label}.base64 not valid base64: {e}"))
+    } else if url.is_some() {
+        Err(format!(
+            "llamacpp_adapter received an URL-only {modality_label}; the sensory \
              bridge should resolve URLs to base64 before reaching the local \
              adapter (avoids per-request refetches and lets the adapter run \
              without network access)"
-            .to_string())
+        ))
     } else {
-        Err("ImageInput has neither base64 nor url — nothing to decode".to_string())
+        Err(format!(
+            "{modality_label} has neither base64 nor url — nothing to decode"
+        ))
     }
 }
 
@@ -428,20 +449,23 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .and_then(|m| m.chat_template.clone());
         let template_string = backend.model_chat_template().or(registry_template);
         let template = template_string.as_deref();
-        // Walk the request to find any image content. If present, the
-        // model MUST natively accept images (else the bridge is wrong
-        // upstream — sensory-bridge converts to text BEFORE reaching here
-        // for non-vision models). For vision-capable local models with
-        // a loaded mmproj, images splice in as `<__media__>` markers
-        // inside the rendered text and the call routes to
-        // `backend.generate_with_image()` instead of the scheduler.
+        // Walk the request to find any image / audio content. If present,
+        // the model MUST natively accept that modality (else the bridge
+        // is wrong upstream — sensory-bridge converts to text BEFORE
+        // reaching here for non-multimodal models). For vision-capable /
+        // audio-capable local models with a loaded mmproj, media items
+        // splice in as `<__media__>` markers inside the rendered text
+        // and the call routes to `backend.generate_with_image()` /
+        // `generate_with_audio()` instead of the scheduler.
         //
-        // Single-image scope for v1: the mtmd C API supports multiple
-        // images per prompt (one marker per image), but our backend's
-        // `generate_with_image(prompt, &[u8], ...)` takes one. Multi-image
-        // is a follow-up — declare it explicitly here so future work has
-        // a place to land. Audio is the same shape and slots in next.
-        let mut collected_images: Vec<Vec<u8>> = Vec::new();
+        // Single-media-per-call scope for v1: libmtmd's C API supports
+        // multiple bitmaps per tokenize call (one marker each, in
+        // order), but our backend signatures take one bytes blob. The
+        // collected_media vector preserves order; if there's >1 item
+        // OR a mix of image+audio, we hard-error rather than silently
+        // dropping the rest. Multi-media is a follow-up once a real
+        // caller needs it (mtmd_tokenize already does the work).
+        let mut collected_media: Vec<(llama::MediaKind, Vec<u8>)> = Vec::new();
         let mut messages: Vec<llama::ChatMsg> = Vec::new();
         if let Some(sys) = request.system_prompt.as_ref() {
             if !sys.is_empty() {
@@ -462,15 +486,26 @@ impl AIProviderAdapter for LlamaCppAdapter {
                                 out.push_str(text);
                             }
                             crate::ai::types::ContentPart::Image { image } => {
-                                // Splice in the model's media marker so
-                                // mtmd_tokenize can splice the image
-                                // tokens at this exact spot. Order
-                                // matters — text-before-image vs
-                                // image-before-text changes what the
-                                // model sees.
+                                // Splice the marker at this exact spot —
+                                // mtmd_tokenize replaces it with the
+                                // image-token chunk. Position matters
+                                // (text-before-image vs after changes
+                                // what the model sees).
                                 out.push_str(llama::MtmdContext::default_marker());
                                 let bytes = decode_image_bytes(image)?;
-                                collected_images.push(bytes);
+                                collected_media.push((llama::MediaKind::Image, bytes));
+                            }
+                            crate::ai::types::ContentPart::Audio { audio } => {
+                                // Same shape as image — splice marker,
+                                // collect bytes. mtmd's bitmap helper
+                                // auto-detects audio from magic bytes;
+                                // the modality tag here drives backend
+                                // capability checks (supports_audio
+                                // instead of supports_vision) and
+                                // routing to generate_with_audio.
+                                out.push_str(llama::MtmdContext::default_marker());
+                                let bytes = decode_audio_bytes(audio)?;
+                                collected_media.push((llama::MediaKind::Audio, bytes));
                             }
                             _ => {} // tool_use / tool_result handled by tool path, not here
                         }
@@ -553,7 +588,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .persona_id
             .as_deref()
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
-        let result: Result<(String, usize), String> = if collected_images.is_empty() {
+        let result: Result<(String, usize), String> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
             tokio::task::spawn_blocking(move || {
                 let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
@@ -569,35 +604,48 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .await
             .map_err(|e| format!("generate task panicked: {e}"))?
         } else {
-            // Vision path: bypass the scheduler — image tokens have a
-            // fixed positional layout the scheduler can't interleave
-            // with concurrent text seqs. Single-image only for v1; the
-            // collector above pushed N images, but generate_with_image
-            // takes one. Multi-image is a real follow-up (mtmd's C API
-            // supports it natively, our backend signature doesn't yet).
-            // Hard-error on multi rather than silently dropping the
-            // extras and confusing the model.
-            if collected_images.len() > 1 {
+            // Multimodal path: bypass the scheduler — media tokens have
+            // a fixed positional layout the scheduler can't interleave
+            // with concurrent text seqs. Single-media-per-call scope for
+            // v1; mtmd's C API supports multiple media in one prompt
+            // (one marker each in order) but our backend signatures take
+            // one bytes blob. Hard-error rather than silently dropping
+            // extras — clearer signal upstream.
+            if collected_media.len() > 1 {
+                let kinds: Vec<String> = collected_media
+                    .iter()
+                    .map(|(k, _)| format!("{:?}", k))
+                    .collect();
                 return Err(format!(
-                    "llamacpp_adapter: multi-image vision not yet supported \
-                     in this adapter ({} images in request); take one image \
-                     per request until backend.generate_with_image learns N-image",
-                    collected_images.len()
+                    "llamacpp_adapter: multi-media not yet supported in this adapter \
+                     ({} items: {}); send one media item per request until backend.\
+                     generate_with_media accepts &[(MediaKind, Vec<u8>)]",
+                    collected_media.len(),
+                    kinds.join(", ")
                 ));
             }
-            let image_bytes = collected_images.into_iter().next().unwrap();
+            let (kind, media_bytes) = collected_media.into_iter().next().unwrap();
             tokio::task::spawn_blocking(move || {
                 let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
-                backend_for_blocking.generate_with_image(
-                    &prompt_for_blocking,
-                    &image_bytes,
-                    max_tokens,
-                    sampling_for_closure,
-                    &stop_refs,
-                )
+                match kind {
+                    llama::MediaKind::Image => backend_for_blocking.generate_with_image(
+                        &prompt_for_blocking,
+                        &media_bytes,
+                        max_tokens,
+                        sampling_for_closure,
+                        &stop_refs,
+                    ),
+                    llama::MediaKind::Audio => backend_for_blocking.generate_with_audio(
+                        &prompt_for_blocking,
+                        &media_bytes,
+                        max_tokens,
+                        sampling_for_closure,
+                        &stop_refs,
+                    ),
+                }
             })
             .await
-            .map_err(|e| format!("generate_with_image task panicked: {e}"))?
+            .map_err(|e| format!("generate_with_media task panicked: {e}"))?
         };
         let (text, tokens) = result?;
 

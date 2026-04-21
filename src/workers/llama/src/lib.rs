@@ -15,5 +15,5 @@ pub mod sys {
 
 mod mtmd;
 mod safe;
-pub use mtmd::MtmdContext;
+pub use mtmd::{MediaKind, MtmdContext};
 pub use safe::*;

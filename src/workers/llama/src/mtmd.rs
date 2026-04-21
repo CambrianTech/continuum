@@ -29,6 +29,17 @@ use std::ffi::CString;
 use std::path::Path;
 use std::ptr::NonNull;
 
+/// Which modality the caller is asking the mtmd projector to process.
+/// Used for capability checks + error-message specificity. The underlying
+/// bitmap helper auto-detects image vs audio from magic bytes either way,
+/// but the caller's intent is what tells us which capability to enforce
+/// and which projector mismatch to report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Image,
+    Audio,
+}
+
 /// Multimodal projector context. Loaded once per (mmproj, model) pair and
 /// reused across many image evaluations.
 pub struct MtmdContext {
@@ -94,6 +105,11 @@ impl MtmdContext {
     /// `logits_last` controls whether logits for the very last token are
     /// computed (true if the next step is sampling, false if more eval
     /// calls follow).
+    ///
+    /// Thin wrapper for the single-image case. For audio-only callers see
+    /// `eval_audio`; for the eventual mixed-media case, `eval_media` is
+    /// the underlying workhorse (currently single-bitmap; multi-marker
+    /// support is a follow-up once a real caller needs it).
     pub fn eval_image(
         &self,
         lctx: &mut Context,
@@ -104,17 +120,67 @@ impl MtmdContext {
         seq_id: i32,
         logits_last: bool,
     ) -> Result<i32, String> {
-        // Step 1: load bitmap from raw bytes (helper does the JPEG/PNG
-        // decode + RGB conversion + resize-to-projector-grid for us).
+        self.eval_media(lctx, text, image_bytes, n_past, n_batch, seq_id, logits_last, MediaKind::Image)
+    }
+
+    /// Audio analogue of `eval_image`. The underlying mtmd helper
+    /// (`mtmd_helper_bitmap_init_from_buf`) auto-detects audio vs image
+    /// from magic bytes and routes through the same bitmap+chunks+eval
+    /// pipeline. Different entry points exist (a) so the error messages
+    /// and capability checks stay specific to the modality the caller
+    /// asked for and (b) because adapter routing reads the request's
+    /// ContentPart variant explicitly — silently letting an "image"
+    /// caller succeed on audio bytes (or vice versa) would mask a
+    /// classification bug upstream.
+    ///
+    /// Supported audio container formats are whatever miniaudio
+    /// understands (wav, mp3, flac per upstream mtmd-helper.h).
+    pub fn eval_audio(
+        &self,
+        lctx: &mut Context,
+        text: &str,
+        audio_bytes: &[u8],
+        n_past: i32,
+        n_batch: i32,
+        seq_id: i32,
+        logits_last: bool,
+    ) -> Result<i32, String> {
+        self.eval_media(lctx, text, audio_bytes, n_past, n_batch, seq_id, logits_last, MediaKind::Audio)
+    }
+
+    /// Internal workhorse — single-bitmap eval (image OR audio, whichever
+    /// the bytes turn out to be). The `kind` argument shapes only the
+    /// error messages so failures point at the actual modality the
+    /// caller asked for; the underlying mtmd code path is identical.
+    fn eval_media(
+        &self,
+        lctx: &mut Context,
+        text: &str,
+        media_bytes: &[u8],
+        n_past: i32,
+        n_batch: i32,
+        seq_id: i32,
+        logits_last: bool,
+        kind: MediaKind,
+    ) -> Result<i32, String> {
+        // Step 1: load bitmap from raw bytes — the helper auto-detects
+        // image vs audio from magic bytes (per mtmd-helper.h: stb_image
+        // formats for images, miniaudio formats wav/mp3/flac for audio).
         let bitmap = unsafe {
             sys::mtmd_helper_bitmap_init_from_buf(
                 self.ptr.as_ptr(),
-                image_bytes.as_ptr(),
-                image_bytes.len(),
+                media_bytes.as_ptr(),
+                media_bytes.len(),
             )
         };
         let bitmap = NonNull::new(bitmap).ok_or_else(|| {
-            "mtmd_helper_bitmap_init_from_buf failed — image bytes not a valid JPEG/PNG/etc.".to_string()
+            format!(
+                "mtmd_helper_bitmap_init_from_buf failed — bytes not a valid {} format",
+                match kind {
+                    MediaKind::Image => "image (JPEG/PNG/BMP/etc)",
+                    MediaKind::Audio => "audio (WAV/MP3/FLAC)",
+                }
+            )
         })?;
 
         // RAII: free bitmap + chunks even if we early-return on error.
