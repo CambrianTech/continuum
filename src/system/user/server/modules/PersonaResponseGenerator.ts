@@ -53,9 +53,13 @@ import { FitnessTracker } from '../../../genome/server/FitnessTracker';
 import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
 import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
 import { PersonaEngagementDecider, type DormancyState } from './PersonaEngagementDecider';
-import { runAgentLoop, type AgentLoopContext } from './PersonaAgentLoop';
-import { PersonaResponseValidator } from './PersonaResponseValidator';
-import { PersonaPromptAssembler } from './PersonaPromptAssembler';
+// Removed 2026-04-20: PersonaAgentLoop / PersonaResponseValidator /
+// PersonaPromptAssembler ran a TS-side second-pass inference + retry
+// loop on Rust personaRespond's output, duplicating work the Rust
+// cognition crate already owns and bypassing the model's full context
+// window via a TS maxTokens cap. Per the no-fallback rule, Rust is the
+// only path. Tool calling moves into Rust as part of the cognition
+// migration.
 import { SentinelDispatchDecider } from '../../../sentinel/SentinelDispatchDecider';
 import { SentinelDispatchCoordinator } from '../../../sentinel/SentinelDispatchCoordinator';
 import { Commands } from '../../../core/shared/Commands';
@@ -294,6 +298,50 @@ export class PersonaResponseGenerator {
         knownSpecialties,
         isVoice: originalMessage.sourceModality === 'voice',
       };
+      // Fixture capture for the Rust-persona-rewrite replay test harness
+      // AND the eventual training corpus that Forge/Academy/Sentinel-AI
+      // use to LoRA-train models against our actual RAG output shape.
+      //
+      // FIFO-pruned at FIXTURE_CAP_PER_DIR — keeps a representative
+      // recent slice without unbounded compound growth. 200 fixtures
+      // at ~25KB each = ~5MB ceiling per persona-respond dir, still
+      // plenty of training-corpus diversity.
+      //
+      // No try/catch — disk write failure is a real bug to surface, not
+      // hide. If permissions/disk are wrong, fix that, don't silently
+      // lose fixtures.
+      {
+        const { writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } = await import('fs');
+        const { homedir } = await import('os');
+        const { join } = await import('path');
+        const dir = join(homedir(), '.continuum', 'fixtures', 'persona-respond');
+        mkdirSync(dir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const fname = `${this.personaName.replace(/\s+/g, '_')}-${originalMessage.id.slice(0, 8)}-${ts}.json`;
+        writeFileSync(join(dir, fname), JSON.stringify({
+          captured_at: Date.now(),
+          persona_id: this.personaId,
+          persona_name: this.personaName,
+          model_config: this.modelConfig,
+          rust_request: rustRequest,
+        }, null, 2));
+
+        const FIXTURE_CAP_PER_DIR = 200;
+        const entries = readdirSync(dir)
+          .filter((n) => n.endsWith('.json'))
+          .map((n) => {
+            const full = join(dir, n);
+            return { full, mtime: statSync(full).mtimeMs };
+          });
+        if (entries.length > FIXTURE_CAP_PER_DIR) {
+          entries.sort((a, b) => a.mtime - b.mtime);
+          const toRemove = entries.slice(0, entries.length - FIXTURE_CAP_PER_DIR);
+          for (const e of toRemove) {
+            unlinkSync(e.full);
+          }
+        }
+      }
+
       const response = await this._rustBridge.personaRespond(rustRequest);
       pipelineTiming['3.2_cognition'] = Date.now() - phase32Start;
 
@@ -301,77 +349,19 @@ export class PersonaResponseGenerator {
         return this.handleSilent(originalMessage, response, pipelineTiming, generateStartTime);
       }
 
-      // Spoke: run tool agent loop on the returned text (model may have
-      // emitted tool calls inline). Zero-iteration case (no tool calls) is
-      // a no-op — aiResponse.text stays as Rust's output.
-      const phase33Start = Date.now();
-      const seedResponse: TextGenerationResponse = {
-        text: response.text,
-        model: response.model_used,
-        provider: this.modelConfig.provider,
-        toolCalls: [],
-        finishReason: 'stop',
-        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-        responseTimeMs: response.inference_ms,
-        requestId: originalMessage.id,
-      };
-
-      const messages = this.buildMessagesForToolLoop(systemPrompt, recentHistory, originalMessage);
-      const request: TextGenerationRequest = {
-        messages,
-        model: response.model_used,
-        temperature: this.modelConfig.temperature ?? 0.7,
-        maxTokens: this.modelConfig.maxTokens,
-        provider: this.modelConfig.provider,
-        intelligenceLevel: this.entity.intelligenceLevel,
-        personaContext: {
-          uniqueId: this.personaId,
-          displayName: this.personaName,
-          logDir: `${process.env.HOME ?? ''}/.continuum/personas/${this.entity.uniqueId}`,
-        },
-      };
-
-      const toolMeta = ragContext.metadata?.toolDefinitions as Record<string, unknown> | undefined;
-      const hasNativeTools = !!(toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0);
-      if (hasNativeTools) {
-        request.tools = toolMeta!.nativeToolSpecs as NativeToolSpec[];
-        request.toolChoice = (toolMeta!.toolChoice as string) || 'auto';
-      }
-
-      const sessionId = this.getSessionId();
-      if (!sessionId) {
-        throw new Error(`${this.personaName}: Cannot execute tool loop without sessionId`);
-      }
-
-      const agentCtx: AgentLoopContext = {
-        personaId: this.personaId,
-        personaName: this.personaName,
-        provider: this.modelConfig.provider,
-        roomId: originalMessage.roomId,
-        sessionId,
-        context: this.client!.context,
-        toolExecutor: this.toolExecutor,
-        // Tool loop needs a validator + prompt assembler for refinement retries.
-        // Cognition core owns the initial render; the tool loop's own retry
-        // helpers are injected here so it can build turn-N prompts via TS paths.
-        // Those modules still exist in the repo (anvil hasn't deleted them yet);
-        // the tool-loop-Rust-migration PR will move them next.
-        responseValidator: new PersonaResponseValidator(this.personaName, this.log.bind(this)),
-        promptAssembler: new PersonaPromptAssembler(this.personaName, this.modelConfig, this.log.bind(this)),
-        mediaConfig: this.mediaConfig,
-        log: this.log.bind(this),
-        modelFamily: getModelFamily(this.modelConfig.provider, this.modelConfig.model),
-      };
-
-      const agentResult = await runAgentLoop(agentCtx, messages, request, seedResponse);
-      allStoredResultIds.push(...agentResult.storedToolResultIds);
-      pipelineTiming['3.3_agent_loop'] = agentResult.durationMs;
-
-      // Post the final text (possibly rewritten by the tool loop) to chat.
-      const finalText = seedResponse.text.trim();
+      // No-fallback: Rust personaRespond is the ONLY inference path for
+      // a persona reply. The previous TS agent loop, response validator,
+      // and prompt assembler ran a SECOND inference pass on the Rust
+      // output, applied a TS-side maxTokens cap, and fell back to TS
+      // logic that duplicated work the Rust cognition crate already
+      // owns. Joel's instruction (2026-04-20): "REMOVE THESE FUCKING
+      // FALLBACKS". Tool calling will be re-added inside Rust as part
+      // of the cognition migration; until then a persona's spoken text
+      // is exactly what Rust returned.
+      const finalText = response.text.trim();
       if (!finalText) {
-        this.log(`⚠️ ${this.personaName}: Empty response after tool loop — skipping post`);
-        return { success: false, error: 'Empty response', storedToolResultIds: allStoredResultIds };
+        this.log(`⚠️ ${this.personaName}: Rust returned empty text — skipping post`);
+        return { success: false, error: 'Empty response from Rust', storedToolResultIds: allStoredResultIds };
       }
 
       const phase35Start = Date.now();
