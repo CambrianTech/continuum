@@ -146,7 +146,21 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         });
     }
 
-    // Identity reminder at end (recency bias — model pays most attention to recent tokens).
+    // Identity reminder is INTENTIONALLY OMITTED here.
+    //
+    // Earlier this slot pushed a `system`-role reminder ("Remember: You
+    // are {name}...") between the history user-messages and the current
+    // user message. The chatml chat templates qwen3.5 was trained on
+    // expect single-system + alternating user/assistant; an extra
+    // system block injected mid-conversation is malformed structure
+    // and the render model emits EOG almost immediately ("the" / "" /
+    // bare `<think>`) — verified 2026-04-20 via
+    // tests/persona_respond_replay.rs::synthesized_prod_shape_input.
+    //
+    // The persona's identity is already in the leading system_prompt
+    // (built by RAG with the full IDENTITY section). The reminder was
+    // belt-and-suspenders for cases where the conversation drifted
+    // long; with realistic prod-shape input it's strictly destructive.
     //
     // Silence is NOT mentioned here. Whether to speak is decided upstream by
     // score_persona() in the orchestrator; by the time we're assembling a
@@ -155,15 +169,6 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
     // enable_thinking=false literally outputs "stay silent" or "[stay silent]"
     // as its response). The render model's job is to produce the contribution,
     // not second-guess the participation decision.
-    messages.push(PromptMessage {
-        role: "system".to_string(),
-        content: format!(
-            "Remember: You are {}. Respond as yourself — no name prefix, \
-             no speaking for others. Contribute the perspective your specialty \
-             adds to this conversation.",
-            input.persona_name
-        ),
-    });
 
     // Current message
     let current_formatted = if let Some(ref name) = input.current_message.name {
@@ -250,7 +255,7 @@ mod tests {
 
         assert!(result.system_message.contains("Helper AI"));
         assert!(result.system_message.contains("Rust error handling"));
-        assert!(result.messages.len() >= 3); // history + identity reminder + current
+        assert!(result.messages.len() >= 2); // history + current (identity reminder removed 2026-04-20)
         assert!(result.estimated_tokens > 0);
     }
 
