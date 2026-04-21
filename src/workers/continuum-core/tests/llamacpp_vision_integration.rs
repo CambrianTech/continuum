@@ -115,12 +115,6 @@ fn qwen2_vl_describes_image_via_rust_pipeline() {
         n_batch: 2048,
         n_gpu_layers: -1,
         n_seq_max: 1,
-        // Disable flash attention — brew defaults to Auto which on M5 Metal
-        // picks Enabled for supported head-dim combos, but our Auto pick
-        // may diverge on vision-encoder attention. Brew works either way
-        // per testing (`--flash-attn off` still produces cat description);
-        // force off for parity.
-        flash_attn: llama::FlashAttn::Disabled,
         ..Default::default()
     };
     let backend =

@@ -36,19 +36,35 @@ pub fn backend_init() {
             sys::llama_backend_init();
             sys::ggml_backend_load_all();
 
-            // Force-register statically linked GPU backends. `ggml_backend_register`
-            // is idempotent (the registry dedups on identity), so calling this
-            // when the static initializer already ran is harmless. When the
-            // initializer DIDN'T run (because dead_strip dropped the path),
-            // this is what makes Metal show up at all.
+            // Force-register statically linked GPU backends ONLY IF NOT
+            // ALREADY PRESENT. Earlier comment claimed
+            // `ggml_backend_register` was idempotent — it is NOT. Reading
+            // ggml-backend-reg.cpp, register_backend() unconditionally
+            // push_backs onto the backends vector, with no identity check.
+            // Verified 2026-04-21 against Qwen2-VL-7B: when Metal was
+            // double-registered (static-init path ran AND we called the
+            // defensive register), the vision encoder's first-token
+            // logits diverged dramatically — top token became
+            // `<|box_start|>` (bbox detection) instead of `A` (natural
+            // language description). Same model files via brew's
+            // mtmd-cli → correct output. Same C reproducer linking the
+            // SAME vendored .a files → correct output. Only the Rust
+            // path with the duplicate register call diverged. Removing
+            // the duplicate register restored vision behavior end-to-end.
+            //
+            // The defensive register from #38 still earns its keep when
+            // dead_strip DID drop the static initializer (otherwise we
+            // silently run on CPU). Guard it so it only fires in that
+            // case: scan the registered backends by name and skip if the
+            // expected one is already there.
             #[cfg(all(feature = "metal", target_os = "macos"))]
-            sys::ggml_backend_register(sys::ggml_backend_metal_reg());
+            ensure_backend_registered("Metal", || sys::ggml_backend_metal_reg());
 
             #[cfg(all(feature = "cuda", target_os = "linux"))]
-            sys::ggml_backend_register(sys::ggml_backend_cuda_reg());
+            ensure_backend_registered("CUDA", || sys::ggml_backend_cuda_reg());
 
             #[cfg(all(feature = "vulkan", target_os = "linux"))]
-            sys::ggml_backend_register(sys::ggml_backend_vk_reg());
+            ensure_backend_registered("Vulkan", || sys::ggml_backend_vk_reg());
 
             // Fail-hard guard. If we're on a platform that should have a GPU
             // backend but the registry only contains CPU after registration,
@@ -63,6 +79,44 @@ pub fn backend_init() {
             assert_gpu_backend_registered_when_expected();
         }
     });
+}
+
+/// Register `reg_factory()`'s backend iff its exact `ggml_backend_reg_t`
+/// pointer is NOT already in the registry. Guards against
+/// double-registration — `ggml_backend_register` does NOT dedup (verified
+/// 2026-04-21 by reading ggml-backend-reg.cpp::register_backend, which
+/// unconditionally push_backs onto the backends vector).
+///
+/// Pointer identity is the right comparison here: `ggml_backend_metal_reg()`
+/// (and its CUDA/Vulkan peers) returns a pointer to a process-wide static
+/// registry entry. If the static initializer already registered it, the
+/// same pointer is already in the list. Name-matching would also work but
+/// drifts with upstream string choices (Metal's name is "MTL" not "Metal").
+///
+/// Double-registration symptom (2026-04-21): Qwen2-VL-7B vision encoder
+/// first-token logits diverged — top token became `<|box_start|>` (bbox
+/// detection mode) instead of `A` (natural-language description). The
+/// model files + prompt + context params were identical to brew's
+/// mtmd-cli and a C reproducer; only the Rust path hit this because only
+/// Rust was calling the defensive register after ggml_backend_load_all.
+#[allow(dead_code)] // used only under GPU feature gates
+unsafe fn ensure_backend_registered(
+    _tag: &str,
+    reg_factory: impl FnOnce() -> sys::ggml_backend_reg_t,
+) {
+    let candidate = reg_factory();
+    if candidate.is_null() {
+        return; // factory returned nothing — nothing to register
+    }
+    let n = sys::ggml_backend_reg_count();
+    for i in 0..n {
+        if sys::ggml_backend_reg_get(i) == candidate {
+            return; // static init or load_all already added this exact backend
+        }
+    }
+    // Not present — the defensive path from #38: static init got
+    // stripped, so register explicitly.
+    sys::ggml_backend_register(candidate);
 }
 
 /// Walks the registered backend devices and asserts that — if the build
