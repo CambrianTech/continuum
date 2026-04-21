@@ -271,6 +271,19 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub purpose: Option<String>,
+    /// Persona generating this request — the inference's "owner" for
+    /// per-persona resource attribution (KV cache bytes, GPU pressure,
+    /// recipe budgets). Wire format is a stringified UUID; the local
+    /// adapter parses to `uuid::Uuid` at the Rust boundary. None = the
+    /// inference is not attributable to a persona (test rigs, ad-hoc
+    /// system probes, benchmarks). Production paths through
+    /// PersonaResponseGenerator MUST set this — without it the registry
+    /// can't tell whose conversation owns this seq's KV slot, and the
+    /// pressure policy can't make per-persona eviction decisions.
+    /// See docs/architecture/PERSONA-CONTEXT-PAGING.md §13.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub persona_id: Option<String>,
 }
 
 /// Constrains the model's output format. OpenAI-compatible serialization:

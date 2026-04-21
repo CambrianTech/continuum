@@ -31,14 +31,14 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use ts_rs::TS;
+use serde_json::{Value, json};
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
+use ts_rs::TS;
 use uuid::Uuid;
 
 // ============================================================================
@@ -85,7 +85,10 @@ pub struct ToolCall {
 
 /// Result of executing a tool
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/agent/AgentToolResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/agent/AgentToolResult.ts"
+)]
 pub struct ToolResult {
     pub success: bool,
     pub output: String,
@@ -584,36 +587,47 @@ async fn call_llm(
 
     // Register adapters based on available API keys
     if get_secret("DEEPSEEK_API_KEY").is_some() {
-        registry.register(Box::new(OpenAICompatibleAdapter::from_registry("deepseek")), 0);
+        registry.register(
+            Box::new(OpenAICompatibleAdapter::from_registry("deepseek")),
+            0,
+        );
     }
     if get_secret("ANTHROPIC_API_KEY").is_some() {
         registry.register(Box::new(AnthropicAdapter::new()), 1);
     }
     if get_secret("OPENAI_API_KEY").is_some() {
-        registry.register(Box::new(OpenAICompatibleAdapter::from_registry("openai")), 2);
+        registry.register(
+            Box::new(OpenAICompatibleAdapter::from_registry("openai")),
+            2,
+        );
     }
     if get_secret("GROQ_API_KEY").is_some() {
         registry.register(Box::new(OpenAICompatibleAdapter::from_registry("groq")), 3);
     }
     if get_secret("TOGETHER_API_KEY").is_some() {
-        registry.register(Box::new(OpenAICompatibleAdapter::from_registry("together")), 4);
+        registry.register(
+            Box::new(OpenAICompatibleAdapter::from_registry("together")),
+            4,
+        );
     }
 
     // Initialize all registered adapters
     registry.initialize_all().await?;
 
     // Select adapter based on model
-    let (_provider_id, adapter) = registry.select(None, Some(model), InferenceDevice::default()).ok_or_else(|| {
-        let available = registry.available();
-        if available.is_empty() {
-            "No AI providers available. Add API keys to ~/.continuum/config.env".to_string()
-        } else {
-            format!(
-                "Model {} not available. Available providers: {:?}",
-                model, available
-            )
-        }
-    })?;
+    let (_provider_id, adapter) = registry
+        .select(None, Some(model), InferenceDevice::default())
+        .ok_or_else(|| {
+            let available = registry.available();
+            if available.is_empty() {
+                "No AI providers available. Add API keys to ~/.continuum/config.env".to_string()
+            } else {
+                format!(
+                    "Model {} not available. Available providers: {:?}",
+                    model, available
+                )
+            }
+        })?;
 
     // Use AI provider module - routes to DeepSeek, Anthropic, OpenAI, etc.
     let request = TextGenerationRequest {
@@ -635,6 +649,8 @@ async fn call_llm(
         active_adapters: None,
         response_format: None,
         purpose: None,
+        // Agent-mode call from the IPC bridge — not a persona-owned conversation.
+        persona_id: None,
     };
 
     let response = adapter.generate_text(request).await?;
@@ -718,7 +734,7 @@ fn tool_read_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
                 success: false,
                 output: "Missing path argument".to_string(),
                 error: Some("Missing path".to_string()),
-            }
+            };
         }
     };
 
@@ -783,7 +799,7 @@ fn tool_write_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
                 success: false,
                 output: "Missing path argument".to_string(),
                 error: Some("Missing path".to_string()),
-            }
+            };
         }
     };
 
@@ -794,7 +810,7 @@ fn tool_write_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
                 success: false,
                 output: "Missing content argument".to_string(),
                 error: Some("Missing content".to_string()),
-            }
+            };
         }
     };
 
@@ -840,7 +856,7 @@ fn tool_edit_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
                 success: false,
                 output: "Missing path argument".to_string(),
                 error: Some("Missing path".to_string()),
-            }
+            };
         }
     };
 
@@ -851,7 +867,7 @@ fn tool_edit_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
                 success: false,
                 output: "Missing search argument".to_string(),
                 error: Some("Missing search".to_string()),
-            }
+            };
         }
     };
 
@@ -862,7 +878,7 @@ fn tool_edit_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
                 success: false,
                 output: "Missing replace argument".to_string(),
                 error: Some("Missing replace".to_string()),
-            }
+            };
         }
     };
 
@@ -881,14 +897,20 @@ fn tool_edit_file(call: &ToolCall, working_dir: &Path) -> ToolResult {
             if count == 0 {
                 return ToolResult {
                     success: false,
-                    output: format!("Search string not found in {}. Make sure to use exact text including whitespace.", path),
+                    output: format!(
+                        "Search string not found in {}. Make sure to use exact text including whitespace.",
+                        path
+                    ),
                     error: Some("Search string not found".to_string()),
                 };
             }
             if count > 1 {
                 return ToolResult {
                     success: false,
-                    output: format!("Search string found {} times in {}. Use a more specific search to match exactly one location.", count, path),
+                    output: format!(
+                        "Search string found {} times in {}. Use a more specific search to match exactly one location.",
+                        count, path
+                    ),
                     error: Some("Multiple matches".to_string()),
                 };
             }
@@ -928,7 +950,7 @@ fn tool_search_files(call: &ToolCall, working_dir: &Path) -> ToolResult {
                 success: false,
                 output: "Missing pattern argument".to_string(),
                 error: Some("Missing pattern".to_string()),
-            }
+            };
         }
     };
 
@@ -1067,7 +1089,7 @@ fn tool_run_command(call: &ToolCall, working_dir: &Path) -> ToolResult {
                 success: false,
                 output: "Missing command argument".to_string(),
                 error: Some("Missing command".to_string()),
-            }
+            };
         }
     };
 

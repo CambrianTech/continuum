@@ -24,9 +24,7 @@ use std::time::Instant;
 use llama::{FlashAttn, KvCacheType, LoraAdapter, Model, ModelParams};
 
 use super::SamplingConfig;
-use super::llamacpp_scheduler::{
-    GenerationRequest, Scheduler, SchedulerConfig, TokenEvent,
-};
+use super::llamacpp_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, TokenEvent};
 use crate::runtime;
 
 /// Configuration for loading a model.
@@ -125,20 +123,30 @@ impl LlamaCppBackend {
     pub fn load(config: LlamaCppConfig) -> Result<Self, String> {
         let log = runtime::logger("llamacpp");
         if !config.model_path.exists() {
-            return Err(format!("Model file not found: {}", config.model_path.display()));
+            return Err(format!(
+                "Model file not found: {}",
+                config.model_path.display()
+            ));
         }
-        let model_id = config.model_path.file_stem()
+        let model_id = config
+            .model_path
+            .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".into());
 
         let load_start = Instant::now();
         let model = Model::load(
             &config.model_path,
-            ModelParams { n_gpu_layers: config.n_gpu_layers, use_mmap: true },
+            ModelParams {
+                n_gpu_layers: config.n_gpu_layers,
+                use_mmap: true,
+            },
         )?;
         log.info(&format!(
             "Loaded {} in {:.2}s (vocab={})",
-            model_id, load_start.elapsed().as_secs_f64(), model.n_vocab()
+            model_id,
+            load_start.elapsed().as_secs_f64(),
+            model.n_vocab()
         ));
 
         Ok(Self {
@@ -150,23 +158,34 @@ impl LlamaCppBackend {
         })
     }
 
-    pub fn model_id(&self) -> &str { &self.model_id }
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
 
     /// Model's trained context length, straight from the GGUF metadata.
     /// Single source of truth — never hardcode a context window in
     /// adapters or RAG budgeters; ask this.
-    pub fn n_ctx_train(&self) -> u32 { self.model.n_ctx_train() }
+    pub fn n_ctx_train(&self) -> u32 {
+        self.model.n_ctx_train()
+    }
 
     /// Model's embedded chat template (Jinja-style string). Used by
     /// adapters to render messages through `llama::render_chat`. None
     /// means the model carries no template — caller decides what to do
     /// (error, default, etc.) instead of a silent fallback.
-    pub fn model_chat_template(&self) -> Option<String> { self.model.chat_template() }
+    pub fn model_chat_template(&self) -> Option<String> {
+        self.model.chat_template()
+    }
 
     /// Ensure a LoRA adapter is loaded (idempotent). Used by genome paging.
     pub fn ensure_adapter(&self, id: &str, path: &Path) -> Result<(), String> {
-        let mut guard = self.loras.lock().map_err(|e| format!("LoRA lock poisoned: {e}"))?;
-        if guard.contains_key(id) { return Ok(()); }
+        let mut guard = self
+            .loras
+            .lock()
+            .map_err(|e| format!("LoRA lock poisoned: {e}"))?;
+        if guard.contains_key(id) {
+            return Ok(());
+        }
         let adapter = self.model.load_lora(path)?;
         guard.insert(id.to_string(), adapter);
         Ok(())
@@ -174,7 +193,10 @@ impl LlamaCppBackend {
 
     /// Remove a LoRA adapter from the cache.
     pub fn remove_adapter(&self, id: &str) -> Result<(), String> {
-        let mut guard = self.loras.lock().map_err(|e| format!("LoRA lock poisoned: {e}"))?;
+        let mut guard = self
+            .loras
+            .lock()
+            .map_err(|e| format!("LoRA lock poisoned: {e}"))?;
         guard.remove(id);
         Ok(())
     }
@@ -188,7 +210,9 @@ impl LlamaCppBackend {
             // — qwen3.5-4b-code-forged carries n_ctx_train=262144 in its
             // GGUF metadata; capping that at a hardcoded 8192 wastes 32×
             // the model's real capability.
-            let per_seq = self.config.context_length
+            let per_seq = self
+                .config
+                .context_length
                 .unwrap_or_else(|| self.model.n_ctx_train());
             // n_ctx is the SHARED KV pool across all sequences. Scale by
             // n_seq_max so each seq has `per_seq` tokens of KV headroom
@@ -228,13 +252,44 @@ impl LlamaCppBackend {
         stop_sequences: &[&str],
         active_loras: &[(String, f32)],
     ) -> Result<(String, usize), String> {
+        // Forwards to the persona-aware variant with persona_id=None so
+        // test rigs and ad-hoc probes don't need to change. Production
+        // adapter calls go through generate_for_persona() so the registry
+        // can attribute KV bytes per-persona.
+        self.generate_for_persona(
+            None,
+            prompt,
+            max_tokens,
+            sampling,
+            stop_sequences,
+            active_loras,
+        )
+    }
+
+    /// Same as `generate` but threads a `persona_id` through to the
+    /// scheduler so the registry can attribute the seq slot's KV bytes
+    /// to the right persona. Pass `None` for test/ad-hoc paths that
+    /// shouldn't appear in per-persona accounting.
+    ///
+    /// `persona_id` is forwarded as-is into `ActiveSeq::persona_id`. The
+    /// actual registry reporting (Piece 2 of the substrate work) hooks
+    /// into seq alloc / Done events inside the scheduler — this method's
+    /// only job here is to deliver the value.
+    pub fn generate_for_persona(
+        &self,
+        persona_id: Option<uuid::Uuid>,
+        prompt: &str,
+        max_tokens: usize,
+        sampling: SamplingConfig,
+        stop_sequences: &[&str],
+        active_loras: &[(String, f32)],
+    ) -> Result<(String, usize), String> {
         let log = runtime::logger("llamacpp");
         let gen_start = Instant::now();
         let prompt_len_chars = prompt.len();
 
         // Channel for streaming tokens back from the scheduler.
-        let (response_tx, mut response_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
+        let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
 
         // Caller passes the full SamplingConfig (the value-object pattern
         // — adding fields like `grammar` doesn't require changing this
@@ -247,6 +302,7 @@ impl LlamaCppBackend {
             stop_sequences: stop_sequences.iter().map(|s| s.to_string()).collect(),
             active_loras: active_loras.to_vec(),
             response_tx,
+            persona_id,
         };
 
         self.scheduler().enqueue(req)?;
@@ -290,7 +346,10 @@ impl LlamaCppBackend {
                     output.push_str(&piece);
                     n_decoded += 1;
                 }
-                Some(TokenEvent::Done { tokens_generated, elapsed_ms }) => {
+                Some(TokenEvent::Done {
+                    tokens_generated,
+                    elapsed_ms,
+                }) => {
                     n_decoded = tokens_generated;
                     let elapsed = gen_start.elapsed();
                     log.info(&format!(

@@ -31,8 +31,9 @@ static ANALYSIS_CACHE: Lazy<Arc<DashMap<String, SharedAnalysis>>> =
 /// message M and persona B requests the same analysis a few ms later,
 /// B awaits A's result instead of firing a second inference. Same
 /// shape as PagedResourcePool's load_or_share.
-static IN_FLIGHT: Lazy<Arc<TokioMutex<HashMap<String, Arc<TokioMutex<Option<Result<SharedAnalysis, String>>>>>>>> =
-    Lazy::new(|| Arc::new(TokioMutex::new(HashMap::new())));
+static IN_FLIGHT: Lazy<
+    Arc<TokioMutex<HashMap<String, Arc<TokioMutex<Option<Result<SharedAnalysis, String>>>>>>>,
+> = Lazy::new(|| Arc::new(TokioMutex::new(HashMap::new())));
 
 /// Cache size cap. Old entries evicted FIFO when over.
 const CACHE_MAX_ENTRIES: usize = 200;
@@ -239,6 +240,9 @@ async fn run_analysis(input: &AnalysisInput, cache_key: &str) -> Result<SharedAn
         user_id: None,
         room_id: Some(input.room_id.to_string()),
         purpose: Some("shared-cognition-analysis".to_string()),
+        // Shared analysis is room-wide cognition (not attributable to one
+        // persona); registry treats this seq's KV as un-attributed.
+        persona_id: None,
     };
 
     // Acquire the registry read lock for the duration of the call.
@@ -253,10 +257,7 @@ async fn run_analysis(input: &AnalysisInput, cache_key: &str) -> Result<SharedAn
     // parser sees the actual structured output.
     let stripped = strip_think_blocks(&response.text);
     let parsed = parse_model_output(&stripped, &input.known_specialties)?;
-    let duration_ms = start
-        .elapsed()
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let duration_ms = start.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
 
     Ok(SharedAnalysis {
         message_id: input.message_id,
@@ -433,8 +434,7 @@ fn parse_model_output(raw: &str, known_specialties: &[String]) -> Result<ParsedO
             continue;
         }
         let tail = &candidate[idx..];
-        let mut stream = serde_json::Deserializer::from_str(tail)
-            .into_iter::<serde_json::Value>();
+        let mut stream = serde_json::Deserializer::from_str(tail).into_iter::<serde_json::Value>();
         if let Some(Ok(value)) = stream.next() {
             if let Some(obj) = value.as_object() {
                 if obj.contains_key("summary") {
@@ -485,9 +485,7 @@ fn parse_model_output(raw: &str, known_specialties: &[String]) -> Result<ParsedO
 
     // Normalize: ensure every known specialty has an entry, coerce values
     // to strings, default to empty (= stay silent) when missing.
-    let raw_angles = obj
-        .get("suggestedAngles")
-        .and_then(|v| v.as_object());
+    let raw_angles = obj.get("suggestedAngles").and_then(|v| v.as_object());
     let mut suggested_angles = HashMap::with_capacity(known_specialties.len());
     for spec in known_specialties {
         let val = raw_angles
@@ -599,11 +597,20 @@ mod tests {
         }"#;
         let specs = vec!["code".to_string(), "general".to_string()];
         let parsed = parse_model_output(raw, &specs).unwrap();
-        assert_eq!(parsed.summary, "User asks about cache invalidation strategy");
+        assert_eq!(
+            parsed.summary,
+            "User asks about cache invalidation strategy"
+        );
         assert_eq!(parsed.intent, SharedAnalysisIntent::Question);
         assert_eq!(parsed.emotional_tone.as_deref(), Some("curious"));
-        assert_eq!(parsed.suggested_angles.get("code").map(String::as_str), Some("Direct relevance — caching is a code-architecture topic."));
-        assert_eq!(parsed.suggested_angles.get("general").map(String::as_str), Some(""));
+        assert_eq!(
+            parsed.suggested_angles.get("code").map(String::as_str),
+            Some("Direct relevance — caching is a code-architecture topic.")
+        );
+        assert_eq!(
+            parsed.suggested_angles.get("general").map(String::as_str),
+            Some("")
+        );
     }
 
     #[test]
@@ -632,7 +639,10 @@ mod tests {
         let raw = "{\"summary\":\"hi\",\"keyConcepts\":[],\"intent\":\"social\",\"suggestedAngles\":{\"general\":\"context covers chat\"}} * `relevantContext`: stuff with { extra } braces in code";
         let parsed = parse_model_output(raw, &["general".to_string()]).unwrap();
         assert_eq!(parsed.summary, "hi");
-        assert_eq!(parsed.suggested_angles.get("general").map(String::as_str), Some("context covers chat"));
+        assert_eq!(
+            parsed.suggested_angles.get("general").map(String::as_str),
+            Some("context covers chat")
+        );
     }
 
     #[test]
@@ -651,10 +661,22 @@ mod tests {
 
     #[test]
     fn intent_parse_lenient_unknown_collapses_to_other() {
-        assert_eq!(SharedAnalysisIntent::parse_lenient("question"), SharedAnalysisIntent::Question);
-        assert_eq!(SharedAnalysisIntent::parse_lenient("QUESTION"), SharedAnalysisIntent::Question);
-        assert_eq!(SharedAnalysisIntent::parse_lenient("nonsense"), SharedAnalysisIntent::Other);
-        assert_eq!(SharedAnalysisIntent::parse_lenient(""), SharedAnalysisIntent::Other);
+        assert_eq!(
+            SharedAnalysisIntent::parse_lenient("question"),
+            SharedAnalysisIntent::Question
+        );
+        assert_eq!(
+            SharedAnalysisIntent::parse_lenient("QUESTION"),
+            SharedAnalysisIntent::Question
+        );
+        assert_eq!(
+            SharedAnalysisIntent::parse_lenient("nonsense"),
+            SharedAnalysisIntent::Other
+        );
+        assert_eq!(
+            SharedAnalysisIntent::parse_lenient(""),
+            SharedAnalysisIntent::Other
+        );
     }
 
     #[test]

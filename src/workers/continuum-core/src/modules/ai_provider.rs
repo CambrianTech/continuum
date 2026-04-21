@@ -31,10 +31,10 @@ use crate::secrets::get_secret;
 use crate::utils::params::Params;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::any::Any;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{OnceCell, RwLock};
 
@@ -142,15 +142,11 @@ impl AIProviderModule {
             .to_socket_addrs()
             .ok()
             .and_then(|mut addrs| addrs.next())
-            .map(|addr| {
-                std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()
-            })
+            .map(|addr| std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok())
             .unwrap_or(false);
         if internal_ok {
             Some(DmrEndpoint {
-                base_url: Some(
-                    "http://model-runner.docker.internal/engines/llama.cpp".to_string(),
-                ),
+                base_url: Some("http://model-runner.docker.internal/engines/llama.cpp".to_string()),
             })
         } else {
             None
@@ -213,7 +209,6 @@ fn select_failure_message(
 // Re-open the AIProviderModule impl block so the rest of the methods
 // (parse_request, response_to_json, etc.) stay where they were.
 impl AIProviderModule {
-
     /// Get logger (panics if called before initialize)
     fn log(&self) -> &ModuleLogger {
         self.log
@@ -246,7 +241,10 @@ impl AIProviderModule {
         // Only register adapters that have API keys configured
         if get_secret("DEEPSEEK_API_KEY").is_some() {
             self.log().info("Registering DeepSeek adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("deepseek")), 0);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("deepseek")),
+                0,
+            );
         }
 
         if get_secret("ANTHROPIC_API_KEY").is_some() {
@@ -256,7 +254,10 @@ impl AIProviderModule {
 
         if get_secret("OPENAI_API_KEY").is_some() {
             self.log().info("Registering OpenAI adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("openai")), 2);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("openai")),
+                2,
+            );
         }
 
         if get_secret("GROQ_API_KEY").is_some() {
@@ -266,12 +267,18 @@ impl AIProviderModule {
 
         if get_secret("TOGETHER_API_KEY").is_some() {
             self.log().info("Registering Together adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("together")), 4);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("together")),
+                4,
+            );
         }
 
         if get_secret("FIREWORKS_API_KEY").is_some() {
             self.log().info("Registering Fireworks adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("fireworks")), 5);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("fireworks")),
+                5,
+            );
         }
 
         if get_secret("XAI_API_KEY").is_some() {
@@ -281,7 +288,10 @@ impl AIProviderModule {
 
         if get_secret("GOOGLE_API_KEY").is_some() {
             self.log().info("Registering Google adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("google")), 7);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("google")),
+                7,
+            );
         }
 
         // In-process llama.cpp adapter — bypasses DMR's container Metal toolchain,
@@ -300,9 +310,8 @@ impl AIProviderModule {
         // exactly which file is missing.
         let llamacpp = crate::inference::LlamaCppAdapter::new();
         if llamacpp.health_check().await.api_available {
-            self.log().info(
-                "Registering in-process llama.cpp adapter (forge qwen3.5-4b, GPU/Metal)",
-            );
+            self.log()
+                .info("Registering in-process llama.cpp adapter (forge qwen3.5-4b, GPU/Metal)");
             registry.register(Box::new(llamacpp), 0);
         } else {
             self.log().info(
@@ -329,8 +338,10 @@ impl AIProviderModule {
                     .base_url
                     .as_deref()
                     .unwrap_or("localhost:12434 (host-native)");
-                self.log()
-                    .info(&format!("Registering Docker Model Runner adapter ({})", desc));
+                self.log().info(&format!(
+                    "Registering Docker Model Runner adapter ({})",
+                    desc
+                ));
                 registry.register(
                     Self::build_dmr_adapter(&endpoint),
                     // Priority 1 — sits BELOW the in-process llama.cpp adapter
@@ -414,7 +425,9 @@ impl AIProviderModule {
             max_tokens: p.u64_opt_alias("max_tokens", "maxTokens").map(|t| t as u32),
             top_p: p.f64_opt_alias("top_p", "topP").map(|t| t as f32),
             top_k: p.u64_opt_alias("top_k", "topK").map(|t| t as u32),
-            repeat_penalty: p.f32_opt("repeat_penalty").or_else(|| p.f32_opt("repeatPenalty")),
+            repeat_penalty: p
+                .f32_opt("repeat_penalty")
+                .or_else(|| p.f32_opt("repeatPenalty")),
             stop_sequences: p
                 .json_opt("stop_sequences")
                 .or_else(|| p.json_opt("stopSequences")),
@@ -426,6 +439,10 @@ impl AIProviderModule {
             user_id: p.string_opt_alias("user_id", "userId"),
             room_id: p.string_opt_alias("room_id", "roomId"),
             purpose: p.str_opt("purpose").map(String::from),
+            // Caller-provided persona attribution. TS sends `personaId`
+            // (camelCase) per Continuum convention; snake_case alias
+            // accepted for symmetry with the sibling fields.
+            persona_id: p.string_opt_alias("persona_id", "personaId"),
         })
     }
 
@@ -546,7 +563,8 @@ impl ServiceModule for AIProviderModule {
                          re-register automatically.",
                     );
                 }
-                self.dmr_consecutive_down_ticks.fetch_add(1, Ordering::AcqRel);
+                self.dmr_consecutive_down_ticks
+                    .fetch_add(1, Ordering::AcqRel);
             }
             (false, Some(endpoint)) => {
                 // Recovery path: Docker Desktop just came back. Build the
@@ -624,7 +642,11 @@ impl ServiceModule for AIProviderModule {
 
                 // Select adapter
                 let (provider_id, adapter) = registry
-                    .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
+                    .select(
+                        request.provider.as_deref(),
+                        request.model.as_deref(),
+                        InferenceDevice::default(),
+                    )
                     .ok_or_else(|| {
                         select_failure_message(
                             &registry,
@@ -713,25 +735,24 @@ impl ServiceModule for AIProviderModule {
                 let model_name = model.unwrap_or(adapter.default_model());
 
                 // Find exact model or return default
-                let info = models.iter()
-                    .find(|m| m.id.to_lowercase().contains(&model_name.to_lowercase())
-                           || model_name.to_lowercase().contains(&m.id.to_lowercase()))
+                let info = models
+                    .iter()
+                    .find(|m| {
+                        m.id.to_lowercase().contains(&model_name.to_lowercase())
+                            || model_name.to_lowercase().contains(&m.id.to_lowercase())
+                    })
                     .or_else(|| models.first());
 
                 match info {
-                    Some(model_info) => {
-                        Ok(CommandResult::Json(json!({
-                            "success": true,
-                            "provider": provider_id,
-                            "modelInfo": serde_json::to_value(model_info).unwrap_or(Value::Null)
-                        })))
-                    }
-                    None => {
-                        Ok(CommandResult::Json(json!({
-                            "success": false,
-                            "error": format!("No model info available for {}/{}", provider_id, model_name)
-                        })))
-                    }
+                    Some(model_info) => Ok(CommandResult::Json(json!({
+                        "success": true,
+                        "provider": provider_id,
+                        "modelInfo": serde_json::to_value(model_info).unwrap_or(Value::Null)
+                    }))),
+                    None => Ok(CommandResult::Json(json!({
+                        "success": false,
+                        "error": format!("No model info available for {}/{}", provider_id, model_name)
+                    }))),
                 }
             }
 
@@ -861,7 +882,11 @@ pub async fn generate_text(
     request: TextGenerationRequest,
 ) -> Result<TextGenerationResponse, String> {
     let (provider_id, adapter) = registry
-        .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
+        .select(
+            request.provider.as_deref(),
+            request.model.as_deref(),
+            InferenceDevice::default(),
+        )
         .ok_or_else(|| {
             select_failure_message(
                 registry,

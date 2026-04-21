@@ -45,6 +45,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use llama::{Batch, ContextParams, FlashAttn, KvCacheType, Model, Sampler};
+use uuid::Uuid;
 
 use crate::runtime;
 
@@ -74,6 +75,14 @@ pub struct GenerationRequest {
     pub active_loras: Vec<(String, f32)>,
     /// Tokens stream back through this. Use `tokio::sync::mpsc::unbounded_channel()`.
     pub response_tx: tokio::sync::mpsc::UnboundedSender<TokenEvent>,
+    /// Persona that owns this generation — flows down from
+    /// `TextGenerationRequest::persona_id` so the scheduler can attribute
+    /// the seq slot's KV bytes to the right persona in the global
+    /// FootprintRegistry. None = no attribution (test rigs, ad-hoc
+    /// probes); production paths set this. Kept as `Uuid` here (not
+    /// `Option<String>` like the wire format) because parsing happens at
+    /// the adapter boundary — the scheduler always sees a typed value.
+    pub persona_id: Option<Uuid>,
 }
 
 /// Scheduler config — sized at construction.
@@ -141,6 +150,11 @@ struct ActiveSeq {
     output_so_far: String,
     response_tx: tokio::sync::mpsc::UnboundedSender<TokenEvent>,
     started_at: Instant,
+    /// Persona that owns this seq slot — copied from
+    /// `GenerationRequest::persona_id`. Used by the registry-reporting
+    /// path (Piece 2 of this work) to attribute KV bytes per-persona on
+    /// alloc/free. None = test rig or ad-hoc probe; reporting skipped.
+    persona_id: Option<Uuid>,
 }
 
 /// Per-batch-slot bookkeeping so we know which logit index to sample for
@@ -153,10 +167,18 @@ struct ActiveSeq {
 enum BatchRole {
     /// This seq just finished its prefill in this batch. Sample to get
     /// the first generation token; future generation pushes use `gen_pos`.
-    PrefillFinal { seq_id: i32, gen_pos: i32, logit_idx: i32 },
+    PrefillFinal {
+        seq_id: i32,
+        gen_pos: i32,
+        logit_idx: i32,
+    },
     /// This seq is mid-generation. Next sampled token continues from
     /// position `pos_after`.
-    Generating { seq_id: i32, pos_after: i32, logit_idx: i32 },
+    Generating {
+        seq_id: i32,
+        pos_after: i32,
+        logit_idx: i32,
+    },
 }
 
 fn driver_loop(
@@ -305,7 +327,10 @@ fn driver_loop(
                     tokens_in_batch += 1;
                 }
                 if is_final {
-                    debug_assert!(final_logit_idx >= 0, "final prefill chunk must record logit idx");
+                    debug_assert!(
+                        final_logit_idx >= 0,
+                        "final prefill chunk must record logit idx"
+                    );
                     roles.push(BatchRole::PrefillFinal {
                         seq_id,
                         gen_pos: chunk_end as i32,
@@ -370,12 +395,16 @@ fn driver_loop(
             let mut sample_call_iter_total = std::time::Duration::ZERO;
             for role in &roles {
                 let (seq_id, advance_pos, logit_idx) = match role {
-                    BatchRole::PrefillFinal { seq_id, gen_pos, logit_idx } => {
-                        (*seq_id, *gen_pos, *logit_idx)
-                    }
-                    BatchRole::Generating { seq_id, pos_after, logit_idx } => {
-                        (*seq_id, *pos_after, *logit_idx)
-                    }
+                    BatchRole::PrefillFinal {
+                        seq_id,
+                        gen_pos,
+                        logit_idx,
+                    } => (*seq_id, *gen_pos, *logit_idx),
+                    BatchRole::Generating {
+                        seq_id,
+                        pos_after,
+                        logit_idx,
+                    } => (*seq_id, *pos_after, *logit_idx),
                 };
                 let seq = match active.get_mut(&seq_id) {
                     Some(s) => s,
@@ -447,7 +476,9 @@ fn driver_loop(
             let total_us_per_tok = avg_decode_us + avg_sample_call_us + avg_post_sample_us;
             let tok_per_s = if total_us_per_tok > 0.0 {
                 1_000_000.0 / total_us_per_tok
-            } else { 0.0 };
+            } else {
+                0.0
+            };
             // sample_call captures the GPU sync wait + sampler chain CPU
             // work. post_sample is everything else (token_to_piece, send,
             // stop scan). When sample_call ≫ post_sample the bottleneck is
@@ -479,8 +510,7 @@ fn driver_loop(
                     seq_id,
                     seq.tokens_generated,
                     seq.started_at.elapsed().as_millis(),
-                    seq.tokens_generated as f64
-                        / seq.started_at.elapsed().as_secs_f64().max(0.001)
+                    seq.tokens_generated as f64 / seq.started_at.elapsed().as_secs_f64().max(0.001)
                 ));
             }
             free_seqs.push(seq_id);
@@ -488,11 +518,7 @@ fn driver_loop(
     }
 }
 
-fn start_request(
-    model: &Model,
-    _seq_id: i32,
-    req: GenerationRequest,
-) -> Result<ActiveSeq, String> {
+fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<ActiveSeq, String> {
     if !req.active_loras.is_empty() {
         // v1 limitation — see module-level docs.
         runtime::logger("llamacpp-scheduler").warn(
@@ -525,7 +551,11 @@ fn start_request(
         }
         // 64 = llama.cpp default last-n window for the penalty calculation.
         chain = chain.penalties(64, req.sampling.repeat_penalty, 0.0, 0.0);
-        let temp = if req.sampling.temperature > 0.0 { req.sampling.temperature as f32 } else { 0.01 };
+        let temp = if req.sampling.temperature > 0.0 {
+            req.sampling.temperature as f32
+        } else {
+            0.01
+        };
         chain.temp(temp).dist(42).build()
     };
     Ok(ActiveSeq {
@@ -541,5 +571,6 @@ fn start_request(
         output_so_far: String::new(),
         response_tx: req.response_tx,
         started_at: Instant::now(),
+        persona_id: req.persona_id,
     })
 }

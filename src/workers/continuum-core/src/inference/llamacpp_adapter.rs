@@ -32,11 +32,11 @@
 //! - DMR remains the fallback for: cases where in-process load fails,
 //!   non-Mac platforms, or operators who prefer the container path.
 
-use crate::ai::adapter::{AdapterCapabilities, AIProviderAdapter, ApiStyle, InferenceDevice};
+use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::registry_bridge::models_for_provider_via_registry;
 use crate::ai::types::{
-    FinishReason, HealthState, HealthStatus, MessageContent,
-    ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
+    FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo, TextGenerationRequest,
+    TextGenerationResponse, UsageMetrics,
 };
 use crate::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use async_trait::async_trait;
@@ -239,7 +239,7 @@ impl LlamaCppAdapter {
         // llama.cpp doesn't expose a "bytes loaded" counter and the file
         // size is the most honest first-cut number.
         if let Ok(meta) = std::fs::metadata(&self.model_path) {
-            use crate::inference::footprint_registry::{global, FootprintKey, ResourceType};
+            use crate::inference::footprint_registry::{FootprintKey, ResourceType, global};
             use crate::inference::kv_quant::Residency;
             global().report_authoritative(
                 FootprintKey::for_backend(
@@ -410,7 +410,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // format, attach the JSON grammar so output is structurally valid.
         // Same value-object pattern Joel called for ('pass the struct').
         use crate::ai::types::ResponseFormat;
-        use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
+        use crate::inference::backends::{JSON_GRAMMAR, SamplingConfig};
         let mut sampling = SamplingConfig::chat();
         if let Some(t) = request.temperature {
             sampling.temperature = t as f64;
@@ -440,8 +440,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // field carries the correct strings (e.g. `<|im_end|>`) that the
         // scheduler matches against streamed output.
         let mut stop_owned: Vec<String> = request.stop_sequences.clone().unwrap_or_default();
-        if let Some(model_meta) = crate::model_registry::try_global()
-            .and_then(|reg| reg.model(backend.model_id()))
+        if let Some(model_meta) =
+            crate::model_registry::try_global().and_then(|reg| reg.model(backend.model_id()))
         {
             for s in &model_meta.stop_sequences {
                 if !stop_owned.contains(s) {
@@ -455,9 +455,20 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let prompt_for_blocking = prompt.clone();
         let stop_for_closure = stop_owned.clone();
         let sampling_for_closure = sampling.clone();
+        // Parse the wire-format persona_id (Option<String> on the public
+        // request type) to Option<Uuid> for the typed scheduler API. A
+        // malformed UUID drops to None rather than failing the request —
+        // the request itself is still valid, we just can't attribute its
+        // KV bytes per-persona. The registry's drift-detection sanity
+        // check will surface this if it becomes systemic.
+        let persona_id: Option<uuid::Uuid> = request
+            .persona_id
+            .as_deref()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
         let result: Result<(String, usize), String> = tokio::task::spawn_blocking(move || {
             let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
-            backend_for_blocking.generate(
+            backend_for_blocking.generate_for_persona(
+                persona_id,
                 &prompt_for_blocking,
                 max_tokens,
                 sampling_for_closure,
@@ -507,7 +518,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
     async fn health_check(&self) -> HealthStatus {
         let healthy = self.backend.read().is_some() || self.model_path.exists();
         HealthStatus {
-            status: if healthy { HealthState::Healthy } else { HealthState::Unhealthy },
+            status: if healthy {
+                HealthState::Healthy
+            } else {
+                HealthState::Unhealthy
+            },
             api_available: healthy,
             response_time_ms: 0,
             error_rate: 0.0,

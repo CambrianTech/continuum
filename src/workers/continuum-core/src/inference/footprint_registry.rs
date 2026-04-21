@@ -161,22 +161,22 @@ fn default_costs_for(resource_type: &ResourceType, bytes: u64) -> (u64, u64) {
 
     match resource_type {
         ResourceType::KvCache => (
-            nvme_micros,                          // spill: raw write
-            nvme_micros + gpu_upload_micros,      // reload: read + GPU upload
+            nvme_micros,                     // spill: raw write
+            nvme_micros + gpu_upload_micros, // reload: read + GPU upload
         ),
         ResourceType::LoraAdapter => (
             // Adapters are usually cheaper to evict (re-download from
             // storage) than spill. Treat eviction cost as 0 (storage
             // is fast); reload is HF download + GPU upload.
             0,
-            500_000 + gpu_upload_micros,          // ~500ms HF roundtrip + upload
+            500_000 + gpu_upload_micros, // ~500ms HF roundtrip + upload
         ),
         ResourceType::ModelWeights => (
             // Almost never spillable in practice — model load is
             // multi-second, mmap'd from disk. Mark spill as expensive
             // so the eviction policy avoids it.
-            5_000_000,                            // 5 seconds (mmap teardown)
-            5_000_000 + nvme_micros,              // load + read
+            5_000_000,               // 5 seconds (mmap teardown)
+            5_000_000 + nvme_micros, // load + read
         ),
         ResourceType::RenderBuffer | ResourceType::AudioPipeline | ResourceType::VideoPipeline => {
             // Pipeline buffers — small, fast to recreate. Effectively
@@ -186,8 +186,7 @@ fn default_costs_for(resource_type: &ResourceType, bytes: u64) -> (u64, u64) {
         ResourceType::TokenizerCache => (
             // Tokenizer is small (~2MB) and mmap'd; treat as effectively
             // permanent. Spill cost set high so the policy never picks it.
-            10_000_000,
-            10_000_000,
+            10_000_000, 10_000_000,
         ),
         ResourceType::Other(_) => (nvme_micros, nvme_micros + gpu_upload_micros),
     }
@@ -254,7 +253,9 @@ pub struct FootprintRegistry {
 
 impl FootprintRegistry {
     pub fn new() -> Self {
-        Self { entries: DashMap::new() }
+        Self {
+            entries: DashMap::new(),
+        }
     }
 
     /// Record `bytes` of resource for the given key. If the key
@@ -329,7 +330,9 @@ impl FootprintRegistry {
     pub fn by_resource_type(&self) -> HashMap<ResourceType, u64> {
         let mut by_type = HashMap::new();
         for entry in self.entries.iter() {
-            *by_type.entry(entry.key().resource_type.clone()).or_insert(0u64) += entry.value().bytes;
+            *by_type
+                .entry(entry.key().resource_type.clone())
+                .or_insert(0u64) += entry.value().bytes;
         }
         by_type
     }
@@ -389,9 +392,7 @@ impl FootprintRegistry {
             .collect();
 
         // Cheapest first.
-        candidates.sort_by(|a, b| {
-            a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        candidates.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut plan_entries = Vec::new();
         let mut bytes_freed = 0u64;
@@ -560,7 +561,11 @@ mod tests {
         assert_eq!(reg.total_bytes(), 1000);
         // Same key again: should add, not replace
         reg.add(key.clone(), 500);
-        assert_eq!(reg.entry_count(), 1, "second add merges into existing entry");
+        assert_eq!(
+            reg.entry_count(),
+            1,
+            "second add merges into existing entry"
+        );
         assert_eq!(reg.total_bytes(), 1500);
     }
 
@@ -599,9 +604,18 @@ mod tests {
         let helper = Uuid::new_v4();
         let teacher = Uuid::new_v4();
 
-        reg.add(FootprintKey::for_persona(helper, ResourceType::KvCache, Residency::Active), 1000);
-        reg.add(FootprintKey::for_persona(helper, ResourceType::LoraAdapter, Residency::Active), 500);
-        reg.add(FootprintKey::for_persona(teacher, ResourceType::KvCache, Residency::Active), 2000);
+        reg.add(
+            FootprintKey::for_persona(helper, ResourceType::KvCache, Residency::Active),
+            1000,
+        );
+        reg.add(
+            FootprintKey::for_persona(helper, ResourceType::LoraAdapter, Residency::Active),
+            500,
+        );
+        reg.add(
+            FootprintKey::for_persona(teacher, ResourceType::KvCache, Residency::Active),
+            2000,
+        );
 
         assert_eq!(reg.persona_total(helper), 1500);
         assert_eq!(reg.persona_total(teacher), 2000);
@@ -620,17 +634,32 @@ mod tests {
         let reg = FootprintRegistry::new();
         let p1 = Uuid::new_v4();
         let p2 = Uuid::new_v4();
-        reg.add(FootprintKey::for_persona(p1, ResourceType::KvCache, Residency::Active), 1000);
-        reg.add(FootprintKey::for_persona(p2, ResourceType::KvCache, Residency::Active), 2000);
-        reg.add(FootprintKey::for_persona(p1, ResourceType::LoraAdapter, Residency::Active), 500);
-        reg.add(FootprintKey::shared(ResourceType::ModelWeights, Residency::Active), 2_500_000_000);
+        reg.add(
+            FootprintKey::for_persona(p1, ResourceType::KvCache, Residency::Active),
+            1000,
+        );
+        reg.add(
+            FootprintKey::for_persona(p2, ResourceType::KvCache, Residency::Active),
+            2000,
+        );
+        reg.add(
+            FootprintKey::for_persona(p1, ResourceType::LoraAdapter, Residency::Active),
+            500,
+        );
+        reg.add(
+            FootprintKey::shared(ResourceType::ModelWeights, Residency::Active),
+            2_500_000_000,
+        );
 
         let by_type = reg.by_resource_type();
         let sum: u64 = by_type.values().sum();
         assert_eq!(sum, reg.total_bytes(), "by_type sum must equal total");
         assert_eq!(by_type.get(&ResourceType::KvCache).copied(), Some(3000));
         assert_eq!(by_type.get(&ResourceType::LoraAdapter).copied(), Some(500));
-        assert_eq!(by_type.get(&ResourceType::ModelWeights).copied(), Some(2_500_000_000));
+        assert_eq!(
+            by_type.get(&ResourceType::ModelWeights).copied(),
+            Some(2_500_000_000)
+        );
     }
 
     /// What this catches: report_authoritative not flipping the
@@ -649,8 +678,14 @@ mod tests {
 
         reg.report_authoritative(key.clone(), 1000);
         let after = reg.entries.get(&key).unwrap().clone();
-        assert!(after.backend_reported, "authoritative report should flip the flag");
-        assert_eq!(after.bytes, 1000, "authoritative report overwrites, doesn't add");
+        assert!(
+            after.backend_reported,
+            "authoritative report should flip the flag"
+        );
+        assert_eq!(
+            after.bytes, 1000,
+            "authoritative report overwrites, doesn't add"
+        );
     }
 
     /// What this catches: cheapest_eviction_for picking expensive
@@ -665,7 +700,10 @@ mod tests {
         let reg = FootprintRegistry::new();
         let p1 = Uuid::new_v4();
         // KV cache: cheap to spill (~1µs/MB)
-        reg.add(FootprintKey::for_persona(p1, ResourceType::KvCache, Residency::Active), 1_000_000);
+        reg.add(
+            FootprintKey::for_persona(p1, ResourceType::KvCache, Residency::Active),
+            1_000_000,
+        );
         // Model weights: very expensive to spill
         reg.add(
             FootprintKey::shared(ResourceType::ModelWeights, Residency::Active),
@@ -673,14 +711,19 @@ mod tests {
         );
 
         // Need 500K freed: cheapest KV alone covers it
-        let plan = reg.cheapest_eviction_for(500_000, &[]).expect("plan should exist");
+        let plan = reg
+            .cheapest_eviction_for(500_000, &[])
+            .expect("plan should exist");
         assert!(plan.bytes_freed >= 500_000);
         // Plan should NOT include the expensive model weights
         let has_model = plan
             .entries
             .iter()
             .any(|(k, _)| matches!(k.resource_type, ResourceType::ModelWeights));
-        assert!(!has_model, "shouldn't evict model weights when KV alone suffices");
+        assert!(
+            !has_model,
+            "shouldn't evict model weights when KV alone suffices"
+        );
     }
 
     /// What this catches: cheapest_eviction_for ignoring the
@@ -695,10 +738,18 @@ mod tests {
         let reg = FootprintRegistry::new();
         let active = Uuid::new_v4();
         let idle = Uuid::new_v4();
-        reg.add(FootprintKey::for_persona(active, ResourceType::KvCache, Residency::Active), 1_000_000);
-        reg.add(FootprintKey::for_persona(idle, ResourceType::KvCache, Residency::Active), 1_000_000);
+        reg.add(
+            FootprintKey::for_persona(active, ResourceType::KvCache, Residency::Active),
+            1_000_000,
+        );
+        reg.add(
+            FootprintKey::for_persona(idle, ResourceType::KvCache, Residency::Active),
+            1_000_000,
+        );
 
-        let plan = reg.cheapest_eviction_for(500_000, &[active]).expect("plan exists");
+        let plan = reg
+            .cheapest_eviction_for(500_000, &[active])
+            .expect("plan exists");
         // Plan should ONLY contain the idle persona's entry
         for (key, _) in &plan.entries {
             assert_ne!(
@@ -720,11 +771,17 @@ mod tests {
     fn cheapest_eviction_returns_none_when_target_unachievable() {
         let reg = FootprintRegistry::new();
         let p = Uuid::new_v4();
-        reg.add(FootprintKey::for_persona(p, ResourceType::KvCache, Residency::Active), 1000);
+        reg.add(
+            FootprintKey::for_persona(p, ResourceType::KvCache, Residency::Active),
+            1000,
+        );
 
         // Need 1MB but only have 1KB available
         let plan = reg.cheapest_eviction_for(1_000_000, &[]);
-        assert!(plan.is_none(), "should return None when target can't be reached");
+        assert!(
+            plan.is_none(),
+            "should return None when target can't be reached"
+        );
     }
 
     /// What this catches: target_bytes=0 panic / inefficient processing.
@@ -738,7 +795,9 @@ mod tests {
     fn cheapest_eviction_zero_target_returns_empty_plan() {
         let reg = FootprintRegistry::new();
         reg.add(persona_kv_key(Uuid::new_v4()), 1000);
-        let plan = reg.cheapest_eviction_for(0, &[]).expect("zero target should yield empty plan");
+        let plan = reg
+            .cheapest_eviction_for(0, &[])
+            .expect("zero target should yield empty plan");
         assert!(plan.entries.is_empty());
         assert_eq!(plan.bytes_freed, 0);
     }
@@ -792,17 +851,35 @@ mod tests {
         let reg = FootprintRegistry::new();
         let p1 = Uuid::new_v4();
         let p2 = Uuid::new_v4();
-        reg.add(FootprintKey::for_persona(p1, ResourceType::KvCache, Residency::Active), 1000);
-        reg.add(FootprintKey::for_persona(p1, ResourceType::LoraAdapter, Residency::Active), 500);
-        reg.add(FootprintKey::for_persona(p2, ResourceType::KvCache, Residency::Active), 2000);
-        reg.add(FootprintKey::shared(ResourceType::ModelWeights, Residency::Active), 2_500_000_000);
+        reg.add(
+            FootprintKey::for_persona(p1, ResourceType::KvCache, Residency::Active),
+            1000,
+        );
+        reg.add(
+            FootprintKey::for_persona(p1, ResourceType::LoraAdapter, Residency::Active),
+            500,
+        );
+        reg.add(
+            FootprintKey::for_persona(p2, ResourceType::KvCache, Residency::Active),
+            2000,
+        );
+        reg.add(
+            FootprintKey::shared(ResourceType::ModelWeights, Residency::Active),
+            2_500_000_000,
+        );
 
         let snap = reg.snapshot();
         assert_eq!(snap.total_bytes, reg.total_bytes());
         assert_eq!(snap.entry_count, reg.entry_count());
         assert_eq!(snap.by_resource_type, reg.by_resource_type());
-        assert_eq!(snap.by_persona.get(&p1).copied(), Some(reg.persona_total(p1)));
-        assert_eq!(snap.by_persona.get(&p2).copied(), Some(reg.persona_total(p2)));
+        assert_eq!(
+            snap.by_persona.get(&p1).copied(),
+            Some(reg.persona_total(p1))
+        );
+        assert_eq!(
+            snap.by_persona.get(&p2).copied(),
+            Some(reg.persona_total(p2))
+        );
         // Shared entry (model weights) has no persona_id — must NOT
         // appear in by_persona.
         assert_eq!(
@@ -828,7 +905,10 @@ mod tests {
         assert_eq!(snap_empty.total_bytes, 0);
         assert_eq!(snap_empty.entry_count, 0);
 
-        reg.add(FootprintKey::for_persona(p, ResourceType::KvCache, Residency::Active), 4242);
+        reg.add(
+            FootprintKey::for_persona(p, ResourceType::KvCache, Residency::Active),
+            4242,
+        );
         let snap_after = reg.snapshot();
         assert_eq!(snap_after.total_bytes, 4242);
         assert_eq!(snap_after.entry_count, 1);
@@ -846,21 +926,22 @@ mod tests {
     #[test]
     fn for_backend_keys_are_distinct_per_backend_id() {
         let reg = FootprintRegistry::new();
-        let key_a = FootprintKey::for_backend(
-            "qwen3.5-4b",
-            ResourceType::ModelWeights,
-            Residency::Active,
+        let key_a =
+            FootprintKey::for_backend("qwen3.5-4b", ResourceType::ModelWeights, Residency::Active);
+        let key_b =
+            FootprintKey::for_backend("qwen3.5-7b", ResourceType::ModelWeights, Residency::Active);
+        assert_ne!(
+            key_a, key_b,
+            "different backends must produce distinct keys"
         );
-        let key_b = FootprintKey::for_backend(
-            "qwen3.5-7b",
-            ResourceType::ModelWeights,
-            Residency::Active,
-        );
-        assert_ne!(key_a, key_b, "different backends must produce distinct keys");
 
         reg.report_authoritative(key_a.clone(), 2_500_000_000);
         reg.report_authoritative(key_b.clone(), 4_500_000_000);
-        assert_eq!(reg.entry_count(), 2, "two backends should produce two entries");
+        assert_eq!(
+            reg.entry_count(),
+            2,
+            "two backends should produce two entries"
+        );
         assert_eq!(reg.total_bytes(), 7_000_000_000);
 
         let by_type = reg.by_resource_type();
@@ -918,7 +999,10 @@ mod tests {
     fn try_global_returns_same_instance_as_global_when_initialized() {
         let g = global();
         let tg = try_global().expect("global was just initialized");
-        assert!(std::ptr::eq(g, tg), "try_global must point at the same OnceLock cell");
+        assert!(
+            std::ptr::eq(g, tg),
+            "try_global must point at the same OnceLock cell"
+        );
     }
 
     /// What this catches: concurrent add/remove from multiple "personas"

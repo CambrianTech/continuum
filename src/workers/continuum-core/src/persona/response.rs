@@ -42,11 +42,11 @@
 //!   - <think> parsing is a hot path on every response; regex/str
 //!     manipulation in Rust is ~100x what TS does on the same input.
 
-use crate::cognition::{
-    analyze, score_persona, AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis,
-    DEFAULT_RELEVANCE_THRESHOLD,
-};
 use crate::cognition::types::ResponderDecision;
+use crate::cognition::{
+    AnalysisInput, DEFAULT_RELEVANCE_THRESHOLD, PersonaSlot, RecentMessage, SharedAnalysis,
+    analyze, score_persona,
+};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use ts_rs::TS;
@@ -105,7 +105,10 @@ pub struct RespondInput {
 // "spoke") are handled by the tag rename below.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
-#[ts(export, export_to = "../../../shared/generated/cognition/PersonaResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/PersonaResponse.ts"
+)]
 pub enum PersonaResponse {
     /// Persona chose silence. Reason carried for observability + training.
     Silent {
@@ -238,9 +241,7 @@ async fn run_render(
 ) -> Result<RawRenderOutput, String> {
     use crate::ai::adapter::InferenceDevice;
     use crate::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
-    use crate::persona::prompt_assembly::{
-        assemble, HistoryMessage, PromptAssemblyInput,
-    };
+    use crate::persona::prompt_assembly::{HistoryMessage, PromptAssemblyInput, assemble};
 
     // 1. The matched angle for this persona's specialty. Empty string
     //    means "no specific angle" — assemble() handles that gracefully
@@ -329,6 +330,12 @@ async fn run_render(
         user_id: None,
         room_id: Some(input.room_id.to_string()),
         purpose: Some("persona-respond".to_string()),
+        // The whole point of this request is to generate a response on
+        // behalf of THIS persona — its KV bytes belong in this persona's
+        // attribution bucket. Adapters that honor persona_id (LlamaCpp)
+        // route the seq slot's KV into the FootprintRegistry under this
+        // id; adapters that don't (DMR, cloud) ignore it.
+        persona_id: Some(input.persona.persona_id.to_string()),
     };
 
     // 4. Pick an adapter via the global registry — capability-routed,
@@ -337,11 +344,7 @@ async fn run_render(
     let registry_arc = crate::modules::ai_provider::global_registry();
     let registry = registry_arc.read().await;
     let (_provider_id, adapter) = registry
-        .select(
-            Some("local"),
-            Some(&input.model),
-            InferenceDevice::Gpu,
-        )
+        .select(Some("local"), Some(&input.model), InferenceDevice::Gpu)
         .ok_or_else(|| {
             format!(
                 "no GPU adapter supports model '{}' (registered: {:?}). \
