@@ -4,6 +4,67 @@
 **Author**: Claude + Joel, captured during the qwen3.5 scheduler debugging session
 **Branch context**: written while iterating on `feature/qwen35-metal-acceleration`; supersedes the static `LlamaCppAdapter::with_context_length()` override pattern that was the immediate-term mitigation
 
+## 0. Current State vs Target (Honest Migration Map)
+
+This doc describes the architectural endpoint. The codebase is partway there. Knowing exactly where each piece is now is part of the design — it tells us what has to ship before paging is meaningful.
+
+### 0.1 What's already in Rust
+
+`continuum-core/src/`:
+- `cognition/shared_analysis.rs` — analyze step (parse + JSON envelope handling)
+- `cognition/response_orchestrator.rs` — score_persona / DEFAULT_RELEVANCE_THRESHOLD
+- `cognition/types.rs` — shared types
+- `persona/response.rs` — `respond()` entry point + `strip_thinks_emit_events`
+- `persona/prompt_assembly.rs` — initial prompt build, multi_party_strategy enum, NamePrefixed/SingleUserTurn variants
+- `persona/inbox.rs`, `persona/channel_*.rs` — message routing and prioritization
+- `persona/genome_paging.rs` — LoRA adapter LRU + activation tracking (the §11 substrate already exists)
+- `memory/cache.rs`, `memory/recall.rs`, `memory/embedding.rs`, `memory/timeline.rs`, etc. — substantial memory infra (~2800 lines)
+- `inference/llamacpp_adapter.rs` + `inference/backends/llamacpp_scheduler.rs` — backend with `with_context_length` lever
+- `model_registry/types.rs` — Model + Provider declarations including `multi_party_strategy`, `chat_template`, `stop_sequences`, `Capability` (now with AudioInput/Output/Vision)
+- `gpu/memory_manager.rs` — accounting infrastructure (but using static `recommendedMaxWorkingSetSize` for Metal — wrong, see §12)
+
+### 0.2 What's still in TS (and why it matters)
+
+`system/user/server/modules/`:
+- `PersonaAgentLoop.ts` (~309) — tool-call execution loop
+- `PersonaResponseValidator.ts` (~110) — response shape validation
+- `PersonaPromptAssembler.ts` (~343) — turn-N prompt construction (initial build duplicates Rust prompt_assembly; turn-N delta is TS-only)
+- `PersonaToolExecutor.ts` (~636) — actual tool dispatch into the command system
+- `Hippocampus.ts` (~693) — memory consolidation (Rust `memory/*` is the destination but consolidation passes still happen in TS)
+- `PersonaResponseGenerator.ts` (~700) — orchestrator that calls Rust `personaRespond` then runs the TS agent loop
+
+### 0.3 Live response path today
+
+```
+TS PersonaResponseGenerator
+  ├─ TS RAG (ChatRAGBuilder — context assembly, source-by-source)
+  ├─ Rust personaRespond (analyze + render + strip_thinks)  ← migrated
+  ├─ TS runAgentLoop:
+  │    ├─ TS validator
+  │    ├─ TS prompt assembler turn-N
+  │    └─ TS tool executor → command system
+  └─ TS post to chat
+```
+
+The hot inference path (analyze + render) is Rust. The agent loop / validation / tool calling / memory consolidation is still TS.
+
+### 0.4 Why this matters for the paging design
+
+**The TS Node event loop is single-threaded.** With N personas in a recipe, Node services them strictly serially via its event loop; the Rust hot path runs concurrently underneath, but the moment control returns to TS, parallelism collapses.
+
+Concrete impact: paging Phase 3.x (PageableBackend / PagingPolicy / spill+resume) is moot if the TS agent loop serializes everything anyway. We'd be paging KV slots that personas can't even reach because they're queued behind Node.
+
+**Therefore: TS-to-Rust migration of the perf-critical persona modules is a prerequisite for paging being meaningful.** Reordered roadmap reflects this — Phase 0.5 (migration) sits BEFORE paging work in §19.
+
+Modules that legitimately stay TS:
+- Browser/widget code (`widgets/*`, lit / shadow DOM)
+- Browser-only commands (`interface/screenshot`, etc.)
+- WebSocket transport
+- CLI scaffolding around `jtag`
+- The web UI server itself
+
+None of those are in the persona response hot path or affected by Node single-threading concerns.
+
 ## 1. Why Static Allocation Fails
 
 The current architecture sizes per-persona KV-cache memory at backend load time as a fixed `n_ctx_seq × n_seq_max` slab. This breaks down across every realistic Continuum workload:
@@ -1189,7 +1250,30 @@ Each model declares its KV cost profile in the registry. The policy accounts for
 
 ## 19. Implementation Roadmap (Ordered by ROI/Cost)
 
-Captured here so the implementation order isn't lost. Each phase ships independently and reduces memory, increases dynamism, or cuts latency.
+Captured here so the implementation order isn't lost. Each phase ships independently and reduces memory, increases dynamism, or cuts latency. **TDD/VDD discipline applies to every phase** — test first, validate the test catches what it claims to catch, then implement.
+
+### Phase 0.5 — TS Cognition Layer → Rust (~5-7 days, prerequisite)
+
+The Node event loop is the per-process bottleneck. Until the perf-critical TS persona modules move to Rust + tokio, paging gives us paged KV slots that personas can't reach because they're queued behind the single-threaded JS runtime. Phase 0.5 ships first; everything else depends on it.
+
+Substeps in dependency order (each TDD/VDD'd):
+
+- **0.5.1** `PersonaResponseValidator` (110 lines) → `cognition::response_validator`
+  - Smallest module, cleanest port, validates the migration discipline before we hit the hard ones
+- **0.5.2** `PersonaPromptAssembler` turn-N (343 lines) → extend `persona::prompt_assembly`
+  - Initial assembly already in Rust; turn-N delta (post-tool-call) is the missing half
+- **0.5.3** `PersonaToolExecutor` (636 lines) → `cognition::tool_executor`
+  - Tool dispatch design: Rust commands callable directly; TS-side commands (browser/widget) callable via reverse-IPC
+- **0.5.4** `PersonaAgentLoop` (309 lines) → `cognition::agent_loop`
+  - Multi-turn loop with validator + tool_executor + prompt_assembler all now Rust
+  - Per-persona tokio task = real parallelism across N personas
+- **0.5.5** `Hippocampus` (693 lines) → `memory::consolidator`
+  - STM→LTM consolidation pass; runs concurrently per persona instead of serialized through Node
+  - Hugely measurable perf win for multi-persona scenarios
+- **0.5.6** `PersonaResponseGenerator` orchestrator (~700 lines) → `persona::response::cycle`
+  - The integration point. Once this lands, `personaRespond` becomes the full per-persona cycle, and the TS module reduces to a thin async caller
+
+After 0.5: TS persona-side becomes a thin IPC client. All cognition runs in Rust under tokio. Per-persona parallelism is real.
 
 ### Phase 1.0 — No-Inference Token Diagnostic (~30 min)
 - Tiny binary: load model metadata only (no KV alloc, no Metal pipelines)
