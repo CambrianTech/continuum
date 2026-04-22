@@ -32,10 +32,10 @@ pub mod types;
 pub mod unified;
 
 pub use allocator::{
-    AllocationResult, PersonaAllocation, PersonaCatalogEntry,
-    allocate as allocate_personas, load_catalog, select_local_model,
+    allocate as allocate_personas, load_catalog, select_local_model, AllocationResult,
+    PersonaAllocation, PersonaCatalogEntry,
 };
-pub use channel_items::ChannelEnqueueRequest;
+pub use channel_items::{ChannelEnqueueRequest, MediaItemRequest};
 pub use channel_registry::ChannelRegistry;
 pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, ServiceCycleResult};
 pub use cognition::{CognitionDecision, PersonaCognitionEngine, PriorityFactors, PriorityScore};
@@ -49,12 +49,12 @@ pub use genome_paging::{
     GenomePagingState,
 };
 pub use inbox::PersonaInbox;
+pub use message_cache::{
+    CachedMessage, ContentDedupResult, ContentDeduplicator, EchoChamberResult, RecentMessageCache,
+    SenderCategory,
+};
 pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionRequest, ModelSelectionResult,
 };
 pub use types::*;
-pub use message_cache::{
-    CachedMessage, ContentDeduplicator, EchoChamberResult, ContentDedupResult,
-    RecentMessageCache, SenderCategory,
-};
 pub use unified::PersonaCognition;

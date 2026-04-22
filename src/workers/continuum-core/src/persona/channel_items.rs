@@ -24,6 +24,41 @@ fn now_ms() -> u64 {
 }
 
 //=============================================================================
+// MEDIA ITEM (for native multimodal — images, audio attached to a message)
+//=============================================================================
+
+/// One media attachment riding with a chat / voice item through Rust IPC.
+///
+/// We deliberately omit `base64` from this hop: chat-send already externalized
+/// the bytes to disk via `MediaBlobService.externalize`, and PRG re-reads from
+/// disk via `blob_hash` on the way back into the model. Sending base64 through
+/// the inbox round-trip would balloon the IPC payload for no win — the disk
+/// fetch is already on the critical path for the cache-hit case anyway.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/MediaItemRequest.ts"
+)]
+pub struct MediaItemRequest {
+    /// "image", "audio", etc. Mirrors the TS `MediaItemLite.type`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[ts(optional)]
+    pub mime_type: Option<String>,
+    /// `sha256:hex` content-addressed handle resolvable via MediaBlobService.
+    #[ts(optional)]
+    pub blob_hash: Option<String>,
+    /// Optional remote URL fallback (e.g. CDN-hosted asset).
+    #[ts(optional)]
+    pub url: Option<String>,
+    /// Pre-computed text description from VisionDescriptionService.
+    /// Lets text-only personas downstream get the bridge text without re-running inference.
+    #[ts(optional)]
+    pub description: Option<String>,
+}
+
+//=============================================================================
 // VOICE QUEUE ITEM
 //=============================================================================
 
@@ -41,6 +76,8 @@ pub struct VoiceQueueItem {
     pub timestamp: u64,
     pub enqueued_at: u64,
     pub priority: f32,
+    #[serde(default)]
+    pub media: Vec<MediaItemRequest>,
 }
 
 impl QueueItemBehavior for VoiceQueueItem {
@@ -97,6 +134,7 @@ impl QueueItemBehavior for VoiceQueueItem {
             "voiceSessionId": self.voice_session_id.to_string(),
             "timestamp": self.timestamp,
             "priority": self.priority,
+            "media": self.media,
         })
     }
 }
@@ -138,6 +176,10 @@ pub struct ChatQueueItem {
     pub priority: f32,
     /// Prior messages consolidated into this item (empty if not consolidated)
     pub consolidated_context: Vec<ConsolidatedContext>,
+    /// Native multimodal attachments riding with this message (images, audio).
+    /// PRG resolves blob_hash → bytes on the model-input side.
+    #[serde(default)]
+    pub media: Vec<MediaItemRequest>,
 }
 
 impl QueueItemBehavior for ChatQueueItem {
@@ -195,6 +237,7 @@ impl QueueItemBehavior for ChatQueueItem {
             "priority": self.priority,
             "consolidatedContext": self.consolidated_context,
             "consolidatedCount": self.consolidated_context.len() + 1,
+            "media": self.media,
         })
     }
 }
@@ -246,6 +289,11 @@ impl ChatQueueItem {
             enqueued_at: self.enqueued_at, // Preserve original enqueue time for aging
             priority: max_priority,
             consolidated_context: context,
+            // Carry the trigger's media (the message we're actually responding to).
+            // Prior consolidated messages had their own context-only role; their
+            // attachments would compete for the model's vision budget without
+            // adding usable signal for the current turn.
+            media: trigger.media.clone(),
         }
     }
 }
@@ -503,6 +551,8 @@ pub enum ChannelEnqueueRequest {
         #[ts(type = "number")]
         timestamp: u64,
         priority: f32,
+        #[serde(default)]
+        media: Vec<MediaItemRequest>,
     },
     #[serde(rename = "chat")]
     Chat {
@@ -516,6 +566,8 @@ pub enum ChannelEnqueueRequest {
         #[ts(type = "number")]
         timestamp: u64,
         priority: f32,
+        #[serde(default)]
+        media: Vec<MediaItemRequest>,
     },
     #[serde(rename = "task")]
     Task {
@@ -566,6 +618,7 @@ impl ChannelEnqueueRequest {
                 voice_session_id,
                 timestamp,
                 priority,
+                media,
             } => Ok(Box::new(VoiceQueueItem {
                 id: parse_uuid(id, "id")?,
                 room_id: parse_uuid(room_id, "room_id")?,
@@ -577,6 +630,7 @@ impl ChannelEnqueueRequest {
                 timestamp: *timestamp,
                 enqueued_at: now,
                 priority: *priority,
+                media: media.clone(),
             })),
             ChannelEnqueueRequest::Chat {
                 id,
@@ -588,6 +642,7 @@ impl ChannelEnqueueRequest {
                 mentions,
                 timestamp,
                 priority,
+                media,
             } => Ok(Box::new(ChatQueueItem {
                 id: parse_uuid(id, "id")?,
                 room_id: parse_uuid(room_id, "room_id")?,
@@ -600,6 +655,7 @@ impl ChannelEnqueueRequest {
                 enqueued_at: now,
                 priority: *priority,
                 consolidated_context: Vec::new(),
+                media: media.clone(),
             })),
             ChannelEnqueueRequest::Code {
                 id,
@@ -706,6 +762,7 @@ mod tests {
             timestamp: now_ms(),
             enqueued_at: now_ms(),
             priority: 1.0,
+            media: Vec::new(),
         }
     }
 
@@ -722,6 +779,7 @@ mod tests {
             enqueued_at: now_ms(),
             priority,
             consolidated_context: Vec::new(),
+            media: Vec::new(),
         }
     }
 
@@ -905,11 +963,55 @@ mod tests {
             mentions: true,
             timestamp: now_ms(),
             priority: 0.8,
+            media: Vec::new(),
         };
 
         let item = req.to_queue_item().unwrap();
         assert_eq!(item.item_type(), "chat");
         assert!(item.is_urgent()); // mentions = true
         assert_eq!(item.domain(), ActivityDomain::Chat);
+    }
+
+    #[test]
+    fn test_chat_media_roundtrip_through_request_and_json() {
+        // Going-in: request with media → ChatQueueItem with media → to_json carries it.
+        // This is the regression guard for the bug Joel hit on 2026-04-21:
+        // vision bytes were enqueuing fine but the inbox round-trip stripped media,
+        // so PRG always saw 0 attachments and Vision AI hallucinated descriptions.
+        let blob_hash = "sha256:deadbeef".to_string();
+        let req = ChannelEnqueueRequest::Chat {
+            id: Uuid::new_v4().to_string(),
+            room_id: Uuid::new_v4().to_string(),
+            content: "look at this".into(),
+            sender_id: Uuid::new_v4().to_string(),
+            sender_name: "joel".into(),
+            sender_type: "human".into(),
+            mentions: false,
+            timestamp: now_ms(),
+            priority: 0.5,
+            media: vec![MediaItemRequest {
+                kind: "image".into(),
+                mime_type: Some("image/jpeg".into()),
+                blob_hash: Some(blob_hash.clone()),
+                url: None,
+                description: None,
+            }],
+        };
+
+        let item = req.to_queue_item().unwrap();
+        let json = item.to_json();
+        let media = json.get("media").expect("media key present in JSON");
+        let media_arr = media.as_array().expect("media is an array");
+        assert_eq!(media_arr.len(), 1, "exactly one media item survives");
+        let first = &media_arr[0];
+        assert_eq!(first.get("type").and_then(|v| v.as_str()), Some("image"));
+        assert_eq!(
+            first.get("blobHash").and_then(|v| v.as_str()),
+            Some(blob_hash.as_str())
+        );
+        assert_eq!(
+            first.get("mimeType").and_then(|v| v.as_str()),
+            Some("image/jpeg")
+        );
     }
 }

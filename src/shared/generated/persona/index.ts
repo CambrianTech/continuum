@@ -28,6 +28,7 @@ export type { GenomeAdapterInfo } from './GenomeAdapterInfo';
 export type { GenomePagingState } from './GenomePagingState';
 export type { InboxMessage } from './InboxMessage';
 export type { InboxTask } from './InboxTask';
+export type { MediaItemRequest } from './MediaItemRequest';
 export type { MentionCheckResult } from './MentionCheckResult';
 export type { Modality } from './Modality';
 export type { ModelFamily } from './ModelFamily';

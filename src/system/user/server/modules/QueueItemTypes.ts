@@ -260,7 +260,30 @@ export function fromRustServiceItem(json: Record<string, unknown>): QueueItem | 
   const itemType = json.type as string;
 
   if (itemType === 'voice' || itemType === 'chat') {
-    // Map Rust voice/chat → TS InboxMessage
+    // Map Rust voice/chat → TS InboxMessage.
+    // `media` round-trips as a camelCase array (see Rust MediaItemRequest
+    // serde rename). Rust deliberately omits `base64` from the IPC payload —
+    // PRG re-reads bytes from disk via MediaBlobService.getPath(blobHash) on
+    // its own side. Carrying base64 through the inbox would balloon the IPC
+    // payload for no win.
+    type RawMedia = {
+      type?: string;
+      mimeType?: string;
+      blobHash?: string;
+      url?: string;
+      description?: string;
+    };
+    const rawMedia = (json.media as RawMedia[] | undefined) ?? [];
+    const media = rawMedia.length > 0
+      ? rawMedia.map((m) => ({
+          type: m.type ?? 'image',
+          mimeType: m.mimeType,
+          blobHash: m.blobHash,
+          url: m.url,
+          description: m.description,
+        }))
+      : undefined;
+
     const msg: InboxMessage = {
       id: json.id as UUID,
       type: 'message',
@@ -276,6 +299,7 @@ export function fromRustServiceItem(json: Record<string, unknown>): QueueItem | 
       enqueuedAt: json.timestamp as number,
       sourceModality: itemType === 'voice' ? 'voice' : 'text',
       voiceSessionId: json.voiceSessionId as UUID | undefined,
+      media,
     };
     return msg;
   }
@@ -387,6 +411,19 @@ export function taskEntityToInboxTask(task: {
  */
 export function toChannelEnqueueRequest(item: QueueItem): ChannelEnqueueRequest {
   if (isInboxMessage(item)) {
+    // Map TS media items → Rust MediaItemRequest shape (camelCase JSON).
+    // Strip `base64` here: bytes are already on disk via MediaBlobService
+    // (chat-send externalizes synchronously before data/create), so the IPC
+    // hop carries blobHash + mimeType + description only. PRG re-reads bytes
+    // from disk on the response side.
+    const media = (item.media ?? []).map((m) => ({
+      type: m.type,
+      mimeType: m.mimeType,
+      blobHash: m.blobHash,
+      url: m.url,
+      description: m.description,
+    }));
+
     // Voice messages
     if (item.sourceModality === 'voice' && item.voiceSessionId) {
       return {
@@ -400,6 +437,7 @@ export function toChannelEnqueueRequest(item: QueueItem): ChannelEnqueueRequest 
         voice_session_id: item.voiceSessionId,
         timestamp: item.timestamp,
         priority: item.priority,
+        media,
       };
     }
 
@@ -415,6 +453,7 @@ export function toChannelEnqueueRequest(item: QueueItem): ChannelEnqueueRequest 
       mentions: item.mentions ?? false,
       timestamp: item.timestamp,
       priority: item.priority,
+      media,
     };
   }
 
