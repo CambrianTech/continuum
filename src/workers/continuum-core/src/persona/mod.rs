@@ -25,6 +25,8 @@ pub mod media_policy;
 pub mod message_cache;
 pub mod model_selection;
 pub mod prompt_assembly;
+pub mod recipe;
+pub mod recipes;
 pub mod recorder;
 pub mod trace;
 pub mod resource_forecast;

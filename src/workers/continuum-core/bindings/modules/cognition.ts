@@ -3,7 +3,6 @@
  */
 
 import type { RustCoreIPCClientBase } from './base';
-import type { MediaItemLite } from '../../../../shared/generated/cognition/MediaItemLite';
 import type {
 	InboxMessageRequest,
 	CognitionDecision,
@@ -30,85 +29,36 @@ import type {
 	QualityScore,
 } from '../../../../shared/generated';
 import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
+import type { Signal } from '../../../../shared/generated/recipe/Signal';
+import type { PersonaContext } from '../../../../shared/generated/recipe/PersonaContext';
 
 /**
- * Caller-supplied input for persona/respond. Mirrors the Rust RespondInput
- * struct (intentionally not a generated TS type because the shape is
- * IPC-call-shaped, not domain-shaped — generated types are for domain
- * objects that flow through events/storage/UI, not for transient call args).
+ * Caller-supplied input for `cognition/respond` (post-Phase-B shape).
  *
- * The PRG.ts shim builds this from the room state and passes it across the
- * IPC. Rust does the analysis caching, scoring, prompt assembly, inference,
- * and <think>-block stripping.
+ * Three fields:
+ * - `recipe` — name of a registered Recipe (`"chat"`, `"vision"`,
+ *   `"code"`, `"game"`, or a host-registered custom name). Picks the
+ *   dispatch logic on the Rust side.
+ * - `signal` — host's raw event (chat message, video frame, code diff,
+ *   game tick). The recipe projects it into the cognition layer's
+ *   internal RespondInput.
+ * - `personaContext` — per-persona stable state (identity, model,
+ *   capabilities, recent history). Built from the room/persona before
+ *   each turn.
+ *
+ * Both `Signal` and `PersonaContext` are ts-rs generated from the Rust
+ * source of truth (persona/recipe.rs). Hosts construct them via
+ * normal TS object literals; the wire format is camelCase JSON.
+ *
+ * No fallback to the older flat shape — Phase A's bridge function
+ * `respond_input_from_value` was deleted. If a TS host ships an old-
+ * shape payload, the IPC handler returns an error and the host knows
+ * to migrate.
  */
 export interface PersonaRespondRequest {
-	personaId: string;
-	roomId: string;
-	messageId: string;
-	personaName: string;
-	specialty: string;
-	messageText: string;
-	/**
-	 * Persona's RAG-built identity / system prompt. Caller supplies because
-	 * persona identity is a TS-side composition (entity + active LoRA
-	 * adapters + user personalization). Rust just consumes it.
-	 */
-	systemPrompt: string;
-	/**
-	 * THIS persona's render-time model identifier. Required (no default).
-	 * Shared-cognition architecture: 1 cheap analysis on a base model + N
-	 * specialty renders each on the persona's own (potentially LoRA-adapted)
-	 * model. Caller MUST pass the persona's actual model — using the analysis
-	 * model would defeat the architecture (every persona would render with
-	 * the same base model).
-	 */
-	model: string;
-	/**
-	 * Recent messages for shared analysis context. Most-recent last. Each
-	 * element: { id, sender_name, text }.
-	 */
-	recentHistory: Array<{ id: string; sender_name: string; text: string }>;
-	/**
-	 * Stable specialty identifiers in the room (all personas, not just
-	 * this one). Lets the shared analysis know which suggested_angles
-	 * keys to populate. This persona's specialty must appear here.
-	 */
-	knownSpecialties: string[];
-	/** Live-voice context flag. Affects assembled-prompt response style. */
-	isVoice?: boolean;
-	/**
-	 * Media (images, audio) attached to the current message. When the
-	 * persona's resolved model has the matching native capability
-	 * (`Vision` for image, `AudioInput` for audio), Rust attaches these
-	 * directly as `ContentPart::Image` / `ContentPart::Audio` on the
-	 * final user-role message — the model sees / hears the source bytes.
-	 * Text-description bridging is the FALLBACK for genuinely text-only
-	 * models, not the default route. Per Joel 2026-04-21: Qwen3.5 /
-	 * Claude / GPT-4o are natively multimodal; routing through a
-	 * description layer defeats the whole reason they were chosen.
-	 *
-	 * Wire shape is `MediaItemLite` (ts-rs generated from
-	 * `cognition::tool_executor::types::MediaItemLite`). `itemType` is
-	 * one of "image" | "audio" today; base64 is required for inline
-	 * payloads (URL-only references not yet supported through this
-	 * path).
-	 */
-	messageMedia?: MediaItemLite[];
-	/**
-	 * Persona's resolved model capabilities. Caller MUST populate from
-	 * the persona's ModelConfig (e.g. `["vision", "audio-input", "tool-use"]`).
-	 * Wire format: kebab-case strings matching Rust
-	 * `model_registry::Capability` serde rename. Required — no default,
-	 * no Rust-side global lookup. Caller declares; Rust consumes.
-	 *
-	 * Why required: when this was a Rust-side `try_global` lookup, key
-	 * drift between PRG's `model` string and the registry's `model.id`
-	 * silently returned empty caps → image bytes already in
-	 * `messageMedia` got demoted to text markers → vision encoder never
-	 * fired even on a vision-capable persona. Declaration travels with
-	 * the request now; lookup misses can't disable vision invisibly.
-	 */
-	capabilities: string[];
+	recipe: string;
+	signal: Signal;
+	personaContext: PersonaContext;
 }
 
 // ============================================================================
@@ -837,35 +787,19 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			// Streaming IPC (return tokens incrementally, no end-to-end cap)
 			// is the architecturally-right next step — filed as follow-up,
 			// not included in this change.
-			const isLocal =
-				req.model.startsWith('continuum-ai/') || req.model.startsWith('qwen2-vl');
+			const model = req.personaContext.model;
+			const isLocal = model.startsWith('continuum-ai/') || model.startsWith('qwen2-vl');
 			const COGNITION_RESPOND_TIMEOUT_MS = isLocal ? 300_000 : 180_000;
+
+			// Wire shape (Phase B): { recipe, signal, personaContext }.
+			// The Rust IPC handler in modules/cognition.rs looks up the
+			// recipe by name, calls recipe.build_input(signal, ctx), runs
+			// respond(), then validate_output. No flat-field fallback.
 			const { response } = await this.requestFull({
 				command: 'cognition/respond',
-				persona_id: req.personaId,
-				room_id: req.roomId,
-				message_id: req.messageId,
-				persona_name: req.personaName,
-				specialty: req.specialty,
-				message_text: req.messageText,
-				system_prompt: req.systemPrompt,
-				model: req.model,
-				recent_history: req.recentHistory,
-				known_specialties: req.knownSpecialties,
-				is_voice: req.isVoice ?? false,
-				// Native multimodal — the Rust IPC handler reads `message_media`
-				// and walks each item into `ContentPart::Image` / `Audio` when
-				// `capabilities` includes the matching variant. Forgetting
-				// either field is a silent strip: PRG built the field but
-				// the IPC payload never carried it, so Rust's diagnostic
-				// "persona/respond received message_media: count=N" stayed
-				// silent on the failure case (only logs when count > 0).
-				...(req.messageMedia && req.messageMedia.length > 0 && { message_media: req.messageMedia }),
-				// Capabilities cross the wire as kebab-case strings matching
-				// the Rust `Capability` serde rename ("vision", "audio-input",
-				// "tool-use", etc.). Required — caller-declared, never
-				// looked up Rust-side.
-				capabilities: req.capabilities,
+				recipe: req.recipe,
+				signal: req.signal,
+				personaContext: req.personaContext,
 			}, COGNITION_RESPOND_TIMEOUT_MS);
 
 			if (!response.success) {

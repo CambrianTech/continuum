@@ -403,29 +403,65 @@ export class PersonaResponseGenerator {
       // registry (broken persona configuration, fail loudly here).
       const capabilities = await this.resolveModelCapabilities();
 
-      const rustRequest: PersonaRespondRequest = {
-        personaId: this.personaId,
-        roomId: originalMessage.roomId,
+      // Phase B IPC shape: { recipe, signal, personaContext }. The Rust
+      // side looks up the recipe by name in its global RecipeRegistry,
+      // calls recipe.build_input(signal, ctx), runs respond(), then
+      // recipe.validate_output. No flat-field fallback exists on the
+      // Rust side — sending the old shape would error out at the
+      // IPC parse step.
+      //
+      // Recipe selection: chat path always dispatches through "chat"
+      // today. ChatRecipe accepts media-bearing signals AND tolerates
+      // empty text (autonomous-tick scenarios), so a single recipe
+      // handles every chat-surface signal cleanly. When VisionRecipe
+      // / CodeRecipe land in follow-on commits, the selection logic
+      // here promotes to those names based on signal characteristics
+      // (image media → "vision", code-context signal → "code").
+      // Field-name convention here is camelCase to match the ts-rs
+      // generated `Signal` / `PersonaContext` types (Rust serde
+      // rename_all = "camelCase"). Snake_case in the wire payload
+      // would be silently rejected by Rust serde — exact field names
+      // matter, no fallback parser.
+      const recipeName = 'chat';
+      const signal = {
+        kind: { kind: 'chat-message' as const },
+        text: originalMessage.content.text ?? '',
+        media: messageMedia,
+        originator: {
+          kind: 'user' as const,
+          // Snake_case here is intentional: ts-rs doesn't apply
+          // `rename_all = "camelCase"` to enum variant fields, only
+          // to the variant tags. So Rust's `User { user_id }` stays
+          // snake_case on the wire.
+          user_id: originalMessage.senderId,
+        },
+        timestampMs: Date.now(),
         messageId: originalMessage.id,
-        personaName: this.personaName,
+      };
+      const personaContext = {
+        personaId: this.personaId,
+        displayName: this.personaName,
         specialty,
-        // Per-persona render model — required so each persona renders with
-        // its OWN configured model, not the shared-analysis base model.
-        // Source of truth is this persona's ModelConfig (auto-routes trait
-        // adapters etc. at the Rust side via select_model).
         model: this.modelConfig.model,
-        messageText: originalMessage.content.text ?? '',
+        // Capabilities cross the wire as kebab-case strings (Rust
+        // `Capability` serde rename) — matches the `Capability`
+        // ts-rs export.
+        capabilities: capabilities as unknown as import('../../../../shared/generated/model_registry/Capability').Capability[],
         systemPrompt,
-        recentHistory,
+        recentHistory: recentHistory.map(h => ({
+          id: h.id,
+          senderName: h.sender_name,
+          text: h.text,
+        })),
         knownSpecialties,
+        roomId: originalMessage.roomId,
         isVoice: originalMessage.sourceModality === 'voice',
-        messageMedia: messageMedia.length > 0 ? messageMedia : undefined,
-        // Caller-declared capabilities — Rust uses these directly. NO
-        // mid-flight `try_global` registry lookup. The kebab-case
-        // strings here ("vision", "audio-input", etc.) match the
-        // serde rename on Rust `model_registry::Capability` and are
-        // resolved once at construction via `models/capabilities`.
-        capabilities,
+      };
+
+      const rustRequest: PersonaRespondRequest = {
+        recipe: recipeName,
+        signal,
+        personaContext,
       };
       // Fixture capture for the Rust-persona-rewrite replay test harness
       // AND the eventual training corpus that Forge/Academy/Sentinel-AI

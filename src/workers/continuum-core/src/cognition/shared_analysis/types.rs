@@ -5,12 +5,24 @@
 //! layer-boundaries pattern as `cognition/tool_executor/types.rs` and
 //! `inference/footprint_registry/types.rs`.
 
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 /// What the analyzer needs to know about a recent message. Minimal
 /// shape so the service doesn't have to know about ChatMessageEntity.
-#[derive(Debug, Clone)]
+///
+/// Wire-exported via ts-rs because `PersonaContext` (recipe-layer
+/// public surface) carries `Vec<RecentMessage>` and the TS host
+/// builds it directly from chat-history queries.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/RecentMessage.ts"
+)]
+#[serde(rename_all = "camelCase")]
 pub struct RecentMessage {
+    #[ts(type = "string")]
     pub id: Uuid,
     pub sender_name: String,
     pub text: String,

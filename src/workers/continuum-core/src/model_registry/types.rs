@@ -38,7 +38,16 @@ pub enum Arch {
 /// `model.has(Capability::ToolUse)` rather than pattern-matching on arch
 /// or id. Adding a capability is a real architectural decision (new kind
 /// of task) and should be rare.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// Wire-exported via ts-rs because `PersonaContext` (recipe layer) and
+/// the `cognition/respond` IPC payload both carry capability vocab as
+/// a list of these values. TS hosts read/write the same kebab-case
+/// strings serde produces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/model_registry/Capability.ts"
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Capability {
     TextGeneration,

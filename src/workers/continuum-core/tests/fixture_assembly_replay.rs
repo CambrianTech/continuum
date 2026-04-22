@@ -66,11 +66,16 @@ use continuum_core::ai::types::{ContentPart, MessageContent};
 use continuum_core::cognition::tool_executor::types::MediaItemLite;
 use continuum_core::model_registry::Capability;
 use continuum_core::persona::prompt_assembly::PromptMessage;
-use continuum_core::persona::response::{build_messages_with_media, respond_input_from_value};
+use continuum_core::persona::recipe::{
+    PersonaContext, Recipe, Signal, SignalKind, SignalOriginator,
+};
+use continuum_core::persona::recipes::chat::ChatRecipe;
+use continuum_core::persona::response::build_messages_with_media;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Once;
+use uuid::Uuid;
 
 /// Read every fixture in the standard dir. Returns empty vec if the
 /// dir doesn't exist (CI / fresh dev box).
@@ -172,6 +177,95 @@ fn synth_prompt_messages(rust_request: &Value) -> Vec<PromptMessage> {
         role: "user".to_string(),
         content: user_text,
     }]
+}
+
+/// Bridge from a legacy-shape fixture's `rust_request` (flat field
+/// layout from before the Recipe IPC) to a `Signal + PersonaContext`
+/// pair the new path consumes. Test-only — production code never
+/// sees the legacy shape (the IPC handler now requires the new wire
+/// shape; old shape returns a JSON-parse error from the IPC).
+///
+/// Captured fixtures are too valuable to discard (they're the
+/// regression corpus), so this helper translates them into the new
+/// shape FOR THE TEST. As fixtures are re-captured in the new shape
+/// post-rip, this helper goes away.
+fn signal_and_ctx_from_legacy_fixture(
+    rust_request: &Value,
+) -> Result<(Signal, PersonaContext), String> {
+    let get_str = |key: &str| -> Option<String> {
+        rust_request
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    };
+    let get_uuid = |key: &str| -> Result<Uuid, String> {
+        let s = get_str(key).ok_or_else(|| format!("missing field '{key}'"))?;
+        Uuid::parse_str(&s).map_err(|e| format!("invalid uuid for '{key}': {e}"))
+    };
+
+    let persona_id = get_uuid("personaId")?;
+    let room_id = get_uuid("roomId")?;
+    let message_id = get_uuid("messageId")?;
+    let display_name = get_str("personaName").unwrap_or_else(|| "AI".to_string());
+    let specialty = get_str("specialty").unwrap_or_else(|| "general".to_string());
+    let model = get_str("model").ok_or_else(|| "missing 'model'".to_string())?;
+    let system_prompt = get_str("systemPrompt").unwrap_or_default();
+    let message_text = get_str("messageText").unwrap_or_default();
+    let is_voice = rust_request
+        .get("isVoice")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let known_specialties: Vec<String> = rust_request
+        .get("knownSpecialties")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_else(|| vec![specialty.clone()]);
+    let recent_history: Vec<continuum_core::cognition::RecentMessage> = rust_request
+        .get("recentHistory")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let id = item.get("id")?.as_str()?.parse::<Uuid>().ok()?;
+                    let sender_name = item
+                        .get("senderName")
+                        .or_else(|| item.get("sender_name"))?
+                        .as_str()?
+                        .to_string();
+                    let text = item.get("text")?.as_str()?.to_string();
+                    Some(continuum_core::cognition::RecentMessage {
+                        id,
+                        sender_name,
+                        text,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let media = extract_media(rust_request);
+    let capabilities: Vec<Capability> = extract_capabilities(rust_request).into_iter().collect();
+
+    let signal = Signal {
+        kind: SignalKind::ChatMessage,
+        text: message_text,
+        media,
+        originator: SignalOriginator::User { user_id: Uuid::nil() },
+        timestamp_ms: 0,
+        message_id: Some(message_id),
+    };
+    let ctx = PersonaContext {
+        persona_id,
+        display_name,
+        specialty,
+        model,
+        capabilities,
+        system_prompt,
+        recent_history,
+        known_specialties,
+        room_id: Some(room_id),
+        is_voice,
+    };
+    Ok((signal, ctx))
 }
 
 #[test]
@@ -460,11 +554,26 @@ async fn vision_fixture_describes_image_via_real_model() {
         let fname = path.file_name().unwrap().to_string_lossy().into_owned();
         let rust_request = fixture.get("rust_request").unwrap();
 
-        // SAME function the live IPC handler uses. No twin transformation.
-        let input = match respond_input_from_value(rust_request) {
+        // Build Signal + PersonaContext from the captured fixture (legacy
+        // shape — fixtures predate the Recipe-shaped IPC), then dispatch
+        // through ChatRecipe. ChatRecipe + media-bearing signal +
+        // vision-capable persona = same effective path the IPC handler
+        // takes for vision input. When VisionRecipe lands in a follow-on
+        // commit, swap the recipe here without touching anything else
+        // — the test gate is "Recipe path produces a working RespondInput
+        // through the same `respond()` function the live IPC calls."
+        let (signal, ctx) = match signal_and_ctx_from_legacy_fixture(rust_request) {
+            Ok(pair) => pair,
+            Err(e) => {
+                failures.push(format!("[{fname}] could not build Signal+PersonaContext: {e}"));
+                continue;
+            }
+        };
+        let recipe = ChatRecipe;
+        let input = match recipe.build_input(&signal, &ctx) {
             Ok(i) => i,
             Err(e) => {
-                failures.push(format!("[{fname}] respond_input_from_value failed: {e}"));
+                failures.push(format!("[{fname}] recipe.build_input failed: {e}"));
                 continue;
             }
         };

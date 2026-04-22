@@ -142,6 +142,19 @@ impl ServiceModule for CognitionModule {
     }
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+        // Seed the process-wide RecipeRegistry with the built-in
+        // recipes (Chat today; Vision/Code/Game land in subsequent
+        // commits this PR). The cognition/respond IPC handler reads
+        // from this registry on every dispatch — must be initialized
+        // before any IPC call lands.
+        crate::persona::recipes::init_default_global();
+        log_info!(
+            "module",
+            "cognition",
+            "RecipeRegistry initialized with {} recipes: {:?}",
+            crate::persona::recipes::global_list().len(),
+            crate::persona::recipes::global_list()
+        );
         Ok(())
     }
 
@@ -782,19 +795,46 @@ impl ServiceModule for CognitionModule {
             "cognition/respond" => {
                 let _timer = TimingGuard::new("module", "cognition_respond");
 
-                // Single source of truth: the JSON-wire-to-RespondInput
-                // transformation lives in `persona::response::respond_input_from_value`.
-                // Tests that exercise the cognition path call the SAME
-                // function, eliminating any twin-implementation drift
-                // between live IPC and test fixtures. If you change the
-                // wire shape, change it there — both paths follow.
-                let input = crate::persona::response::respond_input_from_value(&params)?;
+                // Wire shape (post-Phase-B rip): the IPC payload no longer
+                // matches RespondInput field-for-field. Caller sends:
+                //
+                //   { recipe: string, signal: Signal, personaContext: PersonaContext }
+                //
+                // Recipe by name picks the dispatch logic (Chat / Vision /
+                // Code / Game / host-registered). Signal is the host's
+                // raw event (chat msg, video frame, code diff, game tick).
+                // PersonaContext is the per-persona stable state (identity,
+                // model, capabilities, history).
+                //
+                // The recipe's `build_input` projects (signal, ctx) into
+                // RespondInput. Then `respond()` runs cognition. Then the
+                // recipe's `validate_output` decides what the host does
+                // with the response (Forward / Substitute / Intercepted).
+                //
+                // No fallback path. If the IPC payload is the old flat
+                // shape, parsing fails loudly — chat surface migrates or
+                // breaks. The Phase A bridge `respond_input_from_value`
+                // is gone; there's no second shape we silently accept.
+                let recipe_name: String = p.json("recipe")?;
+                let signal: crate::persona::recipe::Signal = p.json("signal")?;
+                let ctx: crate::persona::recipe::PersonaContext = p.json("personaContext")?;
 
-                // Diagnostic: log what message_media the IPC layer actually
-                // received from PRG. Vision routing was failing 2026-04-21
-                // and we need to see whether (a) PRG sent nothing, (b) PRG
-                // sent items but with wrong shape, or (c) items arrived
-                // and we drop them in the filter_map.
+                let recipe = crate::persona::recipes::global_get(&recipe_name).ok_or_else(|| {
+                    format!(
+                        "recipe '{recipe_name}' not registered in the global registry. \
+                         Registered: {:?}. Either init_default_global wasn't called, \
+                         or the host needs to register a custom recipe under this name \
+                         before dispatching.",
+                        crate::persona::recipes::global_list()
+                    )
+                })?;
+
+                let input = recipe.build_input(&signal, &ctx)?;
+
+                // Diagnostic: log what message_media the recipe produced.
+                // Vision routing was failing 2026-04-21 and this stays as
+                // the in-flight tap to confirm media shape arriving at
+                // cognition matches what the host believed it sent.
                 if !input.message_media.is_empty() {
                     let shape: Vec<String> = input
                         .message_media
@@ -806,7 +846,8 @@ impl ServiceModule for CognitionModule {
                         })
                         .collect();
                     runtime::logger("cognition").info(&format!(
-                        "persona/respond received message_media: count={} shapes=[{}]",
+                        "persona/respond via recipe '{}': message_media count={} shapes=[{}]",
+                        recipe_name,
                         input.message_media.len(),
                         shape.join(", ")
                     ));
@@ -814,8 +855,31 @@ impl ServiceModule for CognitionModule {
 
                 let response = crate::persona::response::respond(input).await?;
 
+                // Apply the recipe's output decision. Forward = host
+                // posts the response unchanged. Substitute = recipe
+                // replaces the response (e.g., GameRecipe wrapping text
+                // in a structured action). Intercepted = recipe
+                // dispatched elsewhere (e.g., CodeRecipe → sentinel),
+                // host treats the original response as suppressed —
+                // we encode this as Silent with the recipe's reason.
+                use crate::persona::recipe::RecipeOutcome;
+                let final_response = match recipe.validate_output(&response, &ctx) {
+                    RecipeOutcome::Forward => response,
+                    RecipeOutcome::Substitute { response: sub } => sub,
+                    RecipeOutcome::Intercepted { reason } => {
+                        crate::persona::response::PersonaResponse::Silent {
+                            persona_id: ctx.persona_id,
+                            reason: format!(
+                                "recipe '{recipe_name}' intercepted: {reason}"
+                            ),
+                            relevance_score: 1.0,
+                        }
+                    }
+                };
+
                 Ok(CommandResult::Json(
-                    serde_json::to_value(&response).map_err(|e| format!("Serialize error: {e}"))?,
+                    serde_json::to_value(&final_response)
+                        .map_err(|e| format!("Serialize error: {e}"))?,
                 ))
             }
 
