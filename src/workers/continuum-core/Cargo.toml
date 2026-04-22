@@ -171,14 +171,24 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 # mlx-rs = { version = "0.25", optional = true }  # phase B
 
 [features]
-# `metal` is intentionally default-on. Verified 2026-04-19 that without it
-# the bundled llama.cpp's Metal backend never registers — every layer is
-# assigned to CPU and qwen3.5-4b runs at ~33 tok/s instead of GPU speed.
-# Cargo doesn't gate features by target_os, so on non-Mac platforms the
-# `metal` feature simply enables Metal-related cmake defines that get
-# compiled out by `if target_os == "macos"` checks in `llama/build.rs` —
-# no harm. The single source of truth: if you're on Mac, you're on Metal.
-default = ["livekit-webrtc", "metal"]
+# `metal` is NOT default — earlier comment claimed it was harmless on
+# non-Mac targets, empirically false (2026-04-22 docker CI failure):
+# `candle-core/metal` pulls `objc2-foundation` unconditionally, which
+# fires `compile_error!("objc2 only works on Apple platforms")` on
+# Linux + Windows builds. The "no harm" assertion never tested.
+#
+# Build the right way per platform:
+#   macOS:                 cargo build --features metal,accelerate
+#   Linux + CUDA:          cargo build --features cuda,load-dynamic-ort
+#   Linux CPU / WSL2-Ubuntu / Windows: cargo build  (no GPU features)
+#
+# `scripts/shared/cargo-features.sh` already detects the right set per
+# uname; `npm start` and the docker builds source it. The only cost is
+# a Mac dev typing `cargo build` directly without features now gets a
+# CPU-only build — paid by the dev who knows to add the flags. The
+# benefit is docker / CI / cross-platform builds stop pulling Apple-
+# only crates into their dep tree on every host.
+default = ["livekit-webrtc"]
 livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda"]
