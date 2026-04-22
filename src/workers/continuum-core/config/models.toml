@@ -296,3 +296,25 @@ gguf_hint = "huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF"
 # follow-up so this path doesn't need to be hand-edited per machine.
 gguf_local_path = "~/models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
 mmproj_local_path = "~/models/qwen2-vl-7b/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
+
+# ─── Local in-process: Qwen2-Audio-7B-Instruct (audio-input native) ───
+# Symmetric to qwen2-vl-7b above but on the audio modality. Same llama.cpp
+# + libmtmd path (`backend.generate_with_audio()` → `MtmdContext::eval_audio()`)
+# verified end-to-end 2026-04-22. The audio mmproj projects raw audio
+# samples → text-decoder embeddings; the model "hears" wav/flac/mp3 bytes
+# directly with no STT bridge. Capability::AudioInput gates the
+# ContentPart::Audio walk in build_messages_with_media (response.rs:461).
+[[model]]
+id = "qwen2-audio-7b-instruct"
+name = "Qwen2-Audio-7B-Instruct (in-process)"
+provider = "llamacpp-local"
+arch = "qwen2"
+context_window = 32768
+max_output_tokens = 4096
+tokens_per_second = 16.0
+capabilities = ["text-generation", "chat", "audio-input", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/mradermacher/Qwen2-Audio-7B-Instruct-GGUF"
+gguf_local_path = "~/models/qwen2-audio-7b/Qwen2-Audio-7B-Instruct-Q4_K_M.gguf"
+mmproj_local_path = "~/models/qwen2-audio-7b/mmproj-Qwen2-Audio-7B-Instruct-f16.gguf"

@@ -99,6 +99,25 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
     modelId: 'qwen2-vl-7b-instruct',
   },
 
+  // Native audio persona — local, free, no API key. Bound to
+  // qwen2-audio-7b-instruct via the in-process llamacpp adapter (registered
+  // when the GGUF + audio mmproj are on disk; install.sh pulls them).
+  // Symmetric to Vision AI: hears raw audio bytes natively via libmtmd's
+  // audio path, no STT bridge. Capability::AudioInput on the model's
+  // declared capabilities gates the ContentPart::Audio walk in
+  // build_messages_with_media. Without an entry like this, audio
+  // attachments either get text-bridged through STT (lossy: tone /
+  // pacing / non-speech sounds gone) or dropped silently.
+  {
+    uniqueId: generateUniqueId('Audio'),
+    displayName: 'Audio AI',
+    provider: 'local',
+    type: 'persona',
+    voiceId: '110',
+    minVramGB: 5,
+    modelId: 'qwen2-audio-7b-instruct',
+  },
+
   // Audio-native personas (need specific API keys)
   {
     uniqueId: generateUniqueId('Qwen3-Omni'),

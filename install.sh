@@ -394,6 +394,49 @@ else
   fi
 fi
 
+# ── Audio-capable model (Qwen2-Audio-7B) — pull if missing ─────────
+# Symmetric to the vision pull above. Audio AI persona uses the SAME
+# in-process llama.cpp + libmtmd path the vision side uses
+# (`backend.generate_with_audio()` → `MtmdContext::eval_audio()`),
+# verified end-to-end 2026-04-22. Without both the GGUF + audio mmproj
+# on disk, the adapter registers and any audio attachment falls through
+# to the STT bridge — lossy: tone, pacing, non-speech sounds gone.
+#
+# mradermacher carries both files; bartowski / second-state / gaianet
+# have weights only and are useless for libmtmd.
+#
+# Total ~5.7 GB on disk (Q4_K_M GGUF + f16 mmproj).
+QWEN2_AUDIO_DIR="${HOME}/models/qwen2-audio-7b"
+QWEN2_AUDIO_GGUF="${QWEN2_AUDIO_DIR}/Qwen2-Audio-7B-Instruct-Q4_K_M.gguf"
+QWEN2_AUDIO_MMPROJ="${QWEN2_AUDIO_DIR}/mmproj-Qwen2-Audio-7B-Instruct-f16.gguf"
+if [[ -f "$QWEN2_AUDIO_GGUF" && -f "$QWEN2_AUDIO_MMPROJ" ]]; then
+  ok "Audio model already on disk: $QWEN2_AUDIO_DIR"
+else
+  info "Pulling Audio AI model — Qwen2-Audio-7B-Instruct (~5.7 GB, first install only)..."
+  mkdir -p "$QWEN2_AUDIO_DIR"
+  if command -v hf >/dev/null 2>&1; then
+    # Note: mradermacher's repo names files with `.` separators (e.g.
+    # `Qwen2-Audio-7B-Instruct.Q4_K_M.gguf`). Renamed locally to the
+    # `-` convention models.toml expects so paths are consistent with
+    # the vision sibling.
+    if hf download mradermacher/Qwen2-Audio-7B-Instruct-GGUF \
+        Qwen2-Audio-7B-Instruct.Q4_K_M.gguf \
+        Qwen2-Audio-7B-Instruct.mmproj-f16.gguf \
+        --local-dir "$QWEN2_AUDIO_DIR" 2>/dev/null && \
+       mv "$QWEN2_AUDIO_DIR/Qwen2-Audio-7B-Instruct.Q4_K_M.gguf" "$QWEN2_AUDIO_GGUF" 2>/dev/null && \
+       mv "$QWEN2_AUDIO_DIR/Qwen2-Audio-7B-Instruct.mmproj-f16.gguf" "$QWEN2_AUDIO_MMPROJ" 2>/dev/null; then
+      ok "Audio model pulled to $QWEN2_AUDIO_DIR"
+    else
+      warn "Audio model pull failed. Manual: hf download mradermacher/Qwen2-Audio-7B-Instruct-GGUF Qwen2-Audio-7B-Instruct.Q4_K_M.gguf Qwen2-Audio-7B-Instruct.mmproj-f16.gguf --local-dir $QWEN2_AUDIO_DIR"
+      warn "Until pulled, the Audio AI persona will register but audio uploads will fall back to STT bridge."
+    fi
+  else
+    warn "'hf' (huggingface-cli) not on PATH — can't auto-pull audio model."
+    warn "Install: pip install huggingface-hub"
+    warn "Then: hf download mradermacher/Qwen2-Audio-7B-Instruct-GGUF Qwen2-Audio-7B-Instruct.Q4_K_M.gguf Qwen2-Audio-7B-Instruct.mmproj-f16.gguf --local-dir $QWEN2_AUDIO_DIR"
+  fi
+fi
+
 # ── Per-service memory caps — auto-calculated from host RAM ────────
 # Joel's directive: don't ask users to set mem limits; auto-calc from host.
 # Don't paper over OOMs with undersized limits; size containers for the
