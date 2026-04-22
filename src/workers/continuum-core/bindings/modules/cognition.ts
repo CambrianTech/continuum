@@ -805,16 +805,26 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 		 * PersonaResponse that the caller posts (or logs, if Silent).
 		 */
 		async cognitionPersonaRespond(req: PersonaRespondRequest): Promise<PersonaResponse> {
-			// 180s timeout (vs default 60s) — cognition/respond runs the full
-			// persona pipeline: analyze (qwen3.5 reasoning preamble + JSON, can
-			// be 30-60s alone) + score + assemble + render inference + strip.
-			// Default 60s timed out mid-analyze 2026-04-19, throwing 'IPC
-			// timeout' before the model finished responding. The IPC TIMEOUT
-			// is not the right signal here — the inference IS taking time,
-			// it's not stuck. Bump to 180s; if THAT trips, something's
-			// genuinely wrong (model crashed, infinite reasoning loop, etc.)
-			// and we want the loud failure.
-			const COGNITION_RESPOND_TIMEOUT_MS = 180_000;
+			// Timeout split by provider class:
+			//   cloud (anthropic/openai/groq/…) → 180s. A healthy cloud call
+			//   completes in 2–10s; at 180s something is genuinely wrong and
+			//   we want the loud failure.
+			//   local (in-process llama.cpp / DMR) → 300s. The persona
+			//   pipeline runs analyze (qwen3.5 reasoning preamble + JSON,
+			//   30–60s alone) + score + assemble + inference + strip, and
+			//   under 3-way concurrent the llamacpp scheduler's per-seq
+			//   throughput drops to ~1.3 tok/s → a 1500+ token reasoning
+			//   response legitimately takes 200–280s. Tripping 180s there
+			//   was the WRONG signal: inference was working, just queued.
+			//   300s still surfaces genuine hangs (model crashed / infinite
+			//   reasoning) loudly.
+			//
+			// Streaming IPC (return tokens incrementally, no end-to-end cap)
+			// is the architecturally-right next step — filed as follow-up,
+			// not included in this change.
+			const isLocal =
+				req.model.startsWith('continuum-ai/') || req.model.startsWith('qwen2-vl');
+			const COGNITION_RESPOND_TIMEOUT_MS = isLocal ? 300_000 : 180_000;
 			const { response } = await this.requestFull({
 				command: 'cognition/respond',
 				persona_id: req.personaId,
