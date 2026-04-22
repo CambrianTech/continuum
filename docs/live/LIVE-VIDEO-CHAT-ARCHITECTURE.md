@@ -45,20 +45,30 @@ Pin the spec so engineering decisions point at it.
 
 ## What Shipped (the Unblocker)
 
-Before 2026-04-22, every webcam frame routed to a vision-capable persona produced `parts=0 image=0` in the adapter log -- the bytes never reached the encoder. Three layers were stripping `messageMedia` between PRG and the model:
+Before 2026-04-22, every webcam frame routed to a vision-capable persona produced `parts=0 image=0` in the adapter log -- the bytes never reached the encoder. **Four** layers were stripping `messageMedia` between PRG and the model:
 
 1. **Inbox round-trip strip** -- Rust's `ChatQueueItem` and `ChannelEnqueueRequest::{Chat,Voice}` had no `media` field. Items serialized through Rust IPC lost the attachment. *Fixed in commit `e1915f218`* (PR #950).
 2. **Mixin payload strip** -- TS `cognitionPersonaRespond` mixin built a typed `PersonaRespondRequest` carrying `messageMedia`, but the actual `requestFull(...)` call args silently omitted `message_media`. *Fixed in commit `efa73f7cd`* (PR #950).
-3. **Adapter walk + mtmd encoder** -- `LlamaCppAdapter.generate_text` walks `ContentPart::Image`, decodes base64, routes to `backend.generate_with_image()` → `MtmdContext::eval_image()`. Existed prior; verified end-to-end 2026-04-22.
+3. **Consolidation trigger demotion** -- `ChatQueueItem.consolidate_with_items` picked latest-by-timestamp as the trigger and dropped media from non-trigger items. In an active room where text replies landed after an image, the image became a non-trigger and its bytes were lost. *Fixed in commit `39d2a6fce`* (PR #950): trigger-selection strategy now prefers the latest media-bearing item when any exists, falling back to latest-by-timestamp otherwise. Per-item-type polymorphism preserved -- chat strategy ≠ video-frame strategy ≠ game-move strategy. Each item type owns its rule.
+4. **Adapter walk + mtmd encoder** -- `LlamaCppAdapter.generate_text` walks `ContentPart::Image`, decodes base64, routes to `backend.generate_with_image()` → `MtmdContext::eval_image()`. Existed prior; verified end-to-end 2026-04-22.
 
-**Proof signal** that the chain works (from `~/.continuum/jtag/logs/system/modules/llamacpp.log`):
+**Proof signals** that the chain works (from `~/.continuum/jtag/logs/system/modules/llamacpp.log`):
 
+Single-image standalone case (msg `390dad9d`, "BAD MOTHER FUCKER" wallet, 2026-04-22):
 ```
 generate_text request: model=qwen2-vl-7b-instruct messages=12
   (text=11 parts=1; parts contain text=1 image=1 audio=0 other=0)
 ```
+Vision AI's response: *"A worn, brown leather wallet with the words 'BAD MOTHER FUCKER' embroidered in black on its front."* — pixel-level OCR.
 
-Reading embroidered text inside an image -- `"BAD MOTHER FUCKER" leather wallet` -- requires actual image bytes at the encoder, not metadata or filename leakage. Vision is wired.
+Image-with-queue-depth case (msg `8668bc`, Activity Monitor screenshot with 10 prior messages queued, 2026-04-22):
+```
+qwen2-vl-7b-instruct messages=11 (text=10 parts=1;
+  parts contain text=1 image=1 audio=0 other=0)
+```
+Vision AI's response named the actual processes visible (*"limactl, llama-cli, qemu-system-aarch64, continuum-core-server"*) and the memory value (*"24.04 GB"*) — confirming the trigger-prefers-media strategy correctly picked the image as the trigger even with 10 text messages around it.
+
+Reading embroidered wallet text and process names inside a screenshot requires actual image bytes at the encoder, not metadata or filename leakage. Vision is wired AND robust to queue depth.
 
 Audio path is structurally identical (`ContentPart::Audio` walk, `backend.generate_with_audio()`, `MtmdContext::eval_audio()`, `Capability::AudioInput` check, test fixture) and ships with the audio-model verification work in PR #950.
 
@@ -279,10 +289,17 @@ LLM continues generating in parallel; subsequent audio chunks chase the token st
 
 Ordered by criticality for the demo target.
 
-### Now (PR #950 close-out)
-- [x] Vision-bytes path end-to-end (commits `e1915f218`, `efa73f7cd`, `62aa2642e`)
-- [x] Local team on Qwen2-VL-7B (every persona vision-capable)
-- [ ] Audio verification: Qwen2-Audio-7B GGUF + audio mmproj seeded; e2e proof signal `audio=1` in adapter log
+### Now (PR #950 — landed)
+- [x] Vision-bytes path end-to-end through Rust IPC (commits `e1915f218`, `efa73f7cd`)
+- [x] Tile UI shows real model name + locality glyph (commit `62aa2642e`)
+- [x] Audio integration test proves Qwen2-Audio-7B + mtmd path deterministically (commit `a3c4ea08d`)
+- [x] Trigger-prefers-media-bearing-item — vision survives queue depth (commit `39d2a6fce`)
+- [x] Conservative seed avoids the multi-mtmd brick (commit `f77476848`) — Vision AI alone uses qwen2-vl, Audio AI dormant
+
+### Next-up architectural blockers (PR #951 candidates) — surfaced empirically 2026-04-22
+- [ ] **Multi-mtmd Metal pipeline-compile race** — confirmed cause of the Mac brick (single mtmd backend = safe; 2+ concurrent mmproj loads at boot wedge WindowServer / cursor frozen / hard reset). Fix: serialize `mtmd_init_from_file` calls behind a global mutex OR re-integrate vision/audio paths through the llama scheduler instead of `LlamaCppBackend::generate_with_image/audio`'s per-call context bypass. Mutex is 1-day; scheduler integration is the architecturally pure version (~1 week). Until shipped, only ONE mtmd-bearing model can be live in the system.
+- [ ] **Image-size preprocessing at chat-send** — confirmed: a 6.6 MB image crashes the system (qwen2-vl tiles large images into many Metal compute passes; combined with per-call context allocation, exceeds Metal device capacity). Cap inbound images to ≤1568px max dimension (qwen2-vl tile boundary), JPEG-compress at 85% quality, downscale with Lanczos. Standard practice for vision pipelines (Anthropic / OpenAI / Google all do this server-side); we just don't yet.
+- [ ] **Audio AI persona seeded after multi-mtmd fix lands** — model + mmproj already on disk + integration test passes; only waiting on the architectural fix above.
 
 ### Next PR (`feature/cv-attention-gate`)
 - [ ] OpenCV bindings vendored in Rust workers
