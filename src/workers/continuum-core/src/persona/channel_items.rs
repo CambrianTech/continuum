@@ -254,9 +254,30 @@ impl ChatQueueItem {
         all_messages.push(self);
         all_messages.sort_by_key(|m| m.timestamp);
 
-        // Latest message is the trigger
-        let trigger = all_messages.last().unwrap();
-        let prior = &all_messages[..all_messages.len() - 1];
+        // Trigger-selection strategy: if any item in this consolidation set
+        // carries media (an image or audio attachment), the latest
+        // media-bearing item becomes the trigger. Only when no item has
+        // media does the trigger fall back to the strict "latest by
+        // timestamp" rule.
+        //
+        // Why: prior to this rule, the trigger was always the most recent
+        // message by wall-clock time. In an active room where multiple
+        // personas reply to each other, an image sent at T₀ would become
+        // a non-trigger by T₀+2s because text replies landed after it.
+        // Media on non-trigger items was dropped (`media: trigger.media`),
+        // so the vision/audio bytes never reached the model. The user
+        // experience was "I shared an image and the AIs talked about
+        // something unrelated."
+        //
+        // This strategy restores the human-intuitive behavior: when
+        // someone shares visual/audible content in a room, the persona
+        // responds to THAT as the primary signal, with surrounding text
+        // chatter as consolidated_context. Per-item-type polymorphism —
+        // VideoFrameQueueItem / GameMoveQueueItem can choose different
+        // trigger rules appropriate to their domain.
+        let latest_with_media = all_messages.iter().rev().find(|m| !m.media.is_empty());
+        let trigger = latest_with_media.copied().unwrap_or(*all_messages.last().unwrap());
+        let prior: Vec<&ChatQueueItem> = all_messages.iter().copied().filter(|m| m.id != trigger.id).collect();
 
         // Build consolidated context
         let mut context: Vec<ConsolidatedContext> = self.consolidated_context.clone();
