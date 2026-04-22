@@ -126,8 +126,16 @@ export class PersonaLifecycleManager {
   }
 
   /**
-   * Fire prewarm requests in parallel for local personas. Each is bounded
-   * by short timeouts so a stuck DMR can never hang boot.
+   * Fire prewarm requests in parallel for local personas — but deduplicated
+   * by model so N personas sharing one model trigger ONE cold-start, not N.
+   * Without this dedup, 5 personas all on qwen2-vl-7b queued 5 simultaneous
+   * `ai/generate` requests against the same in-process adapter, racing to be
+   * the "first" request that triggers the ~6s model load while the other 4
+   * stalled in the scheduler. Same outcome (model resident + slot warm) for
+   * a fraction of the boot work, and it scales naturally to mixed-model
+   * teams: 14 personas across 2 unique models = 2 cold starts, not 14.
+   *
+   * Each is bounded by short timeouts so a stuck DMR can never hang boot.
    */
   private async prewarmAllPersonas(allocations: PersonaAllocation[]): Promise<void> {
     const local = allocations.filter(a => this.isLocalProvider(a.provider));
@@ -141,10 +149,29 @@ export class PersonaLifecycleManager {
       return;
     }
 
-    console.log(`🔥 PersonaLifecycleManager: Prewarming ${local.length} local persona(s)...`);
+    // Group personas by model — one warm-up per unique model, not per
+    // persona. The first persona we see for a given model "represents"
+    // it for the warm-up call; the remaining personas with the same
+    // model implicitly share its loaded weights via DMR / the in-process
+    // adapter cache.
+    const uniqueByModel = new Map<string, PersonaAllocation>();
+    for (const p of local) {
+      const model = p.resolvedModel || p.modelId;
+      if (model && !uniqueByModel.has(model)) {
+        uniqueByModel.set(model, p);
+      }
+    }
+
+    console.log(
+      `🔥 PersonaLifecycleManager: Prewarming ${uniqueByModel.size} unique model(s) ` +
+      `across ${local.length} local persona(s)...`
+    );
     const startedAt = Date.now();
-    await Promise.allSettled(local.map(p => this.prewarmPersona(p)));
-    console.log(`🔥 PersonaLifecycleManager: Prewarm batch finished in ${Date.now() - startedAt}ms`);
+    await Promise.allSettled([...uniqueByModel.values()].map(p => this.prewarmPersona(p)));
+    console.log(
+      `🔥 PersonaLifecycleManager: Prewarm batch finished in ${Date.now() - startedAt}ms ` +
+      `(${uniqueByModel.size} model(s) loaded)`
+    );
   }
 
   /**
