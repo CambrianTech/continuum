@@ -47,17 +47,23 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
 
   // Local personas (Candle native Rust inference — need GPU VRAM)
   // Model sizes: 14B coder ~9GB, 8B instruct ~5GB, 3B instruct ~3GB
-  // On big GPUs (5090 32GB), we run specialized models per persona
-  // On small GPUs (8GB), everyone shares the 3B model
   // Local personas: NO provider hardcode. The Rust AdapterRegistry routes
   // by honest model availability: DMR (Metal on Mac, CUDA on Linux/Nvidia)
   // when the model is pulled, llama-vulkan for other GPU hardware, hard
   // error if neither is available. Never silent Candle-CPU fallback.
-  // 4B GGUF is the universal default — fits every supported machine, fast
-  // on Metal/Vulkan/CUDA. Power users upgrade to 27B manually (HF-gated).
-  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'local', type: 'persona', voiceId: '50', minVramGB: 3, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
-  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'local', type: 'persona', voiceId: '75', minVramGB: 5, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
-  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'local', type: 'persona', voiceId: '100', minVramGB: 5, modelId: 'continuum-ai/qwen3.5-4b-code-forged' },
+  //
+  // Default = qwen2-vl-7b-instruct: native multimodal (every persona sees
+  // images directly via mtmd, no text-bridge), Q4_K_M ~4.5 GB weights +
+  // 1.3 GB mmproj, shared once across ALL local seqs via DMR/llama.cpp
+  // model load — incremental cost per persona is just KV cache (~56 KB
+  // per token at chat depths). Five personas with ~3K active tokens each
+  // ≈ 0.85 GB KV total → ~6.7 GB for the whole local team. Fits a 16 GB
+  // MacBook Air comfortably. Code-quality regresses slightly vs the
+  // Qwen3.5-4B coder forge until a vision-baked Qwen3.5/3.6 ships from
+  // the foundry — at which point this swaps back at the seed level.
+  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'local', type: 'persona', voiceId: '50', minVramGB: 5, modelId: 'qwen2-vl-7b-instruct' },
+  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'local', type: 'persona', voiceId: '75', minVramGB: 5, modelId: 'qwen2-vl-7b-instruct' },
+  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'local', type: 'persona', voiceId: '100', minVramGB: 5, modelId: 'qwen2-vl-7b-instruct' },
 
   // Cloud provider personas (each needs its own API key)
   { uniqueId: generateUniqueId('DeepSeek'), displayName: 'DeepSeek Assistant', provider: 'deepseek', type: 'persona', voiceId: '125', apiKeyEnv: 'DEEPSEEK_API_KEY' },
