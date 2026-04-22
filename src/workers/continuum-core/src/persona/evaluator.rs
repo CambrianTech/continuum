@@ -239,7 +239,10 @@ pub struct FullEvaluateResult {
 /// These are INFORMATION for the LLM, not gates. The LLM sees these
 /// and makes its own social decision about whether to speak.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/SocialSignals.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/SocialSignals.ts"
+)]
 pub struct SocialSignals {
     /// How many AI messages in this room in the last 2 minutes
     #[ts(type = "number")]
@@ -338,9 +341,10 @@ pub fn full_evaluate(
     );
 
     let response_count = rate_limiter.response_count(request.room_id);
-    let seconds_since_last = rate_limiter.rooms.get(&request.room_id).map(|r| {
-        (now_ms - r.last_response_time_ms) as f64 / 1000.0
-    });
+    let seconds_since_last = rate_limiter
+        .rooms
+        .get(&request.room_id)
+        .map(|r| (now_ms - r.last_response_time_ms) as f64 / 1000.0);
 
     let social_signals = SocialSignals {
         ai_messages_recent: echo_result.ai_message_count as u32,
@@ -611,12 +615,23 @@ mod tests {
         rate_limiter.track_response(room_id, now - 20_000);
         rate_limiter.track_response(room_id, now - 11_000); // 11s ago — well past rate-limit window
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now,
+        );
         // Gate MUST NOT be response_cap anymore.
-        assert_ne!(result.gate, "response_cap",
-            "response_cap was removed — count is a social signal now, not a hard gate");
+        assert_ne!(
+            result.gate, "response_cap",
+            "response_cap was removed — count is a social signal now, not a hard gate"
+        );
         // But the count MUST still flow into social_signals so the LLM can see it.
-        let sigs = result.social_signals.expect("social_signals always populated");
+        let sigs = result
+            .social_signals
+            .expect("social_signals always populated");
         assert_eq!(sigs.response_count_this_session, Some(3));
         assert_eq!(sigs.response_cap, Some(3));
     }
@@ -634,9 +649,19 @@ mod tests {
         // Response 5 seconds ago — within 10s window
         rate_limiter.track_response(request.room_id, now - 5_000);
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now,
+        );
         // NOT blocked — rate info passed as signal
-        assert!(result.should_respond, "Rate limit should be a signal, not a veto");
+        assert!(
+            result.should_respond,
+            "Rate limit should be a signal, not a veto"
+        );
         // But the social signals should contain the rate info
         let signals = result.social_signals.unwrap();
         assert!(signals.seconds_since_last_response.unwrap() < 10.0);
@@ -658,7 +683,14 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
         assert!(!result.should_respond);
         assert_eq!(result.gate, "sleep_mode");
     }
@@ -676,7 +708,14 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
         // Should pass sleep gate (mentioned) and reach fast_path
         assert!(result.should_respond);
         assert_ne!(result.gate, "sleep_mode");
@@ -695,7 +734,14 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now);
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now,
+        );
         // Should NOT be blocked by sleep — auto-wake expired
         assert_ne!(result.gate, "sleep_mode");
     }
@@ -711,13 +757,26 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
         // NOT hard-blocked — the LLM will see the signal and decide
         let signals = result.social_signals.unwrap();
         assert!(!signals.is_mentioned, "TestBot is NOT mentioned");
-        assert!(signals.has_directed_mention, "@OtherBot IS a directed mention");
+        assert!(
+            signals.has_directed_mention,
+            "@OtherBot IS a directed mention"
+        );
         // The fast_path may still block (AI sender low priority) but NOT because of directed mention gate
-        assert_ne!(result.gate, "directed_mention", "directed_mention should not be a gate anymore");
+        assert_ne!(
+            result.gate, "directed_mention",
+            "directed_mention should not be a gate anymore"
+        );
     }
 
     #[test]
@@ -728,7 +787,14 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
         assert!(!result.should_respond);
         assert_eq!(result.gate, "fast_path");
         assert!(result.reason.contains("Own message"));
@@ -741,7 +807,14 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
         // Human sender + recent message = high priority → should respond
         assert!(result.should_respond);
     }
@@ -756,7 +829,14 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
         assert!(result.should_respond);
     }
 
@@ -767,7 +847,14 @@ mod tests {
         let sleep = SleepState::default();
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
         assert!(result.should_respond);
         assert!(
             result.decision_time_ms < 10.0,
@@ -790,7 +877,14 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
         assert!(!result.should_respond);
         assert_eq!(result.gate, "sleep_mode");
     }
@@ -809,7 +903,14 @@ mod tests {
         };
         let rate_limiter = RateLimiterState::default();
 
-        let result = full_evaluate(&request, &rate_limiter, &sleep, &engine, &RecentMessageCache::new(), now_ms());
+        let result = full_evaluate(
+            &request,
+            &rate_limiter,
+            &sleep,
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
         // Should pass sleep gate (new topic) and reach fast_path
         assert_ne!(result.gate, "sleep_mode");
     }

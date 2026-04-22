@@ -22,8 +22,8 @@ use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::clog_info;
 use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
-use async_trait::async_trait;
 use crate::live::audio::reloadable::ReloadableModel;
+use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -370,13 +370,9 @@ impl TextToSpeech for PocketTTS {
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
         POCKET_GPU.touch();
 
-        let model_arc = POCKET_MODEL
-            .get()
-            .ok_or_else(|| {
-                TTSError::ModelNotLoaded(
-                    "Pocket-TTS not initialized. Call initialize() first.".into(),
-                )
-            })?;
+        let model_arc = POCKET_MODEL.get().ok_or_else(|| {
+            TTSError::ModelNotLoaded("Pocket-TTS not initialized. Call initialize() first.".into())
+        })?;
 
         // Check for WAV file voice cloning
         let voice_wav = if voice.ends_with(".wav") && Path::new(voice).exists() {

@@ -13,8 +13,8 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
-use super::super::types::{ExecutionContext, PipelineContext, StepResult};
 use super::super::interpolation;
+use super::super::types::{ExecutionContext, PipelineContext, StepResult};
 
 /// Approval decision sent through the channel
 #[derive(Debug)]

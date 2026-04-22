@@ -126,36 +126,72 @@ fn build_metadata(recipe: &CompressionRecipe, arch: &str) -> Vec<(String, Value)
 
     let mut meta = vec![
         ("general.architecture".into(), Value::String(arch.into())),
-        ("general.name".into(), Value::String(format!(
-            "{} (compacted by Continuum)", recipe.base_model
-        ))),
-        (format!("{arch}.block_count"), Value::U32(recipe.topology.layers.len() as u32)),
+        (
+            "general.name".into(),
+            Value::String(format!("{} (compacted by Continuum)", recipe.base_model)),
+        ),
+        (
+            format!("{arch}.block_count"),
+            Value::U32(recipe.topology.layers.len() as u32),
+        ),
         (format!("{arch}.context_length"), Value::U32(32768)),
         (format!("{arch}.embedding_length"), Value::U32(5120)), // TODO: from arch config
-        (format!("{arch}.attention.head_count"), Value::U32(q_heads as u32)),
-        (format!("{arch}.attention.head_count_kv"), Value::U32(kv_heads as u32)),
-        (format!("{arch}.attention.key_length"), Value::U32(recipe.topology.head_dim as u32)),
-        (format!("{arch}.attention.value_length"), Value::U32(recipe.topology.head_dim as u32)),
-        (format!("{arch}.attention.layer_norm_rms_epsilon"), Value::F32(1e-6)),
+        (
+            format!("{arch}.attention.head_count"),
+            Value::U32(q_heads as u32),
+        ),
+        (
+            format!("{arch}.attention.head_count_kv"),
+            Value::U32(kv_heads as u32),
+        ),
+        (
+            format!("{arch}.attention.key_length"),
+            Value::U32(recipe.topology.head_dim as u32),
+        ),
+        (
+            format!("{arch}.attention.value_length"),
+            Value::U32(recipe.topology.head_dim as u32),
+        ),
+        (
+            format!("{arch}.attention.layer_norm_rms_epsilon"),
+            Value::F32(1e-6),
+        ),
         (format!("{arch}.rope.freq_base"), Value::F32(1_000_000.0)),
     ];
 
     // Custom Continuum metadata
     if let Ok(recipe_json) = serde_json::to_string(recipe) {
-        meta.push(("continuum.compression_recipe".into(), Value::String(recipe_json)));
+        meta.push((
+            "continuum.compression_recipe".into(),
+            Value::String(recipe_json),
+        ));
     }
 
     // Per-layer head counts for variable-dimension models
-    let q_head_counts: Vec<u32> = recipe.topology.layers.iter()
+    let q_head_counts: Vec<u32> = recipe
+        .topology
+        .layers
+        .iter()
         .map(|l| l.num_heads as u32)
         .collect();
-    let kv_head_counts: Vec<u32> = recipe.topology.layers.iter()
+    let kv_head_counts: Vec<u32> = recipe
+        .topology
+        .layers
+        .iter()
         .map(|l| l.num_kv_heads as u32)
         .collect();
 
     // Store as comma-separated string (GGUF arrays are complex)
-    let q_str: String = q_head_counts.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(",");
-    let kv_str: String = kv_head_counts.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(",");
+    let q_str: String = q_head_counts
+        .iter()
+        .map(|h| h.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let kv_str: String = kv_head_counts
+        .iter()
+        .map(|h| h.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     meta.push(("continuum.per_layer_q_heads".into(), Value::String(q_str)));
     meta.push(("continuum.per_layer_kv_heads".into(), Value::String(kv_str)));
 
@@ -176,8 +212,7 @@ pub fn write_compressed_gguf(
     let log = crate::runtime::logger("plasticity");
     log.info(&format!(
         "Writing compressed GGUF: {} → {:?}",
-        recipe.base_model,
-        output_path
+        recipe.base_model, output_path
     ));
 
     // Find all safetensor files
@@ -205,8 +240,8 @@ pub fn write_compressed_gguf(
     let mut processed = 0usize;
 
     for shard_path in &shard_paths {
-        let data = std::fs::read(shard_path)
-            .map_err(|e| format!("read shard {:?}: {e}", shard_path))?;
+        let data =
+            std::fs::read(shard_path).map_err(|e| format!("read shard {:?}: {e}", shard_path))?;
         let tensors = SafeTensors::deserialize(&data)
             .map_err(|e| format!("deserialize {:?}: {e}", shard_path))?;
 
@@ -255,30 +290,31 @@ pub fn write_compressed_gguf(
         }
     }
 
-    log.info(&format!("  {} tensors total, writing GGUF...", qtensors.len()));
+    log.info(&format!(
+        "  {} tensors total, writing GGUF...",
+        qtensors.len()
+    ));
 
     // Build metadata
     let metadata = build_metadata(recipe, arch);
-    let metadata_refs: Vec<(&str, &Value)> = metadata.iter()
-        .map(|(k, v)| (k.as_str(), v))
-        .collect();
+    let metadata_refs: Vec<(&str, &Value)> =
+        metadata.iter().map(|(k, v)| (k.as_str(), v)).collect();
 
     // Build tensor refs
-    let tensor_refs: Vec<(&str, &QTensor)> = qtensors.iter()
+    let tensor_refs: Vec<(&str, &QTensor)> = qtensors
+        .iter()
         .map(|(name, qt)| (name.as_str(), qt))
         .collect();
 
     // Write GGUF using candle's built-in writer
-    let mut file = std::fs::File::create(output_path)
-        .map_err(|e| format!("create {:?}: {e}", output_path))?;
+    let mut file =
+        std::fs::File::create(output_path).map_err(|e| format!("create {:?}: {e}", output_path))?;
     let mut writer = std::io::BufWriter::new(&mut file);
 
     candle_core::quantized::gguf_file::write(&mut writer, &metadata_refs, &tensor_refs)
         .map_err(|e| format!("write GGUF: {e}"))?;
 
-    let size = std::fs::metadata(output_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let size = std::fs::metadata(output_path).map(|m| m.len()).unwrap_or(0);
     log.info(&format!(
         "  GGUF written: {:?} ({:.1} GB, {} tensors)",
         output_path,
@@ -359,10 +395,7 @@ mod tests {
             Some("output.weight".into())
         );
         // Unknown tensor
-        assert_eq!(
-            safetensor_to_gguf_name("some.random.tensor"),
-            None
-        );
+        assert_eq!(safetensor_to_gguf_name("some.random.tensor"), None);
     }
 
     #[test]

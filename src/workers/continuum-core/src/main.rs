@@ -152,11 +152,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ),
                 );
                 pm_clone.add_reporter(reporter);
-                info!("🧠 Bevy memory reporter registered (attempt {})", attempt + 1);
+                info!(
+                    "🧠 Bevy memory reporter registered (attempt {})",
+                    attempt + 1
+                );
                 return;
             }
         }
-        tracing::warn!("🧠 Bevy memory reporter NOT registered after 30s — Bevy may not be running");
+        tracing::warn!(
+            "🧠 Bevy memory reporter NOT registered after 30s — Bevy may not be running"
+        );
     });
 
     // Initialize TTS/STT in background (non-blocking - happens after startup)
@@ -218,8 +223,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = result {
             // ORT panics when libonnxruntime.dylib is missing — catch it here
             // instead of letting it poison the tokio runtime
-            tracing::error!("⚠️  TTS/STT initialization panicked (ORT dylib missing?): {:?}", e);
-            tracing::error!("   Voice features disabled. Install libonnxruntime or set ORT_DYLIB_PATH.");
+            tracing::error!(
+                "⚠️  TTS/STT initialization panicked (ORT dylib missing?): {:?}",
+                e
+            );
+            tracing::error!(
+                "   Voice features disabled. Install libonnxruntime or set ORT_DYLIB_PATH."
+            );
         }
     });
 

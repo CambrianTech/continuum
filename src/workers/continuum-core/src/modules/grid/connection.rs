@@ -67,7 +67,11 @@ async fn handle_connection(
                 }
             }
             FrameType::Event => {
-                if let GridPayload::Event { ref event, ref data } = frame.payload {
+                if let GridPayload::Event {
+                    ref event,
+                    ref data,
+                } = frame.payload
+                {
                     if let Some(bus) = state.bus.lock().await.as_ref() {
                         bus.publish_async_only(event, data.clone());
                     }
@@ -92,7 +96,11 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
 
     // Look up the requesting node's trust level.
     // source_node may include port (e.g., "100.1.2.3:7117") — strip it for registry lookup.
-    let source_ip = request.source_node.split(':').next().unwrap_or(&request.source_node);
+    let source_ip = request
+        .source_node
+        .split(':')
+        .next()
+        .unwrap_or(&request.source_node);
     let trust = state
         .registry
         .get(source_ip)
@@ -101,15 +109,18 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
 
     // ACL check
     if !is_command_authorized(command, trust) {
-        let _ = state.audit.log(&AuditEntry {
-            timestamp: frame::now_millis(),
-            direction: AuditDirection::Inbound,
-            remote_node: request.source_node.clone(),
-            command: command.to_string(),
-            correlation_id: request.correlation_id.clone(),
-            outcome: AuditOutcome::Denied,
-            duration_ms: 0,
-        }).await;
+        let _ = state
+            .audit
+            .log(&AuditEntry {
+                timestamp: frame::now_millis(),
+                direction: AuditDirection::Inbound,
+                remote_node: request.source_node.clone(),
+                command: command.to_string(),
+                correlation_id: request.correlation_id.clone(),
+                outcome: AuditOutcome::Denied,
+                duration_ms: 0,
+            })
+            .await;
 
         return GridFrame::error_response(
             request,
@@ -127,9 +138,7 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
             // Command matched a Rust module prefix — try Rust handler first
             let (module, full_cmd) = result;
             match module.handle_command(&full_cmd, params.clone()).await {
-                Ok(CommandResult::Json(value)) => {
-                    GridFrame::success_response(request, value)
-                }
+                Ok(CommandResult::Json(value)) => GridFrame::success_response(request, value),
                 Ok(CommandResult::Binary { metadata, .. }) => {
                     GridFrame::success_response(request, metadata)
                 }
@@ -162,15 +171,18 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
         _ => AuditOutcome::Error,
     };
 
-    let _ = state.audit.log(&AuditEntry {
-        timestamp: frame::now_millis(),
-        direction: AuditDirection::Inbound,
-        remote_node: request.source_node.clone(),
-        command: command.to_string(),
-        correlation_id: request.correlation_id.clone(),
-        outcome,
-        duration_ms,
-    }).await;
+    let _ = state
+        .audit
+        .log(&AuditEntry {
+            timestamp: frame::now_millis(),
+            direction: AuditDirection::Inbound,
+            remote_node: request.source_node.clone(),
+            command: command.to_string(),
+            correlation_id: request.correlation_id.clone(),
+            outcome,
+            duration_ms,
+        })
+        .await;
 
     result
 }

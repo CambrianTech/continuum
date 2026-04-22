@@ -31,9 +31,7 @@ pub struct Qwen2Config {
 impl Qwen2Config {
     /// Parse from a serde_json::Value (the raw config.json).
     pub fn from_json(v: &serde_json::Value) -> std::result::Result<Self, String> {
-        let hidden_size = v["hidden_size"]
-            .as_u64()
-            .ok_or("missing hidden_size")? as usize;
+        let hidden_size = v["hidden_size"].as_u64().ok_or("missing hidden_size")? as usize;
         let num_attention_heads = v["num_attention_heads"]
             .as_u64()
             .ok_or("missing num_attention_heads")? as usize;
@@ -299,11 +297,8 @@ impl Qwen2 {
             layers.push(layer);
         }
 
-        let norm = candle_nn::rms_norm(
-            config.hidden_size,
-            config.rms_norm_eps,
-            vb.pp("model.norm"),
-        )?;
+        let norm =
+            candle_nn::rms_norm(config.hidden_size, config.rms_norm_eps, vb.pp("model.norm"))?;
 
         let lm_head = if config.tie_word_embeddings {
             // Weight-tied: lm_head shares embed_tokens weights
@@ -348,12 +343,7 @@ impl Qwen2 {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-fn apply_rotary_emb(
-    x: &Tensor,
-    index_pos: usize,
-    cos: &Tensor,
-    sin: &Tensor,
-) -> Result<Tensor> {
+fn apply_rotary_emb(x: &Tensor, index_pos: usize, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let (_b_sz, _n_head, seq_len, _n_embd) = x.dims4()?;
     let cos = cos.narrow(0, index_pos, seq_len)?;
     let sin = sin.narrow(0, index_pos, seq_len)?;

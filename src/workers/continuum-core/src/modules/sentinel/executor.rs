@@ -235,9 +235,8 @@ pub async fn execute_pipeline(
                                 "[{handle_id}] Budget exhausted: iteration limit {max_iters}"
                             ));
                             failed = true;
-                            error_msg = Some(format!(
-                                "Budget exhausted: iteration limit {max_iters}"
-                            ));
+                            error_msg =
+                                Some(format!("Budget exhausted: iteration limit {max_iters}"));
                         }
                     }
                 }
@@ -316,7 +315,9 @@ pub async fn execute_pipeline(
         escalation: None,
     };
     if let Err(e) = checkpoint::save_checkpoint(&handle_id, &final_cp) {
-        log.warn(&format!("[{handle_id}] Failed to save final checkpoint: {e}"));
+        log.warn(&format!(
+            "[{handle_id}] Failed to save final checkpoint: {e}"
+        ));
     }
 
     // Emit pipeline completion (push event — replaces TS polling)
@@ -432,7 +433,10 @@ pub async fn execute_isolated(
     let pid_path = logs_dir.join("pid");
     if let Some(pid) = child_pid {
         if let Err(e) = tokio::fs::write(&pid_path, pid.to_string()).await {
-            log.warn(&format!("Failed to write PID file {}: {e}", pid_path.display()));
+            log.warn(&format!(
+                "Failed to write PID file {}: {e}",
+                pid_path.display()
+            ));
         }
     }
 
@@ -570,13 +574,17 @@ pub async fn execute_isolated(
             match log_line {
                 LogLine::Stdout(line) => {
                     let timestamped = format!("[{timestamp}] [STDOUT] {line}\n");
-                    if let Err(e) = stdout_writer.write_all(line.as_bytes()).await
+                    if let Err(e) = stdout_writer
+                        .write_all(line.as_bytes())
+                        .await
                         .and(stdout_writer.write_all(b"\n").await)
                         .and(combined_writer.write_all(timestamped.as_bytes()).await)
                         .and(combined_writer.flush().await)
                     {
                         if !stdout_write_failed {
-                            wlog.warn(&format!("[{writer_handle_id}] Log write failed (stdout): {e}"));
+                            wlog.warn(&format!(
+                                "[{writer_handle_id}] Log write failed (stdout): {e}"
+                            ));
                             stdout_write_failed = true;
                         }
                     }
@@ -613,13 +621,17 @@ pub async fn execute_isolated(
                 }
                 LogLine::Stderr(line) => {
                     let timestamped = format!("[{timestamp}] [STDERR] {line}\n");
-                    if let Err(e) = stderr_writer.write_all(line.as_bytes()).await
+                    if let Err(e) = stderr_writer
+                        .write_all(line.as_bytes())
+                        .await
                         .and(stderr_writer.write_all(b"\n").await)
                         .and(combined_writer.write_all(timestamped.as_bytes()).await)
                         .and(combined_writer.flush().await)
                     {
                         if !stderr_write_failed {
-                            wlog.warn(&format!("[{writer_handle_id}] Log write failed (stderr): {e}"));
+                            wlog.warn(&format!(
+                                "[{writer_handle_id}] Log write failed (stderr): {e}"
+                            ));
                             stderr_write_failed = true;
                         }
                     }
@@ -646,13 +658,19 @@ pub async fn execute_isolated(
 
         // Channel closed — both pipe readers finished
         if let Err(e) = stdout_writer.flush().await {
-            wlog.warn(&format!("[{writer_handle_id}] Final stdout flush failed: {e}"));
+            wlog.warn(&format!(
+                "[{writer_handle_id}] Final stdout flush failed: {e}"
+            ));
         }
         if let Err(e) = stderr_writer.flush().await {
-            wlog.warn(&format!("[{writer_handle_id}] Final stderr flush failed: {e}"));
+            wlog.warn(&format!(
+                "[{writer_handle_id}] Final stderr flush failed: {e}"
+            ));
         }
         if let Err(e) = combined_writer.flush().await {
-            wlog.warn(&format!("[{writer_handle_id}] Final combined flush failed: {e}"));
+            wlog.warn(&format!(
+                "[{writer_handle_id}] Final combined flush failed: {e}"
+            ));
         }
         last_output
     });
@@ -713,7 +731,10 @@ pub async fn execute_isolated(
     if let Err(e) = tokio::fs::remove_file(&pid_path).await {
         // ENOENT is fine — PID file may not have been written
         if e.kind() != std::io::ErrorKind::NotFound {
-            log.warn(&format!("Failed to remove PID file {}: {e}", pid_path.display()));
+            log.warn(&format!(
+                "Failed to remove PID file {}: {e}",
+                pid_path.display()
+            ));
         }
     }
 
@@ -807,7 +828,10 @@ pub async fn execute_pipeline_direct(
     // Create logs directory
     let logs_dir = logs_base_dir.join(handle_id);
     if let Err(e) = tokio::fs::create_dir_all(&logs_dir).await {
-        log.warn(&format!("Failed to create logs directory {}: {e}", logs_dir.display()));
+        log.warn(&format!(
+            "Failed to create logs directory {}: {e}",
+            logs_dir.display()
+        ));
     }
 
     let mut success = true;

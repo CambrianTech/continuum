@@ -56,15 +56,14 @@ pub struct LiveKitAgentManager {
 
 impl LiveKitAgentManager {
     pub fn new() -> Self {
-        let socket_dir = std::env::var("CONTINUUM_SOCKET_DIR")
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .map(|h| h.join(".continuum/sockets").to_string_lossy().to_string())
-                    .unwrap_or_else(|| "/tmp".to_string())
-            });
+        let socket_dir = std::env::var("CONTINUUM_SOCKET_DIR").unwrap_or_else(|_| {
+            dirs::home_dir()
+                .map(|h| h.join(".continuum/sockets").to_string_lossy().to_string())
+                .unwrap_or_else(|| "/tmp".to_string())
+        });
         let bridge_socket_path = format!("{}/livekit-bridge.sock", socket_dir);
-        let livekit_url = std::env::var("LIVEKIT_URL")
-            .unwrap_or_else(|_| "ws://localhost:7880".to_string());
+        let livekit_url =
+            std::env::var("LIVEKIT_URL").unwrap_or_else(|_| "ws://localhost:7880".to_string());
 
         Self {
             writer: Mutex::new(None),
@@ -91,10 +90,14 @@ impl LiveKitAgentManager {
         let stream = UnixStream::connect(&self.bridge_socket_path)
             .map_err(|e| format!("Bridge not available at {}: {}", self.bridge_socket_path, e))?;
 
-        clog_info!("🌉 Connected to livekit-bridge at {}", self.bridge_socket_path);
+        clog_info!(
+            "🌉 Connected to livekit-bridge at {}",
+            self.bridge_socket_path
+        );
 
         // Clone for reader thread
-        let reader_stream = stream.try_clone()
+        let reader_stream = stream
+            .try_clone()
             .map_err(|e| format!("Failed to clone socket: {}", e))?;
 
         *writer = Some(stream);
@@ -113,18 +116,24 @@ impl LiveKitAgentManager {
     }
 
     /// Send command and wait for response (up to 30s).
-    fn send_command(&self, command: BridgeCommand, binary: Option<&[u8]>) -> Result<BridgeResponse, String> {
+    fn send_command(
+        &self,
+        command: BridgeCommand,
+        binary: Option<&[u8]>,
+    ) -> Result<BridgeResponse, String> {
         self.ensure_connected()?;
 
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
 
         // Build envelope
-        let mut envelope = serde_json::to_value(&command)
-            .map_err(|e| format!("Serialize error: {}", e))?;
-        envelope.as_object_mut().unwrap()
+        let mut envelope =
+            serde_json::to_value(&command).map_err(|e| format!("Serialize error: {}", e))?;
+        envelope
+            .as_object_mut()
+            .unwrap()
             .insert("request_id".to_string(), request_id.into());
-        let json_bytes = serde_json::to_vec(&envelope)
-            .map_err(|e| format!("Serialize error: {}", e))?;
+        let json_bytes =
+            serde_json::to_vec(&envelope).map_err(|e| format!("Serialize error: {}", e))?;
         let frame = continuum_bridge_protocol::encode_frame(&json_bytes, binary);
 
         // Register pending request
@@ -132,7 +141,10 @@ impl LiveKitAgentManager {
             response: Mutex::new(None),
             signal: Condvar::new(),
         });
-        self.pending.lock().unwrap().insert(request_id, pending_req.clone());
+        self.pending
+            .lock()
+            .unwrap()
+            .insert(request_id, pending_req.clone());
 
         // Write command
         {
@@ -152,18 +164,19 @@ impl LiveKitAgentManager {
         // Wait for response (30s timeout)
         let mut response = pending_req.response.lock().unwrap();
         let timeout = std::time::Duration::from_secs(30);
-        let (mut guard, timed_out) = pending_req.signal.wait_timeout_while(
-            response,
-            timeout,
-            |r| r.is_none(),
-        ).unwrap();
+        let (mut guard, timed_out) = pending_req
+            .signal
+            .wait_timeout_while(response, timeout, |r| r.is_none())
+            .unwrap();
 
         if timed_out.timed_out() {
             self.pending.lock().unwrap().remove(&request_id);
             return Err("Bridge command timed out after 30s".to_string());
         }
 
-        guard.take().ok_or_else(|| "No response received".to_string())
+        guard
+            .take()
+            .ok_or_else(|| "No response received".to_string())
     }
 
     // =========================================================================
@@ -172,11 +185,16 @@ impl LiveKitAgentManager {
 
     pub async fn join_as_listener(&self, call_id: &str) -> Result<(), String> {
         let resp = self.send_command(
-            BridgeCommand::StartListener { call_id: call_id.to_string() },
+            BridgeCommand::StartListener {
+                call_id: call_id.to_string(),
+            },
             None,
         )?;
         if resp.success {
-            clog_info!("🎤 STT listener started via bridge for {}", &call_id[..8.min(call_id.len())]);
+            clog_info!(
+                "🎤 STT listener started via bridge for {}",
+                &call_id[..8.min(call_id.len())]
+            );
             Ok(())
         } else {
             Err(resp.error.unwrap_or_else(|| "Bridge error".to_string()))
@@ -198,8 +216,12 @@ impl LiveKitAgentManager {
             None,
         )?;
         if resp.success {
-            let sid = resp.data
-                .and_then(|d| d.get("audio_track_sid").and_then(|s| s.as_str().map(|s| s.to_string())))
+            let sid = resp
+                .data
+                .and_then(|d| {
+                    d.get("audio_track_sid")
+                        .and_then(|s| s.as_str().map(|s| s.to_string()))
+                })
                 .unwrap_or_default();
             Ok(AgentHandle {
                 call_id: call_id.to_string(),
@@ -223,14 +245,18 @@ impl LiveKitAgentManager {
 
     pub async fn remove_agents_for_call(&self, call_id: &str) {
         let _ = self.send_command(
-            BridgeCommand::LeaveAllAgents { call_id: call_id.to_string() },
+            BridgeCommand::LeaveAllAgents {
+                call_id: call_id.to_string(),
+            },
             None,
         );
     }
 
     pub async fn remove_listener(&self, call_id: &str) {
         let _ = self.send_command(
-            BridgeCommand::StopListener { call_id: call_id.to_string() },
+            BridgeCommand::StopListener {
+                call_id: call_id.to_string(),
+            },
             None,
         );
     }
@@ -249,7 +275,9 @@ impl LiveKitAgentManager {
         use crate::live::avatar::types::AvatarGender;
 
         // Ensure agent exists in bridge
-        let _ = self.get_or_create_agent(call_id, user_id, display_name).await?;
+        let _ = self
+            .get_or_create_agent(call_id, user_id, display_name)
+            .await?;
 
         // TTS runs HERE in core (uses ort — safe, no webrtc in this process)
         let gender = gender_from_identity(user_id);
@@ -258,9 +286,10 @@ impl LiveKitAgentManager {
             AvatarGender::Female => "female",
         };
 
-        let synthesis = tts_service::synthesize_speech_async(text, voice, adapter, Some(gender_str))
-            .await
-            .map_err(|e| format!("TTS synthesis failed: {}", e))?;
+        let synthesis =
+            tts_service::synthesize_speech_async(text, voice, adapter, Some(gender_str))
+                .await
+                .map_err(|e| format!("TTS synthesis failed: {}", e))?;
 
         let num_samples = synthesis.samples.len();
         let duration_ms = synthesis.duration_ms;
@@ -282,7 +311,9 @@ impl LiveKitAgentManager {
         self.trigger_speech_animation(user_id, text, &synthesis.samples, sample_rate, duration_ms);
 
         // Send PCM audio to bridge for LiveKit publishing
-        let pcm_bytes: Vec<u8> = synthesis.samples.iter()
+        let pcm_bytes: Vec<u8> = synthesis
+            .samples
+            .iter()
             .flat_map(|s| s.to_le_bytes())
             .collect();
 
@@ -304,9 +335,7 @@ impl LiveKitAgentManager {
         user_id: &str,
         samples: Vec<i16>,
     ) -> Result<(), String> {
-        let pcm_bytes: Vec<u8> = samples.iter()
-            .flat_map(|s| s.to_le_bytes())
-            .collect();
+        let pcm_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
         let resp = self.send_command(
             BridgeCommand::InjectAudio {
                 call_id: call_id.to_string(),
@@ -315,10 +344,18 @@ impl LiveKitAgentManager {
             },
             Some(&pcm_bytes),
         )?;
-        if resp.success { Ok(()) } else { Err(resp.error.unwrap_or_default()) }
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_default())
+        }
     }
 
-    pub async fn add_ambient_source(&self, call_id: &str, source_name: &str) -> Result<String, String> {
+    pub async fn add_ambient_source(
+        &self,
+        call_id: &str,
+        source_name: &str,
+    ) -> Result<String, String> {
         let resp = self.send_command(
             BridgeCommand::AddAmbient {
                 call_id: call_id.to_string(),
@@ -327,14 +364,24 @@ impl LiveKitAgentManager {
             None,
         )?;
         if resp.success {
-            Ok(resp.data.and_then(|d| d.get("handle").and_then(|h| h.as_str().map(|s| s.to_string())))
+            Ok(resp
+                .data
+                .and_then(|d| {
+                    d.get("handle")
+                        .and_then(|h| h.as_str().map(|s| s.to_string()))
+                })
                 .unwrap_or_else(|| format!("ambient-{}", call_id)))
         } else {
             Err(resp.error.unwrap_or_default())
         }
     }
 
-    pub async fn inject_ambient(&self, call_id: &str, handle: &str, samples: Vec<i16>) -> Result<(), String> {
+    pub async fn inject_ambient(
+        &self,
+        call_id: &str,
+        handle: &str,
+        samples: Vec<i16>,
+    ) -> Result<(), String> {
         let pcm_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
         let resp = self.send_command(
             BridgeCommand::InjectAmbient {
@@ -344,7 +391,11 @@ impl LiveKitAgentManager {
             },
             Some(&pcm_bytes),
         )?;
-        if resp.success { Ok(()) } else { Err(resp.error.unwrap_or_default()) }
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_default())
+        }
     }
 
     pub async fn remove_ambient_source(&self, call_id: &str, handle: &str) -> Result<(), String> {
@@ -355,7 +406,11 @@ impl LiveKitAgentManager {
             },
             None,
         )?;
-        if resp.success { Ok(()) } else { Err(resp.error.unwrap_or_default()) }
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_default())
+        }
     }
 
     pub async fn start_ambient_audio(&self, call_id: &str) -> Result<(), String> {
@@ -366,7 +421,11 @@ impl LiveKitAgentManager {
             },
             None,
         )?;
-        if resp.success { Ok(()) } else { Err(resp.error.unwrap_or_default()) }
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_default())
+        }
     }
 
     pub async fn poll_transcriptions(&self, call_id: Option<&str>) -> Vec<TranscriptionEntry> {
@@ -390,22 +449,31 @@ impl LiveKitAgentManager {
         duration_ms: u64,
     ) {
         if let Some(bevy_system) = crate::live::video::bevy_renderer::try_get() {
-            use crate::live::video::bevy_renderer::SpeechAnimationClip;
             use crate::live::session::sentiment::extract_sentiment;
+            use crate::live::video::bevy_renderer::SpeechAnimationClip;
 
             let sentiment = extract_sentiment(text);
             let lip_sync_window_ms = 66u32;
             let mouth_weights = calculate_rms_weights(samples, sample_rate, lip_sync_window_ms);
 
             if sentiment.emotion != crate::live::video::bevy_renderer::Emotion::Neutral {
-                bevy_system.set_emotion_by_identity(user_id, sentiment.emotion, sentiment.intensity, 300);
+                bevy_system.set_emotion_by_identity(
+                    user_id,
+                    sentiment.emotion,
+                    sentiment.intensity,
+                    300,
+                );
             }
             if sentiment.gesture != crate::live::video::bevy_renderer::Gesture::None {
                 bevy_system.set_gesture_by_identity(user_id, sentiment.gesture, 2000);
             }
             bevy_system.play_speech_by_identity(
                 user_id,
-                SpeechAnimationClip { mouth_weights, interval_ms: lip_sync_window_ms, duration_ms },
+                SpeechAnimationClip {
+                    mouth_weights,
+                    interval_ms: lip_sync_window_ms,
+                    duration_ms,
+                },
             );
         }
     }
@@ -428,10 +496,7 @@ pub struct AgentHandle {
 // Reader thread — receives responses + pushed events from bridge
 // =============================================================================
 
-fn reader_loop(
-    mut stream: UnixStream,
-    pending: Arc<Mutex<HashMap<u64, Arc<PendingRequest>>>>,
-) {
+fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64, Arc<PendingRequest>>>>) {
     let mut buf = vec![0u8; 4 * 1024 * 1024];
     let mut data = Vec::new();
 
@@ -514,10 +579,17 @@ fn handle_bridge_event(
     processors: &mut HashMap<String, AudioProcessor>,
 ) {
     match event {
-        BridgeEvent::AudioFrame { call_id, speaker_id, speaker_name, track_sid, sample_count } => {
+        BridgeEvent::AudioFrame {
+            call_id,
+            speaker_id,
+            speaker_name,
+            track_sid,
+            sample_count,
+        } => {
             // Decode PCM samples from binary payload
             let samples: Vec<i16> = match binary {
-                Some(bytes) => bytes.chunks_exact(2)
+                Some(bytes) => bytes
+                    .chunks_exact(2)
                     .map(|c| i16::from_le_bytes([c[0], c[1]]))
                     .collect(),
                 None => return, // No audio data
@@ -525,8 +597,17 @@ fn handle_bridge_event(
 
             let key = format!("{}:{}", call_id, speaker_id);
             let processor = processors.entry(key).or_insert_with(|| {
-                clog_info!("🎤 New audio processor for '{}' in call {}", speaker_name, &call_id[..8.min(call_id.len())]);
-                AudioProcessor::new(call_id.clone(), speaker_id.clone(), speaker_name.clone(), track_sid.clone())
+                clog_info!(
+                    "🎤 New audio processor for '{}' in call {}",
+                    speaker_name,
+                    &call_id[..8.min(call_id.len())]
+                );
+                AudioProcessor::new(
+                    call_id.clone(),
+                    speaker_id.clone(),
+                    speaker_name.clone(),
+                    track_sid.clone(),
+                )
             });
 
             processor.frame_count += 1;
@@ -534,7 +615,10 @@ fn handle_bridge_event(
                 let max_amp = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
                 clog_info!(
                     "🎤 Audio frame #{} from '{}': {} samples, max_amp={}",
-                    processor.frame_count, processor.speaker_name, samples.len(), max_amp
+                    processor.frame_count,
+                    processor.speaker_name,
+                    samples.len(),
+                    max_amp
                 );
             }
 
@@ -554,24 +638,53 @@ fn handle_bridge_event(
                 let _ = vad_frame; // Silence unused warning
             }
         }
-        BridgeEvent::ParticipantJoined { call_id, identity, name } => {
-            clog_info!("👤 Bridge: participant joined call {}: {} ({})", &call_id[..8.min(call_id.len())], name, &identity[..8.min(identity.len())]);
+        BridgeEvent::ParticipantJoined {
+            call_id,
+            identity,
+            name,
+        } => {
+            clog_info!(
+                "👤 Bridge: participant joined call {}: {} ({})",
+                &call_id[..8.min(call_id.len())],
+                name,
+                &identity[..8.min(identity.len())]
+            );
         }
-        BridgeEvent::ParticipantLeft { ref call_id, ref identity } => {
-            clog_info!("👤 Bridge: participant left call {}: {}", &call_id[..8.min(call_id.len())], &identity[..8.min(identity.len())]);
+        BridgeEvent::ParticipantLeft {
+            ref call_id,
+            ref identity,
+        } => {
+            clog_info!(
+                "👤 Bridge: participant left call {}: {}",
+                &call_id[..8.min(call_id.len())],
+                &identity[..8.min(identity.len())]
+            );
             // Clean up audio processor for this speaker
             let key = format!("{}:{}", call_id, identity);
             processors.remove(&key);
         }
         BridgeEvent::ListenerReady { call_id } => {
-            clog_info!("🎤 Bridge: STT listener ready for call {}", &call_id[..8.min(call_id.len())]);
+            clog_info!(
+                "🎤 Bridge: STT listener ready for call {}",
+                &call_id[..8.min(call_id.len())]
+            );
         }
         BridgeEvent::RoomDisconnected { call_id, reason } => {
-            clog_warn!("🌉 Bridge: room disconnected for call {}: {}", &call_id[..8.min(call_id.len())], reason);
+            clog_warn!(
+                "🌉 Bridge: room disconnected for call {}: {}",
+                &call_id[..8.min(call_id.len())],
+                reason
+            );
             // Clean up all processors for this call
             processors.retain(|k, _| !k.starts_with(&format!("{}:", call_id)));
         }
-        BridgeEvent::VideoFrame { call_id, speaker_id, speaker_name, width, height } => {
+        BridgeEvent::VideoFrame {
+            call_id,
+            speaker_id,
+            speaker_name,
+            width,
+            height,
+        } => {
             if let Some(jpeg) = binary {
                 // Store in the VideoFrameCapture singleton (same store the vision system queries).
                 // This replaces the direct LiveKit NativeVideoStream capture that used to
@@ -584,12 +697,17 @@ fn handle_bridge_event(
                 #[cfg(not(feature = "livekit-webrtc"))]
                 {
                     // Store snapshot for vision system access
-                    static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    static FRAME_COUNT: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(0);
                     let count = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
                     if count == 0 || count % 60 == 0 {
                         clog_info!(
                             "👁 Video frame #{} from '{}': {}x{} ({}KB JPEG)",
-                            count, speaker_name, width, height, jpeg.len() / 1024
+                            count,
+                            speaker_name,
+                            width,
+                            height,
+                            jpeg.len() / 1024
                         );
                     }
                     // TODO: Store in a shared snapshot cache that vision commands can query.
@@ -598,11 +716,26 @@ fn handle_bridge_event(
                 }
             }
         }
-        BridgeEvent::AgentConnected { call_id, user_id, .. } => {
-            clog_info!("🔊 Bridge: agent connected in call {}: {}", &call_id[..8.min(call_id.len())], &user_id[..8.min(user_id.len())]);
+        BridgeEvent::AgentConnected {
+            call_id, user_id, ..
+        } => {
+            clog_info!(
+                "🔊 Bridge: agent connected in call {}: {}",
+                &call_id[..8.min(call_id.len())],
+                &user_id[..8.min(user_id.len())]
+            );
         }
-        BridgeEvent::AgentDisconnected { call_id, user_id, reason } => {
-            clog_info!("🔊 Bridge: agent disconnected from call {}: {} ({})", &call_id[..8.min(call_id.len())], &user_id[..8.min(user_id.len())], reason);
+        BridgeEvent::AgentDisconnected {
+            call_id,
+            user_id,
+            reason,
+        } => {
+            clog_info!(
+                "🔊 Bridge: agent disconnected from call {}: {} ({})",
+                &call_id[..8.min(call_id.len())],
+                &user_id[..8.min(user_id.len())],
+                reason
+            );
         }
         _ => {}
     }
@@ -617,9 +750,12 @@ fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> V
     if window_size == 0 || samples.is_empty() {
         return vec![];
     }
-    samples.chunks(window_size).map(|chunk| {
-        let sum_sq: f64 = chunk.iter().map(|&s| (s as f64) * (s as f64)).sum();
-        let rms = (sum_sq / chunk.len() as f64).sqrt();
-        (rms / 8000.0).min(1.0) as f32
-    }).collect()
+    samples
+        .chunks(window_size)
+        .map(|chunk| {
+            let sum_sq: f64 = chunk.iter().map(|&s| (s as f64) * (s as f64)).sum();
+            let rms = (sum_sq / chunk.len() as f64).sqrt();
+            (rms / 8000.0).min(1.0) as f32
+        })
+        .collect()
 }

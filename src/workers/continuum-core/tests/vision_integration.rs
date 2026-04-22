@@ -158,11 +158,12 @@ async fn vision_roundtrip_local_qwen2_vl() {
         use continuum_core::ai::adapter::AIProviderAdapter;
         let registry_arc = continuum_core::modules::ai_provider::global_registry();
         let mut registry = registry_arc.write().await;
-        let adapter: Box<dyn AIProviderAdapter> =
-            Box::new(continuum_core::inference::llamacpp_adapter::LlamaCppAdapter::with_model_id(
+        let adapter: Box<dyn AIProviderAdapter> = Box::new(
+            continuum_core::inference::llamacpp_adapter::LlamaCppAdapter::with_model_id(
                 model_path.clone(),
                 model_id.to_string(),
-            ));
+            ),
+        );
         // Priority 0 = highest — beats DMR if it's also registered.
         registry.register(adapter, 0);
     }
@@ -176,7 +177,9 @@ async fn vision_roundtrip_local_qwen2_vl() {
                 "persona chose Silent — local vision pipeline couldn't produce a response. reason: {reason}"
             );
         }
-        PersonaResponse::Spoke { text, model_used, .. } => {
+        PersonaResponse::Spoke {
+            text, model_used, ..
+        } => {
             assert!(
                 !text.trim().is_empty(),
                 "vision model returned empty text — pipeline likely dropped the image bytes"

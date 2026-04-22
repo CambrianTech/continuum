@@ -47,13 +47,19 @@ pub async fn handle_nodes(state: &Arc<GridState>) -> Result<CommandResult, Strin
 
 /// grid/ping — round-trip latency to a remote node.
 pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
-    let node_id = params.get("nodeId").and_then(|v| v.as_str())
+    let node_id = params
+        .get("nodeId")
+        .and_then(|v| v.as_str())
         .ok_or("nodeId parameter required")?;
 
-    let node = state.registry.get(node_id)
+    let node = state
+        .registry
+        .get(node_id)
         .ok_or_else(|| format!("Unknown node: {node_id}"))?;
 
-    let address = node.addresses.first()
+    let address = node
+        .addresses
+        .first()
         .ok_or_else(|| format!("Node {node_id} has no addresses"))?;
 
     let transport = find_transport_for_address(&state.transports, address)
@@ -61,10 +67,13 @@ pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<Comman
 
     let start = std::time::Instant::now();
 
-    let conn = transport.connect(address).await
+    let conn = transport
+        .connect(address)
+        .await
         .map_err(|e| format!("Connect failed: {e}"))?;
 
-    let our_address = transport.local_address()
+    let our_address = transport
+        .local_address()
         .map(|a| a.display_address())
         .unwrap_or_else(|| "unknown".into());
 
@@ -76,16 +85,14 @@ pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<Comman
         json!({}),
     );
 
-    conn.send_frame(&ping_frame).await
+    conn.send_frame(&ping_frame)
+        .await
         .map_err(|e| format!("Send failed: {e}"))?;
 
-    let response = tokio::time::timeout(
-        Duration::from_secs(10),
-        conn.recv_frame(),
-    )
-    .await
-    .map_err(|_| "Ping timed out (10s)".to_string())?
-    .map_err(|e| format!("Recv failed: {e}"))?;
+    let response = tokio::time::timeout(Duration::from_secs(10), conn.recv_frame())
+        .await
+        .map_err(|_| "Ping timed out (10s)".to_string())?
+        .map_err(|e| format!("Recv failed: {e}"))?;
 
     let latency_ms = start.elapsed().as_millis() as u64;
     let _ = conn.close().await;
@@ -103,25 +110,34 @@ pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<Comman
 
 /// grid/send — execute a command on a remote node.
 pub async fn handle_send(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
-    let node_id = params.get("nodeId").and_then(|v| v.as_str())
+    let node_id = params
+        .get("nodeId")
+        .and_then(|v| v.as_str())
         .ok_or("nodeId parameter required")?;
     // TS mixin sends as 'remoteCommand' to avoid collision with IPC 'command' field.
     // Also accept 'command' for direct Rust callers.
-    let remote_command = params.get("remoteCommand").and_then(|v| v.as_str())
+    let remote_command = params
+        .get("remoteCommand")
+        .and_then(|v| v.as_str())
         .or_else(|| params.get("command").and_then(|v| v.as_str()))
         .ok_or("command or remoteCommand parameter required")?;
     let remote_params = params.get("params").cloned().unwrap_or(json!({}));
 
-    let node = state.registry.get(node_id)
+    let node = state
+        .registry
+        .get(node_id)
         .ok_or_else(|| format!("Unknown node: {node_id}"))?;
 
-    let address = node.addresses.first()
+    let address = node
+        .addresses
+        .first()
         .ok_or_else(|| format!("Node {node_id} has no addresses"))?;
 
     let transport = find_transport_for_address(&state.transports, address)
         .ok_or_else(|| format!("No transport for {}", address.display_address()))?;
 
-    let our_address = transport.local_address()
+    let our_address = transport
+        .local_address()
         .map(|a| a.display_address())
         .unwrap_or_else(|| "unknown".into());
 
@@ -136,20 +152,20 @@ pub async fn handle_send(state: &Arc<GridState>, params: Value) -> Result<Comman
 
     let start = std::time::Instant::now();
 
-    let conn = transport.connect(address).await
+    let conn = transport
+        .connect(address)
+        .await
         .map_err(|e| format!("Connect to {node_id} failed: {e}"))?;
 
-    conn.send_frame(&frame).await
+    conn.send_frame(&frame)
+        .await
         .map_err(|e| format!("Send to {node_id} failed: {e}"))?;
 
     // 5 minute timeout for long operations (training, etc.)
-    let response = tokio::time::timeout(
-        Duration::from_secs(300),
-        conn.recv_frame(),
-    )
-    .await
-    .map_err(|_| format!("Command '{remote_command}' on {node_id} timed out (300s)"))?
-    .map_err(|e| format!("Recv from {node_id} failed: {e}"))?;
+    let response = tokio::time::timeout(Duration::from_secs(300), conn.recv_frame())
+        .await
+        .map_err(|_| format!("Command '{remote_command}' on {node_id} timed out (300s)"))?
+        .map_err(|e| format!("Recv from {node_id} failed: {e}"))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
     let _ = conn.close().await;
@@ -160,23 +176,35 @@ pub async fn handle_send(state: &Arc<GridState>, params: Value) -> Result<Comman
         _ => AuditOutcome::Error,
     };
 
-    let _ = state.audit.log(&AuditEntry {
-        timestamp: frame::now_millis(),
-        direction: AuditDirection::Outbound,
-        remote_node: node_id.to_string(),
-        command: remote_command.to_string(),
-        correlation_id: corr_id,
-        outcome,
-        duration_ms,
-    }).await;
+    let _ = state
+        .audit
+        .log(&AuditEntry {
+            timestamp: frame::now_millis(),
+            direction: AuditDirection::Outbound,
+            remote_node: node_id.to_string(),
+            command: remote_command.to_string(),
+            correlation_id: corr_id,
+            outcome,
+            duration_ms,
+        })
+        .await;
 
     match response.payload {
-        GridPayload::CommandResult { success: true, result, .. } => {
-            Ok(CommandResult::Json(result.unwrap_or(json!({"success": true}))))
-        }
-        GridPayload::CommandResult { success: false, error, .. } => {
-            Err(format!("Remote command failed: {}", error.unwrap_or_default()))
-        }
+        GridPayload::CommandResult {
+            success: true,
+            result,
+            ..
+        } => Ok(CommandResult::Json(
+            result.unwrap_or(json!({"success": true})),
+        )),
+        GridPayload::CommandResult {
+            success: false,
+            error,
+            ..
+        } => Err(format!(
+            "Remote command failed: {}",
+            error.unwrap_or_default()
+        )),
         _ => Err("Unexpected response frame type".into()),
     }
 }
@@ -218,10 +246,15 @@ pub async fn handle_discover(state: &Arc<GridState>) -> Result<CommandResult, St
 
 /// grid/pair — register a new node with trust level and optional capabilities.
 pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
-    let address_str = params.get("address").and_then(|v| v.as_str())
+    let address_str = params
+        .get("address")
+        .and_then(|v| v.as_str())
         .ok_or("address parameter required")?;
     let name = params.get("name").and_then(|v| v.as_str());
-    let trust_str = params.get("trust").and_then(|v| v.as_str()).unwrap_or("owner");
+    let trust_str = params
+        .get("trust")
+        .and_then(|v| v.as_str())
+        .unwrap_or("owner");
 
     let trust = parse_trust_level(trust_str)?;
 
@@ -231,10 +264,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
 
     let mut capabilities = Vec::new();
     if gpu.is_some() || vram_mb.is_some() {
-        capabilities.push(super::node::NodeCapability::Compute {
-            gpu,
-            vram_mb,
-        });
+        capabilities.push(super::node::NodeCapability::Compute { gpu, vram_mb });
     }
 
     let address = TransportAddress::tailscale(address_str, name.map(String::from));
@@ -263,9 +293,13 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
 
 /// grid/trust — update a node's trust level.
 pub async fn handle_trust(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
-    let node_id = params.get("nodeId").and_then(|v| v.as_str())
+    let node_id = params
+        .get("nodeId")
+        .and_then(|v| v.as_str())
         .ok_or("nodeId parameter required")?;
-    let trust_str = params.get("trust").and_then(|v| v.as_str())
+    let trust_str = params
+        .get("trust")
+        .and_then(|v| v.as_str())
         .ok_or("trust parameter required")?;
 
     let trust = parse_trust_level(trust_str)?;
@@ -287,7 +321,10 @@ pub async fn handle_audit(state: &Arc<GridState>, params: Value) -> Result<Comma
 
 /// grid/node-status — query local GPU, running jobs, queue depth.
 /// When called remotely via grid/send, this executes on the TARGET node.
-pub async fn handle_node_status(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+pub async fn handle_node_status(
+    state: &Arc<GridState>,
+    params: Value,
+) -> Result<CommandResult, String> {
     let node_id = params.get("nodeId").and_then(|v| v.as_str());
 
     // If nodeId targets a remote node, delegate via handle_send
@@ -326,7 +363,10 @@ pub async fn handle_node_status(state: &Arc<GridState>, params: Value) -> Result
 
 /// grid/job-submit — write alloy to disk, start forge pipeline.
 /// If nodeId targets a remote node, delegates via grid/send.
-pub async fn handle_job_submit(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+pub async fn handle_job_submit(
+    state: &Arc<GridState>,
+    params: Value,
+) -> Result<CommandResult, String> {
     // Remote delegation — route to target node if specified and not local
     if let Some(nid) = params.get("nodeId").and_then(|v| v.as_str()) {
         if !nid.is_empty() {
@@ -344,35 +384,42 @@ pub async fn handle_job_submit(state: &Arc<GridState>, params: Value) -> Result<
         }
     }
 
-    let alloy = params.get("alloy")
-        .ok_or("alloy parameter required")?;
+    let alloy = params.get("alloy").ok_or("alloy parameter required")?;
     let priority = params.get("priority").and_then(|v| v.as_u64()).unwrap_or(5);
 
     let jobs_dir = state.grid_dir.join("jobs");
     let running_dir = jobs_dir.join("running");
-    std::fs::create_dir_all(&running_dir)
-        .map_err(|e| format!("Failed to create jobs dir: {e}"))?;
+    std::fs::create_dir_all(&running_dir).map_err(|e| format!("Failed to create jobs dir: {e}"))?;
 
-    let job_id = format!("job-{}-{:06x}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis(),
-        rand_u32() & 0xFFFFFF);
+    let job_id = format!(
+        "job-{}-{:06x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        rand_u32() & 0xFFFFFF
+    );
 
     let alloy_path = running_dir.join(format!("{job_id}.alloy.json"));
     let log_path = running_dir.join(format!("{job_id}.log"));
     let meta_path = running_dir.join(format!("{job_id}.meta.json"));
 
     // Write alloy
-    std::fs::write(&alloy_path, serde_json::to_string_pretty(alloy).unwrap_or_default())
-        .map_err(|e| format!("Failed to write alloy: {e}"))?;
+    std::fs::write(
+        &alloy_path,
+        serde_json::to_string_pretty(alloy).unwrap_or_default(),
+    )
+    .map_err(|e| format!("Failed to write alloy: {e}"))?;
 
     // Find alloy_executor.py
     let executor = find_alloy_executor();
 
     let pid = if let Some(exec_path) = executor {
         // Start forge pipeline
-        let log_file = std::fs::File::create(&log_path)
-            .map_err(|e| format!("Failed to create log: {e}"))?;
-        let log_err = log_file.try_clone()
+        let log_file =
+            std::fs::File::create(&log_path).map_err(|e| format!("Failed to create log: {e}"))?;
+        let log_err = log_file
+            .try_clone()
             .map_err(|e| format!("Failed to clone log fd: {e}"))?;
 
         let child = std::process::Command::new("python3")
@@ -380,7 +427,12 @@ pub async fn handle_job_submit(state: &Arc<GridState>, params: Value) -> Result<
             .arg(&alloy_path)
             .arg("--output-dir")
             .arg(running_dir.join(&job_id))
-            .current_dir(exec_path.parent().and_then(|p| p.parent()).unwrap_or(std::path::Path::new(".")))
+            .current_dir(
+                exec_path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .unwrap_or(std::path::Path::new(".")),
+            )
             .stdout(log_file)
             .stderr(log_err)
             .spawn()
@@ -390,7 +442,10 @@ pub async fn handle_job_submit(state: &Arc<GridState>, params: Value) -> Result<
         0 // No executor found — job is queued but not started
     };
 
-    let alloy_name = alloy.get("name").and_then(|v| v.as_str()).unwrap_or(&job_id);
+    let alloy_name = alloy
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&job_id);
 
     // Write meta
     let meta = json!({
@@ -403,8 +458,11 @@ pub async fn handle_job_submit(state: &Arc<GridState>, params: Value) -> Result<
         "startedAt": chrono_now_iso(),
         "alloyName": alloy_name,
     });
-    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap_or_default())
-        .map_err(|e| format!("Failed to write meta: {e}"))?;
+    std::fs::write(
+        &meta_path,
+        serde_json::to_string_pretty(&meta).unwrap_or_default(),
+    )
+    .map_err(|e| format!("Failed to write meta: {e}"))?;
 
     Ok(CommandResult::Json(json!({
         "success": true,
@@ -417,7 +475,10 @@ pub async fn handle_job_submit(state: &Arc<GridState>, params: Value) -> Result<
 
 /// grid/job-control — pause/resume/cancel a running job.
 /// If nodeId targets a remote node, delegates via grid/send.
-pub async fn handle_job_control(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+pub async fn handle_job_control(
+    state: &Arc<GridState>,
+    params: Value,
+) -> Result<CommandResult, String> {
     // Remote delegation
     if let Some(nid) = params.get("nodeId").and_then(|v| v.as_str()) {
         if !nid.is_empty() {
@@ -435,46 +496,71 @@ pub async fn handle_job_control(state: &Arc<GridState>, params: Value) -> Result
         }
     }
 
-    let job_id = params.get("jobId").and_then(|v| v.as_str())
+    let job_id = params
+        .get("jobId")
+        .and_then(|v| v.as_str())
         .ok_or("jobId parameter required")?;
-    let action = params.get("action").and_then(|v| v.as_str())
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
         .ok_or("action parameter required")?;
 
     let jobs_dir = state.grid_dir.join("jobs");
-    let meta = find_job_meta(&jobs_dir, job_id)
-        .ok_or_else(|| format!("Job '{job_id}' not found"))?;
+    let meta =
+        find_job_meta(&jobs_dir, job_id).ok_or_else(|| format!("Job '{job_id}' not found"))?;
 
     let pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as i32;
-    let previous_state = meta.get("state").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+    let previous_state = meta
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
 
     let new_state = match action {
         "pause" => {
             #[cfg(unix)]
-            unsafe { libc::kill(pid, libc::SIGSTOP); }
+            unsafe {
+                libc::kill(pid, libc::SIGSTOP);
+            }
             "paused"
         }
         "resume" => {
             #[cfg(unix)]
-            unsafe { libc::kill(pid, libc::SIGCONT); }
+            unsafe {
+                libc::kill(pid, libc::SIGCONT);
+            }
             "running"
         }
         "cancel" => {
             #[cfg(unix)]
-            unsafe { libc::kill(pid, libc::SIGTERM); }
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
             // Move to failed
             let _ = move_job_files(&jobs_dir, job_id, "running", "failed");
             "cancelled"
         }
-        _ => return Err(format!("Invalid action: {action}. Must be pause, resume, or cancel.")),
+        _ => {
+            return Err(format!(
+                "Invalid action: {action}. Must be pause, resume, or cancel."
+            ))
+        }
     };
 
     // Update meta
     let mut updated = meta.clone();
     updated["state"] = json!(new_state);
-    let state_dir = if new_state == "cancelled" { "failed" } else { new_state };
+    let state_dir = if new_state == "cancelled" {
+        "failed"
+    } else {
+        new_state
+    };
     let meta_path = jobs_dir.join(state_dir).join(format!("{job_id}.meta.json"));
     let _ = std::fs::create_dir_all(meta_path.parent().unwrap_or(std::path::Path::new(".")));
-    let _ = std::fs::write(&meta_path, serde_json::to_string_pretty(&updated).unwrap_or_default());
+    let _ = std::fs::write(
+        &meta_path,
+        serde_json::to_string_pretty(&updated).unwrap_or_default(),
+    );
 
     Ok(CommandResult::Json(json!({
         "success": true,
@@ -487,7 +573,10 @@ pub async fn handle_job_control(state: &Arc<GridState>, params: Value) -> Result
 
 /// grid/job-queue — list jobs from filesystem.
 /// If nodeId targets a remote node, delegates via grid/send.
-pub async fn handle_job_queue(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
+pub async fn handle_job_queue(
+    state: &Arc<GridState>,
+    params: Value,
+) -> Result<CommandResult, String> {
     // Remote delegation
     if let Some(nid) = params.get("nodeId").and_then(|v| v.as_str()) {
         if !nid.is_empty() {
@@ -505,14 +594,18 @@ pub async fn handle_job_queue(state: &Arc<GridState>, params: Value) -> Result<C
         }
     }
 
-    let state_filter = params.get("state").and_then(|v| v.as_str()).unwrap_or("all");
+    let state_filter = params
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("all");
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
     let jobs_dir = state.grid_dir.join("jobs");
     let hostname = gethostname();
     let dirs = ["queued", "running", "paused", "completed", "failed"];
 
-    let mut summary = json!({ "queued": 0, "running": 0, "paused": 0, "completed": 0, "failed": 0 });
+    let mut summary =
+        json!({ "queued": 0, "running": 0, "paused": 0, "completed": 0, "failed": 0 });
     let mut jobs = Vec::new();
 
     for dir_name in &dirs {
@@ -520,16 +613,26 @@ pub async fn handle_job_queue(state: &Arc<GridState>, params: Value) -> Result<C
         let metas = list_meta_files(&dir_path);
         summary[*dir_name] = json!(metas.len());
 
-        if state_filter != "all" && state_filter != *dir_name { continue; }
-        if jobs.len() >= limit { continue; }
+        if state_filter != "all" && state_filter != *dir_name {
+            continue;
+        }
+        if jobs.len() >= limit {
+            continue;
+        }
 
         for meta_path in metas {
-            if jobs.len() >= limit { break; }
+            if jobs.len() >= limit {
+                break;
+            }
             if let Ok(content) = std::fs::read_to_string(&meta_path) {
                 if let Ok(meta) = serde_json::from_str::<Value>(&content) {
                     let pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as i32;
                     let is_alive = pid > 0 && is_process_alive(pid);
-                    let effective_state = if *dir_name == "running" && !is_alive { "completed" } else { *dir_name };
+                    let effective_state = if *dir_name == "running" && !is_alive {
+                        "completed"
+                    } else {
+                        *dir_name
+                    };
 
                     jobs.push(json!({
                         "jobId": meta.get("jobId").and_then(|v| v.as_str()).unwrap_or(""),
@@ -558,11 +661,17 @@ pub async fn handle_job_queue(state: &Arc<GridState>, params: Value) -> Result<C
 
 /// Check if a nodeId refers to the local machine.
 fn is_local_node(state: &Arc<GridState>, node_id: &str) -> bool {
-    if node_id.is_empty() || node_id == "local" { return true; }
+    if node_id.is_empty() || node_id == "local" {
+        return true;
+    }
     let hostname = gethostname();
-    if hostname.contains(node_id) || node_id.contains(&hostname) { return true; }
+    if hostname.contains(node_id) || node_id.contains(&hostname) {
+        return true;
+    }
     state.transports.iter().any(|t| {
-        t.local_address().map(|a| a.display_address().contains(node_id)).unwrap_or(false)
+        t.local_address()
+            .map(|a| a.display_address().contains(node_id))
+            .unwrap_or(false)
     })
 }
 
@@ -574,14 +683,20 @@ fn query_gpu_info() -> Value {
         Some("/usr/lib/wsl/lib/nvidia-smi")
     } else {
         // Check if nvidia-smi exists in PATH
-        std::process::Command::new("which").arg("nvidia-smi").output()
-            .ok().filter(|o| o.status.success()).map(|_| "nvidia-smi")
+        std::process::Command::new("which")
+            .arg("nvidia-smi")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|_| "nvidia-smi")
     };
 
     if let Some(smi) = nvidia_smi {
         let output = std::process::Command::new(smi)
-            .args(["--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
-                   "--format=csv,noheader,nounits"])
+            .args([
+                "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ])
             .output();
 
         if let Ok(o) = output {
@@ -608,11 +723,17 @@ fn query_gpu_info() -> Value {
         if let Ok(o) = output {
             if o.status.success() {
                 if let Ok(data) = serde_json::from_slice::<Value>(&o.stdout) {
-                    if let Some(gpu) = data.get("SPDisplaysDataType")
+                    if let Some(gpu) = data
+                        .get("SPDisplaysDataType")
                         .and_then(|v| v.as_array())
-                        .and_then(|a| a.first()) {
-                        let name = gpu.get("sppci_model").and_then(|v| v.as_str()).unwrap_or("Apple GPU");
-                        let vram = gpu.get("spdisplays_vram_shared")
+                        .and_then(|a| a.first())
+                    {
+                        let name = gpu
+                            .get("sppci_model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Apple GPU");
+                        let vram = gpu
+                            .get("spdisplays_vram_shared")
                             .or_else(|| gpu.get("spdisplays_vram"))
                             .and_then(|v| v.as_str())
                             .and_then(|s| s.split_whitespace().next())
@@ -674,10 +795,13 @@ fn query_forge_processes() -> Vec<Value> {
 
 fn query_job_queue(grid_dir: &std::path::Path) -> Vec<Value> {
     let queue_dir = grid_dir.join("jobs/queued");
-    list_meta_files(&queue_dir).iter().filter_map(|path| {
-        let name = path.file_stem()?.to_string_lossy().replace(".meta", "");
-        Some(json!({ "name": name, "path": path.to_string_lossy() }))
-    }).collect()
+    list_meta_files(&queue_dir)
+        .iter()
+        .filter_map(|path| {
+            let name = path.file_stem()?.to_string_lossy().replace(".meta", "");
+            Some(json!({ "name": name, "path": path.to_string_lossy() }))
+        })
+        .collect()
 }
 
 fn gethostname() -> String {
@@ -723,15 +847,23 @@ fn find_alloy_executor() -> Option<std::path::PathBuf> {
     // 1. Explicit env var override (highest priority)
     if let Ok(path) = std::env::var("ALLOY_EXECUTOR") {
         let p = std::path::PathBuf::from(&path);
-        if p.exists() { return Some(p); }
+        if p.exists() {
+            return Some(p);
+        }
         eprintln!("[grid] ALLOY_EXECUTOR={path} does not exist");
     }
 
     // 2. Search relative to this binary (sibling sentinel-ai repo)
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(base) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+        if let Some(base) = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+        {
             let candidate = base.join("sentinel-ai/scripts/alloy_executor.py");
-            if candidate.exists() { return Some(candidate); }
+            if candidate.exists() {
+                return Some(candidate);
+            }
         }
     }
 
@@ -745,19 +877,28 @@ fn find_alloy_executor() -> Option<std::path::PathBuf> {
     ];
     for rel in &candidates {
         let p = std::path::PathBuf::from(&home).join(rel);
-        if p.exists() { return Some(p); }
-    }
-
-    // 4. Search PATH for alloy_executor.py
-    if let Ok(output) = std::process::Command::new("which").arg("alloy_executor.py").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let p = std::path::PathBuf::from(&path);
-            if p.exists() { return Some(p); }
+        if p.exists() {
+            return Some(p);
         }
     }
 
-    eprintln!("[grid] alloy_executor.py not found. Set ALLOY_EXECUTOR env var or install sentinel-ai.");
+    // 4. Search PATH for alloy_executor.py
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("alloy_executor.py")
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let p = std::path::PathBuf::from(&path);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+
+    eprintln!(
+        "[grid] alloy_executor.py not found. Set ALLOY_EXECUTOR env var or install sentinel-ai."
+    );
     None
 }
 
@@ -773,7 +914,12 @@ fn find_job_meta(jobs_dir: &std::path::Path, job_id: &str) -> Option<Value> {
     None
 }
 
-fn move_job_files(jobs_dir: &std::path::Path, job_id: &str, from: &str, to: &str) -> std::io::Result<()> {
+fn move_job_files(
+    jobs_dir: &std::path::Path,
+    job_id: &str,
+    from: &str,
+    to: &str,
+) -> std::io::Result<()> {
     let from_dir = jobs_dir.join(from);
     let to_dir = jobs_dir.join(to);
     std::fs::create_dir_all(&to_dir)?;
@@ -789,9 +935,11 @@ fn move_job_files(jobs_dir: &std::path::Path, job_id: &str, from: &str, to: &str
 }
 
 fn list_meta_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    std::fs::read_dir(dir).ok()
+    std::fs::read_dir(dir)
+        .ok()
         .map(|entries| {
-            let mut files: Vec<_> = entries.flatten()
+            let mut files: Vec<_> = entries
+                .flatten()
                 .filter(|e| e.file_name().to_string_lossy().ends_with(".meta.json"))
                 .map(|e| e.path())
                 .collect();
@@ -804,9 +952,13 @@ fn list_meta_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 fn is_process_alive(pid: i32) -> bool {
     #[cfg(unix)]
-    { unsafe { libc::kill(pid, 0) == 0 } }
+    {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
     #[cfg(not(unix))]
-    { false }
+    {
+        false
+    }
 }
 
 fn rand_u32() -> u32 {
@@ -880,7 +1032,8 @@ pub async fn handle_setup_check(state: &Arc<GridState>) -> Result<CommandResult,
                         .and_then(|v| v.as_str())
                         .map(String::from)
                         .or_else(|| {
-                            status_json.get("Self")
+                            status_json
+                                .get("Self")
                                 .and_then(|s| s.get("TailscaleIPs"))
                                 .and_then(|v| v.as_array())
                                 .and_then(|a| a.first())
@@ -889,17 +1042,22 @@ pub async fn handle_setup_check(state: &Arc<GridState>) -> Result<CommandResult,
                         });
 
                     // Extract DNS name
-                    let dns_name = status_json.get("Self")
+                    let dns_name = status_json
+                        .get("Self")
                         .and_then(|s| s.get("DNSName"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.trim_end_matches('.').to_string());
 
                     // Count online peers
-                    let peers: Vec<Value> = status_json.get("Peer")
+                    let peers: Vec<Value> = status_json
+                        .get("Peer")
                         .and_then(|p| p.as_object())
                         .map(|peers| {
-                            peers.values()
-                                .filter(|p| p.get("Online").and_then(|v| v.as_bool()).unwrap_or(false))
+                            peers
+                                .values()
+                                .filter(|p| {
+                                    p.get("Online").and_then(|v| v.as_bool()).unwrap_or(false)
+                                })
                                 .cloned()
                                 .collect()
                         })
@@ -983,7 +1141,9 @@ pub async fn handle_setup_check(state: &Arc<GridState>) -> Result<CommandResult,
                     "status": "warn",
                     "detail": "HTTPS certificates not available (grid still works without them, but browsers need HTTPS for some features)",
                 }));
-                actions.push("Enable HTTPS: Tailscale admin → DNS → toggle 'HTTPS Certificates' ON".into());
+                actions.push(
+                    "Enable HTTPS: Tailscale admin → DNS → toggle 'HTTPS Certificates' ON".into(),
+                );
                 actions.push("URL: https://login.tailscale.com/admin/dns".into());
             }
         }
@@ -992,7 +1152,8 @@ pub async fn handle_setup_check(state: &Arc<GridState>) -> Result<CommandResult,
     // ── Check 4: Peer discovery ──────────────────────────────
     if ts_connected {
         let peer_count = ts_peers.len();
-        let peer_names: Vec<String> = ts_peers.iter()
+        let peer_names: Vec<String> = ts_peers
+            .iter()
             .filter_map(|p| p.get("HostName").and_then(|v| v.as_str()).map(String::from))
             .collect();
 
@@ -1063,16 +1224,25 @@ pub async fn handle_setup_check(state: &Arc<GridState>) -> Result<CommandResult,
                     true
                 } else {
                     let mut missing = Vec::new();
-                    if !has_profile { missing.push("COMPOSE_PROFILES=grid"); }
-                    if !has_auth_key { missing.push("TS_AUTHKEY"); }
-                    if !has_hostname { missing.push("TS_HOSTNAME"); }
+                    if !has_profile {
+                        missing.push("COMPOSE_PROFILES=grid");
+                    }
+                    if !has_auth_key {
+                        missing.push("TS_AUTHKEY");
+                    }
+                    if !has_hostname {
+                        missing.push("TS_HOSTNAME");
+                    }
                     checks.push(json!({
                         "check": "docker_grid_profile",
                         "status": "warn",
                         "detail": format!("Missing in .env: {}", missing.join(", ")),
                     }));
                     if !has_auth_key {
-                        actions.push("Generate auth key: https://login.tailscale.com/admin/settings/keys".into());
+                        actions.push(
+                            "Generate auth key: https://login.tailscale.com/admin/settings/keys"
+                                .into(),
+                        );
                     }
                     false
                 }
@@ -1124,11 +1294,16 @@ pub async fn handle_setup_check(state: &Arc<GridState>) -> Result<CommandResult,
             format!(
                 "Grid ready! {} peers online. {}",
                 ts_peers.len(),
-                if grid_profile_active { "Docker grid profile active." } else { "Docker grid profile not configured (optional for peer-to-peer)." }
+                if grid_profile_active {
+                    "Docker grid profile active."
+                } else {
+                    "Docker grid profile not configured (optional for peer-to-peer)."
+                }
             )
         }
     } else if ts_installed && !ts_connected {
-        "Tailscale installed but not connected. Run 'tailscale up' to join your tailnet.".to_string()
+        "Tailscale installed but not connected. Run 'tailscale up' to join your tailnet."
+            .to_string()
     } else {
         "Grid not ready. Follow the actions below to configure.".to_string()
     };
@@ -1147,26 +1322,24 @@ pub async fn handle_setup_check(state: &Arc<GridState>) -> Result<CommandResult,
 
 /// grid/route — dry-run routing check.
 pub async fn handle_route(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
-    let command = params.get("targetCommand").and_then(|v| v.as_str())
+    let command = params
+        .get("targetCommand")
+        .and_then(|v| v.as_str())
         .or_else(|| params.get("command").and_then(|v| v.as_str()))
         .ok_or("command or targetCommand parameter required")?;
 
     let decision = state.router.route(command, &params, &state.registry);
 
     match decision {
-        RouteDecision::Local => {
-            Ok(CommandResult::Json(json!({
-                "route": "local",
-                "reason": "default or local capability",
-            })))
-        }
-        RouteDecision::Remote { node, reason } => {
-            Ok(CommandResult::Json(json!({
-                "route": "remote",
-                "nodeId": node.node_id,
-                "nodeName": node.node_name,
-                "reason": reason,
-            })))
-        }
+        RouteDecision::Local => Ok(CommandResult::Json(json!({
+            "route": "local",
+            "reason": "default or local capability",
+        }))),
+        RouteDecision::Remote { node, reason } => Ok(CommandResult::Json(json!({
+            "route": "remote",
+            "nodeId": node.node_id,
+            "nodeName": node.node_name,
+            "reason": reason,
+        }))),
     }
 }

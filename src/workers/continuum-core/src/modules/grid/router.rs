@@ -143,8 +143,11 @@ fn find_gpu_node(registry: &NodeRegistry) -> Option<GridNode> {
     candidates.sort_by(|a, b| {
         let vram_a = gpu_vram(a);
         let vram_b = gpu_vram(b);
-        vram_b.cmp(&vram_a)
-            .then_with(|| a.latency_ms.unwrap_or(u64::MAX).cmp(&b.latency_ms.unwrap_or(u64::MAX)))
+        vram_b.cmp(&vram_a).then_with(|| {
+            a.latency_ms
+                .unwrap_or(u64::MAX)
+                .cmp(&b.latency_ms.unwrap_or(u64::MAX))
+        })
     });
 
     candidates.into_iter().next()
@@ -185,8 +188,8 @@ fn is_online(node: &GridNode) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::node::TransportAddress;
+    use super::*;
 
     fn test_registry_with_gpu_node() -> (NodeRegistry, String) {
         let dir = std::env::temp_dir().join("grid-test-router");
@@ -240,11 +243,7 @@ mod tests {
         let (registry, _dir) = test_registry_with_gpu_node();
         let router = GridRouter::new(false, 0);
 
-        let decision = router.route(
-            "genome/train",
-            &serde_json::json!({}),
-            &registry,
-        );
+        let decision = router.route("genome/train", &serde_json::json!({}), &registry);
 
         match decision {
             RouteDecision::Remote { node, reason } => {
@@ -274,11 +273,7 @@ mod tests {
         let (registry, _dir) = test_registry_with_gpu_node();
         let router = GridRouter::new(true, 8192); // Has GPU
 
-        let decision = router.route(
-            "genome/train",
-            &serde_json::json!({}),
-            &registry,
-        );
+        let decision = router.route("genome/train", &serde_json::json!({}), &registry);
 
         assert!(matches!(decision, RouteDecision::Local));
     }

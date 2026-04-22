@@ -14,9 +14,15 @@ use candle_core::Device;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let input_path = args.iter().skip_while(|a| *a != "--input").nth(1)
+    let input_path = args
+        .iter()
+        .skip_while(|a| *a != "--input")
+        .nth(1)
         .expect("--input <path>");
-    let output_path = args.iter().skip_while(|a| *a != "--output").nth(1)
+    let output_path = args
+        .iter()
+        .skip_while(|a| *a != "--output")
+        .nth(1)
         .expect("--output <path>");
 
     eprintln!("=== Mixed Quantization ===");
@@ -30,24 +36,30 @@ fn main() {
     let mut file = std::fs::File::open(input_path).expect("open input");
     let content = gguf_file::Content::read(&mut file).expect("read gguf");
 
-    eprintln!("  {} tensors, {} metadata keys", content.tensor_infos.len(), content.metadata.len());
+    eprintln!(
+        "  {} tensors, {} metadata keys",
+        content.tensor_infos.len(),
+        content.metadata.len()
+    );
 
     // Collect all metadata
-    let metadata: Vec<(String, gguf_file::Value)> = content.metadata.iter()
+    let metadata: Vec<(String, gguf_file::Value)> = content
+        .metadata
+        .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
     // Re-quantize each tensor
-    let mut reader = std::io::BufReader::new(
-        std::fs::File::open(input_path).expect("reopen")
-    );
+    let mut reader = std::io::BufReader::new(std::fs::File::open(input_path).expect("reopen"));
 
     let mut qtensors: Vec<(String, QTensor)> = Vec::new();
     let mut tensor_names: Vec<String> = content.tensor_infos.keys().cloned().collect();
     tensor_names.sort();
 
     for (i, name) in tensor_names.iter().enumerate() {
-        let qt = content.tensor(&mut reader, name, &device).expect("read tensor");
+        let qt = content
+            .tensor(&mut reader, name, &device)
+            .expect("read tensor");
         let orig_dtype = qt.dtype();
         let shape = qt.shape().dims().to_vec();
         let target_dtype = assign_quant_level(name, orig_dtype);
@@ -77,7 +89,14 @@ fn main() {
             match QTensor::quantize(&f32_tensor, actual_dtype) {
                 Ok(requeued) => {
                     if actual_dtype != orig_dtype {
-                        eprintln!("  {:>4}/{} {:50} {:?} → {:?}", i+1, tensor_names.len(), name, orig_dtype, actual_dtype);
+                        eprintln!(
+                            "  {:>4}/{} {:50} {:?} → {:?}",
+                            i + 1,
+                            tensor_names.len(),
+                            name,
+                            orig_dtype,
+                            actual_dtype
+                        );
                     }
                     qtensors.push((name.clone(), requeued));
                 }
@@ -95,18 +114,14 @@ fn main() {
     }
 
     eprintln!("  Writing mixed-quant GGUF...");
-    let metadata_refs: Vec<(&str, &gguf_file::Value)> = metadata.iter()
-        .map(|(k, v)| (k.as_str(), v))
-        .collect();
-    let tensor_refs: Vec<(&str, &QTensor)> = qtensors.iter()
-        .map(|(n, qt)| (n.as_str(), qt))
-        .collect();
+    let metadata_refs: Vec<(&str, &gguf_file::Value)> =
+        metadata.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    let tensor_refs: Vec<(&str, &QTensor)> =
+        qtensors.iter().map(|(n, qt)| (n.as_str(), qt)).collect();
 
-    let mut outfile = std::io::BufWriter::new(
-        std::fs::File::create(output_path).expect("create output")
-    );
-    gguf_file::write(&mut outfile, &metadata_refs, &tensor_refs)
-        .expect("write gguf");
+    let mut outfile =
+        std::io::BufWriter::new(std::fs::File::create(output_path).expect("create output"));
+    gguf_file::write(&mut outfile, &metadata_refs, &tensor_refs).expect("write gguf");
 
     let out_size = std::fs::metadata(output_path).map(|m| m.len()).unwrap_or(0);
     let in_size = std::fs::metadata(input_path).map(|m| m.len()).unwrap_or(0);

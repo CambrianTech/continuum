@@ -56,11 +56,15 @@ fn qwen35_08b_draft_path() -> Option<PathBuf> {
     // specific GGUF blob pulled. We discover it by listing the bundles dir
     // and picking the one whose contained file is ~500MiB.
     let bundles = PathBuf::from(format!("{}/.docker/models/bundles/sha256", home));
-    if !bundles.is_dir() { return None; }
+    if !bundles.is_dir() {
+        return None;
+    }
     for entry in std::fs::read_dir(&bundles).ok()? {
         let entry = entry.ok()?;
         let gguf = entry.path().join("model").join("model.gguf");
-        if !gguf.is_file() { continue; }
+        if !gguf.is_file() {
+            continue;
+        }
         let size = std::fs::metadata(&gguf).ok()?.len();
         // 0.8B Q4_K_M is ~497MiB; target 4B is ~2.5GiB; sibling quants of the
         // 0.8B fall in 300-700MB range so 300..900MB is the sanity window.
@@ -118,7 +122,13 @@ fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
     eprintln!("[smoke] measurement generation (100 tokens)...");
     let gen_start = Instant::now();
     let (text, tokens) = backend
-        .generate("Count from 1 to 50, separated by commas.", 100, 0.7, &[], &[])
+        .generate(
+            "Count from 1 to 50, separated by commas.",
+            100,
+            0.7,
+            &[],
+            &[],
+        )
         .expect("measurement generate failed");
     let elapsed_secs = gen_start.elapsed().as_secs_f64();
     let tokens_per_sec = tokens as f64 / elapsed_secs;
@@ -176,7 +186,10 @@ fn qwen35_4b_spec_dec_throughput() {
     use llama::{Batch, ContextParams, Model, ModelParams, Sampler};
 
     let target_path = qwen35_4b_target_path();
-    assert!(target_path.exists(), "target GGUF not found: {target_path:?}");
+    assert!(
+        target_path.exists(),
+        "target GGUF not found: {target_path:?}"
+    );
     let draft_path = match qwen35_08b_draft_path() {
         Some(p) => p,
         None => {
@@ -202,12 +215,18 @@ fn qwen35_4b_spec_dec_throughput() {
     let load_start = Instant::now();
     let target_model = Model::load(
         &target_path,
-        ModelParams { n_gpu_layers: -1, use_mmap: true },
+        ModelParams {
+            n_gpu_layers: -1,
+            use_mmap: true,
+        },
     )
     .expect("target load failed");
     let draft_model = Model::load(
         &draft_path,
-        ModelParams { n_gpu_layers: -1, use_mmap: true },
+        ModelParams {
+            n_gpu_layers: -1,
+            use_mmap: true,
+        },
     )
     .expect("draft load failed");
     eprintln!(
@@ -223,7 +242,10 @@ fn qwen35_4b_spec_dec_throughput() {
     );
 
     // --- Context config: 32k ctx, FA-auto. Mirror LlamaCppBackend's defaults. ---
-    let ctx_params = ContextParams { n_ctx: 32_768, ..Default::default() };
+    let ctx_params = ContextParams {
+        n_ctx: 32_768,
+        ..Default::default()
+    };
     let mut target_ctx = target_model
         .new_context(ctx_params.clone())
         .expect("target ctx");
@@ -314,7 +336,9 @@ fn qwen35_4b_spec_dec_throughput() {
         for (i, &tok) in drafts.iter().enumerate() {
             tgt_batch.push(tok, pos + i as i32, &[0], true);
         }
-        target_ctx.decode(&tgt_batch).expect("target validate decode");
+        target_ctx
+            .decode(&tgt_batch)
+            .expect("target validate decode");
 
         // --- (c) Compare draft-vs-target at each position, find first mismatch ---
         let mut accepted = 0usize;
@@ -403,7 +427,9 @@ fn qwen35_4b_spec_dec_throughput() {
     let elapsed = gen_start.elapsed().as_secs_f64();
     let out_len = output_tokens.len();
     let tok_per_sec = out_len as f64 / elapsed;
-    let accept_rate = if draft_proposed == 0 { 0.0 } else {
+    let accept_rate = if draft_proposed == 0 {
+        0.0
+    } else {
         draft_accepted as f64 / draft_proposed as f64
     };
 
@@ -418,7 +444,10 @@ fn qwen35_4b_spec_dec_throughput() {
     eprintln!("  output tokens: {out_len}");
     eprintln!("  wall time: {elapsed:.2}s");
     eprintln!("  THROUGHPUT: {tok_per_sec:.1} tok/s");
-    eprintln!("  draft proposed: {draft_proposed}  accepted: {draft_accepted}  accept_rate: {:.1}%", accept_rate * 100.0);
+    eprintln!(
+        "  draft proposed: {draft_proposed}  accepted: {draft_accepted}  accept_rate: {:.1}%",
+        accept_rate * 100.0
+    );
     eprintln!("  spec-dec iterations: {spec_iterations}");
     eprintln!("  reference baseline (no draft, single-model): ~33 tok/s M1 / ~47 tok/s M5");
     eprintln!("  text head: {:?}", &text[..text.len().min(120)]);

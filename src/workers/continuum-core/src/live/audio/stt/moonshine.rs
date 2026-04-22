@@ -16,10 +16,10 @@
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use ndarray::{Array2, ArrayD, IxDyn};
-use crate::live::audio::reloadable::ReloadableModel;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{Tensor, Value};
@@ -485,7 +485,9 @@ impl SpeechToText for MoonshineStt {
 
         MOONSHINE_MODEL
             .load_with(|| Ok::<_, STTError>(model))
-            .map_err(|e| STTError::ModelNotLoaded(format!("Failed to load Moonshine model: {e}")))?;
+            .map_err(|e| {
+                STTError::ModelNotLoaded(format!("Failed to load Moonshine model: {e}"))
+            })?;
 
         clog_info!("Moonshine: All models loaded successfully");
         Ok(())
@@ -496,13 +498,9 @@ impl SpeechToText for MoonshineStt {
         samples: Vec<f32>,
         _language: Option<&str>,
     ) -> Result<TranscriptResult, STTError> {
-        let model = MOONSHINE_MODEL
-            .get()
-            .ok_or_else(|| {
-                STTError::ModelNotLoaded(
-                    "Moonshine not initialized. Call initialize() first.".into(),
-                )
-            })?;
+        let model = MOONSHINE_MODEL.get().ok_or_else(|| {
+            STTError::ModelNotLoaded("Moonshine not initialized. Call initialize() first.".into())
+        })?;
 
         tokio::task::spawn_blocking(move || Self::transcribe_sync(&model, samples))
             .await

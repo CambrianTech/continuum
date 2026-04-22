@@ -24,10 +24,10 @@
 
 use bevy::asset::AssetId;
 use bevy::prelude::*;
-use bevy::render::Extract;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::texture::GpuImage;
+use bevy::render::Extract;
 use bevy::render::{ExtractSchedule, Render, RenderApp, RenderSystems};
 
 use metal::{
@@ -275,8 +275,8 @@ impl MetalGpuConverter {
         width: u32,
         height: u32,
     ) -> *mut Object {
-        let desc_class = objc::runtime::Class::get("MTLTextureDescriptor")
-            .expect("MTLTextureDescriptor class");
+        let desc_class =
+            objc::runtime::Class::get("MTLTextureDescriptor").expect("MTLTextureDescriptor class");
         let desc: *mut Object = objc::msg_send![desc_class, new];
 
         let _: () = objc::msg_send![desc, setTextureType: 2u64]; // MTLTextureType2D
@@ -372,7 +372,6 @@ struct ExtractedSlotDimensions {
 struct ExtractedFrameNotifiers {
     notifiers: Vec<Arc<tokio::sync::Notify>>,
 }
-
 
 /// Extract GPU bridge slot data from the main world during ExtractSchedule.
 fn extract_gpu_bridge_data(
@@ -472,11 +471,10 @@ fn gpu_convert_system(
             }
         };
 
-        let (width, height) = slot_dims
-            .dims
-            .get(slot_id)
-            .copied()
-            .unwrap_or((super::bevy_renderer::AVATAR_WIDTH, super::bevy_renderer::AVATAR_HEIGHT));
+        let (width, height) = slot_dims.dims.get(slot_id).copied().unwrap_or((
+            super::bevy_renderer::AVATAR_WIDTH,
+            super::bevy_renderer::AVATAR_HEIGHT,
+        ));
 
         unsafe {
             let hal_texture = match gpu_image.texture.as_hal::<wgpu::hal::api::Metal>() {

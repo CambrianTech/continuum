@@ -22,7 +22,7 @@ use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult,
 use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
 use super::types::{
     BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
-    RecordMetadata, StorageResult, UUID, METADATA_KEYS,
+    RecordMetadata, StorageResult, METADATA_KEYS, UUID,
 };
 
 // No artificial cap on reader pool — AdapterConfig.max_connections controls it.
@@ -36,7 +36,10 @@ use super::types::{
 fn open_connection(path: &str, flags: OpenFlags) -> Result<Connection, String> {
     let (effective_path, effective_flags) = if path == ":memory:" {
         // Shared-cache URI: all connections see the same in-memory database
-        ("file::memory:?cache=shared".to_string(), flags | OpenFlags::SQLITE_OPEN_URI)
+        (
+            "file::memory:?cache=shared".to_string(),
+            flags | OpenFlags::SQLITE_OPEN_URI,
+        )
     } else {
         (path.to_string(), flags)
     };
@@ -61,8 +64,9 @@ fn open_connection(path: &str, flags: OpenFlags) -> Result<Connection, String> {
          PRAGMA busy_timeout=5000;\
          PRAGMA cache_size=-8192;\
          PRAGMA mmap_size=0;\
-         PRAGMA temp_store=MEMORY;"
-    ).map_err(|e| format!("SQLite PRAGMA error: {}", e))?;
+         PRAGMA temp_store=MEMORY;",
+    )
+    .map_err(|e| format!("SQLite PRAGMA error: {}", e))?;
 
     Ok(conn)
 }
@@ -79,7 +83,10 @@ fn apply_memory_pressure(conn: &Connection, last_check: &AtomicU64) {
         return;
     }
     // CAS: only one thread applies the pressure adjustment
-    if last_check.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+    if last_check
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
         return;
     }
     let level = crate::system_resources::MemoryPressureMonitor::current_level();
@@ -155,7 +162,11 @@ fn infer_sqlite_type(value: &Value) -> &'static str {
     match value {
         Value::Bool(_) => "INTEGER",
         Value::Number(n) => {
-            if n.is_i64() { "INTEGER" } else { "REAL" }
+            if n.is_i64() {
+                "INTEGER"
+            } else {
+                "REAL"
+            }
         }
         Value::String(_) => "TEXT",
         Value::Array(_) | Value::Object(_) => "TEXT", // JSON stored as text
@@ -204,11 +215,10 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) -> Result<(
 fn evolve_table_schema(conn: &Connection, table: &str, data: &Value) -> bool {
     // Get existing columns
     let existing: Vec<String> = match conn.prepare(&format!("PRAGMA table_info({})", table)) {
-        Ok(mut stmt) => {
-            stmt.query_map([], |row| row.get::<_, String>(1))
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
-                .unwrap_or_default()
-        }
+        Ok(mut stmt) => stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default(),
         Err(_) => return false,
     };
 
@@ -224,7 +234,12 @@ fn evolve_table_schema(conn: &Connection, table: &str, data: &Value) -> bool {
                 let alter = format!("ALTER TABLE {} ADD COLUMN {} {}", table, col_name, col_type);
                 match conn.execute(&alter, []) {
                     Ok(_) => {
-                        clog_info!("Schema evolution: added column {}.{} ({})", table, col_name, col_type);
+                        clog_info!(
+                            "Schema evolution: added column {}.{} ({})",
+                            table,
+                            col_name,
+                            col_type
+                        );
                         added += 1;
                     }
                     Err(e) => {
@@ -297,18 +312,23 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
                 // Schema evolution: add missing columns and retry
                 if evolve_table_schema(conn, &table, &record.data) {
                     match conn.execute(&sql, params.as_slice()) {
-                        Ok(_) => return StorageResult::ok(DataRecord {
-                            metadata: RecordMetadata {
-                                created_at: now.clone(),
-                                updated_at: now,
-                                version: 1,
-                                ..record.metadata
-                            },
-                            ..record
-                        }),
-                        Err(e2) => return StorageResult::err(
-                            format!("Insert failed after schema evolution: {}", e2)
-                        ),
+                        Ok(_) => {
+                            return StorageResult::ok(DataRecord {
+                                metadata: RecordMetadata {
+                                    created_at: now.clone(),
+                                    updated_at: now,
+                                    version: 1,
+                                    ..record.metadata
+                                },
+                                ..record
+                            })
+                        }
+                        Err(e2) => {
+                            return StorageResult::err(format!(
+                                "Insert failed after schema evolution: {}",
+                                e2
+                            ))
+                        }
                     }
                 }
             }
@@ -464,9 +484,12 @@ fn do_update(
                     match conn.execute(&sql, params_ref.as_slice()) {
                         Ok(rows) if rows > 0 => return do_read(conn, collection, id),
                         Ok(_) => return StorageResult::err(format!("Record not found: {}", id)),
-                        Err(e2) => return StorageResult::err(
-                            format!("Update failed after schema evolution: {}", e2)
-                        ),
+                        Err(e2) => {
+                            return StorageResult::err(format!(
+                                "Update failed after schema evolution: {}",
+                                e2
+                            ))
+                        }
                     }
                 }
             }
@@ -827,7 +850,11 @@ fn build_select_clause(select: &Option<Vec<String>>) -> String {
             ];
             for col in cols {
                 let snake = naming::to_snake_case(col);
-                if snake != "id" && snake != "created_at" && snake != "updated_at" && snake != "version" {
+                if snake != "id"
+                    && snake != "created_at"
+                    && snake != "updated_at"
+                    && snake != "version"
+                {
                     selected.push(snake);
                 }
             }
@@ -1207,7 +1234,11 @@ mod tests {
         };
 
         let create_result = adapter.create(record).await;
-        assert!(create_result.success, "Create failed: {:?}", create_result.error);
+        assert!(
+            create_result.success,
+            "Create failed: {:?}",
+            create_result.error
+        );
 
         let read_result = adapter.read("users", &"test-123".to_string()).await;
         assert!(read_result.success, "Read failed: {:?}", read_result.error);
@@ -1244,7 +1275,11 @@ mod tests {
                 metadata: RecordMetadata::default(),
             };
             let result = adapter.create(record).await;
-            assert!(result.success, "Create item-{} failed: {:?}", i, result.error);
+            assert!(
+                result.success,
+                "Create item-{} failed: {:?}",
+                i, result.error
+            );
         }
 
         // Truly concurrent reads via spawn_blocking — each goes to a different reader

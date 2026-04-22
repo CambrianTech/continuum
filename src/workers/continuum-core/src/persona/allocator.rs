@@ -74,7 +74,10 @@ pub struct PersonaCatalogEntry {
 
 /// A single persona allocation decision.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/PersonaAllocation.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/PersonaAllocation.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonaAllocation {
     pub unique_id: String,
@@ -108,7 +111,10 @@ pub struct PersonaAllocation {
 
 /// Full allocation result — personas + diagnostics.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/AllocationResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/AllocationResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct AllocationResult {
     pub allocations: Vec<PersonaAllocation>,
@@ -148,7 +154,11 @@ pub fn select_local_model(vram_gb: f64) -> &'static str {
 /// Detect GPU type from the manager's device name.
 fn detect_gpu_type(gpu_name: &str) -> &'static str {
     let lower = gpu_name.to_lowercase();
-    if lower.contains("nvidia") || lower.contains("geforce") || lower.contains("rtx") || lower.contains("cuda") {
+    if lower.contains("nvidia")
+        || lower.contains("geforce")
+        || lower.contains("rtx")
+        || lower.contains("cuda")
+    {
         "cuda"
     } else if lower.contains("apple") || lower.contains("metal") {
         "metal"
@@ -157,9 +167,13 @@ fn detect_gpu_type(gpu_name: &str) -> &'static str {
     } else {
         // Unknown GPU — assume metal on macOS, cuda elsewhere
         #[cfg(target_os = "macos")]
-        { "metal" }
+        {
+            "metal"
+        }
         #[cfg(not(target_os = "macos"))]
-        { "cuda" }
+        {
+            "cuda"
+        }
     }
 }
 
@@ -206,7 +220,9 @@ pub fn allocate(
                 .unwrap_or(8.0)
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        { 8.0f64 }
+        {
+            8.0f64
+        }
     };
 
     // Effective memory: GPU VRAM if available, system RAM otherwise.
@@ -223,7 +239,8 @@ pub fn allocate(
     // Track MODELS loaded, not PERSONAS. Multiple personas sharing the same
     // model don't multiply the memory cost. The model loads once; each persona
     // is just a config pointing at it.
-    let mut models_loaded: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut models_loaded: std::collections::HashMap<String, f64> =
+        std::collections::HashMap::new();
     let mut vram_allocated_gb: f64 = 0.0;
 
     let mut allocations = Vec::new();
@@ -233,7 +250,11 @@ pub fn allocate(
     if total_vram_gb > 1.0 {
         summary.push(format!(
             "{}: {:.0}GB {} ({:.0}GB usable after {:.0}GB reserve)",
-            gpu_name, total_vram_gb, gpu_type.to_uppercase(), usable_gb, SYSTEM_RESERVE_GB
+            gpu_name,
+            total_vram_gb,
+            gpu_type.to_uppercase(),
+            usable_gb,
+            SYSTEM_RESERVE_GB
         ));
     } else {
         summary.push(format!(
@@ -242,9 +263,7 @@ pub fn allocate(
         ));
     }
 
-    let has_api_key = |env_var: &str| -> bool {
-        available_api_keys.iter().any(|k| k == env_var)
-    };
+    let has_api_key = |env_var: &str| -> bool { available_api_keys.iter().any(|k| k == env_var) };
 
     let mut any_candle_allocated = false;
 
@@ -300,8 +319,15 @@ pub fn allocate(
                 if additional_cost == 0.0 {
                     allocation.reason = format!("sharing {} (already loaded)", model_name);
                 } else {
-                    allocation.reason = format!("{:.0}GB {} allocated", needed_gb,
-                        if total_vram_gb > 1.0 { "VRAM" } else { "RAM (CPU mode)" });
+                    allocation.reason = format!(
+                        "{:.0}GB {} allocated",
+                        needed_gb,
+                        if total_vram_gb > 1.0 {
+                            "VRAM"
+                        } else {
+                            "RAM (CPU mode)"
+                        }
+                    );
                 }
                 if additional_cost > 0.0 {
                     models_loaded.insert(model_name, needed_gb);
@@ -342,7 +368,11 @@ pub fn allocate(
             .iter()
             .map(|s| format!("{} ({})", s.display_name, s.reason))
             .collect();
-        summary.push(format!("Skipped {} personas: {}", skipped.len(), skipped_names.join(", ")));
+        summary.push(format!(
+            "Skipped {} personas: {}",
+            skipped.len(),
+            skipped_names.join(", ")
+        ));
     }
     summary.push(format!("Creating {} personas", allocations.len()));
     summary.push(format!("Local inference model: {}", local_model));
@@ -447,7 +477,10 @@ mod tests {
         let catalog = load_catalog();
         assert!(!catalog.is_empty(), "Catalog should not be empty");
         // Verify some expected entries
-        assert!(catalog.iter().any(|e| e.unique_id == "helper"), "Should have helper persona");
+        assert!(
+            catalog.iter().any(|e| e.unique_id == "helper"),
+            "Should have helper persona"
+        );
     }
 
     #[test]
@@ -457,12 +490,26 @@ mod tests {
         let result = allocate(&manager, &[], &catalog);
 
         // Should always create at least one candle persona (CPU fallback)
-        let candle_count = result.allocations.iter().filter(|a| a.provider == "candle").count();
-        assert!(candle_count >= 1, "Should create at least one local persona");
+        let candle_count = result
+            .allocations
+            .iter()
+            .filter(|a| a.provider == "candle")
+            .count();
+        assert!(
+            candle_count >= 1,
+            "Should create at least one local persona"
+        );
 
         // No cloud personas without API keys
-        let cloud_count = result.allocations.iter().filter(|a| a.api_key_env.is_some() && a.provider != "candle").count();
-        assert_eq!(cloud_count, 0, "Should not create cloud personas without keys");
+        let cloud_count = result
+            .allocations
+            .iter()
+            .filter(|a| a.api_key_env.is_some() && a.provider != "candle")
+            .count();
+        assert_eq!(
+            cloud_count, 0,
+            "Should not create cloud personas without keys"
+        );
     }
 
     #[test]
@@ -472,10 +519,15 @@ mod tests {
         let keys = vec!["ANTHROPIC_API_KEY".to_string()];
         let result = allocate(&manager, &keys, &catalog);
 
-        let anthropic_count = result.allocations.iter().filter(|a| {
-            a.api_key_env.as_deref() == Some("ANTHROPIC_API_KEY")
-        }).count();
-        assert!(anthropic_count >= 1, "Should create at least one Anthropic persona");
+        let anthropic_count = result
+            .allocations
+            .iter()
+            .filter(|a| a.api_key_env.as_deref() == Some("ANTHROPIC_API_KEY"))
+            .count();
+        assert!(
+            anthropic_count >= 1,
+            "Should create at least one Anthropic persona"
+        );
     }
 
     #[test]
@@ -494,8 +546,16 @@ mod tests {
             speciality: None,
             accent_color: None,
             model_preferences: vec![
-                ModelPreference { min_vram_gb: 32.0, model: "coder-32b".to_string(), vram_budget_gb: 20.0 },
-                ModelPreference { min_vram_gb: 16.0, model: "coder".to_string(), vram_budget_gb: 9.0 },
+                ModelPreference {
+                    min_vram_gb: 32.0,
+                    model: "coder-32b".to_string(),
+                    vram_budget_gb: 20.0,
+                },
+                ModelPreference {
+                    min_vram_gb: 16.0,
+                    model: "coder".to_string(),
+                    vram_budget_gb: 9.0,
+                },
             ],
         };
 
@@ -543,14 +603,22 @@ mod tests {
     fn test_catalog_has_model_preferences() {
         let catalog = load_catalog();
 
-        let codereview = catalog.iter().find(|e| e.unique_id == "codereview").unwrap();
-        assert!(!codereview.model_preferences.is_empty(),
-            "CodeReview should have model_preferences in catalog.json");
+        let codereview = catalog
+            .iter()
+            .find(|e| e.unique_id == "codereview")
+            .unwrap();
+        assert!(
+            !codereview.model_preferences.is_empty(),
+            "CodeReview should have model_preferences in catalog.json"
+        );
 
         // Verify highest tier is first
         let first = &codereview.model_preferences[0];
-        assert!(first.min_vram_gb >= 31.0,
-            "First preference should be for 31GB+ (was {}GB)", first.min_vram_gb);
+        assert!(
+            first.min_vram_gb >= 31.0,
+            "First preference should be for 31GB+ (was {}GB)",
+            first.min_vram_gb
+        );
     }
 
     /// Simulate 5090 allocation: CodeReview=32B, Teacher=14B, Helper=8B, Local=3B
@@ -563,7 +631,9 @@ mod tests {
         let result = allocate(&manager, &[], &catalog);
 
         // Find candle personas
-        let candle: Vec<_> = result.allocations.iter()
+        let candle: Vec<_> = result
+            .allocations
+            .iter()
             .filter(|a| a.provider == "candle")
             .collect();
 
@@ -571,14 +641,22 @@ mod tests {
 
         // CodeReview should get coder-32b on 5090
         if let Some(cr) = candle.iter().find(|a| a.unique_id == "codereview") {
-            assert_eq!(cr.resolved_model.as_deref(), Some("coder-32b"),
-                "CodeReview on 5090 should get coder-32b, got {:?}", cr.resolved_model);
+            assert_eq!(
+                cr.resolved_model.as_deref(),
+                Some("coder-32b"),
+                "CodeReview on 5090 should get coder-32b, got {:?}",
+                cr.resolved_model
+            );
         }
 
         // Teacher should get 8B (14B budget goes to CodeReview's 32B model)
         if let Some(t) = candle.iter().find(|a| a.unique_id == "teacher") {
-            assert_eq!(t.resolved_model.as_deref(), Some("unsloth/Llama-3.1-8B-Instruct"),
-                "Teacher on 5090 should get Llama-3.1-8B, got {:?}", t.resolved_model);
+            assert_eq!(
+                t.resolved_model.as_deref(),
+                Some("unsloth/Llama-3.1-8B-Instruct"),
+                "Teacher on 5090 should get Llama-3.1-8B, got {:?}",
+                t.resolved_model
+            );
         }
     }
 
@@ -591,7 +669,9 @@ mod tests {
         let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog);
 
-        let candle: Vec<_> = result.allocations.iter()
+        let candle: Vec<_> = result
+            .allocations
+            .iter()
             .filter(|a| a.provider == "candle")
             .collect();
 
@@ -599,8 +679,11 @@ mod tests {
         let cr = candle.iter().find(|a| a.unique_id == "codereview");
         if let Some(cr) = cr {
             // If it was allocated, it should NOT have the 32B model
-            assert_ne!(cr.resolved_model.as_deref(), Some("coder-32b"),
-                "CodeReview on 16GB should NOT get coder-32b");
+            assert_ne!(
+                cr.resolved_model.as_deref(),
+                Some("coder-32b"),
+                "CodeReview on 16GB should NOT get coder-32b"
+            );
         }
     }
 }

@@ -20,7 +20,10 @@ use uuid::Uuid;
 /// greeting may not need 4 specialists weighing in; a 'task' often does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "../../../shared/generated/cognition/SharedAnalysisIntent.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/SharedAnalysisIntent.ts"
+)]
 pub enum SharedAnalysisIntent {
     Question,
     Request,
@@ -54,7 +57,10 @@ impl SharedAnalysisIntent {
 /// the same message + conversation state hits the cache.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/cognition/SharedAnalysis.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/SharedAnalysis.ts"
+)]
 pub struct SharedAnalysis {
     // ─── Identity / cache key ─────────────────────────────────────────
     /// The chat message this analysis is FOR.
@@ -117,7 +123,10 @@ pub struct SharedAnalysis {
 /// meta-cognitive trace.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/cognition/ResponderDecision.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/ResponderDecision.ts"
+)]
 pub struct ResponderDecision {
     #[ts(type = "string")]
     pub persona_id: Uuid,
@@ -157,7 +166,10 @@ pub struct ResponderDecision {
 /// perspective on what's already been objectively analyzed.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/cognition/PersonaRenderRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/PersonaRenderRequest.ts"
+)]
 pub struct PersonaRenderRequest {
     pub analysis: SharedAnalysis,
     pub decision: ResponderDecision,
@@ -171,7 +183,10 @@ pub struct PersonaRenderRequest {
 /// persona can see + build on. Phase B streaming primitive.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/cognition/PriorContribution.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/PriorContribution.ts"
+)]
 pub struct PriorContribution {
     #[ts(type = "string")]
     pub persona_id: Uuid,

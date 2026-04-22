@@ -83,8 +83,7 @@ static MEMORY_GATE_CLOSED: std::sync::atomic::AtomicBool =
 
 /// Global atomic pressure level — updated every 2s by the monitor loop.
 /// Any subsystem can read this lock-free to make graduated decisions.
-static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 =
-    std::sync::atomic::AtomicU8::new(0); // 0=Normal
+static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0); // 0=Normal
 
 /// Check if the memory gate is closed (critical pressure sustained).
 /// Subsystems should refuse new allocations when this returns true.
@@ -108,7 +107,10 @@ fn open_memory_gate() {
 
 /// Memory pressure severity. Each level implies all lower levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/system/PressureLevel.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/system/PressureLevel.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PressureLevel {
     /// < 80% system memory. Normal operation.
@@ -186,7 +188,10 @@ impl std::fmt::Display for PressureLevel {
 
 /// A single module's self-reported memory usage.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/system/ModuleMemoryReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/system/ModuleMemoryReport.ts"
+)]
 pub struct ModuleMemoryReport {
     /// Module name (e.g., "bevy", "embedding", "corpus", "agents")
     pub name: String,
@@ -208,7 +213,10 @@ pub struct ModuleMemoryReport {
 /// Higher priority = higher pressure gate = harder to evict.
 /// Each consumer declares its priority when registering its budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/system/MemoryPriority.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/system/MemoryPriority.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryPriority {
     /// Render loop, audio pipeline — only OOM stops it
@@ -251,7 +259,10 @@ impl MemoryPriority {
 /// - What it would prefer if headroom allows (flex-grow target)
 /// - An absolute cap it should never exceed (flex-max)
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/system/MemoryBudgetSpec.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/system/MemoryBudgetSpec.ts"
+)]
 pub struct MemoryBudgetSpec {
     /// Consumer name (matches reporter name)
     pub name: String,
@@ -270,7 +281,10 @@ pub struct MemoryBudgetSpec {
 
 /// A consumer's budget allocation result — current state vs declared budget.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/system/MemoryBudgetAllocation.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/system/MemoryBudgetAllocation.ts"
+)]
 pub struct MemoryBudgetAllocation {
     /// Consumer name
     pub name: String,
@@ -295,7 +309,10 @@ pub struct MemoryBudgetAllocation {
 
 /// Full budget snapshot — human-visible state of all memory consumers.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/system/MemoryBudgetSnapshot.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/system/MemoryBudgetSnapshot.ts"
+)]
 pub struct MemoryBudgetSnapshot {
     /// System-wide pressure level
     pub level: PressureLevel,
@@ -328,7 +345,10 @@ pub struct MemoryBudgetSnapshot {
 
 /// Complete memory pressure snapshot — published via watch channel.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/system/PressureSnapshot.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/system/PressureSnapshot.ts"
+)]
 pub struct PressureSnapshot {
     /// Current pressure level
     pub level: PressureLevel,
@@ -522,9 +542,7 @@ impl MemoryPressureMonitor {
     /// Updated every 2s by the monitor loop. Subsystems use this to make
     /// graduated decisions (cache sizes, inference concurrency, render quality).
     pub fn current_level() -> PressureLevel {
-        PressureLevel::from_u8(
-            CURRENT_PRESSURE_LEVEL.load(std::sync::atomic::Ordering::Relaxed)
-        )
+        PressureLevel::from_u8(CURRENT_PRESSURE_LEVEL.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// Dynamically add a reporter after startup.
@@ -675,7 +693,11 @@ impl MemoryPressureMonitor {
                     consecutive_panics: 0,
                     disabled: false,
                 });
-                clog_info!("🧠 Memory reporter '{}' registered dynamically (total: {})", name, reporters.len());
+                clog_info!(
+                    "🧠 Memory reporter '{}' registered dynamically (total: {})",
+                    name,
+                    reporters.len()
+                );
             }
 
             // --- System memory ---
@@ -748,10 +770,7 @@ impl MemoryPressureMonitor {
                             e
                         );
                         if entry.consecutive_panics >= 3 {
-                            clog_warn!(
-                                "🧠 MemoryReporter '{}' quarantined after 3 panics",
-                                name
-                            );
+                            clog_warn!("🧠 MemoryReporter '{}' quarantined after 3 panics", name);
                             entry.disabled = true;
                         }
                     }
@@ -774,10 +793,7 @@ impl MemoryPressureMonitor {
                             entry.consecutive_panics,
                         );
                         if entry.consecutive_panics >= 3 {
-                            clog_warn!(
-                                "🧠 MemoryReporter '{}' quarantined after 3 failures",
-                                name
-                            );
+                            clog_warn!("🧠 MemoryReporter '{}' quarantined after 3 failures", name);
                             entry.disabled = true;
                         }
                     }
@@ -806,8 +822,8 @@ impl MemoryPressureMonitor {
             // Emergency mode: at critical, shed on EVERY poll (not just once)
             let should_shed = match level {
                 PressureLevel::Critical => consecutive_at_level >= 2, // every poll once sustained
-                PressureLevel::High => consecutive_at_level == 2,    // once
-                PressureLevel::Warning => consecutive_at_level == 2, // once
+                PressureLevel::High => consecutive_at_level == 2,     // once
+                PressureLevel::Warning => consecutive_at_level == 2,  // once
                 PressureLevel::Normal => false,
             };
 
@@ -916,17 +932,31 @@ mod tests {
     #[test]
     fn test_memory_priority_ordering() {
         // Higher priority = harder to evict = higher allocation weight
-        assert!(MemoryPriority::Realtime.allocation_weight() > MemoryPriority::Interactive.allocation_weight());
-        assert!(MemoryPriority::Interactive.allocation_weight() > MemoryPriority::Background.allocation_weight());
-        assert!(MemoryPriority::Background.allocation_weight() > MemoryPriority::Batch.allocation_weight());
+        assert!(
+            MemoryPriority::Realtime.allocation_weight()
+                > MemoryPriority::Interactive.allocation_weight()
+        );
+        assert!(
+            MemoryPriority::Interactive.allocation_weight()
+                > MemoryPriority::Background.allocation_weight()
+        );
+        assert!(
+            MemoryPriority::Background.allocation_weight()
+                > MemoryPriority::Batch.allocation_weight()
+        );
     }
 
     #[test]
     fn test_memory_priority_pressure_gates() {
         // Lower priority sheds load at lower pressure
         assert!(MemoryPriority::Batch.pressure_gate() < MemoryPriority::Background.pressure_gate());
-        assert!(MemoryPriority::Background.pressure_gate() < MemoryPriority::Interactive.pressure_gate());
-        assert!(MemoryPriority::Interactive.pressure_gate() < MemoryPriority::Realtime.pressure_gate());
+        assert!(
+            MemoryPriority::Background.pressure_gate()
+                < MemoryPriority::Interactive.pressure_gate()
+        );
+        assert!(
+            MemoryPriority::Interactive.pressure_gate() < MemoryPriority::Realtime.pressure_gate()
+        );
     }
 
     #[test]

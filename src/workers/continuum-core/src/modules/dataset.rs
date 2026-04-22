@@ -15,7 +15,10 @@ use ts_rs::TS;
 
 /// Manifest persisted alongside imported datasets.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/dataset/DatasetManifest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/dataset/DatasetManifest.ts"
+)]
 pub struct DatasetManifest {
     pub name: String,
     pub version: String,
@@ -43,7 +46,10 @@ pub struct DatasetManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/dataset/DatasetMetrics.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/dataset/DatasetMetrics.ts"
+)]
 pub struct DatasetMetrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

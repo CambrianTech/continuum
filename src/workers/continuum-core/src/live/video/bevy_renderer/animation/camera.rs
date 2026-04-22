@@ -2,8 +2,8 @@
 
 use bevy::prelude::*;
 
-use super::components::*;
 use super::super::skeleton::{camera_z_for_head, REFERENCE_HEAD_Y};
+use super::components::*;
 
 /// Lock each camera to its own avatar's head-Y.
 /// Matches camera to avatar via SlotId — each slot's camera frames that slot's avatar.

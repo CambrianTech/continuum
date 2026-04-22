@@ -16,14 +16,14 @@
 //!   - Node B: Events.subscribe('sensor:motion') → receives via UDP injection
 //!   - Transparent: application code doesn't know events crossed the network
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
 
+use super::super::frame::{FrameType, GridFrame, GridPayload};
 use crate::runtime;
-use super::super::frame::{GridFrame, FrameType, GridPayload};
 
 /// Default UDP port for grid event streaming.
 pub const DEFAULT_UDP_PORT: u16 = 7118;
@@ -115,16 +115,25 @@ impl UdpEventTransport {
     ) -> Result<(), String> {
         let socket = self.socket.as_ref().ok_or("UDP not started")?;
 
-        let frame = make_event_frame(&self.local_node_id, &target_addr.to_string(), event_name, data);
+        let frame = make_event_frame(
+            &self.local_node_id,
+            &target_addr.to_string(),
+            event_name,
+            data,
+        );
 
-        let payload = serde_json::to_vec(&frame)
-            .map_err(|e| format!("serialize: {e}"))?;
+        let payload = serde_json::to_vec(&frame).map_err(|e| format!("serialize: {e}"))?;
 
         if payload.len() > MAX_UDP_PAYLOAD {
-            return Err(format!("Frame too large for UDP: {} > {}", payload.len(), MAX_UDP_PAYLOAD));
+            return Err(format!(
+                "Frame too large for UDP: {} > {}",
+                payload.len(),
+                MAX_UDP_PAYLOAD
+            ));
         }
 
-        socket.send_to(&payload, target_addr)
+        socket
+            .send_to(&payload, target_addr)
             .await
             .map_err(|e| format!("UDP send: {e}"))?;
 
@@ -132,18 +141,16 @@ impl UdpEventTransport {
     }
 
     /// Register a remote node's event subscription.
-    pub async fn add_subscriber(
-        &self,
-        node_id: String,
-        addr: SocketAddr,
-        patterns: Vec<String>,
-    ) {
+    pub async fn add_subscriber(&self, node_id: String, addr: SocketAddr, patterns: Vec<String>) {
         let mut subs = self.subscribers.write().await;
-        subs.insert(node_id, RemoteSubscription {
-            addr,
-            patterns,
-            last_seen: now_millis(),
-        });
+        subs.insert(
+            node_id,
+            RemoteSubscription {
+                addr,
+                patterns,
+                last_seen: now_millis(),
+            },
+        );
     }
 
     /// Remove a subscriber.
@@ -174,17 +181,26 @@ impl UdpEventTransport {
                                 on_event(event, data, frame.source_node);
                             }
                             // Subscription request: remote node wants our events
-                            GridPayload::Command { ref command, ref params } if command == "grid/subscribe-events" => {
+                            GridPayload::Command {
+                                ref command,
+                                ref params,
+                            } if command == "grid/subscribe-events" => {
                                 if let Some(patterns) = params.get("patterns").and_then(|p| {
                                     serde_json::from_value::<Vec<String>>(p.clone()).ok()
                                 }) {
                                     let mut subs = self.subscribers.write().await;
-                                    subs.insert(frame.source_node.clone(), RemoteSubscription {
-                                        addr: src,
-                                        patterns,
-                                        last_seen: now_millis(),
-                                    });
-                                    log.debug(&format!("UDP: {} subscribed from {}", frame.source_node, src));
+                                    subs.insert(
+                                        frame.source_node.clone(),
+                                        RemoteSubscription {
+                                            addr: src,
+                                            patterns,
+                                            last_seen: now_millis(),
+                                        },
+                                    );
+                                    log.debug(&format!(
+                                        "UDP: {} subscribed from {}",
+                                        frame.source_node, src
+                                    ));
                                 }
                             }
                             _ => {
@@ -240,7 +256,12 @@ fn now_millis() -> u64 {
 }
 
 /// Create an event frame for UDP (uses existing GridFrame::event with empty correlation).
-fn make_event_frame(source: &str, target: &str, event: &str, data: &serde_json::Value) -> GridFrame {
+fn make_event_frame(
+    source: &str,
+    target: &str,
+    event: &str,
+    data: &serde_json::Value,
+) -> GridFrame {
     GridFrame::event(
         String::new(), // No correlation for fire-and-forget events
         source.to_string(),
@@ -260,7 +281,10 @@ mod tests {
     fn test_pattern_matching() {
         assert!(matches_pattern(&["sensor:*".into()], "sensor:motion"));
         assert!(matches_pattern(&["sensor:*".into()], "sensor:temperature"));
-        assert!(!matches_pattern(&["sensor:*".into()], "voice:transcription"));
+        assert!(!matches_pattern(
+            &["sensor:*".into()],
+            "voice:transcription"
+        ));
         assert!(matches_pattern(&["*".into()], "anything"));
         assert!(matches_pattern(&["exact:match".into()], "exact:match"));
         assert!(!matches_pattern(&["exact:match".into()], "exact:other"));
@@ -287,11 +311,14 @@ mod tests {
         let receiver_addr = receiver_socket.local_addr().unwrap();
 
         // Send event
-        sender.send_event_to(
-            receiver_addr,
-            "test:event",
-            &serde_json::json!({"value": 42}),
-        ).await.unwrap();
+        sender
+            .send_event_to(
+                receiver_addr,
+                "test:event",
+                &serde_json::json!({"value": 42}),
+            )
+            .await
+            .unwrap();
 
         // Receive
         let mut buf = vec![0u8; 2000];

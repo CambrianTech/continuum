@@ -23,9 +23,8 @@ use crate::secrets::get_secret;
 
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
 use super::types::{
-    ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus,
-    MessageContent, ModelInfo, TextGenerationRequest, TextGenerationResponse,
-    ToolCall, ToolChoice, UsageMetrics,
+    ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
+    TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
 };
 
 /// Anthropic adapter implementation

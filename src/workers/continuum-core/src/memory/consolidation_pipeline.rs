@@ -206,15 +206,9 @@ mod tests {
             make_thought(3, "third"),
         ];
 
-        let result = run_consolidation_pass(
-            &mut consolidator,
-            &thoughts,
-            &ctx,
-            &adapter,
-            &manager,
-        )
-        .await
-        .expect("pass should succeed");
+        let result = run_consolidation_pass(&mut consolidator, &thoughts, &ctx, &adapter, &manager)
+            .await
+            .expect("pass should succeed");
 
         assert_eq!(result.memories.len(), 3);
         // Corpus now has 3 memories.

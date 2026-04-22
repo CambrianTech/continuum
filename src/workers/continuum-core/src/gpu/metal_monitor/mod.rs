@@ -35,8 +35,8 @@
 mod mach_ffi;
 
 use crate::gpu::monitor::GpuMonitor;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::time::Duration;
 

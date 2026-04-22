@@ -98,7 +98,8 @@ pub fn models_for_provider_via_registry(provider_id: &str) -> Vec<ModelInfo> {
 /// a runtime failure mode.
 pub fn default_model_for_provider(provider_id: &str) -> Option<String> {
     let reg = crate::model_registry::global();
-    reg.provider(provider_id).and_then(|p| p.default_model.clone())
+    reg.provider(provider_id)
+        .and_then(|p| p.default_model.clone())
 }
 
 #[cfg(test)]
@@ -117,7 +118,9 @@ mod tests {
         assert_eq!(projected.provider, "anthropic");
         assert!(projected.supports_streaming);
         assert!(projected.supports_tools);
-        assert!(projected.capabilities.contains(&ModelCapability::ImageAnalysis));
+        assert!(projected
+            .capabilities
+            .contains(&ModelCapability::ImageAnalysis));
         assert!(projected.capabilities.contains(&ModelCapability::Chat));
         assert!(projected.capabilities.contains(&ModelCapability::ToolUse));
         assert_eq!(projected.context_window, 200_000);

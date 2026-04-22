@@ -67,7 +67,8 @@ impl AuditLog {
         let mut guard = self.writer.lock().await;
         if guard.is_none() {
             if let Some(parent) = self.path.parent() {
-                tokio::fs::create_dir_all(parent).await
+                tokio::fs::create_dir_all(parent)
+                    .await
                     .map_err(|e| format!("Failed to create audit dir: {e}"))?;
             }
             let file = OpenOptions::new()
@@ -84,15 +85,17 @@ impl AuditLog {
     /// Append an audit entry to the log.
     pub async fn log(&self, entry: &AuditEntry) -> Result<(), String> {
         self.ensure_open().await?;
-        let mut line = serde_json::to_string(entry)
-            .map_err(|e| format!("Audit serialization failed: {e}"))?;
+        let mut line =
+            serde_json::to_string(entry).map_err(|e| format!("Audit serialization failed: {e}"))?;
         line.push('\n');
 
         let mut guard = self.writer.lock().await;
         if let Some(file) = guard.as_mut() {
-            file.write_all(line.as_bytes()).await
+            file.write_all(line.as_bytes())
+                .await
                 .map_err(|e| format!("Audit write failed: {e}"))?;
-            file.flush().await
+            file.flush()
+                .await
                 .map_err(|e| format!("Audit flush failed: {e}"))?;
         }
         Ok(())
@@ -100,7 +103,8 @@ impl AuditLog {
 
     /// Read the last N entries from the audit log.
     pub async fn recent(&self, limit: usize) -> Result<Vec<AuditEntry>, String> {
-        let contents = tokio::fs::read_to_string(&self.path).await
+        let contents = tokio::fs::read_to_string(&self.path)
+            .await
             .unwrap_or_default();
 
         let entries: Vec<AuditEntry> = contents

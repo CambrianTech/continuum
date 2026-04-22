@@ -98,7 +98,7 @@ fn decode_data_url_or_base64(
     url: Option<&str>,
     modality_label: &str,
 ) -> Result<Vec<u8>, String> {
-    use base64::{Engine, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine};
     if let Some(b64) = b64 {
         let payload = b64.split_once(',').map(|(_, rest)| rest).unwrap_or(b64);
         general_purpose::STANDARD
@@ -320,7 +320,7 @@ impl LlamaCppAdapter {
         // llama.cpp doesn't expose a "bytes loaded" counter and the file
         // size is the most honest first-cut number.
         if let Ok(meta) = std::fs::metadata(&self.model_path) {
-            use crate::inference::footprint_registry::{FootprintKey, ResourceType, global};
+            use crate::inference::footprint_registry::{global, FootprintKey, ResourceType};
             use crate::inference::kv_quant::Residency;
             global().report_authoritative(
                 FootprintKey::for_backend(
@@ -578,7 +578,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // format, attach the JSON grammar so output is structurally valid.
         // Same value-object pattern Joel called for ('pass the struct').
         use crate::ai::types::ResponseFormat;
-        use crate::inference::backends::{JSON_GRAMMAR, SamplingConfig};
+        use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
         let mut sampling = SamplingConfig::chat();
         if let Some(t) = request.temperature {
             sampling.temperature = t as f64;

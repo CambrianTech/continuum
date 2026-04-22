@@ -129,7 +129,8 @@ fn compute_layer_topology(
             .filter(|&kv_idx| {
                 let q_start = kv_idx * gqa_ratio;
                 let q_end = ((kv_idx + 1) * gqa_ratio).min(num_heads);
-                (q_start..q_end).all(|q| adjusted_precisions.get(q) == Some(&HeadPrecision::Removed))
+                (q_start..q_end)
+                    .all(|q| adjusted_precisions.get(q) == Some(&HeadPrecision::Removed))
             })
             .map(|kv_idx| {
                 let q_start = kv_idx * gqa_ratio;
@@ -148,15 +149,13 @@ fn compute_layer_topology(
             // Resurrect the best Q head in this KV group
             let q_start = kv_idx * gqa_ratio;
             let q_end = ((kv_idx + 1) * gqa_ratio).min(num_heads);
-            if let Some(best_q) = (q_start..q_end)
-                .max_by(|&a, &b| {
-                    head_scores
-                        .get(a)
-                        .unwrap_or(&0.0)
-                        .partial_cmp(head_scores.get(b).unwrap_or(&0.0))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-            {
+            if let Some(best_q) = (q_start..q_end).max_by(|&a, &b| {
+                head_scores
+                    .get(a)
+                    .unwrap_or(&0.0)
+                    .partial_cmp(head_scores.get(b).unwrap_or(&0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }) {
                 adjusted_precisions[best_q] = HeadPrecision::minimum_alive();
             }
         }
@@ -384,10 +383,11 @@ pub fn compute_layer_summaries(
                 }
             }
 
-            let (min_s, max_s, sum_s) = head_scores.iter().fold(
-                (f64::MAX, f64::MIN, 0.0),
-                |(min, max, sum), &s| (min.min(s), max.max(s), sum + s),
-            );
+            let (min_s, max_s, sum_s) = head_scores
+                .iter()
+                .fold((f64::MAX, f64::MIN, 0.0), |(min, max, sum), &s| {
+                    (min.min(s), max.max(s), sum + s)
+                });
 
             let mean = if head_scores.is_empty() {
                 0.0
@@ -446,7 +446,11 @@ pub fn compute_budget_aware_plan(
     let num_layers = scores.layer_scores.len();
     let num_heads = scores.num_heads;
     let num_kv_heads = scores.num_kv_heads;
-    let gqa_ratio = if num_kv_heads > 0 { num_heads / num_kv_heads } else { 1 };
+    let gqa_ratio = if num_kv_heads > 0 {
+        num_heads / num_kv_heads
+    } else {
+        1
+    };
 
     // Collect all heads with their scores
     let mut all_heads: Vec<(usize, usize, f64)> = Vec::new(); // (layer, head_idx, score)
@@ -466,7 +470,7 @@ pub fn compute_budget_aware_plan(
     // KV parameters are shared across GQA group — account separately
     // K head: head_dim * hidden_size, V head: head_dim * hidden_size
     let params_per_kv_head = head_dim * hidden_size * 2; // K + V
-    // Total KV bytes at BF16 (we keep KV at BF16 for now — quantizing shared KV is risky)
+                                                         // Total KV bytes at BF16 (we keep KV at BF16 for now — quantizing shared KV is risky)
     let kv_bytes_total = (num_kv_heads * num_layers * params_per_kv_head * 2) as u64; // BF16 = 2 bytes
     let q_budget = attention_budget.saturating_sub(kv_bytes_total);
 
@@ -481,7 +485,8 @@ pub fn compute_budget_aware_plan(
     ];
 
     // Initialize all heads as Removed
-    let mut assignments: Vec<Vec<HeadPrecision>> = vec![vec![HeadPrecision::Removed; num_heads]; num_layers];
+    let mut assignments: Vec<Vec<HeadPrecision>> =
+        vec![vec![HeadPrecision::Removed; num_heads]; num_layers];
     let mut used_bytes: u64 = 0;
 
     // Greedily assign precision: iterate heads by importance, give best affordable tier
@@ -535,7 +540,10 @@ pub fn compute_budget_aware_plan(
         }
 
         // Enforce minimum heads
-        let alive_count = precisions.iter().filter(|p| **p != HeadPrecision::Removed).count();
+        let alive_count = precisions
+            .iter()
+            .filter(|p| **p != HeadPrecision::Removed)
+            .count();
         if alive_count < config.min_heads_per_layer {
             let mut candidates: Vec<(f64, usize)> = scores.layer_scores[layer_idx]
                 .iter()
@@ -544,7 +552,10 @@ pub fn compute_budget_aware_plan(
                 .map(|(i, &s)| (s, i))
                 .collect();
             candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            for (_, idx) in candidates.iter().take(config.min_heads_per_layer - alive_count) {
+            for (_, idx) in candidates
+                .iter()
+                .take(config.min_heads_per_layer - alive_count)
+            {
                 precisions[*idx] = HeadPrecision::Ternary;
             }
         }
@@ -561,8 +572,12 @@ pub fn compute_budget_aware_plan(
             })
             .collect();
 
-        let head_precisions: Vec<HeadPrecision> = retained_q.iter().map(|&i| precisions[i]).collect();
-        let head_scores: Vec<f64> = retained_q.iter().map(|&i| scores.layer_scores[layer_idx][i]).collect();
+        let head_precisions: Vec<HeadPrecision> =
+            retained_q.iter().map(|&i| precisions[i]).collect();
+        let head_scores: Vec<f64> = retained_q
+            .iter()
+            .map(|&i| scores.layer_scores[layer_idx][i])
+            .collect();
 
         result.push(LayerTopology {
             layer_index: layer_idx,
@@ -607,7 +622,11 @@ pub fn estimate_non_attention_bytes(
 mod tests {
     use super::*;
 
-    fn make_scores(layer_scores: Vec<Vec<f64>>, num_heads: usize, num_kv_heads: usize) -> UtilizationData {
+    fn make_scores(
+        layer_scores: Vec<Vec<f64>>,
+        num_heads: usize,
+        num_kv_heads: usize,
+    ) -> UtilizationData {
         UtilizationData {
             layer_scores,
             num_steps: 100,
@@ -626,15 +645,27 @@ mod tests {
     #[test]
     fn test_precision_from_utilization_dead() {
         assert_eq!(HeadPrecision::from_utilization(0.0), HeadPrecision::Removed);
-        assert_eq!(HeadPrecision::from_utilization(0.05), HeadPrecision::Removed);
-        assert_eq!(HeadPrecision::from_utilization(0.099), HeadPrecision::Removed);
+        assert_eq!(
+            HeadPrecision::from_utilization(0.05),
+            HeadPrecision::Removed
+        );
+        assert_eq!(
+            HeadPrecision::from_utilization(0.099),
+            HeadPrecision::Removed
+        );
     }
 
     #[test]
     fn test_precision_from_utilization_dormant() {
         assert_eq!(HeadPrecision::from_utilization(0.1), HeadPrecision::Ternary);
-        assert_eq!(HeadPrecision::from_utilization(0.15), HeadPrecision::Ternary);
-        assert_eq!(HeadPrecision::from_utilization(0.199), HeadPrecision::Ternary);
+        assert_eq!(
+            HeadPrecision::from_utilization(0.15),
+            HeadPrecision::Ternary
+        );
+        assert_eq!(
+            HeadPrecision::from_utilization(0.199),
+            HeadPrecision::Ternary
+        );
     }
 
     #[test]
@@ -702,7 +733,10 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].num_heads, 8);
         assert_eq!(plan[0].num_kv_heads, 8);
-        assert!(plan[0].head_precisions.iter().all(|p| *p == HeadPrecision::BF16));
+        assert!(plan[0]
+            .head_precisions
+            .iter()
+            .all(|p| *p == HeadPrecision::BF16));
     }
 
     #[test]
@@ -725,7 +759,8 @@ mod tests {
         // 8 heads with varying utilization covering all tiers
         let scores = make_scores(
             vec![vec![0.05, 0.15, 0.25, 0.4, 0.55, 0.65, 0.8, 0.95]],
-            8, 8,
+            8,
+            8,
         );
         let plan = compute_optimization_plan(&scores, &default_config());
 
@@ -756,10 +791,7 @@ mod tests {
             min_kv_heads_per_layer: 1,
             ..default_config()
         };
-        let scores = make_scores(
-            vec![vec![0.01, 0.01, 0.5, 0.01, 0.01, 0.01]],
-            6, 2,
-        );
+        let scores = make_scores(vec![vec![0.01, 0.01, 0.5, 0.01, 0.01, 0.01]], 6, 2);
         let plan = compute_optimization_plan(&scores, &config);
 
         let layer = &plan[0];
@@ -781,10 +813,7 @@ mod tests {
             min_kv_heads_per_layer: 1,
             ..default_config()
         };
-        let scores = make_scores(
-            vec![vec![0.01, 0.01, 0.01, 0.8, 0.8, 0.8]],
-            6, 2,
-        );
+        let scores = make_scores(vec![vec![0.01, 0.01, 0.01, 0.8, 0.8, 0.8]], 6, 2);
         let plan = compute_optimization_plan(&scores, &config);
 
         let layer = &plan[0];
@@ -800,7 +829,7 @@ mod tests {
         // Llama-3.2-3B: 24 Q heads, 8 KV heads (3:1 ratio)
         // Simulate realistic scores
         let mut head_scores = vec![0.5; 24]; // Default medium
-        // Kill KV group 0 (Q heads 0,1,2)
+                                             // Kill KV group 0 (Q heads 0,1,2)
         head_scores[0] = 0.01;
         head_scores[1] = 0.02;
         head_scores[2] = 0.03;
@@ -822,7 +851,10 @@ mod tests {
         // 2 KV heads removed (groups 0 and 3), 6 remaining
         assert_eq!(layer.num_kv_heads, 6);
         // High-util heads should be BF16
-        assert!(layer.head_precisions.iter().any(|p| *p == HeadPrecision::BF16));
+        assert!(layer
+            .head_precisions
+            .iter()
+            .any(|p| *p == HeadPrecision::BF16));
     }
 
     // --- Min heads floor ---
@@ -852,15 +884,16 @@ mod tests {
         // Each layer gets independent decisions
         let scores = make_scores(
             vec![
-                vec![0.8, 0.8, 0.8, 0.8],   // Layer 0: all high
+                vec![0.8, 0.8, 0.8, 0.8],    // Layer 0: all high
                 vec![0.01, 0.01, 0.01, 0.8], // Layer 1: 3 dead, 1 high
             ],
-            4, 4,
+            4,
+            4,
         );
         let plan = compute_optimization_plan(&scores, &default_config());
 
         assert_eq!(plan[0].num_heads, 4); // All alive
-        // Layer 1: 1 alive + min_heads floor (4 min) → resurrect 3
+                                          // Layer 1: 1 alive + min_heads floor (4 min) → resurrect 3
         assert_eq!(plan[1].num_heads, 4);
     }
 
@@ -868,23 +901,21 @@ mod tests {
 
     #[test]
     fn test_precision_profile_computation() {
-        let layers = vec![
-            LayerTopology {
-                layer_index: 0,
-                num_heads: 5,
-                num_kv_heads: 5,
-                retained_head_indices: vec![1, 2, 3, 4, 5],
-                retained_kv_head_indices: vec![1, 2, 3, 4, 5],
-                head_precisions: vec![
-                    HeadPrecision::Ternary,
-                    HeadPrecision::Q2,
-                    HeadPrecision::Q4,
-                    HeadPrecision::Q8,
-                    HeadPrecision::BF16,
-                ],
-                head_scores: vec![0.15, 0.25, 0.4, 0.6, 0.8],
-            },
-        ];
+        let layers = vec![LayerTopology {
+            layer_index: 0,
+            num_heads: 5,
+            num_kv_heads: 5,
+            retained_head_indices: vec![1, 2, 3, 4, 5],
+            retained_kv_head_indices: vec![1, 2, 3, 4, 5],
+            head_precisions: vec![
+                HeadPrecision::Ternary,
+                HeadPrecision::Q2,
+                HeadPrecision::Q4,
+                HeadPrecision::Q8,
+                HeadPrecision::BF16,
+            ],
+            head_scores: vec![0.15, 0.25, 0.4, 0.6, 0.8],
+        }];
         let profile = compute_precision_profile(&layers, 6, 1);
         assert_eq!(profile.removed, 1);
         assert_eq!(profile.ternary, 1);
@@ -899,10 +930,7 @@ mod tests {
 
     #[test]
     fn test_find_saturated_heads() {
-        let scores = make_scores(
-            vec![vec![0.5, 0.95, 0.3, 0.92]],
-            4, 4,
-        );
+        let scores = make_scores(vec![vec![0.5, 0.95, 0.3, 0.92]], 4, 4);
         let saturated = find_saturated_heads(&scores, &default_config());
         assert_eq!(saturated.len(), 2);
         assert_eq!(saturated[0].head_index, 1);
@@ -939,7 +967,11 @@ mod tests {
             head_scores: vec![0.8; 4],
         }];
         let reduction = estimate_parameter_reduction(&layers, 8, 8, 64, 512);
-        assert!(reduction > 0.49 && reduction < 0.51, "Expected ~0.5, got {}", reduction);
+        assert!(
+            reduction > 0.49 && reduction < 0.51,
+            "Expected ~0.5, got {}",
+            reduction
+        );
     }
 
     // --- Edge cases ---
@@ -968,10 +1000,7 @@ mod tests {
 
     #[test]
     fn test_layer_summaries() {
-        let scores = make_scores(
-            vec![vec![0.05, 0.15, 0.25, 0.4, 0.55, 0.8, 0.95]],
-            7, 7,
-        );
+        let scores = make_scores(vec![vec![0.05, 0.15, 0.25, 0.4, 0.55, 0.8, 0.95]], 7, 7);
         let config = CompactionConfig {
             min_heads_per_layer: 1,
             min_kv_heads_per_layer: 1,
@@ -982,13 +1011,13 @@ mod tests {
 
         assert_eq!(summaries.len(), 1);
         let s = &summaries[0];
-        assert_eq!(s.heads_removed, 1);    // Head 0 (0.05) removed
-        assert_eq!(s.heads_ternary, 1);    // Head 1 (0.15) ternary
-        assert_eq!(s.heads_q2, 1);         // Head 2 (0.25) q2
-        assert_eq!(s.heads_q4, 1);         // Head 3 (0.4) q4
-        assert_eq!(s.heads_q8, 1);         // Head 4 (0.55) q8
-        assert!(s.heads_bf16 >= 1);        // Heads 5,6 are BF16
-        assert!(s.heads_saturated >= 1);   // Head 6 (0.95) saturated
+        assert_eq!(s.heads_removed, 1); // Head 0 (0.05) removed
+        assert_eq!(s.heads_ternary, 1); // Head 1 (0.15) ternary
+        assert_eq!(s.heads_q2, 1); // Head 2 (0.25) q2
+        assert_eq!(s.heads_q4, 1); // Head 3 (0.4) q4
+        assert_eq!(s.heads_q8, 1); // Head 4 (0.55) q8
+        assert!(s.heads_bf16 >= 1); // Heads 5,6 are BF16
+        assert!(s.heads_saturated >= 1); // Head 6 (0.95) saturated
         assert!((s.min_score - 0.05).abs() < 1e-6);
         assert!((s.max_score - 0.95).abs() < 1e-6);
     }
@@ -1106,24 +1135,24 @@ mod tests {
         let scores = make_scores(vec![vec![0.199, 0.2]], 2, 2);
         let plan = compute_optimization_plan(&scores, &config);
         assert_eq!(plan[0].head_precisions[0], HeadPrecision::Ternary); // 0.199
-        assert_eq!(plan[0].head_precisions[1], HeadPrecision::Q2);     // 0.2
+        assert_eq!(plan[0].head_precisions[1], HeadPrecision::Q2); // 0.2
 
         // Boundary: low_threshold (0.3)
         let scores = make_scores(vec![vec![0.299, 0.3]], 2, 2);
         let plan = compute_optimization_plan(&scores, &config);
-        assert_eq!(plan[0].head_precisions[0], HeadPrecision::Q2);  // 0.299
-        assert_eq!(plan[0].head_precisions[1], HeadPrecision::Q4);  // 0.3
+        assert_eq!(plan[0].head_precisions[0], HeadPrecision::Q2); // 0.299
+        assert_eq!(plan[0].head_precisions[1], HeadPrecision::Q4); // 0.3
 
         // Boundary: medium_threshold (0.5)
         let scores = make_scores(vec![vec![0.499, 0.5]], 2, 2);
         let plan = compute_optimization_plan(&scores, &config);
-        assert_eq!(plan[0].head_precisions[0], HeadPrecision::Q4);  // 0.499
-        assert_eq!(plan[0].head_precisions[1], HeadPrecision::Q8);  // 0.5
+        assert_eq!(plan[0].head_precisions[0], HeadPrecision::Q4); // 0.499
+        assert_eq!(plan[0].head_precisions[1], HeadPrecision::Q8); // 0.5
 
         // Boundary: high_threshold (0.7)
         let scores = make_scores(vec![vec![0.699, 0.7]], 2, 2);
         let plan = compute_optimization_plan(&scores, &config);
-        assert_eq!(plan[0].head_precisions[0], HeadPrecision::Q8);   // 0.699
+        assert_eq!(plan[0].head_precisions[0], HeadPrecision::Q8); // 0.699
         assert_eq!(plan[0].head_precisions[1], HeadPrecision::BF16); // 0.7
     }
 
@@ -1138,18 +1167,66 @@ mod tests {
         }
 
         let cases = vec![
-            TestCase { score: 0.02, expected_alive: false, expected_precision: None },                     // Dead: no gradient flow
-            TestCase { score: 0.08, expected_alive: false, expected_precision: None },                     // Dead: barely active
-            TestCase { score: 0.12, expected_alive: true, expected_precision: Some(HeadPrecision::Ternary) }, // Dormant: 1.58-bit
-            TestCase { score: 0.18, expected_alive: true, expected_precision: Some(HeadPrecision::Ternary) }, // Dormant: 1.58-bit
-            TestCase { score: 0.25, expected_alive: true, expected_precision: Some(HeadPrecision::Q2) },     // Low: 2-bit
-            TestCase { score: 0.35, expected_alive: true, expected_precision: Some(HeadPrecision::Q4) },     // Medium: 4-bit
-            TestCase { score: 0.45, expected_alive: true, expected_precision: Some(HeadPrecision::Q4) },     // Medium: 4-bit
-            TestCase { score: 0.55, expected_alive: true, expected_precision: Some(HeadPrecision::Q8) },     // Active: 8-bit
-            TestCase { score: 0.65, expected_alive: true, expected_precision: Some(HeadPrecision::Q8) },     // Active: 8-bit
-            TestCase { score: 0.75, expected_alive: true, expected_precision: Some(HeadPrecision::BF16) },   // Hot: full precision
-            TestCase { score: 0.88, expected_alive: true, expected_precision: Some(HeadPrecision::BF16) },   // Hot: essential
-            TestCase { score: 0.95, expected_alive: true, expected_precision: Some(HeadPrecision::BF16) },   // Saturated: overloaded
+            TestCase {
+                score: 0.02,
+                expected_alive: false,
+                expected_precision: None,
+            }, // Dead: no gradient flow
+            TestCase {
+                score: 0.08,
+                expected_alive: false,
+                expected_precision: None,
+            }, // Dead: barely active
+            TestCase {
+                score: 0.12,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::Ternary),
+            }, // Dormant: 1.58-bit
+            TestCase {
+                score: 0.18,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::Ternary),
+            }, // Dormant: 1.58-bit
+            TestCase {
+                score: 0.25,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::Q2),
+            }, // Low: 2-bit
+            TestCase {
+                score: 0.35,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::Q4),
+            }, // Medium: 4-bit
+            TestCase {
+                score: 0.45,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::Q4),
+            }, // Medium: 4-bit
+            TestCase {
+                score: 0.55,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::Q8),
+            }, // Active: 8-bit
+            TestCase {
+                score: 0.65,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::Q8),
+            }, // Active: 8-bit
+            TestCase {
+                score: 0.75,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::BF16),
+            }, // Hot: full precision
+            TestCase {
+                score: 0.88,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::BF16),
+            }, // Hot: essential
+            TestCase {
+                score: 0.95,
+                expected_alive: true,
+                expected_precision: Some(HeadPrecision::BF16),
+            }, // Saturated: overloaded
         ];
 
         let config = CompactionConfig {
@@ -1165,17 +1242,20 @@ mod tests {
             if case.expected_alive {
                 assert_eq!(
                     plan[0].num_heads, 1,
-                    "Case {i}: score={} should be alive", case.score
+                    "Case {i}: score={} should be alive",
+                    case.score
                 );
                 assert_eq!(
                     plan[0].head_precisions[0],
                     case.expected_precision.unwrap(),
-                    "Case {i}: score={} wrong precision", case.score
+                    "Case {i}: score={} wrong precision",
+                    case.score
                 );
             } else {
                 assert_eq!(
                     plan[0].num_heads, 0,
-                    "Case {i}: score={} should be dead", case.score
+                    "Case {i}: score={} should be dead",
+                    case.score
                 );
             }
         }
@@ -1186,11 +1266,11 @@ mod tests {
         // Our system allows custom thresholds via CompactionConfig
         // Aggressive config: wider dead zone, faster path to full precision
         let aggressive = CompactionConfig {
-            dead_threshold: 0.2,     // More aggressive pruning
-            dormant_threshold: 0.3,  // Wider ternary band
+            dead_threshold: 0.2,    // More aggressive pruning
+            dormant_threshold: 0.3, // Wider ternary band
             low_threshold: 0.4,
             medium_threshold: 0.5,
-            high_threshold: 0.6,     // Faster path to full precision
+            high_threshold: 0.6, // Faster path to full precision
             min_heads_per_layer: 0,
             min_kv_heads_per_layer: 0,
             ..default_config()
@@ -1218,14 +1298,25 @@ mod tests {
         // Simulate distilgpt2-scale model to match sentinel-ai test fixture
         let scores = make_scores(
             vec![
-                vec![0.05, 0.8, 0.3, 0.6, 0.9, 0.1, 0.4, 0.7, 0.2, 0.95, 0.5, 0.85],
-                vec![0.1, 0.7, 0.4, 0.5, 0.8, 0.2, 0.3, 0.6, 0.15, 0.9, 0.45, 0.75],
-                vec![0.3, 0.6, 0.5, 0.4, 0.7, 0.35, 0.45, 0.55, 0.25, 0.8, 0.4, 0.65],
+                vec![
+                    0.05, 0.8, 0.3, 0.6, 0.9, 0.1, 0.4, 0.7, 0.2, 0.95, 0.5, 0.85,
+                ],
+                vec![
+                    0.1, 0.7, 0.4, 0.5, 0.8, 0.2, 0.3, 0.6, 0.15, 0.9, 0.45, 0.75,
+                ],
+                vec![
+                    0.3, 0.6, 0.5, 0.4, 0.7, 0.35, 0.45, 0.55, 0.25, 0.8, 0.4, 0.65,
+                ],
                 vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
-                vec![0.01, 0.01, 0.01, 0.01, 0.9, 0.9, 0.9, 0.9, 0.01, 0.01, 0.9, 0.9],
-                vec![0.7, 0.8, 0.9, 0.95, 0.3, 0.2, 0.1, 0.05, 0.5, 0.6, 0.4, 0.35],
+                vec![
+                    0.01, 0.01, 0.01, 0.01, 0.9, 0.9, 0.9, 0.9, 0.01, 0.01, 0.9, 0.9,
+                ],
+                vec![
+                    0.7, 0.8, 0.9, 0.95, 0.3, 0.2, 0.1, 0.05, 0.5, 0.6, 0.4, 0.35,
+                ],
             ],
-            12, 12,
+            12,
+            12,
         );
 
         let plan = compute_optimization_plan(&scores, &default_config());
@@ -1239,22 +1330,35 @@ mod tests {
 
         // Layer 3: all at 0.5 → all Q8
         assert_eq!(plan[3].num_heads, 12);
-        assert!(plan[3].head_precisions.iter().all(|p| *p == HeadPrecision::Q8));
+        assert!(plan[3]
+            .head_precisions
+            .iter()
+            .all(|p| *p == HeadPrecision::Q8));
 
         // Layer 4: 6 dead heads (0.01), 4 alive at 0.9 + 2 alive at 0.9
         // min_heads_per_layer = 4, so at least 4 survive
         assert!(plan[4].num_heads >= 4);
         // The 0.9 heads should all be BF16
-        let bf16_count = plan[4].head_precisions.iter()
+        let bf16_count = plan[4]
+            .head_precisions
+            .iter()
             .filter(|p| **p == HeadPrecision::BF16)
             .count();
-        assert!(bf16_count >= 4, "Should have at least 4 BF16 heads, got {}", bf16_count);
+        assert!(
+            bf16_count >= 4,
+            "Should have at least 4 BF16 heads, got {}",
+            bf16_count
+        );
 
         // Layer 5: heads 6 (0.1) and 7 (0.05) should be dead/Ternary
         let head_7_in_retained = plan[5].retained_head_indices.contains(&7);
         if head_7_in_retained {
             // If resurrected by floor, should be at Ternary (minimum alive)
-            let idx = plan[5].retained_head_indices.iter().position(|&x| x == 7).unwrap();
+            let idx = plan[5]
+                .retained_head_indices
+                .iter()
+                .position(|&x| x == 7)
+                .unwrap();
             assert_eq!(plan[5].head_precisions[idx], HeadPrecision::Ternary);
         }
     }
@@ -1300,18 +1404,21 @@ mod tests {
         let gb = bytes as f64 / 1_073_741_824.0;
         // MLP dominates: 64 layers × 3 × 5120 × 27648 × 2 ≈ 51.6 GB
         // Embeddings: 152064 × 5120 × 2 ≈ 1.45 GB × 2 (embed + lm_head)
-        assert!(gb > 50.0, "Non-attention should be >50GB for 32B, got {gb:.1}GB");
-        assert!(gb < 60.0, "Non-attention should be <60GB for 32B, got {gb:.1}GB");
+        assert!(
+            gb > 50.0,
+            "Non-attention should be >50GB for 32B, got {gb:.1}GB"
+        );
+        assert!(
+            gb < 60.0,
+            "Non-attention should be <60GB for 32B, got {gb:.1}GB"
+        );
         eprintln!("Qwen 32B non-attention: {gb:.2}GB");
     }
 
     #[test]
     fn test_budget_aware_respects_target() {
         // 4 layers, 8 heads, 4 KV (2:1 GQA), head_dim=64, hidden=512
-        let scores = make_scores(
-            vec![vec![0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]; 4],
-            8, 4,
-        );
+        let scores = make_scores(vec![vec![0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]; 4], 8, 4);
         let config = CompactionConfig::default();
 
         // Non-attention bytes (small model)
@@ -1334,10 +1441,7 @@ mod tests {
     #[test]
     fn test_budget_aware_generous_keeps_all() {
         // Same model but with a generous budget
-        let scores = make_scores(
-            vec![vec![0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]; 4],
-            8, 4,
-        );
+        let scores = make_scores(vec![vec![0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]; 4], 8, 4);
         let config = CompactionConfig::default();
         let non_attn = estimate_non_attention_bytes(4, 512, 1024, 1000);
 
@@ -1346,10 +1450,15 @@ mod tests {
 
         // Should keep all heads at high precision
         let total_retained: usize = plan.iter().map(|l| l.num_heads).sum();
-        assert_eq!(total_retained, 4 * 8, "Generous budget should keep all heads");
+        assert_eq!(
+            total_retained,
+            4 * 8,
+            "Generous budget should keep all heads"
+        );
 
         // Best heads should get BF16
-        let bf16_count: usize = plan.iter()
+        let bf16_count: usize = plan
+            .iter()
             .flat_map(|l| &l.head_precisions)
             .filter(|p| **p == HeadPrecision::BF16)
             .count();
@@ -1360,7 +1469,10 @@ mod tests {
     fn test_budget_aware_prioritizes_high_utilization() {
         // 1 layer, 4 heads with different scores
         let scores = make_scores(vec![vec![0.9, 0.1, 0.5, 0.3]], 4, 4);
-        let config = CompactionConfig { min_heads_per_layer: 1, ..CompactionConfig::default() };
+        let config = CompactionConfig {
+            min_heads_per_layer: 1,
+            ..CompactionConfig::default()
+        };
         let non_attn = estimate_non_attention_bytes(1, 512, 1024, 1000);
 
         // Budget for ~2 heads at BF16
@@ -1371,14 +1483,25 @@ mod tests {
         let plan = compute_budget_aware_plan(&scores, budget_gb, non_attn, 64, 512, &config);
 
         // Head 0 (score 0.9) should survive at highest precision
-        assert!(plan[0].retained_head_indices.contains(&0), "Highest-scored head should be retained");
-        let head0_idx = plan[0].retained_head_indices.iter().position(|&i| i == 0).unwrap();
+        assert!(
+            plan[0].retained_head_indices.contains(&0),
+            "Highest-scored head should be retained"
+        );
+        let head0_idx = plan[0]
+            .retained_head_indices
+            .iter()
+            .position(|&i| i == 0)
+            .unwrap();
         let head0_prec = &plan[0].head_precisions[head0_idx];
 
         // Head 1 (score 0.1) is least important
         // If it survived, should be at lower precision than head 0
         if plan[0].retained_head_indices.contains(&1) {
-            let head1_idx = plan[0].retained_head_indices.iter().position(|&i| i == 1).unwrap();
+            let head1_idx = plan[0]
+                .retained_head_indices
+                .iter()
+                .position(|&i| i == 1)
+                .unwrap();
             let head1_prec = &plan[0].head_precisions[head1_idx];
             assert!(
                 head0_prec.bits() >= head1_prec.bits(),

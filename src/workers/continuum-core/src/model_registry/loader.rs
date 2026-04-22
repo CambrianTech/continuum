@@ -42,8 +42,13 @@ impl Registry {
         self.providers.values()
     }
 
-    pub fn models_for_provider<'a>(&'a self, provider_id: &'a str) -> impl Iterator<Item = &'a Model> + 'a {
-        self.models.values().filter(move |m| m.provider == provider_id)
+    pub fn models_for_provider<'a>(
+        &'a self,
+        provider_id: &'a str,
+    ) -> impl Iterator<Item = &'a Model> + 'a {
+        self.models
+            .values()
+            .filter(move |m| m.provider == provider_id)
     }
 }
 
@@ -71,7 +76,9 @@ pub enum RegistryError {
     },
     #[error("duplicate model id `{id}` — each model must appear exactly once in models.toml")]
     DuplicateModel { id: String },
-    #[error("duplicate provider id `{id}` — each provider must appear exactly once in providers.toml")]
+    #[error(
+        "duplicate provider id `{id}` — each provider must appear exactly once in providers.toml"
+    )]
     DuplicateProvider { id: String },
 }
 
@@ -279,7 +286,9 @@ auth = "api_key"
         assert!(!qwen.has(Capability::Vision));
         assert_eq!(qwen.context_window, 262144);
 
-        let claude = reg.model("claude-sonnet-4-5-20250929").expect("claude registered");
+        let claude = reg
+            .model("claude-sonnet-4-5-20250929")
+            .expect("claude registered");
         assert!(claude.has(Capability::Vision));
         assert_eq!(claude.cost_input_per_1k, 0.003);
 
@@ -343,9 +352,11 @@ auth = "none"
         // that will bleed special-token fragments into chat output.
         let crate_root = env!("CARGO_MANIFEST_DIR");
         let models = PathBuf::from(crate_root).join("config").join("models.toml");
-        let providers = PathBuf::from(crate_root).join("config").join("providers.toml");
-        let reg = load_registry(&models, &providers)
-            .expect("seeded config/ should always validate");
+        let providers = PathBuf::from(crate_root)
+            .join("config")
+            .join("providers.toml");
+        let reg =
+            load_registry(&models, &providers).expect("seeded config/ should always validate");
         let forged = reg
             .model("continuum-ai/qwen3.5-4b-code-forged-GGUF")
             .expect("forged qwen3.5 in registry");
@@ -375,7 +386,9 @@ auth = "none"
         // this test catches it before it ships.
         let crate_root = env!("CARGO_MANIFEST_DIR");
         let models = PathBuf::from(crate_root).join("config").join("models.toml");
-        let providers = PathBuf::from(crate_root).join("config").join("providers.toml");
+        let providers = PathBuf::from(crate_root)
+            .join("config")
+            .join("providers.toml");
 
         let reg = load_registry(&models, &providers)
             .unwrap_or_else(|e| panic!("seeded config/ should always validate: {e}"));
@@ -383,8 +396,14 @@ auth = "none"
         // Sanity counts match the extraction audit.
         let n_models = reg.models().count();
         let n_providers = reg.providers().count();
-        assert!(n_providers >= 8, "providers.toml should hold ≥8 entries, got {n_providers}");
-        assert!(n_models >= 12, "models.toml should hold ≥12 entries, got {n_models}");
+        assert!(
+            n_providers >= 8,
+            "providers.toml should hold ≥8 entries, got {n_providers}"
+        );
+        assert!(
+            n_models >= 12,
+            "models.toml should hold ≥12 entries, got {n_models}"
+        );
 
         // Anchor assertions: the models we know are in there, with the
         // capabilities we know they have. If any of these fail, the

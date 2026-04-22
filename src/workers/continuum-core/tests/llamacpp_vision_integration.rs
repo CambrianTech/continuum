@@ -29,8 +29,8 @@
 //!     cargo test --package continuum-core --test llamacpp_vision_integration \
 //!       --release -- --ignored --nocapture
 
-use continuum_core::inference::backends::SamplingConfig;
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
+use continuum_core::inference::backends::SamplingConfig;
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -194,7 +194,9 @@ fn qwen2_vl_describes_image_via_rust_pipeline() {
     // the skip message) is a cat. Vision-LLM phrasing varies — accept
     // any of these animal-identifier words. Brew's llama-mtmd-cli on
     // this same model + image returned "The animal in the image is a cat."
-    let mentions_animal = ["cat", "kitten", "feline"].iter().any(|c| lower.contains(c));
+    let mentions_animal = ["cat", "kitten", "feline"]
+        .iter()
+        .any(|c| lower.contains(c));
     assert!(
         mentions_animal,
         "response should identify the animal (image is a cat); got: {text:?}"

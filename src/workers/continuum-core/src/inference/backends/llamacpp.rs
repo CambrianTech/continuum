@@ -23,8 +23,8 @@ use std::time::Instant;
 
 use llama::{FlashAttn, KvCacheType, LoraAdapter, Model, ModelParams};
 
-use super::SamplingConfig;
 use super::llamacpp_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, TokenEvent};
+use super::SamplingConfig;
 use crate::runtime;
 
 /// Configuration for loading a model.
@@ -197,8 +197,12 @@ impl LlamaCppBackend {
                 self.model_id
             ));
         }
-        let ctx = llama::MtmdContext::from_file(mmproj, &self.model)
-            .map_err(|e| format!("MtmdContext::from_file failed for {}: {e}", mmproj.display()))?;
+        let ctx = llama::MtmdContext::from_file(mmproj, &self.model).map_err(|e| {
+            format!(
+                "MtmdContext::from_file failed for {}: {e}",
+                mmproj.display()
+            )
+        })?;
         let arc = Arc::new(ctx);
         *guard = Some(arc.clone());
         Ok(arc)
@@ -389,8 +393,7 @@ impl LlamaCppBackend {
             if logits.is_empty() {
                 eprintln!("[gen-with-img] WARN: logits_ith(-1) returned empty");
             } else {
-                let mut indexed: Vec<(usize, f32)> =
-                    logits.iter().copied().enumerate().collect();
+                let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
                 indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 eprintln!("[gen-with-img] top-10 logits at post-image position:");
                 for (id, score) in indexed.iter().take(10) {

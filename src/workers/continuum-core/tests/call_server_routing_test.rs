@@ -18,7 +18,9 @@ async fn test_call_manager_tracks_model_capabilities() {
     let call_id = "test-call-1";
 
     // Human joins
-    let human_join = manager.join_call(call_id, "user-1", "test-user", false).await;
+    let human_join = manager
+        .join_call(call_id, "user-1", "test-user", false)
+        .await;
 
     // GPT-4o joins (audio-native)
     let gpt_join = manager
@@ -46,7 +48,9 @@ async fn test_audio_routes_to_capable_participants() {
     let call_id = "test-call-2";
 
     // Human joins
-    let human_join = manager.join_call(call_id, "user-1", "test-user", false).await;
+    let human_join = manager
+        .join_call(call_id, "user-1", "test-user", false)
+        .await;
 
     // GPT-4o joins (should receive audio)
     let gpt_join = manager

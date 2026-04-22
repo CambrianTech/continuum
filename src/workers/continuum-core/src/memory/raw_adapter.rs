@@ -42,11 +42,7 @@ impl ConsolidationAdapter for RawMemoryAdapter {
                 created_at_ms: t.created_at_ms,
                 timestamp_ms: t.created_at_ms,
                 consolidated_at_ms: context.timestamp_ms,
-                tags: t
-                    .domain
-                    .clone()
-                    .map(|d| vec![d])
-                    .unwrap_or_default(),
+                tags: t.domain.clone().map(|d| vec![d]).unwrap_or_default(),
                 synthesized_from: vec![t.id],
             })
             .collect();
@@ -120,10 +116,7 @@ mod tests {
             make_thought(1, "second", "decision", None),
         ];
         let ctx = make_context();
-        let result = RawMemoryAdapter
-            .consolidate(&thoughts, &ctx)
-            .await
-            .unwrap();
+        let result = RawMemoryAdapter.consolidate(&thoughts, &ctx).await.unwrap();
 
         assert_eq!(result.memories.len(), 2);
         assert_eq!(result.groups_created, 2);

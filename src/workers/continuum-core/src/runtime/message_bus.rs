@@ -201,7 +201,7 @@ impl MessageBus {
             || event_name.starts_with("presence:")
             || event_name.starts_with("tool:")
             || event_name.contains("chat_messages")  // data:chat_messages:created must not be coalesced
-            || event_name.contains("chat_rooms");     // room events are real-time too
+            || event_name.contains("chat_rooms"); // room events are real-time too
 
         if !is_realtime {
             // Coalesce: extract prefix (first two segments) and rate-limit

@@ -8,8 +8,8 @@
 //!
 //! Priority: Normal — code operations are important but not time-critical.
 
-use crate::code::{self, FileEngine, PathSecurity, ShellSession};
 use crate::code::types::SearchResult;
+use crate::code::{self, FileEngine, PathSecurity, ShellSession};
 use crate::code::{git_bridge, search, tree};
 use crate::log_info;
 use crate::logging::TimingGuard;
@@ -327,8 +327,7 @@ impl ServiceModule for CodeModule {
                     if remaining == 0 {
                         break;
                     }
-                    let result =
-                        search::search_files(root, pattern, file_glob, remaining);
+                    let result = search::search_files(root, pattern, file_glob, remaining);
                     total_matches += result.total_matches;
                     files_searched += result.files_searched;
                     merged_matches.extend(result.matches);
@@ -340,9 +339,8 @@ impl ServiceModule for CodeModule {
                         .cmp(&b.file_path)
                         .then(a.line_number.cmp(&b.line_number))
                 });
-                merged_matches.dedup_by(|a, b| {
-                    a.file_path == b.file_path && a.line_number == b.line_number
-                });
+                merged_matches
+                    .dedup_by(|a, b| a.file_path == b.file_path && a.line_number == b.line_number);
                 merged_matches.truncate(max_results as usize);
 
                 let result = SearchResult {

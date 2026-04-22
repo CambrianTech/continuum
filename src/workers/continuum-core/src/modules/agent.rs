@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::process::Command;

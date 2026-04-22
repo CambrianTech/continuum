@@ -4,27 +4,26 @@
 //! entities via Query — no shared mutable state between command processing
 //! and animation.
 
-use bevy::camera::RenderTarget;
 use bevy::camera::visibility::RenderLayers;
+use bevy::camera::RenderTarget;
 use bevy::prelude::*;
 use bevy::scene::SceneInstanceReady;
 
 use super::animation::{
-    BlinkAnimation, BreathingAnimation, BoneRef, CameraHeadLock, CognitiveGesture,
-    EmotionAnimation, Emotion, EyeGaze, GestureAnimation, GesturePhase, IdleMotion,
-    ModelPath, MorphMeshLink, MorphTargets, MouthWeight, Skeleton, SlotId, Speaking,
-    SpeechClip, EMOTION_DECAY_SECS,
+    BlinkAnimation, BoneRef, BreathingAnimation, CameraHeadLock, CognitiveGesture, Emotion,
+    EmotionAnimation, EyeGaze, GestureAnimation, GesturePhase, IdleMotion, ModelPath,
+    MorphMeshLink, MorphTargets, MouthWeight, Skeleton, SlotId, Speaking, SpeechClip,
+    EMOTION_DECAY_SECS,
 };
 use super::api::gpu_manager;
 use super::scene::{
-    AnimationConfig, AvatarObject, SceneObject,
-    build_scene, room_color_from_identity, SceneConfig,
-    LightRig, RoomConfig, select_scene_for_identity, scene_model_path,
+    build_scene, room_color_from_identity, scene_model_path, select_scene_for_identity,
+    AnimationConfig, AvatarObject, LightRig, RoomConfig, SceneConfig, SceneObject,
 };
 use super::setup::spawn_readback_entity_opt;
 use super::skeleton;
 use super::types::*;
-use super::{AVATAR_WIDTH, AVATAR_HEIGHT, HD_WIDTH, HD_HEIGHT};
+use super::{AVATAR_HEIGHT, AVATAR_WIDTH, HD_HEIGHT, HD_WIDTH};
 use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::{clog_info, clog_warn};
@@ -72,10 +71,9 @@ pub(super) fn process_commands(
                     };
                     let (scene_root, camera_entity) = build_scene(&mut commands, &config);
                     // Camera gets SlotId + CameraHeadLock
-                    commands.entity(camera_entity).insert((
-                        SlotId(slot),
-                        CameraHeadLock { head_y: None },
-                    ));
+                    commands
+                        .entity(camera_entity)
+                        .insert((SlotId(slot), CameraHeadLock { head_y: None }));
 
                     let scene_entry = select_scene_for_identity(&identity);
                     let asset_path = scene_model_path(scene_entry.filename)
@@ -102,9 +100,13 @@ pub(super) fn process_commands(
                                 .file_name()
                                 .unwrap_or_default();
                             #[cfg(unix)]
-                            { let _ = std::os::unix::fs::symlink(vrm_filename, &glb_path); }
+                            {
+                                let _ = std::os::unix::fs::symlink(vrm_filename, &glb_path);
+                            }
                             #[cfg(not(unix))]
-                            { let _ = std::fs::copy(&model_path, &glb_path); }
+                            {
+                                let _ = std::fs::copy(&model_path, &glb_path);
+                            }
                         }
                         glb_path
                     } else {
@@ -120,7 +122,12 @@ pub(super) fn process_commands(
                     let asset_path = format!("{}#Scene0", load_path);
                     let scene_handle: Handle<Scene> = asset_server.load(&asset_path);
                     let gltf_handle: Handle<bevy::gltf::Gltf> = asset_server.load(&load_path);
-                    clog_info!("🎨 Slot {}: loading '{}' from {}", slot, display_name, load_path);
+                    clog_info!(
+                        "🎨 Slot {}: loading '{}' from {}",
+                        slot,
+                        display_name,
+                        load_path
+                    );
                     pending.scene_handles.push(PendingLoadEntry {
                         slot,
                         handle: scene_handle.clone(),
@@ -156,27 +163,43 @@ pub(super) fn process_commands(
                     let model_path_for_observer = load_path.clone();
                     let identity_for_observer = identity.clone();
                     commands.entity(avatar_entity).observe(
-                        move |
-                            event: On<SceneInstanceReady>,
-                            children_query: Query<&Children>,
-                            names: Query<&Name>,
-                            mut transforms: Query<&mut Transform>,
-                            mut cmds: Commands,
-                            mut slot_registry: ResMut<SlotRegistry>,
-                            mut gpu_guards: ResMut<GpuGuards>,
-                            mut snapshots: ResMut<SnapshotTracker>,
-                        | {
+                        move |event: On<SceneInstanceReady>,
+                              children_query: Query<&Children>,
+                              names: Query<&Name>,
+                              mut transforms: Query<&mut Transform>,
+                              mut cmds: Commands,
+                              mut slot_registry: ResMut<SlotRegistry>,
+                              mut gpu_guards: ResMut<GpuGuards>,
+                              mut snapshots: ResMut<SnapshotTracker>| {
                             let root = event.entity;
                             let child_count = skeleton::count_descendants(root, &children_query);
-                            skeleton::propagate_render_layers(root, &layer_for_observer, &children_query, &mut cmds);
+                            skeleton::propagate_render_layers(
+                                root,
+                                &layer_for_observer,
+                                &children_query,
+                                &mut cmds,
+                            );
                             skeleton::dump_bone_names(root, &children_query, &names);
-                            skeleton::fix_tpose_arms(root, &children_query, &names, &mut transforms);
+                            skeleton::fix_tpose_arms(
+                                root,
+                                &children_query,
+                                &names,
+                                &mut transforms,
+                            );
 
                             // Discover bones and insert Skeleton Component directly on the entity
-                            let bones = skeleton::discover_bones(root, slot_for_observer, &model_path_for_observer, &children_query, &names, &transforms);
+                            let bones = skeleton::discover_bones(
+                                root,
+                                slot_for_observer,
+                                &model_path_for_observer,
+                                &children_query,
+                                &names,
+                                &transforms,
+                            );
                             cmds.entity(root).insert(bones);
 
-                            if let Some(slot_data) = slot_registry.slots.get_mut(&slot_for_observer) {
+                            if let Some(slot_data) = slot_registry.slots.get_mut(&slot_for_observer)
+                            {
                                 if let Some(avatar) = slot_data.avatar_mut(&identity_for_observer) {
                                     avatar.state.model_loaded = true;
                                 }
@@ -189,25 +212,43 @@ pub(super) fn process_commands(
                                 .unwrap_or(0);
                             if model_bytes > 0 {
                                 if let Some(mgr) = gpu_manager() {
-                                    match mgr.allocate(GpuSubsystem::Rendering, model_bytes, GpuPriority::Interactive) {
+                                    match mgr.allocate(
+                                        GpuSubsystem::Rendering,
+                                        model_bytes,
+                                        GpuPriority::Interactive,
+                                    ) {
                                         Ok(guard) => {
                                             mgr.eviction_registry.register(make_entry(
                                                 &format!("render:model:slot{}", slot_for_observer),
-                                                &format!("Avatar Model (slot {})", slot_for_observer),
+                                                &format!(
+                                                    "Avatar Model (slot {})",
+                                                    slot_for_observer
+                                                ),
                                                 GpuPriority::Interactive,
                                                 model_bytes,
                                             ));
-                                            gpu_guards.model_guards.insert(slot_for_observer, guard);
+                                            gpu_guards
+                                                .model_guards
+                                                .insert(slot_for_observer, guard);
                                         }
                                         Err(e) => {
-                                            clog_warn!("🎨 GPU: model allocation for slot {} failed ({})", slot_for_observer, e);
+                                            clog_warn!(
+                                                "🎨 GPU: model allocation for slot {} failed ({})",
+                                                slot_for_observer,
+                                                e
+                                            );
                                         }
                                     }
                                 }
                             }
 
-                            clog_info!("🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants", slot_for_observer, root, child_count);
-                        }
+                            clog_info!(
+                                "🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants",
+                                slot_for_observer,
+                                root,
+                                child_count
+                            );
+                        },
                     );
 
                     avatar.entity = Some(avatar_entity);
@@ -217,7 +258,12 @@ pub(super) fn process_commands(
                         camera.is_active = true;
                     }
 
-                    clog_info!("🎨 Slot {}: loaded '{}' from {}", slot, display_name, load_path);
+                    clog_info!(
+                        "🎨 Slot {}: loaded '{}' from {}",
+                        slot,
+                        display_name,
+                        load_path
+                    );
                 }
             }
             AvatarCommand::Unload { slot } => {
@@ -256,7 +302,11 @@ pub(super) fn process_commands(
                     }
                 }
             }
-            AvatarCommand::SetMouthWeightSequence { slot, weights, interval_ms } => {
+            AvatarCommand::SetMouthWeightSequence {
+                slot,
+                weights,
+                interval_ms,
+            } => {
                 if let Some(slot_data) = registry.slots.get(&slot) {
                     if let Some(avatar_entity) = slot_data.primary_avatar().and_then(|a| a.entity) {
                         let duration_ms = weights.len() as u64 * interval_ms as u64;
@@ -294,7 +344,12 @@ pub(super) fn process_commands(
                     }
                 }
             }
-            AvatarCommand::SetEmotion { slot, emotion, weight, transition_ms } => {
+            AvatarCommand::SetEmotion {
+                slot,
+                emotion,
+                weight,
+                transition_ms,
+            } => {
                 if let Some(slot_data) = registry.slots.get(&slot) {
                     if let Some(avatar_entity) = slot_data.primary_avatar().and_then(|a| a.entity) {
                         let rate = if transition_ms > 0 {
@@ -323,7 +378,11 @@ pub(super) fn process_commands(
                     }
                 }
             }
-            AvatarCommand::SetGesture { slot, gesture, duration_ms } => {
+            AvatarCommand::SetGesture {
+                slot,
+                gesture,
+                duration_ms,
+            } => {
                 if let Some(slot_data) = registry.slots.get(&slot) {
                     if let Some(avatar_entity) = slot_data.primary_avatar().and_then(|a| a.entity) {
                         let g = match gesture {
@@ -367,7 +426,11 @@ pub(super) fn process_commands(
                     }
                 }
             }
-            AvatarCommand::Resize { slot, width, height } => {
+            AvatarCommand::Resize {
+                slot,
+                width,
+                height,
+            } => {
                 if let Some(slot_data) = registry.slots.get_mut(&slot) {
                     let is_hd_request = width >= HD_WIDTH && height >= HD_HEIGHT;
                     let currently_hd = hd_pool.assigned.contains_key(&slot);
@@ -393,23 +456,36 @@ pub(super) fn process_commands(
                     };
 
                     if let Some(cam) = slot_data.camera_entity {
-                        commands.entity(cam).insert(RenderTarget::Image(new_rt_handle.clone().into()));
+                        commands
+                            .entity(cam)
+                            .insert(RenderTarget::Image(new_rt_handle.clone().into()));
                     }
 
                     commands.entity(slot_data.readback_entity).despawn();
                     let has_bridge = crate::live::avatar::publishers::gpu_bridge::has_bridge(slot);
-                    let new_readback = spawn_readback_entity_opt(&mut commands, new_rt_handle.clone(), slot, !has_bridge);
+                    let new_readback = spawn_readback_entity_opt(
+                        &mut commands,
+                        new_rt_handle.clone(),
+                        slot,
+                        !has_bridge,
+                    );
 
                     slot_data.readback_entity = new_readback;
                     slot_data.render_target = new_rt_handle;
 
-                    let (ew, eh) = if is_hd_request { (HD_WIDTH, HD_HEIGHT) } else { (AVATAR_WIDTH, AVATAR_HEIGHT) };
+                    let (ew, eh) = if is_hd_request {
+                        (HD_WIDTH, HD_HEIGHT)
+                    } else {
+                        (AVATAR_WIDTH, AVATAR_HEIGHT)
+                    };
                     slot_dims.dims.insert(slot, (ew, eh));
                     clog_info!("🎨 Slot {}: resized to {}x{}", slot, ew, eh);
                 }
             }
             AvatarCommand::UnloadIdle => {
-                let idle_slots: Vec<u8> = registry.slots.iter()
+                let idle_slots: Vec<u8> = registry
+                    .slots
+                    .iter()
                     .filter(|(_, s)| s.is_active() && !s.is_speaking())
                     .map(|(k, _)| *k)
                     .collect();

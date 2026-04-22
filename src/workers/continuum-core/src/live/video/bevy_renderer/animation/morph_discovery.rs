@@ -3,8 +3,8 @@
 use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
 
-use super::components::*;
 use super::super::vrm;
+use super::components::*;
 use crate::clog_info;
 
 /// Discover morph targets on avatar entities that have SlotId + ModelPath but no MorphTargets yet.
@@ -64,12 +64,24 @@ pub(in crate::live::video::bevy_renderer) fn discover_morph_targets(
             .unwrap_or(0);
 
         let emotion_count = [
-            targets.happy, targets.sad, targets.angry,
-            targets.surprised, targets.relaxed,
-        ].iter().filter(|i| i.is_some()).count();
+            targets.happy,
+            targets.sad,
+            targets.angry,
+            targets.surprised,
+            targets.relaxed,
+        ]
+        .iter()
+        .filter(|i| i.is_some())
+        .count();
         let gaze_count = [
-            targets.look_up, targets.look_down, targets.look_left, targets.look_right,
-        ].iter().filter(|i| i.is_some()).count();
+            targets.look_up,
+            targets.look_down,
+            targets.look_left,
+            targets.look_right,
+        ]
+        .iter()
+        .filter(|i| i.is_some())
+        .count();
         clog_info!(
             "🎨 Morph discovery slot {}: {} weights, {} mesh names, mouth={:?}, blink={:?}, blink_l={:?}, blink_r={:?}, emotions={}/5, gaze={}/4",
             slot_id.0, weight_count, mesh_names.len(), targets.mouth_open, targets.blink,
@@ -78,10 +90,18 @@ pub(in crate::live::video::bevy_renderer) fn discover_morph_targets(
 
         // Insert Components on the avatar entity
         commands.entity(avatar_entity).insert(targets);
-        commands.entity(avatar_entity).insert(MorphMeshLink(morph_entity));
-        commands.entity(avatar_entity).insert(BlinkAnimation::new(elapsed, slot_id.0));
-        commands.entity(avatar_entity).insert(EyeGaze::new(slot_id.0));
-        commands.entity(avatar_entity).insert(EmotionAnimation::default());
+        commands
+            .entity(avatar_entity)
+            .insert(MorphMeshLink(morph_entity));
+        commands
+            .entity(avatar_entity)
+            .insert(BlinkAnimation::new(elapsed, slot_id.0));
+        commands
+            .entity(avatar_entity)
+            .insert(EyeGaze::new(slot_id.0));
+        commands
+            .entity(avatar_entity)
+            .insert(EmotionAnimation::default());
     }
 }
 
@@ -127,7 +147,11 @@ fn discover_from_vrm_extension(model_path: &str, slot: u8, targets: &mut MorphTa
             }
         }
     }
-    clog_info!("🎨 VRM blend shapes slot {}: {} groups parsed", slot, vrm_shapes.len());
+    clog_info!(
+        "🎨 VRM blend shapes slot {}: {} groups parsed",
+        slot,
+        vrm_shapes.len()
+    );
 }
 
 /// Discover morph target indices from standard glTF mesh target names.
@@ -143,64 +167,110 @@ fn discover_from_mesh_names(mesh_names: &[String], layout: &mut MorphTargets) {
             };
         }
 
-        set_first!(mouth_open,
-            lower == "aa" || lower == "a"
-            || lower.ends_with("_mth_a") || lower.ends_with("mth_a")
-            || lower.ends_with("_v_aa") || lower == "v_aa"
-            || lower.ends_with("mouth_open") || lower.ends_with("jawopen")
-            || lower == "fcl_mth_a"
+        set_first!(
+            mouth_open,
+            lower == "aa"
+                || lower == "a"
+                || lower.ends_with("_mth_a")
+                || lower.ends_with("mth_a")
+                || lower.ends_with("_v_aa")
+                || lower == "v_aa"
+                || lower.ends_with("mouth_open")
+                || lower.ends_with("jawopen")
+                || lower == "fcl_mth_a"
         );
-        set_first!(blink,
-            lower == "blink" || lower == "fcl_eye_close" || lower == "vrc.blink"
-            || (lower.contains("eye_close")
-                && !lower.contains("_l") && !lower.contains("_r")
-                && !lower.contains("left") && !lower.contains("right"))
+        set_first!(
+            blink,
+            lower == "blink"
+                || lower == "fcl_eye_close"
+                || lower == "vrc.blink"
+                || (lower.contains("eye_close")
+                    && !lower.contains("_l")
+                    && !lower.contains("_r")
+                    && !lower.contains("left")
+                    && !lower.contains("right"))
         );
-        set_first!(blink_left,
-            lower == "blinkleft" || lower == "blink_l" || lower == "fcl_eye_close_l"
-            || lower.contains("eye_close_l") || lower.contains("eye_close_left")
+        set_first!(
+            blink_left,
+            lower == "blinkleft"
+                || lower == "blink_l"
+                || lower == "fcl_eye_close_l"
+                || lower.contains("eye_close_l")
+                || lower.contains("eye_close_left")
         );
-        set_first!(blink_right,
-            lower == "blinkright" || lower == "blink_r" || lower == "fcl_eye_close_r"
-            || lower.contains("eye_close_r") || lower.contains("eye_close_right")
+        set_first!(
+            blink_right,
+            lower == "blinkright"
+                || lower == "blink_r"
+                || lower == "fcl_eye_close_r"
+                || lower.contains("eye_close_r")
+                || lower.contains("eye_close_right")
         );
-        set_first!(happy,
-            lower == "happy" || lower == "joy"
-            || lower.ends_with("_joy") || lower.ends_with("_happy")
-            || lower == "fcl_all_joy" || lower == "fcl_eye_joy"
+        set_first!(
+            happy,
+            lower == "happy"
+                || lower == "joy"
+                || lower.ends_with("_joy")
+                || lower.ends_with("_happy")
+                || lower == "fcl_all_joy"
+                || lower == "fcl_eye_joy"
         );
-        set_first!(sad,
-            lower == "sad" || lower == "sorrow"
-            || lower.ends_with("_sad") || lower.ends_with("_sorrow")
-            || lower == "fcl_all_sorrow" || lower == "fcl_eye_sorrow"
+        set_first!(
+            sad,
+            lower == "sad"
+                || lower == "sorrow"
+                || lower.ends_with("_sad")
+                || lower.ends_with("_sorrow")
+                || lower == "fcl_all_sorrow"
+                || lower == "fcl_eye_sorrow"
         );
-        set_first!(angry,
-            lower == "angry" || lower.ends_with("_angry")
-            || lower == "fcl_all_angry" || lower == "fcl_mth_angry"
+        set_first!(
+            angry,
+            lower == "angry"
+                || lower.ends_with("_angry")
+                || lower == "fcl_all_angry"
+                || lower == "fcl_mth_angry"
         );
-        set_first!(surprised,
-            lower == "surprised" || lower == "fun"
-            || lower.ends_with("_surprised") || lower.ends_with("_fun")
-            || lower == "fcl_all_fun" || lower == "fcl_brw_surprised"
+        set_first!(
+            surprised,
+            lower == "surprised"
+                || lower == "fun"
+                || lower.ends_with("_surprised")
+                || lower.ends_with("_fun")
+                || lower == "fcl_all_fun"
+                || lower == "fcl_brw_surprised"
         );
-        set_first!(relaxed,
+        set_first!(
+            relaxed,
             lower == "relaxed" || lower.ends_with("_relaxed") || lower == "fcl_all_relaxed"
         );
-        set_first!(look_up,
-            lower == "lookup" || lower == "look_up"
-            || lower.ends_with("lookup") || lower == "fcl_eye_lookup"
+        set_first!(
+            look_up,
+            lower == "lookup"
+                || lower == "look_up"
+                || lower.ends_with("lookup")
+                || lower == "fcl_eye_lookup"
         );
-        set_first!(look_down,
-            lower == "lookdown" || lower == "look_down"
-            || lower.ends_with("lookdown") || lower == "fcl_eye_lookdown"
+        set_first!(
+            look_down,
+            lower == "lookdown"
+                || lower == "look_down"
+                || lower.ends_with("lookdown")
+                || lower == "fcl_eye_lookdown"
         );
-        set_first!(look_left,
-            lower == "lookleft" || lower == "look_left"
-            || lower.ends_with("lookleft") || lower == "fcl_eye_lookleft"
+        set_first!(
+            look_left,
+            lower == "lookleft"
+                || lower == "look_left"
+                || lower.ends_with("lookleft")
+                || lower == "fcl_eye_lookleft"
         );
-        set_first!(look_right,
-            lower == "lookright" || lower == "look_right"
-            || lower.ends_with("lookright") || lower == "fcl_eye_lookright"
+        set_first!(
+            look_right,
+            lower == "lookright"
+                || lower == "look_right"
+                || lower.ends_with("lookright")
+                || lower == "fcl_eye_lookright"
         );
     }
 }

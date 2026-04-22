@@ -2,8 +2,8 @@
 
 use bevy::prelude::*;
 
-use super::components::*;
 use super::super::scene::animation::{AnimationConfig, PORTRAIT_PROFILE};
+use super::components::*;
 
 /// Idle micro-movements on entities with IdleMotion + Skeleton.
 pub(in crate::live::video::bevy_renderer) fn animate_idle_gestures(
@@ -40,8 +40,7 @@ pub(in crate::live::video::bevy_renderer) fn animate_idle_gestures(
         }
 
         let lerp_factor = 1.0 - (-dt * 3.0_f32).exp();
-        idle.head_turn_current +=
-            (idle.head_turn_target - idle.head_turn_current) * lerp_factor;
+        idle.head_turn_current += (idle.head_turn_target - idle.head_turn_current) * lerp_factor;
 
         if is_speaking {
             continue;
@@ -76,7 +75,8 @@ pub(in crate::live::video::bevy_renderer) fn animate_idle_gestures(
         }
         if let Some(ref right_shoulder) = skeleton.right_shoulder {
             if let Ok(mut transform) = transforms.get_mut(right_shoulder.entity) {
-                let shift = (t * 0.4 + std::f32::consts::PI).sin() * profile.shoulder_shift_amplitude
+                let shift = (t * 0.4 + std::f32::consts::PI).sin()
+                    * profile.shoulder_shift_amplitude
                     + (t * 0.17 + 1.0).cos() * (profile.shoulder_shift_amplitude * 0.5);
                 transform.translation.y = right_shoulder.rest_translation.y + shift;
             }

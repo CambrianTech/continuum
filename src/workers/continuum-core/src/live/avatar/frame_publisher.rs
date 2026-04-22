@@ -194,7 +194,10 @@ pub fn create_publisher(
                 return Box::new(publisher);
             }
             Err(e) => {
-                crate::clog_warn!("📹 NativeBufferPublisher failed: {}, trying wgpu compute", e);
+                crate::clog_warn!(
+                    "📹 NativeBufferPublisher failed: {}, trying wgpu compute",
+                    e
+                );
             }
         }
     }
@@ -205,13 +208,19 @@ pub fn create_publisher(
     // Tier 3: WgpuI420Publisher (GPU compute, works on Vulkan/DX12/Metal)
     // Check if wgpu GPU bridge is registered for this slot
     if crate::live::video::wgpu_gpu_convert::has_bridge(slot) {
-        crate::clog_info!("📹 Using WgpuI420Publisher (GPU compute I420, slot {})", slot);
+        crate::clog_info!(
+            "📹 Using WgpuI420Publisher (GPU compute I420, slot {})",
+            slot
+        );
         use super::publishers::wgpu_i420::WgpuI420Publisher;
         return Box::new(WgpuI420Publisher::new(frame_rx, width, height));
     }
 
     // Tier 4: CpuI420Publisher (CPU fallback — last resort for ancient hardware)
-    crate::clog_warn!("📹 Using CpuI420Publisher (CPU fallback — no GPU compute available for slot {})", slot);
+    crate::clog_warn!(
+        "📹 Using CpuI420Publisher (CPU fallback — no GPU compute available for slot {})",
+        slot
+    );
     Box::new(CpuI420Publisher::new(frame_rx, width, height))
 }
 

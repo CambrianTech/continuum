@@ -220,9 +220,8 @@ impl DataModule {
                     slug
                 ));
             }
-            let home = std::env::var("HOME").map_err(|_| {
-                format!("resolve_handle('@persona:{}'): HOME env not set", slug)
-            })?;
+            let home = std::env::var("HOME")
+                .map_err(|_| format!("resolve_handle('@persona:{}'): HOME env not set", slug))?;
             return Ok(format!(
                 "{}/.continuum/personas/{}/data/longterm.db",
                 home, slug
@@ -308,31 +307,30 @@ impl DataModule {
             max_connections,
         };
 
-        let adapter: Arc<dyn StorageAdapter> =
-            if connection_string.starts_with("postgres://")
-                || connection_string.starts_with("postgresql://")
-            {
-                log_info!(
-                    "data",
-                    "get_adapter",
-                    "Creating PostgresAdapter for handle='{}' (resolved)",
-                    handle
-                );
-                let mut pg = PostgresAdapter::new();
-                pg.initialize(config).await?;
-                Arc::new(pg)
-            } else {
-                log_info!(
-                    "data",
-                    "get_adapter",
-                    "Creating SqliteAdapter for handle='{}' → {}",
-                    handle,
-                    connection_string
-                );
-                let mut sqlite = SqliteAdapter::new();
-                sqlite.initialize(config).await?;
-                Arc::new(sqlite)
-            };
+        let adapter: Arc<dyn StorageAdapter> = if connection_string.starts_with("postgres://")
+            || connection_string.starts_with("postgresql://")
+        {
+            log_info!(
+                "data",
+                "get_adapter",
+                "Creating PostgresAdapter for handle='{}' (resolved)",
+                handle
+            );
+            let mut pg = PostgresAdapter::new();
+            pg.initialize(config).await?;
+            Arc::new(pg)
+        } else {
+            log_info!(
+                "data",
+                "get_adapter",
+                "Creating SqliteAdapter for handle='{}' → {}",
+                handle,
+                connection_string
+            );
+            let mut sqlite = SqliteAdapter::new();
+            sqlite.initialize(config).await?;
+            Arc::new(sqlite)
+        };
 
         self.adapters.insert(connection_string, adapter.clone());
         Ok(adapter)
@@ -429,16 +427,41 @@ impl ServiceModule for DataModule {
         // Keeping the dispatch log above — it runs BEFORE deserialize, so
         // parse errors are diagnosable by scrolling up to see the raw params.
         match command {
-            "data/create" => self.handle_create(deserialize_params!(command, params)?).await,
-            "data/read" => self.handle_read(deserialize_params!(command, params)?).await,
-            "data/update" => self.handle_update(deserialize_params!(command, params)?).await,
-            "data/delete" => self.handle_delete(deserialize_params!(command, params)?).await,
-            "data/query" | "data/list" => self.handle_query(deserialize_params!(command, params)?).await,
-            "data/queryWithJoin" => self.handle_query_with_join(deserialize_params!(command, params)?).await,
-            "data/count" => self.handle_count(deserialize_params!(command, params)?).await,
-            "data/batch" => self.handle_batch(deserialize_params!(command, params)?).await,
+            "data/create" => {
+                self.handle_create(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/read" => {
+                self.handle_read(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/update" => {
+                self.handle_update(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/delete" => {
+                self.handle_delete(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/query" | "data/list" => {
+                self.handle_query(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/queryWithJoin" => {
+                self.handle_query_with_join(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/count" => {
+                self.handle_count(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/batch" => {
+                self.handle_batch(deserialize_params!(command, params)?)
+                    .await
+            }
             "data/ensure-schema" => {
-                self.handle_ensure_schema(deserialize_params!(command, params)?).await
+                self.handle_ensure_schema(deserialize_params!(command, params)?)
+                    .await
             }
             "data/list-collections" => self.handle_list_collections(params).await,
             "data/collection-stats" => self.handle_collection_stats(params).await,
@@ -446,9 +469,18 @@ impl ServiceModule for DataModule {
             "data/clear-all" => self.handle_clear_all(params).await,
 
             // Paginated queries - server-side cursor management
-            "data/query-open" => self.handle_query_open(deserialize_params!(command, params)?).await,
-            "data/query-next" => self.handle_query_next(deserialize_params!(command, params)?).await,
-            "data/query-close" => self.handle_query_close(deserialize_params!(command, params)?).await,
+            "data/query-open" => {
+                self.handle_query_open(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/query-next" => {
+                self.handle_query_next(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/query-close" => {
+                self.handle_query_close(deserialize_params!(command, params)?)
+                    .await
+            }
 
             "adapter/capabilities" => self.handle_capabilities(params).await,
             "adapter/info" => self.handle_info(params).await,
@@ -855,7 +887,11 @@ impl DataModule {
     async fn handle_query(&self, params: QueryParams) -> Result<CommandResult, String> {
         // Limit concurrent queries to cap peak heap from 15 personas querying simultaneously.
         // Excess callers wait (not rejected) — bounded concurrency, not dropped work.
-        let _permit = self.query_semaphore.acquire().await.map_err(|_| "query semaphore closed")?;
+        let _permit = self
+            .query_semaphore
+            .acquire()
+            .await
+            .map_err(|_| "query semaphore closed")?;
 
         use std::time::Instant;
         let start = Instant::now();
@@ -891,8 +927,15 @@ impl DataModule {
         CommandResult::json(&result)
     }
 
-    async fn handle_query_with_join(&self, params: QueryWithJoinParams) -> Result<CommandResult, String> {
-        let _permit = self.query_semaphore.acquire().await.map_err(|_| "query semaphore closed")?;
+    async fn handle_query_with_join(
+        &self,
+        params: QueryWithJoinParams,
+    ) -> Result<CommandResult, String> {
+        let _permit = self
+            .query_semaphore
+            .acquire()
+            .await
+            .map_err(|_| "query semaphore closed")?;
 
         let query = StorageQuery {
             collection: params.collection,
@@ -980,15 +1023,14 @@ impl DataModule {
         &self,
         params: EnsureSchemaParams,
     ) -> Result<CommandResult, String> {
-        let entity = crate::modules::entity_schemas::resolve(&params.collection).ok_or_else(
-            || {
+        let entity =
+            crate::modules::entity_schemas::resolve(&params.collection).ok_or_else(|| {
                 format!(
                     "Unknown collection '{}' — not in entity_schemas.json. \
                      If this is a newly added entity, rebuild TS: `npm run build:ts`.",
                     params.collection
                 )
-            },
-        )?;
+            })?;
         let collection_schema = crate::modules::entity_schemas::to_collection_schema(entity);
         let adapter = self.get_adapter(&params.db_path).await?;
         let result = adapter.ensure_schema(collection_schema).await;
@@ -1672,7 +1714,11 @@ impl DataModule {
         // has_more starts optimistic — the LIMIT N+1 probe on the first
         // query_next call is the authoritative signal. If the table is
         // empty, the caller sees an empty first page with has_more: false.
-        let has_more = if params.count_exact { total_count > 0 } else { true };
+        let has_more = if params.count_exact {
+            total_count > 0
+        } else {
+            true
+        };
 
         // Create query state (query_id is the DashMap key, not stored in struct)
         let state = PaginatedQueryState {
@@ -2126,7 +2172,11 @@ mod tests {
             )
             .await;
 
-        assert!(create_result.is_ok(), "create_result failed: {:?}", create_result);
+        assert!(
+            create_result.is_ok(),
+            "create_result failed: {:?}",
+            create_result
+        );
 
         if let Ok(CommandResult::Json(result)) = create_result {
             assert!(result["success"].as_bool().unwrap_or(false));
@@ -2199,7 +2249,11 @@ mod tests {
             )
             .await;
 
-        assert!(create_result.is_ok(), "create_result failed: {:?}", create_result);
+        assert!(
+            create_result.is_ok(),
+            "create_result failed: {:?}",
+            create_result
+        );
         let record_id = if let Ok(CommandResult::Json(result)) = &create_result {
             result["data"]["id"].as_str().unwrap().to_string()
         } else {
@@ -2492,9 +2546,15 @@ mod tests {
         assert!(open_result.is_ok(), "open_result failed: {:?}", open_result);
         let query_id = if let Ok(CommandResult::Json(result)) = &open_result {
             let data = &result["data"];
-            assert_eq!(data["totalCount"], 0, "QW#2: count_exact=false skips COUNT(*); 0 is the sentinel");
+            assert_eq!(
+                data["totalCount"], 0,
+                "QW#2: count_exact=false skips COUNT(*); 0 is the sentinel"
+            );
             assert_eq!(data["pageSize"], 10);
-            assert!(data["hasMore"].as_bool().unwrap(), "QW#2: open is optimistic, query-next is authoritative");
+            assert!(
+                data["hasMore"].as_bool().unwrap(),
+                "QW#2: open is optimistic, query-next is authoritative"
+            );
             data["queryId"].as_str().unwrap().to_string()
         } else {
             panic!("Expected JSON result");
@@ -2602,7 +2662,10 @@ mod tests {
         assert!(open_result.is_ok(), "open_result failed: {:?}", open_result);
         if let Ok(CommandResult::Json(result)) = open_result {
             let data = &result["data"];
-            assert_eq!(data["totalCount"], 7, "count_exact=true should populate totalCount via COUNT(*)");
+            assert_eq!(
+                data["totalCount"], 7,
+                "count_exact=true should populate totalCount via COUNT(*)"
+            );
             assert!(data["hasMore"].as_bool().unwrap());
         } else {
             panic!("Expected JSON result");

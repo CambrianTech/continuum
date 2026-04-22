@@ -134,7 +134,9 @@ impl CompactAttention {
         };
 
         // Reshape back to [batch, seq, hidden_for_this_layer]
-        let y = y.transpose(1, 2)?.reshape(&[b_sz, seq_len, self.n_head * self.head_dim])?;
+        let y = y
+            .transpose(1, 2)?
+            .reshape(&[b_sz, seq_len, self.n_head * self.head_dim])?;
         self.o_proj.forward(&y)
     }
 
@@ -211,15 +213,11 @@ impl CompactLayer {
         intermediate_size: usize,
         rms_norm_eps: f64,
     ) -> Result<Self> {
-        let self_attn = CompactAttention::load(
-            vb.pp("self_attn"),
-            n_head,
-            n_kv_head,
-            head_dim,
-            hidden_size,
-        )?;
+        let self_attn =
+            CompactAttention::load(vb.pp("self_attn"), n_head, n_kv_head, head_dim, hidden_size)?;
         let mlp = CompactMlp::load(vb.pp("mlp"), hidden_size, intermediate_size)?;
-        let input_layernorm = candle_nn::rms_norm(hidden_size, rms_norm_eps, vb.pp("input_layernorm"))?;
+        let input_layernorm =
+            candle_nn::rms_norm(hidden_size, rms_norm_eps, vb.pp("input_layernorm"))?;
         let post_attention_layernorm =
             candle_nn::rms_norm(hidden_size, rms_norm_eps, vb.pp("post_attention_layernorm"))?;
 
@@ -270,27 +268,19 @@ impl CompactLlama {
     ///
     /// The topology provides per-layer head counts. Weight tensors in the
     /// safetensors file must already be sliced to match (by the compactor).
-    pub fn load(
-        vb: VarBuilder,
-        config: &LlamaConfig,
-        topology: &HeadTopology,
-    ) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &LlamaConfig, topology: &HeadTopology) -> Result<Self> {
         let hidden_size = config.hidden_size;
         let rms_norm_eps = config.rms_norm_eps;
         let context_length = config.max_position_embeddings;
         let intermediate_size = config.intermediate_size;
 
-        let embed_tokens = candle_nn::embedding(
-            config.vocab_size,
-            hidden_size,
-            vb.pp("model.embed_tokens"),
-        )?;
+        let embed_tokens =
+            candle_nn::embedding(config.vocab_size, hidden_size, vb.pp("model.embed_tokens"))?;
 
         // Rotary embeddings use the original head_dim (unchanged by compaction)
         let head_dim = topology.head_dim;
         let rope_theta = config.rope_theta as f32;
-        let (cos, sin) =
-            precompute_freqs_cis(head_dim, rope_theta, context_length, vb.device())?;
+        let (cos, sin) = precompute_freqs_cis(head_dim, rope_theta, context_length, vb.device())?;
 
         let mut layers = Vec::with_capacity(topology.layers.len());
         for layer_topo in &topology.layers {

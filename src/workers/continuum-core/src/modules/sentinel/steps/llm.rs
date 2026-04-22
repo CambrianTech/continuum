@@ -192,7 +192,11 @@ async fn execute_generate_mode(
                 });
             }
             Ok(CommandResult::Binary { .. }) => {
-                return Err(step_err(pipeline_ctx.handle_id, "LLM step", "unexpected binary response from ai/generate"));
+                return Err(step_err(
+                    pipeline_ctx.handle_id,
+                    "LLM step",
+                    "unexpected binary response from ai/generate",
+                ));
             }
             Err(e) => {
                 if is_transient_error(&e) && attempt < LLM_MAX_RETRIES {

@@ -16,9 +16,9 @@
 
 use continuum_core::ai::adapter::AIProviderAdapter;
 use continuum_core::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
-use continuum_core::inference::LlamaCppAdapter;
 use continuum_core::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use continuum_core::inference::kv_quant::Residency;
+use continuum_core::inference::LlamaCppAdapter;
 use std::env;
 use std::path::PathBuf;
 use uuid::Uuid;

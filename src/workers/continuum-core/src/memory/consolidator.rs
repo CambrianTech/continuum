@@ -228,7 +228,10 @@ mod tests {
         let before = c.stats().threshold.seconds_since_consolidation;
         c.record_success(1);
         let after = c.stats().threshold.seconds_since_consolidation;
-        assert!(before > 0.0, "expected elapsed>0 before record, got {before}");
+        assert!(
+            before > 0.0,
+            "expected elapsed>0 before record, got {before}"
+        );
         assert!(
             after < before,
             "record_success didn't forward to threshold: before={before}, after={after}"

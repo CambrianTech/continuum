@@ -39,7 +39,10 @@ pub fn parse_and_correct(response_text: &str) -> ToolParseResult {
 }
 
 /// Parse tool calls with an optional model family hint for prioritized parsing.
-pub fn parse_and_correct_with_family(response_text: &str, model_family: Option<&str>) -> ToolParseResult {
+pub fn parse_and_correct_with_family(
+    response_text: &str,
+    model_family: Option<&str>,
+) -> ToolParseResult {
     let start = std::time::Instant::now();
 
     let family = model_family
@@ -227,7 +230,8 @@ Then:
 
     #[test]
     fn parse_with_family_llama() {
-        let text = "<|python_tag|>{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"test.ts\"}}";
+        let text =
+            "<|python_tag|>{\"name\": \"code_read\", \"arguments\": {\"filePath\": \"test.ts\"}}";
         let result = parse_and_correct_with_family(text, Some("llama"));
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].format, "llama");

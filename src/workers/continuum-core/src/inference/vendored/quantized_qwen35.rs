@@ -18,8 +18,8 @@
 
 use std::collections::HashMap;
 
-use candle_core::quantized::QTensor;
 use candle_core::quantized::gguf_file;
+use candle_core::quantized::QTensor;
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::Module;
 
@@ -198,11 +198,11 @@ impl AttentionLayer {
 
         // Split Q into query + gate (each head_dim=256)
         let q_reshaped = q_full.reshape((b_sz, seq_len, self.n_head, self.head_dim * 2))?;
-        let q = q_reshaped.narrow(3, 0, self.head_dim)?;                    // [B, T, n_head, head_dim]
+        let q = q_reshaped.narrow(3, 0, self.head_dim)?; // [B, T, n_head, head_dim]
         let attn_gate = q_reshaped.narrow(3, self.head_dim, self.head_dim)?; // [B, T, n_head, head_dim]
         let attn_gate = attn_gate.reshape((b_sz, seq_len, self.n_head * self.head_dim))?; // [B, T, n_head*head_dim]
 
-        let q = q.transpose(1, 2)?;  // [B, n_head, T, head_dim]
+        let q = q.transpose(1, 2)?; // [B, n_head, T, head_dim]
         let k = k
             .reshape((b_sz, seq_len, self.n_kv_head, self.head_dim))?
             .transpose(1, 2)?;
@@ -247,8 +247,13 @@ impl AttentionLayer {
         // Attention
         let y = if q.device().is_metal() && seq_len == 1 {
             candle_nn::ops::sdpa(
-                &q, &k, &v, None, false,
-                1. / (self.head_dim as f32).sqrt(), 1.,
+                &q,
+                &k,
+                &v,
+                None,
+                false,
+                1. / (self.head_dim as f32).sqrt(),
+                1.,
             )?
         } else {
             let k = candle_transformers::utils::repeat_kv(k, self.n_head / self.n_kv_head)?;
@@ -314,10 +319,10 @@ struct DeltaNetLayer {
     post_attention_norm: RmsNorm,
     mlp: Mlp,
     // Config (derived from tensor shapes)
-    num_k_heads: usize,        // 16 (K-heads, same as Q-heads)
-    num_v_heads: usize,        // 32 (V-heads, 2x K-heads)
-    head_k_dim: usize,         // 128 (per K/Q head)
-    head_v_dim: usize,         // 128 (per V head)
+    num_k_heads: usize, // 16 (K-heads, same as Q-heads)
+    num_v_heads: usize, // 32 (V-heads, 2x K-heads)
+    head_k_dim: usize,  // 128 (per K/Q head)
+    head_v_dim: usize,  // 128 (per V head)
     // State
     recurrence_state: Option<Tensor>, // [batch, num_v_heads, head_k_dim, head_v_dim]
     conv_state: Option<Tensor>,       // [batch, kernel_width-1, qkv_dim]
@@ -330,10 +335,10 @@ impl DeltaNetLayer {
 
         // Step 1: Input projections
         let t0 = std::time::Instant::now();
-        let mixed_qkv = self.attn_qkv.forward(&normed)?;  // [B, T, key_dim*2 + value_dim]
-        let z = self.attn_gate.forward(&normed)?;          // [B, T, value_dim] (output gate)
-        let b = self.ssm_beta.forward(&normed)?;           // [B, T, num_v_heads] (write strength)
-        let a = self.ssm_alpha.forward(&normed)?;          // [B, T, num_v_heads] (decay input)
+        let mixed_qkv = self.attn_qkv.forward(&normed)?; // [B, T, key_dim*2 + value_dim]
+        let z = self.attn_gate.forward(&normed)?; // [B, T, value_dim] (output gate)
+        let b = self.ssm_beta.forward(&normed)?; // [B, T, num_v_heads] (write strength)
+        let a = self.ssm_alpha.forward(&normed)?; // [B, T, num_v_heads] (decay input)
         let proj_us = t0.elapsed().as_micros();
 
         // Step 2: Depthwise causal conv1d on QKV, then SiLU
@@ -379,38 +384,51 @@ impl DeltaNetLayer {
                 self.ssm_conv1d_weight.unsqueeze(1)?
             };
             // x_padded: [B, C, T+pad] → conv1d with groups=C
-            let conv_out = x_padded
-                .conv1d(&weight, 0, 1, 1, qkv_dim)?; // [B, C, T]
+            let conv_out = x_padded.conv1d(&weight, 0, 1, 1, qkv_dim)?; // [B, C, T]
             conv_out.transpose(1, 2)? // [B, T, C]
         };
         let mixed_qkv = candle_nn::ops::silu(&mixed_qkv)?;
         let conv_us = t0.elapsed().as_micros() - proj_us;
 
         // Step 3: Split QKV
-        let key_dim = self.num_k_heads * self.head_k_dim;   // 16 * 128 = 2048
-        let value_dim = self.num_v_heads * self.head_v_dim;  // 32 * 128 = 4096
+        let key_dim = self.num_k_heads * self.head_k_dim; // 16 * 128 = 2048
+        let value_dim = self.num_v_heads * self.head_v_dim; // 32 * 128 = 4096
         let q = mixed_qkv.narrow(2, 0, key_dim)?;
         let k = mixed_qkv.narrow(2, key_dim, key_dim)?;
         let v = mixed_qkv.narrow(2, key_dim * 2, value_dim)?;
 
         // Reshape to [B, T, num_heads, head_dim] → [B, num_heads, T, head_dim]
-        let q = q.reshape((b_sz, seq_len, self.num_k_heads, self.head_k_dim))?.transpose(1, 2)?;
-        let k = k.reshape((b_sz, seq_len, self.num_k_heads, self.head_k_dim))?.transpose(1, 2)?;
-        let v = v.reshape((b_sz, seq_len, self.num_v_heads, self.head_v_dim))?.transpose(1, 2)?;
+        let q = q
+            .reshape((b_sz, seq_len, self.num_k_heads, self.head_k_dim))?
+            .transpose(1, 2)?;
+        let k = k
+            .reshape((b_sz, seq_len, self.num_k_heads, self.head_k_dim))?
+            .transpose(1, 2)?;
+        let v = v
+            .reshape((b_sz, seq_len, self.num_v_heads, self.head_v_dim))?
+            .transpose(1, 2)?;
 
         // Step 4: L2-normalize Q and K (per-head)
         let q = {
-            let norm = q.sqr()?.sum_keepdim(3)?.sqrt()?.clamp(1e-12, f64::INFINITY)?;
+            let norm = q
+                .sqr()?
+                .sum_keepdim(3)?
+                .sqrt()?
+                .clamp(1e-12, f64::INFINITY)?;
             q.broadcast_div(&norm)?
         };
         let k = {
-            let norm = k.sqr()?.sum_keepdim(3)?.sqrt()?.clamp(1e-12, f64::INFINITY)?;
+            let norm = k
+                .sqr()?
+                .sum_keepdim(3)?
+                .sqrt()?
+                .clamp(1e-12, f64::INFINITY)?;
             k.broadcast_div(&norm)?
         };
 
         // Step 5: Compute decay g and write strength beta
-        let beta = candle_nn::ops::sigmoid(&b)?;             // [B, T, num_v_heads]
-        // g = -exp(A_log) * softplus(a + dt_bias)
+        let beta = candle_nn::ops::sigmoid(&b)?; // [B, T, num_v_heads]
+                                                 // g = -exp(A_log) * softplus(a + dt_bias)
         let a_plus_dt = a.broadcast_add(&self.ssm_dt_bias)?;
         let softplus_a = {
             let abs_a = a_plus_dt.abs()?;
@@ -450,11 +468,11 @@ impl DeltaNetLayer {
             }
 
             // Per-timestep vectors
-            let q_t = (q.i((.., .., t, ..))? * scale)?;    // [B, num_v_heads, head_k_dim]
-            let k_t = k.i((.., .., t, ..))?;                // [B, num_v_heads, head_k_dim]
-            let v_t = v.i((.., .., t, ..))?;                // [B, num_v_heads, head_v_dim]
-            let g_t = g.i((.., t, ..))?.exp()?;              // [B, num_v_heads] → scalar per head
-            let beta_t = beta.i((.., t, ..))?;               // [B, num_v_heads]
+            let q_t = (q.i((.., .., t, ..))? * scale)?; // [B, num_v_heads, head_k_dim]
+            let k_t = k.i((.., .., t, ..))?; // [B, num_v_heads, head_k_dim]
+            let v_t = v.i((.., .., t, ..))?; // [B, num_v_heads, head_v_dim]
+            let g_t = g.i((.., t, ..))?.exp()?; // [B, num_v_heads] → scalar per head
+            let beta_t = beta.i((.., t, ..))?; // [B, num_v_heads]
 
             // 1. DECAY: S = S * exp(g_t)
             let g_expanded = g_t.unsqueeze(2)?.unsqueeze(3)?; // [B, num_v_heads, 1, 1]
@@ -462,27 +480,27 @@ impl DeltaNetLayer {
 
             // 2. RETRIEVE: read memory at key location
             // kv_mem = S @ k_t (matmul state with key)
-            let k_col = k_t.unsqueeze(3)?;                   // [B, num_v_heads, head_k_dim, 1]
-            let kv_mem = state.matmul(&k_col)?.squeeze(3)?;  // [B, num_v_heads, head_v_dim]... wait
-            // Actually: S is [B, nh, hk, hv], k is [B, nh, hk]
-            // S^T @ k = [B, nh, hv, hk] @ [B, nh, hk, 1] = [B, nh, hv, 1]
-            // But we want k^T @ S: [B, nh, 1, hk] @ [B, nh, hk, hv] = [B, nh, 1, hv]
-            let k_row = k_t.unsqueeze(2)?;                   // [B, num_v_heads, 1, head_k_dim]
-            let kv_mem = k_row.matmul(&state)?.squeeze(2)?;  // [B, num_v_heads, head_v_dim]
+            let k_col = k_t.unsqueeze(3)?; // [B, num_v_heads, head_k_dim, 1]
+            let kv_mem = state.matmul(&k_col)?.squeeze(3)?; // [B, num_v_heads, head_v_dim]... wait
+                                                            // Actually: S is [B, nh, hk, hv], k is [B, nh, hk]
+                                                            // S^T @ k = [B, nh, hv, hk] @ [B, nh, hk, 1] = [B, nh, hv, 1]
+                                                            // But we want k^T @ S: [B, nh, 1, hk] @ [B, nh, hk, hv] = [B, nh, 1, hv]
+            let k_row = k_t.unsqueeze(2)?; // [B, num_v_heads, 1, head_k_dim]
+            let kv_mem = k_row.matmul(&state)?.squeeze(2)?; // [B, num_v_heads, head_v_dim]
 
             // 3. DELTA: correction = beta * (v - kv_mem)
-            let beta_expanded = beta_t.unsqueeze(2)?;        // [B, num_v_heads, 1]
+            let beta_expanded = beta_t.unsqueeze(2)?; // [B, num_v_heads, 1]
             let delta = (beta_expanded.broadcast_mul(&(&v_t - &kv_mem)?))?; // [B, nh, hv]
 
             // 4. WRITE: S += k ⊗ delta (outer product)
-            let k_col = k_t.unsqueeze(3)?;                   // [B, nh, hk, 1]
-            let delta_row = delta.unsqueeze(2)?;              // [B, nh, 1, hv]
-            let update = k_col.matmul(&delta_row)?;           // [B, nh, hk, hv]
+            let k_col = k_t.unsqueeze(3)?; // [B, nh, hk, 1]
+            let delta_row = delta.unsqueeze(2)?; // [B, nh, 1, hv]
+            let update = k_col.matmul(&delta_row)?; // [B, nh, hk, hv]
             state = (state + update)?;
 
             // 5. READ: output = q^T @ S
-            let q_row = q_t.unsqueeze(2)?;                   // [B, nh, 1, hk]
-            let o_t = q_row.matmul(&state)?.squeeze(2)?;     // [B, nh, hv]
+            let q_row = q_t.unsqueeze(2)?; // [B, nh, 1, hk]
+            let o_t = q_row.matmul(&state)?.squeeze(2)?; // [B, nh, hv]
 
             outputs.push(o_t);
         }
@@ -598,8 +616,7 @@ impl ModelWeights {
             .map(|v| v as usize)
             .unwrap_or(head_dim);
 
-        let rms_norm_eps =
-            md_get(&arch_key("attention.layer_norm_rms_epsilon"))?.to_f32()? as f64;
+        let rms_norm_eps = md_get(&arch_key("attention.layer_norm_rms_epsilon"))?.to_f32()? as f64;
 
         let rope_freq_base = md_get(&arch_key("rope.freq_base"))
             .and_then(|m| m.to_f32())
@@ -608,14 +625,18 @@ impl ModelWeights {
         // SSM dimensions: derive from tensor shapes in the GGUF
         // ssm_a: [n_ssm_head] — gives us the SSM head count directly
         // ssm_out: [n_ssm_head * ssm_head_dim, hidden] — gives us ssm output dim
-        let n_ssm_head = ct.tensor_infos.get("blk.0.ssm_a")
+        let n_ssm_head = ct
+            .tensor_infos
+            .get("blk.0.ssm_a")
             .map(|info| {
                 eprintln!("  ssm_a tensor_info dims: {:?}", info.shape.dims());
                 info.shape.dims()[0]
             })
             .unwrap_or(32);
         // ssm_out GGUF shape is [hidden, out_dim] — out_dim is the SSM output size
-        let ssm_head_dim = ct.tensor_infos.get("blk.0.ssm_out.weight")
+        let ssm_head_dim = ct
+            .tensor_infos
+            .get("blk.0.ssm_out.weight")
             .map(|info| {
                 let dims = info.shape.dims();
                 eprintln!("  ssm_out tensor_info dims: {:?}", dims);
@@ -635,9 +656,8 @@ impl ModelWeights {
         let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?;
 
         // Embeddings
-        let tok_embeddings = DeviceEmbedding::from_gguf(
-            &ct, reader, "token_embd.weight", embedding_length, device,
-        )?;
+        let tok_embeddings =
+            DeviceEmbedding::from_gguf(&ct, reader, "token_embd.weight", embedding_length, device)?;
         let norm = RmsNorm::from_qtensor(
             ct.tensor(reader, "output_norm.weight", device)?,
             rms_norm_eps,
@@ -657,7 +677,9 @@ impl ModelWeights {
             let prefix = format!("blk.{layer_idx}");
 
             // Detect layer type by checking tensor index (no I/O, just hashmap lookup)
-            let is_attention = ct.tensor_infos.contains_key(&format!("{prefix}.attn_q.weight"));
+            let is_attention = ct
+                .tensor_infos
+                .contains_key(&format!("{prefix}.attn_q.weight"));
 
             // Shared: FFN (both layer types) — loaded on the layer's device
             let ffn_gate = ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), layer_device)?;
@@ -675,18 +697,37 @@ impl ModelWeights {
                 rms_norm_eps,
             )?;
             let post_attention_norm = RmsNorm::from_qtensor(
-                ct.tensor(reader, &format!("{prefix}.post_attention_norm.weight"), layer_device)?,
+                ct.tensor(
+                    reader,
+                    &format!("{prefix}.post_attention_norm.weight"),
+                    layer_device,
+                )?,
                 rms_norm_eps,
             )?;
 
             if is_attention {
                 // Full attention layer: separate Q/K/V — on Metal
-                let attention_wq = ct.tensor(reader, &format!("{prefix}.attn_q.weight"), layer_device)?;
-                let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), layer_device)?;
-                let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), layer_device)?;
-                let attention_wo = ct.tensor(reader, &format!("{prefix}.attn_output.weight"), layer_device)?;
-                let attn_q_norm_t = ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), layer_device)?;
-                let attn_k_norm_t = ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), layer_device)?;
+                let attention_wq =
+                    ct.tensor(reader, &format!("{prefix}.attn_q.weight"), layer_device)?;
+                let attention_wk =
+                    ct.tensor(reader, &format!("{prefix}.attn_k.weight"), layer_device)?;
+                let attention_wv =
+                    ct.tensor(reader, &format!("{prefix}.attn_v.weight"), layer_device)?;
+                let attention_wo = ct.tensor(
+                    reader,
+                    &format!("{prefix}.attn_output.weight"),
+                    layer_device,
+                )?;
+                let attn_q_norm_t = ct.tensor(
+                    reader,
+                    &format!("{prefix}.attn_q_norm.weight"),
+                    layer_device,
+                )?;
+                let attn_k_norm_t = ct.tensor(
+                    reader,
+                    &format!("{prefix}.attn_k_norm.weight"),
+                    layer_device,
+                )?;
 
                 if layer_idx == 7 {
                     log.info(&format!("Layer {}: Attention (separate Q/K/V)", layer_idx));
@@ -713,20 +754,29 @@ impl ModelWeights {
                 }));
             } else {
                 // DeltaNet layer: fused QKV + SSM — on CPU (Accelerate BLAS)
-                let attn_qkv = ct.tensor(reader, &format!("{prefix}.attn_qkv.weight"), layer_device)?;
-                let attn_gate = ct.tensor(reader, &format!("{prefix}.attn_gate.weight"), layer_device)?;
+                let attn_qkv =
+                    ct.tensor(reader, &format!("{prefix}.attn_qkv.weight"), layer_device)?;
+                let attn_gate =
+                    ct.tensor(reader, &format!("{prefix}.attn_gate.weight"), layer_device)?;
 
                 // SSM tensors — all on CPU
-                let ssm_a = ct.tensor(reader, &format!("{prefix}.ssm_a"), layer_device)?
+                let ssm_a = ct
+                    .tensor(reader, &format!("{prefix}.ssm_a"), layer_device)?
                     .dequantize(layer_device)?;
-                let ssm_alpha = ct.tensor(reader, &format!("{prefix}.ssm_alpha.weight"), layer_device)?;
-                let ssm_beta = ct.tensor(reader, &format!("{prefix}.ssm_beta.weight"), layer_device)?;
-                let ssm_conv1d = ct.tensor(reader, &format!("{prefix}.ssm_conv1d.weight"), layer_device)?
+                let ssm_alpha =
+                    ct.tensor(reader, &format!("{prefix}.ssm_alpha.weight"), layer_device)?;
+                let ssm_beta =
+                    ct.tensor(reader, &format!("{prefix}.ssm_beta.weight"), layer_device)?;
+                let ssm_conv1d = ct
+                    .tensor(reader, &format!("{prefix}.ssm_conv1d.weight"), layer_device)?
                     .dequantize(layer_device)?;
-                let ssm_dt_bias = ct.tensor(reader, &format!("{prefix}.ssm_dt.bias"), layer_device)?
+                let ssm_dt_bias = ct
+                    .tensor(reader, &format!("{prefix}.ssm_dt.bias"), layer_device)?
                     .dequantize(layer_device)?;
-                let ssm_norm = ct.tensor(reader, &format!("{prefix}.ssm_norm.weight"), layer_device)?;
-                let ssm_out = ct.tensor(reader, &format!("{prefix}.ssm_out.weight"), layer_device)?;
+                let ssm_norm =
+                    ct.tensor(reader, &format!("{prefix}.ssm_norm.weight"), layer_device)?;
+                let ssm_out =
+                    ct.tensor(reader, &format!("{prefix}.ssm_out.weight"), layer_device)?;
 
                 if layer_idx == 0 {
                     log.info(&format!("Layer {}: DeltaNet (fused QKV + SSM)", layer_idx));
@@ -751,7 +801,10 @@ impl ModelWeights {
                 let head_k_dim = key_dim / num_k_heads;
 
                 if layer_idx == 0 {
-                    log.info(&format!("  DeltaNet heads: K={} V={}, head_k={} head_v={}", num_k_heads, num_v_heads, head_k_dim, head_v_dim));
+                    log.info(&format!(
+                        "  DeltaNet heads: K={} V={}, head_k={} head_v={}",
+                        num_k_heads, num_v_heads, head_k_dim, head_v_dim
+                    ));
                 }
 
                 layers.push(LayerKind::DeltaNet(DeltaNetLayer {
@@ -777,9 +830,20 @@ impl ModelWeights {
             }
         }
 
-        let attn_count = layers.iter().filter(|l| matches!(l, LayerKind::Attention(_))).count();
-        let delta_count = layers.iter().filter(|l| matches!(l, LayerKind::DeltaNet(_))).count();
-        log.info(&format!("Loaded {} layers: {} attention + {} DeltaNet", layers.len(), attn_count, delta_count));
+        let attn_count = layers
+            .iter()
+            .filter(|l| matches!(l, LayerKind::Attention(_)))
+            .count();
+        let delta_count = layers
+            .iter()
+            .filter(|l| matches!(l, LayerKind::DeltaNet(_)))
+            .count();
+        log.info(&format!(
+            "Loaded {} layers: {} attention + {} DeltaNet",
+            layers.len(),
+            attn_count,
+            delta_count
+        ));
 
         let span = tracing::span!(tracing::Level::TRACE, "qwen35-model");
         let span_output = tracing::span!(tracing::Level::TRACE, "qwen35-output");
@@ -823,12 +887,8 @@ impl ModelWeights {
         let mut layer_in = x.clone();
         for layer in self.layers.iter_mut() {
             let layer_out = match layer {
-                LayerKind::Attention(attn) => {
-                    attn.forward(&layer_in, mask.as_ref(), index_pos)?
-                }
-                LayerKind::DeltaNet(delta) => {
-                    delta.forward(&layer_in, index_pos)?
-                }
+                LayerKind::Attention(attn) => attn.forward(&layer_in, mask.as_ref(), index_pos)?,
+                LayerKind::DeltaNet(delta) => delta.forward(&layer_in, index_pos)?,
             };
             layer_in = layer_out;
         }

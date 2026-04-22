@@ -27,7 +27,8 @@ fn qwen35_live_pipeline_produces_correct_answer() {
         model_path: PathBuf::from(MODEL_PATH),
         n_gpu_layers: -1,
         ..Default::default()
-    }).expect("load");
+    })
+    .expect("load");
 
     // temperature=0.0 → triggers Sampler::greedy() in start_request, fully
     // deterministic. Same path the chat persona uses for inference.

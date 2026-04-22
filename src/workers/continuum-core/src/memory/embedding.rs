@@ -70,7 +70,9 @@ impl FastEmbedProvider {
                     .map(|s| s.as_str())
                     .or_else(|| panic_payload.downcast_ref::<&str>().copied())
                     .unwrap_or("unknown cause");
-                return Err(EmbeddingError(format!("ORT runtime panicked: {msg}. Check ORT_DYLIB_PATH.")));
+                return Err(EmbeddingError(format!(
+                    "ORT runtime panicked: {msg}. Check ORT_DYLIB_PATH."
+                )));
             }
         };
 

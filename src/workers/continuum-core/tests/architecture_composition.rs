@@ -24,13 +24,9 @@
 
 use continuum_core::gpu::{CpuMonitor, GpuMonitor, MockMonitor};
 use continuum_core::inference::kv_quant::{KvQuantPolicy, Residency};
-use continuum_core::inference::recipe_budget::{
-    PersonaContextBudget, RecipeBudget, TaskKind,
-};
+use continuum_core::inference::recipe_budget::{PersonaContextBudget, RecipeBudget, TaskKind};
 use continuum_core::memory::{ConversationSummary, RecallMode};
-use continuum_core::persona::resource_forecast::{
-    forecast_from_state, MessagePreview,
-};
+use continuum_core::persona::resource_forecast::{forecast_from_state, MessagePreview};
 use continuum_core::persona::types::PersonaState;
 use uuid::Uuid;
 
@@ -112,18 +108,17 @@ fn chat_recipe_with_4_personas_fits_m1_air_8gb() {
 #[test]
 fn coding_large_recipe_allocates_full_context() {
     // Given: a coding-large persona on its own (typical solo coding session)
-    let recipe = RecipeBudget::new()
-        .add_persona(PersonaContextBudget::for_task("CoderAgent", TaskKind::CodingLarge));
+    let recipe = RecipeBudget::new().add_persona(PersonaContextBudget::for_task(
+        "CoderAgent",
+        TaskKind::CodingLarge,
+    ));
 
     assert_eq!(recipe.sum_of_seed_tokens(), 128 * 1024);
     assert_eq!(recipe.sum_of_max_tokens(), 256 * 1024);
 
     // 256K F16 KV for one persona = 1GB. Fits well under M5 Pro's 38GB.
-    let kv_max_bytes = estimate_kv_bytes(
-        recipe.sum_of_max_tokens(),
-        1,
-        QWEN35_4B_BYTES_PER_TOKEN_F16,
-    );
+    let kv_max_bytes =
+        estimate_kv_bytes(recipe.sum_of_max_tokens(), 1, QWEN35_4B_BYTES_PER_TOKEN_F16);
     assert!(
         kv_max_bytes < 2 * 1024 * 1024 * 1024,
         "Single CodingLarge persona at full max F16 should be <2GB; got {kv_max_bytes}"
@@ -186,8 +181,8 @@ fn memory_pressure_signal_propagates_through_monitor() {
 /// fails because tired and fresh both forecast same depth; reverted.
 #[test]
 fn forecast_compounds_persona_state_and_recipe_seed() {
-    let recipe = RecipeBudget::new()
-        .add_persona(PersonaContextBudget::for_task("Helper", TaskKind::Chat));
+    let recipe =
+        RecipeBudget::new().add_persona(PersonaContextBudget::for_task("Helper", TaskKind::Chat));
     let chat_seed = recipe.sum_of_seed_tokens();
 
     let mut tired = PersonaState::default();
@@ -230,9 +225,7 @@ fn forecast_compounds_persona_state_and_recipe_seed() {
 
     // Compound assertion 4: fresh forecasts MORE total context than
     // tired (because deeper reasoning = bigger output budget)
-    assert!(
-        fresh_forecast.estimated_context_tokens > tired_forecast.estimated_context_tokens
-    );
+    assert!(fresh_forecast.estimated_context_tokens > tired_forecast.estimated_context_tokens);
 }
 
 // ─── Composition test 5: invariants hold across all primitives ───────
@@ -331,8 +324,7 @@ async fn concurrent_persona_pipelines_do_not_contend() {
     // Shared state across all "personas" — same primitive prod uses
     let detector = Arc::new(LoopDetector::new());
     let recipe = Arc::new(
-        RecipeBudget::new()
-            .add_persona(PersonaContextBudget::for_task("Helper", TaskKind::Chat)),
+        RecipeBudget::new().add_persona(PersonaContextBudget::for_task("Helper", TaskKind::Chat)),
     );
 
     let start = Instant::now();
@@ -354,11 +346,7 @@ async fn concurrent_persona_pipelines_do_not_contend() {
                 ..Default::default()
             };
 
-            let _forecast = forecast_from_state(
-                &state,
-                &preview,
-                recipe.sum_of_seed_tokens(),
-            );
+            let _forecast = forecast_from_state(&state, &preview, recipe.sum_of_seed_tokens());
 
             // Each "persona" gets its own UUID — DashMap shards by key,
             // so 100 different personas map to ~100 different buckets,

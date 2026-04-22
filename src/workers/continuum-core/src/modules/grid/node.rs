@@ -11,10 +11,7 @@ use ts_rs::TS;
 /// Determines what commands the node is allowed to execute on us,
 /// and what commands we're willing to send to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/grid/TrustLevel.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/grid/TrustLevel.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum TrustLevel {
     /// Unknown node — not in our known_nodes list.
@@ -77,7 +74,11 @@ impl TransportAddress {
     /// Human-readable display string.
     pub fn display_address(&self) -> String {
         match self {
-            Self::Tailscale { ip, port, machine_name } => {
+            Self::Tailscale {
+                ip,
+                port,
+                machine_name,
+            } => {
                 if let Some(name) = machine_name {
                     format!("{name} ({ip}:{port})")
                 } else {
@@ -108,10 +109,7 @@ pub const DEFAULT_GRID_PORT: u16 = 7117;
 /// A capability that a node advertises to the mesh.
 /// Used by the GridRouter to decide where to send commands.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/grid/NodeCapability.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/grid/NodeCapability.ts")]
 #[serde(tag = "type")]
 pub enum NodeCapability {
     /// GPU compute available.
@@ -135,9 +133,7 @@ pub enum NodeCapability {
 
     /// AI inference capability — which models can run here.
     #[serde(rename = "inference")]
-    Inference {
-        models: Vec<String>,
-    },
+    Inference { models: Vec<String> },
 
     /// Training capability — LoRA fine-tuning.
     #[serde(rename = "training")]
@@ -154,10 +150,7 @@ pub enum NodeCapability {
 /// A known node on the Grid mesh.
 /// Stored in the node registry with all known addresses and capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/grid/GridNode.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/grid/GridNode.ts")]
 pub struct GridNode {
     /// Unique node identifier — derived from the first transport identity.
     /// For Tailscale: the Tailscale IP. For Reticulum: the destination hash.

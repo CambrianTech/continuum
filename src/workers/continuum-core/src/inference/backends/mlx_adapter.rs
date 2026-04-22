@@ -80,11 +80,9 @@ impl MlxAdapter {
     /// In phase A this just returns a sentinel error so nobody can
     /// accidentally wire it up yet.
     pub fn load(_model_path: &Path) -> Result<Self, String> {
-        Err(
-            "MlxAdapter::load not implemented — phase A scaffold only. \
+        Err("MlxAdapter::load not implemented — phase A scaffold only. \
              See docs/inference/MLX-BACKEND.md for the staged plan."
-                .to_string(),
-        )
+            .to_string())
     }
 }
 

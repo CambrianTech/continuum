@@ -128,9 +128,7 @@ pub fn execute_step<'a>(
                 prompt,
                 approvers,
                 timeout_secs,
-            } => {
-                approve::execute(prompt, approvers, *timeout_secs, index, ctx, pipeline_ctx).await
-            }
+            } => approve::execute(prompt, approvers, *timeout_secs, index, ctx, pipeline_ctx).await,
             PipelineStep::WebResearch {
                 query,
                 max_pages,

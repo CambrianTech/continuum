@@ -33,23 +33,23 @@
 pub mod anthropic_compat;
 
 use anthropic_compat::{
-    AnthropicContent, ContentBlock, MessagesRequest, MessagesResponse, ResponseContentBlock, Usage,
-    build_sse_events,
+    build_sse_events, AnthropicContent, ContentBlock, MessagesRequest, MessagesResponse,
+    ResponseContentBlock, Usage,
 };
 
 use crate::ai::{
-    ActiveAdapterRequest, ChatMessage, MessageContent, TextGenerationRequest,
-    adapter::InferenceDevice,
+    adapter::InferenceDevice, ActiveAdapterRequest, ChatMessage, MessageContent,
+    TextGenerationRequest,
 };
 
 use axum::{
-    Router,
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
+    Router,
 };
 use once_cell::sync::Lazy;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::{OnceCell, RwLock};
 use tower_http::cors::CorsLayer;

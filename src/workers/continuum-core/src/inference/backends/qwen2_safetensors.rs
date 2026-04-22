@@ -89,7 +89,10 @@ impl ModelBackend for Qwen2SafetensorsBackend {
         }
 
         let log = runtime::logger("candle");
-        log.debug(&format!("Qwen2 prefill: {} tokens full-batch", tokens.len()));
+        log.debug(&format!(
+            "Qwen2 prefill: {} tokens full-batch",
+            tokens.len()
+        ));
 
         let input = Tensor::new(tokens, &self.device)
             .map_err(|e| format!("Tensor creation: {e}"))?

@@ -63,10 +63,18 @@ fn main() {
     // Load model
     let load_start = Instant::now();
     let mut backend = continuum_core::inference::backends::load_gguf_backend(
-        &gguf_path, tokenizer.clone(), "qwen14b-test", &device,
-    ).expect("load model");
+        &gguf_path,
+        tokenizer.clone(),
+        "qwen14b-test",
+        &device,
+    )
+    .expect("load model");
     device.synchronize().ok();
-    eprintln!("Model loaded in {:.1}s (ctx={})", load_start.elapsed().as_secs_f32(), backend.context_length());
+    eprintln!(
+        "Model loaded in {:.1}s (ctx={})",
+        load_start.elapsed().as_secs_f32(),
+        backend.context_length()
+    );
 
     // Read prompt from PROMPT env var, or PROMPT_FILE, or use default
     let prompt = if let Ok(p) = std::env::var("PROMPT") {
@@ -83,7 +91,9 @@ fn main() {
 
     // Minimal test: prefill only, dump top-10 logits. No full generation.
     let max_tokens = std::env::var("MAX_TOKENS")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
 
     let sampling = continuum_core::inference::backends::SamplingConfig::code();
     eprintln!("Sampling: {:?}", sampling);
@@ -93,7 +103,8 @@ fn main() {
         &prompt,
         max_tokens,
         &sampling,
-    ).expect("generate");
+    )
+    .expect("generate");
 
     eprintln!("\n=== Output ({} tokens) ===", token_count);
     println!("{}", output);
@@ -103,14 +114,18 @@ fn main() {
 fn find_model_dir() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let internal = PathBuf::from(&home).join(".continuum/genome/models/qwen14b-compacted-v1");
-    if internal.exists() { return Some(internal); }
-    let external = std::env::var("CONTINUUM_STORAGE_PATH").ok()
+    if internal.exists() {
+        return Some(internal);
+    }
+    let external = std::env::var("CONTINUUM_STORAGE_PATH")
+        .ok()
         .map(|p| PathBuf::from(p).join("genome/models/qwen14b-compacted-v1"));
     external.filter(|p| p.exists())
 }
 
 fn find_gguf(dir: &PathBuf) -> Option<PathBuf> {
-    std::fs::read_dir(dir).ok()?
+    std::fs::read_dir(dir)
+        .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .find(|p| p.extension().and_then(|e| e.to_str()) == Some("gguf"))

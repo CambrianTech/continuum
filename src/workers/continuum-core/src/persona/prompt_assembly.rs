@@ -40,7 +40,7 @@ pub struct PromptAssemblyInput {
 /// A message in conversation history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryMessage {
-    pub role: String,       // "system" | "user" | "assistant"
+    pub role: String, // "system" | "user" | "assistant"
     pub name: Option<String>,
     pub content: String,
     pub timestamp_ms: Option<u64>,
@@ -108,7 +108,7 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
             "\n\n[Voice Mode]\n\
              You are in a live voice conversation. Keep responses concise and \
              conversational — the user is listening, not reading. Avoid markdown, \
-             code blocks, or long lists. Speak naturally."
+             code blocks, or long lists. Speak naturally.",
         );
     }
 
@@ -118,13 +118,11 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         MultiPartyChatStrategy::NamePrefixedUserTurns => {
             build_messages_name_prefixed(&input.history, &input.current_message)
         }
-        MultiPartyChatStrategy::SingleUserTurnFlattenedHistory => {
-            build_messages_single_user_turn(
-                &input.history,
-                &input.current_message,
-                &input.persona_name,
-            )
-        }
+        MultiPartyChatStrategy::SingleUserTurnFlattenedHistory => build_messages_single_user_turn(
+            &input.history,
+            &input.current_message,
+            &input.persona_name,
+        ),
     };
 
     // Estimate tokens (~4 chars per token)
@@ -264,10 +262,16 @@ fn build_social_block(signals: &SocialSignals) -> String {
         lines.push("- This message is directed at another persona (not you)".to_string());
     }
     if let Some(secs) = signals.seconds_since_last_response {
-        lines.push(format!("- You last responded {}s ago in this room", secs.round() as i64));
+        lines.push(format!(
+            "- You last responded {}s ago in this room",
+            secs.round() as i64
+        ));
     }
     if let (Some(count), Some(cap)) = (signals.response_count_this_session, signals.response_cap) {
-        lines.push(format!("- You have responded {}/{} times this session", count, cap));
+        lines.push(format!(
+            "- You have responded {}/{} times this session",
+            count, cap
+        ));
     }
 
     if lines.is_empty() {
@@ -287,14 +291,12 @@ mod tests {
             persona_name: "Helper AI".to_string(),
             system_prompt: "You are Helper AI.".to_string(),
             matched_angle: "This is a coding question about Rust error handling.".to_string(),
-            history: vec![
-                HistoryMessage {
-                    role: "user".to_string(),
-                    name: Some("Joel".to_string()),
-                    content: "How do I handle errors in Rust?".to_string(),
-                    timestamp_ms: Some(1000000),
-                },
-            ],
+            history: vec![HistoryMessage {
+                role: "user".to_string(),
+                name: Some("Joel".to_string()),
+                content: "How do I handle errors in Rust?".to_string(),
+                timestamp_ms: Some(1000000),
+            }],
             current_message: HistoryMessage {
                 role: "user".to_string(),
                 name: Some("Joel".to_string()),
@@ -388,7 +390,9 @@ mod tests {
         assert!(result.system_message.contains("Social Awareness"));
         assert!(result.system_message.contains("5 AI messages"));
         assert!(result.system_message.contains("No human has spoken"));
-        assert!(result.system_message.contains("directed at another persona"));
+        assert!(result
+            .system_message
+            .contains("directed at another persona"));
     }
 
     #[test]
@@ -423,7 +427,10 @@ mod tests {
         };
 
         let result = assemble(&input);
-        let gap_msg = result.messages.iter().find(|m| m.content.contains("minutes passed"));
+        let gap_msg = result
+            .messages
+            .iter()
+            .find(|m| m.content.contains("minutes passed"));
         assert!(gap_msg.is_some(), "Should have time gap marker");
     }
 
@@ -433,14 +440,12 @@ mod tests {
             persona_name: "Helper AI".to_string(),
             system_prompt: "System.".to_string(),
             matched_angle: String::new(),
-            history: vec![
-                HistoryMessage {
-                    role: "user".to_string(),
-                    name: None,
-                    content: "msg1".to_string(),
-                    timestamp_ms: None,
-                },
-            ],
+            history: vec![HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "msg1".to_string(),
+                timestamp_ms: None,
+            }],
             current_message: HistoryMessage {
                 role: "user".to_string(),
                 name: None,
@@ -456,7 +461,9 @@ mod tests {
         // Identity reminder should be second-to-last (before current message)
         let len = result.messages.len();
         assert!(len >= 3);
-        assert!(result.messages[len - 2].content.contains("Remember: You are Helper AI"));
+        assert!(result.messages[len - 2]
+            .content
+            .contains("Remember: You are Helper AI"));
         assert!(result.messages[len - 1].content.contains("current"));
     }
 }

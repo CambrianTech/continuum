@@ -5,6 +5,6 @@
 //! - Reticulum: Encrypted mesh with cryptographic identity (infrastructure-free, future)
 //! - UDP Events: Fire-and-forget event streaming (sensor data, video, heartbeats)
 
-pub mod tailscale;
 pub mod reticulum;
+pub mod tailscale;
 pub mod udp_events;

@@ -308,7 +308,10 @@ pub struct RagSection {
 
 /// Full RAG compose request.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/rag/RagComposeRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/rag/RagComposeRequest.ts"
+)]
 pub struct RagComposeRequest {
     /// Persona ID for memory/persona-specific sources
     pub persona_id: String,

@@ -208,8 +208,17 @@ mod tests {
     #[test]
     fn verbatim_window_size_matches_mode_semantics() {
         assert_eq!(RecallMode::ConsolidatedSummary.verbatim_window_size(), 2);
-        assert_eq!(RecallMode::Hybrid { verbatim_window: 5 }.verbatim_window_size(), 5);
-        assert_eq!(RecallMode::Hybrid { verbatim_window: 10 }.verbatim_window_size(), 10);
+        assert_eq!(
+            RecallMode::Hybrid { verbatim_window: 5 }.verbatim_window_size(),
+            5
+        );
+        assert_eq!(
+            RecallMode::Hybrid {
+                verbatim_window: 10
+            }
+            .verbatim_window_size(),
+            10
+        );
         assert_eq!(RecallMode::Verbatim.verbatim_window_size(), u32::MAX);
     }
 

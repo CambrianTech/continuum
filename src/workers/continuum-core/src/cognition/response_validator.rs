@@ -82,7 +82,10 @@ pub fn clean_and_validate(
         };
     }
 
-    let gate = validation.gate_failed.clone().unwrap_or_else(|| "unknown".to_string());
+    let gate = validation
+        .gate_failed
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
     let reason = match gate.as_str() {
         "garbage" => format!(
             "Garbage output: {:?} - {}",
@@ -149,7 +152,10 @@ mod tests {
         assert!(outcome.should_post(), "clean text should be postable");
         assert!(outcome.posted_text.is_some());
         let text = outcome.posted_text.unwrap();
-        assert!(text.contains("Hello"), "posted text should preserve content; got {text:?}");
+        assert!(
+            text.contains("Hello"),
+            "posted text should preserve content; got {text:?}"
+        );
         assert!(outcome.failure_gate.is_none());
     }
 
@@ -172,7 +178,10 @@ mod tests {
         );
         assert!(outcome.thinking.is_some(), "thinking should be extracted");
         let thinking = outcome.thinking.unwrap();
-        assert!(thinking.contains("careful"), "thinking content preserved; got {thinking:?}");
+        assert!(
+            thinking.contains("careful"),
+            "thinking content preserved; got {thinking:?}"
+        );
         // Cleaned text should NOT contain the thinking tag
         let text = outcome.posted_text.unwrap();
         assert!(!text.contains("<thinking>"));
@@ -191,13 +200,8 @@ mod tests {
         let detector = LoopDetector::new();
         // Long run of repeated character — classic garbage pattern
         let garbage = "@".repeat(200);
-        let outcome = clean_and_validate(
-            &garbage,
-            Uuid::new_v4(),
-            false,
-            &empty_history(),
-            &detector,
-        );
+        let outcome =
+            clean_and_validate(&garbage, Uuid::new_v4(), false, &empty_history(), &detector);
         assert!(!outcome.should_post(), "garbage MUST not post");
         assert_eq!(outcome.failure_gate.as_deref(), Some("garbage"));
         assert!(outcome.reason.to_lowercase().contains("garbage"));
@@ -213,16 +217,16 @@ mod tests {
     #[test]
     fn thinking_preserved_even_when_validation_fails() {
         let detector = LoopDetector::new();
-        let raw = format!("<thinking>Real reasoning here.</thinking>{}", "@".repeat(200));
-        let outcome = clean_and_validate(
-            &raw,
-            Uuid::new_v4(),
-            false,
-            &empty_history(),
-            &detector,
+        let raw = format!(
+            "<thinking>Real reasoning here.</thinking>{}",
+            "@".repeat(200)
         );
+        let outcome = clean_and_validate(&raw, Uuid::new_v4(), false, &empty_history(), &detector);
         assert!(!outcome.should_post(), "garbage suppressed");
-        assert!(outcome.thinking.is_some(), "thinking preserved through failure");
+        assert!(
+            outcome.thinking.is_some(),
+            "thinking preserved through failure"
+        );
         assert!(outcome.thinking.unwrap().contains("Real reasoning"));
     }
 

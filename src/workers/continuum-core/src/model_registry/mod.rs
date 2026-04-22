@@ -19,10 +19,10 @@
 //!   variant AND a TOML row — but the TOML rows for existing arches
 //!   remain unaffected.
 
-pub mod types;
 pub mod loader;
 pub mod singleton;
+pub mod types;
 
-pub use types::{Arch, AuthKind, Capability, Model, Provider};
-pub use loader::{Registry, RegistryError, load_registry, load_models, load_providers};
+pub use loader::{load_models, load_providers, load_registry, Registry, RegistryError};
 pub use singleton::{global, init_global, try_global};
+pub use types::{Arch, AuthKind, Capability, Model, Provider};

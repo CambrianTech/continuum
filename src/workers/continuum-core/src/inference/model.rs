@@ -75,7 +75,9 @@ pub fn select_best_device() -> Device {
     }
 
     log.error("  ❌ No GPU available. CPU inference is not supported.");
-    log.error("  ❌ Build with: --features metal (macOS) or --features cuda (Linux/Windows with GPU)");
+    log.error(
+        "  ❌ Build with: --features metal (macOS) or --features cuda (Linux/Windows with GPU)",
+    );
     panic!("No GPU device available for inference. CPU fallback is disabled.");
 }
 
@@ -174,8 +176,8 @@ pub fn load_model_by_id(
     // Try downloading GGUF weights directly and resolve tokenizer from base model.
     if config_result.is_err() || tokenizer_result.is_err() {
         log.info("  config.json/tokenizer.json not found — checking for GGUF-only repo");
-        let weight_paths = download_weights(&repo)
-            .map_err(|e| format!("Failed to download weights: {e}"))?;
+        let weight_paths =
+            download_weights(&repo).map_err(|e| format!("Failed to download weights: {e}"))?;
 
         if weight_paths.len() == 1
             && weight_paths[0]
@@ -232,9 +234,7 @@ pub fn load_model_by_id(
             .map(|e| e == "gguf")
             .unwrap_or(false)
     {
-        if let Some(bf16_backend) =
-            try_load_bf16_safetensors(&weight_paths[0], model_id)
-        {
+        if let Some(bf16_backend) = try_load_bf16_safetensors(&weight_paths[0], model_id) {
             log.info(&format!(
                 "BF16 backend ready in {:?} (ctx={})",
                 start.elapsed(),
@@ -246,8 +246,7 @@ pub fn load_model_by_id(
         log.info("  Detected GGUF format — loading via GGUF backend");
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
-        let backend =
-            backends::load_gguf_backend(&weight_paths[0], tokenizer, model_id, &device)?;
+        let backend = backends::load_gguf_backend(&weight_paths[0], tokenizer, model_id, &device)?;
         let duration = start.elapsed();
         log.info(&format!(
             "GGUF model loaded in {:?} (arch={}, ctx={})",
@@ -286,7 +285,10 @@ fn resolve_tokenizer_for_gguf(
             "main".to_string(),
         ));
         if let Ok(tokenizer_path) = base_repo.get("tokenizer.json") {
-            log.info(&format!("  ✅ Found tokenizer from base model: {}", base_id));
+            log.info(&format!(
+                "  ✅ Found tokenizer from base model: {}",
+                base_id
+            ));
             let tokenizer = Tokenizer::from_file(&tokenizer_path)
                 .map_err(|e| format!("Failed to load tokenizer from {}: {e}", base_id))?;
             return Ok(tokenizer);
@@ -296,7 +298,8 @@ fn resolve_tokenizer_for_gguf(
     Err(format!(
         "No tokenizer found for GGUF model {}. Tried base models: {:?}",
         model_id, base_model_candidates
-    ).into())
+    )
+    .into())
 }
 
 /// Infer base model HF IDs from a GGUF model ID.
@@ -398,10 +401,9 @@ fn load_safetensors_from_config(
 
             log.info(&format!("  EOS token IDs: {:?}", eos_token_ids));
 
-            let vb =
-                unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, device)? };
-            let model = Qwen2::load(vb, &qwen2_config)
-                .map_err(|e| format!("Qwen2 load failed: {e}"))?;
+            let vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, device)? };
+            let model =
+                Qwen2::load(vb, &qwen2_config).map_err(|e| format!("Qwen2 load failed: {e}"))?;
 
             let duration = start.elapsed();
             log.info(&format!("Qwen2 model loaded in {:?}", duration));
@@ -432,8 +434,7 @@ fn load_safetensors_from_config(
                 config.max_position_embeddings
             ));
 
-            let eos_token_ids =
-                LlamaSafetensorsBackend::parse_eos_tokens(&config.eos_token_id);
+            let eos_token_ids = LlamaSafetensorsBackend::parse_eos_tokens(&config.eos_token_id);
             log.info(&format!("  EOS token IDs: {:?}", eos_token_ids));
 
             // Check for compacted model topology
@@ -444,10 +445,7 @@ fn load_safetensors_from_config(
 
             if let Some(ref dir) = model_dir {
                 if let Some(topo_path) = compact_llama::detect_topology(dir) {
-                    log.info(&format!(
-                        "  Detected compacted topology: {:?}",
-                        topo_path
-                    ));
+                    log.info(&format!("  Detected compacted topology: {:?}", topo_path));
                     let topo = topology::load_topology(&topo_path)
                         .map_err(|e| format!("Failed to load topology: {e}"))?;
 
@@ -460,9 +458,8 @@ fn load_safetensors_from_config(
                     let vb = unsafe {
                         VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, device)?
                     };
-                    let compact_model =
-                        compact_llama::CompactLlama::load(vb, &config, &topo)
-                            .map_err(|e| format!("CompactLlama load failed: {e}"))?;
+                    let compact_model = compact_llama::CompactLlama::load(vb, &config, &topo)
+                        .map_err(|e| format!("CompactLlama load failed: {e}"))?;
 
                     let duration = start.elapsed();
                     log.info(&format!("Compact model loaded in {:?}", duration));
@@ -482,8 +479,7 @@ fn load_safetensors_from_config(
             }
 
             // Standard (non-compacted) Llama path
-            let vb =
-                unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, device)? };
+            let vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, device)? };
 
             let model = Llama::load(vb, &config)?;
             let cache = Cache::new(true, dtype, &config, device)?;
@@ -623,10 +619,7 @@ pub fn load_model_from_dir(
 ///   - Available system RAM ≥ 24GB (safe threshold for ~20GB F16 14B model)
 ///
 /// Returns `None` if either condition isn't met or loading fails — caller falls back to GGUF.
-fn try_load_bf16_safetensors(
-    gguf_path: &Path,
-    model_id: &str,
-) -> Option<Box<dyn ModelBackend>> {
+fn try_load_bf16_safetensors(gguf_path: &Path, model_id: &str) -> Option<Box<dyn ModelBackend>> {
     let bf16_dir = gguf_path.parent()?.join("bf16");
     if !bf16_dir.exists() {
         return None;
@@ -805,10 +798,8 @@ mod tests {
     #[test]
     #[ignore]
     fn test_qwen32b_compacted_gguf_inference() {
-        let model_dir = Path::new(
-            &std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
-        )
-        .join(".continuum/genome/models/qwen32b-compacted-v2");
+        let model_dir = Path::new(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
+            .join(".continuum/genome/models/qwen32b-compacted-v2");
 
         if !model_dir.exists() {
             eprintln!("Skipping: model dir not found at {:?}", model_dir);
@@ -840,7 +831,10 @@ mod tests {
             .expect("Generation failed");
         let gen_time = gen_start.elapsed();
 
-        eprintln!("\n--- Output ({} tokens in {:.1?}) ---", token_count, gen_time);
+        eprintln!(
+            "\n--- Output ({} tokens in {:.1?}) ---",
+            token_count, gen_time
+        );
         eprintln!("{}", output);
         eprintln!("--- End ---\n");
 

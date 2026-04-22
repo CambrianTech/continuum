@@ -293,12 +293,42 @@ mod tests {
             ..Default::default()
         };
         let state = fresh_state();
-        assert!(forecast_from_state(&state, &with_image, 8192).modality_demand.vision_tokens > 0);
-        assert!(forecast_from_state(&state, &with_audio, 8192).modality_demand.audio_tokens > 0);
-        assert!(forecast_from_state(&state, &with_both, 8192).modality_demand.vision_tokens > 0);
-        assert!(forecast_from_state(&state, &with_both, 8192).modality_demand.audio_tokens > 0);
-        assert_eq!(forecast_from_state(&state, &text_only, 8192).modality_demand.vision_tokens, 0);
-        assert_eq!(forecast_from_state(&state, &text_only, 8192).modality_demand.audio_tokens, 0);
+        assert!(
+            forecast_from_state(&state, &with_image, 8192)
+                .modality_demand
+                .vision_tokens
+                > 0
+        );
+        assert!(
+            forecast_from_state(&state, &with_audio, 8192)
+                .modality_demand
+                .audio_tokens
+                > 0
+        );
+        assert!(
+            forecast_from_state(&state, &with_both, 8192)
+                .modality_demand
+                .vision_tokens
+                > 0
+        );
+        assert!(
+            forecast_from_state(&state, &with_both, 8192)
+                .modality_demand
+                .audio_tokens
+                > 0
+        );
+        assert_eq!(
+            forecast_from_state(&state, &text_only, 8192)
+                .modality_demand
+                .vision_tokens,
+            0
+        );
+        assert_eq!(
+            forecast_from_state(&state, &text_only, 8192)
+                .modality_demand
+                .audio_tokens,
+            0
+        );
     }
 
     /// What this catches: confidence not reflecting state. Policy uses
@@ -318,7 +348,10 @@ mod tests {
         let fresh = forecast_from_state(&fresh_state(), &msg, 8192);
         let tired = forecast_from_state(&tired_state(), &msg, 8192);
         assert!(fresh.confidence > tired.confidence);
-        assert!(fresh.confidence > 0.5, "fresh persona should be reasonably confident");
+        assert!(
+            fresh.confidence > 0.5,
+            "fresh persona should be reasonably confident"
+        );
     }
 
     /// What this catches: urgency not reflecting message signals.

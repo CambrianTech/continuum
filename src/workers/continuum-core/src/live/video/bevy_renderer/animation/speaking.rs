@@ -3,8 +3,8 @@
 use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
 
-use super::components::*;
 use super::super::scene::animation::{AnimationConfig, PORTRAIT_PROFILE};
+use super::components::*;
 use crate::clog_info;
 
 /// Animate mouth + head nod on speaking entities.
@@ -26,7 +26,8 @@ pub(in crate::live::video::bevy_renderer) fn animate_speaking(
 ) {
     let now = time.elapsed_secs();
 
-    for (entity, targets, mesh_link, skeleton, clip, mouth_weight, anim_cfg, is_speaking) in &query {
+    for (entity, targets, mesh_link, skeleton, clip, mouth_weight, anim_cfg, is_speaking) in &query
+    {
         // Compute mouth weight from best available source
         let mouth_val = if let Some(clip) = clip {
             // Check if clip has expired
@@ -69,15 +70,14 @@ pub(in crate::live::video::bevy_renderer) fn animate_speaking(
 
         // Head nod during speech
         let should_nod = clip.is_some() || is_speaking;
-        let profile = anim_cfg
-            .map(|c| &c.profile)
-            .unwrap_or(&PORTRAIT_PROFILE);
+        let profile = anim_cfg.map(|c| &c.profile).unwrap_or(&PORTRAIT_PROFILE);
 
         if let Some(ref head) = skeleton.head {
             if let Ok(mut transform) = transforms.get_mut(head.entity) {
                 if should_nod {
                     let t = now;
-                    let nod = (t * 1.5 * std::f32::consts::TAU).sin() * profile.speaking_nod_amplitude;
+                    let nod =
+                        (t * 1.5 * std::f32::consts::TAU).sin() * profile.speaking_nod_amplitude;
                     let tilt = (t * 0.9).sin() * profile.speaking_tilt_amplitude;
                     let delta = Quat::from_euler(EulerRot::XYZ, nod, 0.0, tilt);
                     transform.rotation = head.rest_rotation * delta;

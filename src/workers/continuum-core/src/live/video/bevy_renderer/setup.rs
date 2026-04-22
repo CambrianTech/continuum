@@ -1,19 +1,19 @@
 //! Setup systems — render slot allocation, signal ready, readback entity spawning.
 
+use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::gpu_readback::{Readback, ReadbackComplete};
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-use bevy::asset::RenderAssetUsages;
 use std::collections::HashMap;
 
 use super::api::gpu_manager;
 use super::scene;
 use super::types::*;
-use super::{AVATAR_WIDTH, AVATAR_HEIGHT, MAX_AVATAR_SLOTS, HD_WIDTH, HD_HEIGHT, MAX_HD_SLOTS};
+use super::{AVATAR_HEIGHT, AVATAR_WIDTH, HD_HEIGHT, HD_WIDTH, MAX_AVATAR_SLOTS, MAX_HD_SLOTS};
 use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
-use crate::{clog_info, clog_warn};
 use crate::live::avatar::RgbaFrame;
+use crate::{clog_info, clog_warn};
 
 pub(super) fn setup_render_slots(
     mut commands: Commands,

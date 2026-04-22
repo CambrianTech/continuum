@@ -90,7 +90,10 @@ impl RecentMessageCache {
 
     /// Add a message to the cache. Ring buffer — oldest evicted when full.
     pub fn push(&mut self, room_id: Uuid, msg: CachedMessage) {
-        let room = self.rooms.entry(room_id).or_insert_with(|| VecDeque::with_capacity(MAX_CACHED_PER_ROOM));
+        let room = self
+            .rooms
+            .entry(room_id)
+            .or_insert_with(|| VecDeque::with_capacity(MAX_CACHED_PER_ROOM));
         if room.len() >= MAX_CACHED_PER_ROOM {
             room.pop_front();
         }
@@ -120,12 +123,16 @@ impl RecentMessageCache {
 
         let cutoff = now_ms.saturating_sub(ECHO_CHAMBER_WINDOW_MS);
 
-        let (ai_count, has_human) = self.rooms.get(&room_id)
+        let (ai_count, has_human) = self
+            .rooms
+            .get(&room_id)
             .map(|msgs| {
                 let mut ai = 0usize;
                 let mut human = false;
                 for m in msgs.iter().rev() {
-                    if m.timestamp_ms < cutoff { break; }
+                    if m.timestamp_ms < cutoff {
+                        break;
+                    }
                     match m.sender_type {
                         SenderCategory::Human => human = true,
                         SenderCategory::AI => ai += 1,
@@ -152,7 +159,8 @@ impl RecentMessageCache {
         exclude_persona_id: Uuid,
         exclude_message_id: Uuid,
     ) -> Vec<&CachedMessage> {
-        self.rooms.get(&room_id)
+        self.rooms
+            .get(&room_id)
             .map(|msgs| {
                 msgs.iter()
                     .rev()
@@ -198,7 +206,9 @@ impl ContentDeduplicator {
         let hash = Self::hash_content(content);
         let cutoff = now_ms.saturating_sub(CONTENT_DEDUP_WINDOW_MS);
 
-        let is_dup = self.entries.iter()
+        let is_dup = self
+            .entries
+            .iter()
             .rev()
             .take_while(|e| e.timestamp_ms > cutoff)
             .any(|e| e.hash == hash && e.room_id == room_id);
@@ -227,7 +237,8 @@ impl ContentDeduplicator {
     /// FNV-1a hash — fast, good distribution for short strings.
     fn hash_content(content: &str) -> u64 {
         // Normalize: lowercase, collapse whitespace
-        let normalized: String = content.to_lowercase()
+        let normalized: String = content
+            .to_lowercase()
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
@@ -331,11 +342,20 @@ mod tests {
 
         // 6 AI messages but all >2min ago
         for i in 0..6 {
-            cache.push(room, make_msg(SenderCategory::AI, now - ECHO_CHAMBER_WINDOW_MS - (6 - i) * 1000));
+            cache.push(
+                room,
+                make_msg(
+                    SenderCategory::AI,
+                    now - ECHO_CHAMBER_WINDOW_MS - (6 - i) * 1000,
+                ),
+            );
         }
 
         let result = cache.check_echo_chamber(room, false, false, now);
-        assert!(!result.is_echo_chamber, "Old messages should not trigger echo chamber");
+        assert!(
+            !result.is_echo_chamber,
+            "Old messages should not trigger echo chamber"
+        );
     }
 
     // ── Content Dedup Tests ──

@@ -14,7 +14,7 @@
 
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use continuum_core::inference::backends::SamplingConfig;
-use llama::{ChatMsg, render_chat};
+use llama::{render_chat, ChatMsg};
 use std::path::PathBuf;
 
 const MODEL_PATH: &str = "/Users/joelteply/.docker/models/bundles/sha256/18055fe8ee379b95f4af3cf420588c5daa28f2a1ce1da335112a2d1ea188d3e6/model/model.gguf";
@@ -28,7 +28,8 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
         model_path: PathBuf::from(MODEL_PATH),
         n_gpu_layers: -1,
         ..Default::default()
-    }).expect("load");
+    })
+    .expect("load");
 
     // Render the prompt the way the LlamaCppAdapter would: chatml template
     // applied to a system + user message pair.
@@ -67,13 +68,19 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
 
     // Hard assertions on coherence:
     assert!(n_tokens > 0, "no tokens generated");
-    assert!(n_tokens < 2500, "hit max_tokens cap — model couldn't terminate even with 2500 token budget");
+    assert!(
+        n_tokens < 2500,
+        "hit max_tokens cap — model couldn't terminate even with 2500 token budget"
+    );
     assert!(!text.is_empty(), "empty output text");
     // No obvious loop: the same 20-char window shouldn't repeat 3+ times.
     if text.len() > 60 {
         let window = &text[..20];
         let count = text.matches(window).count();
-        assert!(count < 3, "loop detected: '{window}' appears {count}× in output");
+        assert!(
+            count < 3,
+            "loop detected: '{window}' appears {count}× in output"
+        );
     }
     // Output should NOT include the literal "<|im_end|>" — stop_sequences
     // should have stopped generation BEFORE the model emitted it.

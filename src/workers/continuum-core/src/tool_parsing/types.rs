@@ -9,10 +9,7 @@ use ts_rs::TS;
 /// Model family hint for parser prioritization.
 /// When provided, the model-family-specific parser runs FIRST before generic fallbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/persona/ModelFamily.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/persona/ModelFamily.ts")]
 pub enum ModelFamily {
     /// DeepSeek v3, R1, Coder — Unicode fullwidth delimiters
     DeepSeek,
@@ -185,12 +182,30 @@ mod tests {
 
     #[test]
     fn detect_model_family_from_provider() {
-        assert_eq!(detect_model_family("deepseek", "deepseek-chat"), ModelFamily::DeepSeek);
-        assert_eq!(detect_model_family("candle", "llama-3.1-8b"), ModelFamily::Llama);
-        assert_eq!(detect_model_family("candle", "qwen2.5-coder-14b"), ModelFamily::Qwen);
-        assert_eq!(detect_model_family("candle", "mistral-7b"), ModelFamily::Mistral);
-        assert_eq!(detect_model_family("candle", "hermes-3-llama-3.1"), ModelFamily::Hermes);
-        assert_eq!(detect_model_family("anthropic", "claude-3"), ModelFamily::Generic);
+        assert_eq!(
+            detect_model_family("deepseek", "deepseek-chat"),
+            ModelFamily::DeepSeek
+        );
+        assert_eq!(
+            detect_model_family("candle", "llama-3.1-8b"),
+            ModelFamily::Llama
+        );
+        assert_eq!(
+            detect_model_family("candle", "qwen2.5-coder-14b"),
+            ModelFamily::Qwen
+        );
+        assert_eq!(
+            detect_model_family("candle", "mistral-7b"),
+            ModelFamily::Mistral
+        );
+        assert_eq!(
+            detect_model_family("candle", "hermes-3-llama-3.1"),
+            ModelFamily::Hermes
+        );
+        assert_eq!(
+            detect_model_family("anthropic", "claude-3"),
+            ModelFamily::Generic
+        );
     }
 
     #[test]

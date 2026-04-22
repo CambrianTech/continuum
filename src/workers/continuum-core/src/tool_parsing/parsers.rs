@@ -478,26 +478,22 @@ fn parse_old_style(text: &str) -> Vec<RawToolMatch> {
 // Incomplete code blocks (truncated responses) are handled via open-block fallback.
 
 // Tool name prefix set for colon-shorthand (matches known tool namespaces).
-static COLON_TOOL_PREFIX_RE: &str =
-    r"(?:code|data|collaboration|ai|voice|search|workspace|file|interface|genome|adapter|persona|runtime|session|user|logs|media)/[\w/]+";
+static COLON_TOOL_PREFIX_RE: &str = r"(?:code|data|collaboration|ai|voice|search|workspace|file|interface|genome|adapter|persona|runtime|session|user|logs|media)/[\w/]+";
 
 // JSON-params variant: `tool/name: {key: "value"...}`
 static RE_COLON_TOOL_LINE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!(
         r"(?m)^({}):\s*\{{([^\n\}}]*)",
         COLON_TOOL_PREFIX_RE
-    )).unwrap()
+    ))
+    .unwrap()
 });
 
 // Bare-value variant: `tool/name: bare_value` (no leading `{`)
 // Captures the rest of the line after the colon-space.
 // JSON-params cases (value starts with `{`) are filtered out in the parse loop.
-static RE_COLON_BARE_LINE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(&format!(
-        r"(?m)^({}):\s*([^\n]+)",
-        COLON_TOOL_PREFIX_RE
-    )).unwrap()
-});
+static RE_COLON_BARE_LINE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(&format!(r"(?m)^({}):\s*([^\n]+)", COLON_TOOL_PREFIX_RE)).unwrap());
 
 /// Map a tool name to its first (only positional) parameter key.
 fn first_positional_param(tool: &str) -> &'static str {
@@ -514,13 +510,11 @@ fn first_positional_param(tool: &str) -> &'static str {
 /// Returns (content, bytes_consumed_in_after).
 fn extract_code_block(after: &str) -> Option<(String, usize)> {
     // Complete code block: ```lang\ncontent\n```
-    static RE_CODE_BLOCK: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?s)```(?:\w*)\n(.*?)\n```").unwrap()
-    });
+    static RE_CODE_BLOCK: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?s)```(?:\w*)\n(.*?)\n```").unwrap());
     // Open/incomplete code block: ```lang\ncontent (no closing ```)
-    static RE_OPEN_BLOCK: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"```(?:\w*)\n([\s\S]+)$").unwrap()
-    });
+    static RE_OPEN_BLOCK: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"```(?:\w*)\n([\s\S]+)$").unwrap());
 
     let trimmed = after.trim_start_matches([',', '}', '\n', '\r', ' ']);
     let offset = after.len() - trimmed.len();
@@ -531,7 +525,11 @@ fn extract_code_block(after: &str) -> Option<(String, usize)> {
         Some((content, consumed))
     } else if let Some(ob) = RE_OPEN_BLOCK.captures(trimmed) {
         // Truncated response: accept content up to end of string
-        let content = ob.get(1).map(|m| m.as_str().trim_end()).unwrap_or("").to_string();
+        let content = ob
+            .get(1)
+            .map(|m| m.as_str().trim_end())
+            .unwrap_or("")
+            .to_string();
         if content.is_empty() {
             return None;
         }
@@ -559,7 +557,11 @@ fn parse_colon_shorthand(text: &str) -> Vec<RawToolMatch> {
         if (name == "code/write" && !parameters.contains_key("content"))
             || (name == "code/edit" && !parameters.contains_key("newString"))
         {
-            let param_key = if name == "code/write" { "content" } else { "newString" };
+            let param_key = if name == "code/write" {
+                "content"
+            } else {
+                "newString"
+            };
             if let Some((content, consumed)) = extract_code_block(after) {
                 parameters.insert(param_key.to_string(), content);
                 results.push(RawToolMatch {
@@ -652,7 +654,9 @@ fn parse_colon_params(s: &str) -> HashMap<String, String> {
 
     // Try valid JSON first (keys and values both quoted).
     let json_candidate = format!("{{{}}}", s);
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&json_candidate) {
+    if let Ok(serde_json::Value::Object(map)) =
+        serde_json::from_str::<serde_json::Value>(&json_candidate)
+    {
         return map
             .into_iter()
             .map(|(k, v)| {
@@ -782,7 +786,9 @@ static RE_DEEPSEEK_BLOCK: Lazy<Regex> = Lazy::new(|| {
 
 /// Parse a single DeepSeek tool call JSON object.
 /// Handles both `arguments` as object and `arguments` as double-encoded string.
-fn parse_deepseek_tool_json(value: &serde_json::Value) -> Option<(String, HashMap<String, String>)> {
+fn parse_deepseek_tool_json(
+    value: &serde_json::Value,
+) -> Option<(String, HashMap<String, String>)> {
     let obj = value.as_object()?;
     let name = obj.get("name").and_then(|v| v.as_str())?.to_string();
     let params = match obj.get("arguments").or_else(|| obj.get("parameters")) {
@@ -816,7 +822,8 @@ fn parse_deepseek(text: &str) -> Vec<RawToolMatch> {
             .unwrap_or("");
 
         // Try parsing as JSON array first
-        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(inner) {
+        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(inner)
+        {
             for item in &arr {
                 if let Some((raw_name, params)) = parse_deepseek_tool_json(item) {
                     let name = unsanitize_tool_name(&raw_name);
@@ -863,10 +870,8 @@ fn parse_deepseek(text: &str) -> Vec<RawToolMatch> {
 // Also handles the function-call wrapper format:
 //   <|python_tag|>{"type": "function", "function": {"name": "...", "arguments": {...}}}
 
-static RE_LLAMA_BLOCK: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?s)<\|python_tag\|>\s*(.+?)(?:<\|eot_id\|>|\z)")
-        .unwrap()
-});
+static RE_LLAMA_BLOCK: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)<\|python_tag\|>\s*(.+?)(?:<\|eot_id\|>|\z)").unwrap());
 
 fn parse_llama(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
@@ -880,13 +885,17 @@ fn parse_llama(text: &str) -> Vec<RawToolMatch> {
             match &val {
                 serde_json::Value::Array(arr) => {
                     for item in arr {
-                        if let Some(tm) = parse_llama_tool_json(item, full_match.start(), full_match.end()) {
+                        if let Some(tm) =
+                            parse_llama_tool_json(item, full_match.start(), full_match.end())
+                        {
                             results.push(tm);
                         }
                     }
                 }
                 serde_json::Value::Object(_) => {
-                    if let Some(tm) = parse_llama_tool_json(&val, full_match.start(), full_match.end()) {
+                    if let Some(tm) =
+                        parse_llama_tool_json(&val, full_match.start(), full_match.end())
+                    {
                         results.push(tm);
                     }
                 }
@@ -900,7 +909,9 @@ fn parse_llama(text: &str) -> Vec<RawToolMatch> {
                     continue;
                 }
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                    if let Some(tm) = parse_llama_tool_json(&val, full_match.start(), full_match.end()) {
+                    if let Some(tm) =
+                        parse_llama_tool_json(&val, full_match.start(), full_match.end())
+                    {
                         results.push(tm);
                     }
                 }
@@ -911,7 +922,11 @@ fn parse_llama(text: &str) -> Vec<RawToolMatch> {
     results
 }
 
-fn parse_llama_tool_json(val: &serde_json::Value, start: usize, end: usize) -> Option<RawToolMatch> {
+fn parse_llama_tool_json(
+    val: &serde_json::Value,
+    start: usize,
+    end: usize,
+) -> Option<RawToolMatch> {
     let obj = val.as_object()?;
 
     // Check for nested function wrapper: {"type": "function", "function": {"name": "...", "arguments": {...}}}
@@ -943,7 +958,9 @@ fn parse_llama_tool_json(val: &serde_json::Value, start: usize, end: usize) -> O
 
 /// Extract `arguments` (or `parameters`) from a tool call JSON object.
 /// Handles both object and double-encoded string forms.
-fn extract_arguments_field(obj: &serde_json::Map<String, serde_json::Value>) -> HashMap<String, String> {
+fn extract_arguments_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> HashMap<String, String> {
     match obj.get("arguments").or_else(|| obj.get("parameters")) {
         Some(serde_json::Value::Object(map)) => map
             .iter()
@@ -965,10 +982,8 @@ fn extract_arguments_field(obj: &serde_json::Map<String, serde_json::Value>) -> 
 // Mistral/Mixtral uses `[TOOL_CALLS]` prefix followed by JSON array:
 //   [TOOL_CALLS] [{"name": "code_search", "arguments": {"pattern": "test"}}]
 
-static RE_MISTRAL_BLOCK: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?s)\[TOOL_CALLS\]\s*(\[.+?\])")
-        .unwrap()
-});
+static RE_MISTRAL_BLOCK: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)\[TOOL_CALLS\]\s*(\[.+?\])").unwrap());
 
 fn parse_mistral(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
@@ -977,7 +992,9 @@ fn parse_mistral(text: &str) -> Vec<RawToolMatch> {
         let full_match = cap.get(0).unwrap();
         let arr_str = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
 
-        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(arr_str) {
+        if let Ok(serde_json::Value::Array(arr)) =
+            serde_json::from_str::<serde_json::Value>(arr_str)
+        {
             for item in &arr {
                 if let Some(obj) = item.as_object() {
                     if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
@@ -1005,10 +1022,8 @@ fn parse_mistral(text: &str) -> Vec<RawToolMatch> {
 //   {"name": "code_search", "arguments": {"pattern": "test"}}
 //   </tool_call>
 
-static RE_HERMES_BLOCK: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>")
-        .unwrap()
-});
+static RE_HERMES_BLOCK: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>").unwrap());
 
 fn parse_hermes(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
@@ -1689,7 +1704,10 @@ Then also:
         assert_eq!(matches[0].tool_name, "code/write");
         assert_eq!(matches[0].parameters.get("filePath").unwrap(), "app.py");
         let content = matches[0].parameters.get("content").unwrap();
-        assert!(content.contains("from flask import Flask"), "content should include Flask code");
+        assert!(
+            content.contains("from flask import Flask"),
+            "content should include Flask code"
+        );
     }
 
     #[test]
@@ -1710,7 +1728,10 @@ Then also:
         let text = "code/read: {filePath: \"main.ts\"}";
         let matches = parse_all_formats(text);
         let colon_match = matches.iter().find(|m| m.format == "colon-shorthand");
-        assert!(colon_match.is_some(), "parse_all_formats should include colon-shorthand");
+        assert!(
+            colon_match.is_some(),
+            "parse_all_formats should include colon-shorthand"
+        );
         assert_eq!(colon_match.unwrap().tool_name, "code/read");
     }
 
@@ -1750,7 +1771,10 @@ Then also:
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].tool_name, "code/write");
         assert_eq!(matches[0].parameters.get("filePath").unwrap(), "hello.py");
-        assert_eq!(matches[0].parameters.get("content").unwrap(), "print('Hello World')");
+        assert_eq!(
+            matches[0].parameters.get("content").unwrap(),
+            "print('Hello World')"
+        );
     }
 
     #[test]
@@ -1773,7 +1797,10 @@ Then also:
         let matches = parse_colon_shorthand(text);
         let write_match = matches.iter().find(|m| m.tool_name == "code/write");
         assert!(write_match.is_some(), "Should find code/write");
-        assert_eq!(write_match.unwrap().parameters.get("filePath").unwrap(), "hello.py");
+        assert_eq!(
+            write_match.unwrap().parameters.get("filePath").unwrap(),
+            "hello.py"
+        );
         assert!(write_match.unwrap().parameters.contains_key("content"));
     }
 
@@ -1827,7 +1854,10 @@ Then also:
         let matches = parse_deepseek(text);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].tool_name, "code/search");
-        assert_eq!(matches[0].parameters.get("pattern").unwrap(), "memory clustering");
+        assert_eq!(
+            matches[0].parameters.get("pattern").unwrap(),
+            "memory clustering"
+        );
         assert_eq!(matches[0].format, "deepseek");
     }
 
@@ -1876,7 +1906,8 @@ Then also:
 
     #[test]
     fn llama_basic() {
-        let text = "<|python_tag|>{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}";
+        let text =
+            "<|python_tag|>{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}";
         let matches = parse_llama(text);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].tool_name, "code/search");
@@ -1895,7 +1926,8 @@ Then also:
 
     #[test]
     fn llama_with_eot_id() {
-        let text = "<|python_tag|>{\"name\": \"code_tree\", \"arguments\": {\"path\": \".\"}}<|eot_id|>";
+        let text =
+            "<|python_tag|>{\"name\": \"code_tree\", \"arguments\": {\"path\": \".\"}}<|eot_id|>";
         let matches = parse_llama(text);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].tool_name, "code/tree");
@@ -1921,7 +1953,8 @@ Then also:
 
     #[test]
     fn mistral_basic() {
-        let text = "[TOOL_CALLS] [{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}]";
+        let text =
+            "[TOOL_CALLS] [{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}]";
         let matches = parse_mistral(text);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].tool_name, "code/search");
@@ -2034,7 +2067,8 @@ Then also:
 
     #[test]
     fn truncation_recovery_tool_call() {
-        let text = "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}";
+        let text =
+            "<tool_call>\n{\"name\": \"code_search\", \"arguments\": {\"pattern\": \"test\"}}";
         // No closing </tool_call>
         let matches = parse_with_truncation_recovery(text, ModelFamily::Hermes);
         assert_eq!(matches.len(), 1);
@@ -2043,7 +2077,8 @@ Then also:
 
     #[test]
     fn truncation_recovery_tool_use() {
-        let text = "<tool_use><tool_name>code/read</tool_name><parameters><filePath>test.ts</filePath>";
+        let text =
+            "<tool_use><tool_name>code/read</tool_name><parameters><filePath>test.ts</filePath>";
         // No closing </parameters> or </tool_use>
         let matches = parse_with_truncation_recovery(text, ModelFamily::Generic);
         assert_eq!(matches.len(), 1);

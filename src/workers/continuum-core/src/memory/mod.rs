@@ -40,9 +40,7 @@ pub use consolidation_adapter::{
     MemoryType as ConsolidatedMemoryType, Thought,
 };
 pub use consolidation_pipeline::{run_consolidation_pass, to_corpus_memory};
-pub use consolidation_threshold::{
-    AdaptiveConsolidationThreshold, ConsolidationThresholdStats,
-};
+pub use consolidation_threshold::{AdaptiveConsolidationThreshold, ConsolidationThresholdStats};
 pub use consolidator::{ConsolidationMetrics, Consolidator, ConsolidatorStats};
 pub use conversation_summary::{ConversationSummary, RecallMode};
 pub use corpus::MemoryCorpus;
@@ -251,7 +249,9 @@ impl PersonaMemoryManager {
     pub fn append_memory(&self, persona_id: &str, memory: CorpusMemory) -> Result<(), MemoryError> {
         let corpus_lock = self.get_corpus(persona_id)?;
         let mut corpus = corpus_lock.write().map_err(|e| {
-            MemoryError(format!("Failed to acquire write lock for {persona_id}: {e}"))
+            MemoryError(format!(
+                "Failed to acquire write lock for {persona_id}: {e}"
+            ))
         })?;
         corpus.append_memory_mut(memory);
         // Trim if over capacity
@@ -277,7 +277,9 @@ impl PersonaMemoryManager {
     ) -> Result<(), MemoryError> {
         let corpus_lock = self.get_corpus(persona_id)?;
         let mut corpus = corpus_lock.write().map_err(|e| {
-            MemoryError(format!("Failed to acquire write lock for {persona_id}: {e}"))
+            MemoryError(format!(
+                "Failed to acquire write lock for {persona_id}: {e}"
+            ))
         })?;
         corpus.append_event_mut(event);
         // Trim if over capacity

@@ -121,13 +121,17 @@ impl SentinelModule {
 
         // Check system memory pressure before starting a new sentinel.
         // Candle model loads + LoRA training can easily exhaust RAM if unchecked.
-        if let Ok(mem) = crate::runtime::command_executor::execute_json("system/memory", Value::Null).await {
-            let available = mem.get("available_bytes")
+        if let Ok(mem) =
+            crate::runtime::command_executor::execute_json("system/memory", Value::Null).await
+        {
+            let available = mem
+                .get("available_bytes")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(u64::MAX);
             if available < Self::MIN_AVAILABLE_MEMORY_BYTES {
                 let available_gb = available as f64 / (1024.0 * 1024.0 * 1024.0);
-                let threshold_gb = Self::MIN_AVAILABLE_MEMORY_BYTES as f64 / (1024.0 * 1024.0 * 1024.0);
+                let threshold_gb =
+                    Self::MIN_AVAILABLE_MEMORY_BYTES as f64 / (1024.0 * 1024.0 * 1024.0);
                 return Err(format!(
                     "Insufficient system memory: {:.1}GB available, {:.1}GB required. \
                      Cancel existing sentinels or wait for completion.",
@@ -151,7 +155,11 @@ impl SentinelModule {
         // timeout=0 means no timeout (Academy sessions can run for hours/days).
         // Default 600s (10 min) for ad-hoc sentinels.
         let raw_timeout = p.u64_or("timeout", 600);
-        let timeout_secs = if raw_timeout == 0 { u64::MAX / 2 } else { raw_timeout };
+        let timeout_secs = if raw_timeout == 0 {
+            u64::MAX / 2
+        } else {
+            raw_timeout
+        };
         let env: HashMap<String, String> = p.json_or("env");
 
         // Check if this is a pipeline execution
@@ -257,7 +265,11 @@ impl SentinelModule {
                 log.info(&format!(
                     "[{handle_id_clone}] Executing pipeline with {} steps (timeout: {})",
                     pipeline.steps.len(),
-                    if timeout_secs == 0 { "none".to_string() } else { format!("{timeout_secs}s") }
+                    if timeout_secs == 0 {
+                        "none".to_string()
+                    } else {
+                        format!("{timeout_secs}s")
+                    }
                 ));
 
                 let future = executor::execute_pipeline(
@@ -468,7 +480,11 @@ impl SentinelModule {
         let p = Params::new(&params);
         let handle_id = p.str("handle")?;
         let raw_timeout = p.u64_or("timeout", 600);
-        let timeout_secs = if raw_timeout == 0 { u64::MAX / 2 } else { raw_timeout };
+        let timeout_secs = if raw_timeout == 0 {
+            u64::MAX / 2
+        } else {
+            raw_timeout
+        };
 
         // Clone the watch receiver while holding the DashMap ref briefly
         let mut rx = {
@@ -623,7 +639,9 @@ impl SentinelModule {
             .ok_or_else(|| format!("No checkpoint found for handle: {handle_id}"))?;
 
         match cp.status {
-            PipelineStatus::Interrupted | PipelineStatus::Paused | PipelineStatus::BudgetExhausted => {}
+            PipelineStatus::Interrupted
+            | PipelineStatus::Paused
+            | PipelineStatus::BudgetExhausted => {}
             other => {
                 return Err(format!(
                     "Cannot resume pipeline in status {:?} — only Interrupted, Paused, or BudgetExhausted",
@@ -664,7 +682,10 @@ impl SentinelModule {
             exit_code: None,
             error: None,
             working_dir: cp.working_dir.clone(),
-            logs_dir: logs_base_dir.join(&handle_id_owned).to_string_lossy().to_string(),
+            logs_dir: logs_base_dir
+                .join(&handle_id_owned)
+                .to_string_lossy()
+                .to_string(),
         };
 
         let (completion_tx, completion_rx) = tokio::sync::watch::channel(false);
@@ -733,8 +754,8 @@ impl SentinelModule {
                         ctx.step_results.push(result);
 
                         // Update budget and checkpoint after each step
-                        budget.elapsed_secs = start_time.elapsed().as_secs()
-                            + cp.budget_consumed.elapsed_secs;
+                        budget.elapsed_secs =
+                            start_time.elapsed().as_secs() + cp.budget_consumed.elapsed_secs;
 
                         let mut updated_cp = PipelineCheckpoint {
                             sentinel_handle: handle_id_owned.clone(),
@@ -763,7 +784,8 @@ impl SentinelModule {
                                 log.warn(&format!(
                                     "[{handle_id_owned}] Budget exhausted: time limit {max_secs}s"
                                 ));
-                                error_msg = Some(format!("Budget exhausted: time limit {max_secs}s"));
+                                error_msg =
+                                    Some(format!("Budget exhausted: time limit {max_secs}s"));
                                 failed = true;
                             }
                         }
@@ -774,7 +796,8 @@ impl SentinelModule {
                                 log.warn(&format!(
                                     "[{handle_id_owned}] Budget exhausted: iteration limit {max_iters}"
                                 ));
-                                error_msg = Some(format!("Budget exhausted: iteration limit {max_iters}"));
+                                error_msg =
+                                    Some(format!("Budget exhausted: iteration limit {max_iters}"));
                                 failed = true;
                             }
                         }
@@ -950,9 +973,7 @@ impl SentinelModule {
                 "approverId": approver_id,
             })))
         } else {
-            Err(format!(
-                "No pending approval found for handle: {handle_id}"
-            ))
+            Err(format!("No pending approval found for handle: {handle_id}"))
         }
     }
 
@@ -1047,7 +1068,9 @@ impl ServiceModule for SentinelModule {
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         let log = crate::runtime::logger("sentinel");
                         for handle_id in handles_to_resume {
-                            log.info(&format!("[{handle_id}] Auto-resuming interrupted pipeline..."));
+                            log.info(&format!(
+                                "[{handle_id}] Auto-resuming interrupted pipeline..."
+                            ));
                             match checkpoint::load_checkpoint(&handle_id) {
                                 Ok(Some(mut cp)) => {
                                     cp.status = PipelineStatus::Running;
@@ -1059,11 +1082,13 @@ impl ServiceModule for SentinelModule {
 
                                     // Register as running sentinel so sentinel/status works
                                     let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::channel(1);
-                                    let (completion_tx, completion_rx) = tokio::sync::watch::channel(false);
+                                    let (completion_tx, completion_rx) =
+                                        tokio::sync::watch::channel(false);
                                     let now = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()
-                                        .as_millis() as u64;
+                                        .as_millis()
+                                        as u64;
                                     let handle = SentinelHandle {
                                         id: handle_id.clone(),
                                         sentinel_type: "pipeline".to_string(),
@@ -1110,10 +1135,14 @@ impl ServiceModule for SentinelModule {
                                     }
                                 }
                                 Ok(None) => {
-                                    log.warn(&format!("[{handle_id}] No checkpoint found — cannot resume"));
+                                    log.warn(&format!(
+                                        "[{handle_id}] No checkpoint found — cannot resume"
+                                    ));
                                 }
                                 Err(e) => {
-                                    log.warn(&format!("[{handle_id}] Failed to load checkpoint: {e}"));
+                                    log.warn(&format!(
+                                        "[{handle_id}] Failed to load checkpoint: {e}"
+                                    ));
                                 }
                             }
                         }
@@ -1148,32 +1177,28 @@ impl ServiceModule for SentinelModule {
             "sentinel/logs/tail" => logs::tail_log(&logs_base_dir, params).await,
 
             // Local inference HTTP endpoint management
-            "sentinel/local-inference-port" => {
-                match crate::http::port().await {
-                    Some(port) => Ok(CommandResult::Json(serde_json::json!({
-                        "success": true,
-                        "port": port,
-                        "url": format!("http://127.0.0.1:{}", port)
-                    }))),
-                    None => Ok(CommandResult::Json(serde_json::json!({
-                        "success": false,
-                        "error": "HTTP inference server not started"
-                    }))),
-                }
-            }
-            "sentinel/local-inference-start" => {
-                match crate::http::start_if_needed().await {
-                    Ok(port) => Ok(CommandResult::Json(serde_json::json!({
-                        "success": true,
-                        "port": port,
-                        "url": format!("http://127.0.0.1:{}", port)
-                    }))),
-                    Err(e) => Ok(CommandResult::Json(serde_json::json!({
-                        "success": false,
-                        "error": e
-                    }))),
-                }
-            }
+            "sentinel/local-inference-port" => match crate::http::port().await {
+                Some(port) => Ok(CommandResult::Json(serde_json::json!({
+                    "success": true,
+                    "port": port,
+                    "url": format!("http://127.0.0.1:{}", port)
+                }))),
+                None => Ok(CommandResult::Json(serde_json::json!({
+                    "success": false,
+                    "error": "HTTP inference server not started"
+                }))),
+            },
+            "sentinel/local-inference-start" => match crate::http::start_if_needed().await {
+                Ok(port) => Ok(CommandResult::Json(serde_json::json!({
+                    "success": true,
+                    "port": port,
+                    "url": format!("http://127.0.0.1:{}", port)
+                }))),
+                Err(e) => Ok(CommandResult::Json(serde_json::json!({
+                    "success": false,
+                    "error": e
+                }))),
+            },
 
             _ => Err(format!("Unknown sentinel command: {command}")),
         }

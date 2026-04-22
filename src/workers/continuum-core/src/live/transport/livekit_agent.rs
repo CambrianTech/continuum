@@ -1118,8 +1118,7 @@ async fn spawn_stt_listener(
                     let is_visible = meta
                         .as_ref()
                         .map(|m| {
-                            m.role == ParticipantRole::Human
-                                || m.role == ParticipantRole::AiPersona
+                            m.role == ParticipantRole::Human || m.role == ParticipantRole::AiPersona
                         })
                         .unwrap_or(true);
 
@@ -1150,7 +1149,10 @@ async fn spawn_stt_listener(
                             let tbuf = transcription_buffer.clone();
                             let sname = speaker_name.clone();
                             tokio::spawn(async move {
-                                clog_info!("🎤 STT: Starting listen_and_transcribe for '{}'", sname);
+                                clog_info!(
+                                    "🎤 STT: Starting listen_and_transcribe for '{}'",
+                                    sname
+                                );
                                 listen_and_transcribe(
                                     audio_track,
                                     speaker_id,
@@ -1177,7 +1179,8 @@ async fn spawn_stt_listener(
                                 &speaker_id[..8.min(speaker_id.len())]
                             );
 
-                            let capture = crate::live::video::capture::VideoFrameCapture::instance().clone();
+                            let capture =
+                                crate::live::video::capture::VideoFrameCapture::instance().clone();
                             capture
                                 .start_capture(video_track, speaker_id, speaker_name)
                                 .await;
@@ -1228,14 +1231,18 @@ async fn listen_and_transcribe(
     // Initialize ProductionVAD — two-stage (WebRTC fast filter → Silero confirmation)
     // CRITICAL: ORT (ONNX Runtime) can deadlock if Session::builder() is called from
     // a tokio async context on Apple Silicon. Use spawn_blocking to init on a real thread.
-    clog_info!("🎤 STT: Creating and initializing ProductionVAD for '{}' (spawn_blocking for ORT)...", speaker_name);
+    clog_info!(
+        "🎤 STT: Creating and initializing ProductionVAD for '{}' (spawn_blocking for ORT)...",
+        speaker_name
+    );
     let vad_result = tokio::task::spawn_blocking(|| {
         let mut vad = ProductionVAD::new();
         match vad.initialize() {
             Ok(()) => Ok(vad),
             Err(e) => Err(e),
         }
-    }).await;
+    })
+    .await;
 
     let mut vad = match vad_result {
         Ok(Ok(v)) => v,
@@ -1244,7 +1251,11 @@ async fn listen_and_transcribe(
             return;
         }
         Err(e) => {
-            clog_error!("🎤 STT: VAD init task panicked for '{}': {}", speaker_name, e);
+            clog_error!(
+                "🎤 STT: VAD init task panicked for '{}': {}",
+                speaker_name,
+                e
+            );
             return;
         }
     };

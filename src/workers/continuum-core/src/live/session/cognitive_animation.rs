@@ -167,7 +167,8 @@ pub fn select_weighted_gesture(
         if cumulative >= threshold {
             let gesture = gesture_from_name(&entry.gesture);
             // Duration pseudo-random within [min, max] — second hash with different seed
-            let duration_rand = hash_to_unit(elapsed_secs.to_bits().wrapping_add(0x9E3779B9), slot as u32);
+            let duration_rand =
+                hash_to_unit(elapsed_secs.to_bits().wrapping_add(0x9E3779B9), slot as u32);
             let range = entry.duration_max_ms.saturating_sub(entry.duration_min_ms);
             let duration_ms = entry.duration_min_ms + (duration_rand * range as f32) as u32;
             // Floor: never produce 0ms duration
@@ -252,7 +253,10 @@ mod tests {
     fn hash_to_unit_different_slots_different_values() {
         let val_a = super::hash_to_unit(1000_u32.to_be(), 0);
         let val_b = super::hash_to_unit(1000_u32.to_be(), 1);
-        assert!((val_a - val_b).abs() > 0.001, "Different slots should produce different values");
+        assert!(
+            (val_a - val_b).abs() > 0.001,
+            "Different slots should produce different values"
+        );
     }
 
     #[test]

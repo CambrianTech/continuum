@@ -12,13 +12,19 @@ fn main() {
         .nth(1)
         .unwrap_or(default_dir);
     let max_tokens: usize = std::env::var("MAX_TOKENS")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(512);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(512);
 
     let device = {
         #[cfg(feature = "metal")]
-        { candle_core::Device::new_metal(0).expect("Metal") }
+        {
+            candle_core::Device::new_metal(0).expect("Metal")
+        }
         #[cfg(not(feature = "metal"))]
-        { candle_core::Device::Cpu }
+        {
+            candle_core::Device::Cpu
+        }
     };
 
     let gguf_path = std::fs::read_dir(&model_dir)
@@ -32,8 +38,12 @@ fn main() {
     eprintln!("Loading model...");
     let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).expect("tokenizer");
     let mut backend = continuum_core::inference::backends::load_gguf_backend(
-        &gguf_path, tokenizer, "qwen32b-compacted", &device,
-    ).expect("load");
+        &gguf_path,
+        tokenizer,
+        "qwen32b-compacted",
+        &device,
+    )
+    .expect("load");
     device.synchronize().ok();
     eprintln!("Model loaded. Generating...\n");
 
@@ -54,7 +64,10 @@ fn main() {
         eprintln!("=== {} ===", name);
         let start = Instant::now();
         match continuum_core::inference::backends::generate(
-            backend.as_mut(), prompt, max_tokens, &sampling,
+            backend.as_mut(),
+            prompt,
+            max_tokens,
+            &sampling,
         ) {
             Ok((output, count)) => {
                 let elapsed = start.elapsed();
@@ -64,7 +77,10 @@ fn main() {
                 let clean = trim_output(&output);
 
                 eprintln!("{}", clean);
-                eprintln!("\n--- {} tokens, {:.1} tok/s, {:.1?} ---\n", count, tok_s, elapsed);
+                eprintln!(
+                    "\n--- {} tokens, {:.1} tok/s, {:.1?} ---\n",
+                    count, tok_s, elapsed
+                );
             }
             Err(e) => eprintln!("ERROR: {}\n", e),
         }
@@ -80,8 +96,8 @@ fn trim_output(text: &str) -> &str {
     // Stop at obvious repetition (3+ identical lines)
     let lines: Vec<&str> = text.lines().collect();
     for i in 3..lines.len() {
-        if lines[i] == lines[i-1] && lines[i] == lines[i-2] {
-            let byte_pos: usize = lines[..i-2].iter().map(|l| l.len() + 1).sum();
+        if lines[i] == lines[i - 1] && lines[i] == lines[i - 2] {
+            let byte_pos: usize = lines[..i - 2].iter().map(|l| l.len() + 1).sum();
             return &text[..byte_pos.min(text.len())];
         }
     }

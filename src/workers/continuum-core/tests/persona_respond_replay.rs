@@ -74,8 +74,7 @@ async fn ensure_llamacpp_registered() {
     // Init model_registry singleton — adapters call this on every
     // generate to look up chat_template/stop_sequences. Prod calls it
     // during continuum-core startup; tests must too. Idempotent.
-    continuum_core::model_registry::init_global()
-        .expect("model_registry::init_global() failed");
+    continuum_core::model_registry::init_global().expect("model_registry::init_global() failed");
     // Test fixture context: declared via a chat-task recipe budget
     // (Phase 1.2 — the architecturally-right replacement for the
     // earlier `with_context_length(32768)` magic number band-aid).
@@ -85,16 +84,13 @@ async fn ensure_llamacpp_registered() {
     // before, but the value FALLS OUT of the declaration instead of
     // being a constant smuggled into the test. New TaskKind defaults
     // ship by extending recipe_budget; tests inherit automatically.
-    use continuum_core::inference::recipe_budget::{
-        PersonaContextBudget, RecipeBudget, TaskKind,
-    };
+    use continuum_core::inference::recipe_budget::{PersonaContextBudget, RecipeBudget, TaskKind};
     let recipe = RecipeBudget::new()
         .add_persona(PersonaContextBudget::for_task("Helper", TaskKind::Chat))
         .add_persona(PersonaContextBudget::for_task("Teacher", TaskKind::Chat))
         .add_persona(PersonaContextBudget::for_task("CodeReview", TaskKind::Chat))
         .add_persona(PersonaContextBudget::for_task("Local", TaskKind::Chat));
-    let adapter = continuum_core::inference::LlamaCppAdapter::new()
-        .with_recipe_budget(&recipe);
+    let adapter = continuum_core::inference::LlamaCppAdapter::new().with_recipe_budget(&recipe);
     let health = adapter.health_check().await;
     assert!(
         health.api_available,
@@ -124,8 +120,8 @@ fn load_fixture(filename: &str) -> Fixture {
 }
 
 fn load_fixture_at(path: &Path) -> Fixture {
-    let raw = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read fixture {path:?}: {e}"));
+    let raw =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read fixture {path:?}: {e}"));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse fixture {path:?}: {e}"))
 }
 
@@ -137,12 +133,7 @@ fn most_recent_fixture() -> Fixture {
     let mut entries: Vec<_> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}"))
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|x| x == "json")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
         .collect();
     assert!(!entries.is_empty(), "no fixtures in {dir:?}");
     entries.sort_by_key(|e| {
@@ -202,8 +193,18 @@ fn assert_clean_spoke(label: &str, response: &PersonaResponse) {
             total_ms,
             think_blocks_emitted,
             ..
-        } => (text, model_used, *inference_ms, *total_ms, *think_blocks_emitted),
-        PersonaResponse::Silent { reason, relevance_score, .. } => {
+        } => (
+            text,
+            model_used,
+            *inference_ms,
+            *total_ms,
+            *think_blocks_emitted,
+        ),
+        PersonaResponse::Silent {
+            reason,
+            relevance_score,
+            ..
+        } => {
             panic!(
                 "[{label}] persona chose silent (score={relevance_score}, reason={reason}) — \
                  fixture should produce a Spoke; check known_specialties matches the persona's specialty"
@@ -395,10 +396,11 @@ fn realistic_recent_history() -> Vec<RecentMessage> {
         RecentMessage {
             id: Uuid::new_v4(),
             sender_name: "Teacher AI".to_string(),
-            text: "What's the perceived cost of moving it? The agent loop is mostly orchestration — \
+            text:
+                "What's the perceived cost of moving it? The agent loop is mostly orchestration — \
                    tool-call detection, dispatch, feed result back, re-call. The shape is similar \
                    on both sides."
-                .to_string(),
+                    .to_string(),
         },
         RecentMessage {
             id: Uuid::new_v4(),
@@ -418,7 +420,13 @@ async fn synthesized_prod_shape_input_produces_coherent_response() {
     let system_prompt = realistic_system_prompt(
         "Helper AI",
         "General",
-        &["Developer", "Claude Code", "CodeReview AI", "Teacher AI", "Local Assistant"],
+        &[
+            "Developer",
+            "Claude Code",
+            "CodeReview AI",
+            "Teacher AI",
+            "Local Assistant",
+        ],
     );
     let recent_history = realistic_recent_history();
     let message_text =
@@ -533,11 +541,14 @@ async fn replay_most_recent_fixture_does_not_panic_or_timeout() {
     // panics, deadlocks, or infinite loops — `await` returning at all
     // proves the path doesn't wedge.
     let result = respond(input).await;
-    eprintln!("[most-recent-fixture] result variant: {:?}", match &result {
-        Ok(PersonaResponse::Spoke { text, .. }) => format!("Spoke({} chars)", text.len()),
-        Ok(PersonaResponse::Silent { reason, .. }) => format!("Silent({reason})"),
-        Err(e) => format!("Err({e})"),
-    });
+    eprintln!(
+        "[most-recent-fixture] result variant: {:?}",
+        match &result {
+            Ok(PersonaResponse::Spoke { text, .. }) => format!("Spoke({} chars)", text.len()),
+            Ok(PersonaResponse::Silent { reason, .. }) => format!("Silent({reason})"),
+            Err(e) => format!("Err({e})"),
+        }
+    );
 }
 
 // ─── Test: ask for a substantial response (no clip) ───────────────────────
@@ -568,13 +579,12 @@ async fn long_code_generation_request_completes_without_clipping() {
         },
         room_id: fix.rust_request.room_id,
         message_id: Uuid::new_v4(),
-        message_text:
-            "Write a complete recursive descent parser in Rust for a small expression \
+        message_text: "Write a complete recursive descent parser in Rust for a small expression \
              language (numbers, +, -, *, /, parentheses). Include the AST types, the \
              tokenizer, the parser, and at least three unit tests. Use thorough comments \
              explaining grammar precedence and associativity decisions. Output the full \
              code, not a sketch."
-                .to_string(),
+            .to_string(),
         recent_history: vec![],
         known_specialties: vec![
             fix.rust_request.specialty.clone(),

@@ -16,9 +16,13 @@ fn main() {
 
     let device = {
         #[cfg(feature = "metal")]
-        { candle_core::Device::new_metal(0).expect("Metal") }
+        {
+            candle_core::Device::new_metal(0).expect("Metal")
+        }
         #[cfg(not(feature = "metal"))]
-        { candle_core::Device::Cpu }
+        {
+            candle_core::Device::Cpu
+        }
     };
 
     // Find GGUF + tokenizer
@@ -33,8 +37,12 @@ fn main() {
     eprintln!("Loading model from {:?}...", gguf_path);
     let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).expect("tokenizer");
     let mut backend = continuum_core::inference::backends::load_gguf_backend(
-        &gguf_path, tokenizer.clone(), "qwen14b-diag", &device,
-    ).expect("load");
+        &gguf_path,
+        tokenizer.clone(),
+        "qwen14b-diag",
+        &device,
+    )
+    .expect("load");
     device.synchronize().ok();
     eprintln!("Model loaded.");
 
@@ -55,9 +63,9 @@ fn main() {
     // Prefill token by token, logging top-5 logits at key positions
     let start = Instant::now();
     let check_positions: Vec<usize> = {
-        let mut v: Vec<usize> = (0..5).collect();  // first 5
+        let mut v: Vec<usize> = (0..5).collect(); // first 5
         v.extend((tokens.len().saturating_sub(5))..tokens.len()); // last 5
-        // Also every 50th
+                                                                  // Also every 50th
         for i in (50..tokens.len()).step_by(50) {
             v.push(i);
         }
@@ -95,26 +103,39 @@ fn main() {
             // Top 5 tokens by logit value
             let mut indexed: Vec<(usize, f32)> = logits_vec.iter().cloned().enumerate().collect();
             indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-            let top5: Vec<(u32, f32)> = indexed.iter().take(5).map(|&(i, v)| (i as u32, v)).collect();
+            let top5: Vec<(u32, f32)> = indexed
+                .iter()
+                .take(5)
+                .map(|&(i, v)| (i as u32, v))
+                .collect();
 
             // Decode current token and top predictions
             let current_decoded = tokenizer.decode(&[token], false).unwrap_or_default();
-            let top_decoded: Vec<String> = top5.iter()
+            let top_decoded: Vec<String> = top5
+                .iter()
                 .map(|(tid, logit)| {
                     let d = tokenizer.decode(&[*tid], false).unwrap_or("?".into());
-                    format!("{}:{:.2}:{}", tid, logit, d.replace('\n', "\\n").replace('"', "'"))
+                    format!(
+                        "{}:{:.2}:{}",
+                        tid,
+                        logit,
+                        d.replace('\n', "\\n").replace('"', "'")
+                    )
                 })
                 .collect();
 
             // Special tokens
-            let eos_logit = logits_vec.get(151645).copied().unwrap_or(f32::NAN);  // <|im_end|>
-            let eot_logit = logits_vec.get(151643).copied().unwrap_or(f32::NAN);  // <|endoftext|>
+            let eos_logit = logits_vec.get(151645).copied().unwrap_or(f32::NAN); // <|im_end|>
+            let eot_logit = logits_vec.get(151643).copied().unwrap_or(f32::NAN); // <|endoftext|>
 
             eprintln!(
                 "pos={:>4} token={:>6}({:>15}) | top5=[{}] | eos={:.2} eot={:.2}",
-                pos, token, &current_decoded[..current_decoded.len().min(15)],
+                pos,
+                token,
+                &current_decoded[..current_decoded.len().min(15)],
                 top_decoded.join(", "),
-                eos_logit, eot_logit,
+                eos_logit,
+                eot_logit,
             );
         }
 
@@ -140,7 +161,9 @@ fn main() {
         let mut best_id = 0u32;
         let mut best_val = f32::NEG_INFINITY;
         for (idx, &val) in logits_vec.iter().enumerate() {
-            if idx == 151643 || idx == 151644 { continue; } // suppress <|endoftext|>, <|im_start|>
+            if idx == 151643 || idx == 151644 {
+                continue;
+            } // suppress <|endoftext|>, <|im_start|>
             if val > best_val {
                 best_val = val;
                 best_id = idx as u32;
@@ -165,7 +188,12 @@ fn main() {
 
         eprintln!(
             "gen[{:>2}] pos={:>4} token={:>6}({:>15}) logit={:.2} eos={:.2}  [from prefill]",
-            0, prompt_len - 1, best_id, &decoded[..decoded.len().min(15)], best_val, eos_logit
+            0,
+            prompt_len - 1,
+            best_id,
+            &decoded[..decoded.len().min(15)],
+            best_val,
+            eos_logit
         );
 
         if best_id == 151645 {
@@ -202,7 +230,12 @@ fn main() {
 
         eprintln!(
             "gen[{:>2}] pos={:>4} token={:>6}({:>15}) logit={:.2} eos={:.2}",
-            i, pos, best_id, &decoded[..decoded.len().min(15)], best_val, eos_logit
+            i,
+            pos,
+            best_id,
+            &decoded[..decoded.len().min(15)],
+            best_val,
+            eos_logit
         );
 
         if best_id == 151645 {

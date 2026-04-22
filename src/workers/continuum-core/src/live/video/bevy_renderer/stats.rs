@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use super::scene::SceneLight;
 use super::types::*;
-use super::{AVATAR_WIDTH, AVATAR_HEIGHT};
+use super::{AVATAR_HEIGHT, AVATAR_WIDTH};
 use crate::{clog_info, clog_warn};
 
 /// Run condition: returns true when at least one slot is active.
@@ -17,7 +17,13 @@ pub(super) fn has_active_slots(registry: Res<SlotRegistry>) -> bool {
     if count % 300 == 0 {
         let total = registry.slots.len();
         let active_count = registry.slots.values().filter(|s| s.is_active()).count();
-        clog_info!("🎨 has_active_slots={} ({}/{} slots active, frame {})", active, active_count, total, count);
+        clog_info!(
+            "🎨 has_active_slots={} ({}/{} slots active, frame {})",
+            active,
+            active_count,
+            total,
+            count
+        );
     }
     active
 }
@@ -51,16 +57,38 @@ pub(super) fn update_memory_stats(
     let speaking = speaking_query.iter().count() as u8;
     let pending_count = pending.gltf_handles.len() + pending.scene_handles.len();
 
-    stats.0.active_slots.store(active, std::sync::atomic::Ordering::Relaxed);
-    stats.0.loaded_models.store(loaded, std::sync::atomic::Ordering::Relaxed);
-    stats.0.speaking_slots.store(speaking, std::sync::atomic::Ordering::Relaxed);
-    stats.0.render_target_bytes.store(rt_bytes, std::sync::atomic::Ordering::Relaxed);
-    stats.0.pending_loads.store(pending_count as u32, std::sync::atomic::Ordering::Relaxed);
+    stats
+        .0
+        .active_slots
+        .store(active, std::sync::atomic::Ordering::Relaxed);
+    stats
+        .0
+        .loaded_models
+        .store(loaded, std::sync::atomic::Ordering::Relaxed);
+    stats
+        .0
+        .speaking_slots
+        .store(speaking, std::sync::atomic::Ordering::Relaxed);
+    stats
+        .0
+        .render_target_bytes
+        .store(rt_bytes, std::sync::atomic::Ordering::Relaxed);
+    stats
+        .0
+        .pending_loads
+        .store(pending_count as u32, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Sync idle cadence from the shared atomic (written by MemoryReporter under pressure).
-pub(super) fn sync_idle_cadence(stats: Res<SharedMemoryStats>, mut schedule: ResMut<RenderSchedule>) {
-    let desired = stats.0.desired_idle_cadence.load(std::sync::atomic::Ordering::Relaxed).max(1);
+pub(super) fn sync_idle_cadence(
+    stats: Res<SharedMemoryStats>,
+    mut schedule: ResMut<RenderSchedule>,
+) {
+    let desired = stats
+        .0
+        .desired_idle_cadence
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .max(1);
     if schedule.idle_cadence != desired {
         clog_info!("🎨 Idle cadence {} → {}", schedule.idle_cadence, desired);
         schedule.idle_cadence = desired;

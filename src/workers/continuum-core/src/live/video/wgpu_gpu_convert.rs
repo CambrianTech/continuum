@@ -26,13 +26,13 @@ use bevy::render::{Render, RenderApp, RenderSystems};
 
 use crossbeam_channel::Sender;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use crate::live::avatar::frame::RgbaFrame;
 use crate::clog_info;
 #[allow(unused_imports)]
 use crate::clog_warn;
+use crate::live::avatar::frame::RgbaFrame;
 
 // =============================================================================
 // WGSL Compute Shader — RGBA texture → I420 (Y, U, V separate buffers)
@@ -134,14 +134,12 @@ impl Plugin for WgpuGpuConvertPlugin {
             None => return,
         };
 
-        render_app
-            .init_resource::<WgpuConvertState>()
-            .add_systems(
-                Render,
-                dispatch_compute
-                    .in_set(RenderSystems::Cleanup)
-                    .after(bevy::render::view::prepare_windows),
-            );
+        render_app.init_resource::<WgpuConvertState>().add_systems(
+            Render,
+            dispatch_compute
+                .in_set(RenderSystems::Cleanup)
+                .after(bevy::render::view::prepare_windows),
+        );
     }
 }
 
@@ -275,7 +273,9 @@ fn dispatch_compute(
         let gpu_image = match gpu_images.get(image_id) {
             Some(img) => img,
             None => {
-                state.pending_setup.push((slot_id, image_id, frame_tx, width, height));
+                state
+                    .pending_setup
+                    .push((slot_id, image_id, frame_tx, width, height));
                 continue;
             }
         };
@@ -296,7 +296,9 @@ fn dispatch_compute(
             })
         };
 
-        let stor = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
+        let stor = wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST;
         let y_buffer = mk_buf(&format!("y_slot_{slot_id}"), y_size, stor);
         let u_buffer = mk_buf(&format!("u_slot_{slot_id}"), u_size, stor);
         let v_buffer = mk_buf(&format!("v_slot_{slot_id}"), v_size, stor);
@@ -320,32 +322,64 @@ fn dispatch_compute(
         }
         dims_buffer.unmap();
 
-        let tex_view = gpu_image.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let tex_view = gpu_image
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(&format!("i420_bg_slot_{slot_id}")),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&tex_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: y_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: u_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: v_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: dims_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&tex_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: y_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: u_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: v_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: dims_buffer.as_entire_binding(),
+                },
             ],
         });
 
         clog_info!(
             "📹 WgpuGpuConvert: slot {} setup ({}×{}, I420 {}KB)",
-            slot_id, width, height, i420_size / 1024
+            slot_id,
+            width,
+            height,
+            i420_size / 1024
         );
 
-        state.slots.insert(slot_id, SlotComputeState {
-            y_buffer, u_buffer, v_buffer, staging_buffer, bind_group,
-            width, height, i420_size, y_size, u_size,
-            frame_tx, pending_map: false,
-            map_ready: Arc::new(AtomicBool::new(false)),
-            frame_count: 0,
-        });
+        state.slots.insert(
+            slot_id,
+            SlotComputeState {
+                y_buffer,
+                u_buffer,
+                v_buffer,
+                staging_buffer,
+                bind_group,
+                width,
+                height,
+                i420_size,
+                y_size,
+                u_size,
+                frame_tx,
+                pending_map: false,
+                map_ready: Arc::new(AtomicBool::new(false)),
+                frame_count: 0,
+            },
+        );
     }
 
     if state.slots.is_empty() {
@@ -357,7 +391,9 @@ fn dispatch_compute(
 
     // Read back previous frame's results
     for (_slot_id, s) in state.slots.iter_mut() {
-        if !s.pending_map { continue; }
+        if !s.pending_map {
+            continue;
+        }
 
         // Check if the async map callback has fired
         if !s.map_ready.load(Ordering::Acquire) {
@@ -382,7 +418,10 @@ fn dispatch_compute(
         if s.frame_count == 1 || s.frame_count % 450 == 0 {
             clog_info!(
                 "📹 WgpuGpuConvert: slot {} — {} frames ({}×{} GPU I420)",
-                _slot_id, s.frame_count, s.width, s.height
+                _slot_id,
+                s.frame_count,
+                s.width,
+                s.height
             );
         }
     }
@@ -395,7 +434,9 @@ fn dispatch_compute(
     let mut any = false;
 
     for (_slot_id, s) in state.slots.iter_mut() {
-        if s.pending_map { continue; }
+        if s.pending_map {
+            continue;
+        }
 
         // Clear plane buffers
         encoder.clear_buffer(&s.y_buffer, 0, None);
@@ -418,12 +459,20 @@ fn dispatch_compute(
         // Copy Y, U, V to staging (contiguous: Y then U then V)
         encoder.copy_buffer_to_buffer(&s.y_buffer, 0, &s.staging_buffer, 0, s.y_size);
         encoder.copy_buffer_to_buffer(&s.u_buffer, 0, &s.staging_buffer, s.y_size, s.u_size);
-        encoder.copy_buffer_to_buffer(&s.v_buffer, 0, &s.staging_buffer, s.y_size + s.u_size, s.u_size);
+        encoder.copy_buffer_to_buffer(
+            &s.v_buffer,
+            0,
+            &s.staging_buffer,
+            s.y_size + s.u_size,
+            s.u_size,
+        );
 
         any = true;
     }
 
-    if !any { return; }
+    if !any {
+        return;
+    }
 
     render_queue.submit(std::iter::once(encoder.finish()));
 
@@ -431,11 +480,13 @@ fn dispatch_compute(
     for (_slot_id, s) in state.slots.iter_mut() {
         if !s.pending_map {
             let ready_flag = s.map_ready.clone();
-            s.staging_buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-                if result.is_ok() {
-                    ready_flag.store(true, Ordering::Release);
-                }
-            });
+            s.staging_buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    if result.is_ok() {
+                        ready_flag.store(true, Ordering::Release);
+                    }
+                });
             s.pending_map = true;
         }
     }
@@ -463,9 +514,16 @@ pub fn register_slot(
     height: u32,
 ) {
     let mut bridge = WGPU_BRIDGE.lock().unwrap();
-    bridge.pending.push((slot_id, render_target, frame_tx, width, height));
+    bridge
+        .pending
+        .push((slot_id, render_target, frame_tx, width, height));
     bridge.active_slots.insert(slot_id);
-    clog_info!("📹 WgpuBridge: slot {} registered for GPU I420 ({}×{})", slot_id, width, height);
+    clog_info!(
+        "📹 WgpuBridge: slot {} registered for GPU I420 ({}×{})",
+        slot_id,
+        width,
+        height
+    );
 }
 
 /// Check if a slot has a wgpu GPU bridge active.
@@ -507,8 +565,8 @@ mod tests {
 
     #[test]
     fn test_plane_size_alignment() {
-        assert_eq!(plane_size(9), 12);  // 9 → 12 (next multiple of 4)
+        assert_eq!(plane_size(9), 12); // 9 → 12 (next multiple of 4)
         assert_eq!(plane_size(16), 16); // already aligned
-        assert_eq!(plane_size(1), 4);   // 1 → 4
+        assert_eq!(plane_size(1), 4); // 1 → 4
     }
 }

@@ -44,11 +44,7 @@ pub struct RenderSlot {
 
 impl RenderSlot {
     /// Create a new idle render slot with no scene.
-    pub fn new(
-        slot_id: u8,
-        readback_entity: Entity,
-        render_target: Handle<Image>,
-    ) -> Self {
+    pub fn new(slot_id: u8, readback_entity: Entity, render_target: Handle<Image>) -> Self {
         Self {
             slot_id,
             scene_root: None,
@@ -81,16 +77,16 @@ impl RenderSlot {
 
     /// Iterate all avatars in this scene.
     pub fn avatars(&self) -> impl Iterator<Item = (&str, &AvatarObject)> {
-        self.objects.iter().filter_map(|(id, obj)| {
-            obj.as_avatar().map(|a| (id.as_str(), a))
-        })
+        self.objects
+            .iter()
+            .filter_map(|(id, obj)| obj.as_avatar().map(|a| (id.as_str(), a)))
     }
 
     /// Mutably iterate all avatars in this scene.
     pub fn avatars_mut(&mut self) -> impl Iterator<Item = (&str, &mut AvatarObject)> {
-        self.objects.iter_mut().filter_map(|(id, obj)| {
-            obj.as_avatar_mut().map(|a| (id.as_str(), a))
-        })
+        self.objects
+            .iter_mut()
+            .filter_map(|(id, obj)| obj.as_avatar_mut().map(|a| (id.as_str(), a)))
     }
 
     /// Get the primary (first) avatar. For single-avatar slots this is THE avatar.
@@ -100,7 +96,9 @@ impl RenderSlot {
 
     /// Get the primary avatar mutably.
     pub fn primary_avatar_mut(&mut self) -> Option<&mut AvatarObject> {
-        self.objects.values_mut().find_map(|obj| obj.as_avatar_mut())
+        self.objects
+            .values_mut()
+            .find_map(|obj| obj.as_avatar_mut())
     }
 
     /// Get a specific avatar by its object ID.

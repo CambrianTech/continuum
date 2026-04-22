@@ -36,10 +36,7 @@ mod tailscale_transport_integration {
             let frame = conn.recv_frame().await.unwrap();
             assert_eq!(frame.frame_type, FrameType::Request);
             // Send response
-            let response = GridFrame::success_response(
-                &frame,
-                serde_json::json!({"pong": true}),
-            );
+            let response = GridFrame::success_response(&frame, serde_json::json!({"pong": true}));
             conn.send_frame(&response).await.unwrap();
             frame
         });
@@ -68,7 +65,10 @@ mod tailscale_transport_integration {
         let response = conn.recv_frame().await.unwrap();
         assert_eq!(response.frame_type, FrameType::Response);
         assert_eq!(response.correlation_id, "test-001");
-        if let GridPayload::CommandResult { success, result, .. } = &response.payload {
+        if let GridPayload::CommandResult {
+            success, result, ..
+        } = &response.payload
+        {
             assert!(success);
             assert_eq!(result.as_ref().unwrap()["pong"], true);
         } else {
@@ -132,7 +132,10 @@ mod tailscale_transport_integration {
         }
 
         let received_ids = server_task.await.unwrap();
-        assert_eq!(received_ids, vec!["multi-0", "multi-1", "multi-2", "multi-3", "multi-4"]);
+        assert_eq!(
+            received_ids,
+            vec!["multi-0", "multi-1", "multi-2", "multi-3", "multi-4"]
+        );
     }
 
     #[tokio::test]
@@ -159,7 +162,9 @@ mod tailscale_transport_integration {
         let conn = client.connect(&addr).await.unwrap();
 
         // Send a frame with a large payload (~1MB of JSON)
-        let large_data: Vec<String> = (0..10_000).map(|i| format!("item-{i}-padding-data-here")).collect();
+        let large_data: Vec<String> = (0..10_000)
+            .map(|i| format!("item-{i}-padding-data-here"))
+            .collect();
         let request = GridFrame::command_request(
             "large-001".into(),
             "client".into(),
@@ -355,9 +360,11 @@ mod reticulum_transport_integration {
         let transport = ReticulumTransport::new(dir.clone());
         transport.start().await.unwrap();
 
-        let result = transport.connect(&TransportAddress::Reticulum {
-            destination_hash: "abcdef01".into(),
-        }).await;
+        let result = transport
+            .connect(&TransportAddress::Reticulum {
+                destination_hash: "abcdef01".into(),
+            })
+            .await;
 
         let err = match result {
             Err(e) => e.to_string(),
@@ -453,7 +460,9 @@ mod registry_integration {
             node_id: "storage-node".into(),
             node_name: None,
             addresses: vec![],
-            capabilities: vec![NodeCapability::Storage { available_mb: 500_000 }],
+            capabilities: vec![NodeCapability::Storage {
+                available_mb: 500_000,
+            }],
             trust_level: TrustLevel::Trusted,
             last_seen: 0,
             latency_ms: None,
@@ -488,13 +497,21 @@ mod registry_integration {
             latency_ms: None,
         });
 
-        assert_eq!(registry.get("node-1").unwrap().trust_level, TrustLevel::Blocked);
+        assert_eq!(
+            registry.get("node-1").unwrap().trust_level,
+            TrustLevel::Blocked
+        );
 
         registry.set_trust("node-1", TrustLevel::Owner).unwrap();
-        assert_eq!(registry.get("node-1").unwrap().trust_level, TrustLevel::Owner);
+        assert_eq!(
+            registry.get("node-1").unwrap().trust_level,
+            TrustLevel::Owner
+        );
 
         // Unknown node returns error
-        assert!(registry.set_trust("nonexistent", TrustLevel::Trusted).is_err());
+        assert!(registry
+            .set_trust("nonexistent", TrustLevel::Trusted)
+            .is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -538,13 +555,19 @@ mod audit_integration {
         for i in 0..10 {
             log.log(&AuditEntry {
                 timestamp: 1000 + i,
-                direction: if i % 2 == 0 { AuditDirection::Inbound } else { AuditDirection::Outbound },
+                direction: if i % 2 == 0 {
+                    AuditDirection::Inbound
+                } else {
+                    AuditDirection::Outbound
+                },
                 remote_node: format!("node-{i}"),
                 command: "gpu/stats".into(),
                 correlation_id: format!("corr-{i}"),
                 outcome: AuditOutcome::Success,
                 duration_ms: 10 + i,
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
         }
 
         // Read last 5
@@ -685,11 +708,7 @@ mod router_integration {
         let registry = NodeRegistry::new(&dir);
         let router = GridRouter::new(true, 8192); // Has GPU
 
-        let decision = router.route(
-            "genome/train",
-            &serde_json::json!({}),
-            &registry,
-        );
+        let decision = router.route("genome/train", &serde_json::json!({}), &registry);
 
         assert!(matches!(decision, RouteDecision::Local));
         let _ = std::fs::remove_dir_all(&dir);
@@ -705,14 +724,19 @@ mod acl_integration {
     fn test_owner_trust_allows_all_commands() {
         // Every command in the system should work for owner-trusted nodes
         let commands = [
-            "gpu/stats", "gpu/pressure",
-            "genome/train", "genome/dataset-prepare",
-            "ai/generate", "ai/report",
+            "gpu/stats",
+            "gpu/pressure",
+            "genome/train",
+            "genome/dataset-prepare",
+            "ai/generate",
+            "ai/report",
             "cognition/create-engine",
             "sentinel/execute",
             "plasticity/compact",
-            "code/read", "code/write",
-            "data/list", "data/create",
+            "code/read",
+            "code/write",
+            "data/list",
+            "data/create",
             "embedding/generate",
             "search/query",
             "health-check",

@@ -26,19 +26,20 @@ use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult,
 use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
 use super::types::{
     BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
-    RecordMetadata, StorageResult, UUID, METADATA_KEYS,
+    RecordMetadata, StorageResult, METADATA_KEYS, UUID,
 };
-
 
 /// Format a tokio-postgres error with full detail chain.
 /// The default Display for these errors often just says "db error" — useless.
 fn format_pg_error(e: &tokio_postgres::Error) -> String {
     if let Some(db_err) = e.as_db_error() {
-        format!("{}: {} (column: {}, detail: {})",
+        format!(
+            "{}: {} (column: {}, detail: {})",
             db_err.severity(),
             db_err.message(),
             db_err.column().unwrap_or("?"),
-            db_err.detail().unwrap_or("none"))
+            db_err.detail().unwrap_or("none")
+        )
     } else {
         format!("{:?}", e)
     }
@@ -216,7 +217,11 @@ fn value_to_pg_typed(value: &Value, pg_data_type: Option<&str>) -> Box<dyn ToSql
             match pg_data_type {
                 Some("text") | Some("character varying") => {
                     // Column is TEXT but value is boolean — serialize as string
-                    Box::new(if *b { "true".to_string() } else { "false".to_string() })
+                    Box::new(if *b {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    })
                 }
                 Some("bigint") | Some("integer") | Some("smallint") => {
                     // Column is integer — store as 0/1
@@ -494,7 +499,11 @@ fn build_select_clause(select: &Option<Vec<String>>) -> String {
             ];
             for col in cols {
                 let snake = naming::to_snake_case(col);
-                if snake != "id" && snake != "created_at" && snake != "updated_at" && snake != "version" {
+                if snake != "id"
+                    && snake != "created_at"
+                    && snake != "updated_at"
+                    && snake != "version"
+                {
                     selected.push(snake);
                 }
             }
@@ -982,7 +991,11 @@ impl StorageAdapter for PostgresAdapter {
                 ];
                 for col in cols {
                     let snake = naming::to_snake_case(col);
-                    if snake != "id" && snake != "created_at" && snake != "updated_at" && snake != "version" {
+                    if snake != "id"
+                        && snake != "created_at"
+                        && snake != "updated_at"
+                        && snake != "version"
+                    {
                         parts.push(format!("{}.{}", table, snake));
                     }
                 }
@@ -1178,9 +1191,10 @@ impl StorageAdapter for PostgresAdapter {
                 let err_msg = format_pg_error(&e);
                 if err_msg.contains("does not exist") && err_msg.contains("column") {
                     self.ensured_columns_cache.write().await.remove(&bare_table);
-                    if let Err(evolve_err) = ensure_table_exists_pg(
-                        &client, &table, &bare_table, &self.schema, &data
-                    ).await {
+                    if let Err(evolve_err) =
+                        ensure_table_exists_pg(&client, &table, &bare_table, &self.schema, &data)
+                            .await
+                    {
                         return StorageResult::err(format!(
                             "Update failed [{}]: {} (schema evolution also failed: {})",
                             bare_table, err_msg, evolve_err
@@ -1193,8 +1207,9 @@ impl StorageAdapter for PostgresAdapter {
                         Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
                         Err(e2) => StorageResult::err(format!(
                             "Update failed [{}] after schema evolution: {}",
-                            bare_table, format_pg_error(&e2)
-                        ))
+                            bare_table,
+                            format_pg_error(&e2)
+                        )),
                     }
                 } else {
                     StorageResult::err(format!("Update failed [{}]: {}", bare_table, err_msg))
@@ -1312,8 +1327,11 @@ impl StorageAdapter for PostgresAdapter {
         if let Err(e) = client.execute(&sql, &[]).await {
             // Concurrent DDL race: table may already exist
             let is_race = e.as_db_error().map_or(false, |db| {
-                matches!(db.code(), &tokio_postgres::error::SqlState::DUPLICATE_TABLE
-                    | &tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
+                matches!(
+                    db.code(),
+                    &tokio_postgres::error::SqlState::DUPLICATE_TABLE
+                        | &tokio_postgres::error::SqlState::UNIQUE_VIOLATION
+                )
             });
             if !is_race {
                 return StorageResult::err(format!("Create table failed: {}", format_pg_error(&e)));
@@ -1330,7 +1348,10 @@ impl StorageAdapter for PostgresAdapter {
                     idx_name, table, col_name
                 );
                 if let Err(e) = client.execute(&idx_sql, &[]).await {
-                    return StorageResult::err(format!("Create index failed: {}", format_pg_error(&e)));
+                    return StorageResult::err(format!(
+                        "Create index failed: {}",
+                        format_pg_error(&e)
+                    ));
                 }
             }
         }
@@ -1351,7 +1372,10 @@ impl StorageAdapter for PostgresAdapter {
                 cols.join(", ")
             );
             if let Err(e) = client.execute(&idx_sql, &[]).await {
-                return StorageResult::err(format!("Create composite index failed: {}", format_pg_error(&e)));
+                return StorageResult::err(format!(
+                    "Create composite index failed: {}",
+                    format_pg_error(&e)
+                ));
             }
         }
 
@@ -1536,8 +1560,11 @@ async fn ensure_table_exists_pg(
             // Error code 23505 = unique_violation on pg_class index.
             // Both mean the table exists — safe to continue.
             let is_race = e.as_db_error().map_or(false, |db| {
-                matches!(db.code(), &tokio_postgres::error::SqlState::DUPLICATE_TABLE
-                    | &tokio_postgres::error::SqlState::UNIQUE_VIOLATION)
+                matches!(
+                    db.code(),
+                    &tokio_postgres::error::SqlState::DUPLICATE_TABLE
+                        | &tokio_postgres::error::SqlState::UNIQUE_VIOLATION
+                )
             });
             if !is_race {
                 return Err(format!("Create table failed: {}", format_pg_error(&e)));

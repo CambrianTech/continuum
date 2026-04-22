@@ -140,7 +140,9 @@ pub struct RecipeBudget {
 
 impl RecipeBudget {
     pub fn new() -> Self {
-        Self { personas: Vec::new() }
+        Self {
+            personas: Vec::new(),
+        }
     }
 
     pub fn add_persona(mut self, budget: PersonaContextBudget) -> Self {
@@ -214,10 +216,15 @@ mod tests {
     #[test]
     fn task_kind_default_max_always_at_or_above_seed() {
         for task in [
-            TaskKind::Chat, TaskKind::VoiceChat, TaskKind::VideoChat,
-            TaskKind::CodingSmall, TaskKind::CodingLarge,
-            TaskKind::GameNpcIdle, TaskKind::GameNpcEngaged,
-            TaskKind::SentinelEasy, TaskKind::SentinelHard,
+            TaskKind::Chat,
+            TaskKind::VoiceChat,
+            TaskKind::VideoChat,
+            TaskKind::CodingSmall,
+            TaskKind::CodingLarge,
+            TaskKind::GameNpcIdle,
+            TaskKind::GameNpcEngaged,
+            TaskKind::SentinelEasy,
+            TaskKind::SentinelHard,
             TaskKind::AcademyStudent,
         ] {
             assert!(
@@ -254,8 +261,7 @@ mod tests {
     #[test]
     fn with_min_tokens_auto_bumps_max_to_preserve_invariant() {
         // Chat default: seed=8K, max=16K. Force min=64K — max should bump.
-        let b = PersonaContextBudget::for_task("Big", TaskKind::Chat)
-            .with_min_tokens(64 * 1024);
+        let b = PersonaContextBudget::for_task("Big", TaskKind::Chat).with_min_tokens(64 * 1024);
         assert_eq!(b.min_tokens, 64 * 1024);
         assert!(b.max_tokens >= b.min_tokens, "max must always >= min");
         assert_eq!(b.max_tokens, 64 * 1024);
@@ -270,8 +276,8 @@ mod tests {
     /// reverted.
     #[test]
     fn with_max_tokens_clamps_to_at_least_min() {
-        let b = PersonaContextBudget::for_task("Clamp", TaskKind::CodingLarge)
-            .with_max_tokens(1024);  // way below CodingLarge's 128K seed
+        let b =
+            PersonaContextBudget::for_task("Clamp", TaskKind::CodingLarge).with_max_tokens(1024); // way below CodingLarge's 128K seed
         assert!(b.max_tokens >= b.min_tokens, "max must always >= min");
         assert_eq!(b.max_tokens, b.min_tokens);
     }
@@ -285,8 +291,8 @@ mod tests {
     #[test]
     fn sum_of_seed_tokens_aggregates_min_not_max() {
         let recipe = RecipeBudget::new()
-            .add_persona(PersonaContextBudget::for_task("A", TaskKind::Chat))   // min=8K
-            .add_persona(PersonaContextBudget::for_task("B", TaskKind::Chat))   // min=8K
+            .add_persona(PersonaContextBudget::for_task("A", TaskKind::Chat)) // min=8K
+            .add_persona(PersonaContextBudget::for_task("B", TaskKind::Chat)) // min=8K
             .add_persona(PersonaContextBudget::for_task("C", TaskKind::CodingSmall)); // min=32K
 
         assert_eq!(recipe.sum_of_seed_tokens(), 8 * 1024 + 8 * 1024 + 32 * 1024);

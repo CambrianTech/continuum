@@ -339,16 +339,37 @@ impl LayerWeights {
             let last = seq_len - 1;
             // Q after bias (before reshape/RoPE) — matches llama.cpp "Qcur-0" first dump
             if let Ok(vals) = q.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
-                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("Q+bias (flat): {} dims, first5=[{}]", vals.len(), first.join(", "));
+                let first: Vec<String> = vals[..5.min(vals.len())]
+                    .iter()
+                    .map(|v| format!("{:.6}", v))
+                    .collect();
+                eprintln!(
+                    "Q+bias (flat): {} dims, first5=[{}]",
+                    vals.len(),
+                    first.join(", ")
+                );
             }
             if let Ok(vals) = k.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
-                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("K+bias (flat): {} dims, first5=[{}]", vals.len(), first.join(", "));
+                let first: Vec<String> = vals[..5.min(vals.len())]
+                    .iter()
+                    .map(|v| format!("{:.6}", v))
+                    .collect();
+                eprintln!(
+                    "K+bias (flat): {} dims, first5=[{}]",
+                    vals.len(),
+                    first.join(", ")
+                );
             }
             if let Ok(vals) = v.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
-                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("V+bias (flat): {} dims, first5=[{}]", vals.len(), first.join(", "));
+                let first: Vec<String> = vals[..5.min(vals.len())]
+                    .iter()
+                    .map(|v| format!("{:.6}", v))
+                    .collect();
+                eprintln!(
+                    "V+bias (flat): {} dims, first5=[{}]",
+                    vals.len(),
+                    first.join(", ")
+                );
             }
         }
 
@@ -373,18 +394,40 @@ impl LayerWeights {
             // Compare last head's last position
             let last = seq_len - 1;
             let n_head = self.n_head;
-            if let Ok(vals) = q.i((0, n_head - 1, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
-                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("Q after RoPE (head {}, last tok): first5=[{}]", n_head - 1, first.join(", "));
+            if let Ok(vals) = q
+                .i((0, n_head - 1, last, ..))
+                .and_then(|t| t.to_vec1::<f32>())
+            {
+                let first: Vec<String> = vals[..5.min(vals.len())]
+                    .iter()
+                    .map(|v| format!("{:.6}", v))
+                    .collect();
+                eprintln!(
+                    "Q after RoPE (head {}, last tok): first5=[{}]",
+                    n_head - 1,
+                    first.join(", ")
+                );
             }
             // Q head 0 last tok
             if let Ok(vals) = q.i((0, 0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
-                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("Q after RoPE (head 0, last tok): first5=[{}]", first.join(", "));
+                let first: Vec<String> = vals[..5.min(vals.len())]
+                    .iter()
+                    .map(|v| format!("{:.6}", v))
+                    .collect();
+                eprintln!(
+                    "Q after RoPE (head 0, last tok): first5=[{}]",
+                    first.join(", ")
+                );
             }
             if let Ok(vals) = k.i((0, 0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
-                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("K after RoPE (head 0, last tok): first5=[{}]", first.join(", "));
+                let first: Vec<String> = vals[..5.min(vals.len())]
+                    .iter()
+                    .map(|v| format!("{:.6}", v))
+                    .collect();
+                eprintln!(
+                    "K after RoPE (head 0, last tok): first5=[{}]",
+                    first.join(", ")
+                );
             }
         }
 
@@ -441,7 +484,10 @@ impl LayerWeights {
             // Attention output before reshape (shape: [b, n_head, seq, head_dim])
             // llama.cpp "__fattn__-0" last head
             if let Ok(vals) = y.i((0, 0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
-                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
+                let first: Vec<String> = vals[..5.min(vals.len())]
+                    .iter()
+                    .map(|v| format!("{:.6}", v))
+                    .collect();
                 eprintln!("attn_out (head 0, last tok): first5=[{}]", first.join(", "));
             }
         }
@@ -455,8 +501,15 @@ impl LayerWeights {
             let last = seq_len - 1;
             // kqv_out: reshaped attention output before Wo
             if let Ok(vals) = y.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
-                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("kqv_out (flat, last tok): {} dims, first5=[{}]", vals.len(), first.join(", "));
+                let first: Vec<String> = vals[..5.min(vals.len())]
+                    .iter()
+                    .map(|v| format!("{:.6}", v))
+                    .collect();
+                eprintln!(
+                    "kqv_out (flat, last tok): {} dims, first5=[{}]",
+                    vals.len(),
+                    first.join(", ")
+                );
                 let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                 std::fs::write("/tmp/candle_l0_kqv_out.bin", &data).ok();
             }
@@ -468,8 +521,15 @@ impl LayerWeights {
             x.device().synchronize().ok();
             let last = seq_len - 1;
             if let Ok(vals) = y.i((0, last, ..)).and_then(|t| t.to_vec1::<f32>()) {
-                let first: Vec<String> = vals[..5.min(vals.len())].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("attn_wo (Wo output, last tok): {} dims, first5=[{}]", vals.len(), first.join(", "));
+                let first: Vec<String> = vals[..5.min(vals.len())]
+                    .iter()
+                    .map(|v| format!("{:.6}", v))
+                    .collect();
+                eprintln!(
+                    "attn_wo (Wo output, last tok): {} dims, first5=[{}]",
+                    vals.len(),
+                    first.join(", ")
+                );
                 let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                 std::fs::write("/tmp/candle_l0_attn_wo.bin", &data).ok();
             }
@@ -569,7 +629,8 @@ impl ModelWeights {
         let neg_inf = Tensor::new(f32::NEG_INFINITY, &ct.device)?;
         let embedding_length = ct.hparams.n_embd as usize;
         let tok_embeddings_q = ct.remove("tok_embeddings.weight")?;
-        let tok_embeddings = DeviceEmbedding::from_qtensor(tok_embeddings_q, embedding_length, &ct.device)?;
+        let tok_embeddings =
+            DeviceEmbedding::from_qtensor(tok_embeddings_q, embedding_length, &ct.device)?;
         let norm = RmsNorm::from_qtensor(ct.remove("norm.weight")?, 1e-5)?;
         let output = ct.remove("output.weight")?;
         let mut layers = Vec::with_capacity(ct.hparams.n_layer as usize);
@@ -684,11 +745,14 @@ impl ModelWeights {
                 // But we don't have the tensor yet. Use embedding_length / ORIGINAL head_count
                 // approximation: for standard models this is correct, for compacted we need metadata.
                 // Qwen2 always uses 128.
-                if arch == "qwen2" { 128 } else { embedding_length / head_count }
+                if arch == "qwen2" {
+                    128
+                } else {
+                    embedding_length / head_count
+                }
             });
         let rope_dim = head_dim;
-        let rms_norm_eps =
-            md_get(&arch_key("attention.layer_norm_rms_epsilon"))?.to_f32()? as f64;
+        let rms_norm_eps = md_get(&arch_key("attention.layer_norm_rms_epsilon"))?.to_f32()? as f64;
 
         let rope_freq_base = md_get(&arch_key("rope.freq_base"))
             .and_then(|m| m.to_f32())
@@ -697,26 +761,43 @@ impl ModelWeights {
         // RoPE convention depends on model architecture (matching llama.cpp).
         // NEOX (non-interleaved): pairs (i, i+d/2) — Qwen, Qwen2, Falcon, Phi, BERT, etc.
         // NORM (interleaved): pairs (2i, 2i+1) — Llama, Mistral, DeepSeek, etc.
-        let rope_is_neox = matches!(arch.as_str(),
-            "qwen" | "qwen2" | "qwen2moe" | "qwen3" | "qwen3moe" |
-            "falcon" | "phi" | "phi2" | "phi3" | "stablelm" |
-            "bert" | "nomic-bert" | "plamo" | "grok" | "dbrx" |
-            "olmo2" | "olmoe" | "codeshell" | "starcoder2"
+        let rope_is_neox = matches!(
+            arch.as_str(),
+            "qwen"
+                | "qwen2"
+                | "qwen2moe"
+                | "qwen3"
+                | "qwen3moe"
+                | "falcon"
+                | "phi"
+                | "phi2"
+                | "phi3"
+                | "stablelm"
+                | "bert"
+                | "nomic-bert"
+                | "plamo"
+                | "grok"
+                | "dbrx"
+                | "olmo2"
+                | "olmoe"
+                | "codeshell"
+                | "starcoder2"
         );
 
         {
             let log = crate::runtime::logger("candle");
-            log.info(&format!("RoPE config: arch={}, rope_is_neox={}, rope_dim={}, freq_base={}",
-                arch, rope_is_neox, rope_dim, rope_freq_base));
+            log.info(&format!(
+                "RoPE config: arch={}, rope_is_neox={}, rope_dim={}, freq_base={}",
+                arch, rope_is_neox, rope_dim, rope_freq_base
+            ));
         }
 
         let (cos, sin) = precomput_freqs_cis(rope_dim, rope_freq_base, context_length, device)?;
         let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?;
 
         // Load embedding directly to CPU — bypasses Metal buffer pool entirely.
-        let tok_embeddings = DeviceEmbedding::from_gguf(
-            &ct, reader, "token_embd.weight", embedding_length, device,
-        )?;
+        let tok_embeddings =
+            DeviceEmbedding::from_gguf(&ct, reader, "token_embd.weight", embedding_length, device)?;
         let norm = RmsNorm::from_qtensor(
             ct.tensor(reader, "output_norm.weight", device)?,
             rms_norm_eps,
@@ -756,14 +837,25 @@ impl ModelWeights {
             // Log shapes for first layer to verify compacted model dimensions
             if layer_idx == 0 {
                 let log = crate::runtime::logger("candle");
-                log.info(&format!("Layer 0 weight shapes: Q={:?} K={:?} V={:?} O={:?}",
-                    attention_wq.shape(), attention_wk.shape(), attention_wv.shape(), attention_wo.shape()));
+                log.info(&format!(
+                    "Layer 0 weight shapes: Q={:?} K={:?} V={:?} O={:?}",
+                    attention_wq.shape(),
+                    attention_wk.shape(),
+                    attention_wv.shape(),
+                    attention_wo.shape()
+                ));
                 if let Some(ref bq) = attention_bq {
-                    log.info(&format!("Layer 0 bias shapes: Q={:?} K={:?} V={:?}",
-                        bq.dims(), attention_bk.as_ref().map(|t| t.dims()), attention_bv.as_ref().map(|t| t.dims())));
+                    log.info(&format!(
+                        "Layer 0 bias shapes: Q={:?} K={:?} V={:?}",
+                        bq.dims(),
+                        attention_bk.as_ref().map(|t| t.dims()),
+                        attention_bv.as_ref().map(|t| t.dims())
+                    ));
                 }
-                log.info(&format!("Layer 0 config: n_head={}, n_kv_head={}, head_dim={}, rope_dim={}",
-                    head_count, head_count_kv, head_dim, rope_dim));
+                log.info(&format!(
+                    "Layer 0 config: n_head={}, n_kv_head={}, head_dim={}, rope_dim={}",
+                    head_count, head_count_kv, head_dim, rope_dim
+                ));
             }
 
             let mlp_or_moe = if n_expert <= 1 {
@@ -947,7 +1039,15 @@ impl ModelWeights {
         index_pos: usize,
         max_layers: usize,
     ) -> Result<Tensor> {
-        self.forward_inner(x, index_pos, if max_layers == 0 { self.layers.len() } else { max_layers })
+        self.forward_inner(
+            x,
+            index_pos,
+            if max_layers == 0 {
+                self.layers.len()
+            } else {
+                max_layers
+            },
+        )
     }
 
     pub fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
@@ -978,13 +1078,19 @@ impl ModelWeights {
             if let Ok(flat) = layer_in.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
                 let n = flat.len().min(10);
                 let first10: Vec<String> = flat[..n].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("EMBED    shape={:?} first10=[{}]", layer_in.dims(), first10.join(", "));
+                eprintln!(
+                    "EMBED    shape={:?} first10=[{}]",
+                    layer_in.dims(),
+                    first10.join(", ")
+                );
             }
         }
 
         // Debug: if CANDLE_MAX_LAYERS=0, return embedding directly (skip all layers)
         if effective_max == 0 {
-            return self.output.forward(&self.norm.forward(&layer_in)?.i((.., seq_len - 1, ..))?);
+            return self
+                .output
+                .forward(&self.norm.forward(&layer_in)?.i((.., seq_len - 1, ..))?);
         }
         for (layer_idx, layer) in self.layers.iter_mut().enumerate() {
             if layer_idx >= effective_max {
@@ -1003,8 +1109,13 @@ impl ModelWeights {
                     let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                     std::fs::write("/tmp/candle_l0_attn_norm.bin", &data).ok();
                     let n = vals.len().min(5);
-                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
-                    eprintln!("L0 attn_norm: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                    let first: Vec<String> =
+                        vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!(
+                        "L0 attn_norm: {} dims, first5=[{}]",
+                        vals.len(),
+                        first.join(", ")
+                    );
                 }
             }
 
@@ -1017,8 +1128,13 @@ impl ModelWeights {
                     let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                     std::fs::write("/tmp/candle_l0_attn_out.bin", &data).ok();
                     let n = vals.len().min(5);
-                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
-                    eprintln!("L0 attn_out: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                    let first: Vec<String> =
+                        vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!(
+                        "L0 attn_out: {} dims, first5=[{}]",
+                        vals.len(),
+                        first.join(", ")
+                    );
                 }
             }
 
@@ -1031,8 +1147,13 @@ impl ModelWeights {
                     let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                     std::fs::write("/tmp/candle_l0_attn_resid.bin", &data).ok();
                     let n = vals.len().min(5);
-                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
-                    eprintln!("L0 attn+resid: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                    let first: Vec<String> =
+                        vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!(
+                        "L0 attn+resid: {} dims, first5=[{}]",
+                        vals.len(),
+                        first.join(", ")
+                    );
                 }
             }
 
@@ -1048,8 +1169,13 @@ impl ModelWeights {
                     let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                     std::fs::write("/tmp/candle_l0_ffn_norm.bin", &data).ok();
                     let n = vals.len().min(5);
-                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
-                    eprintln!("L0 ffn_norm: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                    let first: Vec<String> =
+                        vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!(
+                        "L0 ffn_norm: {} dims, first5=[{}]",
+                        vals.len(),
+                        first.join(", ")
+                    );
                 }
             }
 
@@ -1062,8 +1188,13 @@ impl ModelWeights {
                     let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                     std::fs::write("/tmp/candle_l0_mlp_out.bin", &data).ok();
                     let n = vals.len().min(5);
-                    let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
-                    eprintln!("L0 mlp_out: {} dims, first5=[{}]", vals.len(), first.join(", "));
+                    let first: Vec<String> =
+                        vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    eprintln!(
+                        "L0 mlp_out: {} dims, first5=[{}]",
+                        vals.len(),
+                        first.join(", ")
+                    );
                 }
             }
 
@@ -1096,15 +1227,23 @@ impl ModelWeights {
             }
 
             // Dump hidden state for divergence debugging
-            if std::env::var("CANDLE_DUMP_LAYERS").is_ok() && (layer_idx < 3 || layer_idx == effective_max - 1) {
+            if std::env::var("CANDLE_DUMP_LAYERS").is_ok()
+                && (layer_idx < 3 || layer_idx == effective_max - 1)
+            {
                 device.synchronize()?;
                 if let Ok(flat) = layer_in.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
                     let n = flat.len().min(10);
-                    let first10: Vec<String> = flat[..n].iter().map(|v| format!("{:.6}", v)).collect();
+                    let first10: Vec<String> =
+                        flat[..n].iter().map(|v| format!("{:.6}", v)).collect();
                     let mean: f64 = flat.iter().map(|&v| v as f64).sum::<f64>() / flat.len() as f64;
                     let absmax = flat.iter().cloned().fold(0f32, |a, b| a.max(b.abs()));
-                    eprintln!("LAYER[{:>2}] mean={:.6} absmax={:.3} first10=[{}]",
-                        layer_idx, mean, absmax, first10.join(", "));
+                    eprintln!(
+                        "LAYER[{:>2}] mean={:.6} absmax={:.3} first10=[{}]",
+                        layer_idx,
+                        mean,
+                        absmax,
+                        first10.join(", ")
+                    );
                 }
             }
         }
@@ -1117,7 +1256,11 @@ impl ModelWeights {
             if let Ok(vals) = x.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
                 let n = vals.len().min(10);
                 let first: Vec<String> = vals[..n].iter().map(|v| format!("{:.6}", v)).collect();
-                eprintln!("HIDDEN (post-norm, pre-lm_head): {} dims, first10=[{}]", vals.len(), first.join(", "));
+                eprintln!(
+                    "HIDDEN (post-norm, pre-lm_head): {} dims, first10=[{}]",
+                    vals.len(),
+                    first.join(", ")
+                );
                 let data: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                 std::fs::write("/tmp/candle_hidden.bin", &data).ok();
                 eprintln!("  Written to /tmp/candle_hidden.bin");

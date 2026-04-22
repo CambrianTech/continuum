@@ -219,20 +219,25 @@ impl MockMonitor {
     }
 
     pub fn set_free_bytes(&self, b: u64) {
-        self.free_bytes.store(b, std::sync::atomic::Ordering::Relaxed);
+        self.free_bytes
+            .store(b, std::sync::atomic::Ordering::Relaxed);
     }
     pub fn set_process_bytes(&self, b: u64) {
-        self.process_bytes.store(b, std::sync::atomic::Ordering::Relaxed);
+        self.process_bytes
+            .store(b, std::sync::atomic::Ordering::Relaxed);
     }
     pub fn set_utilization(&self, u: f32) {
         let scaled = (u.clamp(0.0, 1.0) * 1000.0) as u32;
-        self.utilization_x1000.store(scaled, std::sync::atomic::Ordering::Relaxed);
+        self.utilization_x1000
+            .store(scaled, std::sync::atomic::Ordering::Relaxed);
     }
     pub fn set_temperature_c(&self, t: f32) {
-        self.temperature_c.store(t as i32, std::sync::atomic::Ordering::Relaxed);
+        self.temperature_c
+            .store(t as i32, std::sync::atomic::Ordering::Relaxed);
     }
     pub fn set_power_watts(&self, p: f32) {
-        self.power_watts.store(p as i32, std::sync::atomic::Ordering::Relaxed);
+        self.power_watts
+            .store(p as i32, std::sync::atomic::Ordering::Relaxed);
     }
     pub fn set_pressure(&self, p: f32) {
         let _ = self.pressure_tx.send(p.clamp(0.0, 1.0));
@@ -253,18 +258,31 @@ impl GpuMonitor for MockMonitor {
         self.free_bytes.load(std::sync::atomic::Ordering::Relaxed)
     }
     fn process_bytes(&self) -> u64 {
-        self.process_bytes.load(std::sync::atomic::Ordering::Relaxed)
+        self.process_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
     fn utilization(&self) -> f32 {
-        self.utilization_x1000.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+        self.utilization_x1000
+            .load(std::sync::atomic::Ordering::Relaxed) as f32
+            / 1000.0
     }
     fn temperature_c(&self) -> Option<f32> {
-        let v = self.temperature_c.load(std::sync::atomic::Ordering::Relaxed);
-        if v == i32::MIN { None } else { Some(v as f32) }
+        let v = self
+            .temperature_c
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if v == i32::MIN {
+            None
+        } else {
+            Some(v as f32)
+        }
     }
     fn power_watts(&self) -> Option<f32> {
         let v = self.power_watts.load(std::sync::atomic::Ordering::Relaxed);
-        if v == i32::MIN { None } else { Some(v as f32) }
+        if v == i32::MIN {
+            None
+        } else {
+            Some(v as f32)
+        }
     }
     fn pressure_rx(&self) -> watch::Receiver<f32> {
         self.pressure_rx.clone()
@@ -308,7 +326,10 @@ mod tests {
         );
 
         m.update_pressure(1.0);
-        assert!(m.free_bytes() < total / 10, "full pressure → near-zero free");
+        assert!(
+            m.free_bytes() < total / 10,
+            "full pressure → near-zero free"
+        );
     }
 
     /// What this catches: pressure value escaping the 0.0..1.0 range

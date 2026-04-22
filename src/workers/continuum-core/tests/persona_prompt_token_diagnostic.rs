@@ -109,8 +109,12 @@ fn chatml_prompt_tokenization_is_invariant_to_add_bos_flag() {
     let model = load_tokenizer_only();
     let prompt = render_minimal_chat();
 
-    let with_bos = model.tokenize(&prompt, true, true).expect("tokenize add_bos=true");
-    let without_bos = model.tokenize(&prompt, false, true).expect("tokenize add_bos=false");
+    let with_bos = model
+        .tokenize(&prompt, true, true)
+        .expect("tokenize add_bos=true");
+    let without_bos = model
+        .tokenize(&prompt, false, true)
+        .expect("tokenize add_bos=false");
 
     dump_first_n_tokens("add_bos=true ", &model, &with_bos, 8);
     dump_first_n_tokens("add_bos=false", &model, &without_bos, 8);
@@ -158,8 +162,12 @@ fn special_tokens_render_as_single_ids_when_special_flag_true() {
     let model = load_tokenizer_only();
     let prompt = render_minimal_chat();
 
-    let with_special = model.tokenize(&prompt, false, true).expect("tokenize special=true");
-    let without_special = model.tokenize(&prompt, false, false).expect("tokenize special=false");
+    let with_special = model
+        .tokenize(&prompt, false, true)
+        .expect("tokenize special=true");
+    let without_special = model
+        .tokenize(&prompt, false, false)
+        .expect("tokenize special=false");
 
     dump_first_n_tokens("special=true ", &model, &with_special, 8);
     dump_first_n_tokens("special=false", &model, &without_special, 12);

@@ -105,9 +105,7 @@ impl LlamaGgufBackend {
                     vec![128009]
                 }
             }
-            _ => {
-                base_eos.map(|e| vec![e]).unwrap_or_else(|| vec![128009])
-            }
+            _ => base_eos.map(|e| vec![e]).unwrap_or_else(|| vec![128009]),
         }
     }
 

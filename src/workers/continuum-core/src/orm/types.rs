@@ -14,7 +14,12 @@ pub type UUID = String;
 /// Single source of truth: adding a metadata column? Add it here.
 /// Both camelCase (TypeScript) and snake_case (SQL) variants included.
 pub const METADATA_KEYS: &[&str] = &[
-    "id", "createdAt", "created_at", "updatedAt", "updated_at", "version",
+    "id",
+    "createdAt",
+    "created_at",
+    "updatedAt",
+    "updated_at",
+    "version",
 ];
 
 /// Generic record data - JSON object with string keys

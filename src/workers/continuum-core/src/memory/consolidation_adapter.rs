@@ -177,8 +177,14 @@ mod tests {
             MemoryType::from_thought_type("decision"),
             MemoryType::Decision
         );
-        assert_eq!(MemoryType::from_thought_type("pattern"), MemoryType::Insight);
-        assert_eq!(MemoryType::from_thought_type("insight"), MemoryType::Insight);
+        assert_eq!(
+            MemoryType::from_thought_type("pattern"),
+            MemoryType::Insight
+        );
+        assert_eq!(
+            MemoryType::from_thought_type("insight"),
+            MemoryType::Insight
+        );
         assert_eq!(
             MemoryType::from_thought_type("reflection"),
             MemoryType::Reflection
@@ -235,10 +241,7 @@ mod tests {
             !adapter.supports_embeddings(),
             "NoOp shouldn't claim embedding support"
         );
-        assert!(
-            !adapter.does_synthesis(),
-            "NoOp shouldn't claim synthesis"
-        );
+        assert!(!adapter.does_synthesis(), "NoOp shouldn't claim synthesis");
 
         let ctx = ConsolidationContext {
             persona_id: Uuid::nil(),

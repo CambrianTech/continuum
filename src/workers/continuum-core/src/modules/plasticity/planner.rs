@@ -338,11 +338,11 @@ mod tests {
                 retained_head_indices: (0..25).collect(),
                 retained_kv_head_indices: (0..5).collect(),
                 head_precisions: vec![
-                    HeadPrecision::BF16,  // group 0: high util
-                    HeadPrecision::Q8,    // group 1: active
-                    HeadPrecision::Q4,    // group 2: medium
-                    HeadPrecision::Q4,    // group 3: medium
-                    HeadPrecision::Q2,    // group 4: low
+                    HeadPrecision::BF16, // group 0: high util
+                    HeadPrecision::Q8,   // group 1: active
+                    HeadPrecision::Q4,   // group 2: medium
+                    HeadPrecision::Q4,   // group 3: medium
+                    HeadPrecision::Q2,   // group 4: low
                 ],
                 head_scores: vec![0.9, 0.6, 0.4, 0.35, 0.2],
             });

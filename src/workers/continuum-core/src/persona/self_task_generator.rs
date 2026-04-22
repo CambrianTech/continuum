@@ -386,7 +386,8 @@ fn chrono_now_iso() -> String {
         .unwrap_or_default();
     let secs = duration.as_secs();
     // Approximate: good enough for task timestamps
-    "1970-01-01T00:00:00.000Z".to_string() // Placeholder — overwritten by DB on insert
+    "1970-01-01T00:00:00.000Z"
+        .to_string() // Placeholder — overwritten by DB on insert
         .replace("1970-01-01T00:00:00.000Z", &format_epoch_secs(secs))
 }
 
@@ -479,7 +480,10 @@ fn parse_iso_to_epoch_ms(iso: &str) -> Option<u64> {
         [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     };
 
-    for &md in month_days.iter().take((month.saturating_sub(1) as usize).min(11)) {
+    for &md in month_days
+        .iter()
+        .take((month.saturating_sub(1) as usize).min(11))
+    {
         days += md;
     }
     days += day.saturating_sub(1);

@@ -2,13 +2,18 @@
 
 use bevy::prelude::*;
 
-use super::components::*;
 use super::super::scene::animation::{AnimationConfig, PORTRAIT_PROFILE};
+use super::components::*;
 
 /// Cognitive gesture driver — selects and triggers gestures from cognitive state.
 pub(in crate::live::video::bevy_renderer) fn drive_cognitive_gestures(
     time: Res<Time>,
-    mut query: Query<(Entity, &mut CognitiveGesture, Has<Speaking>, Has<GestureAnimation>)>,
+    mut query: Query<(
+        Entity,
+        &mut CognitiveGesture,
+        Has<Speaking>,
+        Has<GestureAnimation>,
+    )>,
     mut commands: Commands,
 ) {
     use crate::live::session::cognitive_animation::{select_weighted_gesture, CognitiveState};
@@ -62,7 +67,12 @@ pub(in crate::live::video::bevy_renderer) fn drive_cognitive_gestures(
 /// Body gesture animation — drives bones through gesture poses.
 pub(in crate::live::video::bevy_renderer) fn animate_body_gestures(
     time: Res<Time>,
-    mut query: Query<(Entity, &mut GestureAnimation, &Skeleton, Option<&AnimationConfig>)>,
+    mut query: Query<(
+        Entity,
+        &mut GestureAnimation,
+        &Skeleton,
+        Option<&AnimationConfig>,
+    )>,
     mut transforms: Query<&mut Transform>,
     mut commands: Commands,
 ) {
@@ -93,9 +103,7 @@ pub(in crate::live::video::bevy_renderer) fn animate_body_gestures(
             1.0 - smoothstep(release_progress)
         };
 
-        let profile = anim_cfg
-            .map(|c| &c.profile)
-            .unwrap_or(&PORTRAIT_PROFILE);
+        let profile = anim_cfg.map(|c| &c.profile).unwrap_or(&PORTRAIT_PROFILE);
 
         let w = anim.weight;
         let t = now;
@@ -148,7 +156,9 @@ pub(in crate::live::video::bevy_renderer) fn animate_body_gestures(
             Gesture::Nod => {
                 if let Some(ref head) = skeleton.head {
                     if let Ok(mut transform) = transforms.get_mut(head.entity) {
-                        let nod = (t * 1.5 * std::f32::consts::TAU).sin() * profile.gesture_nod_amplitude * w;
+                        let nod = (t * 1.5 * std::f32::consts::TAU).sin()
+                            * profile.gesture_nod_amplitude
+                            * w;
                         transform.rotation = head.rest_rotation * Quat::from_rotation_x(nod);
                     }
                 }

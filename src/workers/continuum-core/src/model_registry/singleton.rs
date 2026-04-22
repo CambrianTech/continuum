@@ -16,7 +16,7 @@
 //! and WHERE load reads from (env override for deployment, crate-dir
 //! default for dev/test). A deferred `init_global` keeps that control.
 
-use super::loader::{Registry, RegistryError, load_registry};
+use super::loader::{load_registry, Registry, RegistryError};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -108,7 +108,9 @@ mod tests {
         assert!(reg.models().count() > 0);
         assert!(reg.providers().count() > 0);
         // Canonical anchor: Claude Sonnet 4.5 must exist and have Vision.
-        let sonnet = reg.model("claude-sonnet-4-5-20250929").expect("sonnet in registry");
+        let sonnet = reg
+            .model("claude-sonnet-4-5-20250929")
+            .expect("sonnet in registry");
         assert!(sonnet.has(Capability::Vision));
     }
 }

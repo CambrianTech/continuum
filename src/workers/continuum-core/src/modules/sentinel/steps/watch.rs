@@ -34,10 +34,16 @@ pub async fn execute(
         "[{}] Watch step: waiting for event '{}' (timeout={})",
         pipeline_ctx.handle_id,
         interpolated_pattern,
-        if has_timeout { format!("{}s", raw_timeout) } else { "none".to_string() }
+        if has_timeout {
+            format!("{}s", raw_timeout)
+        } else {
+            "none".to_string()
+        }
     ));
 
-    let bus = pipeline_ctx.bus.ok_or_else(|| step_err(pipeline_ctx.handle_id, "Watch step", "requires MessageBus"))?;
+    let bus = pipeline_ctx
+        .bus
+        .ok_or_else(|| step_err(pipeline_ctx.handle_id, "Watch step", "requires MessageBus"))?;
 
     // Check recent event buffer BEFORE subscribing to avoid race conditions.
     // If the emit happened just before we subscribed, we'd miss it without this.

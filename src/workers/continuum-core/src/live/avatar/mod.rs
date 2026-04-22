@@ -56,8 +56,8 @@ pub use hash::{deterministic_index, deterministic_pick, fnv1a_hash};
 #[cfg(all(feature = "livekit-webrtc", target_os = "macos"))]
 pub use publishers::gpu_bridge::GpuBridgePublisher;
 pub use render_loop::{
-    allocate_bevy_slot, create_renderer, reset_slot_pool, spawn_renderer_loop,
-    BevySlotAllocation, SlotGuard,
+    allocate_bevy_slot, create_renderer, reset_slot_pool, spawn_renderer_loop, BevySlotAllocation,
+    SlotGuard,
 };
 pub use renderer::AvatarRenderer;
 pub use selection::{

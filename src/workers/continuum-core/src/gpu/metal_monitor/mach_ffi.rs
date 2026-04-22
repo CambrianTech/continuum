@@ -183,8 +183,7 @@ pub(super) fn read_system_free_bytes() -> Option<u64> {
     // Page size: sysconf(_SC_PAGESIZE) is userspace-stable. Apple Silicon
     // uses 16384, x86_64 uses 4096 — sysconf returns the right one.
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
-    let pages =
-        info.free_count as u64 + info.speculative_count as u64 + info.inactive_count as u64;
+    let pages = info.free_count as u64 + info.speculative_count as u64 + info.inactive_count as u64;
     Some(pages.saturating_mul(page_size))
 }
 
@@ -275,7 +274,10 @@ mod tests {
 
         assert_eq!(free_offset, 0, "free_count must be at offset 0");
         // active_count (4 bytes) + inactive_count = offset 8 on natural alignment.
-        assert_eq!(inactive_offset, 8, "inactive_count must be at offset 8 (after free + active)");
+        assert_eq!(
+            inactive_offset, 8,
+            "inactive_count must be at offset 8 (after free + active)"
+        );
         assert!(
             speculative_offset > inactive_offset,
             "speculative_count must come after inactive_count"
@@ -295,7 +297,10 @@ mod tests {
     fn read_system_free_bytes_returns_positive_sane_value() {
         let bytes = read_system_free_bytes().expect("Mach host_statistics64 should succeed on Mac");
         assert!(bytes > 0, "free bytes = 0 on a live Mac is broken");
-        assert!(bytes < 10_000_000_000_000, "free bytes > 10 TB — sanity failure");
+        assert!(
+            bytes < 10_000_000_000_000,
+            "free bytes > 10 TB — sanity failure"
+        );
     }
 
     /// What this catches: `read_process_phys_footprint` returning None or

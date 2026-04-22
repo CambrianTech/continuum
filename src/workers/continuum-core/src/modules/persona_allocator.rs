@@ -116,18 +116,16 @@ mod tests {
         if let Ok(CommandResult::Json(json)) = result {
             let allocations = json["allocations"].as_array().unwrap();
             // Should have Anthropic personas
-            assert!(allocations.iter().any(|a| {
-                a["apiKeyEnv"].as_str() == Some("ANTHROPIC_API_KEY")
-            }));
+            assert!(allocations
+                .iter()
+                .any(|a| { a["apiKeyEnv"].as_str() == Some("ANTHROPIC_API_KEY") }));
         }
     }
 
     #[tokio::test]
     async fn test_catalog() {
         let module = test_module();
-        let result = module
-            .handle_command("persona/catalog", Value::Null)
-            .await;
+        let result = module.handle_command("persona/catalog", Value::Null).await;
         assert!(result.is_ok());
         if let Ok(CommandResult::Json(json)) = result {
             let entries = json.as_array().unwrap();
@@ -138,9 +136,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_command() {
         let module = test_module();
-        let result = module
-            .handle_command("persona/unknown", Value::Null)
-            .await;
+        let result = module.handle_command("persona/unknown", Value::Null).await;
         assert!(result.is_err());
     }
 }

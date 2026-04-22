@@ -24,14 +24,20 @@ const N_GENERATE: usize = 32;
 fn run(n_gpu_layers: i32, label: &str) -> Vec<i32> {
     let model = Model::load(
         PathBuf::from(MODEL_PATH),
-        ModelParams { n_gpu_layers, use_mmap: true },
-    ).expect("load");
-    let mut ctx = model.new_context(ContextParams {
-        n_ctx: 4096,
-        n_batch: 512,
-        n_seq_max: 1,
-        ..Default::default()
-    }).expect("ctx");
+        ModelParams {
+            n_gpu_layers,
+            use_mmap: true,
+        },
+    )
+    .expect("load");
+    let mut ctx = model
+        .new_context(ContextParams {
+            n_ctx: 4096,
+            n_batch: 512,
+            n_seq_max: 1,
+            ..Default::default()
+        })
+        .expect("ctx");
 
     let prompt_tokens = model.tokenize(PROMPT, true, false).expect("tokenize");
     let mut batch = Batch::allocated(512, 1);
@@ -48,7 +54,9 @@ fn run(n_gpu_layers: i32, label: &str) -> Vec<i32> {
     for _ in 0..N_GENERATE {
         let tok = sampler.sample(&ctx, -1);
         sampler.accept(tok);
-        if model.is_eog_token(tok) { break; }
+        if model.is_eog_token(tok) {
+            break;
+        }
         text.push_str(&model.token_to_piece(tok));
         out.push(tok);
         batch.clear();
@@ -68,11 +76,17 @@ fn qwen35_cpu_vs_gpu_greedy_diff() {
     assert_eq!(cpu.len(), gpu.len(), "different output lengths");
     let first_diff = cpu.iter().zip(gpu.iter()).position(|(a, b)| a != b);
     match first_diff {
-        None => eprintln!("\n✅ CPU and GPU produced IDENTICAL {} tokens — Metal kernels mathematically correct.", cpu.len()),
+        None => eprintln!(
+            "\n✅ CPU and GPU produced IDENTICAL {} tokens — Metal kernels mathematically correct.",
+            cpu.len()
+        ),
         Some(i) => {
-            eprintln!("\n❌ CPU vs GPU DIVERGE at token {i}: CPU={} GPU={}", cpu[i], gpu[i]);
-            eprintln!("   CPU tokens: {:?}", &cpu[..(i+1).min(cpu.len())]);
-            eprintln!("   GPU tokens: {:?}", &gpu[..(i+1).min(gpu.len())]);
+            eprintln!(
+                "\n❌ CPU vs GPU DIVERGE at token {i}: CPU={} GPU={}",
+                cpu[i], gpu[i]
+            );
+            eprintln!("   CPU tokens: {:?}", &cpu[..(i + 1).min(cpu.len())]);
+            eprintln!("   GPU tokens: {:?}", &gpu[..(i + 1).min(gpu.len())]);
             panic!("Metal kernels produce different output than CPU — major bug");
         }
     }

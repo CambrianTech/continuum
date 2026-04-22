@@ -203,23 +203,30 @@ mod tests {
     /// test fails with active still default. Reverted, passes.
     #[test]
     fn builders_modify_only_their_target_tier() {
-        let custom = KvQuantPolicy::default()
-            .with_active(KvCacheType::Q8_0, KvCacheType::Q8_0);
+        let custom = KvQuantPolicy::default().with_active(KvCacheType::Q8_0, KvCacheType::Q8_0);
 
-        assert_eq!(custom.active, KvCachePair::new(KvCacheType::Q8_0, KvCacheType::Q8_0));
+        assert_eq!(
+            custom.active,
+            KvCachePair::new(KvCacheType::Q8_0, KvCacheType::Q8_0)
+        );
         // Other tiers unchanged from default
         assert_eq!(custom.cpu_resident, KvQuantPolicy::default().cpu_resident);
         assert_eq!(custom.spilled, KvQuantPolicy::default().spilled);
 
-        let custom2 = KvQuantPolicy::default()
-            .with_cpu_resident(KvCacheType::F16, KvCacheType::F16);
-        assert_eq!(custom2.cpu_resident, KvCachePair::new(KvCacheType::F16, KvCacheType::F16));
+        let custom2 =
+            KvQuantPolicy::default().with_cpu_resident(KvCacheType::F16, KvCacheType::F16);
+        assert_eq!(
+            custom2.cpu_resident,
+            KvCachePair::new(KvCacheType::F16, KvCacheType::F16)
+        );
         assert_eq!(custom2.active, KvQuantPolicy::default().active);
         assert_eq!(custom2.spilled, KvQuantPolicy::default().spilled);
 
-        let custom3 = KvQuantPolicy::default()
-            .with_spilled(KvCacheType::F16, KvCacheType::F16);
-        assert_eq!(custom3.spilled, KvCachePair::new(KvCacheType::F16, KvCacheType::F16));
+        let custom3 = KvQuantPolicy::default().with_spilled(KvCacheType::F16, KvCacheType::F16);
+        assert_eq!(
+            custom3.spilled,
+            KvCachePair::new(KvCacheType::F16, KvCacheType::F16)
+        );
         assert_eq!(custom3.active, KvQuantPolicy::default().active);
         assert_eq!(custom3.cpu_resident, KvQuantPolicy::default().cpu_resident);
     }
