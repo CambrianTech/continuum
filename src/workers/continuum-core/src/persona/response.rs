@@ -45,8 +45,8 @@
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::cognition::types::ResponderDecision;
 use crate::cognition::{
-    AnalysisInput, DEFAULT_RELEVANCE_THRESHOLD, PersonaSlot, RecentMessage, SharedAnalysis,
-    analyze, score_persona,
+    analyze, score_persona, AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis,
+    DEFAULT_RELEVANCE_THRESHOLD,
 };
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -254,7 +254,7 @@ async fn run_render(
 ) -> Result<RawRenderOutput, String> {
     use crate::ai::adapter::InferenceDevice;
     use crate::ai::types::TextGenerationRequest;
-    use crate::persona::prompt_assembly::{HistoryMessage, PromptAssemblyInput, assemble};
+    use crate::persona::prompt_assembly::{assemble, HistoryMessage, PromptAssemblyInput};
 
     // 1. The matched angle for this persona's specialty. Empty string
     //    means "no specific angle" — assemble() handles that gracefully

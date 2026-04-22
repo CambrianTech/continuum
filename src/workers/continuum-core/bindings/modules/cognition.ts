@@ -838,6 +838,14 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 				recent_history: req.recentHistory,
 				known_specialties: req.knownSpecialties,
 				is_voice: req.isVoice ?? false,
+				// Native multimodal — the Rust IPC handler reads `message_media`
+				// and walks each item into `ContentPart::Image` / `Audio` when
+				// the persona's resolved model has the matching capability.
+				// Forgetting this here is a silent strip: PRG built the field
+				// but the IPC payload never carried it, so Rust's diagnostic
+				// "persona/respond received message_media: count=N" stayed
+				// silent on the failure case (only logs when count > 0).
+				...(req.messageMedia && req.messageMedia.length > 0 && { message_media: req.messageMedia }),
 			}, COGNITION_RESPOND_TIMEOUT_MS);
 
 			if (!response.success) {

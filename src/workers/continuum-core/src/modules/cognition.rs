@@ -31,22 +31,22 @@
 use crate::gpu::GpuMemoryManager;
 use crate::log_info;
 use crate::logging::TimingGuard;
-use crate::persona::GenomeAdapterInfo;
 use crate::persona::evaluator;
 use crate::persona::message_cache::{CachedMessage, SenderCategory};
 use crate::persona::model_selection;
 use crate::persona::text_analysis;
 use crate::persona::text_analysis::LoopDetector;
+use crate::persona::GenomeAdapterInfo;
 use crate::persona::{AdapterInfo, ModelSelectionRequest};
-use crate::runtime;
 use crate::persona::{InboxMessage, Modality, PersonaCognition, SenderType};
 use crate::persona::{RecentResponse, SleepMode};
 use crate::rag::RagEngine;
+use crate::runtime;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::any::Any;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -851,8 +851,16 @@ impl ServiceModule for CognitionModule {
                         .map(|arr| {
                             arr.iter()
                                 .map(|item| {
-                                    let item_type = item.get("itemType").or_else(|| item.get("item_type")).and_then(|v| v.as_str()).unwrap_or("?");
-                                    let has_b64 = item.get("base64").and_then(|v| v.as_str()).map(|s| s.len()).unwrap_or(0);
+                                    let item_type = item
+                                        .get("itemType")
+                                        .or_else(|| item.get("item_type"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("?");
+                                    let has_b64 = item
+                                        .get("base64")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.len())
+                                        .unwrap_or(0);
                                     let has_desc = item.get("description").is_some();
                                     format!("{}(b64={}, desc={})", item_type, has_b64, has_desc)
                                 })
@@ -866,45 +874,46 @@ impl ServiceModule for CognitionModule {
                     ));
                 }
 
-                let message_media: Vec<crate::cognition::tool_executor::types::MediaItemLite> = raw_media_value
-                    .and_then(|v| v.as_array().cloned())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|item| {
-                                let item_type = item
-                                    .get("itemType")
-                                    .or_else(|| item.get("item_type"))?
-                                    .as_str()?
-                                    .to_string();
-                                let base64 = item
-                                    .get("base64")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from);
-                                let mime_type = item
-                                    .get("mimeType")
-                                    .or_else(|| item.get("mime_type"))
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from);
-                                // Carry the pre-computed text description across
-                                // the IPC boundary when the TS sensory bridge
-                                // (VisionDescriptionService) populated it. The
-                                // Rust persona path uses this for text-only
-                                // personas instead of letting them hallucinate
-                                // from prompt context.
-                                let description = item
-                                    .get("description")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from);
-                                Some(crate::cognition::tool_executor::types::MediaItemLite {
-                                    item_type,
-                                    base64,
-                                    mime_type,
-                                    description,
+                let message_media: Vec<crate::cognition::tool_executor::types::MediaItemLite> =
+                    raw_media_value
+                        .and_then(|v| v.as_array().cloned())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|item| {
+                                    let item_type = item
+                                        .get("itemType")
+                                        .or_else(|| item.get("item_type"))?
+                                        .as_str()?
+                                        .to_string();
+                                    let base64 = item
+                                        .get("base64")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from);
+                                    let mime_type = item
+                                        .get("mimeType")
+                                        .or_else(|| item.get("mime_type"))
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from);
+                                    // Carry the pre-computed text description across
+                                    // the IPC boundary when the TS sensory bridge
+                                    // (VisionDescriptionService) populated it. The
+                                    // Rust persona path uses this for text-only
+                                    // personas instead of letting them hallucinate
+                                    // from prompt context.
+                                    let description = item
+                                        .get("description")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from);
+                                    Some(crate::cognition::tool_executor::types::MediaItemLite {
+                                        item_type,
+                                        base64,
+                                        mime_type,
+                                        description,
+                                    })
                                 })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                                .collect()
+                        })
+                        .unwrap_or_default();
 
                 let input = crate::persona::response::RespondInput {
                     persona: crate::cognition::PersonaSlot {

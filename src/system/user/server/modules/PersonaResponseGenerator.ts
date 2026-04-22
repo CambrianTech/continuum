@@ -303,6 +303,7 @@ export class PersonaResponseGenerator {
       const { MediaBlobService } = await import('../../../storage/MediaBlobService');
       const { VisionDescriptionService } = await import('../../../vision/VisionDescriptionService');
       const fs = await import('fs');
+
       const messageMediaResolved = await Promise.all(
         (originalMessage.content.media ?? []).map(async (m) => {
           // Prefer inline base64 if it's still around (browser pre-encode
