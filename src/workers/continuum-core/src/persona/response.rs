@@ -352,12 +352,18 @@ pub enum PersonaResponse {
 /// the caller for proper user-facing error reporting; we don't
 /// silently fall back to "Silent" because that would hide real bugs.
 pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
+    use crate::persona::trace::{
+        CognitionTrace, SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS,
+    };
+
     let total_start = now_ms();
+    let mut trace = CognitionTrace::new();
 
     // 1. Shared analysis (cached per message+room+history fingerprint).
     //    Provides matched-angle hints for the prompt — informational,
     //    NOT gating. The persona's own model is the only thing that
     //    decides what to say (or whether to stay quiet).
+    let analyze_start = now_ms();
     let analysis = analyze(AnalysisInput {
         message_id: input.message_id,
         room_id: input.room_id,
@@ -366,6 +372,16 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
         known_specialties: input.known_specialties.clone(),
     })
     .await?;
+    trace.record(
+        SEAM_ANALYZE,
+        analyze_start,
+        now_ms().saturating_sub(analyze_start),
+        serde_json::json!({
+            "from_cache": analysis.from_cache,
+            "model_used": analysis.model_used,
+            "duration_ms_internal": analysis.duration_ms,
+        }),
+    );
 
     // 2. Render. No external "should this persona respond" gate. Joel
     //    rule (2026-04-22): personas emulate humans — they choose
@@ -388,21 +404,50 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
     let inference_start = now_ms();
     let raw_response = run_render(&input, &analysis).await?;
     let inference_ms = now_ms().saturating_sub(inference_start);
+    trace.record(
+        SEAM_INFERENCE,
+        inference_start,
+        inference_ms,
+        serde_json::json!({
+            "model_used": raw_response.model_used,
+            "raw_text_chars": raw_response.text.len(),
+            "media_attached": input.message_media.len(),
+        }),
+    );
 
+    let post_start = now_ms();
     let (visible_text, think_count) = strip_thinks_emit_events(
         &raw_response.text,
         input.persona.persona_id,
         input.message_id,
     );
+    trace.record(
+        SEAM_POST_PROCESS,
+        post_start,
+        now_ms().saturating_sub(post_start),
+        serde_json::json!({
+            "think_blocks": think_count,
+            "visible_chars": visible_text.len(),
+        }),
+    );
 
-    Ok(PersonaResponse::Spoke {
+    let response = PersonaResponse::Spoke {
         persona_id: input.persona.persona_id,
         text: visible_text,
         model_used: raw_response.model_used,
         inference_ms,
         total_ms: now_ms().saturating_sub(total_start),
         think_blocks_emitted: think_count,
-    })
+    };
+
+    // Best-effort turn capture for observability + replay. Failures
+    // log inside the recorder but never propagate — the persona's
+    // response is the product, the recording is observability. Any
+    // host (TS server, Unreal plugin, Swift app) gets this for free
+    // because it lives Rust-side, next to `respond()`.
+    crate::persona::recorder::record_turn(&input, &response, &trace);
+
+    Ok(response)
 }
 
 /// What the render step returns internally (private — public type is
