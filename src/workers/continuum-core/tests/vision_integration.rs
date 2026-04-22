@@ -74,6 +74,9 @@ fn build_vision_request(model_id: &str) -> RespondInput {
         description: None,
     }];
 
+    let mut caps = std::collections::HashSet::new();
+    caps.insert(continuum_core::model_registry::Capability::Vision);
+
     RespondInput {
         persona: continuum_core::cognition::PersonaSlot {
             persona_id: Uuid::nil(),
@@ -89,6 +92,8 @@ fn build_vision_request(model_id: &str) -> RespondInput {
         model: model_id.to_string(),
         is_voice: false,
         message_media: media,
+        // Vision capability — caller-declared, no registry lookup.
+        capabilities: caps,
     }
 }
 

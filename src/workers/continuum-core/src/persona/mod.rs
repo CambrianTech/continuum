@@ -21,6 +21,7 @@ pub mod domain_classifier;
 pub mod evaluator;
 pub mod genome_paging;
 pub mod inbox;
+pub mod media_policy;
 pub mod message_cache;
 pub mod model_selection;
 pub mod prompt_assembly;

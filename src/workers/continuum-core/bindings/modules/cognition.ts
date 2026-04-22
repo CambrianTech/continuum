@@ -94,6 +94,21 @@ export interface PersonaRespondRequest {
 	 * path).
 	 */
 	messageMedia?: MediaItemLite[];
+	/**
+	 * Persona's resolved model capabilities. Caller MUST populate from
+	 * the persona's ModelConfig (e.g. `["vision", "audio-input", "tool-use"]`).
+	 * Wire format: kebab-case strings matching Rust
+	 * `model_registry::Capability` serde rename. Required — no default,
+	 * no Rust-side global lookup. Caller declares; Rust consumes.
+	 *
+	 * Why required: when this was a Rust-side `try_global` lookup, key
+	 * drift between PRG's `model` string and the registry's `model.id`
+	 * silently returned empty caps → image bytes already in
+	 * `messageMedia` got demoted to text markers → vision encoder never
+	 * fired even on a vision-capable persona. Declaration travels with
+	 * the request now; lookup misses can't disable vision invisibly.
+	 */
+	capabilities: string[];
 }
 
 // ============================================================================
@@ -840,12 +855,17 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 				is_voice: req.isVoice ?? false,
 				// Native multimodal — the Rust IPC handler reads `message_media`
 				// and walks each item into `ContentPart::Image` / `Audio` when
-				// the persona's resolved model has the matching capability.
-				// Forgetting this here is a silent strip: PRG built the field
-				// but the IPC payload never carried it, so Rust's diagnostic
+				// `capabilities` includes the matching variant. Forgetting
+				// either field is a silent strip: PRG built the field but
+				// the IPC payload never carried it, so Rust's diagnostic
 				// "persona/respond received message_media: count=N" stayed
 				// silent on the failure case (only logs when count > 0).
 				...(req.messageMedia && req.messageMedia.length > 0 && { message_media: req.messageMedia }),
+				// Capabilities cross the wire as kebab-case strings matching
+				// the Rust `Capability` serde rename ("vision", "audio-input",
+				// "tool-use", etc.). Required — caller-declared, never
+				// looked up Rust-side.
+				capabilities: req.capabilities,
 			}, COGNITION_RESPOND_TIMEOUT_MS);
 
 			if (!response.success) {

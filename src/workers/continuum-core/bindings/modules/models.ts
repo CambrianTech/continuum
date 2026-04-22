@@ -37,12 +37,24 @@ export interface ModelsDiscoverResult {
 	providers: number;
 }
 
+/**
+ * Result of `models/capabilities` — the canonical kebab-case capability
+ * vocabulary for a model, as declared in `models.toml`. Strings match
+ * Rust `model_registry::types::Capability` serde rename: "vision",
+ * "audio-input", "audio-output", "tool-use", "streaming", etc.
+ */
+export interface ModelsCapabilitiesResult {
+	modelId: string;
+	capabilities: string[];
+}
+
 // ============================================================================
 // Mixin
 // ============================================================================
 
 export interface ModelsMixin {
 	modelsDiscover(providers: ProviderConfig[]): Promise<ModelsDiscoverResult>;
+	modelsCapabilities(modelId: string): Promise<ModelsCapabilitiesResult>;
 }
 
 export function ModelsMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -61,6 +73,33 @@ export function ModelsMixin<T extends new (...args: any[]) => RustCoreIPCClientB
 			}
 
 			return response.result as ModelsDiscoverResult;
+		}
+
+		/**
+		 * Look up a model's canonical capability vocabulary from models.toml.
+		 *
+		 * Callers (PersonaResponseGenerator) use this ONCE at persona
+		 * construction to resolve the capability strings they must then
+		 * pass with every `cognitionPersonaRespond` call. Pushing this
+		 * lookup to the orchestration seam (caller side, loud failure)
+		 * means the inference hot path never does a global registry
+		 * query whose silent-empty result used to disable vision.
+		 *
+		 * Errors visibly if the model id isn't in the registry — that's
+		 * a broken persona configuration, not a missing-default
+		 * scenario. No silent empty-list fallback.
+		 */
+		async modelsCapabilities(modelId: string): Promise<ModelsCapabilitiesResult> {
+			const response = await this.request({
+				command: 'models/capabilities',
+				model_id: modelId,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || `Failed to resolve capabilities for model '${modelId}'`);
+			}
+
+			return response.result as ModelsCapabilitiesResult;
 		}
 	};
 }

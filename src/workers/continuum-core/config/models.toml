@@ -298,23 +298,46 @@ gguf_local_path = "~/models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
 mmproj_local_path = "~/models/qwen2-vl-7b/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
 
 # ─── Local in-process: Qwen2-Audio-7B-Instruct (audio-input native) ───
-# Symmetric to qwen2-vl-7b above but on the audio modality. Same llama.cpp
-# + libmtmd path (`backend.generate_with_audio()` → `MtmdContext::eval_audio()`)
-# verified end-to-end 2026-04-22. The audio mmproj projects raw audio
-# samples → text-decoder embeddings; the model "hears" wav/flac/mp3 bytes
-# directly with no STT bridge. Capability::AudioInput gates the
-# ContentPart::Audio walk in build_messages_with_media (response.rs:461).
-[[model]]
-id = "qwen2-audio-7b-instruct"
-name = "Qwen2-Audio-7B-Instruct (in-process)"
-provider = "llamacpp-local"
-arch = "qwen2"
-context_window = 32768
-max_output_tokens = 4096
-tokens_per_second = 16.0
-capabilities = ["text-generation", "chat", "audio-input", "streaming"]
-cost_input_per_1k = 0.0
-cost_output_per_1k = 0.0
-gguf_hint = "huggingface.co/mradermacher/Qwen2-Audio-7B-Instruct-GGUF"
-gguf_local_path = "~/models/qwen2-audio-7b/Qwen2-Audio-7B-Instruct-Q4_K_M.gguf"
-mmproj_local_path = "~/models/qwen2-audio-7b/mmproj-Qwen2-Audio-7B-Instruct-f16.gguf"
+#
+# DISABLED 2026-04-22 — registering this model spawns a SECOND
+# `LlamaCppAdapter` whose `initialize()` eagerly loads the GGUF (~5GB
+# Metal allocation) at boot ALONGSIDE qwen2-vl-7b's load. On Apple
+# Metal the cumulative pressure pushes the GPU command-buffer
+# allocator over the cliff: every persona's first decode then comes
+# back with `kIOGPUCommandBufferCallbackErrorOutOfMemory` →
+# `llama_decode -3`, the backend wedges into "error state from a
+# previous command buffer failure - recreate the backend to recover",
+# and chat is dead until `npm stop`. (Seeing the persona block in
+# personas.ts is correctly defer'd is necessary but NOT sufficient —
+# the registry still creates the adapter for any model row whose
+# GGUF + mmproj are on disk; the persona-level guard doesn't reach
+# the registry layer.)
+#
+# Re-enable when the substrate lands:
+#   - mmproj init mutex (one mtmd-capable backend may compile its
+#     Metal pipelines at a time)
+#   - PressureBroker-aware adapter registration (refuse the second
+#     mtmd-capable adapter creation while another is mid-init)
+#   - backend recovery on Metal OOM (currently any
+#     `kIOGPUCommandBufferCallbackErrorOutOfMemory` leaves the
+#     backend permanently dead until process restart)
+#
+# The model files, llama-mtmd integration, and integration test
+# (`tests/llamacpp_audio_integration.rs`) all remain — only the
+# registry row is commented out so no adapter is created at boot.
+# When the substrate is ready, uncomment this block.
+#
+# [[model]]
+# id = "qwen2-audio-7b-instruct"
+# name = "Qwen2-Audio-7B-Instruct (in-process)"
+# provider = "llamacpp-local"
+# arch = "qwen2"
+# context_window = 32768
+# max_output_tokens = 4096
+# tokens_per_second = 16.0
+# capabilities = ["text-generation", "chat", "audio-input", "streaming"]
+# cost_input_per_1k = 0.0
+# cost_output_per_1k = 0.0
+# gguf_hint = "huggingface.co/mradermacher/Qwen2-Audio-7B-Instruct-GGUF"
+# gguf_local_path = "~/models/qwen2-audio-7b/Qwen2-Audio-7B-Instruct-Q4_K_M.gguf"
+# mmproj_local_path = "~/models/qwen2-audio-7b/mmproj-Qwen2-Audio-7B-Instruct-f16.gguf"

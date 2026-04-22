@@ -781,156 +781,36 @@ impl ServiceModule for CognitionModule {
             // exists in Rust rather than TS.
             "cognition/respond" => {
                 let _timer = TimingGuard::new("module", "cognition_respond");
-                let persona_uuid = p.uuid("persona_id")?;
-                let room_uuid = p.uuid("room_id")?;
-                let message_uuid = p.uuid("message_id")?;
-                let message_text = p.str("message_text")?.to_string();
-                let persona_specialty = p.str_or("specialty", "general").to_string();
-                let persona_display_name = p.str_or("persona_name", "AI").to_string();
 
-                // recent_history: array of { id, sender_name, text }. Most-
-                // recent last. Caller (chat path / PRG.ts shim) builds this
-                // from the room's recent messages.
-                let recent_history: Vec<crate::cognition::RecentMessage> = p
-                    .json_opt::<Value>("recent_history")
-                    .and_then(|v| v.as_array().cloned())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|item| {
-                                let id = item.get("id")?.as_str()?.parse::<Uuid>().ok()?;
-                                let sender_name = item.get("sender_name")?.as_str()?.to_string();
-                                let text = item.get("text")?.as_str()?.to_string();
-                                Some(crate::cognition::RecentMessage {
-                                    id,
-                                    sender_name,
-                                    text,
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                // Single source of truth: the JSON-wire-to-RespondInput
+                // transformation lives in `persona::response::respond_input_from_value`.
+                // Tests that exercise the cognition path call the SAME
+                // function, eliminating any twin-implementation drift
+                // between live IPC and test fixtures. If you change the
+                // wire shape, change it there — both paths follow.
+                let input = crate::persona::response::respond_input_from_value(&params)?;
 
-                // known_specialties: stable specialty identifiers for ALL
-                // personas in the room. The analyzer needs this list to
-                // know which suggested_angles entries to populate.
-                let known_specialties: Vec<String> = p
-                    .json_opt::<Vec<String>>("known_specialties")
-                    .unwrap_or_else(|| vec![persona_specialty.clone()]);
-
-                let system_prompt = p.str_or("system_prompt", "").to_string();
-                let is_voice = p.bool_or("is_voice", false);
-                // Persona's render-time model. REQUIRED — using the analysis
-                // model here would defeat shared-cognition (every persona
-                // would render with the same base model instead of their
-                // own LoRA-adapted one).
-                let model = p.str("model")?.to_string();
-
-                // Native multimodal: caller may pass `message_media` as an
-                // array of `{ itemType, base64?, mimeType? }`. We parse what
-                // matches our shape and let respond() decide whether the
-                // resolved model can actually consume it (capability check
-                // there). Per Joel 2026-04-21: never bridge images to text
-                // when the model is natively multimodal — that defeats the
-                // whole reason Qwen3.5/Claude/GPT-4o were chosen. The
-                // bridge is the floor for genuinely text-only models.
                 // Diagnostic: log what message_media the IPC layer actually
                 // received from PRG. Vision routing was failing 2026-04-21
                 // and we need to see whether (a) PRG sent nothing, (b) PRG
                 // sent items but with wrong shape, or (c) items arrived
-                // and we drop them in the filter_map below.
-                let raw_media_value = p.json_opt::<Value>("message_media");
-                let raw_media_count = raw_media_value
-                    .as_ref()
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(0);
-                if raw_media_count > 0 {
-                    let shape: Vec<String> = raw_media_value
-                        .as_ref()
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .map(|item| {
-                                    let item_type = item
-                                        .get("itemType")
-                                        .or_else(|| item.get("item_type"))
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("?");
-                                    let has_b64 = item
-                                        .get("base64")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.len())
-                                        .unwrap_or(0);
-                                    let has_desc = item.get("description").is_some();
-                                    format!("{}(b64={}, desc={})", item_type, has_b64, has_desc)
-                                })
-                                .collect()
+                // and we drop them in the filter_map.
+                if !input.message_media.is_empty() {
+                    let shape: Vec<String> = input
+                        .message_media
+                        .iter()
+                        .map(|item| {
+                            let has_b64 = item.base64.as_deref().map(|s| s.len()).unwrap_or(0);
+                            let has_desc = item.description.is_some();
+                            format!("{}(b64={}, desc={})", item.item_type, has_b64, has_desc)
                         })
-                        .unwrap_or_default();
+                        .collect();
                     runtime::logger("cognition").info(&format!(
                         "persona/respond received message_media: count={} shapes=[{}]",
-                        raw_media_count,
+                        input.message_media.len(),
                         shape.join(", ")
                     ));
                 }
-
-                let message_media: Vec<crate::cognition::tool_executor::types::MediaItemLite> =
-                    raw_media_value
-                        .and_then(|v| v.as_array().cloned())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|item| {
-                                    let item_type = item
-                                        .get("itemType")
-                                        .or_else(|| item.get("item_type"))?
-                                        .as_str()?
-                                        .to_string();
-                                    let base64 = item
-                                        .get("base64")
-                                        .and_then(|v| v.as_str())
-                                        .map(String::from);
-                                    let mime_type = item
-                                        .get("mimeType")
-                                        .or_else(|| item.get("mime_type"))
-                                        .and_then(|v| v.as_str())
-                                        .map(String::from);
-                                    // Carry the pre-computed text description across
-                                    // the IPC boundary when the TS sensory bridge
-                                    // (VisionDescriptionService) populated it. The
-                                    // Rust persona path uses this for text-only
-                                    // personas instead of letting them hallucinate
-                                    // from prompt context.
-                                    let description = item
-                                        .get("description")
-                                        .and_then(|v| v.as_str())
-                                        .map(String::from);
-                                    Some(crate::cognition::tool_executor::types::MediaItemLite {
-                                        item_type,
-                                        base64,
-                                        mime_type,
-                                        description,
-                                    })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                let input = crate::persona::response::RespondInput {
-                    persona: crate::cognition::PersonaSlot {
-                        persona_id: persona_uuid,
-                        specialty: persona_specialty,
-                        display_name: persona_display_name,
-                    },
-                    room_id: room_uuid,
-                    message_id: message_uuid,
-                    message_text,
-                    recent_history,
-                    known_specialties,
-                    system_prompt,
-                    model,
-                    is_voice,
-                    message_media,
-                };
 
                 let response = crate::persona::response::respond(input).await?;
 

@@ -8,28 +8,32 @@
 //!
 //! Pipeline (per persona, per inbound message):
 //!
-//!   1. cognition::analyze(...)   — shared, cached. Run once per
-//!                                  message; this persona's call hits
-//!                                  the cache after the first.
-//!   2. cognition::score_persona(...) — local. Just THIS persona's
-//!                                       relevance; no need to know
-//!                                       about others.
-//!   3. If !should_respond → return Silent { reason }. First-class
-//!      outcome — silence with an observable reason, not a hidden skip.
-//!   4. prompt_assembly::build(...) — persona-specific prompt: voice,
+//!   1. cognition::analyze(...)   — shared, cached. Provides the
+//!                                  prompt-time hint map (suggested
+//!                                  angles per specialty) but does NOT
+//!                                  gate response. Informational only.
+//!   2. prompt_assembly::build(...) — persona-specific prompt: voice,
 //!                                    LoRA-rendered specialty, RAG
-//!                                    context interleaving. (TODO:
-//!                                    memento's persona/prompt_assembly
-//!                                    module ships in this PR.)
-//!   5. ai_provider::generate_text(...) — inference (DMR or whatever
-//!                                        adapter the registry picks).
-//!   6. strip_thinks_emit_events(...) — extract <think>...</think>
+//!                                    context interleaving, native
+//!                                    multimodal attachment per the
+//!                                    persona's resolved capabilities.
+//!   3. ai_provider::generate_text(...) — inference. The persona's
+//!                                        own model decides what to
+//!                                        say. Personas emulate
+//!                                        humans — they choose for
+//!                                        themselves whether to
+//!                                        engage; no external scorer
+//!                                        vetoes them.
+//!   4. strip_thinks_emit_events(...) — extract <think>...</think>
 //!                                       blocks, emit them as
 //!                                       cognition:think-block events
 //!                                       for the (future) hippocampus
 //!                                       to consume, return clean
 //!                                       speech for posting.
-//!   7. Return Spoke { text, ... } with timing + diagnostic fields.
+//!   5. Return Spoke { text, ... } with timing + diagnostic fields.
+//!      Silent is still a valid return when the persona's own model
+//!      produces empty / "I'll pass" output — but it's the persona's
+//!      cognitive output, not a pre-inference veto.
 //!
 //! Why this is in Rust (not just a port):
 //!   - Cognition is where the mind/machine line gets drawn — concurrency
@@ -43,11 +47,7 @@
 //!     manipulation in Rust is ~100x what TS does on the same input.
 
 use crate::cognition::tool_executor::types::MediaItemLite;
-use crate::cognition::types::ResponderDecision;
-use crate::cognition::{
-    analyze, score_persona, AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis,
-    DEFAULT_RELEVANCE_THRESHOLD,
-};
+use crate::cognition::{analyze, AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use ts_rs::TS;
@@ -89,9 +89,9 @@ pub struct RespondInput {
     /// instructions in the assembled prompt). False for normal chat.
     pub is_voice: bool,
     /// Media (images/audio/video) attached to the current message. When
-    /// present AND the persona's resolved model has the matching
-    /// `Capability` (`Vision` for images, `AudioInput` for audio), the
-    /// render path constructs `MessageContent::Parts` with a real
+    /// present AND `capabilities` includes the matching variant
+    /// (`Vision` for images, `AudioInput` for audio), the render path
+    /// constructs `MessageContent::Parts` with a real
     /// `ContentPart::Image`/`Audio` instead of `MessageContent::Text` —
     /// preserving the natively-multimodal model's ability to see / hear
     /// directly. **No text-description bridging when the model IS
@@ -100,6 +100,188 @@ pub struct RespondInput {
     /// text-only models as the floor, not the default.
     /// See docs/architecture/PERSONA-CONTEXT-PAGING.md §0.5.X.
     pub message_media: Vec<MediaItemLite>,
+    /// Persona's resolved model capabilities. Caller (PRG) supplies them
+    /// from the persona's ModelConfig — they're a property of the
+    /// caller's request, not something Rust looks up mid-flight.
+    ///
+    /// Why this isn't a registry lookup: `getThatThingIShouldHaveJustBeenGiven`
+    /// (Joel rule). The IPC already names the model; the caller already
+    /// knows what it can do; passing it across removes a global lookup
+    /// that silently failed when registry keys diverged from request
+    /// model strings (capabilities came back empty → image bytes
+    /// demoted to text marker → vision encoder never called even though
+    /// the bytes were sitting right there in `message_media`). Now the
+    /// declaration travels with the request — registry-key drift can't
+    /// silently disable vision.
+    pub capabilities: std::collections::HashSet<crate::model_registry::Capability>,
+}
+
+/// Build a `RespondInput` from a JSON wire payload. Single source of
+/// truth for the transformation — the IPC handler in
+/// `modules/cognition.rs` calls this AND every test that wants to
+/// exercise the same code path the live system uses calls this.
+///
+/// # Why this exists
+///
+/// 2026-04-22: Joel called out that "integration tests" written in
+/// parallel with the prod IPC handler could drift silently — pass in
+/// the test, fail in prod, or vice versa. The fix is to make the
+/// JSON → RespondInput transformation a single function both call.
+/// Tests that reconstruct `RespondInput` by hand from a fixture's
+/// `rust_request` aren't testing the live path; they're testing a
+/// hand-rolled twin of it. This function eliminates the twin.
+///
+/// Wire field names are camelCase per the ts-rs export convention
+/// (`PersonaRespondRequest` in `bindings/modules/cognition.ts`),
+/// with `_` aliases accepted for back-compat with older fixtures.
+/// `model`, `messageText`, and `capabilities` are required (hard
+/// error on absence — same contract as the IPC handler).
+pub fn respond_input_from_value(
+    payload: &serde_json::Value,
+) -> Result<RespondInput, String> {
+    use crate::cognition::PersonaSlot;
+    use crate::cognition::tool_executor::types::MediaItemLite;
+
+    let get_str = |key_camel: &str, key_snake: &str| -> Option<String> {
+        payload
+            .get(key_camel)
+            .or_else(|| payload.get(key_snake))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    };
+    let get_uuid = |key_camel: &str, key_snake: &str| -> Result<Uuid, String> {
+        let s = get_str(key_camel, key_snake)
+            .ok_or_else(|| format!("missing required uuid field '{key_camel}'/'{key_snake}'"))?;
+        Uuid::parse_str(&s).map_err(|e| format!("invalid uuid for '{key_camel}': {e}"))
+    };
+
+    let persona_id = get_uuid("personaId", "persona_id")?;
+    let room_id = get_uuid("roomId", "room_id")?;
+    let message_id = get_uuid("messageId", "message_id")?;
+    let message_text = get_str("messageText", "message_text")
+        .ok_or_else(|| "missing required field 'messageText'".to_string())?;
+    let persona_name = get_str("personaName", "persona_name").unwrap_or_else(|| "AI".to_string());
+    let specialty = get_str("specialty", "specialty").unwrap_or_else(|| "general".to_string());
+    let model = get_str("model", "model")
+        .ok_or_else(|| "missing required field 'model'".to_string())?;
+    let system_prompt = get_str("systemPrompt", "system_prompt").unwrap_or_default();
+    let is_voice = payload
+        .get("isVoice")
+        .or_else(|| payload.get("is_voice"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // recent_history: array of { id, sender_name|senderName, text }.
+    // Most-recent last; chat path / PRG.ts shim builds this from the
+    // room's recent messages. Items that don't parse drop silently —
+    // single bad row in history shouldn't kill the call.
+    let recent_history: Vec<RecentMessage> = payload
+        .get("recentHistory")
+        .or_else(|| payload.get("recent_history"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let id = item.get("id")?.as_str()?.parse::<Uuid>().ok()?;
+                    let sender_name = item
+                        .get("senderName")
+                        .or_else(|| item.get("sender_name"))?
+                        .as_str()?
+                        .to_string();
+                    let text = item.get("text")?.as_str()?.to_string();
+                    Some(RecentMessage {
+                        id,
+                        sender_name,
+                        text,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let known_specialties: Vec<String> = payload
+        .get("knownSpecialties")
+        .or_else(|| payload.get("known_specialties"))
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_else(|| vec![specialty.clone()]);
+
+    // Native multimodal: walk message_media into MediaItemLite.
+    // itemType + base64 + mimeType + description (camelCase wire).
+    // Items missing item_type drop silently (defensive — same shape
+    // the prior IPC handler used).
+    let message_media: Vec<MediaItemLite> = payload
+        .get("messageMedia")
+        .or_else(|| payload.get("message_media"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let item_type = item
+                        .get("itemType")
+                        .or_else(|| item.get("item_type"))?
+                        .as_str()?
+                        .to_string();
+                    let base64 = item
+                        .get("base64")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let mime_type = item
+                        .get("mimeType")
+                        .or_else(|| item.get("mime_type"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let description = item
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    Some(MediaItemLite {
+                        item_type,
+                        base64,
+                        mime_type,
+                        description,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Capabilities: REQUIRED. Caller (PRG) must populate from the
+    // persona's resolved ModelConfig — the whole point of caller-
+    // declared capabilities is to remove a global registry lookup
+    // that was silently returning empty mid-flight. Hard error on
+    // absence so the regression surfaces at the seam, not three
+    // layers down as silently-broken multimodal.
+    let capabilities: std::collections::HashSet<crate::model_registry::Capability> = payload
+        .get("capabilities")
+        .ok_or_else(|| {
+            "missing required field 'capabilities' — caller MUST declare \
+             the persona's resolved model capability vocabulary"
+                .to_string()
+        })?
+        .as_array()
+        .ok_or_else(|| "'capabilities' must be a JSON array of strings".to_string())?
+        .iter()
+        .filter_map(|s| s.as_str())
+        .filter_map(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok())
+        .collect();
+
+    Ok(RespondInput {
+        persona: PersonaSlot {
+            persona_id,
+            specialty,
+            display_name: persona_name,
+        },
+        room_id,
+        message_id,
+        message_text,
+        recent_history,
+        known_specialties,
+        system_prompt,
+        model,
+        is_voice,
+        message_media,
+        capabilities,
+    })
 }
 
 /// What `respond()` returns.
@@ -173,6 +355,9 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
     let total_start = now_ms();
 
     // 1. Shared analysis (cached per message+room+history fingerprint).
+    //    Provides matched-angle hints for the prompt — informational,
+    //    NOT gating. The persona's own model is the only thing that
+    //    decides what to say (or whether to stay quiet).
     let analysis = analyze(AnalysisInput {
         message_id: input.message_id,
         room_id: input.room_id,
@@ -182,30 +367,26 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
     })
     .await?;
 
-    // 2. Local score for THIS persona only. No need to know about others.
-    let decision = score_persona(&analysis, &input.persona, DEFAULT_RELEVANCE_THRESHOLD);
-
-    // 3. Silent path is first-class.
-    if !decision.should_respond {
-        return Ok(PersonaResponse::Silent {
-            persona_id: input.persona.persona_id,
-            reason: decision.explanation,
-            relevance_score: decision.relevance_score,
-        });
-    }
-
-    // 4–6. Build prompt, run inference, parse <think>.
+    // 2. Render. No external "should this persona respond" gate. Joel
+    //    rule (2026-04-22): personas emulate humans — they choose
+    //    themselves whether to engage. The earlier `score_persona`
+    //    + suggested_angles[specialty] vetoed vision-capable personas
+    //    on image-bearing messages because the analyzer's text-domain
+    //    map didn't tag "general" as relevant — silenced the only
+    //    persona that could SEE the image. Mechanical routing
+    //    masquerading as cognition. Removed.
     //
-    // The prompt-assembly + inference + parse work is the next chunk
-    // of this PR. Memento is taking persona/prompt_assembly.rs (port
-    // of PersonaPromptAssembler.ts logic). My piece here calls into
-    // his module + ai_provider + strip_thinks_emit_events.
+    //    A persona may still emit Silence as its OWN cognitive
+    //    output (its model returns "I'll pass on this one" or
+    //    similar) — that's organic. What's gone is the external
+    //    veto that decided FOR the persona.
     //
-    // Stubbed for now so this file compiles + the shape is reviewable.
-    // Will be filled in (no port debt — this is the final-form code,
-    // just incomplete) before the chat-validation gate.
+    //    `analysis.suggested_angles` remains as a prompt-time hint:
+    //    if the analyzer extracted a per-specialty angle, the prompt
+    //    assembler injects it; if not, the persona just sees the
+    //    plain message + history + media, same as a human.
     let inference_start = now_ms();
-    let raw_response = run_render(&input, &analysis, &decision).await?;
+    let raw_response = run_render(&input, &analysis).await?;
     let inference_ms = now_ms().saturating_sub(inference_start);
 
     let (visible_text, think_count) = strip_thinks_emit_events(
@@ -250,7 +431,6 @@ struct RawRenderOutput {
 async fn run_render(
     input: &RespondInput,
     analysis: &SharedAnalysis,
-    _decision: &ResponderDecision,
 ) -> Result<RawRenderOutput, String> {
     use crate::ai::adapter::InferenceDevice;
     use crate::ai::types::TextGenerationRequest;
@@ -324,12 +504,20 @@ async fn run_render(
     // for genuinely text-only models, not the default route.
     //
     // See docs/architecture/PERSONA-CONTEXT-PAGING.md §0.5.X.
-    let model_caps: std::collections::HashSet<crate::model_registry::Capability> =
-        crate::model_registry::try_global()
-            .and_then(|reg| reg.model(&input.model))
-            .map(|m| m.capabilities.iter().copied().collect())
-            .unwrap_or_default();
-    let messages = build_messages_with_media(assembled.messages, &input.message_media, &model_caps);
+    //
+    // Capabilities come WITH the request — no global registry lookup. The
+    // prior shape (try_global → reg.model(&input.model)) silently returned
+    // empty caps when the registry's lookup key didn't match `input.model`
+    // verbatim; image bytes were already in `message_media` but the empty
+    // caps demoted them to text markers, so the vision encoder never got
+    // called even on a vision-capable persona. Caller-declared
+    // capabilities removes the silent-drop seam (Joel rule:
+    // "getThatThingIShouldHaveJustBeenGiven").
+    let messages = build_messages_with_media(
+        assembled.messages,
+        &input.message_media,
+        &input.capabilities,
+    );
 
     let request = TextGenerationRequest {
         messages,
@@ -407,16 +595,16 @@ async fn run_render(
 ///     model has are dropped (e.g. audio sent to a vision-only model).
 ///   - no user-role messages found → media silently dropped (rare —
 ///     would mean the assembler produced an unusual shape).
-fn build_messages_with_media(
+pub fn build_messages_with_media(
     prompt_messages: Vec<crate::persona::prompt_assembly::PromptMessage>,
     media: &[MediaItemLite],
     model_caps: &std::collections::HashSet<crate::model_registry::Capability>,
 ) -> Vec<crate::ai::types::ChatMessage> {
     use crate::ai::types::{AudioInput, ChatMessage, ContentPart, ImageInput, MessageContent};
-    use crate::model_registry::Capability;
+    use crate::persona::media_policy::MediaPolicy;
 
     // Default text-only path. Always start here; we may rewrite the
-    // last user message below if media + capability align.
+    // last user message below if the policy chose an attachable item.
     let mut messages: Vec<ChatMessage> = prompt_messages
         .into_iter()
         .map(|m| ChatMessage {
@@ -430,57 +618,74 @@ fn build_messages_with_media(
         return messages;
     }
 
-    // Walk media items per persona-capability and emit:
-    //   - vision-capable persona + image → ContentPart::Image (raw bytes)
-    //   - audio-capable persona + audio → ContentPart::Audio (raw bytes)
-    //   - text-only persona + media → ContentPart::Text with the
-    //     pre-computed `description` from the upstream sensory bridge,
-    //     or a `[MEDIA: <type>, no description available]` marker if
-    //     the bridge didn't run (so the model knows something is there
-    //     and doesn't hallucinate from prompt context — verified
-    //     2026-04-21 with cat photo: text-only personas hallucinated
-    //     "kitten upright and alert" when given zero info, dropped
-    //     into loop-spam patterns when prompt context dominated).
+    // Apply the AT-MOST-ONE-LATEST policy. The byte-attachment slot
+    // is exclusive — at most one media item ever rides as bytes per
+    // inference call, and it's the LATEST item the model can natively
+    // consume. Everything else (older items, items the model can't
+    // natively consume) becomes a text description marker. This is
+    // the architectural guard against the multi-encoder Metal brick
+    // (each per-call mtmd context allocates ~2 GB; two concurrent
+    // image attachments = two concurrent encoder ops = mouse-frozen
+    // hard reset). See `persona/media_policy.rs` for the rule + tests.
     //
-    // The marker for missing-description is deliberately unhelpful —
-    // we don't want models inventing details. Pre-populating
-    // `MediaItemLite.description` from VisionDescriptionService at
-    // the TS chat-send step is the proper fix; this fallback exists
-    // so a missed bridge call doesn't silently produce hallucinated
-    // "vision" responses.
-    let mut emitted_parts: Vec<ContentPart> = Vec::with_capacity(media.len());
-    for m in media.iter() {
-        let part = match m.item_type.as_str() {
-            "image" if model_caps.contains(&Capability::Vision) => ContentPart::Image {
+    // Joel rule (2026-04-22): "i would never let more than ONE message
+    // deliver an image or tell the ais the image link". The policy
+    // makes that rule a typed value, not a `for` loop.
+    let plan = MediaPolicy::AtMostOneLatest.plan(media, model_caps);
+
+    let mut emitted_parts: Vec<ContentPart> = Vec::with_capacity(plan.descriptions.len() + 1);
+
+    // Bytes slot first (when present). Marker placement: the byte
+    // attachment goes BEFORE description markers so the model
+    // encounters the real sensory input before any text fallback for
+    // older media. mtmd_tokenize splices the model's media marker at
+    // ContentPart::Image position; description markers are inert.
+    if let Some(item) = plan.attachable {
+        let part = match item.item_type.as_str() {
+            "image" => ContentPart::Image {
                 image: ImageInput {
                     url: None,
-                    base64: m.base64.clone(),
-                    mime_type: m.mime_type.clone(),
+                    base64: item.base64.clone(),
+                    mime_type: item.mime_type.clone(),
                 },
             },
-            "audio" if model_caps.contains(&Capability::AudioInput) => ContentPart::Audio {
+            "audio" => ContentPart::Audio {
                 audio: AudioInput {
                     url: None,
-                    base64: m.base64.clone(),
-                    mime_type: m.mime_type.clone(),
+                    base64: item.base64.clone(),
+                    mime_type: item.mime_type.clone(),
                 },
             },
-            // Text-only persona OR unsupported modality → emit text
-            // description from the bridge if we have one, else a
-            // marker that signals "an attachment exists, you can't
-            // see it, do not invent content".
-            other => {
-                let text = match m.description.as_deref() {
-                    Some(d) if !d.trim().is_empty() => format!("[Attached {other}: {d}]"),
-                    _ => format!(
-                        "[Attached {other} — no description available; \
-                         do not describe or speculate about its contents]"
-                    ),
-                };
-                ContentPart::Text { text }
-            }
+            // Policy guarantees attachable is natively-supported, so
+            // any other branch is a contract violation. Falling
+            // through silently would resurrect the silent-drop bug
+            // we're refactoring away — make it loud instead.
+            other => unreachable!(
+                "MediaPolicy returned attachable item with unsupported type '{other}' — \
+                 is_natively_supported is out of sync with the ContentPart variants here"
+            ),
         };
         emitted_parts.push(part);
+    }
+
+    // Description markers for everything else. Pre-computed
+    // `description` (from the upstream sensory bridge) gets used when
+    // present; otherwise a do-not-speculate marker signals "an
+    // attachment exists, you can't see it, do not invent content".
+    // The marker is deliberately unhelpful — we don't want text-only
+    // models inventing details from prompt context (verified
+    // 2026-04-21: text-only personas hallucinated "kitten upright and
+    // alert" given zero info, dropped into loop-spam patterns).
+    for item in &plan.descriptions {
+        let other = item.item_type.as_str();
+        let text = match item.description.as_deref() {
+            Some(d) if !d.trim().is_empty() => format!("[Attached {other}: {d}]"),
+            _ => format!(
+                "[Attached {other} — no description available; \
+                 do not describe or speculate about its contents]"
+            ),
+        };
+        emitted_parts.push(ContentPart::Text { text });
     }
 
     if emitted_parts.is_empty() {
@@ -722,10 +927,24 @@ mod tests {
         let caps = HashSet::new(); // model has NO Vision capability
         let out = build_messages_with_media(prompt, &media, &caps);
         assert_eq!(out.len(), 1);
-        match &out[0].content {
-            MessageContent::Text(t) => assert_eq!(t, "describe this"),
-            _ => panic!("expected Text content for capability-less model, got Parts"),
-        }
+        // New contract (2026-04-22): when model lacks the matching
+        // capability, ContentPart::Image bytes MUST NOT attach. The
+        // wrapper MAY be MessageContent::Parts(...) containing
+        // ContentPart::Text description markers — that's an
+        // improvement over silently dropping the attachment, because
+        // the model now knows "an image was attached" without being
+        // shown bytes it can't process.
+        let has_image_bytes = match &out[0].content {
+            MessageContent::Text(_) => false,
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .any(|p| matches!(p, ContentPart::Image { .. })),
+        };
+        assert!(
+            !has_image_bytes,
+            "image bytes MUST NOT attach when model lacks Vision capability — got: {:?}",
+            out[0].content
+        );
     }
 
     /// What this catches: with media + Vision capability, the LAST
@@ -827,8 +1046,20 @@ mod tests {
         let mut vision_only = HashSet::new();
         vision_only.insert(Capability::Vision);
         let out = build_messages_with_media(prompt.clone(), &[audio.clone()], &vision_only);
-        // Vision-only model: audio must NOT attach (no AudioInput cap).
-        assert!(matches!(out[0].content, MessageContent::Text(_)));
+        // Vision-only model: audio bytes MUST NOT attach. Wrapper MAY
+        // be Parts(Text-marker) per the new policy contract — what
+        // matters is no ContentPart::Audio carrying real bytes.
+        let has_audio_bytes = match &out[0].content {
+            MessageContent::Text(_) => false,
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .any(|p| matches!(p, ContentPart::Audio { .. })),
+        };
+        assert!(
+            !has_audio_bytes,
+            "audio bytes MUST NOT attach when model lacks AudioInput capability — got: {:?}",
+            out[0].content
+        );
 
         let mut audio_capable = HashSet::new();
         audio_capable.insert(Capability::AudioInput);

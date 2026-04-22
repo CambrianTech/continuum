@@ -135,6 +135,24 @@ export class PersonaResponseGenerator {
   private engagementDecider: PersonaEngagementDecider;
   private _dispatchDecider: SentinelDispatchDecider;
 
+  /**
+   * Cached capability vocabulary for this persona's model. Resolved
+   * lazily on first need from `models/capabilities` IPC against the
+   * Rust model registry (the canonical source — `models.toml`). Cached
+   * for the persona's lifetime because a persona's model is fixed.
+   *
+   * Why this is a TS-side cache, not a Rust-side mid-call lookup: when
+   * Rust did `try_global() → registry.model(input.model)` inside
+   * `cognition::respond`, registry-key drift silently returned empty
+   * caps → image bytes that arrived correctly via `messageMedia` got
+   * demoted to text markers and the vision encoder never fired.
+   * Caller-side resolution + cache puts the lookup at the right
+   * boundary (orchestration layer, loud failure when keys diverge)
+   * and keeps the inference hot path free of global lookups.
+   */
+  private _modelCapabilities: string[] | null = null;
+  private _modelCapabilitiesPromise: Promise<string[]> | null = null;
+
   setRustBridge(bridge: RustCognitionBridge): void {
     this._rustBridge = bridge;
   }
@@ -158,6 +176,33 @@ export class PersonaResponseGenerator {
 
     this.engagementDecider = new PersonaEngagementDecider(config.personaName, this.log.bind(this));
     this._dispatchDecider = new SentinelDispatchDecider();
+  }
+
+  /**
+   * Resolve this persona's model capabilities from the Rust registry,
+   * caching for the persona's lifetime. Single-flight: concurrent
+   * callers during the first resolution share one in-flight Promise so
+   * we never issue a duplicate IPC round-trip at boot.
+   *
+   * Hard error if the model id isn't in `models.toml` — that's a
+   * misconfigured persona, not something to silently paper over.
+   * Better to fail visibly here than to silently send empty caps and
+   * watch vision quietly disable itself two layers down.
+   */
+  private async resolveModelCapabilities(): Promise<string[]> {
+    if (this._modelCapabilities) return this._modelCapabilities;
+    if (this._modelCapabilitiesPromise) return this._modelCapabilitiesPromise;
+    if (!this._rustBridge) {
+      throw new Error(`${this.personaName}: cannot resolve model capabilities — Rust bridge not initialized`);
+    }
+    const bridge = this._rustBridge;
+    this._modelCapabilitiesPromise = (async () => {
+      const caps = await bridge.getModelCapabilities(this.modelConfig.model);
+      this._modelCapabilities = caps;
+      this._modelCapabilitiesPromise = null;
+      return caps;
+    })();
+    return this._modelCapabilitiesPromise;
   }
 
   private log(message: string, ...args: unknown[]): void {
@@ -351,6 +396,13 @@ export class PersonaResponseGenerator {
       );
       const messageMedia = messageMediaResolved.filter((x): x is NonNullable<typeof x> => x !== null);
 
+      // Resolve THIS persona's model capabilities (cached). Required by
+      // the IPC contract — Rust no longer does a registry lookup on its
+      // side, so the answer to "is this model vision-capable?" must
+      // travel WITH the request. Hard error if the model isn't in the
+      // registry (broken persona configuration, fail loudly here).
+      const capabilities = await this.resolveModelCapabilities();
+
       const rustRequest: PersonaRespondRequest = {
         personaId: this.personaId,
         roomId: originalMessage.roomId,
@@ -368,6 +420,12 @@ export class PersonaResponseGenerator {
         knownSpecialties,
         isVoice: originalMessage.sourceModality === 'voice',
         messageMedia: messageMedia.length > 0 ? messageMedia : undefined,
+        // Caller-declared capabilities — Rust uses these directly. NO
+        // mid-flight `try_global` registry lookup. The kebab-case
+        // strings here ("vision", "audio-input", etc.) match the
+        // serde rename on Rust `model_registry::Capability` and are
+        // resolved once at construction via `models/capabilities`.
+        capabilities,
       };
       // Fixture capture for the Rust-persona-rewrite replay test harness
       // AND the eventual training corpus that Forge/Academy/Sentinel-AI
@@ -381,40 +439,139 @@ export class PersonaResponseGenerator {
       // No try/catch — disk write failure is a real bug to surface, not
       // hide. If permissions/disk are wrong, fix that, don't silently
       // lose fixtures.
-      {
-        const { writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } = await import('fs');
-        const { homedir } = await import('os');
-        const { join } = await import('path');
-        const dir = join(homedir(), '.continuum', 'fixtures', 'persona-respond');
-        mkdirSync(dir, { recursive: true });
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        const fname = `${this.personaName.replace(/\s+/g, '_')}-${originalMessage.id.slice(0, 8)}-${ts}.json`;
-        writeFileSync(join(dir, fname), JSON.stringify({
-          captured_at: Date.now(),
-          persona_id: this.personaId,
-          persona_name: this.personaName,
-          model_config: this.modelConfig,
-          rust_request: rustRequest,
-        }, null, 2));
+      // Build the fixture path up front; write it twice — once with
+      // the request before the IPC call (so we capture the input even
+      // if Rust hangs or crashes mid-call), then rewrite atomically
+      // with the response paired in. Self-contained fixtures
+      // (input + observed output + timing) are what makes the live
+      // session replayable as an integration test — anything less is
+      // just an input dump that requires re-running real inference
+      // to know "what was it supposed to do?".
+      const { writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } = await import('fs');
+      const { homedir } = await import('os');
+      const { join } = await import('path');
+      const fixtureDir = join(homedir(), '.continuum', 'fixtures', 'persona-respond');
+      mkdirSync(fixtureDir, { recursive: true });
+      const fixtureTs = new Date().toISOString().replace(/[:.]/g, '-');
+      const fixtureName = `${this.personaName.replace(/\s+/g, '_')}-${originalMessage.id.slice(0, 8)}-${fixtureTs}.json`;
+      const fixturePath = join(fixtureDir, fixtureName);
+      // The whole shebang: every input the persona had visibility into
+      // for THIS turn, plus the IPC payload built from those inputs,
+      // plus (after the await) the Rust response. No black boxes — if
+      // a persona "sees" something or "doesn't see" something, this
+      // file documents both, so a replay test can prove the behavior
+      // OR catch the regression that hid it.
+      //
+      // Sensitive payload note: media base64 lives in `rust_request`.
+      // Fixtures are written under ~/.continuum (already gitignored
+      // and out of the repo), but anything copied for sharing should
+      // strip base64 first. The `rag_context.conversationHistory`
+      // mirrors what crossed the IPC; full RAG sources (with
+      // embeddings, scores, and original document bodies) are NOT
+      // included here — would balloon fixture size 10x. If RAG
+      // attribution itself needs replay, capture upstream of PRG.
+      const fixtureBase = {
+        schema_version: 3,
+        captured_at: Date.now(),
+        session_id: this.getSessionId(),
+        persona_id: this.personaId,
+        persona_name: this.personaName,
+        model_config: this.modelConfig,
+        // Original message the persona is reacting to — what the
+        // chat path handed in. Lets a replay reconstruct the trigger
+        // shape (text + media + sender) without hunting through DB.
+        original_message: {
+          id: originalMessage.id,
+          roomId: originalMessage.roomId,
+          senderId: originalMessage.senderId,
+          senderType: originalMessage.senderType,
+          text: originalMessage.content.text,
+          mediaCount: originalMessage.content.media?.length ?? 0,
+          mediaTypes: (originalMessage.content.media ?? []).map((m) => m.type),
+          sourceModality: originalMessage.sourceModality,
+        },
+        // EXACT RAG context the persona had before building the IPC.
+        // FULL conversation history (no truncation, no sampling) so
+        // replay can reconstruct the persona's exact view. Identity
+        // system prompt full. Metadata copied verbatim. If the
+        // captured fixture differs from prod behavior, the difference
+        // is in the test setup or downstream code — never in the
+        // input itself, because the input is byte-for-byte preserved.
+        rag_context: {
+          conversationHistory: (ragContext.conversationHistory ?? []).map((h) => ({
+            role: h.role,
+            name: h.name ?? null,
+            content: h.content,
+          })),
+          identitySystemPrompt: ragContext.identity.systemPrompt ?? null,
+          metadata: ragContext.metadata ?? {},
+        },
+        resolved_capabilities: capabilities,
+        rust_request: rustRequest,
+      };
+      writeFileSync(fixturePath, JSON.stringify({
+        ...fixtureBase,
+        rust_response: null, // pending — set after the IPC await
+        ipc_error: null,
+        ipc_duration_ms: null,
+      }, null, 2));
 
-        const FIXTURE_CAP_PER_DIR = 200;
-        const entries = readdirSync(dir)
-          .filter((n) => n.endsWith('.json'))
-          .map((n) => {
-            const full = join(dir, n);
-            return { full, mtime: statSync(full).mtimeMs };
-          });
-        if (entries.length > FIXTURE_CAP_PER_DIR) {
-          entries.sort((a, b) => a.mtime - b.mtime);
-          const toRemove = entries.slice(0, entries.length - FIXTURE_CAP_PER_DIR);
-          for (const e of toRemove) {
-            unlinkSync(e.full);
-          }
+      const ipcStart = Date.now();
+      let response: PersonaResponse;
+      try {
+        response = await this._rustBridge.personaRespond(rustRequest);
+      } catch (err) {
+        // Persist the failure into the fixture too — the replay tests
+        // need to see "this input made Rust throw" as a first-class
+        // recorded outcome, not lost as a TS-side log line.
+        const ipcDurMs = Date.now() - ipcStart;
+        try {
+          writeFileSync(fixturePath + '.tmp', JSON.stringify({
+            ...fixtureBase,
+            rust_response: null,
+            ipc_error: { message: String(err), stack: (err as Error)?.stack ?? null },
+            ipc_duration_ms: ipcDurMs,
+          }, null, 2));
+          renameSync(fixturePath + '.tmp', fixturePath);
+        } catch (writeErr) {
+          this.log(`⚠️ ${this.personaName}: failed to update fixture with IPC error: ${writeErr}`);
         }
+        throw err;
+      }
+      const ipcDurationMs = Date.now() - ipcStart;
+      pipelineTiming['3.2_cognition'] = Date.now() - phase32Start;
+
+      // Rewrite the fixture with the response paired in. Atomic:
+      // write to .tmp then rename, so a crash mid-write leaves the
+      // pre-call fixture intact rather than producing a half file
+      // that breaks parsers.
+      try {
+        writeFileSync(fixturePath + '.tmp', JSON.stringify({
+          ...fixtureBase,
+          rust_response: response,
+          ipc_error: null,
+          ipc_duration_ms: ipcDurationMs,
+        }, null, 2));
+        renameSync(fixturePath + '.tmp', fixturePath);
+      } catch (writeErr) {
+        this.log(`⚠️ ${this.personaName}: failed to update fixture with response: ${writeErr}`);
       }
 
-      const response = await this._rustBridge.personaRespond(rustRequest);
-      pipelineTiming['3.2_cognition'] = Date.now() - phase32Start;
+      // FIFO trim — keep recent slice without unbounded growth.
+      const FIXTURE_CAP_PER_DIR = 200;
+      const entries = readdirSync(fixtureDir)
+        .filter((n) => n.endsWith('.json'))
+        .map((n) => {
+          const full = join(fixtureDir, n);
+          return { full, mtime: statSync(full).mtimeMs };
+        });
+      if (entries.length > FIXTURE_CAP_PER_DIR) {
+        entries.sort((a, b) => a.mtime - b.mtime);
+        const toRemove = entries.slice(0, entries.length - FIXTURE_CAP_PER_DIR);
+        for (const e of toRemove) {
+          unlinkSync(e.full);
+        }
+      }
 
       if (response.kind === 'silent') {
         return this.handleSilent(originalMessage, response, pipelineTiming, generateStartTime);
