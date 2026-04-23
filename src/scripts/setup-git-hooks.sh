@@ -8,20 +8,22 @@ echo "=================================================="
 mkdir -p .git/hooks
 
 # Setup pre-commit hook
-echo "📋 Installing pre-commit hook → scripts/git-precommit.sh"
+echo "📋 Installing pre-commit hook → src/scripts/git-precommit.sh"
 cat > .git/hooks/pre-commit << 'EOF'
 #!/bin/bash
-# Git pre-commit hook - Delegates to main script
-exec ./scripts/git-precommit.sh
+# Git pre-commit hook — delegates to src/scripts/git-precommit.sh.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+exec "$REPO_ROOT/src/scripts/git-precommit.sh" "$@"
 EOF
 chmod +x .git/hooks/pre-commit
 
 # Setup post-commit hook
-echo "📋 Installing post-commit hook → scripts/git-postcommit.sh"
+echo "📋 Installing post-commit hook → src/scripts/git-postcommit.sh"
 cat > .git/hooks/post-commit << 'EOF'
 #!/bin/bash
-# Git post-commit hook - Clean up validation artifacts after successful commits
-exec ./scripts/git-postcommit.sh
+# Git post-commit hook — delegates to src/scripts/git-postcommit.sh.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+exec "$REPO_ROOT/src/scripts/git-postcommit.sh" "$@"
 EOF
 chmod +x .git/hooks/post-commit
 
