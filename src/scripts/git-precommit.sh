@@ -290,10 +290,24 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
     # can't run — skip with a loud warning rather than block the
     # commit. CI's verify-architectures + GitHub Actions remain the
     # authoritative pre-merge check.
-    # 10s timeout via perl (GNU `timeout` isn't on macOS by default).
-    # Perl ships everywhere bash ships, no install required.
+    # 10s timeout via perl fork+wait. perl's `alarm` doesn't propagate
+    # through `exec` (the SIGALRM handler is lost when the process
+    # image is replaced), so we have to fork: parent times out and
+    # kills the child if it overruns.
     PING_OK=true
-    if ! perl -e 'alarm 10; exec "./jtag", "ping"' > /dev/null 2>&1; then
+    if ! perl -e '
+        my $pid = fork();
+        die "fork: $!" unless defined $pid;
+        if ($pid == 0) { exec "./jtag", "ping"; die "exec: $!"; }
+        my $deadline = time() + 10;
+        while (1) {
+            my $w = waitpid($pid, 1);  # 1 = WNOHANG
+            last if $w == $pid;
+            if (time() > $deadline) { kill 9, $pid; waitpid($pid, 0); exit 142; }
+            select(undef, undef, undef, 0.1);
+        }
+        exit ($? >> 8);
+    ' > /dev/null 2>&1; then
         PING_OK=false
     fi
     if [ "$PING_OK" = false ]; then
@@ -325,13 +339,28 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
         echo "🧪 Running: $TEST_FILE  (60s timeout cap)"
         echo "=================================================="
 
-        # Wrap each test in a 60s timeout via perl alarm. Some tests
-        # (browser-ping) hang for 10 minutes when the browser is in a
-        # non-responsive-but-not-crashed state — that's useless friction
-        # on every commit. 60s is plenty for the test to do its work
-        # if the system is healthy; longer = "system is not actually
-        # ready, try again after the system is up."
-        perl -e 'alarm 60; exec @ARGV' -- npx tsx "$TEST_FILE" 2>&1 \
+        # Wrap each test in a 60s timeout via perl fork+wait. perl's
+        # bare `alarm` doesn't survive `exec` (signal handler is lost
+        # when the process image is replaced), so we fork: parent
+        # times out and kills the child after 60s. Some tests
+        # (browser-ping) hang for 10 minutes when the browser is in
+        # a non-responsive-but-not-crashed state — useless friction
+        # on every commit.
+        perl -e '
+            my $pid = fork();
+            die "fork: $!" unless defined $pid;
+            if ($pid == 0) { exec @ARGV; die "exec: $!"; }
+            my $deadline = time() + 60;
+            while (1) {
+                my $w = waitpid($pid, 1);
+                last if $w == $pid;
+                if (time() > $deadline) {
+                    kill 9, $pid; waitpid($pid, 0); exit 142;
+                }
+                select(undef, undef, undef, 0.1);
+            }
+            exit ($? >> 8);
+        ' -- npx tsx "$TEST_FILE" 2>&1 \
             | tee .continuum/sessions/validation/test-output.txt
         CURRENT_EXIT_CODE=${PIPESTATUS[0]}
 
