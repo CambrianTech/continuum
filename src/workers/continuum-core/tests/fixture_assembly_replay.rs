@@ -111,7 +111,16 @@ fn load_all_fixtures() -> Vec<(PathBuf, Value)> {
 /// camelCase keys per the TS mixin). Returns empty vec when absent or
 /// malformed — same defensive parsing the IPC handler does.
 fn extract_media(rust_request: &Value) -> Vec<MediaItemLite> {
-    let arr = match rust_request.get("messageMedia").and_then(|v| v.as_array()) {
+    // Post-IPC-reshape shape: rust_request.signal.media (nested under signal).
+    // Pre-reshape (legacy) shape: rust_request.messageMedia (flat).
+    // Read both so the replay handles fixtures captured before AND after the
+    // 2026-04-22 cognition/respond IPC reshape (commit 983d30102).
+    let arr = match rust_request
+        .get("signal")
+        .and_then(|s| s.get("media"))
+        .and_then(|v| v.as_array())
+        .or_else(|| rust_request.get("messageMedia").and_then(|v| v.as_array()))
+    {
         Some(a) => a,
         None => return Vec::new(),
     };
@@ -149,7 +158,15 @@ fn extract_media(rust_request: &Value) -> Vec<MediaItemLite> {
 /// strings) into the `Capability` HashSet the message builder
 /// expects. Same flow the IPC handler uses.
 fn extract_capabilities(rust_request: &Value) -> HashSet<Capability> {
-    let arr = match rust_request.get("capabilities").and_then(|v| v.as_array()) {
+    // Post-IPC-reshape: rust_request.personaContext.capabilities.
+    // Pre-reshape (legacy): rust_request.capabilities.
+    // Read both shapes — same reasoning as extract_media().
+    let arr = match rust_request
+        .get("personaContext")
+        .and_then(|p| p.get("capabilities"))
+        .and_then(|v| v.as_array())
+        .or_else(|| rust_request.get("capabilities").and_then(|v| v.as_array()))
+    {
         Some(a) => a,
         None => return HashSet::new(),
     };
@@ -167,9 +184,13 @@ fn extract_capabilities(rust_request: &Value) -> HashSet<Capability> {
 /// recent_history doesn't carry media itself, so its precise
 /// reconstruction isn't needed to test the byte-attachment seam.
 fn synth_prompt_messages(rust_request: &Value) -> Vec<PromptMessage> {
+    // New shape (post-rip): rust_request.signal.text
+    // Legacy shape: rust_request.messageText
     let user_text = rust_request
-        .get("messageText")
+        .get("signal")
+        .and_then(|s| s.get("text"))
         .and_then(|v| v.as_str())
+        .or_else(|| rust_request.get("messageText").and_then(|v| v.as_str()))
         .unwrap_or("")
         .to_string();
     vec![PromptMessage {
@@ -191,6 +212,23 @@ fn synth_prompt_messages(rust_request: &Value) -> Vec<PromptMessage> {
 fn signal_and_ctx_from_legacy_fixture(
     rust_request: &Value,
 ) -> Result<(Signal, PersonaContext), String> {
+    // New shape (post-IPC-reshape commit 983d30102): rust_request already
+    // has `signal` + `personaContext` as nested objects matching the wire
+    // shape exactly. Deserialize directly. No reconstruction needed.
+    if let (Some(signal_json), Some(ctx_json)) =
+        (rust_request.get("signal"), rust_request.get("personaContext"))
+    {
+        let signal: Signal = serde_json::from_value(signal_json.clone())
+            .map_err(|e| format!("new-shape signal deserialize failed: {e}"))?;
+        let ctx: PersonaContext = serde_json::from_value(ctx_json.clone())
+            .map_err(|e| format!("new-shape personaContext deserialize failed: {e}"))?;
+        return Ok((signal, ctx));
+    }
+
+    // Legacy shape (pre-rip): flat fields on rust_request — reconstruct
+    // Signal + PersonaContext below. Once all captured fixtures are
+    // re-recorded in the new shape, this branch + the helper closures
+    // below go away.
     let get_str = |key: &str| -> Option<String> {
         rust_request
             .get(key)
