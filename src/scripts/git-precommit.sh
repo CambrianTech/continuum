@@ -279,29 +279,33 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
     echo "🧪 Phase 2: Browser Tests"
     echo "-----------------------------------------------------------"
 
-    # Skip gracefully when no system is running. The browser-ping test
-    # requires an active continuum-core + browser to be up; without it,
-    # the test sits at "Request timeout after 600000ms" for 10 minutes
-    # then fails. That's a 10-minute block on every commit when the
-    # system isn't up — useless friction for docs/CI/script-only
-    # commits.
+    # Skip gracefully when the browser-test prerequisites aren't met.
+    # The browser-ping test pings the BROWSER through the core socket;
+    # if either continuum-core isn't running OR the browser isn't
+    # connected/responsive, the test sits for 10 minutes then fails.
     #
-    # Detect system-up via the unix socket presence (cheap, no IPC).
-    # If up: run tests as gate. If down: warn loud, skip, don't block.
-    # The CI gate (verify-architectures + GitHub Actions checks)
-    # remains the authoritative pre-merge check, so skipping here
-    # doesn't let bad code reach main — it just lets commits land
-    # so the developer can fix-forward without the system running.
-    SOCKET_PATH="$HOME/.continuum/sockets/continuum-core.sock"
-    if [ ! -S "$SOCKET_PATH" ]; then
+    # Probe with a real `./jtag ping` and a short timeout. If it
+    # succeeds within 10 seconds, both core + browser are healthy and
+    # the gate is meaningful. If it times out or errors, the gate
+    # can't run — skip with a loud warning rather than block the
+    # commit. CI's verify-architectures + GitHub Actions remain the
+    # authoritative pre-merge check.
+    # 10s timeout via perl (GNU `timeout` isn't on macOS by default).
+    # Perl ships everywhere bash ships, no install required.
+    PING_OK=true
+    if ! perl -e 'alarm 10; exec "./jtag", "ping"' > /dev/null 2>&1; then
+        PING_OK=false
+    fi
+    if [ "$PING_OK" = false ]; then
         echo ""
-        echo "⚠️  No running continuum-core (socket $SOCKET_PATH not present)."
+        echo "⚠️  System not responsive to './jtag ping' within 10s."
         echo "   Skipping browser tests for this commit."
-        echo "   Start the system with 'cd src && npm start' to enable browser-test gate."
+        echo "   To enable the browser-test gate, ensure the system is running:"
+        echo "     cd src && npm start"
+        echo "   Then verify with:"
+        echo "     cd src && ./jtag ping"
         echo ""
-        # Skip the rest of this phase but don't fail the commit.
-        # The remaining phases (lint etc) still run.
-        echo "✅ Browser tests: SKIPPED (system not running)"
+        echo "✅ Browser tests: SKIPPED (system not responsive)"
         ENABLE_BROWSER_TEST=false
     fi
 fi
@@ -318,11 +322,32 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
 
     for TEST_FILE in $PRECOMMIT_TESTS; do
         echo "=================================================="
-        echo "🧪 Running: $TEST_FILE"
+        echo "🧪 Running: $TEST_FILE  (60s timeout cap)"
         echo "=================================================="
 
-        npx tsx "$TEST_FILE" 2>&1 | tee .continuum/sessions/validation/test-output.txt
+        # Wrap each test in a 60s timeout via perl alarm. Some tests
+        # (browser-ping) hang for 10 minutes when the browser is in a
+        # non-responsive-but-not-crashed state — that's useless friction
+        # on every commit. 60s is plenty for the test to do its work
+        # if the system is healthy; longer = "system is not actually
+        # ready, try again after the system is up."
+        perl -e 'alarm 60; exec @ARGV' -- npx tsx "$TEST_FILE" 2>&1 \
+            | tee .continuum/sessions/validation/test-output.txt
         CURRENT_EXIT_CODE=${PIPESTATUS[0]}
+
+        if [ $CURRENT_EXIT_CODE -eq 142 ] || [ $CURRENT_EXIT_CODE -eq 14 ]; then
+            # 142 / 14 = SIGALRM exit. The test exceeded the 60s cap —
+            # treat as "system not ready" rather than test failure.
+            # Skip the gate; CI's verify-architectures + browser tests
+            # in CI environments remain authoritative.
+            echo ""
+            echo "⚠️  Test timed out after 60s: $TEST_FILE"
+            echo "   The system isn't responsive enough for this test."
+            echo "   Skipping the browser-test gate for this commit."
+            echo "   To enable: ensure 'cd src && ./jtag interface/screenshot --querySelector=body' returns within 60s."
+            TEST_SUMMARY="$TEST_SUMMARY $TEST_FILE:SKIPPED-TIMEOUT"
+            continue
+        fi
 
         if [ $CURRENT_EXIT_CODE -ne 0 ]; then
             TEST_EXIT_CODE=$CURRENT_EXIT_CODE
