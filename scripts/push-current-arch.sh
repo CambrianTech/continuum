@@ -105,13 +105,45 @@ SKIP_HEAVY="${SKIP_HEAVY:-0}"
 cd "$REPO_ROOT"
 
 REGISTRY="ghcr.io/cambriantech"
-SHA="$(git rev-parse --short HEAD)"
+STARTUP_SHA_FULL="$(git rev-parse HEAD)"
+SHA="$(git rev-parse --short "$STARTUP_SHA_FULL")"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 BRANCH_TAG="$(echo "$BRANCH" | tr '/' '-')"
 PR_NUMBER="${PR_NUMBER:-}"
 if [[ -z "$PR_NUMBER" ]] && command -v gh >/dev/null 2>&1; then
   PR_NUMBER="$(gh pr list --head "$BRANCH" --json number --jq '.[0].number // empty' 2>/dev/null || true)"
 fi
+
+# ── TOCTOU guard (issue #953) ────────────────────────────────────────
+# Docker buildx re-reads the live working tree PER VARIANT build, but this
+# script snapshots the tag SHA once at startup. If the working tree changes
+# between the first and last variant (contributor git-pulls / rebases mid-
+# push, cargo-edit tweaks a Cargo.toml, an IDE autoformat fires), the tag
+# will say :$SHA but the image bits will be from a later tree. Caught 2026-
+# 04: a rebase mid-push caused cuda to ship post-commit source under a pre-
+# commit SHA tag. Subtle contributor-class bug.
+#
+# Two guards, one at startup and one per variant:
+#   1. Startup: refuse to run with modified tracked files (untracked OK;
+#      docker build context already ignores them via .dockerignore).
+#   2. Per-variant: verify HEAD hasn't moved. Die loud if it did; any
+#      variants already pushed up to that point have inconsistent source
+#      and need re-running.
+if ! git diff --quiet HEAD -- 2>/dev/null; then
+  echo "ERROR: Working tree has modified tracked files. Push would mix source states." >&2
+  echo "       Commit or stash first:  git status" >&2
+  exit 1
+fi
+assert_sha_unchanged() {
+  local current_sha
+  current_sha="$(git rev-parse HEAD)"
+  if [ "$current_sha" != "$STARTUP_SHA_FULL" ]; then
+    echo "ERROR: HEAD moved during push ($STARTUP_SHA_FULL → $current_sha)." >&2
+    echo "       Image bits would no longer match the :$SHA tag." >&2
+    echo "       Reset and rerun:  git reset --hard $STARTUP_SHA_FULL  &&  $0" >&2
+    exit 1
+  fi
+}
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -127,6 +159,7 @@ echo ""
 # ── Heavy variants (Rust-compiling, native arch only) ───────────────
 if [[ "$SKIP_HEAVY" -eq 0 ]]; then
   for V in "${HEAVY_VARIANTS[@]}"; do
+    assert_sha_unchanged
     case "$V" in
       cuda)
         # CUDA variant is always linux/amd64. If HOST_PLATFORM is arm64,
@@ -164,6 +197,7 @@ if [[ "$SKIP_LIGHT" -eq 0 ]]; then
   fi
 
   for ENTRY in "${LIGHT_IMAGES[@]}"; do
+    assert_sha_unchanged
     IFS=':' read -r IMAGE DOCKERFILE CONTEXT <<< "$ENTRY"
     TAG_SHA="$REGISTRY/$IMAGE:$SHA"
     TAG_BRANCH="$REGISTRY/$IMAGE:$BRANCH_TAG"
