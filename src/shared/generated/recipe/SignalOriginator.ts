@@ -2,7 +2,7 @@
 
 /**
  * Who emitted the signal — used for system-prompt composition + for
- * recipes that filter by originator (e.g., a recipe that only
- * responds to humans, not other personas).
+ * pipelines that filter by originator (e.g., a recipe step that
+ * only responds to humans, not other personas).
  */
 export type SignalOriginator = { "kind": "user", user_id: string, } | { "kind": "persona", persona_id: string, } | { "kind": "tool", tool_name: string, } | { "kind": "game-engine" } | { "kind": "system" };

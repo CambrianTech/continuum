@@ -4,13 +4,14 @@ import type { SignalKind } from "./SignalKind";
 import type { SignalOriginator } from "./SignalOriginator";
 
 /**
- * Input to a `Recipe::build_input` call. The host's raw event,
- * pre-cognition. Open enough that ANY domain (chat, voice, video,
- * code, game, AR) emits the same shape.
+ * Input to the cognition layer — the host's raw event, pre-cognition.
+ * Open enough that ANY domain (chat, voice, video, code, game, AR)
+ * emits the same shape.
  */
 export type Signal = { 
 /**
- * Hint about the signal's nature. Recipes use it for routing.
+ * Hint about the signal's nature. The pipeline executor uses it
+ * for routing decisions.
  */
 kind: SignalKind, 
 /**

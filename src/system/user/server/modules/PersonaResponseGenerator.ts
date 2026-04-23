@@ -403,26 +403,18 @@ export class PersonaResponseGenerator {
       // registry (broken persona configuration, fail loudly here).
       const capabilities = await this.resolveModelCapabilities();
 
-      // Phase B IPC shape: { recipe, signal, personaContext }. The Rust
-      // side looks up the recipe by name in its global RecipeRegistry,
-      // calls recipe.build_input(signal, ctx), runs respond(), then
-      // recipe.validate_output. No flat-field fallback exists on the
-      // Rust side — sending the old shape would error out at the
-      // IPC parse step.
+      // IPC shape: { signal, personaContext }. Rust projects (signal,
+      // ctx) → RespondInput via cognition_io::build_respond_input,
+      // runs respond(), returns the response. No recipe-name field —
+      // recipes are JSON data walked by whatever wraps this call
+      // (today: nothing — chat dispatches directly; future: a small
+      // walker that interprets recipe pipelines for non-chat hosts).
       //
-      // Recipe selection: chat path always dispatches through "chat"
-      // today. ChatRecipe accepts media-bearing signals AND tolerates
-      // empty text (autonomous-tick scenarios), so a single recipe
-      // handles every chat-surface signal cleanly. When VisionRecipe
-      // / CodeRecipe land in follow-on commits, the selection logic
-      // here promotes to those names based on signal characteristics
-      // (image media → "vision", code-context signal → "code").
       // Field-name convention here is camelCase to match the ts-rs
       // generated `Signal` / `PersonaContext` types (Rust serde
       // rename_all = "camelCase"). Snake_case in the wire payload
       // would be silently rejected by Rust serde — exact field names
       // matter, no fallback parser.
-      const recipeName = 'chat';
       const signal = {
         kind: { kind: 'chat-message' as const },
         text: originalMessage.content.text ?? '',
@@ -459,7 +451,6 @@ export class PersonaResponseGenerator {
       };
 
       const rustRequest: PersonaRespondRequest = {
-        recipe: recipeName,
         signal,
         personaContext,
       };

@@ -33,30 +33,27 @@ import type { Signal } from '../../../../shared/generated/recipe/Signal';
 import type { PersonaContext } from '../../../../shared/generated/recipe/PersonaContext';
 
 /**
- * Caller-supplied input for `cognition/respond` (post-Phase-B shape).
+ * Caller-supplied input for `cognition/respond`.
  *
- * Three fields:
- * - `recipe` — name of a registered Recipe (`"chat"`, `"vision"`,
- *   `"code"`, `"game"`, or a host-registered custom name). Picks the
- *   dispatch logic on the Rust side.
+ * Two fields:
  * - `signal` — host's raw event (chat message, video frame, code diff,
- *   game tick). The recipe projects it into the cognition layer's
- *   internal RespondInput.
+ *   game tick). The Rust side projects it into the cognition layer's
+ *   internal RespondInput via `cognition_io::build_respond_input`.
  * - `personaContext` — per-persona stable state (identity, model,
  *   capabilities, recent history). Built from the room/persona before
  *   each turn.
  *
  * Both `Signal` and `PersonaContext` are ts-rs generated from the Rust
- * source of truth (persona/recipe.rs). Hosts construct them via
+ * source of truth (persona/cognition_io.rs). Hosts construct them via
  * normal TS object literals; the wire format is camelCase JSON.
  *
- * No fallback to the older flat shape — Phase A's bridge function
- * `respond_input_from_value` was deleted. If a TS host ships an old-
- * shape payload, the IPC handler returns an error and the host knows
- * to migrate.
+ * Recipe selection is NOT in this payload — recipes are JSON data
+ * walked by whatever wraps this call (today: nothing — chat dispatches
+ * directly; future: a small walker that interprets recipe pipelines
+ * for non-chat hosts). The cognition layer just runs the projection
+ * and `respond()`.
  */
 export interface PersonaRespondRequest {
-	recipe: string;
 	signal: Signal;
 	personaContext: PersonaContext;
 }
@@ -791,13 +788,12 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			const isLocal = model.startsWith('continuum-ai/') || model.startsWith('qwen2-vl');
 			const COGNITION_RESPOND_TIMEOUT_MS = isLocal ? 300_000 : 180_000;
 
-			// Wire shape (Phase B): { recipe, signal, personaContext }.
-			// The Rust IPC handler in modules/cognition.rs looks up the
-			// recipe by name, calls recipe.build_input(signal, ctx), runs
-			// respond(), then validate_output. No flat-field fallback.
+			// Wire shape: { signal, personaContext }. Rust projects via
+			// cognition_io::build_respond_input, runs respond(), returns
+			// the response. No recipe-name field — recipes are JSON
+			// data walked above this layer.
 			const { response } = await this.requestFull({
 				command: 'cognition/respond',
-				recipe: req.recipe,
 				signal: req.signal,
 				personaContext: req.personaContext,
 			}, COGNITION_RESPOND_TIMEOUT_MS);

@@ -66,10 +66,9 @@ use continuum_core::ai::types::{ContentPart, MessageContent};
 use continuum_core::cognition::tool_executor::types::MediaItemLite;
 use continuum_core::model_registry::Capability;
 use continuum_core::persona::prompt_assembly::PromptMessage;
-use continuum_core::persona::recipe::{
-    PersonaContext, Recipe, Signal, SignalKind, SignalOriginator,
+use continuum_core::persona::cognition_io::{
+    build_respond_input, PersonaContext, Signal, SignalKind, SignalOriginator,
 };
-use continuum_core::persona::recipes::chat::ChatRecipe;
 use continuum_core::persona::response::build_messages_with_media;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -555,13 +554,12 @@ async fn vision_fixture_describes_image_via_real_model() {
         let rust_request = fixture.get("rust_request").unwrap();
 
         // Build Signal + PersonaContext from the captured fixture (legacy
-        // shape — fixtures predate the Recipe-shaped IPC), then dispatch
-        // through ChatRecipe. ChatRecipe + media-bearing signal +
-        // vision-capable persona = same effective path the IPC handler
-        // takes for vision input. When VisionRecipe lands in a follow-on
-        // commit, swap the recipe here without touching anything else
-        // — the test gate is "Recipe path produces a working RespondInput
-        // through the same `respond()` function the live IPC calls."
+        // shape — fixtures predate the post-rip IPC), then run the
+        // chat-shaped projection. Media-bearing signal + vision-capable
+        // persona = same effective path the IPC handler takes for vision
+        // input. The test gate is "the projection + respond() pair
+        // produces working output for the same fixtures the live IPC
+        // exercises."
         let (signal, ctx) = match signal_and_ctx_from_legacy_fixture(rust_request) {
             Ok(pair) => pair,
             Err(e) => {
@@ -569,11 +567,10 @@ async fn vision_fixture_describes_image_via_real_model() {
                 continue;
             }
         };
-        let recipe = ChatRecipe;
-        let input = match recipe.build_input(&signal, &ctx) {
+        let input = match build_respond_input(&signal, &ctx) {
             Ok(i) => i,
             Err(e) => {
-                failures.push(format!("[{fname}] recipe.build_input failed: {e}"));
+                failures.push(format!("[{fname}] build_respond_input failed: {e}"));
                 continue;
             }
         };

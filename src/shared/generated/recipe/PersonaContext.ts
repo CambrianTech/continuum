@@ -3,27 +3,27 @@ import type { RecentMessage } from "../cognition/RecentMessage";
 import type { Capability } from "../model_registry/Capability";
 
 /**
- * Per-persona stable state needed by every recipe — identity, model,
- * capabilities, recent history, room membership. Built once per turn
- * by the host and handed to the recipe; recipes must not mutate it.
+ * Per-persona stable state needed by every cognition turn — identity,
+ * model, capabilities, recent history, room membership. Built once
+ * per turn by the host and handed to the executor; the executor and
+ * the cognition layer must not mutate it.
  *
  * Capabilities are `Vec<Capability>` on the wire (ts-rs friendlier
- * than HashSet); the trait converts to a HashSet at use site for
- * O(1) membership checks. Conversion happens once per
- * `build_input` call — negligible vs the inference work that
- * follows.
+ * than HashSet); the projection converts to a HashSet at use site
+ * for O(1) membership checks. Conversion happens once per
+ * `build_respond_input` call — negligible vs the inference work
+ * that follows.
  */
 export type PersonaContext = { personaId: string, displayName: string, specialty: string, 
 /**
  * The persona's render-time model id. Recipes use it directly
- * (no global lookup); same single-source-of-truth principle as
- * the IPC handler's `respond_input_from_value`.
+ * (no global lookup); single source of truth.
  */
 model: string, 
 /**
  * Resolved capability vocabulary for the persona's model. Caller
- * declares; Rust consumes. Recipes may switch behavior on cap
- * presence (VisionRecipe checks for `Capability::Vision`).
+ * declares; Rust consumes. Recipe steps may switch behavior on
+ * cap presence (vision-tagged step checks for `Capability::Vision`).
  */
 capabilities: Array<Capability>, 
 /**
@@ -32,7 +32,7 @@ capabilities: Array<Capability>,
 systemPrompt: string, 
 /**
  * Recent conversation history (most-recent last). May be empty
- * for recipes that don't use chat history (GameRecipe).
+ * for recipes that don't use chat history (game pipelines).
  */
 recentHistory: Array<RecentMessage>, 
 /**
