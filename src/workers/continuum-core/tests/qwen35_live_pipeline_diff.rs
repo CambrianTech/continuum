@@ -16,7 +16,13 @@
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use std::path::PathBuf;
 
-const MODEL_PATH: &str = "/Users/joelteply/.docker/models/bundles/sha256/18055fe8ee379b95f4af3cf420588c5daa28f2a1ce1da335112a2d1ea188d3e6/model/model.gguf";
+mod common;
+
+fn model_path() -> std::path::PathBuf {
+    common::qwen35_4b_code_gguf().expect(
+        "qwen3.5-4b-code-forged GGUF not resolvable via DMR;          is Docker Desktop running with Model Runner enabled?",
+    )
+}
 const PROMPT: &str = "Q: What is twelve times seven? A:";
 const N_GENERATE: usize = 32;
 
@@ -24,7 +30,7 @@ const N_GENERATE: usize = 32;
 #[ignore = "requires local GGUF; run with --ignored --nocapture"]
 fn qwen35_live_pipeline_produces_correct_answer() {
     let backend = LlamaCppBackend::load(LlamaCppConfig {
-        model_path: PathBuf::from(MODEL_PATH),
+        model_path: PathBuf::from(model_path()),
         n_gpu_layers: -1,
         ..Default::default()
     })

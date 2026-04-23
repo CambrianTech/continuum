@@ -811,9 +811,9 @@ Training Sentinel-AI from scratch:
 ## 📚 Related Documentation
 
 **Sentinel-AI**:
-- [Sentinel-AI README](/Volumes/FlashGordon/cambrian/sentinel-ai/README.md)
-- [Neural Plasticity Roadmap](/Volumes/FlashGordon/cambrian/sentinel-ai/NEURAL_PLASTICITY_ROADMAP.md)
-- [Agency Examples](/Volumes/FlashGordon/cambrian/sentinel-ai/docs/agency_examples.md)
+- [Sentinel-AI README](/Volumes/<external-drive>/cambrian/sentinel-ai/README.md)
+- [Neural Plasticity Roadmap](/Volumes/<external-drive>/cambrian/sentinel-ai/NEURAL_PLASTICITY_ROADMAP.md)
+- [Agency Examples](/Volumes/<external-drive>/cambrian/sentinel-ai/docs/agency_examples.md)
 
 **Continuum**:
 - [Continuum README](../../README.md)

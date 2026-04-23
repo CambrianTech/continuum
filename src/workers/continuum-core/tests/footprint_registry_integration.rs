@@ -27,7 +27,7 @@ fn qwen35_4b_target_path() -> PathBuf {
     if let Ok(p) = env::var("QWEN35_4B_GGUF") {
         return PathBuf::from(p);
     }
-    let home = env::var("HOME").unwrap_or_else(|_| "/Users/joelteply".to_string());
+    let home = env::var("HOME").expect("HOME env var must be set for this integration test");
     PathBuf::from(format!(
         "{}/.docker/models/bundles/sha256/18055fe8ee379b95f4af3cf420588c5daa28f2a1ce1da335112a2d1ea188d3e6/model/model.gguf",
         home

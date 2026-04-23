@@ -1655,7 +1655,7 @@ class DataDaemonServer {
 ## File System Layout
 
 ```
-/Volumes/FlashGordon/cambrian/continuum/
+/Volumes/<external-drive>/cambrian/continuum/
 └── src/
     ├── .continuum/
     │   ├── genome/
@@ -1750,7 +1750,7 @@ class DataDaemonServer {
             ├── training-end-to-end.test.ts
             └── adapter-deployment.test.ts
 
-/Volumes/FlashGordon/cambrian/datasets/
+/Volumes/<external-drive>/cambrian/datasets/
 ├── raw/
 │   └── continuum-git/                           # Raw git repo
 │

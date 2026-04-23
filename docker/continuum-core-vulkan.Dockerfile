@@ -126,6 +126,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/target/release/continuum-core-server /usr/local/bin/
 COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
 
+# Model registry config — server boots with model_registry::loader reading
+# /app/continuum-core/config/models.toml. Without this COPY the runtime
+# panics on first start.
+COPY --from=builder /app/continuum-core/config /app/continuum-core/config
+
 # ONNX Runtime — Silero VAD + Piper TTS.
 ARG TARGETARCH
 ARG ONNX_VERSION=1.24.4

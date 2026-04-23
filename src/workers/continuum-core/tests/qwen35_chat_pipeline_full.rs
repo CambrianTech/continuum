@@ -17,7 +17,13 @@ use continuum_core::inference::backends::SamplingConfig;
 use llama::{render_chat, ChatMsg};
 use std::path::PathBuf;
 
-const MODEL_PATH: &str = "/Users/joelteply/.docker/models/bundles/sha256/18055fe8ee379b95f4af3cf420588c5daa28f2a1ce1da335112a2d1ea188d3e6/model/model.gguf";
+mod common;
+
+fn model_path() -> std::path::PathBuf {
+    common::qwen35_4b_code_gguf().expect(
+        "qwen3.5-4b-code-forged GGUF not resolvable via DMR;          is Docker Desktop running with Model Runner enabled?",
+    )
+}
 
 const CHATML: &str = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}";
 
@@ -25,7 +31,7 @@ const CHATML: &str = "{% for message in messages %}{{ '<|im_start|>' + message['
 #[ignore = "requires local GGUF; cargo test --release --test qwen35_chat_pipeline_full -- --ignored --nocapture"]
 fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     let backend = LlamaCppBackend::load(LlamaCppConfig {
-        model_path: PathBuf::from(MODEL_PATH),
+        model_path: PathBuf::from(model_path()),
         n_gpu_layers: -1,
         ..Default::default()
     })

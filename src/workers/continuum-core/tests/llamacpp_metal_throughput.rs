@@ -28,8 +28,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 /// SHA256-keyed path to the qwen3.5-4b-code-forged GGUF (target), as DMR pulls it.
-/// The same model hashes identically across anvil's (joelteply@M5) and memento's
-/// (joel@M1) dev boxes, so the path is a matter of `$HOME` only.
+/// The same content hashes identically across all hosts that pull the same
+/// model, so the path is a matter of `$HOME` only.
 fn qwen35_4b_target_path() -> PathBuf {
     // Override wins. If $QWEN35_4B_GGUF is set, use it verbatim.
     if let Ok(p) = env::var("QWEN35_4B_GGUF") {
@@ -37,7 +37,7 @@ fn qwen35_4b_target_path() -> PathBuf {
     }
     // Otherwise resolve via `$HOME/.docker/models/bundles/sha256/<hash>/model/model.gguf`.
     // Hash is the content-address of the continuum-ai forged Qwen3.5-4B GGUF.
-    let home = env::var("HOME").unwrap_or_else(|_| "/Users/joelteply".to_string());
+    let home = env::var("HOME").expect("HOME env var must be set for this integration test");
     PathBuf::from(format!(
         "{}/.docker/models/bundles/sha256/18055fe8ee379b95f4af3cf420588c5daa28f2a1ce1da335112a2d1ea188d3e6/model/model.gguf",
         home

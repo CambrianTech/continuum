@@ -203,7 +203,7 @@ console.log('🎨 Theme color changed to coral red');
 ### **Daily Development Process**
 ```bash
 # 1. Start system (always first)
-cd /Volumes/FlashGordon/cambrian/continuum/src
+cd /Volumes/<external-drive>/cambrian/continuum/src
 JTAG_WORKING_DIR="examples/widget-ui" npm start
 
 # 2. Make widget changes

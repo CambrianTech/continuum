@@ -36,13 +36,13 @@ fn qwen2_audio_paths() -> (PathBuf, PathBuf) {
     let model = env::var("QWEN2_AUDIO_7B_GGUF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env::var("HOME").unwrap_or_else(|_| "/Users/joelteply".to_string()))
+            PathBuf::from(env::var("HOME").expect("HOME env var must be set for this integration test"))
                 .join("models/qwen2-audio-7b/Qwen2-Audio-7B-Instruct-Q4_K_M.gguf")
         });
     let mmproj = env::var("QWEN2_AUDIO_7B_MMPROJ")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env::var("HOME").unwrap_or_else(|_| "/Users/joelteply".to_string()))
+            PathBuf::from(env::var("HOME").expect("HOME env var must be set for this integration test"))
                 .join("models/qwen2-audio-7b/mmproj-Qwen2-Audio-7B-Instruct-f16.gguf")
         });
     (model, mmproj)

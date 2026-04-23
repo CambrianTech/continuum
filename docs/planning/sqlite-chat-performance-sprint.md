@@ -293,7 +293,7 @@ process.on('exit', () => {
 **Task 1.3: Install better-sqlite3** (30 minutes)
 
 ```bash
-cd /Volumes/FlashGordon/cambrian/continuum/src
+cd /Volumes/<external-drive>/cambrian/continuum/src
 npm install better-sqlite3
 npm install --save-dev @types/better-sqlite3
 ```

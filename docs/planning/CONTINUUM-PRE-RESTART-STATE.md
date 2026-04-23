@@ -70,7 +70,7 @@
 │           └── screenshots
 ├── tests
 └── training
-    └── claude-sessions -> /Users/joel/.claude/projects/-Volumes-FlashGordon-cambrian-continuum
+    └── claude-sessions -> /Users/joel/.claude/projects/-Volumes-<external-drive>-cambrian-continuum
 
 59 directories
 ```

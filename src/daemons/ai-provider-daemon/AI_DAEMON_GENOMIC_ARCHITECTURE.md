@@ -667,9 +667,9 @@ npm restart  # Kill and restart system
 ## 🔗 Related Documentation
 
 - [AI Provider Daemon Architecture](./ARCHITECTURE.md) - Current daemon design
-- [Genomic Data Architecture](/Volumes/FlashGordon/cambrian/continuum/middle-out/academy/genomic-data-architecture.md) - LoRA layer types
+- [Genomic Data Architecture](/Volumes/<external-drive>/cambrian/continuum/middle-out/academy/genomic-data-architecture.md) - LoRA layer types
 - [RAG Adapter Architecture](../../system/rag/RAG_ADAPTER_ARCHITECTURE.md) - Capability-aware context building
-- [Process Isolation Architecture](/Volumes/FlashGordon/cambrian/continuum/middle-out/architecture/process-isolation-architecture.md) - OS-level sandboxing
+- [Process Isolation Architecture](/Volumes/<external-drive>/cambrian/continuum/middle-out/architecture/process-isolation-architecture.md) - OS-level sandboxing
 
 ---
 

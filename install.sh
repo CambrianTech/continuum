@@ -114,7 +114,7 @@ case "$OS" in
     fi
     # ── Docker Desktop VM memory (Mac Option B — continuum-core NATIVE) ─────
     # The previous 80%-of-RAM target crashed Docker Desktop mid-run on 32GB
-    # M1 during matrix testing (FlashGordon 2026-04-16): Docker VM at 25.6GB
+    # M1 during matrix testing (<external-drive> 2026-04-16): Docker VM at 25.6GB
     # + native continuum-core at ~11GB RSS + macOS overhead ~6GB ≈ 43GB on a
     # 32GB physical box → heavy swap → Docker daemon died, DMR endpoint
     # disappeared, Helper AI fell back to Candle (5x slower) and never

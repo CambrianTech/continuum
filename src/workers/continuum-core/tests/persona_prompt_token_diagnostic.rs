@@ -23,7 +23,13 @@
 use llama::{render_chat, ChatMsg, Model, ModelParams};
 use std::path::PathBuf;
 
-const MODEL_PATH: &str = "/Users/joelteply/.docker/models/bundles/sha256/18055fe8ee379b95f4af3cf420588c5daa28f2a1ce1da335112a2d1ea188d3e6/model/model.gguf";
+mod common;
+
+fn model_path() -> std::path::PathBuf {
+    common::qwen35_4b_code_gguf().expect(
+        "qwen3.5-4b-code-forged GGUF not resolvable via DMR;          is Docker Desktop running with Model Runner enabled?",
+    )
+}
 
 const CHATML_TEMPLATE: &str = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}";
 
@@ -42,10 +48,10 @@ fn load_tokenizer_only() -> Model {
     // n_gpu_layers = 0 keeps weights on CPU only and avoids Metal pipeline
     // compilation. Tokenizer lives on the model object regardless of
     // device, so we get full tokenization without paying GPU init cost.
-    let path = PathBuf::from(MODEL_PATH);
+    let path = PathBuf::from(model_path());
     assert!(
         path.exists(),
-        "Model GGUF not present at {MODEL_PATH}. \
+        "Model GGUF not present at {model_path()}. \
          Pull continuum-ai/qwen3.5-4b-code-forged-gguf via DMR before running this test."
     );
     Model::load(

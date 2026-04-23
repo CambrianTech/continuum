@@ -17,9 +17,12 @@ name: Verify Docker Images
 #
 # New rule (Joel, 2026-04-23): "CI is for CHECK, not BUILD."
 # Docker builds move entirely off CI:
-#   - BigMama (Linux amd64 + Nvidia 5090) pushes amd64 of all variants
-#     including CUDA, via pre-push hook on that machine.
-#   - Mac M-series pushes arm64 of core + vulkan via pre-push hook.
+#   - BigMama (Linux amd64 + Nvidia 5090) pushes amd64 of all variants:
+#     core, vulkan, cuda, livekit-bridge. Vulkan slice covers Linux +
+#     Windows WSL2 consumer GPUs.
+#   - Mac M-series pushes arm64 of core + livekit-bridge. No arm64 vulkan
+#     (Mac Docker Desktop has no GPU passthrough; arm64 vulkan has no
+#     consumer story worth shipping). No CUDA (no Nvidia hardware).
 #   - Either machine pushes node-server / model-init / widgets (they're
 #     TS-only, build in under a minute on either arch).
 #
@@ -129,26 +132,26 @@ jobs:
             fi
           done
 
-      - name: Verify Rust-heavy images (amd64 hard gate; arm64 warning-only)
+      - name: Verify portable Rust images (amd64 hard, arm64 warning)
         run: |
-          # Rust-heavy images: core, vulkan, livekit-bridge, cuda.
-          # amd64 is the hard gate (BigMama pushes it, or any Linux amd64
-          # machine). arm64 is warning-only in v1 until the manifest-
-          # combine step lands (arm64 lives at a different tag while
-          # single-arch push overwrites the main tag).
+          # Portable Rust images — buildable on either arch:
+          #   core: CPU baseline
+          #   livekit-bridge: WebRTC bridge, CPU only
+          # amd64 is the hard gate (BigMama or any Linux amd64 machine).
+          # arm64 is warning-only in v1 until the manifest-combine step
+          # lands (arm64 lives at a different tag while single-arch push
+          # overwrites the main tag).
           TAG="${{ steps.tag.outputs.tag }}"
-          RUST_IMAGES=(
+          PORTABLE_IMAGES=(
             "ghcr.io/cambriantech/continuum-core:$TAG"
-            "ghcr.io/cambriantech/continuum-core-vulkan:$TAG"
             "ghcr.io/cambriantech/continuum-livekit-bridge:$TAG"
           )
           FAILED=0
-          for IMAGE in "${RUST_IMAGES[@]}"; do
+          for IMAGE in "${PORTABLE_IMAGES[@]}"; do
             echo "━━━ $IMAGE ━━━"
             if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
               echo "  ❌ MISSING in registry"
               echo "     Run on a Linux amd64 host: scripts/push-current-arch.sh"
-              echo "     (Or on BigMama if you want CUDA variants too.)"
               echo "  Error: $MANIFEST"
               FAILED=1
               continue
@@ -164,25 +167,37 @@ jobs:
               echo "  ✅ linux/arm64 present"
             else
               echo "  ⚠️  linux/arm64 missing (warning-only until manifest-combine lands)"
-              echo "     Run on this Mac: scripts/push-current-arch.sh"
+              echo "     Run on Mac M-series: scripts/push-current-arch.sh"
             fi
           done
 
-          # CUDA variant is amd64-only by design (NVIDIA Container Toolkit
-          # is practical-amd64). Check it separately so the "arm64 warning"
-          # message doesn't confuse readers.
-          CUDA_IMAGE="ghcr.io/cambriantech/continuum-core-cuda:$TAG"
-          echo "━━━ $CUDA_IMAGE (amd64-only by design) ━━━"
-          if ! MANIFEST=$(docker buildx imagetools inspect "$CUDA_IMAGE" 2>&1); then
-            echo "  ❌ MISSING in registry"
-            echo "     Run on BigMama (Nvidia amd64): scripts/push-current-arch.sh"
-            FAILED=1
-          elif echo "$MANIFEST" | grep -q "linux/amd64"; then
-            echo "  ✅ linux/amd64 present"
-          else
-            echo "  ❌ linux/amd64 MISSING"
-            FAILED=1
-          fi
+          # GPU variants are amd64-only by design:
+          #   vulkan: Mac Docker Desktop has no GPU passthrough; arm64
+          #           vulkan has no consumer use case. Linux + WSL2 GPUs
+          #           are amd64.
+          #   cuda:   NVIDIA Container Toolkit is practical-amd64.
+          # Both come from BigMama. Check them separately so "arm64
+          # warning" messages don't confuse readers.
+          GPU_IMAGES=(
+            "ghcr.io/cambriantech/continuum-core-vulkan:$TAG"
+            "ghcr.io/cambriantech/continuum-core-cuda:$TAG"
+          )
+          for IMAGE in "${GPU_IMAGES[@]}"; do
+            echo "━━━ $IMAGE (amd64-only by design) ━━━"
+            if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
+              echo "  ❌ MISSING in registry"
+              echo "     Run on BigMama (Linux amd64 + Nvidia): scripts/push-current-arch.sh"
+              FAILED=1
+              continue
+            fi
+            if echo "$MANIFEST" | grep -q "linux/amd64"; then
+              echo "  ✅ linux/amd64 present"
+            else
+              echo "  ❌ linux/amd64 MISSING"
+              echo "     Run on BigMama: scripts/push-current-arch.sh"
+              FAILED=1
+            fi
+          done
 
           if [ "$FAILED" -ne 0 ]; then
             echo ""

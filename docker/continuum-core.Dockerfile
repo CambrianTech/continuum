@@ -86,6 +86,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/target/release/continuum-core-server /usr/local/bin/
 COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
 
+# Model registry config — server boots with model_registry::loader reading
+# /app/continuum-core/config/models.toml. Without this COPY the runtime
+# panics on first start ("reading /app/continuum-core/config/models.toml:
+# No such file or directory") which fails slice tests and any real use.
+COPY --from=builder /app/continuum-core/config /app/continuum-core/config
+
 # ONNX Runtime — required for Silero VAD (voice activity detection) and Piper TTS.
 # These are core persona sensory capabilities (hearing + speech).
 # The ort crate uses load-dynamic (dlopen), so libonnxruntime must be present at runtime.

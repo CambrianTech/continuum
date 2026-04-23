@@ -17,13 +17,19 @@
 use llama::{Batch, ContextParams, Model, ModelParams, Sampler};
 use std::path::PathBuf;
 
-const MODEL_PATH: &str = "/Users/joelteply/.docker/models/bundles/sha256/18055fe8ee379b95f4af3cf420588c5daa28f2a1ce1da335112a2d1ea188d3e6/model/model.gguf";
+mod common;
+
+fn model_path() -> std::path::PathBuf {
+    common::qwen35_4b_code_gguf().expect(
+        "qwen3.5-4b-code-forged GGUF not resolvable via DMR;          is Docker Desktop running with Model Runner enabled?",
+    )
+}
 const PROMPT: &str = "Q: What is twelve times seven? A:";
 const N_GENERATE: usize = 32;
 
 fn run(n_gpu_layers: i32, label: &str) -> Vec<i32> {
     let model = Model::load(
-        PathBuf::from(MODEL_PATH),
+        PathBuf::from(model_path()),
         ModelParams {
             n_gpu_layers,
             use_mmap: true,
