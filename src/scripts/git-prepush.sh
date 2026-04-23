@@ -29,16 +29,52 @@ else
     FAILED=1
 fi
 
-# Phase 1b: ESLint — zero tolerance for any, malformed types, etc.
+# Phase 1b: ESLint — baseline-tolerant.
+#
+# Rationale: the repo has thousands of pre-existing ESLint violations
+# accumulated over time (see eslint-baseline.txt for the count). Strict
+# `--max-warnings 0` would block every push regardless of whether the
+# pusher introduced anything new. We still want the gate — just one
+# that catches REGRESSIONS, not historical state.
+#
+# How this works:
+#   1. Run ESLint, count errors against the explicit glob (`.` is
+#      "all ignored" in ESLint 9 with the current eslint.config.js).
+#   2. Read eslint-baseline.txt — the recorded "acceptable" count.
+#   3. Pass if current <= baseline. Fail if current > baseline (means
+#      this push added new violations).
+#   4. Suggest updating the baseline if current dropped substantially
+#      (cleanup is welcome, but the baseline should track real state).
+#
+# Update baseline after a real cleanup pass:
+#   cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 \
+#     | grep -cE "error\s+" > eslint-baseline.txt
 echo ""
-echo "📋 Phase 1b: ESLint"
-echo "--------------------"
+echo "📋 Phase 1b: ESLint (baseline-tolerant)"
+echo "----------------------------------------"
 LINT_START=$(date +%s)
-if cd "$SRC_DIR" && npx eslint . --max-warnings 0 --quiet > /dev/null 2>&1; then
-    echo "✅ ESLint: clean ($(( $(date +%s) - LINT_START ))s)"
+BASELINE_FILE="$SRC_DIR/eslint-baseline.txt"
+if [ ! -f "$BASELINE_FILE" ]; then
+    echo "⚠️  eslint-baseline.txt not present at $BASELINE_FILE — skipping ESLint gate."
+    echo "   Generate it once with: cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE \"error\\s+\" > eslint-baseline.txt"
 else
-    echo "❌ ESLint FAILED — run: cd src && npm run lint"
-    FAILED=1
+    BASELINE=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
+    CURRENT=$(cd "$SRC_DIR" && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE "error\s+" || true)
+    LINT_DUR=$(( $(date +%s) - LINT_START ))
+    if [ "$CURRENT" -le "$BASELINE" ]; then
+        if [ "$CURRENT" -lt "$BASELINE" ]; then
+            DROPPED=$(( BASELINE - CURRENT ))
+            echo "✅ ESLint: $CURRENT errors (baseline $BASELINE, dropped $DROPPED — update eslint-baseline.txt to lock the win) (${LINT_DUR}s)"
+        else
+            echo "✅ ESLint: $CURRENT errors at baseline ($BASELINE) (${LINT_DUR}s)"
+        fi
+    else
+        DELTA=$(( CURRENT - BASELINE ))
+        echo "❌ ESLint: $CURRENT errors — baseline is $BASELINE, this push added $DELTA new violation(s)."
+        echo "   Run to see what's new:"
+        echo "   cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet"
+        FAILED=1
+    fi
 fi
 
 # Phase 2: Rust compilation check (<20s cached)
@@ -59,16 +95,22 @@ else
 fi
 
 # Phase 3: Rust tests (<30s cached)
+# Use cargo's exit code as the canonical pass/fail signal — the
+# previous `tail -1 | grep "test result: ok"` failed because cargo
+# emits a trailing newline, so tail -1 saw an empty line and grep
+# always returned no match. Exit code is the reliable test gate.
 echo ""
 echo "📋 Phase 3: Rust tests"
 echo "----------------------"
 TEST_START=$(date +%s)
 if [ -d "$RUST_DIR" ]; then
-    if cd "$RUST_DIR" && cargo test --lib 2>/dev/null | tail -1 | grep -q "^test result: ok"; then
+    if (cd "$RUST_DIR" && cargo test --lib > /tmp/git-prepush-cargo.log 2>&1); then
         echo "✅ Rust tests: passed ($(( $(date +%s) - TEST_START ))s)"
     else
         echo "❌ Rust tests FAILED"
         echo "   Run: cd src/workers/continuum-core && cargo test --lib"
+        echo "   Last output:"
+        tail -10 /tmp/git-prepush-cargo.log | sed 's/^/      /'
         FAILED=1
     fi
 else

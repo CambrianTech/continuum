@@ -47,6 +47,7 @@
     "index.ts",
     "browser-index.ts",
     "server-index.ts",
+    "api/**/*.ts",
     "browser/**/*.ts",
     "server/**/*.ts",
     "shared/**/*.ts",

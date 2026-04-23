@@ -120,21 +120,48 @@ if [ -n "$RS_FILES" ]; then
     echo "$RS_FILES" | sed 's/^/  • /' | head -10
     echo ""
 
-    # Run clippy on the workspace (warnings as errors)
-    if ! (cd workers/continuum-core && cargo clippy --quiet -- -D warnings 2>&1); then
-        echo ""
-        echo "╔════════════════════════════════════════════════════════════════╗"
-        echo "║  ❌ RUST CLIPPY FAILED - BLOCKING COMMIT                       ║"
-        echo "╠════════════════════════════════════════════════════════════════╣"
-        echo "║  Common violations:                                            ║"
-        echo "║  • Dead code           → Remove unused functions/vars          ║"
-        echo "║  • Unused imports      → Remove unused 'use' statements        ║"
-        echo "║  • Unnecessary clone   → Remove or explain why needed          ║"
-        echo "╚════════════════════════════════════════════════════════════════╝"
-        LINT_FAILED=true
+    # Baseline-tolerant clippy (same shape as ESLint baseline in
+    # git-prepush.sh): the workspace has 100+ pre-existing clippy
+    # warnings, and -D warnings turns ALL of them into hard errors.
+    # That made every commit fail regardless of who wrote what.
+    #
+    # New shape: count warnings, compare to clippy-baseline.txt.
+    # Pass if current <= baseline. Fail if current > baseline (i.e.
+    # this commit added new violations). Update the baseline after
+    # a real cleanup pass:
+    #   cd src/workers/continuum-core
+    #   cargo clippy --lib 2>&1 | grep -cE "^warning:" > ../../clippy-baseline.txt
+    BASELINE_FILE="$(git rev-parse --show-toplevel)/src/clippy-baseline.txt"
+    CLIPPY_LOG="$(mktemp)"
+    (cd workers/continuum-core && cargo clippy --lib 2>&1 > "$CLIPPY_LOG") || true
+    CURRENT=$(grep -cE "^warning:" "$CLIPPY_LOG" || echo 0)
+    if [ ! -f "$BASELINE_FILE" ]; then
+        echo "⚠️  clippy-baseline.txt not found — skipping clippy gate."
+        echo "   Generate once with: cd src/workers/continuum-core && cargo clippy --lib 2>&1 | grep -cE \"^warning:\" > ../../clippy-baseline.txt"
+        echo "   Current warning count: $CURRENT"
     else
-        echo "✅ Rust clippy: PASSED"
+        BASELINE=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
+        if [ "$CURRENT" -le "$BASELINE" ]; then
+            if [ "$CURRENT" -lt "$BASELINE" ]; then
+                DROPPED=$(( BASELINE - CURRENT ))
+                echo "✅ Rust clippy: $CURRENT warnings (baseline $BASELINE, dropped $DROPPED — update src/clippy-baseline.txt to lock the win)"
+            else
+                echo "✅ Rust clippy: $CURRENT warnings at baseline ($BASELINE)"
+            fi
+        else
+            DELTA=$(( CURRENT - BASELINE ))
+            echo ""
+            echo "╔════════════════════════════════════════════════════════════════╗"
+            echo "║  ❌ RUST CLIPPY: $DELTA NEW WARNING(S) — BLOCKING COMMIT       ║"
+            echo "╠════════════════════════════════════════════════════════════════╣"
+            echo "║  Current: $CURRENT  Baseline: $BASELINE                                       ║"
+            echo "║  Run to see what's new:                                        ║"
+            echo "║    cd src/workers/continuum-core && cargo clippy --lib         ║"
+            echo "╚════════════════════════════════════════════════════════════════╝"
+            LINT_FAILED=true
+        fi
     fi
+    rm -f "$CLIPPY_LOG"
 else
     echo "⏭️  No Rust files staged - skipping clippy"
 fi
@@ -252,6 +279,34 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
     echo "🧪 Phase 2: Browser Tests"
     echo "-----------------------------------------------------------"
 
+    # Skip gracefully when no system is running. The browser-ping test
+    # requires an active continuum-core + browser to be up; without it,
+    # the test sits at "Request timeout after 600000ms" for 10 minutes
+    # then fails. That's a 10-minute block on every commit when the
+    # system isn't up — useless friction for docs/CI/script-only
+    # commits.
+    #
+    # Detect system-up via the unix socket presence (cheap, no IPC).
+    # If up: run tests as gate. If down: warn loud, skip, don't block.
+    # The CI gate (verify-architectures + GitHub Actions checks)
+    # remains the authoritative pre-merge check, so skipping here
+    # doesn't let bad code reach main — it just lets commits land
+    # so the developer can fix-forward without the system running.
+    SOCKET_PATH="$HOME/.continuum/sockets/continuum-core.sock"
+    if [ ! -S "$SOCKET_PATH" ]; then
+        echo ""
+        echo "⚠️  No running continuum-core (socket $SOCKET_PATH not present)."
+        echo "   Skipping browser tests for this commit."
+        echo "   Start the system with 'cd src && npm start' to enable browser-test gate."
+        echo ""
+        # Skip the rest of this phase but don't fail the commit.
+        # The remaining phases (lint etc) still run.
+        echo "✅ Browser tests: SKIPPED (system not running)"
+        ENABLE_BROWSER_TEST=false
+    fi
+fi
+
+if [ "$ENABLE_BROWSER_TEST" = true ]; then
     echo "🧪 Running precommit tests: $PRECOMMIT_TESTS"
 
     # Ensure test output directory exists
