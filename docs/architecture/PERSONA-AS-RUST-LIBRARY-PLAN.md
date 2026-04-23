@@ -5,6 +5,24 @@
 **Parent:** [Architecture](README.md)
 **Related:** [RECIPE-EXECUTION-RUNTIME.md](RECIPE-EXECUTION-RUNTIME.md), [PERSONA-COGNITION-RUST-MIGRATION.md](PERSONA-COGNITION-RUST-MIGRATION.md), [PERSONA-CONTEXT-PAGING.md](PERSONA-CONTEXT-PAGING.md), [LIVE-VIDEO-CHAT-ARCHITECTURE.md](LIVE-VIDEO-CHAT-ARCHITECTURE.md), [LORA-GENOME-PAGING.md](../personas/LORA-GENOME-PAGING.md)
 
+## Pragmatic delivery — what we are reducing and what every change must satisfy
+
+The work below is in service of three measurable outcomes, in order of weight:
+
+1. **Reduce latency.** Felt latency is FPS for personas. Every IPC round-trip eliminated, every Metal allocation pooled, every encode amortized counts. The 17-min/image encode time observed 2026-04-23 is the canonical example of what "reduce latency" means concretely — until that's down two orders of magnitude, video chat is impossible regardless of feature count.
+2. **Reduce brittleness.** A change that breaks vision should fail loudly in a Rust test BEFORE it reaches a deploy. A test that reports PASS while testing zero things is brittleness, not safety. Today's silent-pass on the slow-replay (extractors reading the wrong shape) is the canonical example of what "reduce brittleness" means concretely.
+3. **Reduce iteration cost via record/playback at every level.** Every persona turn (chat, vision, audio, tool, recipe step, cognition seam) gets captured to a fixture and is replayable in a Rust test against real models. **No "deploy and pray."** The test loop is: change Rust → `cargo test` against captured fixtures → fix concrete failure → repeat. Live deploy is the *last* gate, not the *only* gate.
+
+Every step in the phases below earns inclusion by serving one of those three. Steps that don't measurably reduce latency, reduce brittleness, or improve the record/playback loop are deprioritized regardless of how interesting they are architecturally.
+
+**The capture-and-replay infrastructure is treated as foundational, not ancillary.** It is the only way out of the deploy-and-pray cycle. Specifically:
+
+- Every `cognition/respond` call captures a fixture today (PRG.ts records `{ rust_request, rust_response, ipc_error, ipc_duration_ms }`). Repaired extractor (commit `66c4d3799`) lets the Rust slow-replay consume them.
+- Future capture surfaces to add: per-recipe-step capture inside the executor (Phase B2), per-seam trace events inside `respond()` (Phase E1), per-frame capture for live video (Phase B8 with C5 in place).
+- Replay surfaces to add: `cargo test --test recipe_executor_replay`, `cargo test --test live_video_replay`, eventually `cargo test --package continuum-persona` running embedded-host scenarios with no orchestrator.
+
+When a user reports a bug, the workflow becomes: capture the broken fixture → write a `#[test]` that loads it → reproduce the failure in a Rust test → fix → green. No live deploy needed for the inner loop.
+
 ## Status overview (2026-04-23)
 
 - **Phase A (cognition substrate):** A1–A5 ✅ landed
