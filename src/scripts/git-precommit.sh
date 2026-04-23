@@ -347,15 +347,29 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
         # a non-responsive-but-not-crashed state — useless friction
         # on every commit.
         perl -e '
+            use POSIX qw(setpgid);
             my $pid = fork();
             die "fork: $!" unless defined $pid;
-            if ($pid == 0) { exec @ARGV; die "exec: $!"; }
+            if ($pid == 0) {
+                # Put child + descendants into their own process group so we
+                # can kill the entire tree (npx -> node -> tsx -> test +
+                # any subprocesses). Without this, killing $pid only kills
+                # npx; orphaned tsx + test keep running and hold the
+                # commit hostage.
+                POSIX::setpgid(0, 0) or warn "setpgid failed: $!";
+                exec @ARGV;
+                die "exec: $!";
+            }
+            POSIX::setpgid($pid, $pid);  # parent races child; both safe
             my $deadline = time() + 60;
             while (1) {
                 my $w = waitpid($pid, 1);
                 last if $w == $pid;
                 if (time() > $deadline) {
-                    kill 9, $pid; waitpid($pid, 0); exit 142;
+                    # Negative PID = signal whole process group.
+                    kill 9, -$pid;
+                    waitpid($pid, 0);
+                    exit 142;
                 }
                 select(undef, undef, undef, 0.1);
             }

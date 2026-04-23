@@ -48,11 +48,43 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# 6. Check if already authenticated
+# 6. Check if already authenticated. If so, also confirm Tailscale SSH is
+# enabled — without --ssh, peer machines can't reach this host without
+# per-device OpenSSH keys. The most common breakage is a user running
+# plain `tailscale up` later (e.g. after a reboot or a network change),
+# which RESETS configured flags including --ssh. Detect that case and
+# re-add --ssh idempotently.
 TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
 if [ -n "$TS_IP" ]; then
   echo -e "  ${GREEN}✅ Tailscale connected: ${TS_IP}${NC}"
-  echo -e "  ${GREEN}  Auto-reconnects on reboot. Done.${NC}"
+  # Probe the running prefs for --ssh. The exact JSON path is
+  # .Prefs.RunSSH on recent tailscale versions; older may be .RunSSH.
+  TS_SSH_ON=$(tailscale debug prefs 2>/dev/null | python3 -c "
+import sys, json
+try:
+    p = json.load(sys.stdin)
+    # newer schemas: top-level RunSSH; older: nested under Prefs
+    print('true' if (p.get('RunSSH') or p.get('Prefs', {}).get('RunSSH')) else 'false')
+except Exception:
+    print('unknown')
+" 2>/dev/null)
+  if [ "$TS_SSH_ON" = "true" ]; then
+    echo -e "  ${GREEN}  Tailscale SSH already enabled. Auto-reconnects on reboot. Done.${NC}"
+    exit 0
+  fi
+  # SSH not enabled (or probe inconclusive). Re-run `up --ssh` to add the
+  # flag. This preserves every other flag the user has set (advertise-
+  # routes, accept-routes, etc.) and is idempotent — no browser prompt
+  # if already authenticated.
+  echo -e "  ${YELLOW}⚠️  Tailscale SSH not enabled (status: $TS_SSH_ON).${NC}"
+  echo -e "  ${YELLOW}  Enabling now so peers on the Tailnet can SSH in without per-device keys...${NC}"
+  if sudo tailscale up --ssh --accept-routes 2>&1; then
+    echo -e "  ${GREEN}✅ Tailscale SSH enabled. Done.${NC}"
+  else
+    echo -e "  ${RED}❌ Failed to enable Tailscale SSH. Run manually:${NC}"
+    echo -e "       sudo tailscale up --ssh --accept-routes"
+    exit 1
+  fi
   exit 0
 fi
 

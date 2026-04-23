@@ -493,22 +493,43 @@ install_livekit
 # Tailscale mesh VPN (multi-tower networking)
 # ============================================================================
 
-echo -e "${YELLOW}[8/8] Tailscale${NC}"
+echo -e "${YELLOW}[8/8] Tailscale (grid mode only)${NC}"
 
-# Tailscale is its own script — testable independently: bash scripts/install-tailscale.sh
-case "$PLATFORM" in
-  macos)
-    if [ -d "/Applications/Tailscale.app" ]; then
-      echo -e "  ${GREEN}✅ Tailscale installed — sign in via menu bar${NC}"
-    else
-      brew install --cask tailscale 2>/dev/null
-      echo -e "  ${GREEN}✅ Tailscale installed — sign in via menu bar${NC}"
-    fi
-    ;;
-  linux|wsl)
-    bash "$SCRIPT_DIR/install-tailscale.sh"
-    ;;
-esac
+# Tailscale is OPTIONAL — it's the substrate for grid (multi-machine) mode
+# where peers reach each other for forge/inference distribution. Single-
+# machine local users (the majority of Carl's audience) don't need it.
+#
+# Opt-in via:
+#   CONTINUUM_GRID=1 bash install.sh   — wants grid, install + configure
+#   bash install.sh --grid             — same, flag form
+#
+# Default: SKIP. No download, no daemon, no prompts. Carl's local-only
+# install completes faster and his attack surface is smaller.
+WANTS_GRID="${CONTINUUM_GRID:-0}"
+for arg in "$@"; do
+  [ "$arg" = "--grid" ] && WANTS_GRID=1
+done
+
+if [ "$WANTS_GRID" != "1" ]; then
+  echo -e "  ${GREEN}⏭  Skipped — local-only install (no grid).${NC}"
+  echo -e "     Re-run with ${YELLOW}CONTINUUM_GRID=1${NC} to enable multi-machine mode later."
+else
+  case "$PLATFORM" in
+    macos)
+      if [ -d "/Applications/Tailscale.app" ]; then
+        echo -e "  ${GREEN}✅ Tailscale installed — sign in via menu bar${NC}"
+      else
+        brew install --cask tailscale 2>/dev/null
+        echo -e "  ${GREEN}✅ Tailscale installed — sign in via menu bar${NC}"
+      fi
+      echo -e "  ${YELLOW}  After signing in, enable Tailscale SSH so peers can reach this Mac${NC}"
+      echo -e "  ${YELLOW}  without per-device keys: bash scripts/enable-tailscale-ssh.sh${NC}"
+      ;;
+    linux|wsl)
+      bash "$SCRIPT_DIR/install-tailscale.sh"
+      ;;
+  esac
+fi
 
 # DEPS_ONLY mode: all infrastructure installed, skip config/summary/auto-launch
 if [ "$SKIP_BUILD" = "1" ]; then

@@ -113,6 +113,12 @@ fi
 # Pre-flight: catch Xcode issues NOW, not buried in build output 30 lines deep
 preflight_check_xcode
 
+# Pre-flight: self-heal Tailscale SSH state. If the user has tailscale and
+# is authenticated but --ssh got dropped (common after a reboot or a plain
+# `tailscale up`), re-add it. Silent no-op if tailscale isn't installed or
+# the user opted out via CONTINUUM_NO_TAILSCALE_PREFLIGHT=1.
+preflight_check_tailscale_ssh
+
 # Phase 1: Detect existing system state
 # If the system is already running, we do a HOT RESTART:
 #   - Don't nuke everything (browser stays alive)
