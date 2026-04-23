@@ -203,10 +203,11 @@ export class ToolDefinitionsSource implements RAGSource {
     allocatedBudget: number,
     startTime: number
   ): Omit<RAGSection, 'tier'> {
-    // Exclude chat/send when responding in a chat room (same as native path)
-    if (context.roomId) {
-      toolDefinitions = toolDefinitions.filter(t => t.name !== 'collaboration/chat/send');
-    }
+    // chat/send stays in the tool list regardless of context — model retains
+    // access for legitimate cross-room messaging. The discouragement against
+    // using it for current-room replies lives in PersonaIdentitySource +
+    // the communication-group example (which now shows a different room
+    // to reinforce the discouragement instead of contradicting it).
 
     // Contextual group selection: analyze trigger message to find relevant tool groups
     const groupRegistry = ToolGroupRegistry.sharedInstance();

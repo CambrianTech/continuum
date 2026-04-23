@@ -11,6 +11,7 @@ export type { PersonaMediaConfigLite } from './PersonaMediaConfigLite';
 export type { PersonaRenderRequest } from './PersonaRenderRequest';
 export type { PersonaResponse } from './PersonaResponse';
 export type { PriorContribution } from './PriorContribution';
+export type { RecentMessage } from './RecentMessage';
 export type { ResponderDecision } from './ResponderDecision';
 export type { SharedAnalysis } from './SharedAnalysis';
 export type { SharedAnalysisIntent } from './SharedAnalysisIntent';

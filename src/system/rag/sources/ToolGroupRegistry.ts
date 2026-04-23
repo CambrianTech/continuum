@@ -50,12 +50,17 @@ const TOOL_GROUPS: readonly ToolGroup[] = [
   {
     id: 'communication',
     label: 'Communication',
-    description: 'Send messages, read conversation history, reply to others',
+    description: 'Read conversation history, send messages to OTHER rooms (your text reply IS your message in the current room — do not call chat/send for that)',
     toolPatterns: ['collaboration/chat/send', 'collaboration/chat/export', 'collaboration/chat/history'],
     intentKeywords: ['tell', 'say', 'message', 'reply', 'ask', 'share', 'inform', 'announce', 'discuss', 'talk'],
-    example: `<tool_use>
+    // Example targets a DIFFERENT room (not the current one) — the only
+    // legitimate use of chat/send. For replies in the current room, the
+    // model's plain-text response IS the chat message; calling chat/send
+    // for that wraps the reply in tool-use markup and is wrong.
+    example: `To send a message to a DIFFERENT room (cross-room handoff):
+<tool_use>
 <tool_name>collaboration/chat/send</tool_name>
-<parameters>{"room": "general", "message": "I found the issue — the timeout was set to 0ms instead of 60000ms."}</parameters>
+<parameters>{"room": "code", "message": "Cross-posting from #general — this issue belongs here."}</parameters>
 </tool_use>`,
     alwaysInclude: true,
     priority: 100,
