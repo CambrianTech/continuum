@@ -46,34 +46,44 @@ if [[ -z "$VARIANT" ]]; then
 Usage: $0 <variant> [platforms]
 
 Variants:
-  core    — CPU-only (Ares bootloader exception; not a Carl default)
-  cuda    — Nvidia GPU via CUDA (BigMama, Nvidia Linux hosts)
-  vulkan  — GPU via Vulkan (Mac Carl via Podman+krunkit+MoltenVK, also
-            valid on Nvidia/AMD/Intel Linux hosts with libvulkan)
+  core           — CPU-only (Ares bootloader exception; not a Carl default)
+  cuda           — Nvidia GPU via CUDA (BigMama, Nvidia Linux hosts)
+  vulkan         — GPU via Vulkan (Mac Carl via Podman+krunkit+MoltenVK,
+                   also valid on Nvidia/AMD/Intel Linux hosts with libvulkan)
+  livekit-bridge — Rust WebRTC bridge to LiveKit SFU (separate process)
 
 Platforms (optional): linux/amd64, linux/arm64, or comma-separated both.
   Default per variant:
-    core    → linux/amd64,linux/arm64
-    cuda    → linux/amd64   (CUDA is x86-only in practice)
-    vulkan  → linux/amd64,linux/arm64
+    core           → linux/amd64,linux/arm64
+    cuda           → linux/amd64   (CUDA is x86-only in practice)
+    vulkan         → linux/amd64,linux/arm64
+    livekit-bridge → linux/amd64,linux/arm64
 EOF
   exit 1
 fi
 
 case "$VARIANT" in
-  core)   DOCKERFILE="docker/continuum-core.Dockerfile"; IMAGE="continuum-core"
-          GPU_FEATURES="--no-default-features --features load-dynamic-ort"
-          DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
-          ;;
-  cuda)   DOCKERFILE="docker/continuum-core-cuda.Dockerfile"; IMAGE="continuum-core-cuda"
-          GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda"
-          DEFAULT_PLATFORMS="linux/amd64"
-          ;;
-  vulkan) DOCKERFILE="docker/continuum-core-vulkan.Dockerfile"; IMAGE="continuum-core-vulkan"
-          GPU_FEATURES="--no-default-features --features load-dynamic-ort,vulkan"
-          DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
-          ;;
-  *) echo "ERROR: unknown variant '$VARIANT' (core|cuda|vulkan)" >&2; exit 1 ;;
+  core)        DOCKERFILE="docker/continuum-core.Dockerfile"; IMAGE="continuum-core"
+               GPU_FEATURES="--no-default-features --features load-dynamic-ort"
+               DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
+               ;;
+  cuda)        DOCKERFILE="docker/continuum-core-cuda.Dockerfile"; IMAGE="continuum-core-cuda"
+               GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda"
+               DEFAULT_PLATFORMS="linux/amd64"
+               ;;
+  vulkan)      DOCKERFILE="docker/continuum-core-vulkan.Dockerfile"; IMAGE="continuum-core-vulkan"
+               GPU_FEATURES="--no-default-features --features load-dynamic-ort,vulkan"
+               DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
+               ;;
+  livekit-bridge)
+               DOCKERFILE="docker/livekit-bridge.Dockerfile"; IMAGE="continuum-livekit-bridge"
+               # WebRTC + LiveKit bridge — separate Rust binary in src/workers/.
+               # Same workspace, different Cargo binary. Uses default features
+               # (livekit-webrtc enabled) since this IS the livekit-webrtc consumer.
+               GPU_FEATURES=""
+               DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
+               ;;
+  *) echo "ERROR: unknown variant '$VARIANT' (core|cuda|vulkan|livekit-bridge)" >&2; exit 1 ;;
 esac
 
 PLATFORMS="${PLATFORMS:-$DEFAULT_PLATFORMS}"

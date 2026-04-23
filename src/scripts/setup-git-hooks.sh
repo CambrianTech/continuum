@@ -26,11 +26,17 @@ EOF
 chmod +x .git/hooks/post-commit
 
 # Setup pre-push hook
-echo "📋 Installing pre-push hook → scripts/git-prepush.sh"
+# Hook resolves the script path relative to the repo root via
+# `git rev-parse --show-toplevel` so it works regardless of the cwd
+# git invokes the hook from. Previous version used `./scripts/...`
+# which broke when the install ran from src/ and the user pushed from
+# the repo root.
+echo "📋 Installing pre-push hook → src/scripts/git-prepush.sh"
 cat > .git/hooks/pre-push << 'EOF'
 #!/bin/bash
-# Git pre-push hook - Delegates to main script
-exec ./scripts/git-prepush.sh
+# Git pre-push hook — delegates to src/scripts/git-prepush.sh.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+exec "$REPO_ROOT/src/scripts/git-prepush.sh" "$@"
 EOF
 chmod +x .git/hooks/pre-push
 

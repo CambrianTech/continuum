@@ -1,4 +1,30 @@
-name: Build Docker Images
+name: Verify Docker Images
+
+# CI's job here is to CHECK, not BUILD. All Docker image builds happen
+# on dev machines via the pre-push hook + scripts/push-current-arch.sh
+# (which wraps scripts/push-image.sh). CI's role shrinks to:
+#   1. Verify that every required image variant is in the registry at
+#      the right tag for this PR / branch / SHA.
+#   2. Verify that the requested architectures are in each manifest.
+#   3. Smoke-pull one architecture per image so we catch registry
+#      corruption / layer auth / network issues before merge.
+#
+# Previous workflow tried to build everything in CI via QEMU cross-
+# compilation. linux/arm64 emulation on amd64 GHA runners took 5-6
+# hours per image and timed out every PR on the Rust-heavy variants
+# (continuum-core, continuum-core-vulkan, livekit-bridge). That's what
+# blocked PR #950 for days.
+#
+# New rule (Joel, 2026-04-23): "CI is for CHECK, not BUILD."
+# Docker builds move entirely off CI:
+#   - BigMama (Linux amd64 + Nvidia 5090) pushes amd64 of all variants
+#     including CUDA, via pre-push hook on that machine.
+#   - Mac M-series pushes arm64 of core + vulkan via pre-push hook.
+#   - Either machine pushes node-server / model-init / widgets (they're
+#     TS-only, build in under a minute on either arch).
+#
+# See docs/architecture/PERSONA-AS-RUST-LIBRARY-PLAN.md for the full
+# rationale and scripts/push-current-arch.sh for the entry point.
 
 on:
   push:
@@ -14,409 +40,24 @@ on:
     paths:
       - 'src/workers/**'
       - 'docker/**'
-  # Manual trigger — rebuild all images on demand
   workflow_dispatch:
 
-# Auto-cancel in-progress runs when a new commit lands on the same branch.
-# Without this, rapid-fire pushes stack up concurrent multi-arch builds that
-# fight each other for runners + GHA cache + registry storage — which we hit
-# on this branch when three runs piled up during the Vulkan wall-march. The
-# `group` scopes cancellation per branch/PR so main + feature branches don't
-# interfere with each other. cancel-in-progress=true cancels obsolete builds
-# the moment a newer commit supersedes them.
+# Cancel superseded runs per branch/PR so verify passes don't stack.
 concurrency:
-  group: docker-images-${{ github.ref }}
+  group: verify-docker-images-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
-  # CI builds linux/amd64 natively on GHA (its native arch → fast, reliable).
-  # linux/arm64 is built on dev machines via pre-push hook + scripts/push-
-  # current-arch.sh and uploaded with an arch-specific tag. The combine
-  # job at the bottom stitches both into a multi-arch manifest.
-  #
-  # Previously: PLATFORMS=linux/amd64,linux/arm64 via QEMU on amd64 runners.
-  # That emulated arm64 builds inside amd64 took 5-6 hours per image and
-  # timed out every PR, producing failing builds, missing registry entries,
-  # and blocking verify-architectures. The native + pre-push split is the
-  # fix for that timing catastrophe. See docs/architecture/
-  # PERSONA-AS-RUST-LIBRARY-PLAN.md for the full rationale.
-  PLATFORMS_AMD64: linux/amd64
-  PLATFORMS_ARM64: linux/arm64
-  # The legacy PLATFORMS var stayed multi-arch for images that ARE fast
-  # to build in QEMU (node-server, model-init, widget-server — TS-only,
-  # no Rust compile). Keeping multi-arch for those is cheap.
-  PLATFORMS_LIGHT: linux/amd64,linux/arm64
 
 jobs:
-  # ── Rust Core ─────────────────────────────────────────────
-  continuum-core:
-    runs-on: ubuntu-latest
-    # Runs on PR too — validates the Dockerfile builds on every change.
-    # `push` step inside build-push-action below already gates ghcr upload
-    # on non-PR events, so PR runs are smoke-only.
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # QEMU enables building arm64 images on amd64 runners (and vice versa).
-      # Without this, the arm64 build fails with "exec format error".
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-core
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src/workers
-          file: ./docker/continuum-core.Dockerfile
-          # entity_schemas.json (Phase 2 codegen) lives outside the workers
-          # context. Mirrors docker-compose.yml's `additional_contexts:`.
-          # Without this the build fails: `error: couldn't read entity_schemas.json`.
-          build-contexts: |
-            shared-generated=./src/shared/generated
-          # amd64 only in CI — linux/arm64 comes from pre-push hook on Mac
-          # dev machines (scripts/push-current-arch.sh). See the combine
-          # job at the bottom of this workflow that stitches both arches
-          # into a multi-arch manifest.
-          platforms: ${{ env.PLATFORMS_AMD64 }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-core:buildcache
-          cache-to: type=gha,mode=max
-          # Avatar VRM models are NOT shipped via build-context anymore —
-          # src/models/avatars is git-ignored (133MB), so a fresh CI checkout
-          # has nothing to mount. Dockerfiles now create an empty /app/avatars
-          # placeholder. When LFS / model-init download / curl-from-CC0
-          # avatar provisioning lands, restore this `build-contexts` line.
-
-  # ── Rust Core (CUDA variant) ─────────────────────────────
-  # The cuda image is referenced by docker-compose.gpu.yml. Prior to this
-  # job the Dockerfile was orphaned: it existed on disk but no workflow
-  # built or published it, so `docker compose --profile gpu up` failed
-  # with a pull error (no such image in ghcr.io). amd64-only because
-  # NVIDIA Container Toolkit + CUDA is a practical-amd64 concern; arm64
-  # CUDA is Jetson-class and not the gpu-profile's target.
-  continuum-core-cuda:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp needs to be populated
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-core-cuda
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src/workers
-          file: ./docker/continuum-core-cuda.Dockerfile
-          # entity_schemas.json (Phase 2 codegen) lives outside the workers
-          # context. Required by the cargo build step.
-          build-contexts: |
-            shared-generated=./src/shared/generated
-          # amd64-only: CUDA devel image + NVIDIA Container Toolkit
-          # target amd64 hosts in practice.
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha,scope=continuum-core-cuda
-            type=registry,ref=ghcr.io/cambriantech/continuum-core-cuda:buildcache
-          cache-to: type=gha,mode=max,scope=continuum-core-cuda
-          # Avatar build-context removed — see continuum-core job above
-          # for full reasoning. Dockerfile creates an empty /app/avatars.
-
-  # ── Rust Core (Vulkan) ────────────────────────────────────
-  # The Carl-on-Mac GPU path. Apple's hypervisor exposes no GPU to Linux
-  # containers (Docker Desktop / Apple container / krunkit all blocked by
-  # Apple), but Podman + krunkit routes Vulkan API calls out to MoltenVK
-  # on the host Mac, which translates to Metal. ~80% of native Metal perf
-  # on the reference llama.cpp benchmark (M2 Max, Phi-3: 63 vs 78 tok/s).
-  # Same image is valid on Nvidia/AMD Linux hosts with libvulkan.
-  continuum-core-vulkan:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp needs to be populated
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # QEMU for cross-arch build. Carl-on-Mac is linux/arm64 under krunkit.
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-core-vulkan
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src/workers
-          file: ./docker/continuum-core-vulkan.Dockerfile
-          # entity_schemas.json (Phase 2 codegen) lives outside the workers
-          # context. Required by the cargo build step.
-          build-contexts: |
-            shared-generated=./src/shared/generated
-          # amd64 only in CI — linux/arm64 (Carl-on-Mac Vulkan via Podman+
-          # krunkit+MoltenVK) is built natively on Mac via pre-push hook
-          # and uploaded with an arch-specific tag. Combine job below
-          # stitches both arches into a multi-arch manifest.
-          platforms: ${{ env.PLATFORMS_AMD64 }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha,scope=continuum-core-vulkan
-            type=registry,ref=ghcr.io/cambriantech/continuum-core-vulkan:buildcache
-          cache-to: type=gha,mode=max,scope=continuum-core-vulkan
-
-  # ── LiveKit Bridge (was missing from CI!) ─────────────────
-  livekit-bridge:
-    runs-on: ubuntu-latest
-    # Same PR-smoke policy as continuum-core.
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-livekit-bridge
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src/workers
-          file: ./docker/livekit-bridge.Dockerfile
-          # amd64 only in CI; arm64 comes from Mac pre-push (Rust compile
-          # inside this image is too expensive to run under QEMU). Same
-          # split as continuum-core + continuum-core-vulkan.
-          platforms: ${{ env.PLATFORMS_AMD64 }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-livekit-bridge:buildcache
-          cache-to: type=gha,mode=max
-
-  # ── Node Server ───────────────────────────────────────────
-  node-server:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-node
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src
-          file: ./docker/node-server.Dockerfile
-          platforms: ${{ env.PLATFORMS_LIGHT }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-node:buildcache
-          cache-to: type=gha,mode=max
-
-  # ── Model Init ────────────────────────────────────────────
-  model-init:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-model-init
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src
-          file: ./docker/model-init.Dockerfile
-          platforms: ${{ env.PLATFORMS_LIGHT }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-model-init:buildcache
-          cache-to: type=gha,mode=max
-
-  # ── Widget Server ─────────────────────────────────────────
-  widget-server:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-widgets
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src
-          file: ./docker/widget-server.Dockerfile
-          platforms: ${{ env.PLATFORMS_LIGHT }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-widgets:buildcache
-          cache-to: type=gha,mode=max
-
   # ── Verify Image Coverage ─────────────────────────────────
-  # Runs AFTER all builds, on EVERY trigger (PR + main), even when some
-  # build jobs failed. Three responsibilities:
-  #   1. Coverage gate — every variant we ship must have a manifest at
-  #      the right tag. Missing image = failed build = merge BLOCKED.
-  #      (Previously this job was `if: github.event_name != 'pull_request'`
-  #       which meant a PR could merge with broken images — exactly the
-  #       'CI passed missing slices' state Joel called out.)
-  #   2. Tag selection — `:pr-<N>` on PR builds, `:latest` on main, `:<sha>`
-  #      always present. Picks the right tag for the trigger.
-  #   3. Architecture check — multi-arch manifests must include all
-  #      expected platforms. amd64-only is OK only for cuda.
+  # Pulls every required image at the right tag and asserts each has
+  # the expected architectures. No building, no QEMU, no caches —
+  # just registry reads. Runs in ~1 minute (previously: blocked by
+  # 5-6 hour build jobs that timed out).
   verify-architectures:
     runs-on: ubuntu-latest
-    # Run on every trigger (was: only main pushes — that gap let PRs
-    # merge with broken images).
-    # Run even when individual build jobs failed — that's the whole
-    # point of this gate. Without `if: always()`, GHA skips the dependent
-    # when any need fails, hiding the coverage gap.
-    if: always()
-    needs: [continuum-core, continuum-core-cuda, continuum-core-vulkan, livekit-bridge, node-server, model-init, widget-server]
     steps:
       - uses: docker/setup-qemu-action@v3
 
@@ -430,48 +71,18 @@ jobs:
             TAG="latest"
           else
             TAG="${{ github.sha }}"
-            TAG="${TAG:0:40}"  # full sha — metadata-action strips to short, we use full to be safe
+            TAG="${TAG:0:40}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Verifying coverage at tag: $TAG"
 
-      - name: Report build job results (so failures are loud)
+      - name: Verify Rust-heavy images (amd64 hard gate; arm64 warning-only)
         run: |
-          echo "━━━ Per-variant build results ━━━"
-          echo "  continuum-core:         ${{ needs.continuum-core.result }}"
-          echo "  continuum-core-cuda:    ${{ needs.continuum-core-cuda.result }}"
-          echo "  continuum-core-vulkan:  ${{ needs.continuum-core-vulkan.result }}"
-          echo "  livekit-bridge:         ${{ needs.livekit-bridge.result }}"
-          echo "  node-server:            ${{ needs.node-server.result }}"
-          echo "  model-init:             ${{ needs.model-init.result }}"
-          echo "  widget-server:          ${{ needs.widget-server.result }}"
-
-      - name: Verify amd64-only cuda image
-        run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          IMAGE="ghcr.io/cambriantech/continuum-core-cuda:$TAG"
-          echo "━━━ Checking $IMAGE (amd64-only) ━━━"
-          if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
-            echo "  ❌ MISSING — image not in registry. Build job result: ${{ needs.continuum-core-cuda.result }}"
-            echo "  $MANIFEST"
-            exit 1
-          fi
-          if echo "$MANIFEST" | grep -q "linux/amd64"; then
-            echo "  ✅ linux/amd64 present"
-          else
-            echo "  ❌ linux/amd64 MISSING"
-            exit 1
-          fi
-
-      - name: Verify Rust-heavy images (amd64 from CI; arm64 out-of-band via pre-push)
-        run: |
-          # Rust-heavy images: CI pushes amd64-only (native on GHA runner,
-          # fast). linux/arm64 is produced by dev machines via pre-push
-          # hook + scripts/push-current-arch.sh. This PR's v1 gates on
-          # amd64-only for these three; the full arm64-coverage gate comes
-          # when we wire the manifest-combine step (see PERSONA-AS-RUST-
-          # LIBRARY-PLAN.md). Until then, arm64 users pull arch-suffixed
-          # tags pushed out-of-band; missing arm64 is a warning, not a block.
+          # Rust-heavy images: core, vulkan, livekit-bridge, cuda.
+          # amd64 is the hard gate (BigMama pushes it, or any Linux amd64
+          # machine). arm64 is warning-only in v1 until the manifest-
+          # combine step lands (arm64 lives at a different tag while
+          # single-arch push overwrites the main tag).
           TAG="${{ steps.tag.outputs.tag }}"
           RUST_IMAGES=(
             "ghcr.io/cambriantech/continuum-core:$TAG"
@@ -480,39 +91,61 @@ jobs:
           )
           FAILED=0
           for IMAGE in "${RUST_IMAGES[@]}"; do
-            echo "━━━ Checking $IMAGE (amd64 required; arm64 warning-only) ━━━"
+            echo "━━━ $IMAGE ━━━"
             if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
-              echo "  ❌ MISSING — image not in registry. Build job result check above."
-              echo "  $MANIFEST"
+              echo "  ❌ MISSING in registry"
+              echo "     Run on a Linux amd64 host: scripts/push-current-arch.sh"
+              echo "     (Or on BigMama if you want CUDA variants too.)"
+              echo "  Error: $MANIFEST"
               FAILED=1
               continue
             fi
             if echo "$MANIFEST" | grep -q "linux/amd64"; then
               echo "  ✅ linux/amd64 present"
             else
-              echo "  ❌ linux/amd64 MISSING (CI should have published this)"
+              echo "  ❌ linux/amd64 MISSING"
+              echo "     Run on a Linux amd64 host: scripts/push-current-arch.sh"
               FAILED=1
             fi
             if echo "$MANIFEST" | grep -q "linux/arm64"; then
-              echo "  ✅ linux/arm64 present (pushed out-of-band)"
+              echo "  ✅ linux/arm64 present"
             else
-              echo "  ⚠️  linux/arm64 missing — run on Mac: scripts/push-current-arch.sh"
-              echo "     (not blocking v1; blocks once manifest-combine step lands)"
+              echo "  ⚠️  linux/arm64 missing (warning-only until manifest-combine lands)"
+              echo "     Run on this Mac: scripts/push-current-arch.sh"
             fi
           done
+
+          # CUDA variant is amd64-only by design (NVIDIA Container Toolkit
+          # is practical-amd64). Check it separately so the "arm64 warning"
+          # message doesn't confuse readers.
+          CUDA_IMAGE="ghcr.io/cambriantech/continuum-core-cuda:$TAG"
+          echo "━━━ $CUDA_IMAGE (amd64-only by design) ━━━"
+          if ! MANIFEST=$(docker buildx imagetools inspect "$CUDA_IMAGE" 2>&1); then
+            echo "  ❌ MISSING in registry"
+            echo "     Run on BigMama (Nvidia amd64): scripts/push-current-arch.sh"
+            FAILED=1
+          elif echo "$MANIFEST" | grep -q "linux/amd64"; then
+            echo "  ✅ linux/amd64 present"
+          else
+            echo "  ❌ linux/amd64 MISSING"
+            FAILED=1
+          fi
+
           if [ "$FAILED" -ne 0 ]; then
             echo ""
-            echo "❌ RUST-IMAGE amd64 COVERAGE FAILED"
-            echo "   One or more continuum-core / vulkan / livekit-bridge images"
-            echo "   missing their linux/amd64 manifest (CI should publish it)."
-            echo "   Check the build job logs above for the actual failure."
+            echo "❌ RUST-IMAGE COVERAGE FAILED — see errors above."
+            echo "   Dev machines are authoritative for Docker builds."
+            echo "   Run scripts/push-current-arch.sh on a host with the"
+            echo "   right native arch, then re-trigger this workflow."
             exit 1
           fi
 
-      - name: Verify TS-only images (both arches required; QEMU-built in CI)
+      - name: Verify TS-only images (both arches required)
         run: |
-          # TS-only images build fast enough in QEMU that CI still produces
-          # both arches directly. These MUST be complete for merge.
+          # TS-only images: node-server, model-init, widgets. No Rust
+          # compile, so building them on either arch is fast. Dev
+          # machines push both arches for these (push-current-arch.sh
+          # handles via QEMU since the cost is low on TS-only builds).
           TAG="${{ steps.tag.outputs.tag }}"
           LIGHT_IMAGES=(
             "ghcr.io/cambriantech/continuum-node:$TAG"
@@ -521,10 +154,10 @@ jobs:
           )
           FAILED=0
           for IMAGE in "${LIGHT_IMAGES[@]}"; do
-            echo "━━━ Checking $IMAGE ━━━"
+            echo "━━━ $IMAGE ━━━"
             if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
-              echo "  ❌ MISSING — image not in registry"
-              echo "  $MANIFEST"
+              echo "  ❌ MISSING in registry"
+              echo "     Run: scripts/push-current-arch.sh (either machine is fine)"
               FAILED=1
               continue
             fi
@@ -536,30 +169,22 @@ jobs:
                 FAILED=1
               fi
             done
-            echo "  Testing amd64 pull + run..."
-            docker pull --platform linux/amd64 "$IMAGE" > /dev/null 2>&1
-            if docker run --rm --platform linux/amd64 "$IMAGE" true 2>/dev/null || \
-               docker run --rm --platform linux/amd64 "$IMAGE" echo "ok" 2>/dev/null; then
-              echo "  ✅ amd64 runs"
+            # Smoke-pull amd64 on the runner (native arch, fast)
+            echo "  Testing amd64 pull..."
+            if docker pull --platform linux/amd64 "$IMAGE" > /dev/null 2>&1; then
+              echo "  ✅ amd64 pulls cleanly"
             else
-              echo "  ✅ amd64 pulled (entrypoint needs services)"
-            fi
-            echo "  Testing arm64 pull..."
-            if docker pull --platform linux/arm64 "$IMAGE" > /dev/null 2>&1; then
-              echo "  ✅ arm64 pulled"
-            else
-              echo "  ❌ arm64 pull FAILED"
+              echo "  ❌ amd64 pull FAILED"
               FAILED=1
             fi
           done
           if [ "$FAILED" -ne 0 ]; then
             echo ""
-            echo "❌ TS-IMAGE COVERAGE FAILED"
-            echo "   node-server / model-init / widgets missing architectures."
-            echo "   CI is the authoritative source for these — check build logs above."
+            echo "❌ TS-IMAGE COVERAGE FAILED — see errors above."
             exit 1
           fi
           echo ""
           echo "✅ All images verified at tag $TAG"
-          echo "   Rust-heavy (core/vulkan/livekit-bridge): amd64 checked; arm64 out-of-band via pre-push"
-          echo "   TS-only (node/model-init/widgets): both arches verified"
+          echo "   Rust-heavy (core/vulkan/livekit-bridge): amd64 hard, arm64 warning"
+          echo "   Rust-CUDA (continuum-core-cuda): amd64 only (by design)"
+          echo "   TS-only (node/model-init/widgets): both arches required"

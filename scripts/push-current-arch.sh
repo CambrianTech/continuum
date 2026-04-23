@@ -42,26 +42,25 @@ ARCH="$(uname -m)"
 case "$OS/$ARCH" in
   Darwin/arm64)
     # Mac M-series: linux/arm64 is natively buildable via Docker Desktop's
-    # Linux VM. Vulkan is the Carl-on-Mac backend. Core is the CPU-only
-    # baseline. CUDA requires Nvidia hardware — skipped on Mac.
+    # Linux VM. Carl on Mac uses vulkan. Core is CPU-only baseline.
+    # livekit-bridge is the WebRTC bridge. CUDA requires Nvidia hardware
+    # — skipped on Mac.
     HOST_PLATFORM="linux/arm64"
-    DEFAULT_VARIANTS=("vulkan" "core")
+    HEAVY_VARIANTS=("vulkan" "core" "livekit-bridge")
     ;;
   Linux/x86_64)
-    # Linux amd64: native platform. Core + vulkan always; CUDA only when
-    # Nvidia driver is present (nvidia-smi reports a GPU). nvcc isn't
-    # required here — push-image.sh's Phase 0 handles its own detection.
+    # Linux amd64: native platform. Core + vulkan + livekit-bridge always;
+    # CUDA only when Nvidia driver is present (nvidia-smi reports a GPU).
     HOST_PLATFORM="linux/amd64"
-    DEFAULT_VARIANTS=("core" "vulkan")
+    HEAVY_VARIANTS=("core" "vulkan" "livekit-bridge")
     if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
-      DEFAULT_VARIANTS+=("cuda")
+      HEAVY_VARIANTS+=("cuda")
     fi
     ;;
   Linux/aarch64 | Linux/arm64)
-    # Linux arm64 (e.g. a Raspberry Pi, Nvidia Jetson, or ARM cloud host).
-    # Native linux/arm64 slices of core + vulkan.
+    # Linux arm64 (e.g. Raspberry Pi, Nvidia Jetson, ARM cloud host).
     HOST_PLATFORM="linux/arm64"
-    DEFAULT_VARIANTS=("core" "vulkan")
+    HEAVY_VARIANTS=("core" "vulkan" "livekit-bridge")
     ;;
   *)
     echo "ERROR: push-current-arch.sh — unsupported host $OS/$ARCH" >&2
@@ -70,51 +69,116 @@ case "$OS/$ARCH" in
     ;;
 esac
 
-# VARIANT env var lets a caller override the default set (useful for
-# iterating on one variant without the full ~20+ min for all three).
+# Light (TS-only) images: node-server, model-init, widget-server.
+# These are small Node.js / static-content Dockerfiles with no Rust
+# compile, so they build in <2 min even via QEMU. Multi-arch in one
+# pass is fine. We push them on every dev-machine run so both arches
+# stay current — last push wins for the manifest, but since builds are
+# fast and fully reproducible from source, "last wins" is fine.
+LIGHT_IMAGES=(
+  "continuum-node:docker/node-server.Dockerfile:./src"
+  "continuum-model-init:docker/model-init.Dockerfile:./src"
+  "continuum-widgets:docker/widget-server.Dockerfile:./src"
+)
+
+# VARIANT env var lets a caller override the default heavy set (useful
+# for iterating on one variant without the full ~20+ min cost).
 if [[ -n "${VARIANT:-}" ]]; then
-  VARIANTS=("$VARIANT")
-else
-  VARIANTS=("${DEFAULT_VARIANTS[@]}")
+  HEAVY_VARIANTS=("$VARIANT")
 fi
 
+# SKIP_LIGHT=1 skips the TS-only image push (e.g. iterating on Rust only).
+# SKIP_HEAVY=1 skips the Rust-heavy push (e.g. only updating widgets).
+SKIP_LIGHT="${SKIP_LIGHT:-0}"
+SKIP_HEAVY="${SKIP_HEAVY:-0}"
+
 cd "$REPO_ROOT"
+
+REGISTRY="ghcr.io/cambriantech"
+SHA="$(git rev-parse --short HEAD)"
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+BRANCH_TAG="$(echo "$BRANCH" | tr '/' '-')"
+PR_NUMBER="${PR_NUMBER:-}"
+if [[ -z "$PR_NUMBER" ]] && command -v gh >/dev/null 2>&1; then
+  PR_NUMBER="$(gh pr list --head "$BRANCH" --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  push-current-arch: $OS/$ARCH → $HOST_PLATFORM"
-echo "  variants: ${VARIANTS[*]}"
+echo "  heavy:  ${HEAVY_VARIANTS[*]}"
+echo "  light:  $(if [[ "$SKIP_LIGHT" -eq 0 ]]; then echo "node + model-init + widgets"; else echo "(skipped)"; fi)"
+echo "  branch: $BRANCH"
+echo "  sha:    $SHA"
+[[ -n "$PR_NUMBER" ]] && echo "  pr:     #$PR_NUMBER"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# Phase 0 opt-out (cargo test gate inside push-image.sh). Propagated via
-# a simple wrapper — push-image.sh doesn't read this env var itself but
-# editing it to would be a bigger change than we want here.
-export SKIP_PHASE_0="${SKIP_PHASE_0:-0}"
+# ── Heavy variants (Rust-compiling, native arch only) ───────────────
+if [[ "$SKIP_HEAVY" -eq 0 ]]; then
+  for V in "${HEAVY_VARIANTS[@]}"; do
+    case "$V" in
+      cuda)
+        # CUDA variant is always linux/amd64. If HOST_PLATFORM is arm64,
+        # this machine can't build cuda natively — skip with a note.
+        if [[ "$HOST_PLATFORM" != "linux/amd64" ]]; then
+          echo "→ Skipping cuda (requires linux/amd64 host; this is $HOST_PLATFORM)"
+          continue
+        fi
+        echo "→ scripts/push-image.sh cuda"
+        "$SCRIPT_DIR/push-image.sh" cuda
+        ;;
+      core|vulkan|livekit-bridge)
+        echo "→ scripts/push-image.sh $V $HOST_PLATFORM"
+        "$SCRIPT_DIR/push-image.sh" "$V" "$HOST_PLATFORM"
+        ;;
+      *)
+        echo "WARN: unknown heavy variant '$V' — skipped" >&2
+        ;;
+    esac
+  done
+fi
 
-for V in "${VARIANTS[@]}"; do
-  case "$V" in
-    cuda)
-      # CUDA variant is always linux/amd64. If HOST_PLATFORM is arm64,
-      # this machine can't build cuda natively — skip with a note.
-      if [[ "$HOST_PLATFORM" != "linux/amd64" ]]; then
-        echo "→ Skipping cuda (requires linux/amd64 host; this is $HOST_PLATFORM)"
-        continue
-      fi
-      echo "→ scripts/push-image.sh cuda  (linux/amd64 default)"
-      "$SCRIPT_DIR/push-image.sh" cuda
-      ;;
-    core|vulkan)
-      echo "→ scripts/push-image.sh $V $HOST_PLATFORM"
-      "$SCRIPT_DIR/push-image.sh" "$V" "$HOST_PLATFORM"
-      ;;
-    *)
-      echo "WARN: unknown variant '$V' — skipped" >&2
-      ;;
-  esac
-done
+# ── Light variants (TS-only, multi-arch via QEMU is fast) ───────────
+# These are direct `docker buildx build --push` invocations rather than
+# going through push-image.sh — the script's Rust-shaped phases (cargo
+# test gate, slice tests) don't apply to TS-only Dockerfiles.
+if [[ "$SKIP_LIGHT" -eq 0 ]]; then
+  echo ""
+  echo "→ Building light TS images (multi-arch via QEMU; fast, no Rust)"
+
+  if ! docker buildx inspect continuum-builder &>/dev/null; then
+    docker buildx create --name continuum-builder --use >/dev/null
+  else
+    docker buildx use continuum-builder >/dev/null
+  fi
+
+  for ENTRY in "${LIGHT_IMAGES[@]}"; do
+    IFS=':' read -r IMAGE DOCKERFILE CONTEXT <<< "$ENTRY"
+    TAG_SHA="$REGISTRY/$IMAGE:$SHA"
+    TAG_BRANCH="$REGISTRY/$IMAGE:$BRANCH_TAG"
+    LIGHT_TAGS=(--tag "$TAG_SHA" --tag "$TAG_BRANCH")
+    [[ "$BRANCH" == "main" ]] && LIGHT_TAGS+=(--tag "$REGISTRY/$IMAGE:latest")
+    [[ -n "$PR_NUMBER" ]] && LIGHT_TAGS+=(--tag "$REGISTRY/$IMAGE:pr-$PR_NUMBER")
+
+    echo ""
+    echo "→ docker buildx build --push  $IMAGE  (multi-arch)"
+    docker buildx build \
+      --platform "linux/amd64,linux/arm64" \
+      --file "$DOCKERFILE" \
+      "${LIGHT_TAGS[@]}" \
+      --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
+      --cache-to   "type=registry,ref=$REGISTRY/$IMAGE:buildcache,mode=max" \
+      --push \
+      "$CONTEXT"
+    echo "✓ Pushed: $TAG_SHA"
+  done
+fi
 
 echo ""
-echo "✓ push-current-arch: done — pushed ${VARIANTS[*]} for $HOST_PLATFORM"
-echo "  CI will verify coverage across both arches at merge time."
-echo "  If the OTHER arch is missing, a dev on that machine runs the same script."
+echo "✓ push-current-arch: complete"
+echo "  Heavy variants ($HOST_PLATFORM): ${HEAVY_VARIANTS[*]}"
+[[ "$SKIP_LIGHT" -eq 0 ]] && echo "  Light variants (multi-arch): node, model-init, widgets"
+echo ""
+echo "  CI's verify-architectures gates merge. If a required image is missing,"
+echo "  CI's error message tells you which machine/script to run."
