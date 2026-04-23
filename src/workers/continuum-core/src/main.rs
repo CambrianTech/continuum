@@ -74,11 +74,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    // Parse command line arguments
+    // Parse command line arguments. argv[1] is the IPC socket path (positional)
+    // — but intercept flag-like values FIRST so `--version` and `--help` don't
+    // get treated as a socket path. Without this, `continuum-core-server
+    // --version` boots the server with "/--version" as the socket path
+    // and prints "IPC Socket: --version" — confusing for anyone trying to
+    // verify the binary works (Carl's first instinct after `docker pull`).
     let args: Vec<String> = env::args().collect();
+    if args.len() >= 2 {
+        match args[1].as_str() {
+            "-V" | "--version" | "version" => {
+                println!("continuum-core-server {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "-h" | "--help" | "help" => {
+                println!("Usage: {} <socket-path>", args[0]);
+                println!("Example: {} /tmp/continuum-core.sock", args[0]);
+                println!();
+                println!("Flags:");
+                println!("  -V, --version    Print version and exit");
+                println!("  -h, --help       Print this help and exit");
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
     if args.len() < 2 {
         eprintln!("Usage: {} <socket-path>", args[0]);
         eprintln!("Example: {} /tmp/continuum-core.sock", args[0]);
+        eprintln!("Try `{} --help` for more.", args[0]);
         std::process::exit(1);
     }
 
