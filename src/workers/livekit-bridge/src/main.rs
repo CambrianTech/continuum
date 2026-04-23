@@ -31,9 +31,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
+    // Parse command line arguments. argv[1] is the IPC socket path (positional)
+    // — but intercept flag-like values FIRST so `--version` and `--help` don't
+    // get treated as a socket path. Without this, `livekit-bridge --version`
+    // boots trying to bind "/--version" as the socket path, hanging on a
+    // connection that never arrives. Same failure mode as continuum-core-server
+    // before a79bd56f0 fixed that; Carl runs `docker pull` then tries --version
+    // to verify the image works, and gets a hang instead of a version string.
     let args: Vec<String> = env::args().collect();
+    if args.len() >= 2 {
+        match args[1].as_str() {
+            "-V" | "--version" | "version" => {
+                println!("livekit-bridge {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "-h" | "--help" | "help" => {
+                println!("Usage: {} <socket-path> [--livekit-url <url>]", args[0]);
+                println!("Example: {} /tmp/livekit-bridge.sock", args[0]);
+                println!();
+                println!("Flags:");
+                println!("  -V, --version           Print version and exit");
+                println!("  -h, --help              Print this help and exit");
+                println!("      --livekit-url URL   LiveKit server URL (default ws://localhost:7880, or $LIVEKIT_URL)");
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
     if args.len() < 2 {
         eprintln!("Usage: {} <socket-path> [--livekit-url <url>]", args[0]);
+        eprintln!("Try `{} --help` for more.", args[0]);
         std::process::exit(1);
     }
 
