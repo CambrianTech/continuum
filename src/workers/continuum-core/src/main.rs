@@ -37,6 +37,23 @@ use tracing_subscriber::FmtSubscriber;
 
 /// Install signal handlers that kill all sentinel process groups on shutdown.
 /// This prevents orphaned training processes from eating memory after npm stop.
+///
+/// Exit semantics: we use `libc::_exit` (the syscall) instead of
+/// `std::process::exit` (which runs C++ static destructors via
+/// `__cxa_finalize_ranges`). Reason: the process holds raw pointers to
+/// llama.cpp objects (Model, Context, LoraAdapter, MtmdContext) whose Rust
+/// `Drop` impls call `llama_*_free` from libllama. If those drops race with
+/// libllama's own static destructors during atexit teardown, we double-free
+/// and SIGABRT. The crash signature is:
+///   `tokio-rt-worker → __cxa_finalize_ranges → continuum-core destructor → abort()`
+///
+/// `_exit` skips all atexit handlers + Rust drops + libc cleanup → kernel
+/// reclaims memory + closes FDs + unmaps mmaps. Buffered stdout would be
+/// lost, but tracing writes to stderr per-line and we eprintln! the
+/// shutdown message before exiting, so no diagnostic loss in practice.
+///
+/// The `Drop` impls remain correct for normal lifetime — model unload,
+/// context swap, etc. We're only short-circuiting the process-exit path.
 fn install_shutdown_handlers() {
     // SIGTERM (from npm stop / kill / system-stop.sh)
     tokio::spawn(async {
@@ -47,7 +64,7 @@ fn install_shutdown_handlers() {
             eprintln!("[continuum-core] SIGTERM — killing sentinel process groups");
             continuum_core::modules::sentinel::shutdown_all_sentinels();
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            std::process::exit(0);
+            unsafe { libc::_exit(0) };
         }
     });
 
@@ -60,7 +77,7 @@ fn install_shutdown_handlers() {
             eprintln!("[continuum-core] SIGINT — killing sentinel process groups");
             continuum_core::modules::sentinel::shutdown_all_sentinels();
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            std::process::exit(0);
+            unsafe { libc::_exit(0) };
         }
     });
 }
