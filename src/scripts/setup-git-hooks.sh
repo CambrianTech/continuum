@@ -1,59 +1,66 @@
 #!/bin/bash
-# Git Hook Setup Script - Makes hidden .git/hooks/ visible and manageable
+# Git Hook Setup Script — installs hooks from src/scripts/git-*.sh into
+# .git/hooks/ as thin delegators that resolve their target via
+# `git rev-parse --show-toplevel`. Each delegator is installed only if
+# its target script exists; missing targets are skipped silently so this
+# script can run idempotently after a partial cleanup.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+if [[ -z "$REPO_ROOT" ]]; then
+  echo "setup-git-hooks: not inside a git checkout — skipping" >&2
+  exit 0
+fi
+
+HOOKS_DIR="$REPO_ROOT/.git/hooks"
+SRC_DIR="$REPO_ROOT/src/scripts"
+mkdir -p "$HOOKS_DIR"
 
 echo "🔗 GIT HOOKS: Setting up repository validation hooks"
 echo "=================================================="
 
-# Ensure hooks directory exists
-mkdir -p .git/hooks
+INSTALLED=()
+SKIPPED=()
 
-# Setup pre-commit hook
-echo "📋 Installing pre-commit hook → src/scripts/git-precommit.sh"
-cat > .git/hooks/pre-commit << 'EOF'
-#!/bin/bash
-# Git pre-commit hook — delegates to src/scripts/git-precommit.sh.
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-exec "$REPO_ROOT/src/scripts/git-precommit.sh" "$@"
-EOF
-chmod +x .git/hooks/pre-commit
+install_hook() {
+  local hook_name="$1"      # e.g. pre-commit
+  local target_script="$2"  # e.g. git-precommit.sh
+  local description="$3"    # human-readable
 
-# Setup post-commit hook
-echo "📋 Installing post-commit hook → src/scripts/git-postcommit.sh"
-cat > .git/hooks/post-commit << 'EOF'
-#!/bin/bash
-# Git post-commit hook — delegates to src/scripts/git-postcommit.sh.
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-exec "$REPO_ROOT/src/scripts/git-postcommit.sh" "$@"
-EOF
-chmod +x .git/hooks/post-commit
+  local target_path="$SRC_DIR/$target_script"
+  local hook_path="$HOOKS_DIR/$hook_name"
 
-# Setup pre-push hook
-# Hook resolves the script path relative to the repo root via
-# `git rev-parse --show-toplevel` so it works regardless of the cwd
-# git invokes the hook from. Previous version used `./scripts/...`
-# which broke when the install ran from src/ and the user pushed from
-# the repo root.
-echo "📋 Installing pre-push hook → src/scripts/git-prepush.sh"
-cat > .git/hooks/pre-push << 'EOF'
+  if [[ ! -f "$target_path" ]]; then
+    echo "⏭️  Skipping $hook_name → src/scripts/$target_script (target script not present)"
+    SKIPPED+=("$hook_name")
+    return 0
+  fi
+
+  echo "📋 Installing $hook_name → src/scripts/$target_script — $description"
+  cat > "$hook_path" <<EOF
 #!/bin/bash
-# Git pre-push hook — delegates to src/scripts/git-prepush.sh.
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-exec "$REPO_ROOT/src/scripts/git-prepush.sh" "$@"
+# Git $hook_name hook — delegates to src/scripts/$target_script.
+REPO_ROOT="\$(git rev-parse --show-toplevel)"
+exec "\$REPO_ROOT/src/scripts/$target_script" "\$@"
 EOF
-chmod +x .git/hooks/pre-push
+  chmod +x "$hook_path"
+  INSTALLED+=("$hook_name")
+}
+
+install_hook pre-commit  git-precommit.sh  "Comprehensive CRUD + state validation"
+install_hook post-commit git-postcommit.sh "Post-commit cleanup"
+install_hook pre-push    git-prepush.sh    "Compile + test + native-arch docker push"
 
 echo ""
-echo "✅ Git hooks installed successfully!"
+echo "✅ Git hooks setup complete"
 echo "=================================================="
-echo "📁 Hook scripts (visible and editable):"
-echo "   • scripts/git-precommit.sh   - Comprehensive CRUD + State validation"
-echo "   • scripts/git-postcommit.sh  - Cleanup after successful commit"
-echo "   • scripts/git-prepush.sh     - Lightweight pre-push checks"
-echo ""
-echo "🔗 Git integration (hidden but managed):"
-echo "   • .git/hooks/pre-commit   → scripts/git-precommit.sh"
-echo "   • .git/hooks/post-commit  → scripts/git-postcommit.sh"
-echo "   • .git/hooks/pre-push     → scripts/git-prepush.sh"
+if [[ ${#INSTALLED[@]} -gt 0 ]]; then
+  echo "📁 Installed: ${INSTALLED[*]}"
+fi
+if [[ ${#SKIPPED[@]} -gt 0 ]]; then
+  echo "⏭️  Skipped (target script missing): ${SKIPPED[*]}"
+fi
 echo ""
 echo "🛠️ Management commands:"
 echo "   npm run hooks:setup     - Run this script"
