@@ -243,7 +243,13 @@ pub fn render_chat(
                 chat.as_ptr(),
                 chat.len(),
                 add_assistant,
-                buf.as_mut_ptr(),
+                // Cast to *mut c_char so the call type-checks on both
+                // macOS (c_char = i8) and Linux (c_char = u8). Without
+                // this cast the bare *mut i8 from Vec<i8>::as_mut_ptr()
+                // mismatches Linux's *mut u8 expectation, breaking the
+                // docker Linux build (caught by pre-push docker phase
+                // on commit fa4b1034d's push attempt).
+                buf.as_mut_ptr() as *mut std::os::raw::c_char,
                 buf.len() as i32,
             )
         }
