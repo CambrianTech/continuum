@@ -76,6 +76,59 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Verifying coverage at tag: $TAG"
 
+      - name: Login to ghcr (read access for inspect, write for alias)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Alias :<sha> → :pr-<N> if needed (closes the first-push chicken-egg)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Closes the chicken-and-egg between pre-push and PR creation:
+          # the pre-push hook only knows the PR number AFTER the PR exists,
+          # so the very first push to a new feature branch tags images as
+          # :<sha> and :<branch> only — the :pr-<N> tag doesn't exist yet.
+          # When the developer opens the PR, CI fires here, sees :<sha> in
+          # the registry, and aliases it as :pr-<N> via a cheap manifest-
+          # only registry op (no rebuild, no data transfer). Verify-
+          # architectures below then finds :pr-<N> and passes.
+          #
+          # Subsequent pushes to the same PR have :pr-<N> already (pre-push
+          # picks it up via gh pr list), so the alias is a no-op. Idempotent.
+          PR_TAG="pr-${{ github.event.pull_request.number }}"
+          # github.event.pull_request.head.sha is the PR branch's HEAD commit.
+          # push-image.sh tags images with `git rev-parse --short HEAD` (7 chars
+          # by default), so we slice the same length here for the alias source.
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          SHORT_SHA="${HEAD_SHA:0:7}"
+          echo "PR_TAG=$PR_TAG  SHORT_SHA=$SHORT_SHA"
+
+          IMAGES=(
+            continuum-core
+            continuum-core-vulkan
+            continuum-core-cuda
+            continuum-livekit-bridge
+            continuum-node
+            continuum-model-init
+            continuum-widgets
+          )
+          for IMG in "${IMAGES[@]}"; do
+            FULL="ghcr.io/cambriantech/$IMG"
+            if docker buildx imagetools inspect "$FULL:$PR_TAG" >/dev/null 2>&1; then
+              echo "  ✅ $FULL:$PR_TAG already exists"
+              continue
+            fi
+            if docker buildx imagetools inspect "$FULL:$SHORT_SHA" >/dev/null 2>&1; then
+              echo "  → Aliasing $FULL:$SHORT_SHA → $FULL:$PR_TAG"
+              docker buildx imagetools create --tag "$FULL:$PR_TAG" "$FULL:$SHORT_SHA"
+            else
+              echo "  ⚠️  $FULL: neither :$PR_TAG nor :$SHORT_SHA in registry"
+              echo "     Verify step below will report this as missing."
+            fi
+          done
+
       - name: Verify Rust-heavy images (amd64 hard gate; arm64 warning-only)
         run: |
           # Rust-heavy images: core, vulkan, livekit-bridge, cuda.
