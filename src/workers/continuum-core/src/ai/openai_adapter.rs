@@ -624,6 +624,31 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "stream": false
         });
 
+        // DMR-specific: llama.cpp's OpenAI-compatible server accepts the
+        // llama.cpp-native `repeat_penalty` field as an extension. Until
+        // this patch the POST body shipped ONLY the 5 fields above, so
+        // DMR inference ran with repeat_penalty=1.0 (llama.cpp default,
+        // disabled) and produced runaway repetition — empirically verified
+        // 2026-04-24 on Linux/CUDA Carl stack: qwen3.5-4b-code-forged
+        // reprinted the same <think> paragraph 10-40 times then burned
+        // max_tokens without emitting a real reply. Meanwhile the
+        // in-process llamacpp_adapter path defaults
+        // `sampling.repeat_penalty = 1.1` (backends/mod.rs:195,205) and
+        // does NOT exhibit this failure mode on Mac Metal. Classic RULE 1
+        // divergence (integration test path ≠ production path).
+        //
+        // Scoped to docker-model-runner ONLY because cloud OpenAI-compat
+        // providers (openai, groq, xai, fireworks, together) do NOT accept
+        // `repeat_penalty` (non-standard field); some ignore it silently,
+        // others reject. Behavior parity with pre-patch for those
+        // providers is preserved by gating on provider_id.
+        if self.config.provider_id == "docker-model-runner" {
+            let rp = request.repeat_penalty.unwrap_or(1.1);
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("repeat_penalty".to_string(), json!(rp));
+            }
+        }
+
         // Forward response_format when set. Llama.cpp/DMR DO grammar-constrain
         // JSON output, but for qwen3.5 reasoning models the model still
         // emits its <think> reasoning BEFORE the constrained JSON region,
