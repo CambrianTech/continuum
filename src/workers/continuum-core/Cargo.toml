@@ -190,8 +190,8 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 # only crates into their dep tree on every host.
 default = ["livekit-webrtc"]
 livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda"]
 # Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
 # Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
 # to MoltenVK on the host, which translates to Metal. Also valid on Linux

@@ -219,8 +219,28 @@ impl MoonshineStt {
     /// Build an ONNX session with standard settings
     fn build_session(model_path: &Path) -> Result<Session, STTError> {
         let threads = num_cpus::get().min(4);
-        Session::builder()
-            .map_err(|e| STTError::ModelNotLoaded(format!("Session builder failed: {e}")))?
+        let mut builder = Session::builder()
+            .map_err(|e| STTError::ModelNotLoaded(format!("Session builder failed: {e}")))?;
+        // GPU EP first → fall back to CPU for unsupported ops. Without this,
+        // Moonshine STT matmul ran on MLAS CPU kernels per voice input. See
+        // #964. Only attaches when the corresponding build feature +
+        // target_os are enabled — non-Mac/non-CUDA paths remain CPU-only
+        // with no behavior change.
+        #[cfg(all(feature = "coreml", target_os = "macos"))]
+        {
+            use ort::execution_providers::CoreMLExecutionProvider;
+            builder = builder
+                .with_execution_providers([CoreMLExecutionProvider::default().build()])
+                .map_err(|e| STTError::ModelNotLoaded(format!("CoreML EP register failed: {e}")))?;
+        }
+        #[cfg(all(feature = "cuda", not(target_os = "macos")))]
+        {
+            use ort::execution_providers::CUDAExecutionProvider;
+            builder = builder
+                .with_execution_providers([CUDAExecutionProvider::default().build()])
+                .map_err(|e| STTError::ModelNotLoaded(format!("CUDA EP register failed: {e}")))?;
+        }
+        builder
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| STTError::ModelNotLoaded(format!("Optimization level failed: {e}")))?
             .with_intra_threads(threads)

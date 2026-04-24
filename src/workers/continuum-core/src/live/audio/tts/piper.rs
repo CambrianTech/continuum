@@ -181,10 +181,28 @@ impl TextToSpeech for PiperTTS {
 
         clog_info!("Loading Piper model from: {:?}", model_path);
 
-        let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(num_cpus::get().min(4))?
-            .commit_from_file(&model_path)?;
+        let session = {
+            let mut builder = Session::builder()?;
+            // GPU EP first → fall back to CPU for unsupported ops. Without
+            // this, Piper TTS matmul lands on MLAS CPU kernels (per-response
+            // CPU spike). See #964. Only attaches when the corresponding
+            // build feature + target_os are enabled — non-Mac/non-CUDA paths
+            // remain CPU-only with no behavior change.
+            #[cfg(all(feature = "coreml", target_os = "macos"))]
+            {
+                use ort::execution_providers::CoreMLExecutionProvider;
+                builder = builder.with_execution_providers([CoreMLExecutionProvider::default().build()])?;
+            }
+            #[cfg(all(feature = "cuda", not(target_os = "macos")))]
+            {
+                use ort::execution_providers::CUDAExecutionProvider;
+                builder = builder.with_execution_providers([CUDAExecutionProvider::default().build()])?;
+            }
+            builder
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(num_cpus::get().min(4))?
+                .commit_from_file(&model_path)?
+        };
 
         // Load phonemizer from model config
         let config_path = model_path.with_extension("onnx.json");
