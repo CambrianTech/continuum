@@ -94,7 +94,13 @@ if [ -n "$TS_FILES" ]; then
     echo ""
 
     # Run ESLint on modified files only (paths relative to jtag dir)
-    LINT_OUTPUT=$(cd .. && echo "$TS_FILES" | xargs npx eslint --max-warnings 0 2>&1) || {
+    # --no-warn-ignored: silence the "File ignored because of a matching
+    # ignore pattern" warning that fires when a staged file matches the
+    # eslint.config ignore globs (e.g., scripts/**). The hook explicitly
+    # selects staged TS files and we'd rather lint nothing on the
+    # ignored ones than fail the commit on a meta-warning. Real lint
+    # errors on non-ignored files still fire normally under --max-warnings 0.
+    LINT_OUTPUT=$(cd .. && echo "$TS_FILES" | xargs npx eslint --max-warnings 0 --no-warn-ignored 2>&1) || {
         echo ""
         echo "╔════════════════════════════════════════════════════════════════╗"
         echo "║  ❌ TYPESCRIPT LINT FAILED - BLOCKING COMMIT                   ║"

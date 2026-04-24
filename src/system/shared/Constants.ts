@@ -170,6 +170,13 @@ export const LOCAL_MODELS = {
    *  Our own forged model — 70%+ HumanEval, runs on 8GB devices. */
   DEFAULT: 'continuum-ai/qwen3.5-4b-code-forged-GGUF',
 
+  /** Native-vision local model (Vision AI persona).
+   *  Bound to qwen2-vl-7b-instruct via the in-process llamacpp adapter
+   *  with mmproj. Single string lives here; personas.ts + models.toml +
+   *  any future caller all read this constant so a model swap is one edit.
+   *  See #963 for the eventual Rust↔TS shared source-of-truth. */
+  VISION: 'qwen2-vl-7b-instruct',
+
   /** Fast model for gating/classification tasks */
   GATING: 'Qwen/Qwen2-0.5B-Instruct',
 

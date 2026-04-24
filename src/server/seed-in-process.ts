@@ -103,7 +103,38 @@ class DatabaseSeeder {
       limit: 1,
       dbHandle: 'default',
     });
-    if (existing?.items?.[0]) return existing.items[0];
+    if (existing?.items?.[0]) {
+      // User exists. data:clear preserves users by design (line 24 of
+      // data-clear.ts: persona UUIDs are kept so memories don't orphan).
+      // BUT the persisted modelConfig may be stale — drifted from the
+      // current PersonaConfig as code changes the model id (e.g. when we
+      // rename the local default GGUF tag). If the seed-declared model
+      // differs from what's persisted, update in place. Without this, the
+      // persona keeps a stale model id forever and `cognition/respond`
+      // throws "model id 'X' not in registry" until the user manually
+      // reseeds. See #957/#959 follow-up — fresh-clear-then-restart on Mac
+      // exposed this exact gap because data:clear nukes rooms but keeps
+      // users; the resulting find-existing branch was skipping the
+      // create-time modelConfig set.
+      const found = existing.items[0];
+      if (provider && modelId) {
+        const current = (found as Record<string, unknown>).modelConfig as Record<string, unknown> | undefined;
+        const currentModel = current?.model as string | undefined;
+        const currentProvider = current?.provider as string | undefined;
+        if (currentModel !== modelId || currentProvider !== provider) {
+          const newConfig = getModelConfigForProvider(provider, modelId);
+          await DataUpdate.execute({
+            collection: UserEntity.collection,
+            dbHandle: 'default',
+            id: found.id,
+            data: { modelConfig: newConfig } as Partial<UserEntity>,
+          });
+          (found as Record<string, unknown>).modelConfig = newConfig;
+          console.log(`  🔧 Refreshed ${displayName} modelConfig: ${currentModel ?? '(unset)'} → ${modelId}`);
+        }
+      }
+      return found;
+    }
 
     const user = new UserEntity();
     user.uniqueId = uniqueId;
