@@ -357,12 +357,15 @@
   "engines": {
     "node": ">=16.0.0"
   },
+  "overrides": {
+    "@hono/node-server": ">=1.19.13"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.62",
     "@anthropic-ai/sdk": "^0.71.2",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
-    "@modelcontextprotocol/sdk": "^1.25.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@preact/signals-core": "^1.12.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/sqlite3": "^3.1.11",

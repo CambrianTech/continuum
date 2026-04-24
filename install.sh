@@ -269,6 +269,32 @@ if type ic_detect_hardware &>/dev/null; then
   ic_decide_gpu_path
   ic_describe_hardware
 
+  # Hard-fail on unsupported. Previously this case fell through silently:
+  # install.sh "completed", continuum runtime then errored on missing models.
+  # That's the silent-failure-is-failure rule — Carl deserves an actionable
+  # error at install time, not a confusing model-not-found at first chat.
+  if [ "$IC_GPU_PATH" = "unsupported" ]; then
+    cat >&2 <<EOF
+
+ERROR: Continuum can't auto-detect a supported GPU path on this machine.
+  Detected:  IC_PLATFORM=$IC_PLATFORM, IC_GPU_KIND=$IC_GPU_KIND
+  Supported: macos:metal, linux:cuda, linux:rocm, linux:vulkan,
+             wsl:cuda, wsl:vulkan, windows:cuda, windows:vulkan
+
+If your hardware IS one of those, the detector missed something. Check:
+  - macOS: 'sysctl -n machdep.cpu.brand_string' should mention "Apple"
+  - Linux/WSL CUDA: 'nvidia-smi' should print GPU info
+  - Linux ROCm: 'rocminfo' should print GPU info
+  - Linux/WSL/Windows Vulkan: 'vulkaninfo --summary' should list deviceName
+  - Windows CUDA: 'nvidia-smi' (Windows native) should print GPU info
+
+If your hardware truly isn't supported, Continuum can't run reliably here.
+File an issue at https://github.com/CambrianTech/continuum/issues with the
+output of: uname -a + nvidia-smi (if installed) + vulkaninfo --summary.
+EOF
+    exit 1
+  fi
+
   # Pull default persona model into DMR so Carl's first chat is instant.
   # Only for DMR paths — Vulkan path loads models differently (local GGUF).
   PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF"
