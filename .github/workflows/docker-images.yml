@@ -275,66 +275,11 @@ jobs:
       # service health, port bindings, docker-compose.yml syntax) at
       # PR time, not post-merge.
       - name: Install-and-run gate (CPU-only Carl path)
-        timeout-minutes: 8
+        timeout-minutes: 12
         env:
           CONTINUUM_IMAGE_TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          echo "━━━ Bringing up CPU compose stack at tag: $CONTINUUM_IMAGE_TAG ━━━"
-          # Use the repo's docker-compose.yml as-is. No GPU profile.
-          # `--quiet-pull` keeps the log readable; pulls were already
-          # warmed by the verify-architectures inspect calls above.
-          docker compose pull --quiet model-init livekit-bridge continuum-core node-server widget-server livekit
-          docker compose up -d model-init
-          echo "Waiting for model-init to complete (one-shot, downloads voice models)..."
-          # model-init exits 0 when done; tolerate up to 5 min for first run
-          for i in $(seq 1 60); do
-            STATUS=$(docker compose ps -a --format json model-init 2>/dev/null | head -1 | python3 -c "import sys,json; d=json.loads(sys.stdin.read() or '{}'); print(d.get('State',''))" 2>/dev/null)
-            if [ "$STATUS" = "exited" ]; then break; fi
-            sleep 5
-          done
-
-          echo ""
-          echo "━━━ Bringing up the runtime services ━━━"
-          docker compose up -d livekit livekit-bridge continuum-core node-server widget-server
-
-          echo ""
-          echo "━━━ Waiting for widget-server health on :9003 ━━━"
-          # widget-server is the user-facing port. If Carl's browser opens
-          # to localhost:9003 and gets a 200, install is functionally
-          # alive. Other services are reached via internal compose network.
-          HEALTHY=0
-          for i in $(seq 1 60); do
-            if curl -fsS -o /dev/null -w "%{http_code}" http://localhost:9003/ 2>/dev/null | grep -q "^2"; then
-              HEALTHY=1
-              echo "✅ widget-server responding on :9003"
-              break
-            fi
-            sleep 5
-          done
-
-          # Also check continuum-core IPC socket appeared (proves the Rust
-          # core booted, didn't panic on missing models.toml or similar).
-          # Look inside the container's mounted socket dir.
-          if docker compose exec -T continuum-core test -S /root/.continuum/sockets/continuum-core.sock 2>/dev/null; then
-            echo "✅ continuum-core IPC socket is up"
-          else
-            echo "⚠️  continuum-core IPC socket NOT up (may still be booting; surfacing as warning, not fail)"
-          fi
-
-          if [ "$HEALTHY" -ne 1 ]; then
-            echo ""
-            echo "❌ widget-server never returned 2xx on :9003 within 5min."
-            echo "   Dumping logs for diagnosis:"
-            for SVC in continuum-core node-server widget-server livekit-bridge livekit; do
-              echo ""
-              echo "━━━ $SVC ━━━"
-              docker compose logs --tail=50 "$SVC" 2>&1 || true
-            done
-            docker compose down -v 2>&1 || true
-            exit 1
-          fi
-
-          echo ""
-          echo "━━━ Tearing down ━━━"
-          docker compose down -v 2>&1 | tail -5
-          echo "✅ Install-and-run gate PASSED — Carl-class Docker install confirmed working at tag $CONTINUUM_IMAGE_TAG"
+        # Delegated to scripts/ci/install-and-run-gate.sh so CI and humans
+        # (bigmama-wsl, anvil, anyone) run the EXACT same gate via:
+        #   CONTINUUM_IMAGE_TAG=pr-950 bash scripts/ci/install-and-run-gate.sh
+        # Single source of truth, identical failure surface, easy local testing.
+        run: bash scripts/ci/install-and-run-gate.sh
