@@ -185,19 +185,28 @@ case "$VARIANT:$HOST_OS" in
       echo "→ Phase 0 skipped: variant=vulkan but libvulkan not installed on host"
     fi
     ;;
+  core:Darwin)
+    # Mac + core: Metal is the native backend AND required by llama
+    # crate's compile_error guard (commit 7f32bc04e) — without
+    # --features metal, cargo test fails at compile time. The old
+    # `core:*` branch below erroneously caught core:Darwin first and
+    # left NATIVE_FEATURE empty → Phase 0 crashed with compile_error
+    # instead of running tests. Explicit core:Darwin branch placed
+    # before core:* so Mac gets the feature set it needs.
+    NATIVE_FEATURE="metal,accelerate"
+    echo "→ Phase 0 using --features=metal,accelerate on Mac (variant=core)"
+    ;;
   core:*)
-    # Default features, no GPU required — always runnable.
+    # Non-Mac + core: Default features, no GPU required — always runnable.
     NATIVE_FEATURE=""  # Empty means default features (no --features flag)
     ;;
   *:Darwin)
-    # Mac can't build cuda or vulkan natively — cuda is x86-only Nvidia,
-    # vulkan on Mac needs MoltenVK setup we haven't wired. But Metal IS
-    # the native Mac backend; running `--features=metal` proves the
-    # llama crate + scheduler code is sound for the same Rust paths that
-    # the container will exercise via Vulkan kernels. Not identical, but
-    # close enough to catch most Rust regressions in seconds.
-    NATIVE_FEATURE="metal"
-    echo "→ Phase 0 using --features=metal on Mac (variant=$VARIANT builds in container)"
+    # Mac + any other variant (livekit-bridge, etc): still Metal for host-
+    # side Phase 0 validation. Docker build inside container uses its own
+    # feature set (cuda for continuum-core-cuda, vulkan for continuum-core-
+    # vulkan — those don't build natively on Mac anyway).
+    NATIVE_FEATURE="metal,accelerate"
+    echo "→ Phase 0 using --features=metal,accelerate on Mac (variant=$VARIANT builds in container)"
     ;;
 esac
 
