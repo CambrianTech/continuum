@@ -601,21 +601,38 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
     let content =
         gguf_file::Content::read(&mut file).map_err(|e| format!("Failed to read GGUF: {e}"))?;
 
+    // general.architecture is REQUIRED — silently falling back to "llama" would
+    // route a qwen/mistral/phi/etc. model through the wrong backend and produce
+    // garbage output or outright crash. Rule-2 violation (fallbacks are illegal)
+    // fixed 2026-04-23. If a GGUF is missing this metadata, that's a broken file,
+    // not a thing to paper over.
     let architecture = content
         .metadata
         .get("general.architecture")
         .and_then(|v| v.to_string().ok())
         .cloned()
-        .unwrap_or_else(|| "llama".to_string());
+        .ok_or_else(|| format!(
+            "GGUF {} is missing required metadata key 'general.architecture' — cannot \
+             determine backend. Silent fallback to 'llama' has been removed; fix the \
+             GGUF file or re-export it with proper metadata.",
+            path.display()
+        ))?;
 
-    // Try architecture-specific key first, then llama fallback
+    // Try architecture-specific key first, then llama fallback for the context_length
+    // key only (some older tools wrote 'llama.context_length' regardless of actual
+    // architecture). If neither exists, that's a broken GGUF, not a thing to guess 4096 for.
     let context_length = content
         .metadata
         .get(&format!("{architecture}.context_length"))
         .or_else(|| content.metadata.get("llama.context_length"))
         .and_then(|v| v.to_u32().ok())
         .map(|v| v as usize)
-        .unwrap_or(4096);
+        .ok_or_else(|| format!(
+            "GGUF {} (architecture={architecture}) is missing context_length metadata \
+             (tried '{architecture}.context_length' and 'llama.context_length'). Silent \
+             fallback to 4096 has been removed; fix the GGUF file.",
+            path.display()
+        ))?;
 
     let model_name = content
         .metadata
@@ -647,12 +664,18 @@ pub fn load_gguf_backend(
     let content =
         gguf_file::Content::read(&mut file).map_err(|e| format!("Failed to read GGUF: {e}"))?;
 
+    // Same fallback prohibition as parse_gguf_metadata above — broken GGUF
+    // metadata must surface as an error, not be guessed into the llama backend.
     let architecture = content
         .metadata
         .get("general.architecture")
         .and_then(|v| v.to_string().ok())
         .cloned()
-        .unwrap_or_else(|| "llama".to_string());
+        .ok_or_else(|| format!(
+            "GGUF {} is missing required 'general.architecture' metadata — cannot \
+             determine backend. Fix the GGUF file or re-export it with proper metadata.",
+            model_path.display()
+        ))?;
 
     log.info(&format!("GGUF architecture: {architecture}"));
 
