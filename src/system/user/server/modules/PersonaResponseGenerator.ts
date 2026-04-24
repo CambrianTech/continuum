@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- pre-existing 720-line file; scheduled for split into PRG.ts (orchestration) + PRG-postResponse.ts + PRG-pipeline.ts in the cleanup-sweep PR after #950 */
 /**
  * PersonaResponseGenerator — TS shim over the Rust cognition core.
  *
@@ -25,10 +26,10 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import type { UserEntity, ModelConfig } from '../../../data/entities/UserEntity';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
-import type { TextGenerationRequest, TextGenerationResponse, NativeToolSpec } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { getContextWindow, getInferenceSpeed } from '../../../shared/ModelContextWindows';
-import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
+import { truncate, messagePreview } from '../../../../shared/utils/StringUtils';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import { Events } from '../../../core/shared/Events';
@@ -45,7 +46,7 @@ import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { getToolCapability, getModelFamily } from './ToolFormatAdapter';
+import { getToolCapability } from './ToolFormatAdapter';
 import type { ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
 import type { RustCognitionBridge } from './RustCognitionBridge';
@@ -196,7 +197,7 @@ export class PersonaResponseGenerator {
       throw new Error(`${this.personaName}: cannot resolve model capabilities — Rust bridge not initialized`);
     }
     const bridge = this._rustBridge;
-    this._modelCapabilitiesPromise = (async () => {
+    this._modelCapabilitiesPromise = (async (): Promise<string[]> => {
       const caps = await bridge.getModelCapabilities(this.modelConfig.model);
       this._modelCapabilities = caps;
       this._modelCapabilitiesPromise = null;
@@ -294,10 +295,12 @@ export class PersonaResponseGenerator {
    * for analysis + scoring + render + strip-thinks, keeps tool agent loop +
    * posting in TS.
    */
+  // eslint-disable-next-line max-lines-per-function, complexity -- pre-existing: this is the convergence point that needs to be split into pipeline stages, scheduled for the cleanup-sweep PR after #950
   async generateAndPostResponse(
     originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
     preBuiltRagContext?: RAGContext,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- caller passes for forward-compat with social-signal injection feature
     socialSignals?: SocialSignals,
   ): Promise<ResponseGenerationResult> {
     const generateStartTime = Date.now();
@@ -664,6 +667,19 @@ export class PersonaResponseGenerator {
     const tps = this.modelInfo?.tokensPerSecond
       ?? getInferenceSpeed(this.modelConfig.model, this.modelConfig.provider);
 
+    // Resolve THIS persona's model capabilities up front so toolCapability
+    // is derived from the registry truth, not provider-string defaults. A
+    // vision-only VLM (qwen2-vl-7b) has caps [text-generation, chat, vision,
+    // streaming] with NO `tool-use` — defaulting to 'xml' makes RAG inject
+    // sentinel/tool definitions the model has zero training to invoke, and
+    // it emits literal tool-name fragments as response text. Capability
+    // declaration travels WITH the request → no silent provider default.
+    const caps = await this.resolveModelCapabilities();
+    const hasToolUse = caps.includes('tool-use');
+    const toolCapability = hasToolUse
+      ? getToolCapability(this.modelConfig.provider, this.modelConfig)
+      : 'none';
+
     return ragBuilder.buildContext(
       originalMessage.roomId,
       this.personaId,
@@ -677,7 +693,7 @@ export class PersonaResponseGenerator {
         includeMemories: true,
         voiceSessionId: originalMessage.voiceSessionId,
         provider: this.modelConfig.provider,
-        toolCapability: getToolCapability(this.modelConfig.provider, this.modelConfig),
+        toolCapability,
         currentMessage: {
           role: 'user',
           content: originalMessage.content.text,
@@ -773,11 +789,13 @@ export class PersonaResponseGenerator {
     return { success: true, storedToolResultIds: [] };
   }
 
+  // eslint-disable-next-line max-lines-per-function -- pre-existing: posting + side-effects bundled here, scheduled for cleanup-sweep PR after #950
   private async postResponse(
     originalMessage: ProcessableMessage,
     finalText: string,
     rustResponse: Extract<PersonaResponse, { kind: 'spoke' }>,
     pipelineTiming: Record<string, number>,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- caller passes for total-pipeline timing, kept in signature for future telemetry
     _generateStartTime: number,
   ): Promise<UUID | undefined> {
     const responseMessage = new ChatMessageEntity();
@@ -890,7 +908,7 @@ export class PersonaResponseGenerator {
     const fallbackDomain = this.inferTrainingDomain(originalMessage);
     const inputText = originalMessage.content.text ?? '';
 
-    (async () => {
+    (async (): Promise<void> => {
       let domain = fallbackDomain;
       let qualityRating: number | undefined;
       if (bridge) {

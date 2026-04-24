@@ -78,16 +78,26 @@ else
 fi
 
 # Phase 2: Rust compilation check (<20s cached)
+#
+# Source cargo-features.sh to select the right GPU features per platform —
+# Mac MUST pass `--features metal` after the 2026-04-23 compile_error guard
+# in llama/src/lib.rs (a Mac build without --features metal produces a
+# silent CPU-only binary, so the guard makes that case impossible). Without
+# this source, cargo check on Mac trips the guard and pre-push fails.
+# Same path npm start uses — single source of truth for which features go
+# with which uname -s.
 echo ""
 echo "📋 Phase 2: Rust compilation"
 echo "----------------------------"
 RUST_START=$(date +%s)
 if [ -d "$RUST_DIR" ]; then
-    if cd "$RUST_DIR" && cargo check 2>/dev/null; then
-        echo "✅ Rust: clean ($(( $(date +%s) - RUST_START ))s)"
+    # shellcheck source=shared/cargo-features.sh
+    source "$(dirname "$0")/shared/cargo-features.sh"
+    if (cd "$RUST_DIR" && cargo check $CARGO_GPU_FEATURES 2>/dev/null); then
+        echo "✅ Rust: clean ($(( $(date +%s) - RUST_START ))s) ${CARGO_GPU_FEATURES:-[cpu-only]}"
     else
         echo "❌ Rust compilation FAILED"
-        echo "   Run: cd src/workers/continuum-core && cargo check"
+        echo "   Run: cd src/workers/continuum-core && cargo check $CARGO_GPU_FEATURES"
         FAILED=1
     fi
 else
@@ -99,16 +109,19 @@ fi
 # previous `tail -1 | grep "test result: ok"` failed because cargo
 # emits a trailing newline, so tail -1 saw an empty line and grep
 # always returned no match. Exit code is the reliable test gate.
+#
+# Same --features rule as Phase 2 — Mac without metal trips the
+# llama-crate compile_error guard.
 echo ""
 echo "📋 Phase 3: Rust tests"
 echo "----------------------"
 TEST_START=$(date +%s)
 if [ -d "$RUST_DIR" ]; then
-    if (cd "$RUST_DIR" && cargo test --lib > /tmp/git-prepush-cargo.log 2>&1); then
-        echo "✅ Rust tests: passed ($(( $(date +%s) - TEST_START ))s)"
+    if (cd "$RUST_DIR" && cargo test --lib $CARGO_GPU_FEATURES > /tmp/git-prepush-cargo.log 2>&1); then
+        echo "✅ Rust tests: passed ($(( $(date +%s) - TEST_START ))s) ${CARGO_GPU_FEATURES:-[cpu-only]}"
     else
         echo "❌ Rust tests FAILED"
-        echo "   Run: cd src/workers/continuum-core && cargo test --lib"
+        echo "   Run: cd src/workers/continuum-core && cargo test --lib $CARGO_GPU_FEATURES"
         echo "   Last output:"
         tail -10 /tmp/git-prepush-cargo.log | sed 's/^/      /'
         FAILED=1
