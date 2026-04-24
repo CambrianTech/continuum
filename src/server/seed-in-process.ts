@@ -217,6 +217,7 @@ class DatabaseSeeder {
  * without requiring a DB wipe. This is the automation of the manual
  * sqlite3 UPDATE hack that was needed during GPU-always development.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- pre-existing: seeder param kept in signature for future per-seeder dispatch
 async function syncPersonaProviders(_seeder: DatabaseSeeder): Promise<void> {
   const { personas } = getAvailablePersonas();
 
@@ -238,15 +239,32 @@ async function syncPersonaProviders(_seeder: DatabaseSeeder): Promise<void> {
         ? ((user as Record<string, unknown>).modelConfig as Record<string, unknown>).provider
         : undefined;
 
-      if (currentProvider !== config.provider) {
-        const newConfig = getModelConfigForProvider(config.provider);
+      // Honor the per-persona modelId override from PersonaConfig. Without
+      // this, syncPersonaProviders silently demoted any persona with a
+      // specific model (e.g. Vision AI → qwen2-vl-7b-instruct) to the
+      // provider's universal default (qwen3.5-4b-code-forged for 'local').
+      // Vision AI on docker carl ended up running a code model with no
+      // vision capability — see #957. Pass config.modelId through so the
+      // persona seed's declared model survives every resync.
+      const currentModelId = (user as Record<string, unknown>).modelConfig
+        ? ((user as Record<string, unknown>).modelConfig as Record<string, unknown>).model
+        : undefined;
+      const desiredModelId = config.modelId;
+      const providerChanged = currentProvider !== config.provider;
+      const modelChanged = desiredModelId !== undefined && currentModelId !== desiredModelId;
+
+      if (providerChanged || modelChanged) {
+        const newConfig = getModelConfigForProvider(config.provider, config.modelId);
         await DataUpdate.execute({
           collection: 'users',
           dbHandle: 'default',
           id: user.id,
           data: { modelConfig: newConfig } as Partial<UserEntity>,
         });
-        console.log(`  🔄 Synced ${config.displayName} provider: ${currentProvider} → ${config.provider}`);
+        const reasons: string[] = [];
+        if (providerChanged) reasons.push(`provider: ${currentProvider} → ${config.provider}`);
+        if (modelChanged) reasons.push(`model: ${currentModelId ?? '(unset)'} → ${desiredModelId}`);
+        console.log(`  🔄 Synced ${config.displayName} ${reasons.join(', ')}`);
       }
     } catch {
       // Non-fatal — persona might not exist yet
@@ -274,7 +292,7 @@ export async function seedDatabase(): Promise<boolean> {
   // Owner
   const owner = await seeder.findOrCreateUser('joel', 'Developer', 'human');
   // Emit event so SessionDaemon upgrades anonymous browser sessions to this owner
-  Events.emit('data:users:created', owner);
+  void Events.emit('data:users:created', owner);
   console.log(`  ✅ Owner: ${owner.displayName}`);
 
   // Rooms — validate recipeIds exist before creating anything
@@ -295,6 +313,7 @@ export async function seedDatabase(): Promise<boolean> {
   const { personas, summary } = getAvailablePersonas();
   console.log(`  🖥️ ${summary[0] || 'unknown hardware'}`);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- pre-existing: localModel kept for the soon-to-land per-persona model selection wiring (Mac arm64 will pick a different default than M5)
   const localModel = selectLocalModel(0);
   const created: Map<string, UserEntity> = new Map();
 
