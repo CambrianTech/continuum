@@ -269,9 +269,25 @@ jobs:
           #
           # push-image.sh now bakes `org.opencontainers.image.revision`
           # into every pushed image manifest at build time (full HEAD SHA
-          # captured at buildx invocation). This step pulls the manifest
-          # config for each image and asserts the label matches the PR's
-          # HEAD SHA. Mismatch = stale alias = fail loud.
+          # captured at buildx invocation). This step pulls each per-arch
+          # config blob and asserts the label matches the PR's HEAD SHA.
+          #
+          # Per-arch enforcement policy (matches the existence-check
+          # policy + handles the cross-dev push race until #965 lands):
+          #   - amd64 mismatch  → HARD FAIL  (Carl pulls amd64 by default;
+          #                                   user-facing target must be
+          #                                   current)
+          #   - arm64 mismatch  → WARN ONLY  (in the pre-#965 window, the
+          #                                   developer who owns the Mac
+          #                                   M-series push can be offline
+          #                                   when their counterpart pushes
+          #                                   amd64-side; failing the gate
+          #                                   would force serial coord on
+          #                                   every cross-dev push)
+          #
+          # Once #965 lands (CI auto-rebuild on stale arches via GitHub
+          # arm64 runners) this becomes HARD on both arches because CI
+          # itself can fix the staleness without manual rebuild.
           TAG="${{ steps.tag.outputs.tag }}"
           if [[ -n "${{ github.event.pull_request.head.sha }}" ]]; then
             EXPECTED_SHA="${{ github.event.pull_request.head.sha }}"
@@ -279,6 +295,7 @@ jobs:
             EXPECTED_SHA="${{ github.sha }}"
           fi
           echo "Expected revision: $EXPECTED_SHA"
+          echo "Policy: amd64 = HARD, arm64 = WARN (until #965 lands CI auto-rebuild)"
           echo ""
           ALL_IMAGES=(
             ghcr.io/cambriantech/continuum-core
@@ -290,61 +307,82 @@ jobs:
             ghcr.io/cambriantech/continuum-widgets
           )
           FAILED=0
+          STALE_ARM64=()
+          REGISTRY_HOST="ghcr.io"
           for IMAGE in "${ALL_IMAGES[@]}"; do
             REF="$IMAGE:$TAG"
             echo "━━━ $REF ━━━"
-            # Inspect the image config for the revision label. --raw gives
-            # the manifest JSON; we walk it via jq for the per-arch config
-            # blob and read the label from there. For multi-arch indices,
-            # we check the linux/amd64 entry (every image we ship has
-            # amd64) — if amd64's revision matches, the alias group was
-            # built at the same time so the other arches match too.
-            CONFIG_DIGEST=$(docker buildx imagetools inspect --raw "$REF" 2>/dev/null \
-              | jq -r '.manifests[]? | select(.platform.architecture == "amd64" and .platform.os == "linux") | .digest' \
-              | head -1)
-            if [[ -z "$CONFIG_DIGEST" ]]; then
-              # Single-arch image (some intermediate publishes) — fall back
-              # to the manifest's own config field.
-              CONFIG_DIGEST=$(docker buildx imagetools inspect --raw "$REF" 2>/dev/null \
-                | jq -r '.config.digest // empty')
-            fi
-            if [[ -z "$CONFIG_DIGEST" ]]; then
-              echo "  ⚠️  Couldn't resolve config digest — skipping (image may not exist yet)"
-              continue
-            fi
-            REGISTRY_HOST="${IMAGE%%/*}"
             REPO_PATH="${IMAGE#*/}"
+            # Get a registry token once per image; reuse for amd64 + arm64
+            # blob fetches.
             TOKEN=$(curl -fsSL -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
               "https://$REGISTRY_HOST/token?scope=repository:$REPO_PATH:pull" \
               | jq -r .token)
-            REV=$(curl -fsSL \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Accept: application/vnd.oci.image.config.v1+json" \
-              "https://$REGISTRY_HOST/v2/$REPO_PATH/blobs/$CONFIG_DIGEST" \
-              | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty')
-            if [[ -z "$REV" ]]; then
-              echo "  ❌ Image has no org.opencontainers.image.revision label"
-              echo "     This image was built before the SHA-label gate. Re-push at HEAD."
-              FAILED=1
-            elif [[ "$REV" != "$EXPECTED_SHA" ]]; then
-              echo "  ❌ STALE: image revision $REV ≠ expected $EXPECTED_SHA"
-              echo "     The :$TAG tag is aliased to an older image build."
-              echo "     Re-run scripts/push-current-arch.sh on the current HEAD to refresh."
-              FAILED=1
-            else
-              echo "  ✅ revision matches HEAD ($REV)"
+            RAW=$(docker buildx imagetools inspect --raw "$REF" 2>/dev/null || echo '{}')
+
+            # Walk per-arch entries in the multi-arch index. For
+            # single-arch images (no manifests array), fall back to the
+            # manifest's own config field treated as amd64.
+            ARCH_LIST=$(echo "$RAW" | jq -r '
+              if (.manifests // [] | length) > 0 then
+                [.manifests[] | select(.platform.os == "linux") | "\(.platform.architecture):\(.digest)"] | .[]
+              else
+                "amd64:\(.config.digest // empty)"
+              end
+            ')
+
+            if [[ -z "$ARCH_LIST" ]]; then
+              echo "  ⚠️  No manifest entries — image may not exist yet at this tag"
+              continue
             fi
+
+            for entry in $ARCH_LIST; do
+              ARCH="${entry%%:*}"
+              CONFIG_DIGEST="${entry#*:}"
+              [[ -z "$CONFIG_DIGEST" || "$CONFIG_DIGEST" == "null" ]] && continue
+              REV=$(curl -fsSL \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Accept: application/vnd.oci.image.config.v1+json" \
+                "https://$REGISTRY_HOST/v2/$REPO_PATH/blobs/$CONFIG_DIGEST" \
+                | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty')
+              if [[ -z "$REV" ]]; then
+                if [[ "$ARCH" == "amd64" ]]; then
+                  echo "  ❌ amd64: no org.opencontainers.image.revision label — pre-gate build, refresh required"
+                  FAILED=1
+                else
+                  echo "  ⚠️  $ARCH: no revision label (pre-gate build) — re-push from arm64 host to refresh"
+                  STALE_ARM64+=("$REF")
+                fi
+              elif [[ "$REV" != "$EXPECTED_SHA" ]]; then
+                if [[ "$ARCH" == "amd64" ]]; then
+                  echo "  ❌ amd64: STALE (revision $REV ≠ HEAD $EXPECTED_SHA) — Linux dev rebuild required"
+                  FAILED=1
+                else
+                  echo "  ⚠️  $ARCH: STALE (revision $REV ≠ HEAD $EXPECTED_SHA) — Mac dev rebuild required (warning-only until #965)"
+                  STALE_ARM64+=("$REF")
+                fi
+              else
+                echo "  ✅ $ARCH: revision matches HEAD"
+              fi
+            done
           done
+
+          if [ ${#STALE_ARM64[@]} -gt 0 ]; then
+            echo ""
+            echo "⚠️  arm64 stale on ${#STALE_ARM64[@]} image(s):"
+            for REF in "${STALE_ARM64[@]}"; do echo "     - $REF"; done
+            echo "   Mac M-series dev: run \`scripts/push-current-arch.sh\` to refresh."
+            echo "   Not blocking — CI will catch up automatically once #965 lands GitHub arm64 runner support."
+          fi
+
           if [ "$FAILED" -ne 0 ]; then
             echo ""
-            echo "❌ STALE-IMAGE GATE FAILED — at least one image at :$TAG was built from a different commit."
-            echo "   This is exactly the failure mode this gate exists to catch:"
-            echo "   the tag exists, but the binary inside is from before the latest fixes."
-            echo "   Push a fresh build from the right host(s) and re-run this workflow."
+            echo "❌ STALE-IMAGE GATE FAILED — amd64 image at :$TAG was built from a different commit."
+            echo "   The user-facing target must always be current. Re-push from the Linux/amd64 host and re-run this workflow."
             exit 1
           fi
           echo ""
-          echo "✅ All images at tag $TAG built from HEAD SHA $EXPECTED_SHA"
+          echo "✅ amd64 images at tag $TAG built from HEAD SHA $EXPECTED_SHA"
 
       # ── Install-and-run gate ─────────────────────────────────────────
       # Existence in the registry is necessary but not sufficient. The
