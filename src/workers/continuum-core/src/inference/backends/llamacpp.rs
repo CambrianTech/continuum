@@ -313,10 +313,24 @@ impl LlamaCppBackend {
 
         // Per-call context — see method-level docstring on why we don't
         // share the scheduler's context.
-        let per_seq = self
-            .config
-            .context_length
-            .unwrap_or_else(|| self.model.n_ctx_train());
+        //
+        // context_length is REQUIRED here (no silent fallback to model's
+        // n_ctx_train). Falling back to n_ctx_train silently allocated a
+        // 262144-token KV cache for qwen3.5 on every call, which is ~38GB
+        // per sequence — far beyond what Mac Metal can hold without paging
+        // to disk, causing ~12 tok/s slowdown with no visible warning.
+        // Rule-2 violation (fallbacks are illegal) caught 2026-04-23.
+        // If you hit this panic: set `context_length` explicitly in
+        // models.toml for the model you're loading. Pick a value that
+        // fits your target hardware's unified memory / VRAM budget
+        // (typically 4096-16384 for most consumer hardware).
+        let per_seq = self.config.context_length.expect(
+            "ModelConfig.context_length MUST be set explicitly — silent \
+             fallback to n_ctx_train allocates an enormous KV cache that \
+             crushes Mac Metal (caused the 12 tok/s bug, 2026-04). Set \
+             `context_length` in models.toml for this model. Pick a size \
+             that fits the target hardware (4096-16384 typical).",
+        );
         let mut ctx = self
             .model
             .new_context(llama::ContextParams {
@@ -495,15 +509,21 @@ impl LlamaCppBackend {
     /// owns the shared Context and the OS-thread driver loop.
     fn scheduler(&self) -> &Scheduler {
         self.scheduler.get_or_init(|| {
-            // Per-sequence context: the model's own training ceiling unless
-            // an explicit override is set. The model is the source of truth
-            // — qwen3.5-4b-code-forged carries n_ctx_train=262144 in its
-            // GGUF metadata; capping that at a hardcoded 8192 wastes 32×
-            // the model's real capability.
-            let per_seq = self
-                .config
-                .context_length
-                .unwrap_or_else(|| self.model.n_ctx_train());
+            // context_length is REQUIRED (no silent fallback to
+            // n_ctx_train). See the sibling require-sites in this file and
+            // the 12-tok/s-on-Mac bug from 2026-04 for history. Falling
+            // back to n_ctx_train silently allocated 262144-token KV
+            // caches for qwen3.5 models, which Metal can't hold without
+            // paging. Rule-2 (fallbacks are illegal) says fail loud
+            // instead of serving degraded quietly. If you hit this panic,
+            // set `context_length` for the model in models.toml — pick a
+            // size that fits your hardware (typically 4096-16384).
+            let per_seq = self.config.context_length.expect(
+                "ModelConfig.context_length MUST be set explicitly for the \
+                 scheduler — silent fallback to n_ctx_train crushes Metal \
+                 with 262144-token KV allocation (caused 12 tok/s Mac bug, \
+                 2026-04). Set `context_length` in models.toml.",
+            );
             // n_ctx is the SHARED KV pool across all sequences. Scale by
             // n_seq_max so each seq has `per_seq` tokens of KV headroom
             // even when all slots are occupied with RAG-heavy prompts.
