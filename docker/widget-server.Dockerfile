@@ -11,6 +11,12 @@
 
 FROM node:20-slim
 
+# ghcr visibility default: image published to ghcr.io inherits visibility from
+# the source repo when this LABEL is present. Without it, org container packages
+# default to PRIVATE on first push, which blocks Carl's anonymous docker pull.
+# See: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#labelling-container-images
+LABEL org.opencontainers.image.source=https://github.com/CambrianTech/continuum
+
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

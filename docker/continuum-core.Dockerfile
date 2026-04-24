@@ -75,6 +75,13 @@ RUN cargo build --release ${GPU_FEATURES} \
 # Ubuntu 24.04 works on all platforms: WSL2 (dzn), Linux (nvidia/radeon), Mac (MoltenVK).
 FROM ubuntu:24.04 AS runtime
 
+# ghcr visibility default: image published to ghcr.io inherits visibility from
+# the source repo when this LABEL is present. Without it, org container packages
+# default to PRIVATE on first push, which blocks Carl's anonymous docker pull.
+# Caught 2026-04-23: continuum-core-vulkan landed private on first push, blocked
+# CI verify-architectures until visibility was manually flipped via UI.
+LABEL org.opencontainers.image.source=https://github.com/CambrianTech/continuum
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3t64 libpq5 curl netcat-openbsd \
     libglib2.0-0t64 \

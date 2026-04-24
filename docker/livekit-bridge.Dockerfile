@@ -36,6 +36,9 @@ RUN cargo build --release --bin livekit-bridge
 # ── Stage 4: Runtime ────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
+# ghcr visibility default — see continuum-core.Dockerfile for rationale.
+LABEL org.opencontainers.image.source=https://github.com/CambrianTech/continuum
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 curl \
     libglib2.0-0 \
