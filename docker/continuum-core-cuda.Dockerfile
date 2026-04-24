@@ -103,6 +103,9 @@ RUN cargo build --release ${GPU_FEATURES} \
 # ── Stage 2: Runtime (smaller, just CUDA runtime) ────────────
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
 
+# ghcr visibility default — see continuum-core.Dockerfile for rationale.
+LABEL org.opencontainers.image.source=https://github.com/CambrianTech/continuum
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 libpq5 curl netcat-openbsd \
     libglib2.0-0 libvulkan1 mesa-vulkan-drivers \

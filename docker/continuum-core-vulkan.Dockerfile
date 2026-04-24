@@ -114,6 +114,9 @@ RUN cargo build --release ${GPU_FEATURES} \
 # bookworm's Mesa 22.x has no dzn. MoltenVK on the host side handles Mac.
 FROM ubuntu:24.04 AS runtime
 
+# ghcr visibility default — see continuum-core.Dockerfile for rationale.
+LABEL org.opencontainers.image.source=https://github.com/CambrianTech/continuum
+
 # Vulkan runtime + common ICDs. mesa-vulkan-drivers provides radv/venus/lvp
 # which cover AMD, virtio-GPU (krunkit), and software fallback. Nvidia
 # proprietary users mount their own ICD via docker run --device/--gpus.

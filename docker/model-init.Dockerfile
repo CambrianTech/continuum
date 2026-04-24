@@ -8,6 +8,9 @@
 
 FROM node:20-slim
 
+# ghcr visibility default — see continuum-core.Dockerfile for rationale.
+LABEL org.opencontainers.image.source=https://github.com/CambrianTech/continuum
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl unzip bash ca-certificates \
     && rm -rf /var/lib/apt/lists/*
