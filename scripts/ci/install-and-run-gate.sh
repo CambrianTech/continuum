@@ -54,6 +54,18 @@ teardown() {
 }
 trap teardown EXIT INT TERM
 
+# docker-compose.yml bind-mounts `~/.continuum/config.env` read-only into
+# widget-server (line 202) + potentially other services. If the host path
+# doesn't exist — which is the default on a fresh GHA runner — docker
+# auto-creates an empty DIRECTORY at that path while satisfying the first
+# mount, then chokes on the next container trying to mount the same path
+# as a FILE: "not a directory: Are you trying to mount a directory onto a
+# file (or vice-versa)". Empty config.env up front makes the bind mount a
+# file-to-file, which is what compose expects. Human runs are fine because
+# install.sh creates this file; CI runs are fresh.
+mkdir -p "$HOME/.continuum"
+[[ -f "$HOME/.continuum/config.env" ]] || touch "$HOME/.continuum/config.env"
+
 echo ""
 echo "━━━ pulling image set at tag $CONTINUUM_IMAGE_TAG ━━━"
 docker compose pull --quiet \
