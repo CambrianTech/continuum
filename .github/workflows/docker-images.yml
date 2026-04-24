@@ -61,7 +61,13 @@ jobs:
   # 5-6 hour build jobs that timed out).
   verify-architectures:
     runs-on: ubuntu-latest
+    outputs:
+      stale_amd64: ${{ steps.gate.outputs.stale_amd64 }}
+      stale_arm64: ${{ steps.gate.outputs.stale_arm64 }}
+      tag: ${{ steps.tag.outputs.tag }}
+      expected_sha: ${{ steps.gate.outputs.expected_sha }}
     steps:
+      - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
 
       - name: Determine image tag (pr-<N> | latest | <sha>)
@@ -258,131 +264,47 @@ jobs:
           echo "   TS-only (node/model-init/widgets): both arches required"
 
       - name: Verify image revision matches HEAD SHA (no stale aliased images)
+        id: gate
         run: |
-          # Existence-only checks above can pass when a tag like :pr-950
-          # was aliased to an OLDER image SHA — paired QA on 2026-04-23
-          # found multiple cycles where a stale build sat behind the alias
-          # while the actual PR HEAD had moved several commits forward,
-          # silently shipping the OLD binary as if it were current. Joel's
-          # ask: the gate must verify the image was BUILT from the current
-          # commit, not just that the tag exists.
-          #
-          # push-image.sh now bakes `org.opencontainers.image.revision`
-          # into every pushed image manifest at build time (full HEAD SHA
-          # captured at buildx invocation). This step pulls each per-arch
-          # config blob and asserts the label matches the PR's HEAD SHA.
-          #
-          # Per-arch enforcement policy (matches the existence-check
-          # policy + handles the cross-dev push race until #965 lands):
-          #   - amd64 mismatch  → HARD FAIL  (Carl pulls amd64 by default;
-          #                                   user-facing target must be
-          #                                   current)
-          #   - arm64 mismatch  → WARN ONLY  (in the pre-#965 window, the
-          #                                   developer who owns the Mac
-          #                                   M-series push can be offline
-          #                                   when their counterpart pushes
-          #                                   amd64-side; failing the gate
-          #                                   would force serial coord on
-          #                                   every cross-dev push)
-          #
-          # Once #965 lands (CI auto-rebuild on stale arches via GitHub
-          # arm64 runners) this becomes HARD on both arches because CI
-          # itself can fix the staleness without manual rebuild.
-          TAG="${{ steps.tag.outputs.tag }}"
+          # All revision-check logic lives in scripts/verify-image-revisions.sh
+          # so the same code runs here AND in the post-rebuild verify pass
+          # below AND when a developer runs it manually. Joel rule
+          # (2026-04-23): "you can't have one [check] that's yaml and
+          # another that's shell. you have to reuse otherwise they
+          # diverge." See script header for the full per-arch policy.
           if [[ -n "${{ github.event.pull_request.head.sha }}" ]]; then
             EXPECTED_SHA="${{ github.event.pull_request.head.sha }}"
           else
             EXPECTED_SHA="${{ github.sha }}"
           fi
-          echo "Expected revision: $EXPECTED_SHA"
-          echo "Policy: amd64 = HARD, arm64 = WARN (until #965 lands CI auto-rebuild)"
-          echo ""
-          ALL_IMAGES=(
-            ghcr.io/cambriantech/continuum-core
-            ghcr.io/cambriantech/continuum-core-vulkan
-            ghcr.io/cambriantech/continuum-core-cuda
-            ghcr.io/cambriantech/continuum-livekit-bridge
-            ghcr.io/cambriantech/continuum-node
-            ghcr.io/cambriantech/continuum-model-init
-            ghcr.io/cambriantech/continuum-widgets
-          )
-          FAILED=0
-          STALE_ARM64=()
-          REGISTRY_HOST="ghcr.io"
-          for IMAGE in "${ALL_IMAGES[@]}"; do
-            REF="$IMAGE:$TAG"
-            echo "━━━ $REF ━━━"
-            REPO_PATH="${IMAGE#*/}"
-            # Get a registry token once per image; reuse for amd64 + arm64
-            # blob fetches.
-            TOKEN=$(curl -fsSL -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
-              "https://$REGISTRY_HOST/token?scope=repository:$REPO_PATH:pull" \
-              | jq -r .token)
-            RAW=$(docker buildx imagetools inspect --raw "$REF" 2>/dev/null || echo '{}')
-
-            # Walk per-arch entries in the multi-arch index. For
-            # single-arch images (no manifests array), fall back to the
-            # manifest's own config field treated as amd64.
-            ARCH_LIST=$(echo "$RAW" | jq -r '
-              if (.manifests // [] | length) > 0 then
-                [.manifests[] | select(.platform.os == "linux") | "\(.platform.architecture):\(.digest)"] | .[]
-              else
-                "amd64:\(.config.digest // empty)"
-              end
-            ')
-
-            if [[ -z "$ARCH_LIST" ]]; then
-              echo "  ⚠️  No manifest entries — image may not exist yet at this tag"
-              continue
-            fi
-
-            for entry in $ARCH_LIST; do
-              ARCH="${entry%%:*}"
-              CONFIG_DIGEST="${entry#*:}"
-              [[ -z "$CONFIG_DIGEST" || "$CONFIG_DIGEST" == "null" ]] && continue
-              REV=$(curl -fsSL \
-                -H "Authorization: Bearer $TOKEN" \
-                -H "Accept: application/vnd.oci.image.config.v1+json" \
-                "https://$REGISTRY_HOST/v2/$REPO_PATH/blobs/$CONFIG_DIGEST" \
-                | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty')
-              if [[ -z "$REV" ]]; then
-                if [[ "$ARCH" == "amd64" ]]; then
-                  echo "  ❌ amd64: no org.opencontainers.image.revision label — pre-gate build, refresh required"
-                  FAILED=1
-                else
-                  echo "  ⚠️  $ARCH: no revision label (pre-gate build) — re-push from arm64 host to refresh"
-                  STALE_ARM64+=("$REF")
-                fi
-              elif [[ "$REV" != "$EXPECTED_SHA" ]]; then
-                if [[ "$ARCH" == "amd64" ]]; then
-                  echo "  ❌ amd64: STALE (revision $REV ≠ HEAD $EXPECTED_SHA) — Linux dev rebuild required"
-                  FAILED=1
-                else
-                  echo "  ⚠️  $ARCH: STALE (revision $REV ≠ HEAD $EXPECTED_SHA) — Mac dev rebuild required (warning-only until #965)"
-                  STALE_ARM64+=("$REF")
-                fi
-              else
-                echo "  ✅ $ARCH: revision matches HEAD"
-              fi
-            done
-          done
-
-          if [ ${#STALE_ARM64[@]} -gt 0 ]; then
-            echo ""
-            echo "⚠️  arm64 stale on ${#STALE_ARM64[@]} image(s):"
-            for REF in "${STALE_ARM64[@]}"; do echo "     - $REF"; done
-            echo "   Mac M-series dev: run \`scripts/push-current-arch.sh\` to refresh."
-            echo "   Not blocking — CI will catch up automatically once #965 lands GitHub arm64 runner support."
+          # Emit early so downstream jobs always have it (even on FAIL).
+          echo "expected_sha=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+          export EXPECTED_SHA
+          export TAG="${{ steps.tag.outputs.tag }}"
+          export GHCR_USER="${{ github.actor }}"
+          export GHCR_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          export STALE_AMD64_OUT="$RUNNER_TEMP/stale-amd64.txt"
+          export STALE_ARM64_OUT="$RUNNER_TEMP/stale-arm64.txt"
+          # Don't `set -e` exit-on-error here; the script returns 1 only
+          # for amd64 mismatches and we want to capture the stale lists
+          # in either case so the rebuild matrix has them.
+          GATE_RC=0
+          bash scripts/verify-image-revisions.sh || GATE_RC=$?
+          # Emit stale lists as JSON arrays for the rebuild-stale matrix
+          # job to consume. Use `jq -R` to read raw lines + `jq -s` to
+          # slurp into an array; empty file → '[]'.
+          STALE_AMD64_JSON=$(jq -R . < "$STALE_AMD64_OUT" | jq -s . | jq -c .)
+          STALE_ARM64_JSON=$(jq -R . < "$STALE_ARM64_OUT" | jq -s . | jq -c .)
+          echo "stale_amd64=$STALE_AMD64_JSON" >> "$GITHUB_OUTPUT"
+          echo "stale_arm64=$STALE_ARM64_JSON" >> "$GITHUB_OUTPUT"
+          # Initial gate exits non-zero on amd64 stale, but the final
+          # gate (after rebuild) is what actually blocks the merge. So
+          # we let this initial check report status but not hard-fail
+          # the workflow if the rebuild can fix it. The rebuild jobs
+          # are conditional on the stale outputs being non-empty.
+          if [ "$GATE_RC" -ne 0 ]; then
+            echo "::warning::amd64 image(s) stale — rebuild-stale-amd64 job will refresh them"
           fi
-
-          if [ "$FAILED" -ne 0 ]; then
-            echo ""
-            echo "❌ STALE-IMAGE GATE FAILED — amd64 image at :$TAG was built from a different commit."
-            echo "   The user-facing target must always be current. Re-push from the Linux/amd64 host and re-run this workflow."
-            exit 1
-          fi
-          echo ""
-          echo "✅ amd64 images at tag $TAG built from HEAD SHA $EXPECTED_SHA"
 
       # ── Install-and-run gate ─────────────────────────────────────────
       # Existence in the registry is necessary but not sufficient. The
@@ -410,3 +332,123 @@ jobs:
         #   CONTINUUM_IMAGE_TAG=pr-950 bash scripts/ci/install-and-run-gate.sh
         # Single source of truth, identical failure surface, easy local testing.
         run: bash scripts/ci/install-and-run-gate.sh
+
+  # ── Rebuild Stale Arches (CI auto-rebuild fallback) ────────────────
+  # Closes the cross-developer push race that the SHA-revision gate
+  # surfaces: when one dev pushes, their arch is current but the other
+  # dev's arch goes stale. Without this job, the off-host dev would
+  # have to manually rebuild on their machine before the gate passes —
+  # serial coordination dance that blocks every cross-dev PR.
+  #
+  # Per Joel (2026-04-23): "you can't have one [check] that's yaml and
+  # another that's shell. you have to reuse otherwise they diverge."
+  # So this job is THIN: pick the right native runner via matrix,
+  # set up registry auth, then invoke the SAME `scripts/push-current-arch.sh`
+  # the developer pre-push hook calls. No build logic in CI yaml. When
+  # push-current-arch.sh changes (new variant, new --label, new arch),
+  # CI inherits the change automatically.
+  #
+  # Slice efficiency: registry buildcache (--cache-from on push-image.sh)
+  # means unchanged layers (rust base, apt installs, cargo-chef workspace
+  # deps) replay from cache. Typical incremental rebuild: 5-15 min on
+  # cache hit, well under the GHA timeout.
+  #
+  # See #965 for the full design rationale.
+  rebuild-stale-amd64:
+    needs: verify-architectures
+    if: needs.verify-architectures.outputs.stale_amd64 != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The push-current-arch.sh script needs full git history for
+          # `git rev-parse HEAD` and the working-tree-clean assertion.
+          # Default fetch-depth=1 (shallow) is fine for HEAD ops.
+          fetch-depth: 1
+      - name: Login to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Install Rust toolchain (push-current-arch may invoke pre-build cargo checks)
+        run: |
+          # We don't actually need a host-side cargo build — push-image.sh
+          # builds inside the docker buildx context — but if push-current-arch.sh
+          # ever runs `cargo test` as Phase 0, we need the toolchain present.
+          # Cheap when not used, prevents a future surprise.
+          if ! command -v cargo >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Rebuild stale amd64 images via push-current-arch.sh
+        env:
+          # SKIP_PHASE_0=1: push-image.sh's cargo-test phase needs models on disk
+          # which CI doesn't have. The slice tests inside test-slices.sh still run
+          # (HTTP probe + container liveness) — those don't need models.
+          SKIP_PHASE_0: '1'
+          # PR_NUMBER lets push-current-arch.sh emit the :pr-<N> tag. Without
+          # this it falls back to gh-cli lookup which works if gh is logged in.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo "Rebuilding amd64 images that drifted from HEAD."
+          echo "Stale list: ${{ needs.verify-architectures.outputs.stale_amd64 }}"
+          bash scripts/push-current-arch.sh
+
+  rebuild-stale-arm64:
+    needs: verify-architectures
+    if: needs.verify-architectures.outputs.stale_arm64 != '[]'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Login to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Install Rust toolchain (push-current-arch may invoke pre-build cargo checks)
+        run: |
+          if ! command -v cargo >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Rebuild stale arm64 images via push-current-arch.sh
+        env:
+          SKIP_PHASE_0: '1'
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo "Rebuilding arm64 images that drifted from HEAD."
+          echo "Stale list: ${{ needs.verify-architectures.outputs.stale_arm64 }}"
+          bash scripts/push-current-arch.sh
+
+  # ── Final verification (post-rebuild) ────────────────────────────
+  # Re-runs the SAME revision-check script after any rebuilds. This
+  # job is the actual merge gate — verify-architectures' initial run
+  # is informational + matrix-input only. With both rebuilds done
+  # (or skipped because nothing was stale), every image at the
+  # expected tag should now have its revision label matching HEAD.
+  verify-after-rebuild:
+    needs: [verify-architectures, rebuild-stale-amd64, rebuild-stale-arm64]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - name: Login to ghcr (read access for inspect)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Final revision check (same script as initial gate)
+        env:
+          EXPECTED_SHA: ${{ needs.verify-architectures.outputs.expected_sha }}
+          TAG: ${{ needs.verify-architectures.outputs.tag }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/verify-image-revisions.sh
