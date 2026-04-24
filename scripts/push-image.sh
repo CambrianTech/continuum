@@ -193,8 +193,12 @@ case "$VARIANT:$HOST_OS" in
     # left NATIVE_FEATURE empty → Phase 0 crashed with compile_error
     # instead of running tests. Explicit core:Darwin branch placed
     # before core:* so Mac gets the feature set it needs.
-    NATIVE_FEATURE="metal,accelerate"
-    echo "→ Phase 0 using --features=metal,accelerate on Mac (variant=core)"
+    # Phase 0 runs `cargo test -p llama`, so features must be llama-crate-
+    # scoped (metal|cuda|vulkan). `accelerate` belongs to continuum-core
+    # and is not a valid llama feature — passing it here fails with
+    # "package llama does not contain this feature accelerate".
+    NATIVE_FEATURE="metal"
+    echo "→ Phase 0 using --features=metal on Mac (variant=core)"
     ;;
   core:*)
     # Non-Mac + core: Default features, no GPU required — always runnable.
@@ -204,9 +208,10 @@ case "$VARIANT:$HOST_OS" in
     # Mac + any other variant (livekit-bridge, etc): still Metal for host-
     # side Phase 0 validation. Docker build inside container uses its own
     # feature set (cuda for continuum-core-cuda, vulkan for continuum-core-
-    # vulkan — those don't build natively on Mac anyway).
-    NATIVE_FEATURE="metal,accelerate"
-    echo "→ Phase 0 using --features=metal,accelerate on Mac (variant=$VARIANT builds in container)"
+    # vulkan — those don't build natively on Mac anyway). llama-crate-
+    # scoped feature only (see core:Darwin note above).
+    NATIVE_FEATURE="metal"
+    echo "→ Phase 0 using --features=metal on Mac (variant=$VARIANT builds in container)"
     ;;
 esac
 
