@@ -134,6 +134,42 @@ if ! git diff --quiet HEAD -- 2>/dev/null; then
   echo "       Commit or stash first:  git status" >&2
   exit 1
 fi
+
+# ── Stop in-flight stale builds (energy + correctness) ────────────────
+# A push that fires while a previous push is still building wastes CPU
+# (two concurrent builds compete for cores) AND ships the wrong bits if
+# the OLDER build finishes second and its alias step overwrites the
+# newer image. 2026-04: we observed buildkit at 2300% CPU + 10GB RAM
+# from a stale build that started 30+ min earlier at an older SHA while
+# new fixes had landed.
+#
+# Strategy: when a build is already running, restart the buildkit
+# container before kicking off the new one. Layer cache is preserved
+# (it lives in the registry via --cache-from/--cache-to, not inside the
+# buildkit container) so the new build benefits from anything the
+# old one already pushed to buildcache. Net effect: kill in-flight
+# wasted work, keep the layer cache, build at the current SHA only.
+#
+# Skip if STOP_PRIOR=0 (e.g., parallel-test scenarios that genuinely
+# want concurrent builds; default is to be conservative).
+STOP_PRIOR="${STOP_PRIOR:-1}"
+if [ "$STOP_PRIOR" = "1" ] && command -v docker >/dev/null 2>&1; then
+  BUILDKIT_CONTAINER="$(docker ps --filter "name=buildx_buildkit_continuum-builder0" --format '{{.Names}}' 2>/dev/null | head -1)"
+  if [ -n "$BUILDKIT_CONTAINER" ]; then
+    # Check if there's actual build work running (rustc / cargo / sh -c) —
+    # idle buildkit is fine to leave alone.
+    INFLIGHT="$(docker exec "$BUILDKIT_CONTAINER" sh -c "pgrep -f 'rustc|cargo' | wc -l" 2>/dev/null || echo 0)"
+    INFLIGHT="$(echo "$INFLIGHT" | tr -d ' ')"
+    if [ "$INFLIGHT" -gt 0 ] 2>/dev/null; then
+      echo "→ Stopping in-flight buildkit work ($INFLIGHT rustc/cargo procs from a previous push)..."
+      docker restart "$BUILDKIT_CONTAINER" >/dev/null 2>&1 || true
+      # Brief settle so the next buildx invocation doesn't race the
+      # restarting container. Layer cache stays in the registry.
+      sleep 2
+      echo "  ✓ Cleared. Registry layer cache preserved — new build will reuse unchanged layers."
+    fi
+  fi
+fi
 assert_sha_unchanged() {
   local current_sha
   current_sha="$(git rev-parse HEAD)"

@@ -255,13 +255,22 @@ echo ""
 # we don't throw half-working images over the wall to CI.
 LOCAL_PLATFORM="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null || echo linux/amd64)"
 
+# Capture the build-time HEAD SHA so the resulting image carries it as a
+# label. Verify-architectures asserts this label matches the PR HEAD SHA;
+# without it a stale-tagged image (alias of an older sha) would silently
+# pass the gate. Issue #957/#959/#964 paired QA cycle proved we need this
+# to detect "the tag exists but the binary is from before the fix landed."
+BUILD_SHA="$(git rev-parse HEAD)"
+
 echo "→ Phase 1: local build + slice test on $LOCAL_PLATFORM"
 docker buildx build \
   --platform "$LOCAL_PLATFORM" \
   --file "$DOCKERFILE" \
   --build-arg "GPU_FEATURES=$GPU_FEATURES" \
+  --build-arg "GIT_SHA=$BUILD_SHA" \
   --build-context "shared-generated=src/shared/generated" \
   --tag "$TAG_SHA" \
+  --label "org.opencontainers.image.revision=$BUILD_SHA" \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
   --load \
   src/workers
@@ -281,8 +290,10 @@ docker buildx build \
   --platform "$PLATFORMS" \
   --file "$DOCKERFILE" \
   --build-arg "GPU_FEATURES=$GPU_FEATURES" \
+  --build-arg "GIT_SHA=$BUILD_SHA" \
   --build-context "shared-generated=src/shared/generated" \
   "${TAGS[@]}" \
+  --label "org.opencontainers.image.revision=$BUILD_SHA" \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
   --cache-to   "type=registry,ref=$REGISTRY/$IMAGE:buildcache,mode=max" \
   --push \

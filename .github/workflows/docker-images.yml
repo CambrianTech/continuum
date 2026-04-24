@@ -257,6 +257,95 @@ jobs:
           echo "   Rust-CUDA (continuum-core-cuda): amd64 only (by design)"
           echo "   TS-only (node/model-init/widgets): both arches required"
 
+      - name: Verify image revision matches HEAD SHA (no stale aliased images)
+        run: |
+          # Existence-only checks above can pass when a tag like :pr-950
+          # was aliased to an OLDER image SHA — paired QA on 2026-04-23
+          # found multiple cycles where a stale build sat behind the alias
+          # while the actual PR HEAD had moved several commits forward,
+          # silently shipping the OLD binary as if it were current. Joel's
+          # ask: the gate must verify the image was BUILT from the current
+          # commit, not just that the tag exists.
+          #
+          # push-image.sh now bakes `org.opencontainers.image.revision`
+          # into every pushed image manifest at build time (full HEAD SHA
+          # captured at buildx invocation). This step pulls the manifest
+          # config for each image and asserts the label matches the PR's
+          # HEAD SHA. Mismatch = stale alias = fail loud.
+          TAG="${{ steps.tag.outputs.tag }}"
+          if [[ -n "${{ github.event.pull_request.head.sha }}" ]]; then
+            EXPECTED_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            EXPECTED_SHA="${{ github.sha }}"
+          fi
+          echo "Expected revision: $EXPECTED_SHA"
+          echo ""
+          ALL_IMAGES=(
+            ghcr.io/cambriantech/continuum-core
+            ghcr.io/cambriantech/continuum-core-vulkan
+            ghcr.io/cambriantech/continuum-core-cuda
+            ghcr.io/cambriantech/continuum-livekit-bridge
+            ghcr.io/cambriantech/continuum-node
+            ghcr.io/cambriantech/continuum-model-init
+            ghcr.io/cambriantech/continuum-widgets
+          )
+          FAILED=0
+          for IMAGE in "${ALL_IMAGES[@]}"; do
+            REF="$IMAGE:$TAG"
+            echo "━━━ $REF ━━━"
+            # Inspect the image config for the revision label. --raw gives
+            # the manifest JSON; we walk it via jq for the per-arch config
+            # blob and read the label from there. For multi-arch indices,
+            # we check the linux/amd64 entry (every image we ship has
+            # amd64) — if amd64's revision matches, the alias group was
+            # built at the same time so the other arches match too.
+            CONFIG_DIGEST=$(docker buildx imagetools inspect --raw "$REF" 2>/dev/null \
+              | jq -r '.manifests[]? | select(.platform.architecture == "amd64" and .platform.os == "linux") | .digest' \
+              | head -1)
+            if [[ -z "$CONFIG_DIGEST" ]]; then
+              # Single-arch image (some intermediate publishes) — fall back
+              # to the manifest's own config field.
+              CONFIG_DIGEST=$(docker buildx imagetools inspect --raw "$REF" 2>/dev/null \
+                | jq -r '.config.digest // empty')
+            fi
+            if [[ -z "$CONFIG_DIGEST" ]]; then
+              echo "  ⚠️  Couldn't resolve config digest — skipping (image may not exist yet)"
+              continue
+            fi
+            REGISTRY_HOST="${IMAGE%%/*}"
+            REPO_PATH="${IMAGE#*/}"
+            TOKEN=$(curl -fsSL -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+              "https://$REGISTRY_HOST/token?scope=repository:$REPO_PATH:pull" \
+              | jq -r .token)
+            REV=$(curl -fsSL \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.oci.image.config.v1+json" \
+              "https://$REGISTRY_HOST/v2/$REPO_PATH/blobs/$CONFIG_DIGEST" \
+              | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty')
+            if [[ -z "$REV" ]]; then
+              echo "  ❌ Image has no org.opencontainers.image.revision label"
+              echo "     This image was built before the SHA-label gate. Re-push at HEAD."
+              FAILED=1
+            elif [[ "$REV" != "$EXPECTED_SHA" ]]; then
+              echo "  ❌ STALE: image revision $REV ≠ expected $EXPECTED_SHA"
+              echo "     The :$TAG tag is aliased to an older image build."
+              echo "     Re-run scripts/push-current-arch.sh on the current HEAD to refresh."
+              FAILED=1
+            else
+              echo "  ✅ revision matches HEAD ($REV)"
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "❌ STALE-IMAGE GATE FAILED — at least one image at :$TAG was built from a different commit."
+            echo "   This is exactly the failure mode this gate exists to catch:"
+            echo "   the tag exists, but the binary inside is from before the latest fixes."
+            echo "   Push a fresh build from the right host(s) and re-run this workflow."
+            exit 1
+          fi
+          echo ""
+          echo "✅ All images at tag $TAG built from HEAD SHA $EXPECTED_SHA"
+
       # ── Install-and-run gate ─────────────────────────────────────────
       # Existence in the registry is necessary but not sufficient. The
       # only honest test that the image set actually works for Carl is
