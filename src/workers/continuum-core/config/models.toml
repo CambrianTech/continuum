@@ -220,7 +220,7 @@ cost_input_per_1k = 0.0
 cost_output_per_1k = 0.0
 gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
 # Same shaping rule as the in-process row — see that row's comment.
-multi_party_strategy = "single_user_turn_flattened_history"
+multi_party_strategy = "proper_chat_ml_single_party"
 
 # ─── In-process llama.cpp (Metal/CUDA direct) ───────────────────────────
 
@@ -258,12 +258,23 @@ chat_template = "{% for message in messages %}{{ '<|im_start|>' + message['role'
 # Same architectural rule: per-model knobs are TOML, not adapter code.
 stop_sequences = ["<|im_end|>", "<|endoftext|>"]
 # Multi-party chat shape. qwen3.5 was trained on alternating user/assistant
-# turns; sending it 5+ consecutive user messages with name prefixes causes
-# near-immediate EOG response (verified 2026-04-20 via
-# tests/persona_respond_replay.rs::synthesized_prod_shape_input). Flatten
-# multi-party history into ONE user turn so the chat template sees
-# system + user + assistant — the shape the model was actually trained on.
-multi_party_strategy = "single_user_turn_flattened_history"
+# turns and cannot coherently process multi-party (multiple AI speakers in
+# the same room). The earlier `single_user_turn_flattened_history` strategy
+# tried to work around this by flattening history into one user turn with
+# `<Name>:` prefixes + a closing instruction "no name prefix, no quoting" —
+# qwen3.5 ignored the instruction and emitted name-prefixed completions
+# anyway, producing the visible echo-loop + sentinel-leak symptoms in the
+# 2026-04-24 empirical chat (task #75, PR-blocker).
+#
+# `proper_chat_ml_single_party` is the source-level fix Joel asked for
+# instead of TS-side regex stripping: own-persona prior turns become
+# role:assistant, human messages become role:user, OTHER-persona turns are
+# DROPPED — the model only ever sees a clean user/assistant alternation it
+# was actually trained on. No closing-cue, no prefixes, no transcript-as-
+# completion-pattern setup. Honest cost: personas on this model are blind
+# to other AI peers in the room. That's the model's actual capability
+# boundary, not a workaround. See MultiPartyChatStrategy enum doc.
+multi_party_strategy = "proper_chat_ml_single_party"
 
 # ─── Vision-capable Qwen2-VL-7B (in-process llama.cpp + mtmd) ───────────
 # Reference vision model for the local multimodal path. mmproj_local_path

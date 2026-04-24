@@ -72,6 +72,14 @@ pub struct RespondInput {
     /// which `suggested_angles` keys to populate. This persona's own
     /// specialty must appear here.
     pub known_specialties: Vec<String>,
+    /// Display names of OTHER personas in the room (excluding self).
+    /// Forwarded to `prompt_assembly` so the
+    /// `ProperChatMlSingleParty` strategy can drop other-AI history
+    /// turns that single-party-trained models cannot coherently
+    /// process. Empty when the host doesn't expose a roster or when
+    /// the active model uses a strategy that doesn't need it
+    /// (`NamePrefixedUserTurns` ignores).
+    pub other_persona_names: Vec<String>,
     /// Persona's RAG-built identity / system prompt. Caller-supplied
     /// because the persona's identity comes from RAG (which knows the
     /// persona entity, the active adapters, the user-personalization
@@ -362,6 +370,7 @@ async fn run_render(
         is_voice: input.is_voice,
         social_signals: None,
         multi_party_strategy,
+        other_persona_names: input.other_persona_names.clone(),
     };
 
     let assembled = assemble(&prompt_input);

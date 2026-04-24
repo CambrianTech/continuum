@@ -109,7 +109,33 @@ pub enum MultiPartyChatStrategy {
     /// same turn. The chat template sees system + one user, matching
     /// the user→assistant alternation that single-party-trained models
     /// like qwen3.5 expect.
+    ///
+    /// Deprecated 2026-04-24 — produced echo-loops + name-prefix leaks
+    /// because qwen3.5 reads the flattened transcript as a continuation
+    /// pattern. Kept in the enum for backward-compat / experimentation;
+    /// new model-registry entries should prefer `ProperChatMlSingleParty`.
     SingleUserTurnFlattenedHistory,
+    /// Proper ChatML alternation for single-party-trained models. Walks
+    /// the history and:
+    ///   - own-persona prior turns become `role: assistant`
+    ///   - human messages become `role: user`
+    ///   - other-persona turns are DROPPED (single-party models cannot
+    ///     handle multi-party — pretending they can is the bug
+    ///     `SingleUserTurnFlattenedHistory` was working around)
+    /// No closing-cue instruction is appended; the chat template's
+    /// assistant-prefill signals the model to write the next assistant
+    /// turn. Joel 2026-04-24, task #75: "no band aids — take the
+    /// engineering path." This is the engineering path: shape the prompt
+    /// for the model's actual training distribution rather than post-
+    /// processing its output.
+    ///
+    /// Cost: personas on single-party models are honestly blind to
+    /// other AI peers in the room. That's a real loss of cross-AI
+    /// collaboration but it's an HONEST exposure of the model-capability
+    /// constraint, not a workaround. Multi-party-capable models
+    /// (Claude / GPT) keep `NamePrefixedUserTurns` and continue to see
+    /// every speaker.
+    ProperChatMlSingleParty,
 }
 
 /// A single model's metadata. Loaded from TOML; never constructed in code.

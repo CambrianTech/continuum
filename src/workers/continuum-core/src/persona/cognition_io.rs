@@ -154,6 +154,22 @@ pub struct PersonaContext {
     pub recent_history: Vec<RecentMessage>,
     /// Specialty identifiers in the room (for shared analysis).
     pub known_specialties: Vec<String>,
+    /// Display names of OTHER personas this persona shares the room
+    /// with (excluding self). Used by `prompt_assembly` for the
+    /// `ProperChatMlSingleParty` strategy: history entries whose
+    /// `name` is in this set are dropped from the rendered prompt
+    /// because single-party-trained models (qwen3.5) cannot
+    /// coherently process other-AI turns and produce echo loops /
+    /// name-prefix leaks when shown them.
+    ///
+    /// Empty for: rooms with only this persona, hosts that don't
+    /// expose a roster, or models that handle multi-party natively
+    /// (the `NamePrefixedUserTurns` strategy ignores this field).
+    /// Joel 2026-04-24, task #75 (PR-blocker): the source-level fix
+    /// for "no band aids — engineering path" — see
+    /// MultiPartyChatStrategy::ProperChatMlSingleParty doc.
+    #[serde(default)]
+    pub other_persona_names: Vec<String>,
     /// Optional room id — present for chat-room recipes, absent for
     /// game/AR/embedded hosts that have no concept of "room".
     #[ts(optional, type = "string")]
@@ -217,6 +233,7 @@ pub fn build_respond_input(
         message_text: signal.text.clone(),
         recent_history: ctx.recent_history.clone(),
         known_specialties: ctx.known_specialties.clone(),
+        other_persona_names: ctx.other_persona_names.clone(),
         system_prompt: ctx.system_prompt.clone(),
         model: ctx.model.clone(),
         is_voice: ctx.is_voice,
@@ -249,6 +266,7 @@ mod tests {
             system_prompt: String::new(),
             recent_history: vec![],
             known_specialties: vec![],
+            other_persona_names: vec![],
             room_id: None,
             is_voice: false,
         }

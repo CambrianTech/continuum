@@ -433,6 +433,38 @@ export class PersonaResponseGenerator {
         timestampMs: Date.now(),
         messageId: originalMessage.id,
       };
+      // Build the "other personas in this conversation" list for Rust's
+      // ProperChatMlSingleParty strategy (qwen3.5 etc.). Derived from
+      // recent_history's distinct sender names MINUS this persona's own
+      // name MINUS the originalMessage.senderName (the active human).
+      //
+      // Why history-derived rather than a room-roster query: the echo-loop
+      // / name-prefix-leak bug specifically manifests when other-persona
+      // turns appear IN HISTORY and the model treats them as a
+      // continuation pattern. If a persona never spoke in this window,
+      // they don't trigger the bug — so excluding them from the drop
+      // list is safe. History is also already in-hand; no extra DB
+      // round-trip per render.
+      //
+      // Limitation (TODO followup): a HUMAN whose senderName happens to
+      // match a persona's name is correctly excluded (we filter against
+      // originalMessage.senderName), but a human who is NOT the active
+      // sender on this turn yet appears in history would be mistakenly
+      // tagged as "other persona" if their name matches one in the
+      // roster. Mitigation if it bites: roster-aware filter via a
+      // single Room query at PersonaUser construction time, cached.
+      const selfName = this.personaName;
+      const activeHumanName = originalMessage.senderName;
+      const otherPersonaNames = Array.from(
+        new Set(
+          recentHistory
+            .map(h => h.sender_name)
+            .filter((name): name is string =>
+              !!name && name !== selfName && name !== activeHumanName,
+            ),
+        ),
+      );
+
       const personaContext = {
         personaId: this.personaId,
         displayName: this.personaName,
@@ -449,6 +481,7 @@ export class PersonaResponseGenerator {
           text: h.text,
         })),
         knownSpecialties,
+        otherPersonaNames,
         roomId: originalMessage.roomId,
         isVoice: originalMessage.sourceModality === 'voice',
       };

@@ -323,6 +323,7 @@ mod tests {
             message_text: "hello".to_string(),
             recent_history: vec![],
             known_specialties: vec!["general".to_string()],
+            other_persona_names: vec![],
             system_prompt: "you are helpful".to_string(),
             model: "test-model".to_string(),
             is_voice: false,
