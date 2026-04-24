@@ -368,6 +368,13 @@ jobs:
           # `git rev-parse HEAD` and the working-tree-clean assertion.
           # Default fetch-depth=1 (shallow) is fine for HEAD ops.
           fetch-depth: 1
+          # Recursive submodules required: vendor/llama.cpp is checked out
+          # as a submodule and the docker build CACHED layer references its
+          # CMakeLists.txt presence. Without this, the rebuild dies with
+          # "vendor/llama.cpp is empty — host submodule not initialized."
+          # Bigmama caught this 2026-04-24 after the rebuild-stale-amd64 job
+          # first fired post-stale-image-gate-restoration.
+          submodules: recursive
       - name: Login to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Set up Docker Buildx
@@ -407,6 +414,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          submodules: recursive  # vendor/llama.cpp — see amd64 job comment
       - name: Login to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Set up Docker Buildx
