@@ -13,8 +13,21 @@
 #
 # Usage:
 #   EXPECTED_SHA=<full sha> TAG=<image tag> \
-#   GHCR_USER=<user> GHCR_TOKEN=<token> \
 #   scripts/verify-image-revisions.sh
+#
+# Auth: uses `docker buildx imagetools` which reuses the existing
+# `docker login ghcr.io` state. No PAT handling in the script — if
+# imagetools can't reach the registry, the underlying `docker login`
+# isn't valid. Previously this script did raw `curl -H "Authorization:
+# Bearer $TOKEN" https://ghcr.io/v2/.../blobs/<digest>` which 404'd in
+# practice: the script was passing the per-arch MANIFEST digest to the
+# /blobs/ endpoint (manifests live under /manifests/, not /blobs/), so
+# the auth-scoped pull token was being asked to fetch a blob that
+# doesn't exist under that digest. On top of that, ghcr's pull token
+# from `/token?scope=repository:x:pull` can refuse blob fetches when
+# the caller is gh's default oauth scope vs a PAT with read:packages.
+# Both failure modes disappear when we let docker's credential helper
+# handle auth.
 #
 # Optional env:
 #   STALE_ARM64_OUT=<path>  Write newline-separated list of stale arm64
@@ -37,10 +50,6 @@ if [[ -z "${TAG:-}" ]]; then
   echo "ERROR: TAG env var required" >&2
   exit 2
 fi
-if [[ -z "${GHCR_USER:-}" || -z "${GHCR_TOKEN:-}" ]]; then
-  echo "ERROR: GHCR_USER and GHCR_TOKEN env vars required for blob fetch" >&2
-  exit 2
-fi
 
 REGISTRY_HOST="ghcr.io"
 DEFAULT_IMAGES="ghcr.io/cambriantech/continuum-core:ghcr.io/cambriantech/continuum-core-vulkan:ghcr.io/cambriantech/continuum-core-cuda:ghcr.io/cambriantech/continuum-livekit-bridge:ghcr.io/cambriantech/continuum-node:ghcr.io/cambriantech/continuum-model-init:ghcr.io/cambriantech/continuum-widgets"
@@ -59,6 +68,29 @@ echo ""
 FAILED=0
 WARN_ARM64=0
 
+# fetch_revision_label — given a repo (without tag) and the per-arch
+# manifest digest, walk index → manifest → config blob → labels and
+# extract `org.opencontainers.image.revision`. Returns empty if any
+# hop fails or the label is absent.
+fetch_revision_label() {
+  local repo="$1"        # e.g. ghcr.io/cambriantech/continuum-core
+  local manifest_digest="$2"
+
+  local manifest
+  manifest=$(docker buildx imagetools inspect --raw "${repo}@${manifest_digest}" 2>/dev/null)
+  [[ -z "$manifest" ]] && return
+
+  local config_digest
+  config_digest=$(echo "$manifest" | jq -r '.config.digest // empty' 2>/dev/null)
+  [[ -z "$config_digest" || "$config_digest" == "null" ]] && return
+
+  local config
+  config=$(docker buildx imagetools inspect --raw "${repo}@${config_digest}" 2>/dev/null)
+  [[ -z "$config" ]] && return
+
+  echo "$config" | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' 2>/dev/null
+}
+
 # Iterate the colon-separated image list. Bash IFS swap so the `for`
 # splits on `:` without regex / xargs.
 SAVED_IFS="$IFS"
@@ -70,21 +102,21 @@ IFS="$SAVED_IFS"
 for IMAGE in "${IMAGE_ARRAY[@]}"; do
   REF="$IMAGE:$TAG"
   echo "━━━ $REF ━━━"
-  REPO_PATH="${IMAGE#"$REGISTRY_HOST/"}"
-
-  # One token per image; reused for amd64 + arm64 blob fetches.
-  TOKEN=$(curl -fsSL -u "$GHCR_USER:$GHCR_TOKEN" \
-    "https://$REGISTRY_HOST/token?scope=repository:$REPO_PATH:pull" \
-    | jq -r .token 2>/dev/null)
 
   RAW=$(docker buildx imagetools inspect --raw "$REF" 2>/dev/null || echo '{}')
 
-  # For multi-arch indexes: enumerate per-platform manifests.
-  # For single-arch images (no manifests array): treat the top-level
-  # config as amd64.
+  # For multi-arch indexes: enumerate per-platform manifests. Skip the
+  # `unknown/unknown` attestation manifests buildx adds alongside real
+  # arch manifests — those are sbom/provenance, not image configs with
+  # revision labels. For single-arch images (no manifests array), use
+  # the top-level config digest directly so the script still works on
+  # Dockerfiles that emit single-platform artifacts.
   ARCH_LIST=$(echo "$RAW" | jq -r '
     if (.manifests // [] | length) > 0 then
-      [.manifests[] | select(.platform.os == "linux") | "\(.platform.architecture):\(.digest)"] | .[]
+      [.manifests[]
+       | select(.platform.os == "linux")
+       | select(.platform.architecture != "unknown")
+       | "\(.platform.architecture):\(.digest)"] | .[]
     else
       "amd64:\(.config.digest // empty)"
     end
@@ -95,15 +127,33 @@ for IMAGE in "${IMAGE_ARRAY[@]}"; do
     continue
   fi
 
+  # Track whether we saw amd64 for this image. A multi-arch tag that is
+  # missing the amd64 entry entirely is a hard failure — the user-facing
+  # target cannot ship without its primary arch.
+  SAW_AMD64=0
+
   for entry in $ARCH_LIST; do
     ARCH="${entry%%:*}"
-    CONFIG_DIGEST="${entry#*:}"
-    [[ -z "$CONFIG_DIGEST" || "$CONFIG_DIGEST" == "null" ]] && continue
-    REV=$(curl -fsSL \
-      -H "Authorization: Bearer $TOKEN" \
-      -H "Accept: application/vnd.oci.image.config.v1+json" \
-      "https://$REGISTRY_HOST/v2/$REPO_PATH/blobs/$CONFIG_DIGEST" \
-      | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' 2>/dev/null)
+    MANIFEST_DIGEST="${entry#*:}"
+    [[ -z "$MANIFEST_DIGEST" || "$MANIFEST_DIGEST" == "null" ]] && continue
+    [[ "$ARCH" == "amd64" ]] && SAW_AMD64=1
+
+    # For single-arch-as-top-level (jq fallback branch above), the
+    # digest is already the config digest — no intermediate manifest
+    # hop needed. Detect by trying the two-hop path first and falling
+    # back to a direct config fetch. Most real images hit the two-hop
+    # path since buildx produces OCI indexes even for single-platform
+    # pushes.
+    REV=$(fetch_revision_label "$IMAGE" "$MANIFEST_DIGEST")
+
+    # Fallback: maybe the extracted digest IS a config blob (rare,
+    # happens when `inspect --raw` returns an image manifest directly
+    # rather than an index). One hop.
+    if [[ -z "$REV" ]]; then
+      CONFIG_DIRECT=$(docker buildx imagetools inspect --raw "${IMAGE}@${MANIFEST_DIGEST}" 2>/dev/null)
+      REV=$(echo "$CONFIG_DIRECT" | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' 2>/dev/null)
+    fi
+
     if [[ -z "$REV" ]]; then
       if [[ "$ARCH" == "amd64" ]]; then
         echo "  ❌ amd64: no org.opencontainers.image.revision label — pre-gate build, refresh required"
@@ -128,6 +178,21 @@ for IMAGE in "${IMAGE_ARRAY[@]}"; do
       echo "  ✅ $ARCH: revision matches HEAD"
     fi
   done
+
+  # Missing-amd64-entry detection: if the tag is multi-arch but has no
+  # amd64 platform at all, that's the tag-overwrite race (arm64 push
+  # clobbered the multi-arch manifest). This is a hard fail separate
+  # from "revision label absent."
+  if [[ "$SAW_AMD64" -eq 0 ]]; then
+    # Only flag if the index actually has multiple arch entries — a
+    # single-arch-only image shouldn't trip this.
+    ARCH_COUNT=$(echo "$ARCH_LIST" | wc -l | tr -d ' ')
+    if [[ "$ARCH_COUNT" -gt 0 ]]; then
+      echo "  ❌ amd64: MISSING from multi-arch manifest — tag-overwrite race (arm64 push clobbered amd64)"
+      echo "$REF" >> "$STALE_AMD64_OUT"
+      FAILED=1
+    fi
+  fi
 done
 
 if [ "$WARN_ARM64" -ne 0 ]; then

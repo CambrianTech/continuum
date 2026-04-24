@@ -243,10 +243,19 @@ if [[ "$SKIP_LIGHT" -eq 0 ]]; then
 
     echo ""
     echo "→ docker buildx build --push  $IMAGE  (multi-arch)"
+    # --label org.opencontainers.image.revision parity with push-image.sh
+    # heavy builds. Without this, light images (node/model-init/widgets)
+    # ship tagged :<sha> but carry no `revision` label — the stale-image
+    # gate in verify-image-revisions.sh then reports them as pre-gate
+    # pushes and blocks merge. Caught empirically 2026-04-24 after the
+    # paired amd64/arm64 rebuild at 0c6d62ad5: heavy variants passed the
+    # gate, light variants failed "no revision label." Same $STARTUP_SHA_FULL
+    # already captured at script start for the TOCTOU guard.
     docker buildx build \
       --platform "linux/amd64,linux/arm64" \
       --file "$DOCKERFILE" \
       "${LIGHT_TAGS[@]}" \
+      --label "org.opencontainers.image.revision=$STARTUP_SHA_FULL" \
       --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
       --cache-to   "type=registry,ref=$REGISTRY/$IMAGE:buildcache,mode=max" \
       --push \
