@@ -90,7 +90,13 @@ class DatabaseSeeder {
   }
 
   /** Find or create a user by uniqueId */
-  async findOrCreateUser(uniqueId: string, displayName: string, type: UserType, provider?: string): Promise<UserEntity> {
+  async findOrCreateUser(
+    uniqueId: string,
+    displayName: string,
+    type: UserType,
+    provider?: string,
+    modelId?: string,
+  ): Promise<UserEntity> {
     const existing = await DataList.execute<UserEntity>({
       collection: UserEntity.collection,
       filter: { uniqueId },
@@ -106,6 +112,17 @@ class DatabaseSeeder {
     user.isAI = type !== 'human';
     user.status = 'online' as UserStatus;
     if (provider) user.provider = provider;
+
+    // Set modelConfig at create time (not just in syncPersonaProviders later).
+    // Without this, UserDaemon's first persona-spawn pass races with the
+    // syncPersonaProviders pass: UserDaemon throws "missing required
+    // modelConfig.provider" on every persona because the row was created
+    // bare, and the resync that fills modelConfig runs AFTER UserDaemon has
+    // already given up. Net effect: zero PersonaUser instances live, no
+    // chat:messages subscriptions, complete silence in chat. See #959.
+    if (provider) {
+      (user as Record<string, unknown>).modelConfig = getModelConfigForProvider(provider, modelId);
+    }
 
     const result = await DataCreate.execute<UserEntity>({
       collection: UserEntity.collection,
@@ -324,6 +341,7 @@ export async function seedDatabase(): Promise<boolean> {
         config.displayName,
         config.type === 'agent' ? 'agent' : 'persona',
         config.provider,
+        config.modelId,
       );
       created.set(config.uniqueId, user);
     } catch (err) {
