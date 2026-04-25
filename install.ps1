@@ -214,9 +214,9 @@ if ($bootstrapExit -eq 0) {
     Write-Ok 'Continuum is up.'
     Write-Host ''
     switch ($Mode) {
-        'browser'  { Write-Host '  UI:        http://localhost:9000' }
+        'browser'  { Write-Host '  UI:        http://localhost:9003' }
         'cli'      { Write-Host '  CLI:       continuum   (from any new shell)' }
-        'headless' { Write-Host '  Server:    http://localhost:9000 (API only)' }
+        'headless' { Write-Host '  Server:    http://localhost:9003 (API only)' }
     }
     Write-Host '  Verify:    continuum doctor'
     Write-Host ''
