@@ -92,21 +92,29 @@ is where we discover regressions, that's its job.
 
 ### B. Mac-mode install rationalization
 
-Two options to fix the README mismatch — pick whichever is cleaner per
-in-implementation discovery:
+**Update 2026-04-25 (anvil, after reading install.sh:118-123):** B.1 is
+not a choice we have. Apple's hypervisor blocks GPU passthrough to
+containers (confirmed by Docker Feb 2026, comment in install.sh). Mac
+NEEDS to run continuum-core natively for Metal acceleration. The 5-15min
+Rust build is architectural, not a bug. Going with B.2.
 
-**Option B.1 (preferred):** install.sh on Mac defaults to docker-only,
-matching the README. The Rust source build + npm-start path moves behind a
-`CONTINUUM_DEV=1` flag. Carl's path: docker pull + compose up. Dev's path:
-explicit opt-in.
+**B.2 (current plan):** README updated to admit the hybrid split:
+- Linux: docker-first, no compilation (matches the existing README claim)
+- Mac: docker for support services + native continuum-core for Metal
+  (~10min first build, incremental after; happens automatically as part
+  of `curl install.sh | bash` — no separate command, no env flag)
 
-**Option B.2:** README explicitly describes the hybrid (docker for users,
-source-build for live-mode/voice/avatar features), and install.sh prints a
-big "this will take 15-30 minutes for full feature set, use
-CONTINUUM_MODE=carl for the 3-min docker-only install" banner.
+Implementation:
+- README's headline install section gets a small per-platform table or
+  inline note explaining the wall-clock difference.
+- install.sh prints an upfront banner on Mac estimating build time
+  (so Carl knows to expect ~10min, not ~3min).
+- `--quiet` mode keeps existing behavior; just clearer messaging.
 
-B.1 is cleaner because the README is what Carl read; the install should
-match it. B.2 is honest but admits we shipped an inconsistency.
+(Considered B.3: ship TWO install commands — install-mac.sh vs install.sh.
+Rejected: more docs surface, more drift risk, fragments the support story.
+One entry point with honest messaging beats two entry points with shorter
+average time.)
 
 ### C. Browser smoke test (puppeteer)
 
