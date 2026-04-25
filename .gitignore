@@ -12,6 +12,11 @@ dist/
 *.tgz
 continuum-jtag-*.tgz
 
+# Generated CSS-in-JS modules emitted by src/scripts/compile-sass.ts
+# from sibling .scss source files. Pure build output — never hand-edited.
+src/widgets/**/public/*.styles.ts
+src/widgets/**/styles/*.styles.ts
+
 # Generated manifest files (use generated.ts instead)
 src/manifests/
 
