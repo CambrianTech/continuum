@@ -300,6 +300,10 @@ tokens_per_second = 16.0
 capabilities = ["text-generation", "chat", "vision", "streaming"]
 cost_input_per_1k = 0.0
 cost_output_per_1k = 0.0
+# Same multi-party strategy as the qwen3.5 entries: drop other-persona turns from
+# history and assemble proper ChatML so Vision AI doesn't echo "Local Assistant:"
+# / "Teacher AI:" name prefixes on vision replies (Joel 2026-04-24 brick test).
+multi_party_strategy = "proper_chat_ml_single_party"
 gguf_hint = "huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF"
 # Local path on the dev machine. Production install (Carl/Dev) pulls
 # these via `install.sh` into a per-user model cache. Auto-discovery of

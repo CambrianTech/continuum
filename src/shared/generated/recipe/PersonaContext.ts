@@ -40,6 +40,23 @@ recentHistory: Array<RecentMessage>,
  */
 knownSpecialties: Array<string>, 
 /**
+ * Display names of OTHER personas this persona shares the room
+ * with (excluding self). Used by `prompt_assembly` for the
+ * `ProperChatMlSingleParty` strategy: history entries whose
+ * `name` is in this set are dropped from the rendered prompt
+ * because single-party-trained models (qwen3.5) cannot
+ * coherently process other-AI turns and produce echo loops /
+ * name-prefix leaks when shown them.
+ *
+ * Empty for: rooms with only this persona, hosts that don't
+ * expose a roster, or models that handle multi-party natively
+ * (the `NamePrefixedUserTurns` strategy ignores this field).
+ * Joel 2026-04-24, task #75 (PR-blocker): the source-level fix
+ * for "no band aids — engineering path" — see
+ * MultiPartyChatStrategy::ProperChatMlSingleParty doc.
+ */
+otherPersonaNames: Array<string>, 
+/**
  * Optional room id — present for chat-room recipes, absent for
  * game/AR/embedded hosts that have no concept of "room".
  */

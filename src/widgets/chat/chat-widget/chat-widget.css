@@ -297,6 +297,77 @@
   min-width: 0;
 }
 
+.attachment-preview {
+  display: none; /* Toggled to flex when populated */
+  flex-wrap: wrap;
+  gap: var(--spacing-xs, 6px);
+  padding: var(--spacing-sm, 8px) var(--spacing-lg, 16px) 0 var(--spacing-lg, 16px);
+  background: var(--surface-secondary, rgba(10, 15, 20, 0.8));
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.attachment-preview:not(:empty) {
+  display: flex;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs, 6px);
+  padding: 4px 6px 4px 4px;
+  background: var(--surface-input, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  border-radius: var(--radius-sm, 6px);
+  max-width: 200px;
+  font-size: 0.75rem;
+  color: var(--text-primary, rgba(255, 255, 255, 0.9));
+}
+
+.attachment-chip-thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.attachment-chip-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.attachment-chip-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.attachment-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.attachment-chip-remove:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.12));
+  color: var(--text-primary, rgba(255, 255, 255, 0.95));
+}
+
 .message-input {
   flex: 1;
   min-width: 0;  /* Allow shrinking in flex context */
