@@ -717,33 +717,69 @@ if [[ "$OS" == "Darwin" ]]; then
     warn "npm start failed — check logs at ~/.continuum/jtag/logs/system/continuum-core.log"
 fi
 
-# ── 8. Wait for health ─────────────────────────────────────
-info "Waiting for services..."
-for i in {1..30}; do
-  if curl -sf http://localhost:9003 &>/dev/null || curl -sf https://localhost:9003 -k &>/dev/null; then
+# ── 8. Wait for widget-server health ───────────────────────
+# Carl's experience hinges on this gate: if we open the browser before
+# widget-server is actually serving, Chrome lands on the failed URL,
+# replaces the location bar with chrome-error://chromewebdata/, and any
+# subsequent reload tries to navigate from chrome-error back to http: —
+# which the browser blocks as a cross-scheme navigation. Carl is then
+# stuck on an error page with no clean recovery. Empirically: 2026-04-25
+# joel hit "Unsafe attempt to load URL http://localhost:9003/ from frame
+# with URL chrome-error://chromewebdata/" exactly because of this race.
+#
+# Two changes vs the prior 'curl -sf' wait:
+#   1. Hit /health specifically (widget-server's health endpoint at
+#      JTAGEndpoints.HEALTH = '/health'). A 200 here means widget-server
+#      is actually serving HTTP, not just that the port is open.
+#   2. If we never get a 200 in HEALTH_TIMEOUT_SEC, DO NOT open the
+#      browser. Print actionable diagnostic + a manual-open command for
+#      Carl to use after he checks the logs. Opening to a not-yet-ready
+#      server is the bug; refusing to open is the correct behavior.
+info "Waiting for widget-server health (timeout ${HEALTH_TIMEOUT_SEC:=120}s)..."
+HEALTH_OK=0
+for i in $(seq 1 "$HEALTH_TIMEOUT_SEC"); do
+  # --fail returns non-zero on 4xx/5xx; --max-time keeps each probe snappy
+  # so the loop stays close to a 1s cadence even when the server hangs.
+  if curl -sf --max-time 2 http://localhost:9003/health >/dev/null 2>&1 \
+     || curl -sfk --max-time 2 https://localhost:9003/health >/dev/null 2>&1; then
+    HEALTH_OK=1
+    ok "widget-server healthy after ${i}s"
     break
   fi
-  [ $i -eq 30 ] && warn "Services still starting — check: $CONTAINER_CMD compose logs"
-  sleep 2
+  sleep 1
 done
 
-# ── 9. Determine URL + open browser ────────────────────────
+# ── 9. Determine URL + open browser (only if healthy) ──────
 if [ -n "$TS_HOSTNAME" ] && [ -f "$CONTINUUM_DATA/$TS_HOSTNAME.crt" ]; then
   URL="https://$TS_HOSTNAME:9003"
 else
   URL="http://localhost:9003"
 fi
 
-case "$OS" in
-  Darwin) open "$URL" 2>/dev/null || true ;;
-  Linux)
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-      cmd.exe /c start "" "$URL" 2>/dev/null || true
-    else
-      xdg-open "$URL" 2>/dev/null || true
-    fi
-    ;;
-esac
+if [ "$HEALTH_OK" -eq 1 ]; then
+  case "$OS" in
+    Darwin) open "$URL" 2>/dev/null || true ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        cmd.exe /c start "" "$URL" 2>/dev/null || true
+      else
+        xdg-open "$URL" 2>/dev/null || true
+      fi
+      ;;
+  esac
+else
+  warn "widget-server not healthy after ${HEALTH_TIMEOUT_SEC}s — NOT opening browser."
+  warn "  Opening Chrome to a not-yet-ready URL traps you on a chrome-error page"
+  warn "  that cannot cleanly recover. Diagnose + retry instead:"
+  echo ""
+  echo "    Logs:   $CONTAINER_CMD compose -f $INSTALL_DIR/docker-compose.yml logs --tail=200"
+  echo "    Status: $CONTAINER_CMD compose -f $INSTALL_DIR/docker-compose.yml ps"
+  echo "    Retry:  curl -v http://localhost:9003/health"
+  echo ""
+  echo "    Once the health endpoint returns 200, open the URL manually:"
+  echo "      $URL"
+  echo ""
+fi
 
 # ── Done ────────────────────────────────────────────────────
 echo ""
