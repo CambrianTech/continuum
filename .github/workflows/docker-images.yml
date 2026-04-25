@@ -371,6 +371,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # CRITICAL: check out the PR HEAD, NOT the synthetic merge commit
+          # GitHub creates by default. Without this, push-current-arch.sh's
+          # `git rev-parse HEAD` returns the merge SHA, images get labeled
+          # with that SHA, and verify-image-revisions.sh (which expects
+          # github.event.pull_request.head.sha) flags them STALE forever.
+          # 2026-04-24: hit this exact failure — labels said 9dc97ea (merge
+          # SHA), expected 056978cde (PR HEAD), every rebuild produced more
+          # mismatched labels.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # Full history needed for the re-check step to invoke
           # verify-image-revisions.sh's smart staleness diff (compares
           # the older labeled SHA against HEAD to skip rebuilds for
@@ -447,6 +456,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}  # PR HEAD, not merge commit — see amd64 job comment
           fetch-depth: 0  # full history — see amd64 job comment
           submodules: recursive  # vendor/llama.cpp — see amd64 job comment
       - name: Login to ghcr.io
