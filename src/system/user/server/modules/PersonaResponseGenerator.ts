@@ -373,16 +373,33 @@ export class PersonaResponseGenerator {
           if (!base64) {
             return null; // Nothing to send to the model
           }
-          // Pull cached description (populated by prewarmVisionDescriptions
-          // at chat-send time). Cache hit takes ~0ms; miss returns
-          // undefined — text-only personas downstream get a "no
-          // description available" marker instead of fabricating.
+          // Pull description from VDS — populated by prewarmVisionDescriptions
+          // at chat-send time. Two states are valid waits:
+          //   'cached'   → ~0ms instant lookup (pre-warm finished).
+          //   'inflight' → bounded wait. Pre-warm started but hasn't
+          //                resolved yet; we'd rather wait up to 8s than
+          //                hand the persona an empty description and
+          //                let it hallucinate "I don't see any image."
+          //                VDS already deduplicates inflight requests, so
+          //                this await piggybacks on the existing call —
+          //                no extra inference cost.
+          // Status `none` / `error` → don't trigger a blocking describe
+          // here; the chat-send path is responsible for prewarming. Stage
+          // 2 (Rust-side) is responsible for emitting an [Attached image:
+          // unavailable] marker when description ends up undefined, so a
+          // text-only persona at least KNOWS an image was attached
+          // instead of fabricating absence. Tracked in #970.
           let description: string | undefined;
           if (m.type === 'image') {
             try {
               const visionSvc = VisionDescriptionService.getInstance();
-              if (visionSvc.descriptionStatus(base64) === 'cached') {
-                const desc = await visionSvc.describeBase64(base64, m.mimeType ?? 'image/png', { maxLength: 200 });
+              const status = visionSvc.descriptionStatus(base64);
+              if (status === 'cached' || status === 'inflight') {
+                const VDS_WAIT_MS = 8000;
+                const desc = await Promise.race([
+                  visionSvc.describeBase64(base64, m.mimeType ?? 'image/png', { maxLength: 200 }),
+                  new Promise<null>((resolve) => setTimeout(() => resolve(null), VDS_WAIT_MS)),
+                ]);
                 description = desc?.description;
               }
             } catch {
