@@ -7,8 +7,17 @@ use std::path::PathBuf;
 
 use super::types::{PipelineCheckpoint, PipelineStatus};
 
-/// Base directory for checkpoint storage
+/// Base directory for checkpoint storage.
+///
+/// Default: `~/.continuum/sentinel/checkpoints`.
+/// Overridable via `CONTINUUM_CHECKPOINT_DIR` env var — used by tests to
+/// isolate checkpoint state from the user's real `~/.continuum` (and to
+/// survive the case where root-owned directories from a previous docker
+/// container run leave the default path unwritable for the dev user).
 fn checkpoints_dir() -> PathBuf {
+    if let Ok(override_dir) = std::env::var("CONTINUUM_CHECKPOINT_DIR") {
+        return PathBuf::from(override_dir);
+    }
     let home = dirs::home_dir().expect("Failed to resolve home directory");
     home.join(".continuum").join("sentinel").join("checkpoints")
 }
@@ -137,6 +146,35 @@ mod tests {
     use super::*;
     use crate::modules::sentinel::types::*;
     use std::collections::HashMap;
+    use std::sync::OnceLock;
+    use tempfile::TempDir;
+
+    /// Process-global tempdir for checkpoint tests, lazily initialized on
+    /// first access. All tests in this module share it — they use unique
+    /// UUID-derived handles, so file collisions don't happen. This isolates
+    /// the test runs from the user's real `~/.continuum/sentinel/checkpoints`
+    /// (which may be root-owned-and-unwritable on a dev box that previously
+    /// ran a docker container that mounted $HOME and chmod'd the dir under
+    /// root).
+    ///
+    /// Stored in a static so the TempDir is dropped (and cleaned up) only
+    /// when the test process exits — a per-test TempDir would race with
+    /// cargo's default parallel test execution since `set_var` is process-
+    /// global.
+    fn ensure_test_checkpoint_dir() {
+        static TMPDIR: OnceLock<TempDir> = OnceLock::new();
+        let dir = TMPDIR.get_or_init(|| {
+            tempfile::tempdir().expect("Failed to create test checkpoint tempdir")
+        });
+        // SAFETY: set_var is unsafe in newer Rust (process-global, racy with
+        // other threads reading env). Tests in this module only ever write
+        // the SAME path, so concurrent setters write the same value — race-
+        // free in practice.
+        std::env::set_var(
+            "CONTINUUM_CHECKPOINT_DIR",
+            dir.path(),
+        );
+    }
 
     fn make_test_checkpoint(handle: &str) -> PipelineCheckpoint {
         PipelineCheckpoint {
@@ -189,6 +227,7 @@ mod tests {
 
     #[test]
     fn test_save_load_checkpoint() {
+        ensure_test_checkpoint_dir();
         let handle = format!(
             "test-ckpt-{}",
             uuid::Uuid::new_v4().to_string()[..8].to_string()
@@ -208,6 +247,7 @@ mod tests {
 
     #[test]
     fn test_list_checkpoints() {
+        ensure_test_checkpoint_dir();
         let handle = format!(
             "test-list-{}",
             uuid::Uuid::new_v4().to_string()[..8].to_string()
@@ -223,6 +263,7 @@ mod tests {
 
     #[test]
     fn test_recover_interrupted() {
+        ensure_test_checkpoint_dir();
         let handle = format!(
             "test-recover-{}",
             uuid::Uuid::new_v4().to_string()[..8].to_string()
