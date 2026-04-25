@@ -1,0 +1,99 @@
+# Carl-install smoke — runs the EXACT install command Carl runs, then
+# verifies the page Carl opens after install actually serves usable HTML.
+#
+# Closes the gap that let #950 merge with the Mac install path doing a
+# hidden 5-15min Rust source build despite the README claiming "Docker-
+# first: no compilation needed." Existing CI gates (verify-architectures,
+# verify-after-rebuild, validate, install-and-run-gate) all passed because
+# they validate image presence + revision label + service health on a
+# CI-only docker compose. They never exercised `curl install.sh | bash`.
+#
+# Status: ADVISORY for the first week of operation (per docs/CARL-CI-PLAN.md
+# rollout section). Once we have <2% false-fail rate over 1 week, flip to
+# REQUIRED via the PrimaryBranches ruleset PUT. Until then, this workflow
+# runs but doesn't block merge — letting us tune the smoke without locking
+# the merge button on flakes.
+
+name: Carl Install Smoke
+
+on:
+  pull_request:
+    branches: [canary, main]
+    paths:
+      # Run when anything that affects Carl's install path changes.
+      # No need to re-run on TS-only widget changes that don't touch
+      # install/docker; those are covered by other gates.
+      - 'install.sh'
+      - 'install.ps1'
+      - 'setup.sh'
+      - 'bootstrap.sh'
+      - 'src/scripts/install*.sh'
+      - 'src/scripts/lib/install-common.sh'
+      - 'docker/**'
+      - 'docker-compose*.yml'
+      - 'src/.dockerignore'
+      - 'src/workers/.dockerignore'
+      - 'scripts/ci/carl-install-smoke.sh'
+      - '.github/workflows/carl-install-smoke.yml'
+  push:
+    branches: [canary, main]
+  # Manual trigger so anyone can validate Carl's path against any branch
+  # without opening a throwaway PR.
+  workflow_dispatch:
+    inputs:
+      install_ref:
+        description: 'Git ref to fetch install.sh from (sha / branch / tag)'
+        required: false
+        default: ''
+
+jobs:
+  carl-install-smoke-amd64:
+    name: carl-install-smoke (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # PR HEAD, not the synthetic merge commit. Otherwise github.sha
+          # is the merge commit and the install.sh we'd fetch from raw.
+          # githubusercontent.com wouldn't be the one in this PR. Same
+          # rationale as docker-images.yml's ref pattern.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Smoke uses the local script directly; no need for full history.
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to ghcr.io (so install.sh can pull pre-built images)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Run carl-install smoke
+        env:
+          # Pass the PR HEAD sha so the smoke fetches the install.sh from
+          # THIS PR (not main). Falls back to manual workflow_dispatch input
+          # when not in a PR context.
+          CARL_INSTALL_REF: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
+          # 25-min cap on the docker-only install. Hybrid (Mac source-build)
+          # path would exceed this — by design, that's the gate firing on
+          # the README/install mismatch.
+          CARL_INSTALL_TIMEOUT_SEC: '1500'
+          # Generous health wait — model-init can take 3-5min on cold pull.
+          CARL_HEALTH_TIMEOUT_SEC: '300'
+          # CI shouldn't leave docker compose stacks running.
+          SKIP_TEARDOWN: '0'
+        run: bash scripts/ci/carl-install-smoke.sh
+
+      - name: Upload install + page artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: carl-install-debug-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            /tmp/carl-smoke-*.install.log
+            /tmp/carl-smoke-*.page.html
+          retention-days: 7
+          if-no-files-found: ignore
