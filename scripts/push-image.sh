@@ -260,7 +260,14 @@ LOCAL_PLATFORM="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>/d
 # without it a stale-tagged image (alias of an older sha) would silently
 # pass the gate. Issue #957/#959/#964 paired QA cycle proved we need this
 # to detect "the tag exists but the binary is from before the fix landed."
-BUILD_SHA="$(git rev-parse HEAD)"
+#
+# EXPECTED_SHA env var override — necessary in CI for pull_request events
+# where the runner's checkout defaults to refs/pull/<N>/merge (synthetic
+# merge commit), making `git rev-parse HEAD` return the merge sha instead
+# of the PR HEAD. The gate compares against PR HEAD, so without the
+# override the label would never match. Same env var honored by
+# push-current-arch.sh's STARTUP_SHA_FULL.
+BUILD_SHA="${EXPECTED_SHA:-$(git rev-parse HEAD)}"
 
 echo "→ Phase 1: local build + slice test on $LOCAL_PLATFORM"
 docker buildx build \

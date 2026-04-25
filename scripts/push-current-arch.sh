@@ -105,9 +105,43 @@ SKIP_HEAVY="${SKIP_HEAVY:-0}"
 cd "$REPO_ROOT"
 
 REGISTRY="ghcr.io/cambriantech"
-STARTUP_SHA_FULL="$(git rev-parse HEAD)"
-SHA="$(git rev-parse --short "$STARTUP_SHA_FULL")"
+
+# STARTUP_SHA_FULL: the commit we're building + tagging. On a dev machine
+# this is just `git rev-parse HEAD`. In GitHub Actions for a pull_request
+# event, the runner's checkout defaults to `refs/pull/<N>/merge` — a
+# synthetic merge commit between the PR HEAD and the base branch, NOT the
+# PR HEAD itself. Tagging images with that synthetic sha makes the
+# verify-after-rebuild gate fail (it asserts pr-950 amd64 label ==
+# github.event.pull_request.head.sha, which is the PR HEAD, not the merge
+# sha). Caught empirically 2026-04-25 on PR #950: rebuild-stale-amd64
+# pushed images labeled 9dc97ea4 (merge sha) but the gate expected
+# 056978cde (PR head). Result: stale-image gate fails post-rebuild on a
+# pure CI artifact.
+#
+# Resolution priority:
+#   1. EXPECTED_SHA env var (explicit override from caller / CI yaml)
+#   2. GitHub Actions PR-event fallback: GITHUB_EVENT_NAME=pull_request +
+#      gh CLI available → query the actual PR HEAD via gh api. Works even
+#      when the workflow yaml doesn't pass EXPECTED_SHA explicitly, so the
+#      fix doesn't require a workflow-yaml edit (which needs `workflow`
+#      OAuth scope my push lane lacks).
+#   3. Plain git rev-parse HEAD (dev-machine default).
+STARTUP_SHA_FULL=""
+if [[ -n "${EXPECTED_SHA:-}" ]]; then
+  STARTUP_SHA_FULL="$EXPECTED_SHA"
+elif [[ -n "${GITHUB_ACTIONS:-}" && "${GITHUB_EVENT_NAME:-}" == "pull_request" ]] \
+     && command -v gh >/dev/null 2>&1; then
+  PR_NUM_FOR_SHA="$(jq -r '.pull_request.number // empty' "${GITHUB_EVENT_PATH:-/dev/null}" 2>/dev/null || true)"
+  if [[ -n "$PR_NUM_FOR_SHA" ]]; then
+    STARTUP_SHA_FULL="$(gh pr view "$PR_NUM_FOR_SHA" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+    [[ -n "$STARTUP_SHA_FULL" ]] && echo "→ STARTUP_SHA_FULL resolved to PR #$PR_NUM_FOR_SHA HEAD via gh api: $STARTUP_SHA_FULL"
+  fi
+fi
+[[ -z "$STARTUP_SHA_FULL" ]] && STARTUP_SHA_FULL="$(git rev-parse HEAD)"
+SHA="${STARTUP_SHA_FULL:0:7}"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+# Export so push-image.sh sees the same value (its own EXPECTED_SHA fallback).
+export EXPECTED_SHA="$STARTUP_SHA_FULL"
 BRANCH_TAG="$(echo "$BRANCH" | tr '/' '-')"
 PR_NUMBER="${PR_NUMBER:-}"
 if [[ -z "$PR_NUMBER" ]] && command -v gh >/dev/null 2>&1; then
