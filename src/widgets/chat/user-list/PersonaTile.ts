@@ -39,6 +39,7 @@ export class PersonaTile extends LitElement {
   @reactive() speciality: string = '';
   @reactive() modelInfo: string = '';
   @reactive() modelBadge: string = '';
+  @reactive() isLocalModel: boolean = false;
   @reactive() requiresMention: boolean = false;
   @reactive() ragCertified: boolean = false;
   @reactive() lastActive: string = '';
@@ -326,7 +327,7 @@ export class PersonaTile extends LitElement {
             <span class="tile-type-badge">${this.userType}</span>
             ${this.modelInfo ? html`<span class="tile-model-info" title="AI Model">${this.modelInfo}</span>` : nothing}
             ${this.speciality ? html`<span class="tile-speciality">${this.speciality}</span>` : nothing}
-            ${this.modelBadge ? html`<span class="tile-model-badge">${this.modelBadge}</span>` : nothing}
+            ${this.modelBadge ? html`<span class="tile-model-badge ${this.isLocalModel ? 'is-local' : 'is-remote'}" title=${this.modelInfo}>${this.modelBadge}</span>` : nothing}
           </div>
           ${this._isAI ? this._renderMeters() : nothing}
         </div>

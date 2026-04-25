@@ -253,7 +253,10 @@ mod tests {
         let decisions = orchestrate(&analysis, &personas, DEFAULT_RELEVANCE_THRESHOLD);
 
         // CodeReview + Teacher both selected (non-empty angles); Helper silent.
-        let leads: Vec<_> = decisions.iter().filter(|d| d.is_lead == Some(true)).collect();
+        let leads: Vec<_> = decisions
+            .iter()
+            .filter(|d| d.is_lead == Some(true))
+            .collect();
         assert_eq!(leads.len(), 1, "exactly one lead");
 
         // Both code and education score 1.0 (non-empty angle = 1.0). The lead

@@ -78,7 +78,10 @@ pub fn reset_slot_pool() {
             max
         );
     } else {
-        clog_info!("🎨 Slot pool reset: all {} slots available (no zombies)", max);
+        clog_info!(
+            "🎨 Slot pool reset: all {} slots available (no zombies)",
+            max
+        );
     }
 }
 

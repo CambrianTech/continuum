@@ -43,12 +43,12 @@ Set the `DATASETS_DIR` environment variable to use a custom directory:
 
 ```bash
 # In your shell profile (~/.zshrc, ~/.bashrc, etc.)
-export DATASETS_DIR=/Volumes/FlashGordon/cambrian/datasets
+export DATASETS_DIR=/Volumes/<external-drive>/cambrian/datasets
 ```
 
 Or add to `~/.continuum/config/environment`:
 ```bash
-DATASETS_DIR=/Volumes/FlashGordon/cambrian/datasets
+DATASETS_DIR=/Volumes/<external-drive>/cambrian/datasets
 ```
 
 **Default**: If not set, archives are stored in `$HOME/.continuum/datasets`
@@ -60,7 +60,7 @@ Create `~/.continuum/config/datasets.json` to customize sources and projects:
 ```json
 {
   "version": "1.0.0",
-  "defaultOutputPath": "/Volumes/FlashGordon/cambrian/datasets",
+  "defaultOutputPath": "/Volumes/<external-drive>/cambrian/datasets",
   "sources": [
     {
       "id": "claude-projects",
@@ -83,7 +83,7 @@ Create `~/.continuum/config/datasets.json` to customize sources and projects:
       "id": "claude-continuum",
       "name": "Continuum Project",
       "sourceId": "claude-projects",
-      "path": "-Volumes-FlashGordon-cambrian-continuum",
+      "path": "-Volumes-<external-drive>-cambrian-continuum",
       "enabled": true,
       "tags": ["continuum", "main"]
     }

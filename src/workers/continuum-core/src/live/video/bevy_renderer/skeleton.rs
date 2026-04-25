@@ -43,7 +43,11 @@ pub(super) fn propagate_render_layers(
 }
 
 /// Dump all named entities in a scene hierarchy (for debugging bone names).
-pub(super) fn dump_bone_names(_entity: Entity, _children: &Query<&Children>, _names: &Query<&Name>) {
+pub(super) fn dump_bone_names(
+    _entity: Entity,
+    _children: &Query<&Children>,
+    _names: &Query<&Name>,
+) {
     // No-op: bevy_debug calls removed. Function retained for call-site compatibility.
 }
 
@@ -330,19 +334,17 @@ pub(super) fn discover_upper_body_bones(
     if !vrm_bones.is_empty() {
         let vrm_discover = |vrm_name: &str, _label: &str| -> Option<BoneInfo> {
             vrm_bones.get(vrm_name).and_then(|node_name| {
-                find_bone_by_name(root, children, names, &[node_name.as_str()]).and_then(
-                    |entity| {
-                        if let Ok(t) = transforms.get(entity) {
-                            Some(BoneInfo {
-                                entity,
-                                rest_translation: t.translation,
-                                rest_rotation: t.rotation,
-                            })
-                        } else {
-                            None
-                        }
-                    },
-                )
+                find_bone_by_name(root, children, names, &[node_name.as_str()]).and_then(|entity| {
+                    if let Ok(t) = transforms.get(entity) {
+                        Some(BoneInfo {
+                            entity,
+                            rest_translation: t.translation,
+                            rest_rotation: t.rotation,
+                        })
+                    } else {
+                        None
+                    }
+                })
             })
         };
 
@@ -439,17 +441,89 @@ pub(super) fn discover_bones(
     let head = discover(&["J_Bip_C_Head", "mixamorig:Head", "Head"]);
     let neck = discover(&["J_Bip_C_Neck", "mixamorig:Neck", "Neck"]);
     let spine = discover(&["J_Bip_C_Spine", "mixamorig:Spine", "Spine"]);
-    let left_shoulder = discover(&["J_Bip_L_Shoulder", "mixamorig:LeftShoulder", "LeftShoulder", "Left shoulder", "Shoulder_L", "Shoulder.L"]);
-    let right_shoulder = discover(&["J_Bip_R_Shoulder", "mixamorig:RightShoulder", "RightShoulder", "Right shoulder", "Shoulder_R", "Shoulder.R"]);
-    let left_upper_arm = discover(&["J_Bip_L_UpperArm", "mixamorig:LeftArm", "LeftUpperArm", "Left_UpperArm", "Left arm", "Upperarm_L", "upper_arm.L"]);
-    let right_upper_arm = discover(&["J_Bip_R_UpperArm", "mixamorig:RightArm", "RightUpperArm", "Right_UpperArm", "Right arm", "Upperarm_R", "upper_arm.R"]);
-    let left_lower_arm = discover(&["J_Bip_L_LowerArm", "mixamorig:LeftForeArm", "LeftLowerArm", "Left_LowerArm", "LeftForeArm", "Left elbow", "Lowerarm_L", "lower_arm.L"]);
-    let right_lower_arm = discover(&["J_Bip_R_LowerArm", "mixamorig:RightForeArm", "RightLowerArm", "Right_LowerArm", "RightForeArm", "Right elbow", "Lowerarm_R", "lower_arm.R"]);
+    let left_shoulder = discover(&[
+        "J_Bip_L_Shoulder",
+        "mixamorig:LeftShoulder",
+        "LeftShoulder",
+        "Left shoulder",
+        "Shoulder_L",
+        "Shoulder.L",
+    ]);
+    let right_shoulder = discover(&[
+        "J_Bip_R_Shoulder",
+        "mixamorig:RightShoulder",
+        "RightShoulder",
+        "Right shoulder",
+        "Shoulder_R",
+        "Shoulder.R",
+    ]);
+    let left_upper_arm = discover(&[
+        "J_Bip_L_UpperArm",
+        "mixamorig:LeftArm",
+        "LeftUpperArm",
+        "Left_UpperArm",
+        "Left arm",
+        "Upperarm_L",
+        "upper_arm.L",
+    ]);
+    let right_upper_arm = discover(&[
+        "J_Bip_R_UpperArm",
+        "mixamorig:RightArm",
+        "RightUpperArm",
+        "Right_UpperArm",
+        "Right arm",
+        "Upperarm_R",
+        "upper_arm.R",
+    ]);
+    let left_lower_arm = discover(&[
+        "J_Bip_L_LowerArm",
+        "mixamorig:LeftForeArm",
+        "LeftLowerArm",
+        "Left_LowerArm",
+        "LeftForeArm",
+        "Left elbow",
+        "Lowerarm_L",
+        "lower_arm.L",
+    ]);
+    let right_lower_arm = discover(&[
+        "J_Bip_R_LowerArm",
+        "mixamorig:RightForeArm",
+        "RightLowerArm",
+        "Right_LowerArm",
+        "RightForeArm",
+        "Right elbow",
+        "Lowerarm_R",
+        "lower_arm.R",
+    ]);
 
-    let mut left_eye = discover(&["J_Adj_L_FaceEye", "mixamorig:LeftEye", "LeftEye", "Eye_L", "eye.L"]);
-    let mut right_eye = discover(&["J_Adj_R_FaceEye", "mixamorig:RightEye", "RightEye", "Eye_R", "eye.R"]);
-    let mut left_hand = discover(&["J_Bip_L_Hand", "mixamorig:LeftHand", "LeftHand", "Hand_L", "hand.L"]);
-    let mut right_hand = discover(&["J_Bip_R_Hand", "mixamorig:RightHand", "RightHand", "Hand_R", "hand.R"]);
+    let mut left_eye = discover(&[
+        "J_Adj_L_FaceEye",
+        "mixamorig:LeftEye",
+        "LeftEye",
+        "Eye_L",
+        "eye.L",
+    ]);
+    let mut right_eye = discover(&[
+        "J_Adj_R_FaceEye",
+        "mixamorig:RightEye",
+        "RightEye",
+        "Eye_R",
+        "eye.R",
+    ]);
+    let mut left_hand = discover(&[
+        "J_Bip_L_Hand",
+        "mixamorig:LeftHand",
+        "LeftHand",
+        "Hand_L",
+        "hand.L",
+    ]);
+    let mut right_hand = discover(&[
+        "J_Bip_R_Hand",
+        "mixamorig:RightHand",
+        "RightHand",
+        "Hand_R",
+        "hand.R",
+    ]);
 
     // VRM humanoid bone fallback
     let vrm_bones = vrm::parse_vrm_humanoid_bones(model_path);
@@ -458,33 +532,72 @@ pub(super) fn discover_bones(
             vrm_bones.get(vrm_name).and_then(|node_name| {
                 find_bone_by_name(root, children, names, &[node_name.as_str()]).and_then(|entity| {
                     if let Ok(t) = transforms.get(entity) {
-                        Some(BoneRef { entity, rest_translation: t.translation, rest_rotation: t.rotation })
+                        Some(BoneRef {
+                            entity,
+                            rest_translation: t.translation,
+                            rest_rotation: t.rotation,
+                        })
                     } else {
                         None
                     }
                 })
             })
         };
-        if left_eye.is_none() { left_eye = vrm_discover("leftEye"); }
-        if right_eye.is_none() { right_eye = vrm_discover("rightEye"); }
-        if left_hand.is_none() { left_hand = vrm_discover("leftHand"); }
-        if right_hand.is_none() { right_hand = vrm_discover("rightHand"); }
+        if left_eye.is_none() {
+            left_eye = vrm_discover("leftEye");
+        }
+        if right_eye.is_none() {
+            right_eye = vrm_discover("rightEye");
+        }
+        if left_hand.is_none() {
+            left_hand = vrm_discover("leftHand");
+        }
+        if right_hand.is_none() {
+            right_hand = vrm_discover("rightHand");
+        }
     }
 
     let look_at_config = vrm::parse_vrm_look_at_config(model_path);
 
-    let upper = [&head, &neck, &spine, &left_shoulder, &right_shoulder].iter().filter(|b| b.is_some()).count();
-    let arms = [&left_upper_arm, &right_upper_arm, &left_lower_arm, &right_lower_arm].iter().filter(|b| b.is_some()).count();
-    clog_info!("🎨 Skeleton slot {}: {}/5 upper, {}/4 arms, eyes={}/2, lookAt={}", slot, upper, arms,
-        [&left_eye, &right_eye].iter().filter(|b| b.is_some()).count(), look_at_config.is_some());
+    let upper = [&head, &neck, &spine, &left_shoulder, &right_shoulder]
+        .iter()
+        .filter(|b| b.is_some())
+        .count();
+    let arms = [
+        &left_upper_arm,
+        &right_upper_arm,
+        &left_lower_arm,
+        &right_lower_arm,
+    ]
+    .iter()
+    .filter(|b| b.is_some())
+    .count();
+    clog_info!(
+        "🎨 Skeleton slot {}: {}/5 upper, {}/4 arms, eyes={}/2, lookAt={}",
+        slot,
+        upper,
+        arms,
+        [&left_eye, &right_eye]
+            .iter()
+            .filter(|b| b.is_some())
+            .count(),
+        look_at_config.is_some()
+    );
 
     Skeleton {
-        head, neck, spine,
-        left_shoulder, right_shoulder,
-        left_upper_arm, right_upper_arm,
-        left_lower_arm, right_lower_arm,
-        left_eye, right_eye,
-        left_hand, right_hand,
+        head,
+        neck,
+        spine,
+        left_shoulder,
+        right_shoulder,
+        left_upper_arm,
+        right_upper_arm,
+        left_lower_arm,
+        right_lower_arm,
+        left_eye,
+        right_eye,
+        left_hand,
+        right_hand,
         look_at_config,
     }
 }

@@ -171,10 +171,27 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 # mlx-rs = { version = "0.25", optional = true }  # phase B
 
 [features]
+# `metal` is NOT default — earlier comment claimed it was harmless on
+# non-Mac targets, empirically false (2026-04-22 docker CI failure):
+# `candle-core/metal` pulls `objc2-foundation` unconditionally, which
+# fires `compile_error!("objc2 only works on Apple platforms")` on
+# Linux + Windows builds. The "no harm" assertion never tested.
+#
+# Build the right way per platform:
+#   macOS:                 cargo build --features metal,accelerate
+#   Linux + CUDA:          cargo build --features cuda,load-dynamic-ort
+#   Linux CPU / WSL2-Ubuntu / Windows: cargo build  (no GPU features)
+#
+# `scripts/shared/cargo-features.sh` already detects the right set per
+# uname; `npm start` and the docker builds source it. The only cost is
+# a Mac dev typing `cargo build` directly without features now gets a
+# CPU-only build — paid by the dev who knows to add the flags. The
+# benefit is docker / CI / cross-platform builds stop pulling Apple-
+# only crates into their dep tree on every host.
 default = ["livekit-webrtc"]
 livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda"]
 # Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
 # Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
 # to MoltenVK on the host, which translates to Metal. Also valid on Linux

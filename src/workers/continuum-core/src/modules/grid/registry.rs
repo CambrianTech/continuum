@@ -189,8 +189,8 @@ fn now_millis() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::node::NodeCapability;
+    use super::*;
 
     #[test]
     fn test_upsert_new_node() {

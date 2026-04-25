@@ -23,13 +23,13 @@ use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 use crate::inference::vendored::quantized_llama::ModelWeights;
+use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use ndarray::Array2;
-use crate::live::audio::reloadable::ReloadableModel;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{Tensor as OrtTensor, Value};
@@ -604,11 +604,9 @@ impl TextToSpeech for OrpheusTts {
         ORPHEUS_LLM_GPU.touch();
         ORPHEUS_SNAC_GPU.touch();
 
-        let model_arc = ORPHEUS_MODEL
-            .get()
-            .ok_or_else(|| {
-                TTSError::ModelNotLoaded("Orpheus not initialized. Call initialize() first.".into())
-            })?;
+        let model_arc = ORPHEUS_MODEL.get().ok_or_else(|| {
+            TTSError::ModelNotLoaded("Orpheus not initialized. Call initialize() first.".into())
+        })?;
 
         // Validate voice
         let voice = if VOICES.iter().any(|(id, _, _)| *id == voice) {

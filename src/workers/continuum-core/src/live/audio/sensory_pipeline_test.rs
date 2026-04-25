@@ -55,7 +55,9 @@ mod tests {
         // TTS: text → PCM audio
         let synthesis = match crate::live::audio::tts_service::synthesize_speech_async(
             input_text, None, None, None,
-        ).await {
+        )
+        .await
+        {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("TTS not available ({}), skipping test", e);
@@ -68,8 +70,11 @@ mod tests {
 
         // STT: PCM audio → text
         let transcript = match crate::live::audio::stt_service::transcribe_speech_async(
-            &synthesis.samples, Some("en"),
-        ).await {
+            &synthesis.samples,
+            Some("en"),
+        )
+        .await
+        {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("STT not available ({}), skipping test", e);
@@ -84,7 +89,8 @@ mod tests {
         assert!(
             output_text.contains("hello") || output_text.contains("world"),
             "STT output '{}' doesn't match input '{}'",
-            output_text, input_text,
+            output_text,
+            input_text,
         );
     }
 
@@ -96,9 +102,14 @@ mod tests {
 
         let synthesis = match crate::live::audio::tts_service::synthesize_speech_async(
             input_text, None, None, None,
-        ).await {
+        )
+        .await
+        {
             Ok(s) => s,
-            Err(_) => { eprintln!("TTS unavailable, skipping"); return; }
+            Err(_) => {
+                eprintln!("TTS unavailable, skipping");
+                return;
+            }
         };
 
         // Mix with gunfire at +10dB SNR (speech louder than gunfire)
@@ -106,10 +117,16 @@ mod tests {
         let mixed = TestAudioGenerator::mix_audio_with_snr(&synthesis.samples, &noise, 10.0);
 
         let transcript = match crate::live::audio::stt_service::transcribe_speech_async(
-            &mixed, Some("en"),
-        ).await {
+            &mixed,
+            Some("en"),
+        )
+        .await
+        {
             Ok(t) => t,
-            Err(_) => { eprintln!("STT unavailable, skipping"); return; }
+            Err(_) => {
+                eprintln!("STT unavailable, skipping");
+                return;
+            }
         };
 
         let output = transcript.text.trim().to_lowercase();
@@ -125,19 +142,30 @@ mod tests {
 
         let synthesis = match crate::live::audio::tts_service::synthesize_speech_async(
             input_text, None, None, None,
-        ).await {
+        )
+        .await
+        {
             Ok(s) => s,
-            Err(_) => { eprintln!("TTS unavailable, skipping"); return; }
+            Err(_) => {
+                eprintln!("TTS unavailable, skipping");
+                return;
+            }
         };
 
         let noise = gen.generate_noise(&NoiseType::Music, synthesis.samples.len());
         let mixed = TestAudioGenerator::mix_audio_with_snr(&synthesis.samples, &noise, 5.0);
 
         let transcript = match crate::live::audio::stt_service::transcribe_speech_async(
-            &mixed, Some("en"),
-        ).await {
+            &mixed,
+            Some("en"),
+        )
+        .await
+        {
             Ok(t) => t,
-            Err(_) => { eprintln!("STT unavailable, skipping"); return; }
+            Err(_) => {
+                eprintln!("STT unavailable, skipping");
+                return;
+            }
         };
 
         let output = transcript.text.trim().to_lowercase();
@@ -152,12 +180,16 @@ mod tests {
         let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE);
         let gunfire = gen.generate_noise(&NoiseType::Gunfire(5.0), AUDIO_SAMPLE_RATE as usize * 3);
 
-        let transcript = match crate::live::audio::stt_service::transcribe_speech_async(
-            &gunfire, Some("en"),
-        ).await {
-            Ok(t) => t,
-            Err(_) => { eprintln!("STT unavailable, skipping"); return; }
-        };
+        let transcript =
+            match crate::live::audio::stt_service::transcribe_speech_async(&gunfire, Some("en"))
+                .await
+            {
+                Ok(t) => t,
+                Err(_) => {
+                    eprintln!("STT unavailable, skipping");
+                    return;
+                }
+            };
 
         let output = transcript.text.trim();
         println!("Gunfire only: '{}'", output);
@@ -165,7 +197,8 @@ mod tests {
         assert!(
             output.len() < 20,
             "STT false-positive on gunfire: '{}' ({} chars)",
-            output, output.len(),
+            output,
+            output.len(),
         );
     }
 
@@ -184,11 +217,15 @@ mod tests {
                 Ok(()) => Ok(vad),
                 Err(e) => Err(e),
             }
-        }).await;
+        })
+        .await;
 
         let mut vad = match vad_result {
             Ok(Ok(v)) => v,
-            _ => { eprintln!("VAD unavailable, skipping"); return; }
+            _ => {
+                eprintln!("VAD unavailable, skipping");
+                return;
+            }
         };
 
         // Feed silence — should NOT trigger
@@ -199,7 +236,10 @@ mod tests {
                 speech_detected_in_silence = true;
             }
         }
-        assert!(!speech_detected_in_silence, "VAD false-triggered on silence");
+        assert!(
+            !speech_detected_in_silence,
+            "VAD false-triggered on silence"
+        );
 
         // Feed formant speech — should trigger
         let speech = gen.generate_sentence(5);
@@ -213,7 +253,10 @@ mod tests {
         }
         // Note: synthetic formant speech may not always trigger Silero VAD
         // (it's trained on real speech). Log but don't hard-fail.
-        println!("VAD speech detection on synthetic audio: {}", speech_detected);
+        println!(
+            "VAD speech detection on synthetic audio: {}",
+            speech_detected
+        );
     }
 
     // =========================================================================
@@ -224,7 +267,7 @@ mod tests {
     /// Verifies PCM survives the JSON + binary payload round-trip.
     #[test]
     fn test_bridge_audio_frame_roundtrip() {
-        use continuum_bridge_protocol::{BridgeEvent, encode_frame, decode_frame};
+        use continuum_bridge_protocol::{decode_frame, encode_frame, BridgeEvent};
 
         // Create test audio
         let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE);
@@ -248,15 +291,23 @@ mod tests {
         let (decoded_json, decoded_bin) = decode_frame(&frame[4..4 + len]);
 
         let decoded_event: BridgeEvent = serde_json::from_slice(decoded_json).unwrap();
-        let decoded_samples: Vec<i16> = decoded_bin.unwrap()
+        let decoded_samples: Vec<i16> = decoded_bin
+            .unwrap()
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
 
         // Verify
-        assert_eq!(decoded_samples, samples, "PCM samples corrupted in round-trip");
+        assert_eq!(
+            decoded_samples, samples,
+            "PCM samples corrupted in round-trip"
+        );
         match decoded_event {
-            BridgeEvent::AudioFrame { sample_count, speaker_name, .. } => {
+            BridgeEvent::AudioFrame {
+                sample_count,
+                speaker_name,
+                ..
+            } => {
                 assert_eq!(sample_count, samples.len() as u32);
                 assert_eq!(speaker_name, "Test");
             }
@@ -268,7 +319,7 @@ mod tests {
     /// Verifies RGBA pixels survive the binary payload round-trip.
     #[test]
     fn test_bridge_video_frame_roundtrip() {
-        use continuum_bridge_protocol::{BridgeCommand, encode_frame, decode_frame};
+        use continuum_bridge_protocol::{decode_frame, encode_frame, BridgeCommand};
 
         let width = 64u32;
         let height = 48u32;
@@ -290,9 +341,17 @@ mod tests {
         let decoded_cmd: BridgeCommand = serde_json::from_slice(decoded_json).unwrap();
         let decoded_rgba = decoded_bin.unwrap();
 
-        assert_eq!(decoded_rgba, &rgba[..], "RGBA pixels corrupted in round-trip");
+        assert_eq!(
+            decoded_rgba,
+            &rgba[..],
+            "RGBA pixels corrupted in round-trip"
+        );
         match decoded_cmd {
-            BridgeCommand::PublishVideoFrame { width: w, height: h, .. } => {
+            BridgeCommand::PublishVideoFrame {
+                width: w,
+                height: h,
+                ..
+            } => {
                 assert_eq!(w, width);
                 assert_eq!(h, height);
             }
@@ -301,10 +360,18 @@ mod tests {
 
         // Verify known pixel values
         // Top-left should be red (255, 0, 0, 255)
-        assert_eq!(&decoded_rgba[0..4], &[255, 0, 0, 255], "Top-left pixel should be red");
+        assert_eq!(
+            &decoded_rgba[0..4],
+            &[255, 0, 0, 255],
+            "Top-left pixel should be red"
+        );
         // Top-right should be green
         let tr = ((width - 1) * 4) as usize;
-        assert_eq!(&decoded_rgba[tr..tr + 4], &[0, 255, 0, 255], "Top-right pixel should be green");
+        assert_eq!(
+            &decoded_rgba[tr..tr + 4],
+            &[0, 255, 0, 255],
+            "Top-right pixel should be green"
+        );
     }
 
     /// Test audio mixing with various noise types at different SNR levels.
@@ -340,7 +407,12 @@ mod tests {
 
                 // Not all zeros (mixing produced output)
                 let rms = TestAudioGenerator::calculate_rms(&mixed);
-                assert!(rms > 0.0, "{:?} at {}dB produced silence", noise_type, snr_db);
+                assert!(
+                    rms > 0.0,
+                    "{:?} at {}dB produced silence",
+                    noise_type,
+                    snr_db
+                );
             }
         }
     }
@@ -353,7 +425,9 @@ mod tests {
     #[test]
     fn test_rgba_to_i420_known_colors() {
         // Pure red pixel
-        let rgba = vec![255u8, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255];
+        let rgba = vec![
+            255u8, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+        ];
         let width = 2u32;
         let height = 2u32;
 
@@ -369,7 +443,11 @@ mod tests {
         // Verify quadrant colors
         assert_eq!(&frame[0..4], &[255, 0, 0, 255], "Top-left = red");
         let mid_x = 160 * 4;
-        assert_eq!(&frame[mid_x..mid_x + 4], &[0, 255, 0, 255], "Top-right = green");
+        assert_eq!(
+            &frame[mid_x..mid_x + 4],
+            &[0, 255, 0, 255],
+            "Top-right = green"
+        );
     }
 
     /// Test that generating test frames of various sizes works.
@@ -385,17 +463,20 @@ mod tests {
     /// decode → verify JPEG is valid and contains expected content.
     #[test]
     fn test_vision_capture_roundtrip() {
-        use continuum_bridge_protocol::{BridgeEvent, encode_frame, decode_frame};
+        use continuum_bridge_protocol::{decode_frame, encode_frame, BridgeEvent};
 
         let width = 320u32;
         let height = 240u32;
         let rgba = generate_test_frame(width, height);
 
         // Simulate what the bridge does: RGBA → RGB → JPEG (JPEG doesn't support alpha)
-        let img: image::RgbaImage = image::ImageBuffer::from_raw(width, height, rgba.clone()).unwrap();
+        let img: image::RgbaImage =
+            image::ImageBuffer::from_raw(width, height, rgba.clone()).unwrap();
         let rgb_img = image::DynamicImage::ImageRgba8(img).to_rgb8();
         let mut jpeg_buf = std::io::Cursor::new(Vec::new());
-        rgb_img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg).unwrap();
+        rgb_img
+            .write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
+            .unwrap();
         let jpeg = jpeg_buf.into_inner();
 
         assert!(jpeg.len() > 100, "JPEG too small: {} bytes", jpeg.len());
@@ -423,7 +504,8 @@ mod tests {
         assert_eq!(decoded_jpeg, &jpeg[..], "JPEG corrupted in transport");
 
         // Decode JPEG back to pixels and verify content
-        let decoded_img = image::load_from_memory_with_format(decoded_jpeg, image::ImageFormat::Jpeg).unwrap();
+        let decoded_img =
+            image::load_from_memory_with_format(decoded_jpeg, image::ImageFormat::Jpeg).unwrap();
         let decoded_rgba = decoded_img.to_rgba8();
         assert_eq!(decoded_rgba.width(), width);
         assert_eq!(decoded_rgba.height(), height);
@@ -440,7 +522,12 @@ mod tests {
         assert!(px[1] > 200, "Green should be high, got {}", px[1]);
 
         match decoded_event {
-            BridgeEvent::VideoFrame { speaker_name, width: w, height: h, .. } => {
+            BridgeEvent::VideoFrame {
+                speaker_name,
+                width: w,
+                height: h,
+                ..
+            } => {
                 assert_eq!(speaker_name, "Test Human");
                 assert_eq!(w, width);
                 assert_eq!(h, height);

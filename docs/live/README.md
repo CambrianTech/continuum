@@ -13,6 +13,7 @@
 | Document | Summary |
 |----------|---------|
 | [LIVE-CALL-ARCHITECTURE.md](LIVE-CALL-ARCHITECTURE.md) | **Start here.** Game engine philosophy -- render loop sacred, handle-based zero-copy architecture, command buffers, mix-minus audio |
+| [LIVE-VIDEO-CHAT-ARCHITECTURE.md](LIVE-VIDEO-CHAT-ARCHITECTURE.md) | Vision-capable personas in WebRTC calls. Change-driven design (scene unchanged → zero inference), CV gate palette, command + reusable-adapter pattern, mixed-modality turn-taking, M2 Air avatar demo target |
 | [STREAMING-BACKBONE-ARCHITECTURE.md](STREAMING-BACKBONE-ARCHITECTURE.md) | Universal real-time infrastructure -- ring buffers, pipeline stages, adapters for voice/video/generation on ONE backbone |
 | [CONTINUOUS-TRANSCRIPTION-ARCHITECTURE.md](CONTINUOUS-TRANSCRIPTION-ARCHITECTURE.md) | Low-latency streaming transcription with continuous output, sliding window buffer, no waiting for silence |
 | [LIVEWIDGET-REFACTORING-PLAN.md](LIVEWIDGET-REFACTORING-PLAN.md) | LiveWidget.ts refactoring plan -- split 1026-line monolith into LiveCallState, LiveMediaManager, LiveParticipantRenderer |

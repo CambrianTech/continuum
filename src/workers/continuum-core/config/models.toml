@@ -1,0 +1,358 @@
+# models.toml — single source of truth for AI model catalogs.
+# Generated from hardcoded ModelInfo definitions in:
+#   src/ai/anthropic_adapter.rs
+#   src/ai/openai_adapter.rs
+#   src/inference/llamacpp_adapter.rs
+#
+# capabilities vocabulary (kebab-case):
+#   text-generation, chat, tool-use,
+#   vision, audio-input, audio-output,        # sensory — see CLAUDE.md
+#                                              # "Sensory Architecture":
+#                                              # absent → bridge fills the gap
+#                                              # (VisionDescriptionService / STT / TTS)
+#   streaming, fine-tuning, lora-adapter, image-generation, embedding, reranking
+
+# ─── Anthropic ──────────────────────────────────────────────────────────
+
+[[model]]
+id = "claude-sonnet-4-5-20250929"
+name = "Claude Sonnet 4.5"
+provider = "anthropic"
+arch = "claude"
+context_window = 200000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.003
+cost_output_per_1k = 0.015
+
+[[model]]
+id = "claude-opus-4-20250514"
+name = "Claude Opus 4"
+provider = "anthropic"
+arch = "claude"
+context_window = 200000
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.015
+cost_output_per_1k = 0.075
+
+[[model]]
+id = "claude-3-5-haiku-20250107"
+name = "Claude 3.5 Haiku"
+provider = "anthropic"
+arch = "claude"
+context_window = 200000
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.00025
+cost_output_per_1k = 0.00125
+
+# ─── OpenAI ─────────────────────────────────────────────────────────────
+
+[[model]]
+id = "gpt-4-turbo-preview"
+name = "GPT-4 Turbo"
+provider = "openai"
+arch = "gpt"
+context_window = 128000
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "vision", "streaming"]
+cost_input_per_1k = 0.01
+cost_output_per_1k = 0.03
+
+[[model]]
+id = "gpt-4o"
+name = "GPT-4o"
+provider = "openai"
+arch = "gpt"
+context_window = 128000
+max_output_tokens = 4096
+tokens_per_second = 50.0
+# vision + audio-input + audio-output: GPT-4o is fully multimodal natively.
+# Without these declarations the sensory bridge would still convert via
+# STT/TTS — works but wastes a roundtrip and loses the model's native
+# voice qualities. Declaring honestly lets the routing layer skip the bridge.
+capabilities = ["text-generation", "chat", "tool-use", "vision", "audio-input", "audio-output", "streaming"]
+cost_input_per_1k = 0.005
+cost_output_per_1k = 0.015
+
+# ─── DeepSeek ───────────────────────────────────────────────────────────
+
+[[model]]
+id = "deepseek-chat"
+name = "DeepSeek Chat"
+provider = "deepseek"
+arch = "deepseek"
+context_window = 128000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.00014
+cost_output_per_1k = 0.00028
+
+[[model]]
+id = "deepseek-reasoner"
+name = "DeepSeek Reasoner"
+provider = "deepseek"
+arch = "deepseek"
+context_window = 128000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.00055
+cost_output_per_1k = 0.00219
+
+# ─── Together AI ────────────────────────────────────────────────────────
+
+[[model]]
+id = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+name = "Llama 3.1 70B (Together)"
+provider = "together"
+arch = "llama"
+context_window = 131072
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.00088
+cost_output_per_1k = 0.00088
+
+# ─── Groq ───────────────────────────────────────────────────────────────
+
+[[model]]
+id = "llama-3.1-8b-instant"
+name = "Llama 3.1 8B Instant (Groq)"
+provider = "groq"
+arch = "llama"
+context_window = 131072
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.00005
+cost_output_per_1k = 0.00008
+
+# ─── Fireworks AI ───────────────────────────────────────────────────────
+
+[[model]]
+id = "accounts/fireworks/models/llama-v3p3-70b-instruct"
+name = "Llama 3.3 70B (Fireworks)"
+provider = "fireworks"
+arch = "llama"
+context_window = 128000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.0009
+cost_output_per_1k = 0.0009
+
+# ─── xAI (Grok) ─────────────────────────────────────────────────────────
+
+[[model]]
+id = "grok-3"
+name = "Grok 3"
+provider = "xai"
+arch = "grok"
+context_window = 131072
+max_output_tokens = 8192
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.003
+cost_output_per_1k = 0.015
+
+# ─── Google (Gemini via OpenAI-compatible) ──────────────────────────────
+
+[[model]]
+id = "gemini-2.0-flash"
+name = "Gemini 2.0 Flash"
+provider = "google"
+arch = "gemini"
+context_window = 1000000
+max_output_tokens = 8192
+tokens_per_second = 50.0
+# Gemini 2.0 Flash accepts audio + image natively (multimodal). Audio
+# output is not in the OpenAI-compatible endpoint we use today; if/when
+# we add the native Gemini API, declare audio-output here too.
+capabilities = ["text-generation", "chat", "tool-use", "vision", "audio-input", "streaming"]
+cost_input_per_1k = 0.000075
+cost_output_per_1k = 0.0003
+
+# ─── Docker Model Runner (local Metal/CUDA via HTTP) ────────────────────
+
+[[model]]
+id = "docker.io/ai/qwen2.5:7B-Q4_K_M"
+name = "Qwen2.5 7B Q4_K_M (DMR)"
+provider = "docker-model-runner"
+arch = "qwen2"
+context_window = 32768
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "docker.io/ai/qwen2.5:7B-Q4_K_M"
+
+[[model]]
+id = "huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit:latest"
+name = "Qwen2.5 7B MLX 4-bit (DMR)"
+provider = "docker-model-runner"
+arch = "qwen2"
+context_window = 32768
+max_output_tokens = 4096
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit"
+
+[[model]]
+id = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest"
+name = "Qwen3.5 4B Code-Forged (DMR)"
+provider = "docker-model-runner"
+arch = "qwen35"
+context_window = 262144
+max_output_tokens = 32768
+tokens_per_second = 50.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
+# Same shaping rule as the in-process row — see that row's comment.
+multi_party_strategy = "proper_chat_ml_single_party"
+
+# ─── In-process llama.cpp (Metal/CUDA direct) ───────────────────────────
+
+[[model]]
+id = "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+name = "Qwen3.5 4B Code-Forged (in-process)"
+provider = "llamacpp-local"
+arch = "qwen35"
+context_window = 262144
+max_output_tokens = 32768
+tokens_per_second = 33.0
+capabilities = ["text-generation", "chat", "tool-use", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
+# Where the in-process Metal/CUDA path loads the GGUF from. This is the
+# artifact DMR caches under its content-addressed bundle store — same
+# bytes the `docker model run` path serves. The SHA is stable (it's the
+# published artifact hash), so pinning it here is correct; a newer
+# forge would publish a new id, not mutate this one.
+gguf_local_path = "~/.docker/models/bundles/sha256/0ed44d4643b05eba23a4ec765aeee8c0f818f9063b09e54d30ded513287f18e9/model/model.gguf"
+# Explicit qwen3.5 chatml template. The forged GGUF doesn't embed
+# `tokenizer.chat_template` in its metadata, and llama.cpp's built-in
+# chatml default drifts from qwen3.5's training on boundary tokens
+# (verified 2026-04-20: fragments like `the </|>` bled into chat when
+# the built-in was used). The proper architectural fix is to embed this
+# template in the GGUF at forge time — filed as a forge-recipe follow-up.
+# Until then, this TOML row is the source of truth and the llamacpp
+# adapter reads it through the registry.
+chat_template = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+# Stop sequences (text-form). The forged GGUF's tokenizer.ggml.eos_token_id
+# = 248046 is wrong — qwen3.5's chat-end is the `<|im_end|>` token (151645).
+# Until the forge recipe re-bakes with the correct EOS id, the scheduler
+# matches these strings against the streamed output and stops the seq.
+# Same architectural rule: per-model knobs are TOML, not adapter code.
+stop_sequences = ["<|im_end|>", "<|endoftext|>"]
+# Multi-party chat shape. qwen3.5 was trained on alternating user/assistant
+# turns and cannot coherently process multi-party (multiple AI speakers in
+# the same room). The earlier `single_user_turn_flattened_history` strategy
+# tried to work around this by flattening history into one user turn with
+# `<Name>:` prefixes + a closing instruction "no name prefix, no quoting" —
+# qwen3.5 ignored the instruction and emitted name-prefixed completions
+# anyway, producing the visible echo-loop + sentinel-leak symptoms in the
+# 2026-04-24 empirical chat (task #75, PR-blocker).
+#
+# `proper_chat_ml_single_party` is the source-level fix Joel asked for
+# instead of TS-side regex stripping: own-persona prior turns become
+# role:assistant, human messages become role:user, OTHER-persona turns are
+# DROPPED — the model only ever sees a clean user/assistant alternation it
+# was actually trained on. No closing-cue, no prefixes, no transcript-as-
+# completion-pattern setup. Honest cost: personas on this model are blind
+# to other AI peers in the room. That's the model's actual capability
+# boundary, not a workaround. See MultiPartyChatStrategy enum doc.
+multi_party_strategy = "proper_chat_ml_single_party"
+
+# ─── Vision-capable Qwen2-VL-7B (in-process llama.cpp + mtmd) ───────────
+# Reference vision model for the local multimodal path. mmproj_local_path
+# is the multimodal projector — required for `Capability::Vision` on the
+# local path because libmtmd needs it to encode image bytes into tokens
+# compatible with this model's embedding space. Cloud providers handle
+# their own projection server-side; local needs the explicit file.
+#
+# `tests/llamacpp_vision_integration.rs` validates the full Rust pipeline
+# against this entry — a real cat photo goes in, natural-language
+# description comes out (verified 2026-04-21 with the libmtmd backend
+# dedup fix in commit f098c4331). When `tests/vision_integration.rs`
+# targets this model_id, the chat path → adapter → backend.generate_with_image
+# → mtmd → projector → text-decoder route is exercised top to bottom.
+[[model]]
+id = "qwen2-vl-7b-instruct"
+name = "Qwen2-VL-7B-Instruct (in-process)"
+provider = "llamacpp-local"
+arch = "qwen2"
+context_window = 32768
+max_output_tokens = 4096
+tokens_per_second = 16.0
+capabilities = ["text-generation", "chat", "vision", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+# Same multi-party strategy as the qwen3.5 entries: drop other-persona turns from
+# history and assemble proper ChatML so Vision AI doesn't echo "Local Assistant:"
+# / "Teacher AI:" name prefixes on vision replies (Joel 2026-04-24 brick test).
+multi_party_strategy = "proper_chat_ml_single_party"
+gguf_hint = "huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF"
+# Local path on the dev machine. Production install (Carl/Dev) pulls
+# these via `install.sh` into a per-user model cache. Auto-discovery of
+# the mmproj from `gguf_hint` + a sibling-file naming convention is a
+# follow-up so this path doesn't need to be hand-edited per machine.
+gguf_local_path = "~/models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
+mmproj_local_path = "~/models/qwen2-vl-7b/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
+
+# ─── Local in-process: Qwen2-Audio-7B-Instruct (audio-input native) ───
+#
+# DISABLED 2026-04-22 — registering this model spawns a SECOND
+# `LlamaCppAdapter` whose `initialize()` eagerly loads the GGUF (~5GB
+# Metal allocation) at boot ALONGSIDE qwen2-vl-7b's load. On Apple
+# Metal the cumulative pressure pushes the GPU command-buffer
+# allocator over the cliff: every persona's first decode then comes
+# back with `kIOGPUCommandBufferCallbackErrorOutOfMemory` →
+# `llama_decode -3`, the backend wedges into "error state from a
+# previous command buffer failure - recreate the backend to recover",
+# and chat is dead until `npm stop`. (Seeing the persona block in
+# personas.ts is correctly defer'd is necessary but NOT sufficient —
+# the registry still creates the adapter for any model row whose
+# GGUF + mmproj are on disk; the persona-level guard doesn't reach
+# the registry layer.)
+#
+# Re-enable when the substrate lands:
+#   - mmproj init mutex (one mtmd-capable backend may compile its
+#     Metal pipelines at a time)
+#   - PressureBroker-aware adapter registration (refuse the second
+#     mtmd-capable adapter creation while another is mid-init)
+#   - backend recovery on Metal OOM (currently any
+#     `kIOGPUCommandBufferCallbackErrorOutOfMemory` leaves the
+#     backend permanently dead until process restart)
+#
+# The model files, llama-mtmd integration, and integration test
+# (`tests/llamacpp_audio_integration.rs`) all remain — only the
+# registry row is commented out so no adapter is created at boot.
+# When the substrate is ready, uncomment this block.
+#
+# [[model]]
+# id = "qwen2-audio-7b-instruct"
+# name = "Qwen2-Audio-7B-Instruct (in-process)"
+# provider = "llamacpp-local"
+# arch = "qwen2"
+# context_window = 32768
+# max_output_tokens = 4096
+# tokens_per_second = 16.0
+# capabilities = ["text-generation", "chat", "audio-input", "streaming"]
+# cost_input_per_1k = 0.0
+# cost_output_per_1k = 0.0
+# gguf_hint = "huggingface.co/mradermacher/Qwen2-Audio-7B-Instruct-GGUF"
+# gguf_local_path = "~/models/qwen2-audio-7b/Qwen2-Audio-7B-Instruct-Q4_K_M.gguf"
+# mmproj_local_path = "~/models/qwen2-audio-7b/mmproj-Qwen2-Audio-7B-Instruct-f16.gguf"

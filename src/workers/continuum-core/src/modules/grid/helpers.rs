@@ -10,7 +10,9 @@ pub fn find_transport_for_address<'a>(
     address: &TransportAddress,
 ) -> Option<&'a Arc<dyn GridTransport>> {
     let transport_name = address.transport_name();
-    transports.iter().find(|t| t.name() == transport_name && t.local_address().is_some())
+    transports
+        .iter()
+        .find(|t| t.name() == transport_name && t.local_address().is_some())
 }
 
 /// Parse a trust level string.
@@ -20,7 +22,9 @@ pub fn parse_trust_level(s: &str) -> Result<TrustLevel, String> {
         "provisional" => Ok(TrustLevel::Provisional),
         "trusted" => Ok(TrustLevel::Trusted),
         "owner" => Ok(TrustLevel::Owner),
-        _ => Err(format!("Invalid trust level: {s}. Use: blocked, provisional, trusted, owner")),
+        _ => Err(format!(
+            "Invalid trust level: {s}. Use: blocked, provisional, trusted, owner"
+        )),
     }
 }
 
@@ -44,16 +48,18 @@ mod tests {
     fn test_parse_trust_levels() {
         assert_eq!(parse_trust_level("owner").unwrap(), TrustLevel::Owner);
         assert_eq!(parse_trust_level("trusted").unwrap(), TrustLevel::Trusted);
-        assert_eq!(parse_trust_level("provisional").unwrap(), TrustLevel::Provisional);
+        assert_eq!(
+            parse_trust_level("provisional").unwrap(),
+            TrustLevel::Provisional
+        );
         assert_eq!(parse_trust_level("blocked").unwrap(), TrustLevel::Blocked);
         assert!(parse_trust_level("invalid").is_err());
     }
 
     #[test]
     fn test_find_transport_for_address() {
-        let transports: Vec<Arc<dyn GridTransport>> = vec![
-            Arc::new(TailscaleTransport::with_default_port()),
-        ];
+        let transports: Vec<Arc<dyn GridTransport>> =
+            vec![Arc::new(TailscaleTransport::with_default_port())];
 
         let ts_addr = TransportAddress::Tailscale {
             ip: "100.1.2.3".into(),

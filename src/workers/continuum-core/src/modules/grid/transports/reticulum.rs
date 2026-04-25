@@ -72,23 +72,22 @@ impl GridTransport for ReticulumTransport {
 
         let destination_hash = if identity_path.exists() {
             // Load existing identity and derive destination hash
-            let key_bytes = tokio::fs::read(&identity_path).await
-                .map_err(|e| TransportError::NotReady(
-                    format!("Failed to read Reticulum identity: {e}")
-                ))?;
+            let key_bytes = tokio::fs::read(&identity_path).await.map_err(|e| {
+                TransportError::NotReady(format!("Failed to read Reticulum identity: {e}"))
+            })?;
             derive_destination_hash(&key_bytes)
         } else {
             // Generate new Ed25519 identity
             let (key_bytes, hash) = generate_identity();
 
-            tokio::fs::create_dir_all(&self.grid_dir).await
-                .map_err(|e| TransportError::NotReady(
-                    format!("Failed to create grid dir: {e}")
-                ))?;
-            tokio::fs::write(&identity_path, &key_bytes).await
-                .map_err(|e| TransportError::NotReady(
-                    format!("Failed to write Reticulum identity: {e}")
-                ))?;
+            tokio::fs::create_dir_all(&self.grid_dir)
+                .await
+                .map_err(|e| TransportError::NotReady(format!("Failed to create grid dir: {e}")))?;
+            tokio::fs::write(&identity_path, &key_bytes)
+                .await
+                .map_err(|e| {
+                    TransportError::NotReady(format!("Failed to write Reticulum identity: {e}"))
+                })?;
 
             hash
         };
@@ -112,15 +111,17 @@ impl GridTransport for ReticulumTransport {
         let hash = match address {
             TransportAddress::Reticulum { destination_hash } => destination_hash.clone(),
             other => {
-                return Err(TransportError::InvalidAddress(
-                    format!("ReticulumTransport cannot connect to {}: wrong transport type",
-                            other.display_address())
-                ));
+                return Err(TransportError::InvalidAddress(format!(
+                    "ReticulumTransport cannot connect to {}: wrong transport type",
+                    other.display_address()
+                )));
             }
         };
 
         if !self.running.load(Ordering::Relaxed) {
-            return Err(TransportError::NotReady("Reticulum transport not started".into()));
+            return Err(TransportError::NotReady(
+                "Reticulum transport not started".into(),
+            ));
         }
 
         // TODO: When reticulum crate matures:
@@ -128,14 +129,16 @@ impl GridTransport for ReticulumTransport {
         // 2. Establish encrypted link (X25519 key exchange)
         // 3. Return wrapped link as GridConnection
 
-        Err(TransportError::NotReady(
-            format!("Reticulum connect to {hash} not yet implemented — crate v0.1 API pending")
-        ))
+        Err(TransportError::NotReady(format!(
+            "Reticulum connect to {hash} not yet implemented — crate v0.1 API pending"
+        )))
     }
 
     async fn accept(&self) -> Result<Box<dyn GridConnection>, TransportError> {
         if !self.running.load(Ordering::Relaxed) {
-            return Err(TransportError::NotReady("Reticulum transport not started".into()));
+            return Err(TransportError::NotReady(
+                "Reticulum transport not started".into(),
+            ));
         }
 
         // TODO: When reticulum crate matures:
@@ -143,13 +146,15 @@ impl GridTransport for ReticulumTransport {
         // 2. Wrap link as GridConnection
 
         Err(TransportError::NotReady(
-            "Reticulum accept not yet implemented — crate v0.1 API pending".into()
+            "Reticulum accept not yet implemented — crate v0.1 API pending".into(),
         ))
     }
 
     async fn discover(&self) -> Result<Vec<DiscoveredNode>, TransportError> {
         if !self.running.load(Ordering::Relaxed) {
-            return Err(TransportError::NotReady("Reticulum transport not started".into()));
+            return Err(TransportError::NotReady(
+                "Reticulum transport not started".into(),
+            ));
         }
 
         // TODO: When reticulum crate matures:
@@ -161,12 +166,11 @@ impl GridTransport for ReticulumTransport {
         Ok(vec![])
     }
 
-    async fn announce(
-        &self,
-        _capabilities: &[NodeCapability],
-    ) -> Result<(), TransportError> {
+    async fn announce(&self, _capabilities: &[NodeCapability]) -> Result<(), TransportError> {
         if !self.running.load(Ordering::Relaxed) {
-            return Err(TransportError::NotReady("Reticulum transport not started".into()));
+            return Err(TransportError::NotReady(
+                "Reticulum transport not started".into(),
+            ));
         }
 
         // TODO: When reticulum crate matures:
@@ -261,9 +265,11 @@ mod tests {
         }
 
         // Connect should fail gracefully (not implemented yet)
-        let result = transport.connect(&TransportAddress::Reticulum {
-            destination_hash: "abcd1234".into(),
-        }).await;
+        let result = transport
+            .connect(&TransportAddress::Reticulum {
+                destination_hash: "abcd1234".into(),
+            })
+            .await;
         assert!(result.is_err());
 
         transport.shutdown().await.unwrap();

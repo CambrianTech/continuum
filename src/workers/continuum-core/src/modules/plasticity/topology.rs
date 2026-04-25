@@ -229,17 +229,15 @@ mod tests {
     fn make_valid_topology() -> HeadTopology {
         HeadTopology {
             base_model: "test-model".to_string(),
-            layers: vec![
-                LayerTopology {
-                    layer_index: 0,
-                    num_heads: 3,
-                    num_kv_heads: 3,
-                    retained_head_indices: vec![0, 2, 3],
-                    retained_kv_head_indices: vec![0, 2, 3],
-                    head_precisions: vec![HeadPrecision::Q4, HeadPrecision::Q8, HeadPrecision::BF16],
-                    head_scores: vec![0.15, 0.5, 0.85],
-                },
-            ],
+            layers: vec![LayerTopology {
+                layer_index: 0,
+                num_heads: 3,
+                num_kv_heads: 3,
+                retained_head_indices: vec![0, 2, 3],
+                retained_kv_head_indices: vec![0, 2, 3],
+                head_precisions: vec![HeadPrecision::Q4, HeadPrecision::Q8, HeadPrecision::BF16],
+                head_scores: vec![0.15, 0.5, 0.85],
+            }],
             original_num_heads: 4,
             original_num_kv_heads: 4,
             head_dim: 64,

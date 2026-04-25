@@ -133,12 +133,15 @@
     "start:direct": "bash scripts/system-stop.sh && npm run smart-build && npm run system:deploy && npm run worker:start && npm run system:run",
     "smart-build": "npx tsx scripts/smart-build.ts",
     "stop": "bash scripts/system-stop.sh",
+    "docker:push": "bash ../scripts/push-current-arch.sh",
+    "docker:push:heavy": "SKIP_LIGHT=1 bash ../scripts/push-current-arch.sh",
+    "docker:push:light": "SKIP_HEAVY=1 bash ../scripts/push-current-arch.sh",
     "clean": "rm -rf dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true",
     "clean:all": "rm -rf dist/ 2>/dev/null || true; rm -rf examples/dist/ 2>/dev/null || true; rm -f *.tgz 2>/dev/null || true; rm -rf .continuum/jtag/sessions 2>/dev/null || true; find .continuum/sessions -mindepth 1 -maxdepth 1 -type d \\! -name 'validation' -exec rm -rf {} + 2>/dev/null || true; rm -rf examples/*/.continuum/jtag/sessions 2>/dev/null || true",
     "clean:dist": "rm -rf dist/ 2>/dev/null || true",
     "clean:logs": "find .continuum/jtag/logs -name '*.log' -type f -delete 2>/dev/null || true; find .continuum/personas -name '*.log' -type f -delete 2>/dev/null || true; rm -f /tmp/jtag-*-timing.jsonl 2>/dev/null || true; echo '✅ Cleaned all log files (system + persona + timing logs)'",
     "prepare": "npx tsx scripts/ensure-config.ts 2>/dev/null || true",
-    "postinstall": "npm run worker:models || echo '⚠️ Voice model download failed (non-fatal — system starts without STT/TTS)'",
+    "postinstall": "(bash scripts/setup-git-hooks.sh > /dev/null 2>&1 || true) && (npm run worker:models || echo '⚠️ Voice model download failed (non-fatal — system starts without STT/TTS)')",
     "prebuild": "npx tsx scripts/ensure-config.ts && npx tsx generator/generate-rust-bindings.ts && npx tsx generator/generate-structure.ts && npx tsx generator/generate-command-schemas.ts && npx tsx generator/generate-command-constants.ts && npx tsx scripts/compile-sass.ts",
     "build:ts": "npx tsx generator/generate-version.ts && npx tsx generator/generate-config.ts && npx tsx generator/generate-entity-schemas.ts && npx tsx scripts/build-with-loud-failure.ts",
     "build:cli": "npx esbuild dist/cli.js --bundle --platform=node --target=node18 --outfile=dist/cli-bundle.js --external:sqlite3 --external:better-sqlite3 --external:@anthropic-ai/sdk --external:@grpc/grpc-js --external:@grpc/proto-loader --external:playwright-core --external:playwright --minify 2>/dev/null && echo '✅ CLI bundle created'",
@@ -354,12 +357,15 @@
   "engines": {
     "node": ">=16.0.0"
   },
+  "overrides": {
+    "@hono/node-server": ">=1.19.13"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.62",
     "@anthropic-ai/sdk": "^0.71.2",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
-    "@modelcontextprotocol/sdk": "^1.25.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@preact/signals-core": "^1.12.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/sqlite3": "^3.1.11",

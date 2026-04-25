@@ -17,7 +17,7 @@ set -eo pipefail
 # Find docker-compose.yml — check current dir, then known locations
 find_compose_dir() {
   if [ -f docker-compose.yml ]; then echo "."; return; fi
-  for d in "$HOME/continuum" "$HOME/Development/cambrian/continuum" "/Volumes/FlashGordon/cambrian/continuum"; do
+  for d in "$HOME/continuum" "$HOME/Development/cambrian/continuum"; do
     [ -f "$d/docker-compose.yml" ] && echo "$d" && return
   done
   echo "❌ Cannot find continuum docker-compose.yml" >&2

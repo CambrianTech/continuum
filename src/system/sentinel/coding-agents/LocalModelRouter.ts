@@ -48,7 +48,7 @@ export class LocalModelRouter {
   route(totalVramMb: number): RoutingDecision {
     if (totalVramMb > 28000) {
       return {
-        provider: 'candle',
+        provider: 'local',
         model: LOCAL_MODELS.CODING_AGENT_BF16,
         usesBatchPrefill: true,
         maxSystemTokens: 800,
@@ -57,7 +57,7 @@ export class LocalModelRouter {
     }
 
     return {
-      provider: 'candle',
+      provider: 'local',
       model: LOCAL_MODELS.CODING_AGENT,
       usesBatchPrefill: false,
       maxSystemTokens: 350,

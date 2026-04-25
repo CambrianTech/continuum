@@ -364,7 +364,10 @@ mod tests {
 
         // Add human
         router
-            .add_participant(RoutedParticipant::human("user-1".into(), "test-user".into()))
+            .add_participant(RoutedParticipant::human(
+                "user-1".into(),
+                "test-user".into(),
+            ))
             .await;
 
         // Add GPT-4o (audio native)

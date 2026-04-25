@@ -180,18 +180,49 @@ pub struct SamplingConfig {
     pub top_k: usize,
     /// Top-p (nucleus) sampling: keep smallest set of tokens with cumulative prob >= p. 1.0 = disabled.
     pub top_p: f64,
+    /// GBNF grammar (e.g. JSON shape). When Some, scheduler attaches it
+    /// to the sampler chain BEFORE temp/dist so output is constrained to
+    /// match the grammar. None = unconstrained. Set by adapters when the
+    /// caller's request_format demands a structured shape (JsonObject).
+    pub grammar: Option<String>,
 }
 
 impl SamplingConfig {
     /// Config for code generation: greedy, moderate repeat penalty.
     pub fn code() -> Self {
-        Self { temperature: 0.0, repeat_penalty: 1.1, top_k: 0, top_p: 1.0 }
+        Self {
+            temperature: 0.0,
+            repeat_penalty: 1.1,
+            top_k: 0,
+            top_p: 1.0,
+            grammar: None,
+        }
     }
     /// Config for chat: slight creativity, standard repeat penalty.
     pub fn chat() -> Self {
-        Self { temperature: 0.6, repeat_penalty: 1.1, top_k: 40, top_p: 0.95 }
+        Self {
+            temperature: 0.6,
+            repeat_penalty: 1.1,
+            top_k: 40,
+            top_p: 0.95,
+            grammar: None,
+        }
     }
 }
+
+/// Built-in JSON grammar (GBNF) — produces any valid JSON value. Used
+/// when callers request `response_format: JsonObject`. Lifted from the
+/// llama.cpp grammars/json.gbnf reference grammar; trimmed to the
+/// expressions actually needed for chat persona analyze responses.
+pub const JSON_GRAMMAR: &str = r#"
+root   ::= object
+value  ::= object | array | string | number | ("true" | "false" | "null") ws
+object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws
+array  ::= "[" ws ( value ("," ws value)* )? "]" ws
+string ::= "\"" ( [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) )* "\"" ws
+number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
+ws ::= ([ \t\n] ws)?
+"#;
 
 /// Generate text from a prompt using ANY ModelBackend.
 ///
@@ -249,10 +280,17 @@ pub fn generate(
     // ── Phase 1: Prefill ──
     let prefill_start = Instant::now();
     let prefill_logits = backend.prefill(&prompt_tokens)?;
-    backend.device().synchronize().map_err(|e| format!("Prefill sync: {e}"))?;
+    backend
+        .device()
+        .synchronize()
+        .map_err(|e| format!("Prefill sync: {e}"))?;
     let prefill_ms = prefill_start.elapsed().as_millis();
-    log.info(&format!("Prefill: {} tokens in {}ms ({:.1}ms/tok)",
-        prompt_len, prefill_ms, prefill_ms as f64 / prompt_len as f64));
+    log.info(&format!(
+        "Prefill: {} tokens in {}ms ({:.1}ms/tok)",
+        prompt_len,
+        prefill_ms,
+        prefill_ms as f64 / prompt_len as f64
+    ));
 
     let prefill_logits = extract_last_logits(&prefill_logits)?;
     let (prefill_logits, had_nan) = sanitize_logits_with_flag(&prefill_logits, backend.device())?;
@@ -267,7 +305,11 @@ pub fn generate(
     // Setup sampler from config — no hardcoded defaults.
     let use_greedy = sampling.temperature <= 0.0;
     let seed = 299792458u64; // deterministic seed
-    let top_p = if sampling.top_p < 1.0 { Some(sampling.top_p) } else { None };
+    let top_p = if sampling.top_p < 1.0 {
+        Some(sampling.top_p)
+    } else {
+        None
+    };
     let mut logits_processor = if use_greedy {
         // Greedy: we use our own argmax, but LogitsProcessor still needed as fallback
         LogitsProcessor::new(seed, Some(0.01), top_p)
@@ -282,15 +324,26 @@ pub fn generate(
 
     // Print top-10 logits from prefill for comparison with PyTorch
     if debug_tokens {
-        let prefill_vec: Vec<f32> = prefill_logits.flatten_all()
+        let prefill_vec: Vec<f32> = prefill_logits
+            .flatten_all()
             .and_then(|t| t.to_vec1())
             .unwrap_or_default();
-        let mut indexed: Vec<(usize, f32)> = prefill_vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        let mut indexed: Vec<(usize, f32)> = prefill_vec
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (i, v))
+            .collect();
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         eprintln!("Top 10 logits after prefill (Candle GGUF):");
         for (rank, &(tid, val)) in indexed.iter().take(10).enumerate() {
             let decoded = backend.decode(&[tid as u32]).unwrap_or_else(|_| "?".into());
-            eprintln!("  {}. token={:>6} logit={:>8.3}  {:?}", rank+1, tid, val, &decoded[..decoded.len().min(20)]);
+            eprintln!(
+                "  {}. token={:>6} logit={:>8.3}  {:?}",
+                rank + 1,
+                tid,
+                val,
+                &decoded[..decoded.len().min(20)]
+            );
         }
         for &eos_id in backend.eos_token_ids() {
             if let Some(&val) = prefill_vec.get(eos_id as usize) {
@@ -300,7 +353,9 @@ pub fn generate(
         // Print suppressed token logits for comparison with llama.cpp
         for &sid in backend.suppress_token_ids() {
             if let Some(&val) = prefill_vec.get(sid as usize) {
-                let name = backend.decode(&[sid]).unwrap_or_else(|_| format!("?{}", sid));
+                let name = backend
+                    .decode(&[sid])
+                    .unwrap_or_else(|_| format!("?{}", sid));
                 eprintln!("  suppress[{}] {:?} logit={:.3}", sid, name, val);
             }
         }
@@ -311,10 +366,15 @@ pub fn generate(
     let _eos_ids = backend.eos_token_ids().to_vec();
 
     // Tokens to suppress during generation (architecture-specific control tokens).
-    let suppress_ids: Vec<usize> = backend.suppress_token_ids().iter().map(|&t| t as usize).collect();
+    let suppress_ids: Vec<usize> = backend
+        .suppress_token_ids()
+        .iter()
+        .map(|&t| t as usize)
+        .collect();
 
     // Sample first token from prefill logits
-    let mut prefill_vec: Vec<f32> = prefill_logits.to_vec1()
+    let mut prefill_vec: Vec<f32> = prefill_logits
+        .to_vec1()
         .map_err(|e| format!("Prefill logits to vec: {e}"))?;
     apply_logit_processing(&mut prefill_vec, &suppress_ids, &[], sampling);
     let first_token = if use_greedy {
@@ -322,7 +382,8 @@ pub fn generate(
     } else {
         let t = Tensor::from_slice(&prefill_vec, prefill_vec.len(), backend.device())
             .map_err(|e| format!("Prefill logits to tensor: {e}"))?;
-        logits_processor.sample(&t)
+        logits_processor
+            .sample(&t)
             .map_err(|e| format!("First token sampling failed: {e}"))?
     };
 
@@ -393,13 +454,27 @@ pub fn generate(
         // Apply suppress + repetition penalty + top-k on logits, then sample.
         // For greedy: operate entirely on Vec<f32> (no GPU round-trip).
         // For non-greedy: rebuild Tensor for LogitsProcessor.
-        let mut logits_vec: Vec<f32> = logits.to_vec1()
+        let mut logits_vec: Vec<f32> = logits
+            .to_vec1()
             .map_err(|e| format!("Logits to vec: {e}"))?;
-        apply_logit_processing(&mut logits_vec, &suppress_ids, &all_tokens[prompt_len..], sampling);
+        apply_logit_processing(
+            &mut logits_vec,
+            &suppress_ids,
+            &all_tokens[prompt_len..],
+            sampling,
+        );
 
         let next_token = sample_token(
-            &logits_vec, use_greedy, &mut logits_processor, &logits, backend.device(),
-            &mut nan_count, i, prompt, &all_tokens[..prompt_len], &log,
+            &logits_vec,
+            use_greedy,
+            &mut logits_processor,
+            &logits,
+            backend.device(),
+            &mut nan_count,
+            i,
+            prompt,
+            &all_tokens[..prompt_len],
+            &log,
         )?;
         let next_token = match next_token {
             Some(t) => t,
@@ -427,8 +502,12 @@ pub fn generate(
 
             eprintln!(
                 "  tok[{:>3}] id={:<6} {:>20} logits=[{:.1}..{:.1}]{}",
-                i, next_token, format!("{:?}", &decoded[..decoded.len().min(20)]),
-                min_logit, max_logit, eos_info
+                i,
+                next_token,
+                format!("{:?}", &decoded[..decoded.len().min(20)]),
+                min_logit,
+                max_logit,
+                eos_info
             );
         }
 
@@ -440,7 +519,12 @@ pub fn generate(
         }
         all_tokens.push(next_token);
         if debug_tokens && i <= 3 {
-            eprintln!("  → generated token {} at pos {}, total tokens {}", next_token, pos, all_tokens.len());
+            eprintln!(
+                "  → generated token {} at pos {}, total tokens {}",
+                next_token,
+                pos,
+                all_tokens.len()
+            );
         }
     }
 
@@ -467,14 +551,19 @@ pub fn generate(
     #[cfg(feature = "metal")]
     if backend.device().is_metal() {
         if let Ok(metal) = backend.device().as_metal_device() {
-            metal.release_unused_buffers()
+            metal
+                .release_unused_buffers()
                 .map_err(|e| format!("Metal pool cleanup: {e}"))?;
         }
     }
 
     let gen_ms = gen_start.elapsed().as_millis();
     let gen_count = generated_tokens.len();
-    let gen_tok_s = if gen_ms > 0 { (gen_count as f64 / gen_ms as f64) * 1000.0 } else { 0.0 };
+    let gen_tok_s = if gen_ms > 0 {
+        (gen_count as f64 / gen_ms as f64) * 1000.0
+    } else {
+        0.0
+    };
     log.info(&format!(
         "Generation: {} tokens in {}ms ({:.1} tok/s)",
         gen_count, gen_ms, gen_tok_s
@@ -512,21 +601,38 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
     let content =
         gguf_file::Content::read(&mut file).map_err(|e| format!("Failed to read GGUF: {e}"))?;
 
+    // general.architecture is REQUIRED — silently falling back to "llama" would
+    // route a qwen/mistral/phi/etc. model through the wrong backend and produce
+    // garbage output or outright crash. Rule-2 violation (fallbacks are illegal)
+    // fixed 2026-04-23. If a GGUF is missing this metadata, that's a broken file,
+    // not a thing to paper over.
     let architecture = content
         .metadata
         .get("general.architecture")
         .and_then(|v| v.to_string().ok())
         .cloned()
-        .unwrap_or_else(|| "llama".to_string());
+        .ok_or_else(|| format!(
+            "GGUF {} is missing required metadata key 'general.architecture' — cannot \
+             determine backend. Silent fallback to 'llama' has been removed; fix the \
+             GGUF file or re-export it with proper metadata.",
+            path.display()
+        ))?;
 
-    // Try architecture-specific key first, then llama fallback
+    // Try architecture-specific key first, then llama fallback for the context_length
+    // key only (some older tools wrote 'llama.context_length' regardless of actual
+    // architecture). If neither exists, that's a broken GGUF, not a thing to guess 4096 for.
     let context_length = content
         .metadata
         .get(&format!("{architecture}.context_length"))
         .or_else(|| content.metadata.get("llama.context_length"))
         .and_then(|v| v.to_u32().ok())
         .map(|v| v as usize)
-        .unwrap_or(4096);
+        .ok_or_else(|| format!(
+            "GGUF {} (architecture={architecture}) is missing context_length metadata \
+             (tried '{architecture}.context_length' and 'llama.context_length'). Silent \
+             fallback to 4096 has been removed; fix the GGUF file.",
+            path.display()
+        ))?;
 
     let model_name = content
         .metadata
@@ -558,12 +664,18 @@ pub fn load_gguf_backend(
     let content =
         gguf_file::Content::read(&mut file).map_err(|e| format!("Failed to read GGUF: {e}"))?;
 
+    // Same fallback prohibition as parse_gguf_metadata above — broken GGUF
+    // metadata must surface as an error, not be guessed into the llama backend.
     let architecture = content
         .metadata
         .get("general.architecture")
         .and_then(|v| v.to_string().ok())
         .cloned()
-        .unwrap_or_else(|| "llama".to_string());
+        .ok_or_else(|| format!(
+            "GGUF {} is missing required 'general.architecture' metadata — cannot \
+             determine backend. Fix the GGUF file or re-export it with proper metadata.",
+            model_path.display()
+        ))?;
 
     log.info(&format!("GGUF architecture: {architecture}"));
 
@@ -635,10 +747,16 @@ pub fn load_gguf_backend(
 
 /// Argmax over a float slice — returns index of the largest value.
 fn argmax_f32(data: &[f32]) -> usize {
-    data.iter().enumerate()
+    data.iter()
+        .enumerate()
         .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
-            if v > bv { (i, v) } else { (bi, bv) }
-        }).0
+            if v > bv {
+                (i, v)
+            } else {
+                (bi, bv)
+            }
+        })
+        .0
 }
 
 /// Apply token suppression, repetition penalty, and top-k filtering on a logits vector.
@@ -707,17 +825,31 @@ fn sample_token(
         let logits = Tensor::from_slice(logits_vec, logits_vec.len(), device)
             .map_err(|e| format!("Logits to tensor: {e}"))?;
         match logits_processor.sample(&logits) {
-            Ok(token) => { *nan_count = 0; Ok(Some(token)) }
+            Ok(token) => {
+                *nan_count = 0;
+                Ok(Some(token))
+            }
             Err(e) => {
                 *nan_count += 1;
                 if *nan_count > 5 {
-                    log.warn(&format!("Aborting after {} consecutive NaN errors", nan_count));
-                    save_prompt_replay(prompt, prompt_tokens, &format!("{} consecutive NaN", nan_count));
+                    log.warn(&format!(
+                        "Aborting after {} consecutive NaN errors",
+                        nan_count
+                    ));
+                    save_prompt_replay(
+                        prompt,
+                        prompt_tokens,
+                        &format!("{} consecutive NaN", nan_count),
+                    );
                     return Ok(None);
                 }
-                log.warn(&format!("Sampling failed at token {}, retrying: {}", token_idx, e));
+                log.warn(&format!(
+                    "Sampling failed at token {}, retrying: {}",
+                    token_idx, e
+                ));
                 let (sanitized, _) = sanitize_logits_with_flag(&logits, device)?;
-                let token = logits_processor.sample(&sanitized)
+                let token = logits_processor
+                    .sample(&sanitized)
                     .map_err(|e| format!("Sampling failed even after sanitization: {e}"))?;
                 Ok(Some(token))
             }

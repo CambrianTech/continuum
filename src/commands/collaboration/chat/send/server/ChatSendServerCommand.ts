@@ -85,9 +85,51 @@ export class ChatSendServerCommand extends ChatSendCommand {
       mediaItems = await this.processMediaPaths(mediaPaths, params.context, params.sessionId);
     }
 
+    // ── Pre-warm vision descriptions BEFORE externalize ────────────
+    // Vision-description inference takes 60-70s (Qwen2-VL on M5
+    // Pro). Kick it off NOW with the still-base64-resident
+    // mediaItems so the description is cached by the time personas
+    // build RAG context for the next turn. Fire-and-forget — doesn't
+    // block this command.
+    //
+    // Order matters: this MUST run before externalize strips base64,
+    // because MediaPrewarm captures `img.base64` from each item by
+    // value at call time. After externalize, base64 is gone.
+    this.prewarmVisionDescriptions(mediaItems);
+
+    // ── Externalize SYNCHRONOUSLY before persisting ────────────────
+    // Joel's directive 2026-04-21: "you CANNOT have images, audio, etc.
+    // make it into a orm data column" — base64 must NEVER hit the DB,
+    // not even transiently. Move bytes to disk via MediaBlobService
+    // FIRST, get back blobHash + relative `/media/{hash}.{ext}` URL,
+    // THEN persist the entity with refs only.
+    //
+    // The previous fire-and-forget pattern (post-data/create) created
+    // a window where the DB row carried full base64 — and a long-lived
+    // window when the externalize task lost. Synchronous closes both.
+    //
+    // Browser real-time rendering still works: `data:create` event
+    // carries the URL ref + blobHash, browser fetches via the
+    // /media/{hash}.{ext} HTTP route (already implemented). No more
+    // bytes-in-events either.
+    if (mediaItems.length > 0) {
+      try {
+        await MediaBlobService.externalize(mediaItems);
+      } catch (err) {
+        // Surface loudly — externalization is non-optional now. If it
+        // fails the alternative is base64 in the DB, which is the
+        // exact thing we're preventing. Better to fail the send and
+        // let the caller see the error than silently degrade.
+        throw new Error(
+          `Failed to externalize media to blob storage: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Inline base64 in chat_messages is forbidden — see MediaBlobService.`
+        );
+      }
+    }
+
     messageEntity.content = {
       text: params.message,
-      media: mediaItems
+      media: mediaItems  // base64 stripped, blobHash + url present
     };
     messageEntity.status = 'sent';
     messageEntity.priority = 'normal';
@@ -111,7 +153,8 @@ export class ChatSendServerCommand extends ChatSendCommand {
     }
 
     // 4. Store message using data/create command (proper delegation)
-    // data/create handles validation, storage, and event broadcast
+    // data/create handles validation, storage, and event broadcast.
+    // Media is already externalized — entity carries refs, not bytes.
     const createResult = await DataCreate.execute<ChatMessageEntity>({
         dbHandle: 'default',
         collection: ChatMessageEntity.collection,
@@ -131,12 +174,9 @@ export class ChatSendServerCommand extends ChatSendCommand {
     // LLaVA takes 60-70s. Starting inference NOW means the description is cached
     // by the time personas build RAG context (~5-10s later for the NEXT message).
     // Without pre-warming, every persona's 10s timeout fires before LLaVA finishes.
+    // (Description is read from cache by the persona path; we don't await here
+    //  since chat-send shouldn't block on a 60s vision call.)
     this.prewarmVisionDescriptions(mediaItems);
-
-    // 6. Externalize media to blob storage (fire-and-forget).
-    // The data/create event already fired with full base64 for real-time rendering.
-    // This updates the stored record to use blobHash + URL, clearing inline base64.
-    this.externalizeMedia(storedEntity, params);
 
     // 7. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
     const shortId = storedEntity.id.slice(-6);

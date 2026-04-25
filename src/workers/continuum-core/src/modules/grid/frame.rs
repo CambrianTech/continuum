@@ -53,10 +53,7 @@ pub enum FrameType {
 pub enum GridPayload {
     /// A Commands.execute() request being forwarded to a remote node.
     #[serde(rename = "command")]
-    Command {
-        command: String,
-        params: Value,
-    },
+    Command { command: String, params: Value },
 
     /// The result of a remote command execution.
     #[serde(rename = "command-result")]
@@ -70,10 +67,7 @@ pub enum GridPayload {
 
     /// An event being forwarded across the mesh.
     #[serde(rename = "event")]
-    Event {
-        event: String,
-        data: Value,
-    },
+    Event { event: String, data: Value },
 
     /// A chunk of a streaming response (large data transfer).
     #[serde(rename = "stream-chunk")]
@@ -159,8 +153,8 @@ impl GridFrame {
     /// Serialize this frame to length-prefixed bytes for wire transmission.
     /// Format: [4 bytes u32 BE length][JSON bytes]
     pub fn to_wire_bytes(&self) -> Result<Vec<u8>, String> {
-        let json = serde_json::to_vec(self)
-            .map_err(|e| format!("Frame serialization failed: {e}"))?;
+        let json =
+            serde_json::to_vec(self).map_err(|e| format!("Frame serialization failed: {e}"))?;
         let len = json.len() as u32;
         let mut buf = Vec::with_capacity(4 + json.len());
         buf.extend_from_slice(&len.to_be_bytes());
@@ -170,8 +164,7 @@ impl GridFrame {
 
     /// Deserialize a frame from JSON bytes (without the length prefix).
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, String> {
-        serde_json::from_slice(bytes)
-            .map_err(|e| format!("Frame deserialization failed: {e}"))
+        serde_json::from_slice(bytes).map_err(|e| format!("Frame deserialization failed: {e}"))
     }
 }
 
@@ -224,10 +217,7 @@ mod tests {
             serde_json::json!({"epochs": 3}),
         );
 
-        let response = GridFrame::success_response(
-            &request,
-            serde_json::json!({"loss": 0.031}),
-        );
+        let response = GridFrame::success_response(&request, serde_json::json!({"loss": 0.031}));
 
         assert_eq!(response.source_node, "home-5090");
         assert_eq!(response.target_node, "laptop");

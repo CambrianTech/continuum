@@ -234,7 +234,8 @@ impl MemoryCorpus {
     /// Caller must hold a write lock (via RwLock in PersonaMemoryManager).
     pub fn append_memory_mut(&mut self, corpus_memory: CorpusMemory) {
         if let Some(emb) = corpus_memory.embedding {
-            self.memory_embeddings.insert(corpus_memory.record.id.clone(), emb);
+            self.memory_embeddings
+                .insert(corpus_memory.record.id.clone(), emb);
         }
         self.memories.push(corpus_memory.record);
     }
@@ -243,7 +244,8 @@ impl MemoryCorpus {
     /// Caller must hold a write lock (via RwLock in PersonaMemoryManager).
     pub fn append_event_mut(&mut self, corpus_event: CorpusTimelineEvent) {
         if let Some(emb) = corpus_event.embedding {
-            self.event_embeddings.insert(corpus_event.event.id.clone(), emb);
+            self.event_embeddings
+                .insert(corpus_event.event.id.clone(), emb);
         }
         self.timeline_events.push(corpus_event.event);
     }
@@ -294,7 +296,8 @@ impl MemoryCorpus {
             return 0;
         }
         // Sort by timestamp DESC, keep most recent N
-        self.timeline_events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        self.timeline_events
+            .sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         let evicted = self.timeline_events.len() - max_count;
         let removed_ids: Vec<String> = self.timeline_events[max_count..]
             .iter()
@@ -312,7 +315,8 @@ impl MemoryCorpus {
         let memory_size = self.memories.len() * std::mem::size_of::<MemoryRecord>();
         let event_size = self.timeline_events.len() * std::mem::size_of::<TimelineEvent>();
         // Each embedding is 384 f32s = 1536 bytes + HashMap overhead
-        let embedding_size = (self.memory_embeddings.len() + self.event_embeddings.len()) * (384 * 4 + 64);
+        let embedding_size =
+            (self.memory_embeddings.len() + self.event_embeddings.len()) * (384 * 4 + 64);
         memory_size + event_size + embedding_size
     }
 

@@ -12,6 +12,11 @@ dist/
 *.tgz
 continuum-jtag-*.tgz
 
+# Generated CSS-in-JS modules emitted by src/scripts/compile-sass.ts
+# from sibling .scss source files. Pure build output — never hand-edited.
+src/widgets/**/public/*.styles.ts
+src/widgets/**/styles/*.styles.ts
+
 # Generated manifest files (use generated.ts instead)
 src/manifests/
 
@@ -68,6 +73,10 @@ Thumbs.db
 # Debug files
 packages/cli/bin/debug-*.js
 
+# Stale QA fixture dumps — runtime artifacts from persona-verify scripts,
+# never meant to be committed. Each run writes a timestamped JSON.
+persona-verify-*.json
+
 # AI system generated files and directories
 # Runtime data (logs, databases, sessions, temp files)
 **/.continuum/jtag/data/*.sqlite
@@ -114,6 +123,7 @@ packages/cli/bin/debug-*.js
 **/.continuum/directory.json
 **/.continuum/*.log
 **/examples/**/.continuum/
+.claude/
 .claude-pool/
 .claude-messages/
 .continuum-comm/

@@ -40,17 +40,29 @@ pub struct OpShape {
 impl OpShape {
     /// Matmul: m×k×n
     pub fn matmul(m: usize, k: usize, n: usize) -> Self {
-        Self { flops: m * k * n, is_matmul: true, is_sequential: false }
+        Self {
+            flops: m * k * n,
+            is_matmul: true,
+            is_sequential: false,
+        }
     }
 
     /// Elementwise op on n elements
     pub fn elementwise(n: usize) -> Self {
-        Self { flops: n, is_matmul: false, is_sequential: false }
+        Self {
+            flops: n,
+            is_matmul: false,
+            is_sequential: false,
+        }
     }
 
     /// Sequential recurrence step (small matmul inside a loop)
     pub fn recurrence_step(m: usize, k: usize, n: usize) -> Self {
-        Self { flops: m * k * n, is_matmul: true, is_sequential: true }
+        Self {
+            flops: m * k * n,
+            is_matmul: true,
+            is_sequential: true,
+        }
     }
 }
 
@@ -67,16 +79,16 @@ impl Thresholds {
     fn for_tier(tier: ChipTier) -> Self {
         match tier {
             ChipTier::AppleSilicon => Self {
-                matmul_cpu_ceiling: 500_000,     // ~128×128×32 = 524K → CPU
-                sequential_always_cpu: true,      // DeltaNet recurrence → always CPU
+                matmul_cpu_ceiling: 500_000, // ~128×128×32 = 524K → CPU
+                sequential_always_cpu: true, // DeltaNet recurrence → always CPU
             },
             ChipTier::AppleSiliconAdvanced => Self {
-                matmul_cpu_ceiling: 100_000,     // M4/M5: lower dispatch overhead
-                sequential_always_cpu: true,      // Even on M5, sequential → CPU (benchmark may override)
+                matmul_cpu_ceiling: 100_000, // M4/M5: lower dispatch overhead
+                sequential_always_cpu: true, // Even on M5, sequential → CPU (benchmark may override)
             },
             ChipTier::Cuda => Self {
-                matmul_cpu_ceiling: 50_000,      // CUDA: very low dispatch overhead
-                sequential_always_cpu: false,     // CUDA can handle sequential with fused kernels
+                matmul_cpu_ceiling: 50_000,   // CUDA: very low dispatch overhead
+                sequential_always_cpu: false, // CUDA can handle sequential with fused kernels
             },
             ChipTier::CpuOnly => Self {
                 matmul_cpu_ceiling: usize::MAX,
@@ -159,7 +171,10 @@ mod tests {
 
     #[test]
     fn small_matmul_routes_to_cpu() {
-        let router = ComputeRouter { tier: ChipTier::AppleSilicon, gpu_device: None };
+        let router = ComputeRouter {
+            tier: ChipTier::AppleSilicon,
+            gpu_device: None,
+        };
         // 128×128×128 = 2M flops — above 500K but let's test smaller
         let op = OpShape::matmul(32, 128, 32); // 131K flops
         assert_eq!(router.route(&op), ComputeTarget::Cpu);
@@ -167,21 +182,30 @@ mod tests {
 
     #[test]
     fn large_matmul_routes_to_gpu() {
-        let router = ComputeRouter { tier: ChipTier::AppleSilicon, gpu_device: None };
+        let router = ComputeRouter {
+            tier: ChipTier::AppleSilicon,
+            gpu_device: None,
+        };
         let op = OpShape::matmul(2560, 8192, 1); // 21M flops
         assert_eq!(router.route(&op), ComputeTarget::Gpu);
     }
 
     #[test]
     fn sequential_always_cpu_on_apple() {
-        let router = ComputeRouter { tier: ChipTier::AppleSiliconAdvanced, gpu_device: None };
+        let router = ComputeRouter {
+            tier: ChipTier::AppleSiliconAdvanced,
+            gpu_device: None,
+        };
         let op = OpShape::recurrence_step(128, 128, 128); // 2M flops, but sequential
         assert_eq!(router.route(&op), ComputeTarget::Cpu);
     }
 
     #[test]
     fn cuda_handles_sequential() {
-        let router = ComputeRouter { tier: ChipTier::Cuda, gpu_device: None };
+        let router = ComputeRouter {
+            tier: ChipTier::Cuda,
+            gpu_device: None,
+        };
         let op = OpShape::recurrence_step(128, 128, 128);
         assert_eq!(router.route(&op), ComputeTarget::Gpu); // CUDA has fused kernels
     }

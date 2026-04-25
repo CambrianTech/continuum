@@ -45,8 +45,8 @@ fn spawn_portrait_lights(parent: &mut ChildSpawnerCommands, layer: &RenderLayers
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.5,                             // 29° down from above
-            std::f32::consts::PI - 0.4,       // from the right side
+            -0.5,                       // 29° down from above
+            std::f32::consts::PI - 0.4, // from the right side
             0.0,
         )),
         layer.clone(),
@@ -62,8 +62,8 @@ fn spawn_portrait_lights(parent: &mut ChildSpawnerCommands, layer: &RenderLayers
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.2,                             // slight downward
-            std::f32::consts::PI + 0.4,       // from the left
+            -0.2,                       // slight downward
+            std::f32::consts::PI + 0.4, // from the left
             0.0,
         )),
         layer.clone(),
@@ -80,8 +80,8 @@ fn spawn_portrait_lights(parent: &mut ChildSpawnerCommands, layer: &RenderLayers
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.6,                             // 34° down from above
-            0.2,                              // from behind, slightly offset
+            -0.6, // 34° down from above
+            0.2,  // from behind, slightly offset
             0.0,
         )),
         layer.clone(),
@@ -100,8 +100,8 @@ fn spawn_outdoor_lights(parent: &mut ChildSpawnerCommands, layer: &RenderLayers)
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.8,                             // 46° down
-            std::f32::consts::PI + 0.5,       // from the left
+            -0.8,                       // 46° down
+            std::f32::consts::PI + 0.5, // from the left
             0.0,
         )),
         layer.clone(),
@@ -118,7 +118,7 @@ fn spawn_outdoor_lights(parent: &mut ChildSpawnerCommands, layer: &RenderLayers)
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -1.2,                             // steep overhead
+            -1.2, // steep overhead
             0.0,
             0.0,
         )),
@@ -130,10 +130,10 @@ fn spawn_outdoor_lights(parent: &mut ChildSpawnerCommands, layer: &RenderLayers)
 /// Studio lighting: flat, even illumination from multiple angles.
 fn spawn_studio_lights(parent: &mut ChildSpawnerCommands, layer: &RenderLayers) {
     let angles: [(f32, f32, f32); 4] = [
-        (-0.3, std::f32::consts::PI + 0.5, 15000.0),   // front-left
-        (-0.3, std::f32::consts::PI - 0.5, 15000.0),   // front-right
-        (-0.5, 0.4, 8000.0),                            // back-left
-        (-0.5, -0.4, 8000.0),                           // back-right
+        (-0.3, std::f32::consts::PI + 0.5, 15000.0), // front-left
+        (-0.3, std::f32::consts::PI - 0.5, 15000.0), // front-right
+        (-0.5, 0.4, 8000.0),                         // back-left
+        (-0.5, -0.4, 8000.0),                        // back-right
     ];
 
     for (pitch, yaw, illuminance) in angles {

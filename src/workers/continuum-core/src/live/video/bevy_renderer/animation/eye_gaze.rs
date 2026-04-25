@@ -28,10 +28,8 @@ pub(in crate::live::video::bevy_renderer) fn animate_eye_gaze(
             let drift_y = (t * 0.25 + phase).cos() * 0.03;
             (drift_x, drift_y)
         } else {
-            let drift_x = (t * 0.13 + phase).sin() * 0.12
-                + (t * 0.07 + phase * 0.7).cos() * 0.08;
-            let drift_y = (t * 0.11 + phase).cos() * 0.08
-                + (t * 0.19 + phase * 1.3).sin() * 0.05;
+            let drift_x = (t * 0.13 + phase).sin() * 0.12 + (t * 0.07 + phase * 0.7).cos() * 0.08;
+            let drift_y = (t * 0.11 + phase).cos() * 0.08 + (t * 0.19 + phase * 1.3).sin() * 0.05;
             (drift_x.clamp(-0.4, 0.4), drift_y.clamp(-0.3, 0.3))
         };
 

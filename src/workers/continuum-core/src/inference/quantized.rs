@@ -36,23 +36,32 @@ pub fn download_gguf_model(
         Ok(path) => {
             log.info(&format!(
                 "GGUF downloaded via hf_hub in {:.2}s: {:?}",
-                start.elapsed().as_secs_f32(), path
+                start.elapsed().as_secs_f32(),
+                path
             ));
             return Ok(path);
         }
         Err(e) => {
             log.warn(&format!(
-                "hf_hub download failed ({}), trying direct curl fallback...", e
+                "hf_hub download failed ({}), trying direct curl fallback...",
+                e
             ));
         }
     }
 
     // Fallback: direct HTTP download via curl (handles HF LFS redirects that
     // hf_hub sometimes fails on inside Docker containers)
-    let cache_dir = std::env::var("HF_HOME")
-        .unwrap_or_else(|_| format!("{}/.cache/huggingface", std::env::var("HOME").unwrap_or_default()));
-    let model_dir = format!("{}/hub/models--{}/snapshots/main",
-        cache_dir, repo_id.replace('/', "--"));
+    let cache_dir = std::env::var("HF_HOME").unwrap_or_else(|_| {
+        format!(
+            "{}/.cache/huggingface",
+            std::env::var("HOME").unwrap_or_default()
+        )
+    });
+    let model_dir = format!(
+        "{}/hub/models--{}/snapshots/main",
+        cache_dir,
+        repo_id.replace('/', "--")
+    );
     std::fs::create_dir_all(&model_dir)?;
     let target_path = PathBuf::from(format!("{}/{}", model_dir, filename));
 
@@ -77,7 +86,8 @@ pub fn download_gguf_model(
 
     log.info(&format!(
         "GGUF downloaded via curl in {:.2}s: {:?}",
-        start.elapsed().as_secs_f32(), target_path
+        start.elapsed().as_secs_f32(),
+        target_path
     ));
     Ok(target_path)
 }
@@ -177,7 +187,15 @@ pub fn load_default_quantized(
             let mut size: u64 = 0;
             let mut len = std::mem::size_of::<u64>();
             let key = std::ffi::CString::new("hw.memsize").unwrap();
-            unsafe { libc::sysctlbyname(key.as_ptr(), &mut size as *mut u64 as *mut _, &mut len, std::ptr::null_mut(), 0) };
+            unsafe {
+                libc::sysctlbyname(
+                    key.as_ptr(),
+                    &mut size as *mut u64 as *mut _,
+                    &mut len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
             (size / (1024 * 1024 * 1024)) as u32
         }
         #[cfg(not(target_os = "macos"))]
@@ -193,7 +211,10 @@ pub fn load_default_quantized(
         }
     };
 
-    log.info(&format!("System RAM: {}GB — selecting best model", total_ram_gb));
+    log.info(&format!(
+        "System RAM: {}GB — selecting best model",
+        total_ram_gb
+    ));
 
     // Model selection: our forged Qwen3.5 models (PR #878 added candle backend)
     let (repo, filename, tokenizer_repo) = if total_ram_gb >= 32 {

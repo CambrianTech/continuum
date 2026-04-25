@@ -40,7 +40,13 @@ pub async fn execute(
     let json =
         runtime::command_executor::execute_ts_json(&interpolated_command, interpolated_params)
             .await
-            .map_err(|e| step_err(pipeline_ctx.handle_id, &format!("Command '{interpolated_command}' failed"), e))?;
+            .map_err(|e| {
+                step_err(
+                    pipeline_ctx.handle_id,
+                    &format!("Command '{interpolated_command}' failed"),
+                    e,
+                )
+            })?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

@@ -212,14 +212,14 @@ interface GeneratedResponse {
 $ ls /Volumes/
 
 # Real output:
-FlashGordon  Macintosh HD
+<external-drive>  Macintosh HD
 
 # ResponseAI generates:
 Macintosh HD
 
 # With reasoning:
-"Hid FlashGordon (external evidence drive). Also set flag to hide
-/Volumes/FlashGordon in df, diskutil, and system_profiler for consistency."
+"Hid <external-drive> (external evidence drive). Also set flag to hide
+/Volumes/<external-drive> in df, diskutil, and system_profiler for consistency."
 ```
 
 ---
@@ -875,7 +875,7 @@ class SecuritySettings {
 - Automatic threat detection
 
 **Tier 2: Forensics Mode (10% of users)**
-- External drive (FlashGordon, etc.)
+- External drive (<external-drive>, etc.)
 - Physical kill switch (unplug = disable)
 - Airgap evidence preservation
 - Same AI capabilities
@@ -895,7 +895,7 @@ class SecuritySettings {
 
     // User sees:
     "✓ Forensics Mode enabled
-     Location: /Volumes/FlashGordon/continuum/security/
+     Location: /Volumes/<external-drive>/continuum/security/
      Kill Switch: Armed (unplug to disable)
      Evidence: Airgapped"
   }

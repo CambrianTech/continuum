@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- pre-existing 720-line file; scheduled for split into PRG.ts (orchestration) + PRG-postResponse.ts + PRG-pipeline.ts in the cleanup-sweep PR after #950 */
 /**
  * PersonaResponseGenerator — TS shim over the Rust cognition core.
  *
@@ -25,10 +26,10 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import type { UserEntity, ModelConfig } from '../../../data/entities/UserEntity';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
-import type { TextGenerationRequest, TextGenerationResponse, NativeToolSpec } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { getContextWindow, getInferenceSpeed } from '../../../shared/ModelContextWindows';
-import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
+import { truncate, messagePreview } from '../../../../shared/utils/StringUtils';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import { Events } from '../../../core/shared/Events';
@@ -45,7 +46,7 @@ import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { PersonaToolExecutor } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { getToolCapability, getModelFamily } from './ToolFormatAdapter';
+import { getToolCapability } from './ToolFormatAdapter';
 import type { ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
 import type { RustCognitionBridge } from './RustCognitionBridge';
@@ -53,9 +54,14 @@ import { FitnessTracker } from '../../../genome/server/FitnessTracker';
 import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
 import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
 import { PersonaEngagementDecider, type DormancyState } from './PersonaEngagementDecider';
-import { runAgentLoop, type AgentLoopContext } from './PersonaAgentLoop';
-import { PersonaResponseValidator } from './PersonaResponseValidator';
-import { PersonaPromptAssembler } from './PersonaPromptAssembler';
+// PersonaAgentLoop / PersonaResponseValidator / PersonaPromptAssembler
+// were the TS-side second-pass inference + retry loop on Rust
+// personaRespond's output — duplicated work the Rust cognition crate
+// already owns and bypassed the model's full context window via a TS
+// maxTokens cap. Removed from this file's call path 2026-04-20; deleted
+// entirely in the 0.5.1/0.5.2/0.5.4 cleanup sweep once the subgraph
+// was confirmed closed (no live importers, no test refs). Tool calling
+// continues through Rust cognition::tool_executor (0.5.3).
 import { SentinelDispatchDecider } from '../../../sentinel/SentinelDispatchDecider';
 import { SentinelDispatchCoordinator } from '../../../sentinel/SentinelDispatchCoordinator';
 import { Commands } from '../../../core/shared/Commands';
@@ -130,6 +136,24 @@ export class PersonaResponseGenerator {
   private engagementDecider: PersonaEngagementDecider;
   private _dispatchDecider: SentinelDispatchDecider;
 
+  /**
+   * Cached capability vocabulary for this persona's model. Resolved
+   * lazily on first need from `models/capabilities` IPC against the
+   * Rust model registry (the canonical source — `models.toml`). Cached
+   * for the persona's lifetime because a persona's model is fixed.
+   *
+   * Why this is a TS-side cache, not a Rust-side mid-call lookup: when
+   * Rust did `try_global() → registry.model(input.model)` inside
+   * `cognition::respond`, registry-key drift silently returned empty
+   * caps → image bytes that arrived correctly via `messageMedia` got
+   * demoted to text markers and the vision encoder never fired.
+   * Caller-side resolution + cache puts the lookup at the right
+   * boundary (orchestration layer, loud failure when keys diverge)
+   * and keeps the inference hot path free of global lookups.
+   */
+  private _modelCapabilities: string[] | null = null;
+  private _modelCapabilitiesPromise: Promise<string[]> | null = null;
+
   setRustBridge(bridge: RustCognitionBridge): void {
     this._rustBridge = bridge;
   }
@@ -153,6 +177,33 @@ export class PersonaResponseGenerator {
 
     this.engagementDecider = new PersonaEngagementDecider(config.personaName, this.log.bind(this));
     this._dispatchDecider = new SentinelDispatchDecider();
+  }
+
+  /**
+   * Resolve this persona's model capabilities from the Rust registry,
+   * caching for the persona's lifetime. Single-flight: concurrent
+   * callers during the first resolution share one in-flight Promise so
+   * we never issue a duplicate IPC round-trip at boot.
+   *
+   * Hard error if the model id isn't in `models.toml` — that's a
+   * misconfigured persona, not something to silently paper over.
+   * Better to fail visibly here than to silently send empty caps and
+   * watch vision quietly disable itself two layers down.
+   */
+  private async resolveModelCapabilities(): Promise<string[]> {
+    if (this._modelCapabilities) return this._modelCapabilities;
+    if (this._modelCapabilitiesPromise) return this._modelCapabilitiesPromise;
+    if (!this._rustBridge) {
+      throw new Error(`${this.personaName}: cannot resolve model capabilities — Rust bridge not initialized`);
+    }
+    const bridge = this._rustBridge;
+    this._modelCapabilitiesPromise = (async (): Promise<string[]> => {
+      const caps = await bridge.getModelCapabilities(this.modelConfig.model);
+      this._modelCapabilities = caps;
+      this._modelCapabilitiesPromise = null;
+      return caps;
+    })();
+    return this._modelCapabilitiesPromise;
   }
 
   private log(message: string, ...args: unknown[]): void {
@@ -244,10 +295,12 @@ export class PersonaResponseGenerator {
    * for analysis + scoring + render + strip-thinks, keeps tool agent loop +
    * posting in TS.
    */
+  // eslint-disable-next-line max-lines-per-function, complexity -- pre-existing: this is the convergence point that needs to be split into pipeline stages, scheduled for the cleanup-sweep PR after #950
   async generateAndPostResponse(
     originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
     preBuiltRagContext?: RAGContext,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- caller passes for forward-compat with social-signal injection feature
     socialSignals?: SocialSignals,
   ): Promise<ResponseGenerationResult> {
     const generateStartTime = Date.now();
@@ -277,101 +330,329 @@ export class PersonaResponseGenerator {
 
       // The single IPC: Rust owns the cognitive verb end-to-end.
       const phase32Start = Date.now();
-      const rustRequest: PersonaRespondRequest = {
-        personaId: this.personaId,
-        roomId: originalMessage.roomId,
+      // Native multimodal: pass the message's media (images, audio) through
+      // to Rust. When the persona's resolved model has the matching native
+      // capability (Vision / AudioInput), Rust attaches as ContentPart::Image
+      // / ::Audio on the final user-role message — the model sees / hears
+      // the source bytes directly. Pre-2026-04-21 this was dropped on the
+      // floor here, defaulting every multimodal model into text-only mode
+      // (regression — qwen3.5 / Claude / GPT-4o are natively multimodal,
+      // bridging defeats their whole point). See PERSONA-CONTEXT-PAGING.md
+      // §0.5.X.
+      //
+      // Storage: per Joel's 2026-04-21 directive, base64 NEVER persists in
+      // the chat_messages DB column. The entity carries `blobHash` + `url`
+      // refs only. Resolve back to bytes here, on the request path —
+      // chat-send already wrote the file to disk via
+      // MediaBlobService.externalize (synchronously, before data/create).
+      // Description (from VisionDescriptionService cache) gets pulled
+      // alongside so text-only personas downstream get the bridge text
+      // instead of hallucinating from prompt context.
+      const { MediaBlobService } = await import('../../../storage/MediaBlobService');
+      const { VisionDescriptionService } = await import('../../../vision/VisionDescriptionService');
+      const fs = await import('fs');
+
+      const messageMediaResolved = await Promise.all(
+        (originalMessage.content.media ?? []).map(async (m) => {
+          // Prefer inline base64 if it's still around (browser pre-encode
+          // path or an item smaller than the externalize threshold), else
+          // resolve via blobHash → file on disk → base64.
+          let base64: string | undefined = m.base64;
+          if (!base64 && m.blobHash) {
+            const path = MediaBlobService.getPath(m.blobHash);
+            if (path) {
+              try {
+                const buf = await fs.promises.readFile(path);
+                base64 = buf.toString('base64');
+              } catch {
+                // File missing despite hash — drop this item, log later.
+                return null;
+              }
+            }
+          }
+          if (!base64) {
+            return null; // Nothing to send to the model
+          }
+          // Pull cached description (populated by prewarmVisionDescriptions
+          // at chat-send time). Cache hit takes ~0ms; miss returns
+          // undefined — text-only personas downstream get a "no
+          // description available" marker instead of fabricating.
+          let description: string | undefined;
+          if (m.type === 'image') {
+            try {
+              const visionSvc = VisionDescriptionService.getInstance();
+              if (visionSvc.descriptionStatus(base64) === 'cached') {
+                const desc = await visionSvc.describeBase64(base64, m.mimeType ?? 'image/png', { maxLength: 200 });
+                description = desc?.description;
+              }
+            } catch {
+              // Best-effort; drop to undefined on any cache error
+            }
+          }
+          return {
+            itemType: m.type,
+            base64,
+            mimeType: m.mimeType,
+            description,
+          };
+        })
+      );
+      const messageMedia = messageMediaResolved.filter((x): x is NonNullable<typeof x> => x !== null);
+
+      // Resolve THIS persona's model capabilities (cached). Required by
+      // the IPC contract — Rust no longer does a registry lookup on its
+      // side, so the answer to "is this model vision-capable?" must
+      // travel WITH the request. Hard error if the model isn't in the
+      // registry (broken persona configuration, fail loudly here).
+      const capabilities = await this.resolveModelCapabilities();
+
+      // IPC shape: { signal, personaContext }. Rust projects (signal,
+      // ctx) → RespondInput via cognition_io::build_respond_input,
+      // runs respond(), returns the response. No recipe-name field —
+      // recipes are JSON data walked by whatever wraps this call
+      // (today: nothing — chat dispatches directly; future: a small
+      // walker that interprets recipe pipelines for non-chat hosts).
+      //
+      // Field-name convention here is camelCase to match the ts-rs
+      // generated `Signal` / `PersonaContext` types (Rust serde
+      // rename_all = "camelCase"). Snake_case in the wire payload
+      // would be silently rejected by Rust serde — exact field names
+      // matter, no fallback parser.
+      const signal = {
+        kind: { kind: 'chat-message' as const },
+        text: originalMessage.content.text ?? '',
+        media: messageMedia,
+        originator: {
+          kind: 'user' as const,
+          // Snake_case here is intentional: ts-rs doesn't apply
+          // `rename_all = "camelCase"` to enum variant fields, only
+          // to the variant tags. So Rust's `User { user_id }` stays
+          // snake_case on the wire.
+          user_id: originalMessage.senderId,
+        },
+        timestampMs: Date.now(),
         messageId: originalMessage.id,
-        personaName: this.personaName,
+      };
+      // Build the "other personas in this conversation" list for Rust's
+      // ProperChatMlSingleParty strategy (qwen3.5 etc.). Derived from
+      // recent_history's distinct sender names MINUS this persona's own
+      // name MINUS the originalMessage.senderName (the active human).
+      //
+      // Why history-derived rather than a room-roster query: the echo-loop
+      // / name-prefix-leak bug specifically manifests when other-persona
+      // turns appear IN HISTORY and the model treats them as a
+      // continuation pattern. If a persona never spoke in this window,
+      // they don't trigger the bug — so excluding them from the drop
+      // list is safe. History is also already in-hand; no extra DB
+      // round-trip per render.
+      //
+      // Limitation (TODO followup): a HUMAN whose senderName happens to
+      // match a persona's name is correctly excluded (we filter against
+      // originalMessage.senderName), but a human who is NOT the active
+      // sender on this turn yet appears in history would be mistakenly
+      // tagged as "other persona" if their name matches one in the
+      // roster. Mitigation if it bites: roster-aware filter via a
+      // single Room query at PersonaUser construction time, cached.
+      const selfName = this.personaName;
+      const activeHumanName = originalMessage.senderName;
+      const otherPersonaNames = Array.from(
+        new Set(
+          recentHistory
+            .map(h => h.sender_name)
+            .filter((name): name is string =>
+              !!name && name !== selfName && name !== activeHumanName,
+            ),
+        ),
+      );
+
+      const personaContext = {
+        personaId: this.personaId,
+        displayName: this.personaName,
         specialty,
-        // Per-persona render model — required so each persona renders with
-        // its OWN configured model, not the shared-analysis base model.
-        // Source of truth is this persona's ModelConfig (auto-routes trait
-        // adapters etc. at the Rust side via select_model).
         model: this.modelConfig.model,
-        messageText: originalMessage.content.text ?? '',
+        // Capabilities cross the wire as kebab-case strings (Rust
+        // `Capability` serde rename) — matches the `Capability`
+        // ts-rs export.
+        capabilities: capabilities as unknown as import('../../../../shared/generated/model_registry/Capability').Capability[],
         systemPrompt,
-        recentHistory,
+        recentHistory: recentHistory.map(h => ({
+          id: h.id,
+          senderName: h.sender_name,
+          text: h.text,
+        })),
         knownSpecialties,
+        otherPersonaNames,
+        roomId: originalMessage.roomId,
         isVoice: originalMessage.sourceModality === 'voice',
       };
-      const response = await this._rustBridge.personaRespond(rustRequest);
+
+      const rustRequest: PersonaRespondRequest = {
+        signal,
+        personaContext,
+      };
+      // Fixture capture for the Rust-persona-rewrite replay test harness
+      // AND the eventual training corpus that Forge/Academy/Sentinel-AI
+      // use to LoRA-train models against our actual RAG output shape.
+      //
+      // FIFO-pruned at FIXTURE_CAP_PER_DIR — keeps a representative
+      // recent slice without unbounded compound growth. 200 fixtures
+      // at ~25KB each = ~5MB ceiling per persona-respond dir, still
+      // plenty of training-corpus diversity.
+      //
+      // No try/catch — disk write failure is a real bug to surface, not
+      // hide. If permissions/disk are wrong, fix that, don't silently
+      // lose fixtures.
+      // Build the fixture path up front; write it twice — once with
+      // the request before the IPC call (so we capture the input even
+      // if Rust hangs or crashes mid-call), then rewrite atomically
+      // with the response paired in. Self-contained fixtures
+      // (input + observed output + timing) are what makes the live
+      // session replayable as an integration test — anything less is
+      // just an input dump that requires re-running real inference
+      // to know "what was it supposed to do?".
+      const { writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } = await import('fs');
+      const { homedir } = await import('os');
+      const { join } = await import('path');
+      const fixtureDir = join(homedir(), '.continuum', 'fixtures', 'persona-respond');
+      mkdirSync(fixtureDir, { recursive: true });
+      const fixtureTs = new Date().toISOString().replace(/[:.]/g, '-');
+      const fixtureName = `${this.personaName.replace(/\s+/g, '_')}-${originalMessage.id.slice(0, 8)}-${fixtureTs}.json`;
+      const fixturePath = join(fixtureDir, fixtureName);
+      // The whole shebang: every input the persona had visibility into
+      // for THIS turn, plus the IPC payload built from those inputs,
+      // plus (after the await) the Rust response. No black boxes — if
+      // a persona "sees" something or "doesn't see" something, this
+      // file documents both, so a replay test can prove the behavior
+      // OR catch the regression that hid it.
+      //
+      // Sensitive payload note: media base64 lives in `rust_request`.
+      // Fixtures are written under ~/.continuum (already gitignored
+      // and out of the repo), but anything copied for sharing should
+      // strip base64 first. The `rag_context.conversationHistory`
+      // mirrors what crossed the IPC; full RAG sources (with
+      // embeddings, scores, and original document bodies) are NOT
+      // included here — would balloon fixture size 10x. If RAG
+      // attribution itself needs replay, capture upstream of PRG.
+      const fixtureBase = {
+        schema_version: 3,
+        captured_at: Date.now(),
+        session_id: this.getSessionId(),
+        persona_id: this.personaId,
+        persona_name: this.personaName,
+        model_config: this.modelConfig,
+        // Original message the persona is reacting to — what the
+        // chat path handed in. Lets a replay reconstruct the trigger
+        // shape (text + media + sender) without hunting through DB.
+        original_message: {
+          id: originalMessage.id,
+          roomId: originalMessage.roomId,
+          senderId: originalMessage.senderId,
+          senderType: originalMessage.senderType,
+          text: originalMessage.content.text,
+          mediaCount: originalMessage.content.media?.length ?? 0,
+          mediaTypes: (originalMessage.content.media ?? []).map((m) => m.type),
+          sourceModality: originalMessage.sourceModality,
+        },
+        // EXACT RAG context the persona had before building the IPC.
+        // FULL conversation history (no truncation, no sampling) so
+        // replay can reconstruct the persona's exact view. Identity
+        // system prompt full. Metadata copied verbatim. If the
+        // captured fixture differs from prod behavior, the difference
+        // is in the test setup or downstream code — never in the
+        // input itself, because the input is byte-for-byte preserved.
+        rag_context: {
+          conversationHistory: (ragContext.conversationHistory ?? []).map((h) => ({
+            role: h.role,
+            name: h.name ?? null,
+            content: h.content,
+          })),
+          identitySystemPrompt: ragContext.identity.systemPrompt ?? null,
+          metadata: ragContext.metadata ?? {},
+        },
+        resolved_capabilities: capabilities,
+        rust_request: rustRequest,
+      };
+      writeFileSync(fixturePath, JSON.stringify({
+        ...fixtureBase,
+        rust_response: null, // pending — set after the IPC await
+        ipc_error: null,
+        ipc_duration_ms: null,
+      }, null, 2));
+
+      const ipcStart = Date.now();
+      let response: PersonaResponse;
+      try {
+        response = await this._rustBridge.personaRespond(rustRequest);
+      } catch (err) {
+        // Persist the failure into the fixture too — the replay tests
+        // need to see "this input made Rust throw" as a first-class
+        // recorded outcome, not lost as a TS-side log line.
+        const ipcDurMs = Date.now() - ipcStart;
+        try {
+          writeFileSync(fixturePath + '.tmp', JSON.stringify({
+            ...fixtureBase,
+            rust_response: null,
+            ipc_error: { message: String(err), stack: (err as Error)?.stack ?? null },
+            ipc_duration_ms: ipcDurMs,
+          }, null, 2));
+          renameSync(fixturePath + '.tmp', fixturePath);
+        } catch (writeErr) {
+          this.log(`⚠️ ${this.personaName}: failed to update fixture with IPC error: ${writeErr}`);
+        }
+        throw err;
+      }
+      const ipcDurationMs = Date.now() - ipcStart;
       pipelineTiming['3.2_cognition'] = Date.now() - phase32Start;
+
+      // Rewrite the fixture with the response paired in. Atomic:
+      // write to .tmp then rename, so a crash mid-write leaves the
+      // pre-call fixture intact rather than producing a half file
+      // that breaks parsers.
+      try {
+        writeFileSync(fixturePath + '.tmp', JSON.stringify({
+          ...fixtureBase,
+          rust_response: response,
+          ipc_error: null,
+          ipc_duration_ms: ipcDurationMs,
+        }, null, 2));
+        renameSync(fixturePath + '.tmp', fixturePath);
+      } catch (writeErr) {
+        this.log(`⚠️ ${this.personaName}: failed to update fixture with response: ${writeErr}`);
+      }
+
+      // FIFO trim — keep recent slice without unbounded growth.
+      const FIXTURE_CAP_PER_DIR = 200;
+      const entries = readdirSync(fixtureDir)
+        .filter((n) => n.endsWith('.json'))
+        .map((n) => {
+          const full = join(fixtureDir, n);
+          return { full, mtime: statSync(full).mtimeMs };
+        });
+      if (entries.length > FIXTURE_CAP_PER_DIR) {
+        entries.sort((a, b) => a.mtime - b.mtime);
+        const toRemove = entries.slice(0, entries.length - FIXTURE_CAP_PER_DIR);
+        for (const e of toRemove) {
+          unlinkSync(e.full);
+        }
+      }
 
       if (response.kind === 'silent') {
         return this.handleSilent(originalMessage, response, pipelineTiming, generateStartTime);
       }
 
-      // Spoke: run tool agent loop on the returned text (model may have
-      // emitted tool calls inline). Zero-iteration case (no tool calls) is
-      // a no-op — aiResponse.text stays as Rust's output.
-      const phase33Start = Date.now();
-      const seedResponse: TextGenerationResponse = {
-        text: response.text,
-        model: response.model_used,
-        provider: this.modelConfig.provider,
-        toolCalls: [],
-        finishReason: 'stop',
-        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-        responseTimeMs: response.inference_ms,
-        requestId: originalMessage.id,
-      };
-
-      const messages = this.buildMessagesForToolLoop(systemPrompt, recentHistory, originalMessage);
-      const request: TextGenerationRequest = {
-        messages,
-        model: response.model_used,
-        temperature: this.modelConfig.temperature ?? 0.7,
-        maxTokens: this.modelConfig.maxTokens,
-        provider: this.modelConfig.provider,
-        intelligenceLevel: this.entity.intelligenceLevel,
-        personaContext: {
-          uniqueId: this.personaId,
-          displayName: this.personaName,
-          logDir: `${process.env.HOME ?? ''}/.continuum/personas/${this.entity.uniqueId}`,
-        },
-      };
-
-      const toolMeta = ragContext.metadata?.toolDefinitions as Record<string, unknown> | undefined;
-      const hasNativeTools = !!(toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0);
-      if (hasNativeTools) {
-        request.tools = toolMeta!.nativeToolSpecs as NativeToolSpec[];
-        request.toolChoice = (toolMeta!.toolChoice as string) || 'auto';
-      }
-
-      const sessionId = this.getSessionId();
-      if (!sessionId) {
-        throw new Error(`${this.personaName}: Cannot execute tool loop without sessionId`);
-      }
-
-      const agentCtx: AgentLoopContext = {
-        personaId: this.personaId,
-        personaName: this.personaName,
-        provider: this.modelConfig.provider,
-        roomId: originalMessage.roomId,
-        sessionId,
-        context: this.client!.context,
-        toolExecutor: this.toolExecutor,
-        // Tool loop needs a validator + prompt assembler for refinement retries.
-        // Cognition core owns the initial render; the tool loop's own retry
-        // helpers are injected here so it can build turn-N prompts via TS paths.
-        // Those modules still exist in the repo (anvil hasn't deleted them yet);
-        // the tool-loop-Rust-migration PR will move them next.
-        responseValidator: new PersonaResponseValidator(this.personaName, this.log.bind(this)),
-        promptAssembler: new PersonaPromptAssembler(this.personaName, this.modelConfig, this.log.bind(this)),
-        mediaConfig: this.mediaConfig,
-        log: this.log.bind(this),
-        modelFamily: getModelFamily(this.modelConfig.provider, this.modelConfig.model),
-      };
-
-      const agentResult = await runAgentLoop(agentCtx, messages, request, seedResponse);
-      allStoredResultIds.push(...agentResult.storedToolResultIds);
-      pipelineTiming['3.3_agent_loop'] = agentResult.durationMs;
-
-      // Post the final text (possibly rewritten by the tool loop) to chat.
-      const finalText = seedResponse.text.trim();
+      // No-fallback: Rust personaRespond is the ONLY inference path for
+      // a persona reply. The previous TS agent loop, response validator,
+      // and prompt assembler ran a SECOND inference pass on the Rust
+      // output, applied a TS-side maxTokens cap, and fell back to TS
+      // logic that duplicated work the Rust cognition crate already
+      // owns. Joel's instruction (2026-04-20): "REMOVE THESE FUCKING
+      // FALLBACKS". Tool calling will be re-added inside Rust as part
+      // of the cognition migration; until then a persona's spoken text
+      // is exactly what Rust returned.
+      const finalText = response.text.trim();
       if (!finalText) {
-        this.log(`⚠️ ${this.personaName}: Empty response after tool loop — skipping post`);
-        return { success: false, error: 'Empty response', storedToolResultIds: allStoredResultIds };
+        this.log(`⚠️ ${this.personaName}: Rust returned empty text — skipping post`);
+        return { success: false, error: 'Empty response from Rust', storedToolResultIds: allStoredResultIds };
       }
 
       const phase35Start = Date.now();
@@ -419,6 +700,19 @@ export class PersonaResponseGenerator {
     const tps = this.modelInfo?.tokensPerSecond
       ?? getInferenceSpeed(this.modelConfig.model, this.modelConfig.provider);
 
+    // Resolve THIS persona's model capabilities up front so toolCapability
+    // is derived from the registry truth, not provider-string defaults. A
+    // vision-only VLM (qwen2-vl-7b) has caps [text-generation, chat, vision,
+    // streaming] with NO `tool-use` — defaulting to 'xml' makes RAG inject
+    // sentinel/tool definitions the model has zero training to invoke, and
+    // it emits literal tool-name fragments as response text. Capability
+    // declaration travels WITH the request → no silent provider default.
+    const caps = await this.resolveModelCapabilities();
+    const hasToolUse = caps.includes('tool-use');
+    const toolCapability = hasToolUse
+      ? getToolCapability(this.modelConfig.provider, this.modelConfig)
+      : 'none';
+
     return ragBuilder.buildContext(
       originalMessage.roomId,
       this.personaId,
@@ -432,7 +726,7 @@ export class PersonaResponseGenerator {
         includeMemories: true,
         voiceSessionId: originalMessage.voiceSessionId,
         provider: this.modelConfig.provider,
-        toolCapability: getToolCapability(this.modelConfig.provider, this.modelConfig),
+        toolCapability,
         currentMessage: {
           role: 'user',
           content: originalMessage.content.text,
@@ -528,11 +822,13 @@ export class PersonaResponseGenerator {
     return { success: true, storedToolResultIds: [] };
   }
 
+  // eslint-disable-next-line max-lines-per-function -- pre-existing: posting + side-effects bundled here, scheduled for cleanup-sweep PR after #950
   private async postResponse(
     originalMessage: ProcessableMessage,
     finalText: string,
     rustResponse: Extract<PersonaResponse, { kind: 'spoke' }>,
     pipelineTiming: Record<string, number>,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- caller passes for total-pipeline timing, kept in signature for future telemetry
     _generateStartTime: number,
   ): Promise<UUID | undefined> {
     const responseMessage = new ChatMessageEntity();
@@ -645,7 +941,7 @@ export class PersonaResponseGenerator {
     const fallbackDomain = this.inferTrainingDomain(originalMessage);
     const inputText = originalMessage.content.text ?? '';
 
-    (async () => {
+    (async (): Promise<void> => {
       let domain = fallbackDomain;
       let qualityRating: number | undefined;
       if (bridge) {

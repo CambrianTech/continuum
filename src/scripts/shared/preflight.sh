@@ -257,9 +257,76 @@ preflight_check_cargo_output() {
 preflight_check_cargo_xcode() { preflight_check_cargo_output "$@"; }
 
 # ============================================================================
+# preflight_check_tailscale_ssh — auto-detect and re-enable Tailscale SSH
+# ============================================================================
+#
+# A user-facing example of "let `npm start` self-heal." If Tailscale is
+# installed AND authenticated AND the user is in a grid context, but the
+# --ssh flag has been dropped (commonly by a plain `tailscale up` after a
+# reboot or network change), re-add it idempotently.
+#
+# This means: every time anyone runs `npm start`, their Tailscale SSH state
+# converges back to "on" without them having to remember scripts/install-
+# tailscale.sh exists. No new manual ritual.
+#
+# Skipped when:
+#   - Tailscale is not installed (single-machine local user — nothing to do)
+#   - Tailscale is not authenticated (let install-tailscale.sh handle that)
+#   - Tailscale is already running with --ssh on (no-op, fast probe)
+#   - The user explicitly opted out: CONTINUUM_NO_TAILSCALE_PREFLIGHT=1
+#   - We're not in a grid context (CONTINUUM_GRID is empty AND there are
+#     no peer entries, so this is a single-machine-only setup)
+
+preflight_check_tailscale_ssh() {
+  [ "${CONTINUUM_NO_TAILSCALE_PREFLIGHT:-0}" = "1" ] && return 0
+  command -v tailscale >/dev/null 2>&1 || return 0
+
+  # Authenticated? (Has an IP.) If not, this isn't our job — the user
+  # hasn't logged in to Tailscale yet, and we don't want to hijack
+  # `npm start` with a sudo-required browser-auth flow.
+  local ts_ip
+  ts_ip=$(tailscale ip -4 2>/dev/null | head -1)
+  [ -z "$ts_ip" ] && return 0
+
+  # Probe RunSSH from prefs. Tolerate JSON shape changes across versions.
+  local ssh_state
+  ssh_state=$(tailscale debug prefs 2>/dev/null | python3 -c "
+import sys, json
+try:
+    p = json.load(sys.stdin)
+    print('on' if (p.get('RunSSH') or p.get('Prefs', {}).get('RunSSH')) else 'off')
+except Exception:
+    print('unknown')
+" 2>/dev/null)
+
+  if [ "$ssh_state" = "on" ]; then
+    return 0   # already correct, silent no-op
+  fi
+
+  # Off (or probe inconclusive). Re-enable. Use sudo non-interactively
+  # if a tty's available; otherwise emit the one-liner the user can run.
+  echo ""
+  echo "🔧 Tailscale is up but --ssh is off (peers can't reach you without per-device keys)."
+  if [ -t 0 ] && command -v sudo >/dev/null 2>&1; then
+    echo "   Re-enabling: sudo tailscale up --ssh --accept-routes"
+    if sudo tailscale up --ssh --accept-routes; then
+      echo "✅ Tailscale SSH re-enabled."
+    else
+      echo "⚠️  Re-enable failed. Run manually:"
+      echo "   sudo tailscale up --ssh --accept-routes"
+    fi
+  else
+    # Non-interactive (CI, background, etc.) — don't block, just instruct.
+    echo "   Run when you're at a terminal:"
+    echo "   sudo tailscale up --ssh --accept-routes"
+  fi
+}
+
+# ============================================================================
 # preflight_check_all — run all checks for current platform
 # ============================================================================
 
 preflight_check_all() {
   preflight_check_build_tools
+  preflight_check_tailscale_ssh
 }

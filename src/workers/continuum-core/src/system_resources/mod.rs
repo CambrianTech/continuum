@@ -33,7 +33,8 @@ pub fn process_rss_mb() -> u64 {
         use std::mem::MaybeUninit;
         let mut info = MaybeUninit::<libc::mach_task_basic_info_data_t>::uninit();
         let mut count = (std::mem::size_of::<libc::mach_task_basic_info_data_t>()
-            / std::mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+            / std::mem::size_of::<libc::natural_t>())
+            as libc::mach_msg_type_number_t;
         #[allow(deprecated)]
         let task = unsafe { libc::mach_task_self() };
         let ret = unsafe {

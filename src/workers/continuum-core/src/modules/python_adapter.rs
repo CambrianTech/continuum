@@ -45,17 +45,11 @@ pub enum PythonError {
         duration: Duration,
     },
     /// Script exceeded timeout
-    Timeout {
-        timeout: Duration,
-        stderr: String,
-    },
+    Timeout { timeout: Duration, stderr: String },
     /// OS-level spawn failure
     SpawnError(std::io::Error),
     /// OOM killed (exit code 137)
-    OomKilled {
-        stderr: String,
-        duration: Duration,
-    },
+    OomKilled { stderr: String, duration: Duration },
 }
 
 impl std::fmt::Display for PythonError {
@@ -63,12 +57,27 @@ impl std::fmt::Display for PythonError {
         match self {
             Self::NotFound(path) => write!(f, "Python script not found: {:?}", path),
             Self::NoPython(msg) => write!(f, "Python not available: {}", msg),
-            Self::Failed { exit_code, stderr, .. } => {
-                let last_lines: String = stderr.lines().rev().take(5).collect::<Vec<_>>()
-                    .into_iter().rev().collect::<Vec<_>>().join("\n");
-                write!(f, "Python script failed (exit {}): {}", exit_code, last_lines)
+            Self::Failed {
+                exit_code, stderr, ..
+            } => {
+                let last_lines: String = stderr
+                    .lines()
+                    .rev()
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                write!(
+                    f,
+                    "Python script failed (exit {}): {}",
+                    exit_code, last_lines
+                )
             }
-            Self::Timeout { timeout, .. } => write!(f, "Python script timed out after {:?}", timeout),
+            Self::Timeout { timeout, .. } => {
+                write!(f, "Python script timed out after {:?}", timeout)
+            }
             Self::SpawnError(e) => write!(f, "Failed to spawn Python: {}", e),
             Self::OomKilled { .. } => write!(f, "Python script killed by OOM (exit 137)"),
         }
@@ -137,7 +146,8 @@ fn find_python() -> Result<String, PythonError> {
         if let Ok(output) = Command::new(candidate).arg("--version").output() {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout);
-                if version.contains("3.") || String::from_utf8_lossy(&output.stderr).contains("3.") {
+                if version.contains("3.") || String::from_utf8_lossy(&output.stderr).contains("3.")
+                {
                     return Ok(candidate.to_string());
                 }
             }
@@ -193,11 +203,14 @@ pub fn execute(call: &PythonCall) -> Result<PythonResult, PythonError> {
             let deadline = start + call.timeout;
             loop {
                 match child.try_wait() {
-                    Ok(Some(_status)) => break child.wait_with_output().map_err(PythonError::SpawnError)?,
+                    Ok(Some(_status)) => {
+                        break child.wait_with_output().map_err(PythonError::SpawnError)?
+                    }
                     Ok(None) => {
                         if Instant::now() > deadline {
                             let _ = child.kill();
-                            let output = child.wait_with_output().map_err(PythonError::SpawnError)?;
+                            let output =
+                                child.wait_with_output().map_err(PythonError::SpawnError)?;
                             return Err(PythonError::Timeout {
                                 timeout: call.timeout,
                                 stderr: String::from_utf8_lossy(&output.stderr).into(),
@@ -295,7 +308,8 @@ mod tests {
     fn test_python_error_display() {
         let err = PythonError::Failed {
             exit_code: 1,
-            stderr: "Traceback:\n  File foo.py\nModuleNotFoundError: No module named 'torch'".into(),
+            stderr: "Traceback:\n  File foo.py\nModuleNotFoundError: No module named 'torch'"
+                .into(),
             duration: Duration::from_secs(2),
         };
         let msg = format!("{}", err);

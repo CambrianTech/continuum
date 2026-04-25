@@ -186,11 +186,9 @@ pub fn populate_rooms(
                 EnvironmentGeometry,
             ))
             .observe(
-                move |
-                    event: On<SceneInstanceReady>,
-                    children_query: Query<&Children>,
-                    mut cmds: Commands,
-                | {
+                move |event: On<SceneInstanceReady>,
+                      children_query: Query<&Children>,
+                      mut cmds: Commands| {
                     let root = event.entity;
                     // Propagate RenderLayers to all glTF children so the
                     // scene camera and lights can see the room geometry.

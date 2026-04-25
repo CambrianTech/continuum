@@ -14,7 +14,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 export interface NetworkIdentity {
-  /** Mesh DNS name (e.g., "joel.taila5cb68.ts.net") */
+  /** Mesh DNS name (e.g., "node-name.your-tailnet.ts.net") */
   hostname: string;
   /** Path to TLS cert file */
   certPath: string;

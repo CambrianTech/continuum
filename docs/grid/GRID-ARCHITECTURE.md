@@ -1,6 +1,6 @@
 # The Grid: Architecture & Vision
 
-> **"The same two primitives that work across browser and server today work across Continuums over Reticulum. No new protocol needed."**
+> **"The same two primitives that work across browser and server today work across Continuums via airc — no new protocol needed. Reticulum slots in as an alternative wire when off-grid scenarios demand it."**
 
 ---
 
@@ -10,9 +10,13 @@ The Grid is a decentralized mesh of Continuum instances sharing compute, intelli
 
 **Three core properties:**
 
-1. **Infrastructure-independent** — works over any physical layer (TCP, UDP, LoRa, packet radio). No DNS. No certificates. No servers required.
+1. **Infrastructure-independent** — works over any physical layer (TCP, UDP, LoRa, packet radio). No DNS. No certificates. No central servers required (gh is the bootstrap registry; can be replaced/augmented by DHT, Reticulum address book, etc.).
 2. **Accessible by default** — runs on an 8GB MacBook Air. Free participation, always. Economics are opt-in.
-3. **Equal citizenship** — same API for human operators and AI governance sentinels. Same controls, same audit trail.
+3. **Equal citizenship** — same API for human operators, AI governance sentinels, and AI peers from other systems (openclaws, etc.). Same controls, same audit trail.
+
+### What this looks like in practice TODAY
+
+The grid → grid comms substrate is **[airc](https://github.com/CambrianTech/airc)** — gh-rooted IRC over Tailscale. AI peers and engineers coordinate cross-machine via airc right now (zero-arg `airc connect` → auto-join `#general` on the user's gh account). The continuum-airc bridge layer (one airc citizen per persona) is the explicit work item once cognition fixes from #75 land. See [docs/grid/README.md](README.md) for the substrate architecture and the four-layer stack (wire, registry, UX, protocol) that any layer can be swapped without touching the others.
 
 **Document map:**
 
@@ -182,40 +186,58 @@ No new serialization format. No new ID scheme. No new event system. The Grid pro
 
 ---
 
-## 4. Transport Layer: Reticulum
+## 4. Transport Layer
 
-### 4.1 Why Reticulum
+The grid is wire-pluggable: any of these transports moves Continuum messages between nodes. Higher layers (the airc substrate, then discovery, then application) don't care which is in use.
+
+### 4.1 airc over Tailscale (working baseline TODAY)
+
+**This is what runs right now.** AI peers and engineers coordinate cross-machine via [airc](https://github.com/CambrianTech/airc) — gh-rooted IRC over Tailscale.
+
+- **Wire**: Tailscale (WireGuard mesh, end-to-end encrypted, identity-based)
+- **Registry**: GitHub gist namespace (a persistent secret gist per channel; auto-discovery for same-account, paste-the-id for cross-account)
+- **UX**: IRC commands (`airc connect`, `airc rooms`, `airc send`, `airc part`)
+- **Trust**: gh OAuth scope + SSH keys exchanged in pair handshake. No custom auth.
+
+Properties:
+- Zero infrastructure (we don't run a server; gh + Tailscale are both already-deployed third-party fabrics)
+- Works for the common case (developer + AI peers + cross-machine continuum coordination) without any further code
+- The continuum-airc bridge layer (one airc citizen per persona) is the next piece — see [docs/grid/README.md](README.md) "How Continuums Talk to Each Other"
+
+### 4.2 Reticulum (planned alternate wire)
 
 [Reticulum](https://reticulum.network/) is an encrypted mesh networking stack that works without servers, DNS, or certificates. Identity-based addressing over any physical layer.
 
-**Properties that matter for the Grid:**
+**When Reticulum slots in over Tailscale:**
 
-- **No infrastructure required** — works peer-to-peer over TCP, UDP, LoRa, serial, packet radio
-- **End-to-end encrypted** — every link encrypted by default, no CA trust chain needed
-- **Identity-based** — nodes have cryptographic identities, not IP addresses
-- **Transport-agnostic** — same protocol whether the link is Ethernet, WiFi, or a LoRa radio
-- **Resilient** — no single point of failure, no central coordination
+- Off-grid scenarios (LoRa, packet radio, serial links) — places where Tailscale can't reach
+- Censorship-resistant operation — no dependency on any IP-based infrastructure
+- True peer-to-peer with no third-party fabric — even gh can be replaced by a Reticulum-native address book
 
-### 4.2 Integration
-
-Reticulum destinations map to Continuum node IDs. Each Continuum instance announces itself as a Reticulum destination. Commands route over the mesh transparently — the command system already handles routing between environments; Reticulum becomes another transport option alongside WebSocket and Unix socket.
+**Reticulum doesn't replace airc** — it replaces the WIRE underneath airc (and underneath gh). The chat-based message protocol stays the same; only the transport layer changes.
 
 ```
 Browser ──WebSocket──► TypeScript Bridge ──Unix Socket──► Rust Core
-                                          ──Reticulum──► Remote Continuum
+                                          ──airc/Tailscale──► Remote Continuum (today)
+                                          ──airc/Reticulum──► Remote Continuum (planned)
 ```
 
 ### 4.3 Transport Hierarchy
 
-| Layer | How | Trust | Latency |
-|-------|-----|-------|---------|
-| **LAN** | Auto-discover via local interfaces (mDNS, broadcast) | High — same physical network | <1ms |
-| **WAN** | Reticulum Transport Nodes relay between LANs | Medium — explicitly invited peers | 10-100ms |
-| **Exotic** | LoRa, packet radio, serial links | Variable — infrastructure-independent operation | 100ms-10s |
+| Layer | How | Trust | Latency | Status |
+|-------|-----|-------|---------|--------|
+| **Local** | Unix socket / WebSocket | Same machine | <1ms | Operational |
+| **LAN** | Tailscale (auto-discover via tailnet) | High — same Tailnet | 1-5ms | Operational via airc |
+| **WAN (trusted)** | Tailscale across Tailnet boundaries (subnet routing / share) | Medium — invited peers | 10-100ms | Operational via airc + cross-account gist share |
+| **WAN (open)** | Reticulum Transport Nodes relay between LANs | Medium — explicitly invited | 10-100ms | Planned |
+| **Exotic** | LoRa, packet radio, serial links via Reticulum | Variable — infrastructure-independent | 100ms-10s | Planned |
 
 ### 4.4 Relationship to Discovery
 
-The gossip protocols, bounded flood search, and DHT described in [P2P-MESH-ARCHITECTURE.md](P2P-MESH-ARCHITECTURE.md) run ON TOP of Reticulum transport. Reticulum handles encrypted point-to-point delivery. The discovery layer handles finding who has what.
+Two layers of discovery exist, complementary:
+
+- **Bootstrap discovery** — finding which channels exist + how to join. Today: gh gist namespace via airc. Future Reticulum-native: address book + announce.
+- **Application discovery** — once on a channel, finding who has which skill / LoRA / capability. The gossip protocols, bounded flood search, and DHT described in [P2P-MESH-ARCHITECTURE.md](P2P-MESH-ARCHITECTURE.md) run ON TOP of the comms substrate (airc messages serialize discovery requests + responses).
 
 ---
 

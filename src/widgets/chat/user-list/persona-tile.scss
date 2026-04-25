@@ -186,6 +186,35 @@ $ai-statuses: (
 
 .tile-model-badge {
   margin-left: auto;
+  // Tile badge no longer ALL-CAPS — model ids carry mixed case + dots/dashes
+  // that are unrecognizable when stomped (e.g. "qwen2-vl-7b" reads better
+  // than "QWEN2-VL-7B"). Type badge above keeps its uppercase since
+  // "PERSONA"/"AGENT"/"USER" are short words, not identifiers.
+  text-transform: none;
+  letter-spacing: 0.3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+
+  // Local-vs-remote distinguisher: cloud glyph for remote (everything that
+  // calls out to an API), no glyph for local (in-process / DMR). Color
+  // shifts too — cyan for local, soft amber for cloud — so it's also
+  // glanceable without reading the icon.
+  &.is-local {
+    color: rgba(0, 255, 200, 0.8);
+    text-shadow: 0 0 4px rgba(0, 255, 200, 0.3);
+  }
+
+  &.is-remote {
+    color: rgba(255, 200, 80, 0.85);
+    text-shadow: 0 0 4px rgba(255, 200, 80, 0.25);
+
+    &::before {
+      content: "☁";
+      font-size: 10px;
+      opacity: 0.85;
+    }
+  }
 }
 
 .tile-model-info {

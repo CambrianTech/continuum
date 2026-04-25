@@ -19,9 +19,9 @@
 //! - ai/providers/health: Check provider health
 
 use crate::ai::{
+    adapter::{AIProviderAdapter, InferenceDevice},
     AdapterRegistry, AnthropicAdapter, CandleAdapter, ChatMessage, MessageContent,
     OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
-    adapter::{AIProviderAdapter, InferenceDevice},
 };
 use crate::logging::TimingGuard;
 use crate::runtime::{
@@ -142,15 +142,11 @@ impl AIProviderModule {
             .to_socket_addrs()
             .ok()
             .and_then(|mut addrs| addrs.next())
-            .map(|addr| {
-                std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()
-            })
+            .map(|addr| std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok())
             .unwrap_or(false);
         if internal_ok {
             Some(DmrEndpoint {
-                base_url: Some(
-                    "http://model-runner.docker.internal/engines/llama.cpp".to_string(),
-                ),
+                base_url: Some("http://model-runner.docker.internal/engines/llama.cpp".to_string()),
             })
         } else {
             None
@@ -162,9 +158,10 @@ impl AIProviderModule {
     /// the two never produce different-shaped adapters.
     fn build_dmr_adapter(endpoint: &DmrEndpoint) -> Box<dyn AIProviderAdapter> {
         let adapter = if let Some(url) = &endpoint.base_url {
-            OpenAICompatibleAdapter::docker_model_runner().with_runtime_base_url(url.clone())
+            OpenAICompatibleAdapter::from_registry("docker-model-runner")
+                .with_runtime_base_url(url.clone())
         } else {
-            OpenAICompatibleAdapter::docker_model_runner()
+            OpenAICompatibleAdapter::from_registry("docker-model-runner")
         };
         Box::new(adapter)
     }
@@ -212,7 +209,6 @@ fn select_failure_message(
 // Re-open the AIProviderModule impl block so the rest of the methods
 // (parse_request, response_to_json, etc.) stay where they were.
 impl AIProviderModule {
-
     /// Get logger (panics if called before initialize)
     fn log(&self) -> &ModuleLogger {
         self.log
@@ -245,7 +241,10 @@ impl AIProviderModule {
         // Only register adapters that have API keys configured
         if get_secret("DEEPSEEK_API_KEY").is_some() {
             self.log().info("Registering DeepSeek adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::deepseek()), 0);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("deepseek")),
+                0,
+            );
         }
 
         if get_secret("ANTHROPIC_API_KEY").is_some() {
@@ -255,32 +254,142 @@ impl AIProviderModule {
 
         if get_secret("OPENAI_API_KEY").is_some() {
             self.log().info("Registering OpenAI adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::openai()), 2);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("openai")),
+                2,
+            );
         }
 
         if get_secret("GROQ_API_KEY").is_some() {
             self.log().info("Registering Groq adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::groq()), 3);
+            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("groq")), 3);
         }
 
         if get_secret("TOGETHER_API_KEY").is_some() {
             self.log().info("Registering Together adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::together()), 4);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("together")),
+                4,
+            );
         }
 
         if get_secret("FIREWORKS_API_KEY").is_some() {
             self.log().info("Registering Fireworks adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::fireworks()), 5);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("fireworks")),
+                5,
+            );
         }
 
         if get_secret("XAI_API_KEY").is_some() {
             self.log().info("Registering XAI adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::xai()), 6);
+            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("xai")), 6);
         }
 
         if get_secret("GOOGLE_API_KEY").is_some() {
             self.log().info("Registering Google adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::google()), 7);
+            registry.register(
+                Box::new(OpenAICompatibleAdapter::from_registry("google")),
+                7,
+            );
+        }
+
+        // In-process llama.cpp adapter — bypasses DMR's container Metal toolchain,
+        // which on M5 Pro fails to compile the tensor-API source (`has tensor=false`)
+        // and falls back to a degraded path running at 22 tok/s. Our host-built
+        // vendored llama.cpp compiles Metal correctly and measures 33 tok/s on the
+        // same hardware (50% improvement, smoke test:
+        // tests/llamacpp_metal_throughput.rs). Priority 0 — wins over DMR for
+        // model IDs we own (continuum-ai/qwen3.5-*). DMR remains the runtime for
+        // anything else.
+        //
+        // Registered eagerly when the GGUF file exists on disk. We intentionally
+        // do NOT register a stub adapter that would silently fail later — per the
+        // no-fallback rule, callers asking for our forge model should get either
+        // a working in-process backend or a hard error at select() time naming
+        // exactly which file is missing.
+        // Register one in-process adapter PER llamacpp-local model row
+        // whose GGUF (and, for multimodal, mmproj) is on disk. Each
+        // adapter binds to a single GGUF — that's the backend's design
+        // (one model per backend) — so multiple llamacpp-local rows
+        // (text + vision + audio + future variants) need one adapter
+        // each. Routing in AdapterRegistry::select picks by model id,
+        // so they don't collide.
+        //
+        // Earlier shape called `LlamaCppAdapter::new()` for "the default"
+        // and then iterated for the rest, but `new()` picks via HashMap
+        // iteration order which is non-deterministic — caused a bug
+        // where qwen3.5 got registered twice and qwen2-vl was skipped.
+        // Now we iterate ALL rows uniformly.
+        if let Some(reg_arc) = crate::model_registry::try_global() {
+            for model_meta in reg_arc.models_for_provider(crate::inference::LLAMACPP_PROVIDER_ID) {
+                let Some(gguf_path) = model_meta.gguf_local_path.clone() else {
+                    self.log().info(&format!(
+                        "Skipping in-process adapter for `{}` — no gguf_local_path in TOML",
+                        model_meta.id
+                    ));
+                    continue;
+                };
+                if !gguf_path.exists() {
+                    self.log().info(&format!(
+                        "Skipping in-process adapter for `{}` — GGUF missing at {}. \
+                         Install must pull this artifact for first-launch parity.",
+                        model_meta.id,
+                        gguf_path.display()
+                    ));
+                    continue;
+                }
+                // For vision/audio rows the mmproj is also required.
+                // backend.generate_with_image / generate_with_audio
+                // returns a clean error when mmproj is absent — we log
+                // the gap upfront so install scripts catch it before
+                // a real user hits "model declares Vision but mmproj
+                // missing" at request time.
+                let needs_mmproj = model_meta.has(crate::model_registry::types::Capability::Vision)
+                    || model_meta.has(crate::model_registry::types::Capability::AudioInput);
+                if needs_mmproj {
+                    match &model_meta.mmproj_local_path {
+                        None => self.log().info(&format!(
+                            "Adapter `{}` declares Vision/AudioInput but TOML has no \
+                             mmproj_local_path — multimodal calls will hard-error. \
+                             Add `mmproj_local_path = \"...\"` to the row.",
+                            model_meta.id
+                        )),
+                        Some(p) if !p.exists() => self.log().info(&format!(
+                            "Adapter `{}` declares Vision/AudioInput but mmproj file \
+                             missing at {} — multimodal calls will hard-error. \
+                             Install must pull this artifact alongside the GGUF.",
+                            model_meta.id,
+                            p.display()
+                        )),
+                        Some(_) => {} // present + on disk, good
+                    }
+                }
+                self.log().info(&format!(
+                    "Registering in-process llama.cpp adapter for model `{}`",
+                    model_meta.id
+                ));
+                // Clamp to 32768 tokens. Models like qwen3.5-4b advertise
+                // n_ctx_train=262144, which would allocate a multi-GB F16
+                // KV cache per seq on load and reliably fail first-decode
+                // with `llama_decode returned -3` on any Mac that can't
+                // fit ~50GB of scratch. 32768 matches DMR's default and
+                // comfortably exceeds every persona RAG we currently
+                // build. Raise after footprint_registry reports real KV
+                // bytes and we have telemetry proving headroom.
+                let adapter = crate::inference::LlamaCppAdapter::with_model_id(
+                    gguf_path,
+                    model_meta.id.clone(),
+                )
+                .with_context_length(32768);
+                // Priority 0 — wins over DMR for the model ids it claims.
+                registry.register(Box::new(adapter), 0);
+            }
+        } else {
+            self.log().info(
+                "In-process llama.cpp adapter NOT registered — model_registry not initialized. \
+                 Local chat will route to DMR or cloud only.",
+            );
         }
 
         // Docker Model Runner — preferred local provider when reachable. Routes
@@ -300,11 +409,19 @@ impl AIProviderModule {
                     .base_url
                     .as_deref()
                     .unwrap_or("localhost:12434 (host-native)");
-                self.log()
-                    .info(&format!("Registering Docker Model Runner adapter ({})", desc));
+                self.log().info(&format!(
+                    "Registering Docker Model Runner adapter ({})",
+                    desc
+                ));
                 registry.register(
                     Self::build_dmr_adapter(&endpoint),
-                    0, // Highest priority — beats Candle for local inference
+                    // Priority 1 — sits BELOW the in-process llama.cpp adapter
+                    // (priority 0) so DMR only wins for models LlamaCppAdapter
+                    // doesn't claim. Critical on Mac M5 where DMR's container
+                    // Metal toolchain is degraded vs the host-built bundled
+                    // llama.cpp (verified 2026-04-19: 33 tok/s container vs
+                    // 47 tok/s in-process for the same forge model).
+                    1,
                 );
             }
             None => {
@@ -379,7 +496,9 @@ impl AIProviderModule {
             max_tokens: p.u64_opt_alias("max_tokens", "maxTokens").map(|t| t as u32),
             top_p: p.f64_opt_alias("top_p", "topP").map(|t| t as f32),
             top_k: p.u64_opt_alias("top_k", "topK").map(|t| t as u32),
-            repeat_penalty: p.f32_opt("repeat_penalty").or_else(|| p.f32_opt("repeatPenalty")),
+            repeat_penalty: p
+                .f32_opt("repeat_penalty")
+                .or_else(|| p.f32_opt("repeatPenalty")),
             stop_sequences: p
                 .json_opt("stop_sequences")
                 .or_else(|| p.json_opt("stopSequences")),
@@ -391,6 +510,10 @@ impl AIProviderModule {
             user_id: p.string_opt_alias("user_id", "userId"),
             room_id: p.string_opt_alias("room_id", "roomId"),
             purpose: p.str_opt("purpose").map(String::from),
+            // Caller-provided persona attribution. TS sends `personaId`
+            // (camelCase) per Continuum convention; snake_case alias
+            // accepted for symmetry with the sibling fields.
+            persona_id: p.string_opt_alias("persona_id", "personaId"),
         })
     }
 
@@ -511,7 +634,8 @@ impl ServiceModule for AIProviderModule {
                          re-register automatically.",
                     );
                 }
-                self.dmr_consecutive_down_ticks.fetch_add(1, Ordering::AcqRel);
+                self.dmr_consecutive_down_ticks
+                    .fetch_add(1, Ordering::AcqRel);
             }
             (false, Some(endpoint)) => {
                 // Recovery path: Docker Desktop just came back. Build the
@@ -543,7 +667,10 @@ impl ServiceModule for AIProviderModule {
                     return Ok(());
                 }
                 let mut registry = self.registry.write().await;
-                registry.register(adapter, 0);
+                // Priority 1 here mirrors the init-time registration —
+                // DMR sits below the in-process llama.cpp adapter so it
+                // only wins for models LlamaCppAdapter doesn't claim.
+                registry.register(adapter, 1);
                 self.log().info(&format!(
                     "Docker Model Runner reachable again — re-registered ({}). \
                      Local AI is available.",
@@ -586,7 +713,11 @@ impl ServiceModule for AIProviderModule {
 
                 // Select adapter
                 let (provider_id, adapter) = registry
-                    .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
+                    .select(
+                        request.provider.as_deref(),
+                        request.model.as_deref(),
+                        InferenceDevice::default(),
+                    )
                     .ok_or_else(|| {
                         select_failure_message(
                             &registry,
@@ -675,25 +806,24 @@ impl ServiceModule for AIProviderModule {
                 let model_name = model.unwrap_or(adapter.default_model());
 
                 // Find exact model or return default
-                let info = models.iter()
-                    .find(|m| m.id.to_lowercase().contains(&model_name.to_lowercase())
-                           || model_name.to_lowercase().contains(&m.id.to_lowercase()))
+                let info = models
+                    .iter()
+                    .find(|m| {
+                        m.id.to_lowercase().contains(&model_name.to_lowercase())
+                            || model_name.to_lowercase().contains(&m.id.to_lowercase())
+                    })
                     .or_else(|| models.first());
 
                 match info {
-                    Some(model_info) => {
-                        Ok(CommandResult::Json(json!({
-                            "success": true,
-                            "provider": provider_id,
-                            "modelInfo": serde_json::to_value(model_info).unwrap_or(Value::Null)
-                        })))
-                    }
-                    None => {
-                        Ok(CommandResult::Json(json!({
-                            "success": false,
-                            "error": format!("No model info available for {}/{}", provider_id, model_name)
-                        })))
-                    }
+                    Some(model_info) => Ok(CommandResult::Json(json!({
+                        "success": true,
+                        "provider": provider_id,
+                        "modelInfo": serde_json::to_value(model_info).unwrap_or(Value::Null)
+                    }))),
+                    None => Ok(CommandResult::Json(json!({
+                        "success": false,
+                        "error": format!("No model info available for {}/{}", provider_id, model_name)
+                    }))),
                 }
             }
 
@@ -823,7 +953,11 @@ pub async fn generate_text(
     request: TextGenerationRequest,
 ) -> Result<TextGenerationResponse, String> {
     let (provider_id, adapter) = registry
-        .select(request.provider.as_deref(), request.model.as_deref(), InferenceDevice::default())
+        .select(
+            request.provider.as_deref(),
+            request.model.as_deref(),
+            InferenceDevice::default(),
+        )
         .ok_or_else(|| {
             select_failure_message(
                 registry,

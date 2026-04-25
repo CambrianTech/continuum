@@ -190,7 +190,9 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
 
     // Fail fast if ORT already panicked in a previous attempt
     if ORT_UNAVAILABLE.load(Ordering::Relaxed) {
-        return Err("ORT runtime previously panicked — embeddings unavailable until restart".to_string());
+        return Err(
+            "ORT runtime previously panicked — embeddings unavailable until restart".to_string(),
+        );
     }
 
     // ORT crate panics if libonnxruntime can't be loaded (instead of returning error).
@@ -212,7 +214,9 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
                 .map(|s| s.as_str())
                 .or_else(|| panic_payload.downcast_ref::<&str>().copied())
                 .unwrap_or("unknown cause");
-            return Err(format!("ORT runtime panicked during model init: {msg}. Check ORT_DYLIB_PATH."));
+            return Err(format!(
+                "ORT runtime panicked during model init: {msg}. Check ORT_DYLIB_PATH."
+            ));
         }
     };
 
@@ -634,9 +638,7 @@ impl EmbeddingModule {
     /// so subsequent calls fail fast, and the rest of the system stays alive.
     pub fn preload_default_model() {
         info!("Pre-loading default embedding model (AllMiniLML6V2)...");
-        let result = std::panic::catch_unwind(|| {
-            get_or_load_model("AllMiniLML6V2")
-        });
+        let result = std::panic::catch_unwind(|| get_or_load_model("AllMiniLML6V2"));
         match result {
             Ok(Ok(())) => info!("Default embedding model ready"),
             Ok(Err(e)) => warn!("Failed to pre-load default model: {e} — embeddings unavailable"),
@@ -1079,7 +1081,11 @@ mod tests {
 
         // Hit accounted for in pool stats.
         let stats = pool.stats_blocking();
-        assert!(stats.hit_count >= 1, "expected ≥1 hit, got {}", stats.hit_count);
+        assert!(
+            stats.hit_count >= 1,
+            "expected ≥1 hit, got {}",
+            stats.hit_count
+        );
     }
 
     #[test]

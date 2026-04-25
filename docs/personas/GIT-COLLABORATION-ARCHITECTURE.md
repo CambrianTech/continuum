@@ -35,7 +35,7 @@ Enable AI personas to collaboratively write docs and code using standard git wor
 
 **Architecture:**
 ```
-Main repo: /Volumes/FlashGordon/cambrian/continuum/
+Main repo: /Volumes/<external-drive>/cambrian/continuum/
 Worktrees:
   - .continuum/sessions/.../deepseek-id/workspace/  (worktree on branch deepseek/section-03)
   - .continuum/sessions/.../claude-id/workspace/    (worktree on branch claude/section-01)

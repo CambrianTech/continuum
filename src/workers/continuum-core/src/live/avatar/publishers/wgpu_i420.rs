@@ -136,9 +136,12 @@ fn copy_i420_planes(i420_data: &[u8], buffer: &mut I420Buffer, width: u32, heigh
         for row in 0..h {
             let src_off = row * w;
             let dst_off = row * stride_y;
-            let copy_len = w.min(i420_data.len().saturating_sub(src_off)).min(data_y.len().saturating_sub(dst_off));
+            let copy_len = w
+                .min(i420_data.len().saturating_sub(src_off))
+                .min(data_y.len().saturating_sub(dst_off));
             if copy_len > 0 {
-                data_y[dst_off..dst_off + copy_len].copy_from_slice(&i420_data[src_off..src_off + copy_len]);
+                data_y[dst_off..dst_off + copy_len]
+                    .copy_from_slice(&i420_data[src_off..src_off + copy_len]);
             }
         }
     }
@@ -146,7 +149,9 @@ fn copy_i420_planes(i420_data: &[u8], buffer: &mut I420Buffer, width: u32, heigh
     // Copy U plane
     let u_src_start = src_y_size;
     if stride_u == cw {
-        let u_end = src_uv_size.min(i420_data.len().saturating_sub(u_src_start)).min(data_u.len());
+        let u_end = src_uv_size
+            .min(i420_data.len().saturating_sub(u_src_start))
+            .min(data_u.len());
         if u_end > 0 {
             data_u[..u_end].copy_from_slice(&i420_data[u_src_start..u_src_start + u_end]);
         }
@@ -154,9 +159,12 @@ fn copy_i420_planes(i420_data: &[u8], buffer: &mut I420Buffer, width: u32, heigh
         for row in 0..ch {
             let src_off = u_src_start + row * cw;
             let dst_off = row * stride_u;
-            let copy_len = cw.min(i420_data.len().saturating_sub(src_off)).min(data_u.len().saturating_sub(dst_off));
+            let copy_len = cw
+                .min(i420_data.len().saturating_sub(src_off))
+                .min(data_u.len().saturating_sub(dst_off));
             if copy_len > 0 {
-                data_u[dst_off..dst_off + copy_len].copy_from_slice(&i420_data[src_off..src_off + copy_len]);
+                data_u[dst_off..dst_off + copy_len]
+                    .copy_from_slice(&i420_data[src_off..src_off + copy_len]);
             }
         }
     }
@@ -164,7 +172,9 @@ fn copy_i420_planes(i420_data: &[u8], buffer: &mut I420Buffer, width: u32, heigh
     // Copy V plane
     let v_src_start = src_y_size + src_uv_size;
     if stride_v == cw {
-        let v_end = src_uv_size.min(i420_data.len().saturating_sub(v_src_start)).min(data_v.len());
+        let v_end = src_uv_size
+            .min(i420_data.len().saturating_sub(v_src_start))
+            .min(data_v.len());
         if v_end > 0 {
             data_v[..v_end].copy_from_slice(&i420_data[v_src_start..v_src_start + v_end]);
         }
@@ -172,9 +182,12 @@ fn copy_i420_planes(i420_data: &[u8], buffer: &mut I420Buffer, width: u32, heigh
         for row in 0..ch {
             let src_off = v_src_start + row * cw;
             let dst_off = row * stride_v;
-            let copy_len = cw.min(i420_data.len().saturating_sub(src_off)).min(data_v.len().saturating_sub(dst_off));
+            let copy_len = cw
+                .min(i420_data.len().saturating_sub(src_off))
+                .min(data_v.len().saturating_sub(dst_off));
             if copy_len > 0 {
-                data_v[dst_off..dst_off + copy_len].copy_from_slice(&i420_data[src_off..src_off + copy_len]);
+                data_v[dst_off..dst_off + copy_len]
+                    .copy_from_slice(&i420_data[src_off..src_off + copy_len]);
             }
         }
     }

@@ -8,23 +8,14 @@ import type { RustCoreIPCClientBase } from './base';
 // Types
 // ============================================================================
 
-export interface VoiceParticipant {
-	user_id: string;
-	display_name: string;
-	participant_type: 'human' | 'persona' | 'agent';
-	expertise: string[];
-	is_audio_native: boolean;
-}
-
-export interface UtteranceEvent {
-	session_id: string;
-	speaker_id: string;
-	speaker_name: string;
-	speaker_type: 'human' | 'persona' | 'agent';
-	transcript: string;
-	confidence: number;
-	timestamp: number;
-}
+// Rust source-of-truth types. The Rust structs carry #[derive(TS)] and
+// emit to src/shared/generated/live/ at build time; inlining the shape
+// here would risk silent field drift (e.g. the `expertise` list or the
+// `is_audio_native` flag diverging between Rust and TS on the IPC wire).
+// See CLAUDE.md "RUST → TYPESCRIPT TYPE BOUNDARIES" / memory
+// feedback_format_only_files_you_touched + the ts-rs rule.
+import type { VoiceParticipant, UtteranceEvent } from '../../../../shared/generated/live';
+export type { VoiceParticipant, UtteranceEvent };
 
 // ============================================================================
 // Mixin

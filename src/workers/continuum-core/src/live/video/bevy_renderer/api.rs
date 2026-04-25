@@ -5,15 +5,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
-use crate::{clog_info, clog_warn};
 use crate::live::avatar::RgbaFrame;
+use crate::{clog_info, clog_warn};
 
 use super::app::run_bevy_app;
 use super::types::{AvatarCommand, BevyMemoryStats, Emotion, Gesture, SpeechAnimationClip};
-use super::{MAX_AVATAR_SLOTS};
+use super::MAX_AVATAR_SLOTS;
 
 /// GPU memory manager for render VRAM tracking.
-static RENDERER_GPU_MANAGER: OnceLock<Arc<crate::gpu::memory_manager::GpuMemoryManager>> = OnceLock::new();
+static RENDERER_GPU_MANAGER: OnceLock<Arc<crate::gpu::memory_manager::GpuMemoryManager>> =
+    OnceLock::new();
 
 /// Provide the GPU memory manager to the renderer subsystem.
 pub fn set_gpu_manager(mgr: Arc<crate::gpu::memory_manager::GpuMemoryManager>) {
@@ -43,8 +44,12 @@ pub fn get_or_init() -> Arc<BevyAvatarSystem> {
     if let Some(ref sys) = *guard {
         return Arc::clone(sys);
     }
-    clog_info!("🎨 Starting Bevy headless avatar renderer ({MAX_AVATAR_SLOTS} slots, {}x{} @{}fps)",
-        super::AVATAR_WIDTH, super::AVATAR_HEIGHT, super::AVATAR_FPS);
+    clog_info!(
+        "🎨 Starting Bevy headless avatar renderer ({MAX_AVATAR_SLOTS} slots, {}x{} @{}fps)",
+        super::AVATAR_WIDTH,
+        super::AVATAR_HEIGHT,
+        super::AVATAR_FPS
+    );
     let sys = Arc::new(BevyAvatarSystem::start());
     *guard = Some(Arc::clone(&sys));
     sys
@@ -112,7 +117,13 @@ impl BevyAvatarSystem {
             .name("bevy-avatar-renderer".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_bevy_app(command_rx, frame_senders, notifiers_for_bevy, ready_clone, stats_for_bevy);
+                    run_bevy_app(
+                        command_rx,
+                        frame_senders,
+                        notifiers_for_bevy,
+                        ready_clone,
+                        stats_for_bevy,
+                    );
                 }));
                 if let Err(e) = result {
                     let msg = if let Some(s) = e.downcast_ref::<&str>() {
@@ -217,8 +228,9 @@ impl BevyAvatarSystem {
     }
 
     pub fn set_speaking_by_identity(&self, identity: &str, speaking: bool) -> bool {
-        let found = self.send_by_identity(identity, |slot| {
-            AvatarCommand::SetSpeaking { slot, speaking }
+        let found = self.send_by_identity(identity, |slot| AvatarCommand::SetSpeaking {
+            slot,
+            speaking,
         });
         if !found && speaking {
             clog_warn!(
@@ -236,8 +248,9 @@ impl BevyAvatarSystem {
     }
 
     pub fn set_mouth_weight_by_identity(&self, identity: &str, weight: f32) -> bool {
-        self.send_by_identity(identity, |slot| {
-            AvatarCommand::SetMouthWeight { slot, weight }
+        self.send_by_identity(identity, |slot| AvatarCommand::SetMouthWeight {
+            slot,
+            weight,
         })
     }
 
@@ -247,15 +260,15 @@ impl BevyAvatarSystem {
         weights: Vec<f32>,
         interval_ms: u32,
     ) -> bool {
-        self.send_by_identity(identity, |slot| {
-            AvatarCommand::SetMouthWeightSequence { slot, weights, interval_ms }
+        self.send_by_identity(identity, |slot| AvatarCommand::SetMouthWeightSequence {
+            slot,
+            weights,
+            interval_ms,
         })
     }
 
     pub fn play_speech_by_identity(&self, identity: &str, clip: SpeechAnimationClip) -> bool {
-        self.send_by_identity(identity, |slot| {
-            AvatarCommand::PlaySpeech { slot, clip }
-        })
+        self.send_by_identity(identity, |slot| AvatarCommand::PlaySpeech { slot, clip })
     }
 
     pub fn stop_speech_by_identity(&self, identity: &str) -> bool {
@@ -263,7 +276,11 @@ impl BevyAvatarSystem {
     }
 
     pub fn resize_slot(&self, slot: u8, width: u32, height: u32) {
-        let _ = self.command_tx.send(AvatarCommand::Resize { slot, width, height });
+        let _ = self.command_tx.send(AvatarCommand::Resize {
+            slot,
+            width,
+            height,
+        });
     }
 
     pub fn set_emotion_by_identity(
@@ -273,8 +290,11 @@ impl BevyAvatarSystem {
         weight: f32,
         transition_ms: u32,
     ) -> bool {
-        self.send_by_identity(identity, |slot| {
-            AvatarCommand::SetEmotion { slot, emotion, weight, transition_ms }
+        self.send_by_identity(identity, |slot| AvatarCommand::SetEmotion {
+            slot,
+            emotion,
+            weight,
+            transition_ms,
         })
     }
 
@@ -284,8 +304,10 @@ impl BevyAvatarSystem {
         gesture: Gesture,
         duration_ms: u32,
     ) -> bool {
-        self.send_by_identity(identity, |slot| {
-            AvatarCommand::SetGesture { slot, gesture, duration_ms }
+        self.send_by_identity(identity, |slot| AvatarCommand::SetGesture {
+            slot,
+            gesture,
+            duration_ms,
         })
     }
 
@@ -294,14 +316,17 @@ impl BevyAvatarSystem {
         identity: &str,
         state: crate::live::session::cognitive_animation::CognitiveState,
     ) -> bool {
-        self.send_by_identity(identity, |slot| {
-            AvatarCommand::SetCognitiveState { slot, state }
+        self.send_by_identity(identity, |slot| AvatarCommand::SetCognitiveState {
+            slot,
+            state,
         })
     }
 
     pub fn resize_by_identity(&self, identity: &str, width: u32, height: u32) -> bool {
-        self.send_by_identity(identity, |slot| {
-            AvatarCommand::Resize { slot, width, height }
+        self.send_by_identity(identity, |slot| AvatarCommand::Resize {
+            slot,
+            width,
+            height,
         })
     }
 }

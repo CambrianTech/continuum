@@ -114,6 +114,9 @@ RUN cargo build --release ${GPU_FEATURES} \
 # bookworm's Mesa 22.x has no dzn. MoltenVK on the host side handles Mac.
 FROM ubuntu:24.04 AS runtime
 
+# ghcr visibility default — see continuum-core.Dockerfile for rationale.
+LABEL org.opencontainers.image.source=https://github.com/CambrianTech/continuum
+
 # Vulkan runtime + common ICDs. mesa-vulkan-drivers provides radv/venus/lvp
 # which cover AMD, virtio-GPU (krunkit), and software fallback. Nvidia
 # proprietary users mount their own ICD via docker run --device/--gpus.
@@ -125,6 +128,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /app/target/release/continuum-core-server /usr/local/bin/
 COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
+
+# Model registry config — server boots with model_registry::loader reading
+# /app/continuum-core/config/models.toml. Without this COPY the runtime
+# panics on first start.
+COPY --from=builder /app/continuum-core/config /app/continuum-core/config
 
 # ONNX Runtime — Silero VAD + Piper TTS.
 ARG TARGETARCH

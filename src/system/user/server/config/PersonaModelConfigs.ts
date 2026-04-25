@@ -48,16 +48,11 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
     maxTokens: 2500,
     systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
   },
-  // Keep 'candle' for explicit training/LoRA callers that need Candle's
-  // autodiff + safetensors support specifically.
-  'candle': {
-    provider: 'candle',
-    model: LOCAL_MODELS.DEFAULT,
-    temperature: 0.7,
-    // Same reasoning as 'local' above — qwen3.5 reasoning preamble + response.
-    maxTokens: 2500,
-    systemPrompt: 'You are a helpful AI assistant running locally via Continuum. You provide thoughtful, concise responses.'
-  },
+  // 'candle' was removed as an inference adapter. The entry is GONE — any
+  // lookup for 'candle' should fall through to 'local' at the call site.
+  // Anyone seeing a missing-key error here should change their persona's
+  // modelConfig.provider from 'candle' to 'local' (DB-side fix), not
+  // re-add this entry.
   'groq': {
     provider: 'groq',
     model: 'llama-3.3-70b-versatile',
@@ -135,20 +130,36 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
 /**
  * Get model configuration for a provider.
  * Throws if provider has no config — every provider must be registered.
+ *
+ * @param provider - The provider id (e.g. 'local', 'anthropic', 'openai').
+ * @param modelIdOverride - Optional persona-specific model id. When supplied,
+ *   the returned config's `model` field is set to this value instead of the
+ *   provider's `LOCAL_MODELS.DEFAULT`-style baseline. The persona seed declares
+ *   `modelId` in `PersonaConfig` (e.g. Vision AI → `qwen2-vl-7b-instruct`); without
+ *   this override the silently-overwriting `syncPersonaProviders` resync flow
+ *   demoted Vision AI to the universal text-only default and vision broke on
+ *   docker carl. Issue #957. Rule-2 violation (silent fallback) closed.
  */
-export function getModelConfigForProvider(provider: string): ModelConfig {
+export function getModelConfigForProvider(
+  provider: string,
+  modelIdOverride?: string,
+): ModelConfig {
   const baseConfig = DEFAULT_MODEL_CONFIGS[provider];
   if (!baseConfig) {
     throw new Error(`No model config for provider '${provider}'. Add it to DEFAULT_MODEL_CONFIGS.`);
   }
 
+  const withModel: ModelConfig = modelIdOverride
+    ? { ...baseConfig, model: modelIdOverride }
+    : baseConfig;
+
   // Add SOTA capability to cloud providers
   if (SOTA_PROVIDERS.has(provider)) {
     return {
-      ...baseConfig,
+      ...withModel,
       capabilities: ['sota']
     };
   }
 
-  return baseConfig;
+  return withModel;
 }

@@ -12,7 +12,7 @@
 //! Usage:
 //! ```rust
 //! let mut registry = AdapterRegistry::new();
-//! registry.register(Box::new(OpenAICompatibleAdapter::deepseek()), 0);
+//! registry.register(Box::new(OpenAICompatibleAdapter::from_registry("deepseek")), 0);
 //! registry.register(Box::new(AnthropicAdapter::new()), 1);
 //! registry.initialize_all().await?;
 //!
@@ -23,6 +23,7 @@
 pub mod adapter;
 pub mod anthropic_adapter;
 pub mod openai_adapter;
+pub mod registry_bridge;
 pub mod types;
 
 // Re-export commonly used types

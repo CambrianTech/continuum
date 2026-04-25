@@ -448,7 +448,7 @@ private async serviceInbox(): Promise<void> {
 
 **The Cambrian C++ AR System (Biological Proof of Concept):**
 
-Found in: `/Volumes/FlashGordon/cambrian/continuum/.continuum/shared/design-up-develop/HomeAR/HomeAR_cpp/cbar`
+Found in: `/Volumes/<external-drive>/cambrian/continuum/.continuum/shared/design-up-develop/HomeAR/HomeAR_cpp/cbar`
 
 This ran real-time 3D scene understanding on iPhone 7 by **mimicking biological systems**:
 

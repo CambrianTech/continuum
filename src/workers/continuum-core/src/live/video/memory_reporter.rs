@@ -46,17 +46,32 @@ impl MemoryReporter for BevyMemoryReporter {
             name: "bevy".to_string(),
             priority: MemoryPriority::Realtime, // Render loop is sacrosanct
             min_bytes: 100 * 1024 * 1024,       // 100MB — Bevy overhead + 1-2 models minimum
-            preferred_bytes: 300 * 1024 * 1024,  // 300MB — 16 slots at 640x360 + all models
-            max_bytes: 500 * 1024 * 1024,        // 500MB — HD pool + all 16 loaded
+            preferred_bytes: 300 * 1024 * 1024, // 300MB — 16 slots at 640x360 + all models
+            max_bytes: 500 * 1024 * 1024,       // 500MB — HD pool + all 16 loaded
         }
     }
 
     fn report(&self) -> ModuleMemoryReport {
-        let active = self.stats.active_slots.load(std::sync::atomic::Ordering::Relaxed);
-        let loaded = self.stats.loaded_models.load(std::sync::atomic::Ordering::Relaxed);
-        let speaking = self.stats.speaking_slots.load(std::sync::atomic::Ordering::Relaxed);
-        let rt_bytes = self.stats.render_target_bytes.load(std::sync::atomic::Ordering::Relaxed);
-        let pending = self.stats.pending_loads.load(std::sync::atomic::Ordering::Relaxed);
+        let active = self
+            .stats
+            .active_slots
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let loaded = self
+            .stats
+            .loaded_models
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let speaking = self
+            .stats
+            .speaking_slots
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let rt_bytes = self
+            .stats
+            .render_target_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let pending = self
+            .stats
+            .pending_loads
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         // Estimate total: render targets + loaded models + Bevy overhead
         let model_bytes = loaded as u64 * ESTIMATED_MODEL_BYTES;
@@ -85,8 +100,14 @@ impl MemoryReporter for BevyMemoryReporter {
     }
 
     fn shed_load(&self, level: PressureLevel) {
-        let loaded = self.stats.loaded_models.load(std::sync::atomic::Ordering::Relaxed);
-        let speaking = self.stats.speaking_slots.load(std::sync::atomic::Ordering::Relaxed);
+        let loaded = self
+            .stats
+            .loaded_models
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let speaking = self
+            .stats
+            .speaking_slots
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         match level {
             PressureLevel::High => {
@@ -102,7 +123,9 @@ impl MemoryReporter for BevyMemoryReporter {
                         height: PRESSURE_HEIGHT,
                     });
                 }
-                self.stats.desired_idle_cadence.store(4, std::sync::atomic::Ordering::Relaxed);
+                self.stats
+                    .desired_idle_cadence
+                    .store(4, std::sync::atomic::Ordering::Relaxed);
             }
             PressureLevel::Critical => {
                 // Resize to tiny + max idle cadence. Do NOT unload models here —
@@ -120,7 +143,9 @@ impl MemoryReporter for BevyMemoryReporter {
                     loaded,
                     speaking,
                 );
-                self.stats.desired_idle_cadence.store(8, std::sync::atomic::Ordering::Relaxed);
+                self.stats
+                    .desired_idle_cadence
+                    .store(8, std::sync::atomic::Ordering::Relaxed);
             }
             PressureLevel::Warning => {
                 crate::clog_info!(
@@ -135,7 +160,9 @@ impl MemoryReporter for BevyMemoryReporter {
                         height: AVATAR_HEIGHT,
                     });
                 }
-                self.stats.desired_idle_cadence.store(2, std::sync::atomic::Ordering::Relaxed);
+                self.stats
+                    .desired_idle_cadence
+                    .store(2, std::sync::atomic::Ordering::Relaxed);
             }
             PressureLevel::Normal => {
                 for slot in 0..MAX_AVATAR_SLOTS {
@@ -145,7 +172,9 @@ impl MemoryReporter for BevyMemoryReporter {
                         height: AVATAR_HEIGHT,
                     });
                 }
-                self.stats.desired_idle_cadence.store(1, std::sync::atomic::Ordering::Relaxed);
+                self.stats
+                    .desired_idle_cadence
+                    .store(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }

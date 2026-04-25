@@ -80,10 +80,21 @@ open_browser() {
   case "$(uname -s)" in
     Darwin)  open "$url" ;;
     Linux)
-      if grep -qi microsoft /proc/version 2>/dev/null; then
+      # WSL2 marker in /proc/version is INHERITED into containers running on
+      # WSL2 hosts (Docker-in-Docker, dev containers, etc), but the Windows
+      # host's /mnt/c/ isn't mounted inside those containers. So the WSL2
+      # branch would try to invoke a binary that doesn't exist. Guard with an
+      # actual -x existence check on explorer.exe before firing the WSL path;
+      # fall through to xdg-open when the Windows host isn't reachable.
+      # Caught 2026-04 during Carl-install E2E test in docker:dind container on
+      # a WSL2 host — install.sh completed, then 'continuum' CLI blew up on
+      # trying to run /mnt/c/Windows/explorer.exe from inside the container.
+      if grep -qi microsoft /proc/version 2>/dev/null && [ -x /mnt/c/Windows/explorer.exe ]; then
         /mnt/c/Windows/explorer.exe "$url"
       elif command -v xdg-open &>/dev/null; then
         xdg-open "$url"
+      else
+        echo "  No browser-open command available. Open this URL manually: $url" >&2
       fi ;;
   esac
 }

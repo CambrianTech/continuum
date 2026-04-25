@@ -22,11 +22,11 @@
 //!
 //! See: docs/architecture/RESOURCE-ARCHITECTURE.md (Phase 7)
 
+use crate::paging::pool::{PagedResourcePool, PoolStats};
+use parking_lot::RwLock;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
-use parking_lot::RwLock;
-use crate::paging::pool::{PagedResourcePool, PoolStats};
 
 /// Anything the broker can read pressure from + evict to relieve it.
 ///
@@ -280,7 +280,11 @@ impl PressureBroker {
                 }
             })
             .collect();
-        views.sort_by(|a, b| b.pressure.partial_cmp(&a.pressure).unwrap_or(std::cmp::Ordering::Equal));
+        views.sort_by(|a, b| {
+            b.pressure
+                .partial_cmp(&a.pressure)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let global_pressure = views.iter().map(|v| v.pressure).fold(0.0_f64, f64::max);
         BrokerSnapshot {
             global_pressure,
@@ -467,7 +471,11 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert!(pool.pressure() >= 0.80, "expected pressure ≥0.80, got {}", pool.pressure());
+        assert!(
+            pool.pressure() >= 0.80,
+            "expected pressure ≥0.80, got {}",
+            pool.pressure()
+        );
         assert_eq!(pool.name(), "real-embeddings");
 
         // Register via blanket impl — no adapter struct needed.
@@ -475,11 +483,21 @@ mod tests {
         broker.register(pool.clone());
 
         let report = broker.relieve();
-        assert!(report.triggered, "broker should fire on real pool over budget");
-        assert!(report.bytes_freed > 0, "blanket evict_some should free bytes");
+        assert!(
+            report.triggered,
+            "broker should fire on real pool over budget"
+        );
+        assert!(
+            report.bytes_freed > 0,
+            "blanket evict_some should free bytes"
+        );
         assert_eq!(report.pools_acted, vec!["real-embeddings".to_string()]);
         // Pressure should drop after eviction.
-        assert!(pool.pressure() < 0.80, "post-eviction pressure should be <0.80, got {}", pool.pressure());
+        assert!(
+            pool.pressure() < 0.80,
+            "post-eviction pressure should be <0.80, got {}",
+            pool.pressure()
+        );
     }
 
     #[test]

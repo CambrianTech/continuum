@@ -90,14 +90,51 @@ class DatabaseSeeder {
   }
 
   /** Find or create a user by uniqueId */
-  async findOrCreateUser(uniqueId: string, displayName: string, type: UserType, provider?: string): Promise<UserEntity> {
+  async findOrCreateUser(
+    uniqueId: string,
+    displayName: string,
+    type: UserType,
+    provider?: string,
+    modelId?: string,
+  ): Promise<UserEntity> {
     const existing = await DataList.execute<UserEntity>({
       collection: UserEntity.collection,
       filter: { uniqueId },
       limit: 1,
       dbHandle: 'default',
     });
-    if (existing?.items?.[0]) return existing.items[0];
+    if (existing?.items?.[0]) {
+      // User exists. data:clear preserves users by design (line 24 of
+      // data-clear.ts: persona UUIDs are kept so memories don't orphan).
+      // BUT the persisted modelConfig may be stale — drifted from the
+      // current PersonaConfig as code changes the model id (e.g. when we
+      // rename the local default GGUF tag). If the seed-declared model
+      // differs from what's persisted, update in place. Without this, the
+      // persona keeps a stale model id forever and `cognition/respond`
+      // throws "model id 'X' not in registry" until the user manually
+      // reseeds. See #957/#959 follow-up — fresh-clear-then-restart on Mac
+      // exposed this exact gap because data:clear nukes rooms but keeps
+      // users; the resulting find-existing branch was skipping the
+      // create-time modelConfig set.
+      const found = existing.items[0];
+      if (provider && modelId) {
+        const current = (found as Record<string, unknown>).modelConfig as Record<string, unknown> | undefined;
+        const currentModel = current?.model as string | undefined;
+        const currentProvider = current?.provider as string | undefined;
+        if (currentModel !== modelId || currentProvider !== provider) {
+          const newConfig = getModelConfigForProvider(provider, modelId);
+          await DataUpdate.execute({
+            collection: UserEntity.collection,
+            dbHandle: 'default',
+            id: found.id,
+            data: { modelConfig: newConfig } as Partial<UserEntity>,
+          });
+          (found as Record<string, unknown>).modelConfig = newConfig;
+          console.log(`  🔧 Refreshed ${displayName} modelConfig: ${currentModel ?? '(unset)'} → ${modelId}`);
+        }
+      }
+      return found;
+    }
 
     const user = new UserEntity();
     user.uniqueId = uniqueId;
@@ -106,6 +143,17 @@ class DatabaseSeeder {
     user.isAI = type !== 'human';
     user.status = 'online' as UserStatus;
     if (provider) user.provider = provider;
+
+    // Set modelConfig at create time (not just in syncPersonaProviders later).
+    // Without this, UserDaemon's first persona-spawn pass races with the
+    // syncPersonaProviders pass: UserDaemon throws "missing required
+    // modelConfig.provider" on every persona because the row was created
+    // bare, and the resync that fills modelConfig runs AFTER UserDaemon has
+    // already given up. Net effect: zero PersonaUser instances live, no
+    // chat:messages subscriptions, complete silence in chat. See #959.
+    if (provider) {
+      (user as Record<string, unknown>).modelConfig = getModelConfigForProvider(provider, modelId);
+    }
 
     const result = await DataCreate.execute<UserEntity>({
       collection: UserEntity.collection,
@@ -217,6 +265,7 @@ class DatabaseSeeder {
  * without requiring a DB wipe. This is the automation of the manual
  * sqlite3 UPDATE hack that was needed during GPU-always development.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- pre-existing: seeder param kept in signature for future per-seeder dispatch
 async function syncPersonaProviders(_seeder: DatabaseSeeder): Promise<void> {
   const { personas } = getAvailablePersonas();
 
@@ -238,15 +287,32 @@ async function syncPersonaProviders(_seeder: DatabaseSeeder): Promise<void> {
         ? ((user as Record<string, unknown>).modelConfig as Record<string, unknown>).provider
         : undefined;
 
-      if (currentProvider !== config.provider) {
-        const newConfig = getModelConfigForProvider(config.provider);
+      // Honor the per-persona modelId override from PersonaConfig. Without
+      // this, syncPersonaProviders silently demoted any persona with a
+      // specific model (e.g. Vision AI → qwen2-vl-7b-instruct) to the
+      // provider's universal default (qwen3.5-4b-code-forged for 'local').
+      // Vision AI on docker carl ended up running a code model with no
+      // vision capability — see #957. Pass config.modelId through so the
+      // persona seed's declared model survives every resync.
+      const currentModelId = (user as Record<string, unknown>).modelConfig
+        ? ((user as Record<string, unknown>).modelConfig as Record<string, unknown>).model
+        : undefined;
+      const desiredModelId = config.modelId;
+      const providerChanged = currentProvider !== config.provider;
+      const modelChanged = desiredModelId !== undefined && currentModelId !== desiredModelId;
+
+      if (providerChanged || modelChanged) {
+        const newConfig = getModelConfigForProvider(config.provider, config.modelId);
         await DataUpdate.execute({
           collection: 'users',
           dbHandle: 'default',
           id: user.id,
           data: { modelConfig: newConfig } as Partial<UserEntity>,
         });
-        console.log(`  🔄 Synced ${config.displayName} provider: ${currentProvider} → ${config.provider}`);
+        const reasons: string[] = [];
+        if (providerChanged) reasons.push(`provider: ${currentProvider} → ${config.provider}`);
+        if (modelChanged) reasons.push(`model: ${currentModelId ?? '(unset)'} → ${desiredModelId}`);
+        console.log(`  🔄 Synced ${config.displayName} ${reasons.join(', ')}`);
       }
     } catch {
       // Non-fatal — persona might not exist yet
@@ -274,7 +340,7 @@ export async function seedDatabase(): Promise<boolean> {
   // Owner
   const owner = await seeder.findOrCreateUser('joel', 'Developer', 'human');
   // Emit event so SessionDaemon upgrades anonymous browser sessions to this owner
-  Events.emit('data:users:created', owner);
+  void Events.emit('data:users:created', owner);
   console.log(`  ✅ Owner: ${owner.displayName}`);
 
   // Rooms — validate recipeIds exist before creating anything
@@ -295,6 +361,7 @@ export async function seedDatabase(): Promise<boolean> {
   const { personas, summary } = getAvailablePersonas();
   console.log(`  🖥️ ${summary[0] || 'unknown hardware'}`);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- pre-existing: localModel kept for the soon-to-land per-persona model selection wiring (Mac arm64 will pick a different default than M5)
   const localModel = selectLocalModel(0);
   const created: Map<string, UserEntity> = new Map();
 
@@ -305,6 +372,7 @@ export async function seedDatabase(): Promise<boolean> {
         config.displayName,
         config.type === 'agent' ? 'agent' : 'persona',
         config.provider,
+        config.modelId,
       );
       created.set(config.uniqueId, user);
     } catch (err) {

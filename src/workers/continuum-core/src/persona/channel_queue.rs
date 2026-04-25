@@ -331,6 +331,7 @@ mod tests {
             enqueued_at: now_ms(),
             priority,
             consolidated_context: Vec::new(),
+            media: Vec::new(),
         })
     }
 
@@ -346,6 +347,7 @@ mod tests {
             timestamp: now_ms(),
             enqueued_at: now_ms(),
             priority: 1.0,
+            media: Vec::new(),
         })
     }
 

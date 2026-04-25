@@ -487,9 +487,7 @@ impl MCPModule {
             }
 
             // Exact segment match
-            let segments: Vec<&str> = name_lower
-                .split(['/', '-', '_'])
-                .collect();
+            let segments: Vec<&str> = name_lower.split(['/', '-', '_']).collect();
             if segments.contains(&query_lower.as_str()) {
                 score += 8;
             }

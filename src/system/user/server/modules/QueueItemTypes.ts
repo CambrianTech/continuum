@@ -54,6 +54,24 @@ export interface InboxMessage extends BaseQueueItem {
   // Voice modality tracking for response routing
   sourceModality?: 'text' | 'voice';   // Where input came from (default: 'text')
   voiceSessionId?: UUID;               // Voice call context if applicable
+
+  /**
+   * Media (images, audio) attached to the message. Flows through to
+   * the persona response path so natively-multimodal models (Qwen3.5 /
+   * Claude / GPT-4o) can see / hear the source bytes directly.
+   * Each item: `{ type: "image" | "audio", base64?, mimeType?, url? }`.
+   * Empty / undefined when the message is text-only (the common case).
+   */
+  media?: ReadonlyArray<{
+    type: string;
+    base64?: string;
+    mimeType?: string;
+    url?: string;
+    /** sha256:hex content hash → file on disk via MediaBlobService.getPath */
+    blobHash?: string;
+    /** Pre-computed text from VisionDescriptionService cache (sidecar JSON) */
+    description?: string;
+  }>;
 }
 
 /**
@@ -138,7 +156,43 @@ export interface ProcessableMessage {
   senderId: UUID;
   senderName: string;
   senderType: 'human' | 'persona' | 'agent' | 'system';
-  content: { text: string };
+  content: {
+    text: string;
+    /**
+     * Native multimodal payload — images, audio attached to this message.
+     * The persona response generator forwards these to Rust as
+     * `messageMedia`; if the persona's resolved model has the matching
+     * native capability (`Vision` / `AudioInput`) the model receives the
+     * raw bytes via `ContentPart::Image` / `Audio` instead of a text
+     * description. Empty / undefined for text-only messages.
+     */
+    media?: ReadonlyArray<{
+      type: string;
+      base64?: string;
+      mimeType?: string;
+      url?: string;
+      /**
+       * Content-addressed blob hash (sha256:hex). Set when the chat-send
+       * path externalized the bytes to disk via MediaBlobService. The
+       * persona response path resolves this back to bytes via
+       * MediaBlobService.getPath(hash) when assembling the request.
+       * Per Joel's 2026-04-21 directive: base64 must NEVER persist in
+       * the chat_messages DB column — entities carry blobHash + url
+       * refs only, bytes live on disk.
+       */
+      blobHash?: string;
+      /**
+       * Pre-computed text description from VisionDescriptionService
+       * (cached at chat-send time via prewarmVisionDescriptions).
+       * Forwarded to Rust as MediaItemLite.description so text-only
+       * personas downstream get a real description instead of
+       * hallucinating from prompt context. Content-addressed cache
+       * means one vision-inference per unique image regardless of
+       * how many personas request it ("ONCE per data" per Joel).
+       */
+      description?: string;
+    }>;
+  };
   timestamp: number;
 
   // Modality — REQUIRED, never undefined
@@ -164,7 +218,10 @@ export function inboxMessageToProcessable(item: InboxMessage): ProcessableMessag
     senderId: item.senderId,
     senderName: item.senderName,
     senderType: item.senderType,
-    content: { text: item.content },
+    // Forward media untouched — when the inbox source has populated it
+    // (image/audio attachment from a chat message), the response path
+    // routes it natively to multimodal-capable models.
+    content: { text: item.content, media: item.media },
     timestamp: item.timestamp,
     sourceModality: item.sourceModality ?? 'text',
     voiceSessionId: item.voiceSessionId,
@@ -203,7 +260,30 @@ export function fromRustServiceItem(json: Record<string, unknown>): QueueItem | 
   const itemType = json.type as string;
 
   if (itemType === 'voice' || itemType === 'chat') {
-    // Map Rust voice/chat → TS InboxMessage
+    // Map Rust voice/chat → TS InboxMessage.
+    // `media` round-trips as a camelCase array (see Rust MediaItemRequest
+    // serde rename). Rust deliberately omits `base64` from the IPC payload —
+    // PRG re-reads bytes from disk via MediaBlobService.getPath(blobHash) on
+    // its own side. Carrying base64 through the inbox would balloon the IPC
+    // payload for no win.
+    type RawMedia = {
+      type?: string;
+      mimeType?: string;
+      blobHash?: string;
+      url?: string;
+      description?: string;
+    };
+    const rawMedia = (json.media as RawMedia[] | undefined) ?? [];
+    const media = rawMedia.length > 0
+      ? rawMedia.map((m) => ({
+          type: m.type ?? 'image',
+          mimeType: m.mimeType,
+          blobHash: m.blobHash,
+          url: m.url,
+          description: m.description,
+        }))
+      : undefined;
+
     const msg: InboxMessage = {
       id: json.id as UUID,
       type: 'message',
@@ -219,6 +299,7 @@ export function fromRustServiceItem(json: Record<string, unknown>): QueueItem | 
       enqueuedAt: json.timestamp as number,
       sourceModality: itemType === 'voice' ? 'voice' : 'text',
       voiceSessionId: json.voiceSessionId as UUID | undefined,
+      media,
     };
     return msg;
   }
@@ -330,6 +411,19 @@ export function taskEntityToInboxTask(task: {
  */
 export function toChannelEnqueueRequest(item: QueueItem): ChannelEnqueueRequest {
   if (isInboxMessage(item)) {
+    // Map TS media items → Rust MediaItemRequest shape (camelCase JSON).
+    // Strip `base64` here: bytes are already on disk via MediaBlobService
+    // (chat-send externalizes synchronously before data/create), so the IPC
+    // hop carries blobHash + mimeType + description only. PRG re-reads bytes
+    // from disk on the response side.
+    const media = (item.media ?? []).map((m) => ({
+      type: m.type,
+      mimeType: m.mimeType,
+      blobHash: m.blobHash,
+      url: m.url,
+      description: m.description,
+    }));
+
     // Voice messages
     if (item.sourceModality === 'voice' && item.voiceSessionId) {
       return {
@@ -343,6 +437,7 @@ export function toChannelEnqueueRequest(item: QueueItem): ChannelEnqueueRequest 
         voice_session_id: item.voiceSessionId,
         timestamp: item.timestamp,
         priority: item.priority,
+        media,
       };
     }
 
@@ -358,6 +453,7 @@ export function toChannelEnqueueRequest(item: QueueItem): ChannelEnqueueRequest 
       mentions: item.mentions ?? false,
       timestamp: item.timestamp,
       priority: item.priority,
+      media,
     };
   }
 

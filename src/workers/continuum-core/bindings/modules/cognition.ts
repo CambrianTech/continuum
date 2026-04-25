@@ -29,52 +29,33 @@ import type {
 	QualityScore,
 } from '../../../../shared/generated';
 import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
+import type { Signal } from '../../../../shared/generated/recipe/Signal';
+import type { PersonaContext } from '../../../../shared/generated/recipe/PersonaContext';
 
 /**
- * Caller-supplied input for persona/respond. Mirrors the Rust RespondInput
- * struct (intentionally not a generated TS type because the shape is
- * IPC-call-shaped, not domain-shaped — generated types are for domain
- * objects that flow through events/storage/UI, not for transient call args).
+ * Caller-supplied input for `cognition/respond`.
  *
- * The PRG.ts shim builds this from the room state and passes it across the
- * IPC. Rust does the analysis caching, scoring, prompt assembly, inference,
- * and <think>-block stripping.
+ * Two fields:
+ * - `signal` — host's raw event (chat message, video frame, code diff,
+ *   game tick). The Rust side projects it into the cognition layer's
+ *   internal RespondInput via `cognition_io::build_respond_input`.
+ * - `personaContext` — per-persona stable state (identity, model,
+ *   capabilities, recent history). Built from the room/persona before
+ *   each turn.
+ *
+ * Both `Signal` and `PersonaContext` are ts-rs generated from the Rust
+ * source of truth (persona/cognition_io.rs). Hosts construct them via
+ * normal TS object literals; the wire format is camelCase JSON.
+ *
+ * Recipe selection is NOT in this payload — recipes are JSON data
+ * walked by whatever wraps this call (today: nothing — chat dispatches
+ * directly; future: a small walker that interprets recipe pipelines
+ * for non-chat hosts). The cognition layer just runs the projection
+ * and `respond()`.
  */
 export interface PersonaRespondRequest {
-	personaId: string;
-	roomId: string;
-	messageId: string;
-	personaName: string;
-	specialty: string;
-	messageText: string;
-	/**
-	 * Persona's RAG-built identity / system prompt. Caller supplies because
-	 * persona identity is a TS-side composition (entity + active LoRA
-	 * adapters + user personalization). Rust just consumes it.
-	 */
-	systemPrompt: string;
-	/**
-	 * THIS persona's render-time model identifier. Required (no default).
-	 * Shared-cognition architecture: 1 cheap analysis on a base model + N
-	 * specialty renders each on the persona's own (potentially LoRA-adapted)
-	 * model. Caller MUST pass the persona's actual model — using the analysis
-	 * model would defeat the architecture (every persona would render with
-	 * the same base model).
-	 */
-	model: string;
-	/**
-	 * Recent messages for shared analysis context. Most-recent last. Each
-	 * element: { id, sender_name, text }.
-	 */
-	recentHistory: Array<{ id: string; sender_name: string; text: string }>;
-	/**
-	 * Stable specialty identifiers in the room (all personas, not just
-	 * this one). Lets the shared analysis know which suggested_angles
-	 * keys to populate. This persona's specialty must appear here.
-	 */
-	knownSpecialties: string[];
-	/** Live-voice context flag. Affects assembled-prompt response style. */
-	isVoice?: boolean;
+	signal: Signal;
+	personaContext: PersonaContext;
 }
 
 // ============================================================================
@@ -786,29 +767,35 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 		 * PersonaResponse that the caller posts (or logs, if Silent).
 		 */
 		async cognitionPersonaRespond(req: PersonaRespondRequest): Promise<PersonaResponse> {
-			// 180s timeout (vs default 60s) — cognition/respond runs the full
-			// persona pipeline: analyze (qwen3.5 reasoning preamble + JSON, can
-			// be 30-60s alone) + score + assemble + render inference + strip.
-			// Default 60s timed out mid-analyze 2026-04-19, throwing 'IPC
-			// timeout' before the model finished responding. The IPC TIMEOUT
-			// is not the right signal here — the inference IS taking time,
-			// it's not stuck. Bump to 180s; if THAT trips, something's
-			// genuinely wrong (model crashed, infinite reasoning loop, etc.)
-			// and we want the loud failure.
-			const COGNITION_RESPOND_TIMEOUT_MS = 180_000;
+			// Timeout split by provider class:
+			//   cloud (anthropic/openai/groq/…) → 180s. A healthy cloud call
+			//   completes in 2–10s; at 180s something is genuinely wrong and
+			//   we want the loud failure.
+			//   local (in-process llama.cpp / DMR) → 300s. The persona
+			//   pipeline runs analyze (qwen3.5 reasoning preamble + JSON,
+			//   30–60s alone) + score + assemble + inference + strip, and
+			//   under 3-way concurrent the llamacpp scheduler's per-seq
+			//   throughput drops to ~1.3 tok/s → a 1500+ token reasoning
+			//   response legitimately takes 200–280s. Tripping 180s there
+			//   was the WRONG signal: inference was working, just queued.
+			//   300s still surfaces genuine hangs (model crashed / infinite
+			//   reasoning) loudly.
+			//
+			// Streaming IPC (return tokens incrementally, no end-to-end cap)
+			// is the architecturally-right next step — filed as follow-up,
+			// not included in this change.
+			const model = req.personaContext.model;
+			const isLocal = model.startsWith('continuum-ai/') || model.startsWith('qwen2-vl');
+			const COGNITION_RESPOND_TIMEOUT_MS = isLocal ? 300_000 : 180_000;
+
+			// Wire shape: { signal, personaContext }. Rust projects via
+			// cognition_io::build_respond_input, runs respond(), returns
+			// the response. No recipe-name field — recipes are JSON
+			// data walked above this layer.
 			const { response } = await this.requestFull({
 				command: 'cognition/respond',
-				persona_id: req.personaId,
-				room_id: req.roomId,
-				message_id: req.messageId,
-				persona_name: req.personaName,
-				specialty: req.specialty,
-				message_text: req.messageText,
-				system_prompt: req.systemPrompt,
-				model: req.model,
-				recent_history: req.recentHistory,
-				known_specialties: req.knownSpecialties,
-				is_voice: req.isVoice ?? false,
+				signal: req.signal,
+				personaContext: req.personaContext,
 			}, COGNITION_RESPOND_TIMEOUT_MS);
 
 			if (!response.success) {

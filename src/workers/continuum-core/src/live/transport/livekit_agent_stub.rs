@@ -31,7 +31,9 @@ pub struct LiveKitAgentManager {
 
 impl LiveKitAgentManager {
     pub fn new() -> Self {
-        tracing::warn!("⚠️ LiveKit WebRTC agent disabled (compiled without livekit-webrtc feature)");
+        tracing::warn!(
+            "⚠️ LiveKit WebRTC agent disabled (compiled without livekit-webrtc feature)"
+        );
         Self {
             url: "ws://localhost:7880".to_string(),
         }
@@ -81,11 +83,7 @@ impl LiveKitAgentManager {
         Err("LiveKit WebRTC agent not available (compiled without livekit-webrtc feature)".into())
     }
 
-    pub async fn add_ambient_source(
-        &self,
-        _call_id: &str,
-        _name: &str,
-    ) -> Result<String, String> {
+    pub async fn add_ambient_source(&self, _call_id: &str, _name: &str) -> Result<String, String> {
         Err("LiveKit WebRTC agent not available (compiled without livekit-webrtc feature)".into())
     }
 
@@ -98,11 +96,7 @@ impl LiveKitAgentManager {
         Err("LiveKit WebRTC agent not available (compiled without livekit-webrtc feature)".into())
     }
 
-    pub async fn remove_ambient_source(
-        &self,
-        _call_id: &str,
-        _handle: &str,
-    ) -> Result<(), String> {
+    pub async fn remove_ambient_source(&self, _call_id: &str, _handle: &str) -> Result<(), String> {
         Err("LiveKit WebRTC agent not available (compiled without livekit-webrtc feature)".into())
     }
 

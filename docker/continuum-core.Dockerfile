@@ -75,6 +75,13 @@ RUN cargo build --release ${GPU_FEATURES} \
 # Ubuntu 24.04 works on all platforms: WSL2 (dzn), Linux (nvidia/radeon), Mac (MoltenVK).
 FROM ubuntu:24.04 AS runtime
 
+# ghcr visibility default: image published to ghcr.io inherits visibility from
+# the source repo when this LABEL is present. Without it, org container packages
+# default to PRIVATE on first push, which blocks Carl's anonymous docker pull.
+# Caught 2026-04-23: continuum-core-vulkan landed private on first push, blocked
+# CI verify-architectures until visibility was manually flipped via UI.
+LABEL org.opencontainers.image.source=https://github.com/CambrianTech/continuum
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3t64 libpq5 curl netcat-openbsd \
     libglib2.0-0t64 \
@@ -85,6 +92,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy binaries
 COPY --from=builder /app/target/release/continuum-core-server /usr/local/bin/
 COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
+
+# Model registry config — server boots with model_registry::loader reading
+# /app/continuum-core/config/models.toml. Without this COPY the runtime
+# panics on first start ("reading /app/continuum-core/config/models.toml:
+# No such file or directory") which fails slice tests and any real use.
+COPY --from=builder /app/continuum-core/config /app/continuum-core/config
 
 # ONNX Runtime — required for Silero VAD (voice activity detection) and Piper TTS.
 # These are core persona sensory capabilities (hearing + speech).

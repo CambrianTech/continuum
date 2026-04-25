@@ -2,8 +2,8 @@
 
 use bevy::prelude::*;
 
-use super::components::*;
 use super::super::scene::animation::{AnimationConfig, PORTRAIT_PROFILE};
+use super::components::*;
 
 /// Animate breathing on any entity with BreathingAnimation + Skeleton.
 pub(in crate::live::video::bevy_renderer) fn animate_breathing(
@@ -27,8 +27,8 @@ pub(in crate::live::video::bevy_renderer) fn animate_breathing(
             let breath = (t * profile.breathing_frequency * std::f32::consts::TAU).sin()
                 * profile.breathing_scale_amplitude;
             transform.scale.y = 1.0 + breath;
-            let sway = (t * profile.spine_sway_frequency * freq_var).sin()
-                * profile.spine_sway_amplitude;
+            let sway =
+                (t * profile.spine_sway_frequency * freq_var).sin() * profile.spine_sway_amplitude;
             let delta = Quat::from_rotation_z(sway);
             transform.rotation = spine.rest_rotation * delta;
         }

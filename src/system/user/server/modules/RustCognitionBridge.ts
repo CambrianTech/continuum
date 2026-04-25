@@ -858,6 +858,27 @@ export class RustCognitionBridge {
    * The TS shim posts the text on Spoke — Rust never touches DataDaemon.
    * THROWS on failure (no silent degradation).
    */
+  /**
+   * Resolve the canonical capability vocabulary for a model from the
+   * Rust registry (`models.toml`). Returns kebab-case strings like
+   * `["text-generation", "chat", "vision", "streaming"]` matching the
+   * serde rename on `model_registry::Capability`.
+   *
+   * Why this method exists: callers must declare a model's capabilities
+   * WITH every `personaRespond` call so Rust never does a global
+   * registry lookup mid-inference. This wrapper keeps the IPC client
+   * private while exposing the one operation `PersonaResponseGenerator`
+   * needs at construction.
+   *
+   * THROWS if the model id isn't in the registry — that's a broken
+   * persona configuration, not a missing-default case.
+   */
+  async getModelCapabilities(modelId: string): Promise<string[]> {
+    this.assertReady('getModelCapabilities');
+    const result = await this.client.modelsCapabilities(modelId);
+    return result.capabilities;
+  }
+
   async personaRespond(req: PersonaRespondRequest): Promise<PersonaResponse> {
     this.assertReady('personaRespond');
     const start = performance.now();

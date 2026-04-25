@@ -18,6 +18,7 @@
 //! Descriptions survive across deploys. One LLaVA call per unique image, forever.
 
 use crate::log_info;
+use crate::runtime::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,6 @@ use serde_json::{json, Value};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use crate::runtime::MessageBus;
 
 // ============================================================================
 // Types
@@ -346,7 +346,12 @@ impl ServiceModule for VisionModule {
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         let mut bus = self.bus.write().unwrap_or_else(|e| e.into_inner());
         *bus = Some(ctx.bus.clone());
-        log_info!("vision", "init", "VisionModule initialized (max_entries={})", MAX_CACHE_ENTRIES);
+        log_info!(
+            "vision",
+            "init",
+            "VisionModule initialized (max_entries={})",
+            MAX_CACHE_ENTRIES
+        );
         Ok(())
     }
 
@@ -393,10 +398,7 @@ mod tests {
 
         // Get it back
         let get_result = module
-            .handle_command(
-                "vision/description-get",
-                json!({ "content_key": "abc123" }),
-            )
+            .handle_command("vision/description-get", json!({ "content_key": "abc123" }))
             .await;
         assert!(get_result.is_ok());
         if let Ok(CommandResult::Json(json)) = get_result {
@@ -437,22 +439,14 @@ mod tests {
             .await;
 
         let _ = module
-            .handle_command(
-                "vision/description-get",
-                json!({ "content_key": "key1" }),
-            )
+            .handle_command("vision/description-get", json!({ "content_key": "key1" }))
             .await; // hit
 
         let _ = module
-            .handle_command(
-                "vision/description-get",
-                json!({ "content_key": "key2" }),
-            )
+            .handle_command("vision/description-get", json!({ "content_key": "key2" }))
             .await; // miss
 
-        let stats = module
-            .handle_command("vision/cache-stats", json!({}))
-            .await;
+        let stats = module.handle_command("vision/cache-stats", json!({})).await;
         assert!(stats.is_ok());
         if let Ok(CommandResult::Json(json)) = stats {
             assert_eq!(json["entries"], 1);
@@ -486,10 +480,7 @@ mod tests {
 
         // Verify all three are accessible
         let get = module
-            .handle_command(
-                "vision/description-get",
-                json!({ "content_key": "b" }),
-            )
+            .handle_command("vision/description-get", json!({ "content_key": "b" }))
             .await;
         if let Ok(CommandResult::Json(json)) = get {
             assert_eq!(json["found"], true);

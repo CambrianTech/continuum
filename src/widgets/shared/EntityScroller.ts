@@ -100,7 +100,6 @@ export function createScroller<T extends BaseEntity>(
   let observer: IntersectionObserver | undefined;
   let sentinel: HTMLElement | undefined;
   let observerActive = false; // Track whether observer should be running
-  let idleTimeout: ReturnType<typeof setTimeout> | undefined;
 
   // Latch state: tracks whether user wants to follow new messages
   // - Latched: auto-scroll to bottom on new content
@@ -267,25 +266,26 @@ export function createScroller<T extends BaseEntity>(
     }
   };
 
-  // Activate observer ONLY when needed (lazy + event-driven)
+  // Eagerly attach the IntersectionObserver and keep it alive while there's more data.
+  // Lazy activation (only on first user scroll) + 2s idle deactivation produced a "totally
+  // dead" symptom in chat scrollback (Joel 2026-04-24): user opens chat, scrolls up, no
+  // older messages appear because (a) the first scroll event and the sentinel creation
+  // raced, and (b) after page 1 loads, the observer disconnects after 2s, so the user
+  // has to scroll-pause-scroll to keep paging. Eager + always-on makes scrollback behave
+  // like Discord/Slack where reaching the top continues to load.
   const activateObserver = (): void => {
     if (!hasMoreItems || observerActive) return;
-
-    // Calculate rootMargin as 20% of container height for smooth loading before reaching top
-    const rootMarginPx = Math.max(100, container.clientHeight * 0.2);
-    const rootMarginStr = `${rootMarginPx}px`;
 
     observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0];
         if (entry?.isIntersecting && hasMoreItems && !isLoading) {
-          console.log(`🔄 INTERSECTION: Triggering loadMore()`);
           scroller.loadMore();
         }
       },
       {
         root: container,
-        rootMargin: config.rootMargin ?? rootMarginStr,
+        rootMargin: config.rootMargin ?? '50px',
         threshold: config.threshold ?? 0.1
       }
     );
@@ -307,46 +307,25 @@ export function createScroller<T extends BaseEntity>(
     observerActive = true;
   };
 
-  // Deactivate observer when idle (go silent)
+  // Tear down only when the scroller itself is destroyed; no idle disconnect.
   const deactivateObserver = (): void => {
     if (!observerActive) return;
-
     observer?.disconnect();
     observer = undefined;
     observerActive = false;
   };
 
-  // Event-driven observer activation: activate on scroll, deactivate after idle
-  const IDLE_TIMEOUT_MS = 2000; // Go idle after 2 seconds of no scroll
-
+  // Scroll handler retained ONLY for autoScroll latch tracking. Observer activation
+  // happens after load() completes so the sentinel is in the DOM by the time the user
+  // can scroll.
   const onUserScroll = (): void => {
-    // Clear any pending idle timeout
-    if (idleTimeout) {
-      clearTimeout(idleTimeout);
-    }
-
-    // Activate observer when user scrolls (ONLY if there's more data)
-    if (hasMoreItems && !observerActive) {
-      activateObserver();
-    }
-
-    // Update latch state based on scroll position
-    // Use tighter threshold (100px) for re-latching via explicit scroll
     if (config.autoScroll?.enabled) {
       const nearBottom = isNearEnd(100);
       isLatchedToBottom = nearBottom;
     }
-
-    // Schedule deactivation after idle period
-    idleTimeout = setTimeout(() => {
-      deactivateObserver();
-    }, IDLE_TIMEOUT_MS);
   };
 
-  // Listen for scroll events:
-  // - For infinite scroll: only when there's more data to load
-  // - For auto-scroll latch detection: always when autoScroll enabled
-  if (hasMoreItems || config.autoScroll?.enabled) {
+  if (config.autoScroll?.enabled) {
     container.addEventListener('scroll', onUserScroll, { passive: true });
   }
 
@@ -430,8 +409,15 @@ export function createScroller<T extends BaseEntity>(
             requestAnimationFrame(() => {
               requestAnimationFrame(() => {
                 scrollToEnd('instant');
+                // Eagerly attach the scrollback observer once the initial page is in the
+                // DOM and we know more pages exist. Doing this here (instead of waiting
+                // for the user's first scroll) is what makes the "scroll up to load older"
+                // behavior actually work on a freshly-loaded chat.
+                if (hasMoreItems) activateObserver();
               });
             });
+          } else if (hasMoreItems) {
+            activateObserver();
           }
         } else {
           // No items - clear if we had items before
@@ -468,6 +454,13 @@ export function createScroller<T extends BaseEntity>(
             ? [...result.items].reverse()
             : result.items;
 
+          // Capture scroll geometry BEFORE prepend so we can preserve the user's
+          // visible content position. Without this, prepending N rows shifts the
+          // viewport down by their combined height — the user gets visually yanked
+          // away from whatever message they were reading.
+          const beforeScrollHeight = container.scrollHeight;
+          const beforeScrollTop = container.scrollTop;
+
           // When loading more, prepend for newest-first (older messages go at top)
           addEntitiesToDOM(itemsToAdd, true);
           hasMoreItems = result.hasMore;
@@ -478,6 +471,17 @@ export function createScroller<T extends BaseEntity>(
             container.insertBefore(sentinel, container.firstChild);
           } else if (sentinel) {
             container.appendChild(sentinel);
+          }
+
+          // Restore the visible-content position after the prepended height landed.
+          // Only meaningful for newest-first where prepend lands above the viewport.
+          if (config.direction === 'newest-first') {
+            requestAnimationFrame(() => {
+              const heightDelta = container.scrollHeight - beforeScrollHeight;
+              if (heightDelta > 0) {
+                container.scrollTop = beforeScrollTop + heightDelta;
+              }
+            });
           }
         } else {
           hasMoreItems = false;
@@ -581,6 +585,26 @@ export function createScroller<T extends BaseEntity>(
       if (entityManager.count() > initialCount && wasAtBottom) {
         // Scroll directly - DOM is already updated synchronously
         scrollToEnd();
+
+        // For media-bearing messages (chat images, etc.), the <img> width/height is
+        // unknown at insertion time — the browser allocates 0 height for the image
+        // until the bytes load. Without this hook, scrollToEnd() snaps to a
+        // scrollHeight that doesn't yet include the image, leaving the new message
+        // partially below the viewport once the image lays out. Re-scroll on each
+        // image's load event while we're still latched.
+        const newElement = container.querySelector(`[data-entity-id="${entityId}"]`);
+        if (newElement) {
+          const images = newElement.querySelectorAll('img');
+          images.forEach((img) => {
+            if (img.complete) return; // Already loaded — no event will fire
+            img.addEventListener('load', () => {
+              if (isLatchedToBottom) scrollToEnd('instant');
+            }, { once: true });
+            img.addEventListener('error', () => {
+              if (isLatchedToBottom) scrollToEnd('instant');
+            }, { once: true });
+          });
+        }
       }
     },
 
@@ -640,9 +664,6 @@ export function createScroller<T extends BaseEntity>(
       resizeObserver?.disconnect();
       sentinel?.remove();
       container.removeEventListener('scroll', onUserScroll);
-      if (idleTimeout) {
-        clearTimeout(idleTimeout);
-      }
       entityManager.clear();
     }
   };

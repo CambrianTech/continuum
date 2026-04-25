@@ -184,9 +184,7 @@ impl AvatarModule {
 
         // Encode RGBA → PNG
         let img = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-            actual_w,
-            actual_h,
-            frame.data,
+            actual_w, actual_h, frame.data,
         )
         .ok_or("Invalid frame dimensions for image buffer")?;
 
@@ -233,7 +231,11 @@ impl ServiceModule for AvatarModule {
     }
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-        log_info!("module", "avatar", "AvatarModule initialized (auto-refresh every 60s)");
+        log_info!(
+            "module",
+            "avatar",
+            "AvatarModule initialized (auto-refresh every 60s)"
+        );
         Ok(())
     }
 
@@ -327,9 +329,8 @@ impl ServiceModule for AvatarModule {
         let identity = &needs_refresh[0];
         let id = identity.clone();
         let dir = avatar_dir.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            Self::capture_snapshot(&id, 480, 480, &dir)
-        }).await;
+        let result =
+            tokio::task::spawn_blocking(move || Self::capture_snapshot(&id, 480, 480, &dir)).await;
 
         match result {
             Ok(Ok(path)) => {

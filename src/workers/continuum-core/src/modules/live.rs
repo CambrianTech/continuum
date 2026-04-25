@@ -250,10 +250,7 @@ impl ServiceModule for VoiceModule {
                     .await;
 
                 // Remove the STT listener room
-                self.state
-                    .livekit_manager
-                    .remove_listener(session_id)
-                    .await;
+                self.state.livekit_manager.remove_listener(session_id).await;
 
                 // Track session end for resource lifecycle (triggers idle timeout).
                 // Avatar models and audio adapters unload after the idle timeout

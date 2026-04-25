@@ -29,6 +29,14 @@ export class SentinelAwarenessSource implements RAGSource {
   readonly defaultBudgetPercent = 8;
 
   isApplicable(context: RAGSourceContext): boolean {
+    // Tool-incapable models must NOT see sentinel definitions. A vision-only
+    // VLM (qwen2-vl-7b) sees `sentinel/coding-agent: Launch Claude Code...`
+    // in its prompt and emits the literal string `Sentinel/coding-agent` as
+    // its response — it has no tool-use training, only the tool-name token
+    // sequence to imitate. Same gate ToolDefinitionsSource and
+    // ToolMethodologySource already use; sentinels are tools-as-pipelines so
+    // the same capability boundary applies.
+    if (context.toolCapability === 'none') return false;
     // Skip for very limited models — they can't orchestrate sentinels anyway
     const modelId = context.options?.modelId;
     if (modelId) {
@@ -38,6 +46,7 @@ export class SentinelAwarenessSource implements RAGSource {
     return true;
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- async required by RAGSource interface contract; this source is purely synchronous template-rendering but must return Promise to satisfy other implementers' I/O
   async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
     const startTime = Date.now();
 
@@ -77,6 +86,7 @@ export class SentinelAwarenessSource implements RAGSource {
     };
   }
 
+  // eslint-disable-next-line complexity -- pre-existing: branch-heavy template-rendering, scheduled for cleanup-sweep PR after #950
   private buildFullSection(context: RAGSourceContext): string {
     const allTemplates = TemplateRegistry.list();
     // Filter by recipe's sentinelTemplates if set
@@ -155,6 +165,7 @@ Sentinels orchestrate ANY multi-step workflow. Current templates focus on develo
     return section;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- context kept for parity with buildFullSection, may be needed when minimal section becomes context-aware
   private buildMinimalSection(_context: RAGSourceContext): string {
     const templates = TemplateRegistry.list();
     const names = templates.map(t => t.name).join(', ');

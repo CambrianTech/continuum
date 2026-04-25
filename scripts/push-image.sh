@@ -46,34 +46,44 @@ if [[ -z "$VARIANT" ]]; then
 Usage: $0 <variant> [platforms]
 
 Variants:
-  core    — CPU-only (Ares bootloader exception; not a Carl default)
-  cuda    — Nvidia GPU via CUDA (BigMama, Nvidia Linux hosts)
-  vulkan  — GPU via Vulkan (Mac Carl via Podman+krunkit+MoltenVK, also
-            valid on Nvidia/AMD/Intel Linux hosts with libvulkan)
+  core           — CPU-only (Ares bootloader exception; not a Carl default)
+  cuda           — Nvidia GPU via CUDA (BigMama, Nvidia Linux hosts)
+  vulkan         — GPU via Vulkan (Mac Carl via Podman+krunkit+MoltenVK,
+                   also valid on Nvidia/AMD/Intel Linux hosts with libvulkan)
+  livekit-bridge — Rust WebRTC bridge to LiveKit SFU (separate process)
 
 Platforms (optional): linux/amd64, linux/arm64, or comma-separated both.
   Default per variant:
-    core    → linux/amd64,linux/arm64
-    cuda    → linux/amd64   (CUDA is x86-only in practice)
-    vulkan  → linux/amd64,linux/arm64
+    core           → linux/amd64,linux/arm64
+    cuda           → linux/amd64   (CUDA is x86-only in practice)
+    vulkan         → linux/amd64,linux/arm64
+    livekit-bridge → linux/amd64,linux/arm64
 EOF
   exit 1
 fi
 
 case "$VARIANT" in
-  core)   DOCKERFILE="docker/continuum-core.Dockerfile"; IMAGE="continuum-core"
-          GPU_FEATURES="--no-default-features --features load-dynamic-ort"
-          DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
-          ;;
-  cuda)   DOCKERFILE="docker/continuum-core-cuda.Dockerfile"; IMAGE="continuum-core-cuda"
-          GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda"
-          DEFAULT_PLATFORMS="linux/amd64"
-          ;;
-  vulkan) DOCKERFILE="docker/continuum-core-vulkan.Dockerfile"; IMAGE="continuum-core-vulkan"
-          GPU_FEATURES="--no-default-features --features load-dynamic-ort,vulkan"
-          DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
-          ;;
-  *) echo "ERROR: unknown variant '$VARIANT' (core|cuda|vulkan)" >&2; exit 1 ;;
+  core)        DOCKERFILE="docker/continuum-core.Dockerfile"; IMAGE="continuum-core"
+               GPU_FEATURES="--no-default-features --features load-dynamic-ort"
+               DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
+               ;;
+  cuda)        DOCKERFILE="docker/continuum-core-cuda.Dockerfile"; IMAGE="continuum-core-cuda"
+               GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda"
+               DEFAULT_PLATFORMS="linux/amd64"
+               ;;
+  vulkan)      DOCKERFILE="docker/continuum-core-vulkan.Dockerfile"; IMAGE="continuum-core-vulkan"
+               GPU_FEATURES="--no-default-features --features load-dynamic-ort,vulkan"
+               DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
+               ;;
+  livekit-bridge)
+               DOCKERFILE="docker/livekit-bridge.Dockerfile"; IMAGE="continuum-livekit-bridge"
+               # WebRTC + LiveKit bridge — separate Rust binary in src/workers/.
+               # Same workspace, different Cargo binary. Uses default features
+               # (livekit-webrtc enabled) since this IS the livekit-webrtc consumer.
+               GPU_FEATURES=""
+               DEFAULT_PLATFORMS="linux/amd64,linux/arm64"
+               ;;
+  *) echo "ERROR: unknown variant '$VARIANT' (core|cuda|vulkan|livekit-bridge)" >&2; exit 1 ;;
 esac
 
 PLATFORMS="${PLATFORMS:-$DEFAULT_PLATFORMS}"
@@ -175,17 +185,31 @@ case "$VARIANT:$HOST_OS" in
       echo "→ Phase 0 skipped: variant=vulkan but libvulkan not installed on host"
     fi
     ;;
+  core:Darwin)
+    # Mac + core: Metal is the native backend AND required by llama
+    # crate's compile_error guard (commit 7f32bc04e) — without
+    # --features metal, cargo test fails at compile time. The old
+    # `core:*` branch below erroneously caught core:Darwin first and
+    # left NATIVE_FEATURE empty → Phase 0 crashed with compile_error
+    # instead of running tests. Explicit core:Darwin branch placed
+    # before core:* so Mac gets the feature set it needs.
+    # Phase 0 runs `cargo test -p llama`, so features must be llama-crate-
+    # scoped (metal|cuda|vulkan). `accelerate` belongs to continuum-core
+    # and is not a valid llama feature — passing it here fails with
+    # "package llama does not contain this feature accelerate".
+    NATIVE_FEATURE="metal"
+    echo "→ Phase 0 using --features=metal on Mac (variant=core)"
+    ;;
   core:*)
-    # Default features, no GPU required — always runnable.
+    # Non-Mac + core: Default features, no GPU required — always runnable.
     NATIVE_FEATURE=""  # Empty means default features (no --features flag)
     ;;
   *:Darwin)
-    # Mac can't build cuda or vulkan natively — cuda is x86-only Nvidia,
-    # vulkan on Mac needs MoltenVK setup we haven't wired. But Metal IS
-    # the native Mac backend; running `--features=metal` proves the
-    # llama crate + scheduler code is sound for the same Rust paths that
-    # the container will exercise via Vulkan kernels. Not identical, but
-    # close enough to catch most Rust regressions in seconds.
+    # Mac + any other variant (livekit-bridge, etc): still Metal for host-
+    # side Phase 0 validation. Docker build inside container uses its own
+    # feature set (cuda for continuum-core-cuda, vulkan for continuum-core-
+    # vulkan — those don't build natively on Mac anyway). llama-crate-
+    # scoped feature only (see core:Darwin note above).
     NATIVE_FEATURE="metal"
     echo "→ Phase 0 using --features=metal on Mac (variant=$VARIANT builds in container)"
     ;;
@@ -231,13 +255,29 @@ echo ""
 # we don't throw half-working images over the wall to CI.
 LOCAL_PLATFORM="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null || echo linux/amd64)"
 
+# Capture the build-time HEAD SHA so the resulting image carries it as a
+# label. Verify-architectures asserts this label matches the PR HEAD SHA;
+# without it a stale-tagged image (alias of an older sha) would silently
+# pass the gate. Issue #957/#959/#964 paired QA cycle proved we need this
+# to detect "the tag exists but the binary is from before the fix landed."
+#
+# EXPECTED_SHA env var override — necessary in CI for pull_request events
+# where the runner's checkout defaults to refs/pull/<N>/merge (synthetic
+# merge commit), making `git rev-parse HEAD` return the merge sha instead
+# of the PR HEAD. The gate compares against PR HEAD, so without the
+# override the label would never match. Same env var honored by
+# push-current-arch.sh's STARTUP_SHA_FULL.
+BUILD_SHA="${EXPECTED_SHA:-$(git rev-parse HEAD)}"
+
 echo "→ Phase 1: local build + slice test on $LOCAL_PLATFORM"
 docker buildx build \
   --platform "$LOCAL_PLATFORM" \
   --file "$DOCKERFILE" \
   --build-arg "GPU_FEATURES=$GPU_FEATURES" \
+  --build-arg "GIT_SHA=$BUILD_SHA" \
   --build-context "shared-generated=src/shared/generated" \
   --tag "$TAG_SHA" \
+  --label "org.opencontainers.image.revision=$BUILD_SHA" \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
   --load \
   src/workers
@@ -257,8 +297,10 @@ docker buildx build \
   --platform "$PLATFORMS" \
   --file "$DOCKERFILE" \
   --build-arg "GPU_FEATURES=$GPU_FEATURES" \
+  --build-arg "GIT_SHA=$BUILD_SHA" \
   --build-context "shared-generated=src/shared/generated" \
   "${TAGS[@]}" \
+  --label "org.opencontainers.image.revision=$BUILD_SHA" \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
   --cache-to   "type=registry,ref=$REGISTRY/$IMAGE:buildcache,mode=max" \
   --push \

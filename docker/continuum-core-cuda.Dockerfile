@@ -103,6 +103,9 @@ RUN cargo build --release ${GPU_FEATURES} \
 # ── Stage 2: Runtime (smaller, just CUDA runtime) ────────────
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
 
+# ghcr visibility default — see continuum-core.Dockerfile for rationale.
+LABEL org.opencontainers.image.source=https://github.com/CambrianTech/continuum
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 libpq5 curl netcat-openbsd \
     libglib2.0-0 libvulkan1 mesa-vulkan-drivers \
@@ -119,13 +122,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/target/release/continuum-core-server /usr/local/bin/
 COPY --from=builder /app/target/release/archive-worker /usr/local/bin/
 
-# ONNX Runtime for Silero VAD + Piper TTS
+# Model registry config — server boots with model_registry::loader reading
+# /app/continuum-core/config/models.toml. Without this COPY the runtime
+# panics on first start.
+COPY --from=builder /app/continuum-core/config /app/continuum-core/config
+
+# ONNX Runtime for Silero VAD + Piper TTS + fastembed embeddings.
+#
+# CRITICAL on the CUDA image: pull the `-gpu` tarball variant, not the
+# CPU-only one. The GPU tarball bundles libonnxruntime_providers_cuda.so
+# alongside libonnxruntime.so — without it `CUDAExecutionProvider` is
+# unavailable at runtime and EVERY ORT session silently falls back to
+# the MLAS CPU matmul kernels. Empirically (2026-04-24): sampled
+# continuum-core during a chat-message CPU spike, 100% of hot frames
+# were `MlasSgemmThreaded` in libonnxruntime — fastembed + Piper + Whisper
+# + VisionDescriptionService all running on CPU despite 32GB RTX 5090
+# sitting idle. Verified the shipped `.so` had zero `cuda`/`coreml`/
+# `tensorrt` strings. Changing the tarball URL fixes the capability at
+# runtime; additionally the Rust ORT session code must `.with_execution_
+# providers([CUDAExecutionProvider::default(), ...])` to actually route
+# matmul to the GPU (shipped separately — the tarball is the foundation).
+#
+# arm64 (linux-aarch64) has no -gpu variant from Microsoft — arm64 CUDA
+# builds are Jetson-only and the community tarballs don't cover it. arm64
+# here stays on the CPU-only ORT and will need a different path (TRT for
+# Jetson, or skip CUDA EP) — tracked as follow-up.
 ARG TARGETARCH
 ARG ONNX_VERSION=1.24.4
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
       ORT_ARCH="linux-aarch64"; \
     else \
-      ORT_ARCH="linux-x64"; \
+      ORT_ARCH="linux-x64-gpu"; \
     fi && \
     curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-${ORT_ARCH}-${ONNX_VERSION}.tgz" \
     | tar xz --strip-components=1 -C /usr/local \

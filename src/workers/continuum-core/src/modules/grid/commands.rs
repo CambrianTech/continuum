@@ -13,19 +13,19 @@ use crate::runtime::{CommandSchema, ParamSchema};
 // Command name constants
 // ============================================================================
 
-pub const STATUS:   &str = "grid/status";
-pub const NODES:    &str = "grid/nodes";
-pub const PING:     &str = "grid/ping";
-pub const SEND:     &str = "grid/send";
+pub const STATUS: &str = "grid/status";
+pub const NODES: &str = "grid/nodes";
+pub const PING: &str = "grid/ping";
+pub const SEND: &str = "grid/send";
 pub const DISCOVER: &str = "grid/discover";
-pub const PAIR:     &str = "grid/pair";
-pub const TRUST:    &str = "grid/trust";
-pub const AUDIT:    &str = "grid/audit";
-pub const ROUTE:       &str = "grid/route";
+pub const PAIR: &str = "grid/pair";
+pub const TRUST: &str = "grid/trust";
+pub const AUDIT: &str = "grid/audit";
+pub const ROUTE: &str = "grid/route";
 pub const NODE_STATUS: &str = "grid/node-status";
-pub const JOB_SUBMIT:  &str = "grid/job-submit";
+pub const JOB_SUBMIT: &str = "grid/job-submit";
 pub const JOB_CONTROL: &str = "grid/job-control";
-pub const JOB_QUEUE:   &str = "grid/job-queue";
+pub const JOB_QUEUE: &str = "grid/job-queue";
 pub const SETUP_CHECK: &str = "grid/setup-check";
 
 // ============================================================================
@@ -145,18 +145,49 @@ mod tests {
 
     #[test]
     fn test_all_commands_have_grid_prefix() {
-        let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE,
-                   NODE_STATUS, JOB_SUBMIT, JOB_CONTROL, JOB_QUEUE, SETUP_CHECK];
+        let all = [
+            STATUS,
+            NODES,
+            PING,
+            SEND,
+            DISCOVER,
+            PAIR,
+            TRUST,
+            AUDIT,
+            ROUTE,
+            NODE_STATUS,
+            JOB_SUBMIT,
+            JOB_CONTROL,
+            JOB_QUEUE,
+            SETUP_CHECK,
+        ];
         for cmd in &all {
-            assert!(cmd.starts_with("grid/"), "Command {cmd} missing grid/ prefix");
+            assert!(
+                cmd.starts_with("grid/"),
+                "Command {cmd} missing grid/ prefix"
+            );
         }
     }
 
     #[test]
     fn test_schemas_match_constants() {
         let schemas = schemas();
-        let all = [STATUS, NODES, PING, SEND, DISCOVER, PAIR, TRUST, AUDIT, ROUTE,
-                   NODE_STATUS, JOB_SUBMIT, JOB_CONTROL, JOB_QUEUE, SETUP_CHECK];
+        let all = [
+            STATUS,
+            NODES,
+            PING,
+            SEND,
+            DISCOVER,
+            PAIR,
+            TRUST,
+            AUDIT,
+            ROUTE,
+            NODE_STATUS,
+            JOB_SUBMIT,
+            JOB_CONTROL,
+            JOB_QUEUE,
+            SETUP_CHECK,
+        ];
         assert_eq!(schemas.len(), all.len(), "Schema count mismatch");
         for (schema, constant) in schemas.iter().zip(all.iter()) {
             assert_eq!(schema.name, *constant, "Schema name doesn't match constant");

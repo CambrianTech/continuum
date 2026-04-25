@@ -1,3 +1,39 @@
+# Docker build context exclusions for the continuum-core (Rust workers) image.
+# Goal: ship cmake everything it needs to compile vendored C++ — and nothing else.
+# Per-directory size measurements taken 2026-04-24 to justify each entry.
+
+# Cargo build output (gigabytes)
 target/
 *.log
 .git/
+
+# ─── vendor/llama.cpp ────────────────────────────────────────
+# cmake compiles src/ + include/ + ggml/ + common/ + vendor/ + tools/mtmd.
+# Everything else in this submodule is reference material that bloats the
+# build context for no compile-time or runtime benefit.
+vendor/llama.cpp/.git/
+vendor/llama.cpp/models/         # 69MB — vocab .gguf files for upstream's CI
+vendor/llama.cpp/docs/           # 29MB — markdown docs
+vendor/llama.cpp/tools/server/   # 12MB — llama-server + the JS chat webui
+                                 # (we only link tools/mtmd; tools/server isn't built)
+vendor/llama.cpp/tests/          # 2.5MB — upstream's test suite
+vendor/llama.cpp/benches/        # 2.4MB — perf benches
+vendor/llama.cpp/examples/       # 1.7MB — sample programs
+vendor/llama.cpp/media/          # 744KB — README screenshots
+vendor/llama.cpp/gguf-py/        # 680KB — Python CLI for gguf inspection
+vendor/llama.cpp/scripts/        # 512KB — upstream maintainer scripts
+vendor/llama.cpp/grammars/       # 52KB  — sample BNF grammars
+
+# ─── vendor/whisper.cpp ──────────────────────────────────────
+# whisper-rs is commented out in continuum-core/Cargo.toml (see comment
+# around line 57: ggml symbol collision with llama-rs). Nothing in this
+# submodule is currently linked, but we keep src/ + include/ + ggml/ +
+# cmake/ around so re-enabling the feature is a one-line uncomment, not
+# a submodule re-add. The heavy subdirs go away regardless.
+vendor/whisper.cpp/.git/
+vendor/whisper.cpp/examples/     # 10MB — sample programs
+vendor/whisper.cpp/models/       # 6MB  — placeholder model dir
+vendor/whisper.cpp/bindings/     # 2MB  — Java/Ruby/Go bindings (not Rust)
+vendor/whisper.cpp/samples/      # 428KB — audio sample fixtures
+vendor/whisper.cpp/tests/        # 280KB — upstream's tests
+vendor/whisper.cpp/scripts/      # 224KB — upstream scripts

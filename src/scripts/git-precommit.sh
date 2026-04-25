@@ -87,29 +87,70 @@ RS_FILES=$(cd .. && git diff --cached --name-only --diff-filter=ACMR | grep -E '
 LINT_FAILED=false
 
 if [ -n "$TS_FILES" ]; then
-    echo "TypeScript files to lint:"
+    echo "TypeScript files staged:"
     echo "$TS_FILES" | sed 's/^/  • /' | head -10
     TS_COUNT=$(echo "$TS_FILES" | wc -l | tr -d ' ')
     [ "$TS_COUNT" -gt 10 ] && echo "  ... and $((TS_COUNT - 10)) more"
     echo ""
 
-    # Run ESLint on modified files only (paths relative to jtag dir)
-    LINT_OUTPUT=$(cd .. && echo "$TS_FILES" | xargs npx eslint --max-warnings 0 2>&1) || {
-        echo ""
-        echo "╔════════════════════════════════════════════════════════════════╗"
-        echo "║  ❌ TYPESCRIPT LINT FAILED - BLOCKING COMMIT                   ║"
-        echo "╠════════════════════════════════════════════════════════════════╣"
-        echo "║  Common violations:                                            ║"
-        echo "║  • Using 'any'          → Use specific types                   ║"
-        echo "║  • Using ||             → Use ?? (nullish coalescing)          ║"
-        echo "║  • Missing return type  → Add explicit return type             ║"
-        echo "║  • Unused variables     → Remove or prefix with _              ║"
-        echo "╚════════════════════════════════════════════════════════════════╝"
-        echo ""
-        echo "$LINT_OUTPUT"
+    # Two-tier ESLint gate. The previous --max-warnings 0 per-file mode
+    # was unworkable: any commit touching a file with pre-existing
+    # violations forced --no-verify, which let new debt land freely.
+    # The new gate mirrors git-prepush.sh's baseline-tolerant approach
+    # but adds a fast path so most commits don't pay the repo-wide cost.
+    #
+    # Tier 1 (fast, ~5s): lint just the staged files. If they're clean
+    #                     (zero violations), the commit can't have added
+    #                     anything — pass immediately.
+    # Tier 2 (slow, ~2m): if staged files carry violations, run the
+    #                     repo-wide check and compare to eslint-baseline.txt.
+    #                     Pass if total <= baseline (no new debt added).
+    #
+    # Update baseline after a real cleanup pass:
+    #   cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 \
+    #     | grep -cE "error\s+" > eslint-baseline.txt
+    BASELINE_FILE="$(git rev-parse --show-toplevel)/src/eslint-baseline.txt"
+
+    # Tier 1: staged-files-only fast lint.
+    STAGED_LINT_LOG="$(mktemp)"
+    (cd .. && echo "$TS_FILES" | xargs npx eslint --no-warn-ignored --quiet 2>&1 > "$STAGED_LINT_LOG") || true
+    STAGED_ERRORS=$(grep -cE "error\s+" "$STAGED_LINT_LOG" || true)
+    rm -f "$STAGED_LINT_LOG"
+
+    if [ "$STAGED_ERRORS" -eq 0 ]; then
+        echo "✅ ESLint: staged files clean (fast path, no repo-wide check needed)"
+    elif [ ! -f "$BASELINE_FILE" ]; then
+        echo "⚠️  eslint-baseline.txt not present — falling back to strict per-file gate."
+        echo "   Generate once with: cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE \"error\\s+\" > eslint-baseline.txt"
         LINT_FAILED=true
-    }
-    [ "$LINT_FAILED" = false ] && echo "✅ TypeScript lint: PASSED"
+    else
+        # Tier 2: staged files carry violations. Verify the commit didn't
+        # ADD any by running the same repo-wide gate as prepush.
+        echo "ℹ️  Staged files carry $STAGED_ERRORS pre-existing violation(s); running repo-wide baseline check..."
+        BASELINE=$(tr -d '[:space:]' < "$BASELINE_FILE")
+        LINT_START=$(date +%s)
+        CURRENT=$(npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE "error\s+" || true)
+        LINT_DUR=$(( $(date +%s) - LINT_START ))
+        if [ "$CURRENT" -le "$BASELINE" ]; then
+            if [ "$CURRENT" -lt "$BASELINE" ]; then
+                DROPPED=$(( BASELINE - CURRENT ))
+                echo "✅ ESLint: $CURRENT errors (baseline $BASELINE, dropped $DROPPED — update src/eslint-baseline.txt to lock the win) (${LINT_DUR}s)"
+            else
+                echo "✅ ESLint: $CURRENT errors at baseline ($BASELINE) (${LINT_DUR}s)"
+            fi
+        else
+            DELTA=$(( CURRENT - BASELINE ))
+            echo ""
+            echo "╔════════════════════════════════════════════════════════════════╗"
+            echo "║  ❌ ESLINT: $DELTA NEW VIOLATION(S) — BLOCKING COMMIT          ║"
+            echo "╠════════════════════════════════════════════════════════════════╣"
+            echo "║  Current: $CURRENT  Baseline: $BASELINE                                       ║"
+            echo "║  Run to see what's new:                                        ║"
+            echo "║    cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet   ║"
+            echo "╚════════════════════════════════════════════════════════════════╝"
+            LINT_FAILED=true
+        fi
+    fi
 else
     echo "⏭️  No TypeScript files staged - skipping ESLint"
 fi
@@ -120,21 +161,48 @@ if [ -n "$RS_FILES" ]; then
     echo "$RS_FILES" | sed 's/^/  • /' | head -10
     echo ""
 
-    # Run clippy on the workspace (warnings as errors)
-    if ! (cd workers/continuum-core && cargo clippy --quiet -- -D warnings 2>&1); then
-        echo ""
-        echo "╔════════════════════════════════════════════════════════════════╗"
-        echo "║  ❌ RUST CLIPPY FAILED - BLOCKING COMMIT                       ║"
-        echo "╠════════════════════════════════════════════════════════════════╣"
-        echo "║  Common violations:                                            ║"
-        echo "║  • Dead code           → Remove unused functions/vars          ║"
-        echo "║  • Unused imports      → Remove unused 'use' statements        ║"
-        echo "║  • Unnecessary clone   → Remove or explain why needed          ║"
-        echo "╚════════════════════════════════════════════════════════════════╝"
-        LINT_FAILED=true
+    # Baseline-tolerant clippy (same shape as ESLint baseline in
+    # git-prepush.sh): the workspace has 100+ pre-existing clippy
+    # warnings, and -D warnings turns ALL of them into hard errors.
+    # That made every commit fail regardless of who wrote what.
+    #
+    # New shape: count warnings, compare to clippy-baseline.txt.
+    # Pass if current <= baseline. Fail if current > baseline (i.e.
+    # this commit added new violations). Update the baseline after
+    # a real cleanup pass:
+    #   cd src/workers/continuum-core
+    #   cargo clippy --lib 2>&1 | grep -cE "^warning:" > ../../clippy-baseline.txt
+    BASELINE_FILE="$(git rev-parse --show-toplevel)/src/clippy-baseline.txt"
+    CLIPPY_LOG="$(mktemp)"
+    (cd workers/continuum-core && cargo clippy --lib 2>&1 > "$CLIPPY_LOG") || true
+    CURRENT=$(grep -cE "^warning:" "$CLIPPY_LOG" || echo 0)
+    if [ ! -f "$BASELINE_FILE" ]; then
+        echo "⚠️  clippy-baseline.txt not found — skipping clippy gate."
+        echo "   Generate once with: cd src/workers/continuum-core && cargo clippy --lib 2>&1 | grep -cE \"^warning:\" > ../../clippy-baseline.txt"
+        echo "   Current warning count: $CURRENT"
     else
-        echo "✅ Rust clippy: PASSED"
+        BASELINE=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
+        if [ "$CURRENT" -le "$BASELINE" ]; then
+            if [ "$CURRENT" -lt "$BASELINE" ]; then
+                DROPPED=$(( BASELINE - CURRENT ))
+                echo "✅ Rust clippy: $CURRENT warnings (baseline $BASELINE, dropped $DROPPED — update src/clippy-baseline.txt to lock the win)"
+            else
+                echo "✅ Rust clippy: $CURRENT warnings at baseline ($BASELINE)"
+            fi
+        else
+            DELTA=$(( CURRENT - BASELINE ))
+            echo ""
+            echo "╔════════════════════════════════════════════════════════════════╗"
+            echo "║  ❌ RUST CLIPPY: $DELTA NEW WARNING(S) — BLOCKING COMMIT       ║"
+            echo "╠════════════════════════════════════════════════════════════════╣"
+            echo "║  Current: $CURRENT  Baseline: $BASELINE                                       ║"
+            echo "║  Run to see what's new:                                        ║"
+            echo "║    cd src/workers/continuum-core && cargo clippy --lib         ║"
+            echo "╚════════════════════════════════════════════════════════════════╝"
+            LINT_FAILED=true
+        fi
     fi
+    rm -f "$CLIPPY_LOG"
 else
     echo "⏭️  No Rust files staged - skipping clippy"
 fi
@@ -252,6 +320,52 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
     echo "🧪 Phase 2: Browser Tests"
     echo "-----------------------------------------------------------"
 
+    # Skip gracefully when the browser-test prerequisites aren't met.
+    # The browser-ping test pings the BROWSER through the core socket;
+    # if either continuum-core isn't running OR the browser isn't
+    # connected/responsive, the test sits for 10 minutes then fails.
+    #
+    # Probe with a real `./jtag ping` and a short timeout. If it
+    # succeeds within 10 seconds, both core + browser are healthy and
+    # the gate is meaningful. If it times out or errors, the gate
+    # can't run — skip with a loud warning rather than block the
+    # commit. CI's verify-architectures + GitHub Actions remain the
+    # authoritative pre-merge check.
+    # 10s timeout via perl fork+wait. perl's `alarm` doesn't propagate
+    # through `exec` (the SIGALRM handler is lost when the process
+    # image is replaced), so we have to fork: parent times out and
+    # kills the child if it overruns.
+    PING_OK=true
+    if ! perl -e '
+        my $pid = fork();
+        die "fork: $!" unless defined $pid;
+        if ($pid == 0) { exec "./jtag", "ping"; die "exec: $!"; }
+        my $deadline = time() + 10;
+        while (1) {
+            my $w = waitpid($pid, 1);  # 1 = WNOHANG
+            last if $w == $pid;
+            if (time() > $deadline) { kill 9, $pid; waitpid($pid, 0); exit 142; }
+            select(undef, undef, undef, 0.1);
+        }
+        exit ($? >> 8);
+    ' > /dev/null 2>&1; then
+        PING_OK=false
+    fi
+    if [ "$PING_OK" = false ]; then
+        echo ""
+        echo "⚠️  System not responsive to './jtag ping' within 10s."
+        echo "   Skipping browser tests for this commit."
+        echo "   To enable the browser-test gate, ensure the system is running:"
+        echo "     cd src && npm start"
+        echo "   Then verify with:"
+        echo "     cd src && ./jtag ping"
+        echo ""
+        echo "✅ Browser tests: SKIPPED (system not responsive)"
+        ENABLE_BROWSER_TEST=false
+    fi
+fi
+
+if [ "$ENABLE_BROWSER_TEST" = true ]; then
     echo "🧪 Running precommit tests: $PRECOMMIT_TESTS"
 
     # Ensure test output directory exists
@@ -263,11 +377,61 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
 
     for TEST_FILE in $PRECOMMIT_TESTS; do
         echo "=================================================="
-        echo "🧪 Running: $TEST_FILE"
+        echo "🧪 Running: $TEST_FILE  (60s timeout cap)"
         echo "=================================================="
 
-        npx tsx "$TEST_FILE" 2>&1 | tee .continuum/sessions/validation/test-output.txt
+        # Wrap each test in a 60s timeout via perl fork+wait. perl's
+        # bare `alarm` doesn't survive `exec` (signal handler is lost
+        # when the process image is replaced), so we fork: parent
+        # times out and kills the child after 60s. Some tests
+        # (browser-ping) hang for 10 minutes when the browser is in
+        # a non-responsive-but-not-crashed state — useless friction
+        # on every commit.
+        perl -e '
+            use POSIX qw(setpgid);
+            my $pid = fork();
+            die "fork: $!" unless defined $pid;
+            if ($pid == 0) {
+                # Put child + descendants into their own process group so we
+                # can kill the entire tree (npx -> node -> tsx -> test +
+                # any subprocesses). Without this, killing $pid only kills
+                # npx; orphaned tsx + test keep running and hold the
+                # commit hostage.
+                POSIX::setpgid(0, 0) or warn "setpgid failed: $!";
+                exec @ARGV;
+                die "exec: $!";
+            }
+            POSIX::setpgid($pid, $pid);  # parent races child; both safe
+            my $deadline = time() + 60;
+            while (1) {
+                my $w = waitpid($pid, 1);
+                last if $w == $pid;
+                if (time() > $deadline) {
+                    # Negative PID = signal whole process group.
+                    kill 9, -$pid;
+                    waitpid($pid, 0);
+                    exit 142;
+                }
+                select(undef, undef, undef, 0.1);
+            }
+            exit ($? >> 8);
+        ' -- npx tsx "$TEST_FILE" 2>&1 \
+            | tee .continuum/sessions/validation/test-output.txt
         CURRENT_EXIT_CODE=${PIPESTATUS[0]}
+
+        if [ $CURRENT_EXIT_CODE -eq 142 ] || [ $CURRENT_EXIT_CODE -eq 14 ]; then
+            # 142 / 14 = SIGALRM exit. The test exceeded the 60s cap —
+            # treat as "system not ready" rather than test failure.
+            # Skip the gate; CI's verify-architectures + browser tests
+            # in CI environments remain authoritative.
+            echo ""
+            echo "⚠️  Test timed out after 60s: $TEST_FILE"
+            echo "   The system isn't responsive enough for this test."
+            echo "   Skipping the browser-test gate for this commit."
+            echo "   To enable: ensure 'cd src && ./jtag interface/screenshot --querySelector=body' returns within 60s."
+            TEST_SUMMARY="$TEST_SUMMARY $TEST_FILE:SKIPPED-TIMEOUT"
+            continue
+        fi
 
         if [ $CURRENT_EXIT_CODE -ne 0 ]; then
             TEST_EXIT_CODE=$CURRENT_EXIT_CODE

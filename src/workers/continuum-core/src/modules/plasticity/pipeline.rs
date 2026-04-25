@@ -36,9 +36,7 @@ pub fn compress(config: &CompressConfig) -> Result<CompressionPipelineResult, St
     let log = crate::runtime::logger("plasticity");
     log.info(&format!(
         "Compression pipeline: {:?} → {:?} (target: {})",
-        config.model_path,
-        config.output_path,
-        config.device_spec.label
+        config.model_path, config.output_path, config.device_spec.label
     ));
 
     // Step 1: Load topology from capture
@@ -137,8 +135,8 @@ fn load_topology(capture_path: &Path) -> Result<HeadTopology, String> {
         ));
     }
 
-    let data = std::fs::read_to_string(&topology_file)
-        .map_err(|e| format!("Read topology: {e}"))?;
+    let data =
+        std::fs::read_to_string(&topology_file).map_err(|e| format!("Read topology: {e}"))?;
 
     serde_json::from_str(&data).map_err(|e| format!("Parse topology: {e}"))
 }
@@ -164,16 +162,16 @@ fn resolve_arch(arch_name: &str, topology: &HeadTopology) -> Result<ModelArchCon
                 })
             }
         }
-        _ => Err(format!("Unknown architecture: {arch_name}. Supported: qwen2, llama")),
+        _ => Err(format!(
+            "Unknown architecture: {arch_name}. Supported: qwen2, llama"
+        )),
     }
 }
 
 /// Estimate original model size in BF16 bytes.
 fn estimate_original_size(arch: &ModelArchConfig, _topology: &HeadTopology) -> u64 {
-    let attn_per_layer = arch.attention_params_per_layer(
-        arch.num_attention_heads,
-        arch.num_kv_heads,
-    );
+    let attn_per_layer =
+        arch.attention_params_per_layer(arch.num_attention_heads, arch.num_kv_heads);
     let mlp_per_layer = arch.mlp_params_per_layer();
     let embed = arch.embedding_params();
     let norm = arch.norm_params();
@@ -199,7 +197,10 @@ pub fn parse_device_spec(spec: &str) -> Result<DeviceSpec, String> {
             }
             // Try as JSON
             serde_json::from_str(spec).map_err(|e| {
-                format!("Invalid device spec '{}'. Use: 16gb, 32gb, 24gb-vram, or JSON. Error: {e}", spec)
+                format!(
+                    "Invalid device spec '{}'. Use: 16gb, 32gb, 24gb-vram, or JSON. Error: {e}",
+                    spec
+                )
             })
         }
     }
@@ -267,7 +268,10 @@ mod tests {
         let size = estimate_original_size(&arch, &topology);
         let size_gb = size as f64 / 1073741824.0;
         // Qwen2.5-Coder-32B is ~62GB in BF16
-        assert!(size_gb > 55.0 && size_gb < 70.0,
-            "Expected ~62GB, got {:.1}GB", size_gb);
+        assert!(
+            size_gb > 55.0 && size_gb < 70.0,
+            "Expected ~62GB, got {:.1}GB",
+            size_gb
+        );
     }
 }

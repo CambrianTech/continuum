@@ -1,0 +1,8 @@
+// Auto-generated barrel export — do not edit manually
+// Source: generator/generate-rust-bindings.ts
+// Re-generate: npx tsx generator/generate-rust-bindings.ts
+
+export type { PersonaContext } from './PersonaContext';
+export type { Signal } from './Signal';
+export type { SignalKind } from './SignalKind';
+export type { SignalOriginator } from './SignalOriginator';

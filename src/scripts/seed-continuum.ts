@@ -246,7 +246,14 @@ async function loadAllRooms(): Promise<{
 /**
  * Wait for JTAG system to be fully ready with commands registered
  */
-async function waitForJTAGReady(maxWaitSeconds: number = 180): Promise<boolean> {
+// Default 480s (was 180s). Cold-start of the in-process llamacpp adapter
+// loading qwen3.5-4b @ 262k context to GPU/Metal can take 200-300s on
+// first npm start before the model is in OS page cache. The seed step
+// blocks until Rust IPC is up because it issues `data/create` commands
+// that go through the Rust ORM. 180s was empirically too short on M5
+// (verified 2026-04-21 — seeded zero personas every cold-start). 480s
+// gives Rust ample headroom without making warm-restarts wait silly long.
+async function waitForJTAGReady(maxWaitSeconds: number = 480): Promise<boolean> {
   const startTime = Date.now();
   let attempts = 0;
 

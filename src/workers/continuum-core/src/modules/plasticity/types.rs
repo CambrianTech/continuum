@@ -87,9 +87,9 @@ impl HeadPrecision {
     pub fn bytes_per_param(&self) -> f64 {
         match self {
             HeadPrecision::Removed => 0.0,
-            HeadPrecision::Ternary => 0.2,  // 1 byte per 5 values
-            HeadPrecision::Q2 => 0.25,      // 1 byte per 4 values
-            HeadPrecision::Q4 => 0.5,       // 1 byte per 2 values
+            HeadPrecision::Ternary => 0.2, // 1 byte per 5 values
+            HeadPrecision::Q2 => 0.25,     // 1 byte per 4 values
+            HeadPrecision::Q4 => 0.5,      // 1 byte per 2 values
             HeadPrecision::Q8 => 1.0,
             HeadPrecision::BF16 => 2.0,
         }
@@ -456,8 +456,14 @@ impl GgufQuantType {
     /// Returns 0 for types with no alignment constraint (F16, F32).
     pub fn block_alignment(&self) -> usize {
         match self {
-            Self::Q2K | Self::Q3KS | Self::Q3KM | Self::Q3KL
-            | Self::Q4KS | Self::Q4KM | Self::Q5KS | Self::Q5KM
+            Self::Q2K
+            | Self::Q3KS
+            | Self::Q3KM
+            | Self::Q3KL
+            | Self::Q4KS
+            | Self::Q4KM
+            | Self::Q5KS
+            | Self::Q5KM
             | Self::Q6K => 256,
             Self::Q8_0 => 32,
             Self::Iq4Xs => 256,
@@ -498,15 +504,27 @@ impl DeviceSpec {
     }
 
     pub fn macbook_air_16gb() -> Self {
-        Self { memory_gb: 16.0, reserved_gb: 5.0, label: "MacBook Air 16GB".into() }
+        Self {
+            memory_gb: 16.0,
+            reserved_gb: 5.0,
+            label: "MacBook Air 16GB".into(),
+        }
     }
 
     pub fn macbook_pro_32gb() -> Self {
-        Self { memory_gb: 32.0, reserved_gb: 8.0, label: "MacBook Pro 32GB".into() }
+        Self {
+            memory_gb: 32.0,
+            reserved_gb: 8.0,
+            label: "MacBook Pro 32GB".into(),
+        }
     }
 
     pub fn rtx_5090_24gb() -> Self {
-        Self { memory_gb: 24.0, reserved_gb: 2.0, label: "RTX 5090 24GB VRAM".into() }
+        Self {
+            memory_gb: 24.0,
+            reserved_gb: 2.0,
+            label: "RTX 5090 24GB VRAM".into(),
+        }
     }
 
     /// Auto-compute reserves: 25% of total, minimum 3 GB.

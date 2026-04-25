@@ -74,10 +74,7 @@ impl SharedCompute {
         T: Any + Send + Sync + 'static,
         F: std::future::Future<Output = T>,
     {
-        let scope_map = self
-            .cache
-            .entry(scope.to_string())
-            .or_default();
+        let scope_map = self.cache.entry(scope.to_string()).or_default();
 
         let lazy = scope_map
             .entry(key.to_string())

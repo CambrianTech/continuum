@@ -122,10 +122,7 @@ pub trait GridTransport: Send + Sync {
     /// Announce our presence and capabilities on this transport.
     /// For Tailscale: no-op (Tailscale handles presence via its coordinator).
     /// For Reticulum: broadcast an announce packet with capability app_data.
-    async fn announce(
-        &self,
-        capabilities: &[NodeCapability],
-    ) -> Result<(), TransportError>;
+    async fn announce(&self, capabilities: &[NodeCapability]) -> Result<(), TransportError>;
 
     /// Gracefully shut down this transport.
     /// Close listener, drop connections, clean up resources.

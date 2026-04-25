@@ -33,5 +33,5 @@ pub use avatar::*;
 pub use builder::*;
 pub use lighting::*;
 pub use object::*;
-pub use room::{RoomConfig, select_scene_for_identity, scene_model_path};
+pub use room::{scene_model_path, select_scene_for_identity, RoomConfig};
 pub use slot::*;

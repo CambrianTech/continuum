@@ -552,7 +552,7 @@ Together, they enable **cognitive organisms** that are both responsive and robus
 
 ## References
 
-1. **CBAR Mobile-Home-SDK** - `/Volumes/FlashGordon/cambrian/cb-mobile-sdk` (C++/Unity AR project, 42fps on iPhone 7)
+1. **CBAR Mobile-Home-SDK** - `/Volumes/<external-drive>/cambrian/cb-mobile-sdk` (C++/Unity AR project, 42fps on iPhone 7)
 2. **THOUGHT-FRAME-ARCHITECTURE.md** - Detailed implementation specification
 3. **PERSONA-CONVERGENCE-ROADMAP.md** - Integration with autonomous loops and LoRA genomes
 4. **FreeRTOS Documentation** - Priority-based scheduling patterns

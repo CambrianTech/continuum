@@ -354,7 +354,7 @@ Consent-based attention establishes a foundation for ethical AI systems where co
 ## Appendix A: Implementation Code
 
 ```python
-# Full implementation at: /Volumes/FlashGordon/cambrian/sentinel-ai
+# Full implementation at: /Volumes/<external-drive>/cambrian/sentinel-ai
 # Key files:
 # - sentinel/models/adaptive_transformer.py
 # - sentinel/models/agency_specialization.py

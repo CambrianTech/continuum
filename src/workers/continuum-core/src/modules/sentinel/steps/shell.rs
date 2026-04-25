@@ -95,8 +95,16 @@ pub async fn execute(
                 }),
             })
         }
-        Ok(Err(e)) => Err(step_err(pipeline_ctx.handle_id, &format!("Shell step failed to execute '{actual_cmd}'"), e)),
-        Err(_) => Err(step_err(pipeline_ctx.handle_id, "Shell step", format!("timed out after {timeout_secs}s"))),
+        Ok(Err(e)) => Err(step_err(
+            pipeline_ctx.handle_id,
+            &format!("Shell step failed to execute '{actual_cmd}'"),
+            e,
+        )),
+        Err(_) => Err(step_err(
+            pipeline_ctx.handle_id,
+            "Shell step",
+            format!("timed out after {timeout_secs}s"),
+        )),
     }
 }
 

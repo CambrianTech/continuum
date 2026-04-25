@@ -16,10 +16,10 @@
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use ndarray::{Array2, ArrayD, IxDyn};
-use crate::live::audio::reloadable::ReloadableModel;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{Tensor, Value};
@@ -219,8 +219,28 @@ impl MoonshineStt {
     /// Build an ONNX session with standard settings
     fn build_session(model_path: &Path) -> Result<Session, STTError> {
         let threads = num_cpus::get().min(4);
-        Session::builder()
-            .map_err(|e| STTError::ModelNotLoaded(format!("Session builder failed: {e}")))?
+        let mut builder = Session::builder()
+            .map_err(|e| STTError::ModelNotLoaded(format!("Session builder failed: {e}")))?;
+        // GPU EP first → fall back to CPU for unsupported ops. Without this,
+        // Moonshine STT matmul ran on MLAS CPU kernels per voice input. See
+        // #964. Only attaches when the corresponding build feature +
+        // target_os are enabled — non-Mac/non-CUDA paths remain CPU-only
+        // with no behavior change.
+        #[cfg(all(feature = "coreml", target_os = "macos"))]
+        {
+            use ort::execution_providers::CoreMLExecutionProvider;
+            builder = builder
+                .with_execution_providers([CoreMLExecutionProvider::default().build()])
+                .map_err(|e| STTError::ModelNotLoaded(format!("CoreML EP register failed: {e}")))?;
+        }
+        #[cfg(all(feature = "cuda", not(target_os = "macos")))]
+        {
+            use ort::execution_providers::CUDAExecutionProvider;
+            builder = builder
+                .with_execution_providers([CUDAExecutionProvider::default().build()])
+                .map_err(|e| STTError::ModelNotLoaded(format!("CUDA EP register failed: {e}")))?;
+        }
+        builder
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| STTError::ModelNotLoaded(format!("Optimization level failed: {e}")))?
             .with_intra_threads(threads)
@@ -485,7 +505,9 @@ impl SpeechToText for MoonshineStt {
 
         MOONSHINE_MODEL
             .load_with(|| Ok::<_, STTError>(model))
-            .map_err(|e| STTError::ModelNotLoaded(format!("Failed to load Moonshine model: {e}")))?;
+            .map_err(|e| {
+                STTError::ModelNotLoaded(format!("Failed to load Moonshine model: {e}"))
+            })?;
 
         clog_info!("Moonshine: All models loaded successfully");
         Ok(())
@@ -496,13 +518,9 @@ impl SpeechToText for MoonshineStt {
         samples: Vec<f32>,
         _language: Option<&str>,
     ) -> Result<TranscriptResult, STTError> {
-        let model = MOONSHINE_MODEL
-            .get()
-            .ok_or_else(|| {
-                STTError::ModelNotLoaded(
-                    "Moonshine not initialized. Call initialize() first.".into(),
-                )
-            })?;
+        let model = MOONSHINE_MODEL.get().ok_or_else(|| {
+            STTError::ModelNotLoaded("Moonshine not initialized. Call initialize() first.".into())
+        })?;
 
         tokio::task::spawn_blocking(move || Self::transcribe_sync(&model, samples))
             .await

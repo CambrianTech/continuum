@@ -60,7 +60,10 @@ fn main() {
     // Skip if output already exists (idempotent)
     let output_model = output.join("model.safetensors");
     if output_model.exists() {
-        eprintln!("BF16 safetensors already exists at {:?} — skipping.", output_model);
+        eprintln!(
+            "BF16 safetensors already exists at {:?} — skipping.",
+            output_model
+        );
         return;
     }
 
@@ -210,7 +213,5 @@ fn dequantize(gguf_path: &Path, output_dir: &Path) -> Result<(), String> {
 }
 
 fn get_arg(args: &[String], flag: &str) -> Option<String> {
-    args.windows(2)
-        .find(|w| w[0] == flag)
-        .map(|w| w[1].clone())
+    args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
 }

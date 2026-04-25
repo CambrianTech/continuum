@@ -10,9 +10,7 @@ use super::types::{PipelineCheckpoint, PipelineStatus};
 /// Base directory for checkpoint storage
 fn checkpoints_dir() -> PathBuf {
     let home = dirs::home_dir().expect("Failed to resolve home directory");
-    home.join(".continuum")
-        .join("sentinel")
-        .join("checkpoints")
+    home.join(".continuum").join("sentinel").join("checkpoints")
 }
 
 /// Ensure the checkpoints directory exists
@@ -69,8 +67,8 @@ pub fn list_checkpoints() -> Result<Vec<PipelineCheckpoint>, String> {
     }
 
     let mut checkpoints = Vec::new();
-    let entries = std::fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read checkpoints dir: {e}"))?;
+    let entries =
+        std::fs::read_dir(&dir).map_err(|e| format!("Failed to read checkpoints dir: {e}"))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -191,7 +189,10 @@ mod tests {
 
     #[test]
     fn test_save_load_checkpoint() {
-        let handle = format!("test-ckpt-{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
+        let handle = format!(
+            "test-ckpt-{}",
+            uuid::Uuid::new_v4().to_string()[..8].to_string()
+        );
         let cp = make_test_checkpoint(&handle);
 
         save_checkpoint(&handle, &cp).unwrap();
@@ -207,7 +208,10 @@ mod tests {
 
     #[test]
     fn test_list_checkpoints() {
-        let handle = format!("test-list-{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
+        let handle = format!(
+            "test-list-{}",
+            uuid::Uuid::new_v4().to_string()[..8].to_string()
+        );
         let cp = make_test_checkpoint(&handle);
         save_checkpoint(&handle, &cp).unwrap();
 
@@ -219,7 +223,10 @@ mod tests {
 
     #[test]
     fn test_recover_interrupted() {
-        let handle = format!("test-recover-{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
+        let handle = format!(
+            "test-recover-{}",
+            uuid::Uuid::new_v4().to_string()[..8].to_string()
+        );
         let cp = make_test_checkpoint(&handle);
         save_checkpoint(&handle, &cp).unwrap();
 

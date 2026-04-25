@@ -56,6 +56,24 @@ impl FastEmbedProvider {
         options.model_name = fastembed::EmbeddingModel::AllMiniLML6V2;
         options.show_download_progress = true;
 
+        // Push a GPU execution provider FIRST so the embedding matmul lands
+        // on the GPU instead of MLAS CPU kernels. fastembed fires per chat
+        // message; without this, every message ate ~800% of M5 Pro CPU
+        // observed via `sample` — entire stack was MlasSgemmThreaded inside
+        // libonnxruntime. ORT chains EPs in order and falls back through
+        // the list per op, so CoreML/CUDA first → CPU last is safe (any op
+        // the GPU EP can't run silently routes to CPU). See #964.
+        #[cfg(all(feature = "coreml", target_os = "macos"))]
+        {
+            use ort::execution_providers::CoreMLExecutionProvider;
+            options.execution_providers = vec![CoreMLExecutionProvider::default().build()];
+        }
+        #[cfg(all(feature = "cuda", not(target_os = "macos")))]
+        {
+            use ort::execution_providers::CUDAExecutionProvider;
+            options.execution_providers = vec![CUDAExecutionProvider::default().build()];
+        }
+
         // ORT panics (instead of returning error) when libonnxruntime can't load.
         // catch_unwind prevents the panic from killing the process.
         let model_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -70,7 +88,9 @@ impl FastEmbedProvider {
                     .map(|s| s.as_str())
                     .or_else(|| panic_payload.downcast_ref::<&str>().copied())
                     .unwrap_or("unknown cause");
-                return Err(EmbeddingError(format!("ORT runtime panicked: {msg}. Check ORT_DYLIB_PATH.")));
+                return Err(EmbeddingError(format!(
+                    "ORT runtime panicked: {msg}. Check ORT_DYLIB_PATH."
+                )));
             }
         };
 

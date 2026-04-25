@@ -32,13 +32,18 @@ pub struct TailscaleConnection {
 #[async_trait]
 impl GridConnection for TailscaleConnection {
     async fn send_frame(&self, frame: &GridFrame) -> Result<(), TransportError> {
-        let bytes = frame.to_wire_bytes()
+        let bytes = frame
+            .to_wire_bytes()
             .map_err(|e| TransportError::IoError(e))?;
 
         let mut writer = self.writer.lock().await;
-        writer.write_all(&bytes).await
+        writer
+            .write_all(&bytes)
+            .await
             .map_err(|e| TransportError::IoError(format!("TCP write failed: {e}")))?;
-        writer.flush().await
+        writer
+            .flush()
+            .await
             .map_err(|e| TransportError::IoError(format!("TCP flush failed: {e}")))?;
         Ok(())
     }
@@ -48,28 +53,32 @@ impl GridConnection for TailscaleConnection {
 
         // Read 4-byte length prefix
         let mut len_buf = [0u8; 4];
-        reader.read_exact(&mut len_buf).await
+        reader
+            .read_exact(&mut len_buf)
+            .await
             .map_err(|e| TransportError::IoError(format!("TCP read length failed: {e}")))?;
         let len = u32::from_be_bytes(len_buf) as usize;
 
         // Sanity check frame size (max 64 MB)
         if len > 64 * 1024 * 1024 {
-            return Err(TransportError::IoError(
-                format!("Frame too large: {len} bytes (max 64 MB)")
-            ));
+            return Err(TransportError::IoError(format!(
+                "Frame too large: {len} bytes (max 64 MB)"
+            )));
         }
 
         // Read JSON payload
         let mut payload = vec![0u8; len];
-        reader.read_exact(&mut payload).await
+        reader
+            .read_exact(&mut payload)
+            .await
             .map_err(|e| TransportError::IoError(format!("TCP read payload failed: {e}")))?;
 
-        GridFrame::from_json_bytes(&payload)
-            .map_err(|e| TransportError::IoError(e))
+        GridFrame::from_json_bytes(&payload).map_err(|e| TransportError::IoError(e))
     }
 
     async fn close(&self) -> Result<(), TransportError> {
-        self.connected.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.connected
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -126,10 +135,9 @@ impl TailscaleTransport {
         *self.local_ip.lock().await = Some(ip.to_string());
 
         let bind_addr = format!("0.0.0.0:{}", self.port);
-        let listener = TcpListener::bind(&bind_addr).await
-            .map_err(|e| TransportError::ConnectionFailed(
-                format!("Failed to bind {bind_addr}: {e}")
-            ))?;
+        let listener = TcpListener::bind(&bind_addr).await.map_err(|e| {
+            TransportError::ConnectionFailed(format!("Failed to bind {bind_addr}: {e}"))
+        })?;
 
         *self.listener.lock().await = Some(Arc::new(listener));
         Ok(())
@@ -160,20 +168,21 @@ impl GridTransport for TailscaleTransport {
     async fn start(&self) -> Result<(), TransportError> {
         // Discover our own Tailscale IP
         let status = query_tailscale_status().await?;
-        let self_ip = status.tailscale_ips.first()
-            .ok_or_else(|| TransportError::NotReady(
-                "No Tailscale IP found — is Tailscale running?".into()
-            ))?
+        let self_ip = status
+            .tailscale_ips
+            .first()
+            .ok_or_else(|| {
+                TransportError::NotReady("No Tailscale IP found — is Tailscale running?".into())
+            })?
             .clone();
 
         *self.local_ip.lock().await = Some(self_ip.clone());
 
         // Bind TCP listener on all interfaces (Tailscale handles routing)
         let bind_addr = format!("0.0.0.0:{}", self.port);
-        let listener = TcpListener::bind(&bind_addr).await
-            .map_err(|e| TransportError::ConnectionFailed(
-                format!("Failed to bind {bind_addr}: {e}")
-            ))?;
+        let listener = TcpListener::bind(&bind_addr).await.map_err(|e| {
+            TransportError::ConnectionFailed(format!("Failed to bind {bind_addr}: {e}"))
+        })?;
 
         *self.listener.lock().await = Some(Arc::new(listener));
 
@@ -187,10 +196,10 @@ impl GridTransport for TailscaleTransport {
         let (ip, port) = match address {
             TransportAddress::Tailscale { ip, port, .. } => (ip.clone(), *port),
             other => {
-                return Err(TransportError::InvalidAddress(
-                    format!("TailscaleTransport cannot connect to {}: wrong transport type",
-                            other.display_address())
-                ));
+                return Err(TransportError::InvalidAddress(format!(
+                    "TailscaleTransport cannot connect to {}: wrong transport type",
+                    other.display_address()
+                )));
             }
         };
 
@@ -201,24 +210,34 @@ impl GridTransport for TailscaleTransport {
         )
         .await
         .map_err(|_| TransportError::Timeout(format!("Connect to {addr} timed out (10s)")))?
-        .map_err(|e| TransportError::ConnectionFailed(format!("TCP connect to {addr} failed: {e}")))?;
+        .map_err(|e| {
+            TransportError::ConnectionFailed(format!("TCP connect to {addr} failed: {e}"))
+        })?;
 
         // Disable Nagle's algorithm for low-latency frame exchange
-        stream.set_nodelay(true)
+        stream
+            .set_nodelay(true)
             .map_err(|e| TransportError::IoError(format!("set_nodelay failed: {e}")))?;
 
-        Ok(Box::new(TailscaleConnection::from_stream(stream, address.clone())))
+        Ok(Box::new(TailscaleConnection::from_stream(
+            stream,
+            address.clone(),
+        )))
     }
 
     async fn accept(&self) -> Result<Box<dyn GridConnection>, TransportError> {
         let listener = self.listener.lock().await;
-        let listener = listener.as_ref()
+        let listener = listener
+            .as_ref()
             .ok_or_else(|| TransportError::NotReady("Listener not started".into()))?;
 
-        let (stream, peer_addr) = listener.accept().await
+        let (stream, peer_addr) = listener
+            .accept()
+            .await
             .map_err(|e| TransportError::IoError(format!("TCP accept failed: {e}")))?;
 
-        stream.set_nodelay(true)
+        stream
+            .set_nodelay(true)
             .map_err(|e| TransportError::IoError(format!("set_nodelay failed: {e}")))?;
 
         let remote = TransportAddress::Tailscale {
@@ -233,13 +252,12 @@ impl GridTransport for TailscaleTransport {
     async fn discover(&self) -> Result<Vec<DiscoveredNode>, TransportError> {
         let status = query_tailscale_status().await?;
 
-        let nodes: Vec<DiscoveredNode> = status.peers
+        let nodes: Vec<DiscoveredNode> = status
+            .peers
             .into_iter()
             .filter(|p| p.online)
             .map(|peer| {
-                let ip = peer.tailscale_ips.first()
-                    .cloned()
-                    .unwrap_or_default();
+                let ip = peer.tailscale_ips.first().cloned().unwrap_or_default();
                 DiscoveredNode {
                     address: TransportAddress::Tailscale {
                         ip,
@@ -255,10 +273,7 @@ impl GridTransport for TailscaleTransport {
         Ok(nodes)
     }
 
-    async fn announce(
-        &self,
-        _capabilities: &[NodeCapability],
-    ) -> Result<(), TransportError> {
+    async fn announce(&self, _capabilities: &[NodeCapability]) -> Result<(), TransportError> {
         // Tailscale handles presence automatically via its coordinator.
         // No additional announcement needed.
         Ok(())
@@ -339,15 +354,13 @@ async fn query_tailscale_cli() -> Result<TailscaleStatus, TransportError> {
         .args(["status", "--json"])
         .output()
         .await
-        .map_err(|e| TransportError::NotReady(
-            format!("tailscale CLI not available: {e}")
-        ))?;
+        .map_err(|e| TransportError::NotReady(format!("tailscale CLI not available: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TransportError::NotReady(
-            format!("Tailscale CLI failed: {stderr}")
-        ));
+        return Err(TransportError::NotReady(format!(
+            "Tailscale CLI failed: {stderr}"
+        )));
     }
 
     parse_tailscale_json(&output.stdout)
@@ -367,7 +380,10 @@ async fn query_tailscale_file() -> Result<TailscaleStatus, TransportError> {
         if let Ok(bytes) = tokio::fs::read(path).await {
             match parse_tailscale_json(&bytes) {
                 Ok(status) => {
-                    eprintln!("[grid/tailscale] Using cached status from {}", path.display());
+                    eprintln!(
+                        "[grid/tailscale] Using cached status from {}",
+                        path.display()
+                    );
                     return Ok(status);
                 }
                 Err(e) => {
@@ -378,16 +394,15 @@ async fn query_tailscale_file() -> Result<TailscaleStatus, TransportError> {
     }
 
     Err(TransportError::NotReady(
-        "No tailscale CLI and no cached tailscale-status.json from host".into()
+        "No tailscale CLI and no cached tailscale-status.json from host".into(),
     ))
 }
 
 /// Parse raw Tailscale status JSON bytes into our TailscaleStatus.
 fn parse_tailscale_json(bytes: &[u8]) -> Result<TailscaleStatus, TransportError> {
-    let raw: RawTailscaleStatus = serde_json::from_slice(bytes)
-        .map_err(|e| TransportError::IoError(
-            format!("Failed to parse tailscale status JSON: {e}")
-        ))?;
+    let raw: RawTailscaleStatus = serde_json::from_slice(bytes).map_err(|e| {
+        TransportError::IoError(format!("Failed to parse tailscale status JSON: {e}"))
+    })?;
 
     // Self IPs may be at top level or in the Self node
     let self_ips = if !raw.tailscale_ips.is_empty() {
@@ -398,7 +413,8 @@ fn parse_tailscale_json(bytes: &[u8]) -> Result<TailscaleStatus, TransportError>
         vec![]
     };
 
-    let peers: Vec<TailscalePeer> = raw.peer
+    let peers: Vec<TailscalePeer> = raw
+        .peer
         .into_values()
         .map(|p| TailscalePeer {
             host_name: p.host_name,
@@ -448,7 +464,11 @@ mod tests {
         assert_eq!(self_ips, vec!["100.64.0.1"]);
         assert_eq!(raw.peer.len(), 2);
 
-        let bigmama = raw.peer.values().find(|p| p.host_name == "bigmama").unwrap();
+        let bigmama = raw
+            .peer
+            .values()
+            .find(|p| p.host_name == "bigmama")
+            .unwrap();
         assert!(bigmama.online);
         assert_eq!(bigmama.tailscale_ips[0], "100.124.122.107");
     }

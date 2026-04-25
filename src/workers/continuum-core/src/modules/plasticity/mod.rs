@@ -102,10 +102,8 @@ impl PlasticityModule {
 
         let topo = build_topology(&utilization, &config);
 
-        let (orig_bytes, quant_bytes) = quantizer::estimate_total_savings(
-            &topo,
-            infer_hidden_size(&utilization),
-        );
+        let (orig_bytes, quant_bytes) =
+            quantizer::estimate_total_savings(&topo, infer_hidden_size(&utilization));
 
         let result = types::AnalysisResult {
             topology: topo,
@@ -229,8 +227,7 @@ impl PlasticityModule {
 
         let result = pipeline::compress(&config)?;
 
-        let json = serde_json::to_value(&result)
-            .map_err(|e| format!("Serialize result: {e}"))?;
+        let json = serde_json::to_value(&result).map_err(|e| format!("Serialize result: {e}"))?;
         Ok(CommandResult::Json(json))
     }
 
@@ -242,8 +239,8 @@ impl PlasticityModule {
 
         let topo = topology::load_topology(&PathBuf::from(topo_path))?;
 
-        let json = serde_json::to_value(topo)
-            .map_err(|e| format!("Failed to serialize topology: {e}"))?;
+        let json =
+            serde_json::to_value(topo).map_err(|e| format!("Failed to serialize topology: {e}"))?;
         Ok(CommandResult::Json(json))
     }
 
@@ -286,17 +283,22 @@ impl PlasticityModule {
         let gradients_path = PathBuf::from(capture_path).join("gate_gradients.json");
         if !gradients_path.exists() {
             // Also check results subdirectory (RunPod capture downloads to results/)
-            let alt_path = PathBuf::from(capture_path).join("results").join("gate_gradients.json");
+            let alt_path = PathBuf::from(capture_path)
+                .join("results")
+                .join("gate_gradients.json");
             if !alt_path.exists() {
                 return Err(format!(
                     "gate_gradients.json not found in {} or {}/results/",
                     capture_path, capture_path
                 ));
             }
-            return self.run_pipeline(&alt_path, model_path, &output_dir, &config).await;
+            return self
+                .run_pipeline(&alt_path, model_path, &output_dir, &config)
+                .await;
         }
 
-        self.run_pipeline(&gradients_path, model_path, &output_dir, &config).await
+        self.run_pipeline(&gradients_path, model_path, &output_dir, &config)
+            .await
     }
 
     async fn run_pipeline(
@@ -306,7 +308,10 @@ impl PlasticityModule {
         output_dir: &Path,
         config: &types::CompactionConfig,
     ) -> Result<CommandResult, String> {
-        eprintln!("[plasticity/pipeline] Loading gate gradients from {}", gradients_path.display());
+        eprintln!(
+            "[plasticity/pipeline] Loading gate gradients from {}",
+            gradients_path.display()
+        );
         let utilization = topology::load_utilization_data(gradients_path)?;
 
         eprintln!(
@@ -333,8 +338,13 @@ impl PlasticityModule {
         );
 
         // 3. Create output directory
-        std::fs::create_dir_all(output_dir)
-            .map_err(|e| format!("Failed to create output directory {}: {}", output_dir.display(), e))?;
+        std::fs::create_dir_all(output_dir).map_err(|e| {
+            format!(
+                "Failed to create output directory {}: {}",
+                output_dir.display(),
+                e
+            )
+        })?;
 
         let output_file = output_dir.join("compacted_model.safetensors");
 
@@ -350,11 +360,7 @@ impl PlasticityModule {
         // 5. Also save analysis summary alongside
         let hidden_size = infer_hidden_size(&utilization);
         let (orig_bytes, quant_bytes) = quantizer::estimate_total_savings(&topo, hidden_size);
-        let layer_summaries = scoring::compute_layer_summaries(
-            &utilization,
-            &topo.layers,
-            config,
-        );
+        let layer_summaries = scoring::compute_layer_summaries(&utilization, &topo.layers, config);
 
         let analysis = types::AnalysisResult {
             topology: topo.clone(),
@@ -387,15 +393,21 @@ impl PlasticityModule {
 /// When `config.target_size_gb` is set, uses budget-aware allocation that optimally
 /// distributes precision tiers to fit within the target size. Otherwise falls back
 /// to fixed-threshold assignment.
-fn build_topology(utilization: &types::UtilizationData, config: &types::CompactionConfig) -> types::HeadTopology {
+fn build_topology(
+    utilization: &types::UtilizationData,
+    config: &types::CompactionConfig,
+) -> types::HeadTopology {
     let arch = lookup_model_arch(&utilization.model_name);
     let head_dim = arch.as_ref().map(|a| a.head_dim).unwrap_or(128);
-    let hidden_size = arch.as_ref().map(|a| a.hidden_size)
+    let hidden_size = arch
+        .as_ref()
+        .map(|a| a.hidden_size)
         .unwrap_or_else(|| utilization.num_heads * head_dim);
 
     let layers = if let Some(target_gb) = config.target_size_gb {
         // Budget-aware: fit the model into target_gb
-        let (intermediate_size, vocab_size) = arch.as_ref()
+        let (intermediate_size, vocab_size) = arch
+            .as_ref()
             .map(|a| (a.intermediate_size, a.vocab_size))
             .unwrap_or_else(|| {
                 // Reasonable defaults: intermediate ≈ 3.5× hidden, vocab ≈ 32K
@@ -518,37 +530,92 @@ fn lookup_model_arch(name: &str) -> Option<ModelArchConfig> {
     // Qwen 2.5 family (from HuggingFace config.json files)
     if name.contains("qwen2.5") || name.contains("qwen-2.5") {
         if name.contains("32b") {
-            return Some(ModelArchConfig { head_dim: 128, hidden_size: 5120, intermediate_size: 27648, vocab_size: 152064 });
+            return Some(ModelArchConfig {
+                head_dim: 128,
+                hidden_size: 5120,
+                intermediate_size: 27648,
+                vocab_size: 152064,
+            });
         } else if name.contains("14b") {
-            return Some(ModelArchConfig { head_dim: 128, hidden_size: 5120, intermediate_size: 13824, vocab_size: 152064 });
+            return Some(ModelArchConfig {
+                head_dim: 128,
+                hidden_size: 5120,
+                intermediate_size: 13824,
+                vocab_size: 152064,
+            });
         } else if name.contains("7b") {
-            return Some(ModelArchConfig { head_dim: 128, hidden_size: 3584, intermediate_size: 18944, vocab_size: 152064 });
+            return Some(ModelArchConfig {
+                head_dim: 128,
+                hidden_size: 3584,
+                intermediate_size: 18944,
+                vocab_size: 152064,
+            });
         } else if name.contains("3b") {
-            return Some(ModelArchConfig { head_dim: 128, hidden_size: 2048, intermediate_size: 11008, vocab_size: 152064 });
+            return Some(ModelArchConfig {
+                head_dim: 128,
+                hidden_size: 2048,
+                intermediate_size: 11008,
+                vocab_size: 152064,
+            });
         } else if name.contains("1.5b") {
-            return Some(ModelArchConfig { head_dim: 128, hidden_size: 1536, intermediate_size: 8960, vocab_size: 152064 });
+            return Some(ModelArchConfig {
+                head_dim: 128,
+                hidden_size: 1536,
+                intermediate_size: 8960,
+                vocab_size: 152064,
+            });
         } else if name.contains("0.5b") {
-            return Some(ModelArchConfig { head_dim: 64, hidden_size: 896, intermediate_size: 4864, vocab_size: 152064 });
+            return Some(ModelArchConfig {
+                head_dim: 64,
+                hidden_size: 896,
+                intermediate_size: 4864,
+                vocab_size: 152064,
+            });
         }
     }
 
     // Llama 3.x family
     if name.contains("llama-3.2-3b") || name.contains("llama-3.1") || name.contains("llama-3-") {
-        return Some(ModelArchConfig { head_dim: 128, hidden_size: 3072, intermediate_size: 8192, vocab_size: 128256 });
+        return Some(ModelArchConfig {
+            head_dim: 128,
+            hidden_size: 3072,
+            intermediate_size: 8192,
+            vocab_size: 128256,
+        });
     }
     if name.contains("llama-3.2-1b") {
-        return Some(ModelArchConfig { head_dim: 64, hidden_size: 2048, intermediate_size: 8192, vocab_size: 128256 });
+        return Some(ModelArchConfig {
+            head_dim: 64,
+            hidden_size: 2048,
+            intermediate_size: 8192,
+            vocab_size: 128256,
+        });
     }
 
     // SmolLM2 family
     if name.contains("smollm2-135m") {
-        return Some(ModelArchConfig { head_dim: 64, hidden_size: 576, intermediate_size: 1536, vocab_size: 49152 });
+        return Some(ModelArchConfig {
+            head_dim: 64,
+            hidden_size: 576,
+            intermediate_size: 1536,
+            vocab_size: 49152,
+        });
     }
     if name.contains("smollm2-360m") {
-        return Some(ModelArchConfig { head_dim: 64, hidden_size: 960, intermediate_size: 2560, vocab_size: 49152 });
+        return Some(ModelArchConfig {
+            head_dim: 64,
+            hidden_size: 960,
+            intermediate_size: 2560,
+            vocab_size: 49152,
+        });
     }
     if name.contains("smollm2-1.7b") || name.contains("smollm2") {
-        return Some(ModelArchConfig { head_dim: 64, hidden_size: 2048, intermediate_size: 8192, vocab_size: 49152 });
+        return Some(ModelArchConfig {
+            head_dim: 64,
+            hidden_size: 2048,
+            intermediate_size: 8192,
+            vocab_size: 49152,
+        });
     }
 
     None
@@ -709,13 +776,19 @@ mod tests {
         assert_eq!(topo.layers.len(), 64);
 
         // Should have some reduction since we're going from ~65GB BF16 to 20GB target
-        assert!(topo.parameter_reduction > 0.0, "Should have parameter reduction");
+        assert!(
+            topo.parameter_reduction > 0.0,
+            "Should have parameter reduction"
+        );
 
         // Precision profile should have a mix (not all BF16 — budget is tight)
         let pp = &topo.precision_profile;
         let total = pp.total_original();
         assert_eq!(total, 64 * 40, "Total heads should be 64 layers × 40 heads");
-        assert!(pp.bf16 < total, "Not all heads should be BF16 at 20GB target");
+        assert!(
+            pp.bf16 < total,
+            "Not all heads should be BF16 at 20GB target"
+        );
 
         eprintln!(
             "Budget-aware 32B → 20GB: removed={} ternary={} q2={} q4={} q8={} bf16={}, reduction={:.1}%",
@@ -757,7 +830,9 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_command() {
         let module = PlasticityModule::new();
-        let result = module.handle_command("plasticity/unknown", Value::Null).await;
+        let result = module
+            .handle_command("plasticity/unknown", Value::Null)
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unknown plasticity command"));
     }
@@ -765,7 +840,9 @@ mod tests {
     #[tokio::test]
     async fn test_analyze_missing_params() {
         let module = PlasticityModule::new();
-        let result = module.handle_command("plasticity/analyze", Value::Null).await;
+        let result = module
+            .handle_command("plasticity/analyze", Value::Null)
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("adapterPath"));
     }
@@ -773,7 +850,9 @@ mod tests {
     #[tokio::test]
     async fn test_compact_missing_params() {
         let module = PlasticityModule::new();
-        let result = module.handle_command("plasticity/compact", Value::Null).await;
+        let result = module
+            .handle_command("plasticity/compact", Value::Null)
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("adapterPath"));
     }
@@ -781,7 +860,9 @@ mod tests {
     #[tokio::test]
     async fn test_topology_missing_params() {
         let module = PlasticityModule::new();
-        let result = module.handle_command("plasticity/topology", Value::Null).await;
+        let result = module
+            .handle_command("plasticity/topology", Value::Null)
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("topologyPath"));
     }

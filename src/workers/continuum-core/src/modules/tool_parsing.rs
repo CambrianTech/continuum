@@ -59,10 +59,8 @@ impl ServiceModule for ToolParsingModule {
             "tool-parsing/parse" => {
                 let response_text = p.str("response_text")?;
                 let model_family = p.str_opt("model_family");
-                let result = tool_parsing::parse_and_correct_with_family(
-                    response_text,
-                    model_family,
-                );
+                let result =
+                    tool_parsing::parse_and_correct_with_family(response_text, model_family);
                 CommandResult::json(&result)
             }
 

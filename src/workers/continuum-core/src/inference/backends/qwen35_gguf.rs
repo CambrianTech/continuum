@@ -142,10 +142,7 @@ impl ModelBackend for Qwen35GgufBackend {
         }
 
         let log = runtime::logger("candle");
-        log.debug(&format!(
-            "Qwen3.5 batch prefilling {} tokens",
-            tokens.len()
-        ));
+        log.debug(&format!("Qwen3.5 batch prefilling {} tokens", tokens.len()));
 
         let input = Tensor::new(tokens, &self.device)
             .map_err(|e| format!("Tensor creation: {e}"))?

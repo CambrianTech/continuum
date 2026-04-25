@@ -139,8 +139,7 @@ pub struct EntitySchema {
 ///   modules/entity_schemas.rs  (this file)
 ///   ../../../../shared/generated/entity_schemas.json
 ///     \_ modules -> \_ src -> \_ continuum-core -> \_ workers -> \_ src
-const ENTITY_SCHEMAS_JSON: &str =
-    include_str!("../../../../shared/generated/entity_schemas.json");
+const ENTITY_SCHEMAS_JSON: &str = include_str!("../../../../shared/generated/entity_schemas.json");
 
 /// Lazy-load the entity schemas. First caller triggers parse + SHA check;
 /// subsequent callers get the cached map. Panics (with a clear message) on
@@ -228,8 +227,8 @@ fn parse_and_verify() -> Result<HashMap<String, EntitySchema>, String> {
     // First pass: parse as untyped Value so we can canonicalize + hash the
     // `entities` subtree exactly as TS emitted it. Avoids needing Serialize
     // derives on our typed structs just for hashing.
-    let raw: Value = serde_json::from_str(ENTITY_SCHEMAS_JSON)
-        .map_err(|e| format!("parse error: {}", e))?;
+    let raw: Value =
+        serde_json::from_str(ENTITY_SCHEMAS_JSON).map_err(|e| format!("parse error: {}", e))?;
 
     // Validate schema version + extract sha256 from the top level.
     let schema_version = raw
@@ -273,9 +272,8 @@ fn parse_and_verify() -> Result<HashMap<String, EntitySchema>, String> {
 
     // Second pass: now that the hash checks out, deserialize into typed
     // structs for consumers.
-    let entities: HashMap<String, EntitySchema> =
-        serde_json::from_value(entities_value.clone())
-            .map_err(|e| format!("typed parse of entities failed: {}", e))?;
+    let entities: HashMap<String, EntitySchema> = serde_json::from_value(entities_value.clone())
+        .map_err(|e| format!("typed parse of entities failed: {}", e))?;
 
     Ok(entities)
 }
@@ -283,8 +281,10 @@ fn parse_and_verify() -> Result<HashMap<String, EntitySchema>, String> {
 fn canonicalize_value(v: &Value) -> Value {
     match v {
         Value::Object(map) => {
-            let sorted: BTreeMap<&String, Value> =
-                map.iter().map(|(k, v)| (k, canonicalize_value(v))).collect();
+            let sorted: BTreeMap<&String, Value> = map
+                .iter()
+                .map(|(k, v)| (k, canonicalize_value(v)))
+                .collect();
             let mut out = serde_json::Map::new();
             for (k, v) in sorted {
                 out.insert(k.clone(), v);
@@ -316,7 +316,10 @@ mod tests {
     #[test]
     fn entity_schemas_load() {
         let schemas = get_entity_schemas();
-        assert!(!schemas.is_empty(), "ENTITY_REGISTRY walk yielded no entities");
+        assert!(
+            !schemas.is_empty(),
+            "ENTITY_REGISTRY walk yielded no entities"
+        );
         // Sanity: a well-known entity should resolve.
         assert!(
             schemas.contains_key("users"),

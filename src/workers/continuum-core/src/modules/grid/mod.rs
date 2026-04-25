@@ -138,11 +138,15 @@ impl ServiceModule for GridModule {
 
         // Enrich local capabilities by querying GPU module for hardware details
         if let Some((module, cmd)) = ctx.registry.route_command("gpu/stats") {
-            if let Ok(CommandResult::Json(gpu_json)) = module.handle_command(&cmd, serde_json::json!({})).await {
-                let gpu_name = gpu_json.get("gpu_name")
+            if let Ok(CommandResult::Json(gpu_json)) =
+                module.handle_command(&cmd, serde_json::json!({})).await
+            {
+                let gpu_name = gpu_json
+                    .get("gpu_name")
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                let vram = gpu_json.get("total_vram_mb")
+                let vram = gpu_json
+                    .get("total_vram_mb")
                     .and_then(|v| v.as_f64())
                     .map(|v| v as u64);
 
@@ -156,9 +160,11 @@ impl ServiceModule for GridModule {
                             vram_mb: vram,
                         });
                     }
-                    eprintln!("[grid] Local capabilities: GPU={}, VRAM={}MB",
+                    eprintln!(
+                        "[grid] Local capabilities: GPU={}, VRAM={}MB",
                         gpu_name.as_deref().unwrap_or("none"),
-                        vram.unwrap_or(0));
+                        vram.unwrap_or(0)
+                    );
                 }
             }
         }
@@ -166,7 +172,8 @@ impl ServiceModule for GridModule {
         for transport in &self.state.transports {
             match transport.start().await {
                 Ok(()) => {
-                    let addr = transport.local_address()
+                    let addr = transport
+                        .local_address()
                         .map(|a| a.display_address())
                         .unwrap_or_else(|| "unknown".into());
                     eprintln!("[grid] Transport '{}' started: {}", transport.name(), addr);
@@ -177,7 +184,10 @@ impl ServiceModule for GridModule {
                         "reticulum" => " — Reticulum transport not yet implemented",
                         _ => "",
                     };
-                    eprintln!("[grid] Transport '{}' not available: {e}{hint}", transport.name());
+                    eprintln!(
+                        "[grid] Transport '{}' not available: {e}{hint}",
+                        transport.name()
+                    );
                 }
             }
         }
@@ -209,19 +219,19 @@ impl ServiceModule for GridModule {
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         // Dispatch uses constants from commands.rs — no magic strings.
         match command {
-            commands::STATUS   => handlers::handle_status(&self.state).await,
-            commands::NODES    => handlers::handle_nodes(&self.state).await,
-            commands::PING     => handlers::handle_ping(&self.state, params).await,
-            commands::SEND     => handlers::handle_send(&self.state, params).await,
+            commands::STATUS => handlers::handle_status(&self.state).await,
+            commands::NODES => handlers::handle_nodes(&self.state).await,
+            commands::PING => handlers::handle_ping(&self.state, params).await,
+            commands::SEND => handlers::handle_send(&self.state, params).await,
             commands::DISCOVER => handlers::handle_discover(&self.state).await,
-            commands::PAIR     => handlers::handle_pair(&self.state, params).await,
-            commands::TRUST    => handlers::handle_trust(&self.state, params).await,
-            commands::AUDIT    => handlers::handle_audit(&self.state, params).await,
-            commands::ROUTE    => handlers::handle_route(&self.state, params).await,
+            commands::PAIR => handlers::handle_pair(&self.state, params).await,
+            commands::TRUST => handlers::handle_trust(&self.state, params).await,
+            commands::AUDIT => handlers::handle_audit(&self.state, params).await,
+            commands::ROUTE => handlers::handle_route(&self.state, params).await,
             commands::NODE_STATUS => handlers::handle_node_status(&self.state, params).await,
-            commands::JOB_SUBMIT  => handlers::handle_job_submit(&self.state, params).await,
+            commands::JOB_SUBMIT => handlers::handle_job_submit(&self.state, params).await,
             commands::JOB_CONTROL => handlers::handle_job_control(&self.state, params).await,
-            commands::JOB_QUEUE   => handlers::handle_job_queue(&self.state, params).await,
+            commands::JOB_QUEUE => handlers::handle_job_queue(&self.state, params).await,
             commands::SETUP_CHECK => handlers::handle_setup_check(&self.state).await,
             _ => Err(format!("Unknown grid command: {command}")),
         }
@@ -256,14 +266,18 @@ impl ServiceModule for GridModule {
         tokio::spawn(async move {
             let nodes = registry.all_nodes();
             for node in &nodes {
-                if node.trust_level == node::TrustLevel::Blocked { continue; }
+                if node.trust_level == node::TrustLevel::Blocked {
+                    continue;
+                }
                 for addr in &node.addresses {
                     if let node::TransportAddress::Tailscale { ip, port, .. } = addr {
                         let target = format!("{ip}:{port}");
                         match tokio::time::timeout(
                             Duration::from_secs(2),
                             tokio::net::TcpStream::connect(&target),
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(Ok(_)) => {
                                 registry.update_latency(&node.node_id, 0);
                             }
@@ -272,12 +286,18 @@ impl ServiceModule for GridModule {
                                 // Owner/Trusted nodes stay but age out of online_nodes().
                                 if node.trust_level == node::TrustLevel::default() {
                                     registry.remove(&node.node_id);
-                                    eprintln!("[grid] Removed unreachable node {} ({})",
-                                        node.node_name.as_deref().unwrap_or("?"), node.node_id);
+                                    eprintln!(
+                                        "[grid] Removed unreachable node {} ({})",
+                                        node.node_name.as_deref().unwrap_or("?"),
+                                        node.node_id
+                                    );
                                     if let Some(bus) = &bus {
-                                        bus.publish_async_only("grid:node:left", serde_json::json!({
-                                            "nodeId": node.node_id,
-                                        }));
+                                        bus.publish_async_only(
+                                            "grid:node:left",
+                                            serde_json::json!({
+                                                "nodeId": node.node_id,
+                                            }),
+                                        );
                                     }
                                 }
                             }

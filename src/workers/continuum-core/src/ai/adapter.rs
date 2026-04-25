@@ -117,7 +117,6 @@ pub enum LoRACapabilities {
     },
 }
 
-
 /// Information about a loaded LoRA adapter
 #[derive(Debug, Clone)]
 pub struct LoRAAdapterInfo {
@@ -206,7 +205,7 @@ pub trait AIProviderAdapter: Send + Sync {
         // Default: search available_models synchronously from cached list.
         // Adapters with runtime catalogs (DMR, cloud /v1/models) should
         // override this with their live data.
-        None  // Adapters MUST override — None means "I don't know my own models"
+        None // Adapters MUST override — None means "I don't know my own models"
     }
 
     /// Check if this adapter supports a specific capability
@@ -409,7 +408,10 @@ impl AdapterRegistry {
             let model_lower = model_name.to_lowercase();
             let cloud_match: Option<&str> = if model_lower.starts_with("claude") {
                 Some("anthropic")
-            } else if model_lower.starts_with("gpt") || model_lower.starts_with("o1") || model_lower.starts_with("o3") {
+            } else if model_lower.starts_with("gpt")
+                || model_lower.starts_with("o1")
+                || model_lower.starts_with("o3")
+            {
                 Some("openai")
             } else if model_lower.starts_with("deepseek") {
                 Some("deepseek")
@@ -509,7 +511,9 @@ mod tests {
     //! two would leave a phantom in `available()` after deregister, which
     //! is exactly the bug a DMR watchdog needs to NOT have.
     use super::*;
-    use crate::ai::types::{HealthStatus, ModelInfo, TextGenerationRequest, TextGenerationResponse};
+    use crate::ai::types::{
+        HealthStatus, ModelInfo, TextGenerationRequest, TextGenerationResponse,
+    };
 
     /// Minimal adapter for registry-shape tests. Doesn't actually do
     /// inference — every operation either no-ops or returns a stub.
@@ -519,14 +523,31 @@ mod tests {
 
     #[async_trait]
     impl AIProviderAdapter for StubAdapter {
-        fn provider_id(&self) -> &str { &self.id }
-        fn name(&self) -> &str { &self.id }
-        fn capabilities(&self) -> AdapterCapabilities { AdapterCapabilities::default() }
-        fn api_style(&self) -> ApiStyle { ApiStyle::Local }
-        fn default_model(&self) -> &str { "stub" }
-        async fn initialize(&mut self) -> Result<(), String> { Ok(()) }
-        async fn shutdown(&mut self) -> Result<(), String> { Ok(()) }
-        async fn generate_text(&self, _r: TextGenerationRequest) -> Result<TextGenerationResponse, String> {
+        fn provider_id(&self) -> &str {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            &self.id
+        }
+        fn capabilities(&self) -> AdapterCapabilities {
+            AdapterCapabilities::default()
+        }
+        fn api_style(&self) -> ApiStyle {
+            ApiStyle::Local
+        }
+        fn default_model(&self) -> &str {
+            "stub"
+        }
+        async fn initialize(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn shutdown(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn generate_text(
+            &self,
+            _r: TextGenerationRequest,
+        ) -> Result<TextGenerationResponse, String> {
             Err("stub adapter — no inference".into())
         }
         async fn health_check(&self) -> HealthStatus {
@@ -539,9 +560,15 @@ mod tests {
                 message: Some("stub".to_string()),
             }
         }
-        async fn get_available_models(&self) -> Vec<ModelInfo> { Vec::new() }
-        fn device_type(&self) -> InferenceDevice { InferenceDevice::Gpu }
-        fn supports_model(&self, _model: &str) -> bool { true }
+        async fn get_available_models(&self) -> Vec<ModelInfo> {
+            Vec::new()
+        }
+        fn device_type(&self) -> InferenceDevice {
+            InferenceDevice::Gpu
+        }
+        fn supports_model(&self, _model: &str) -> bool {
+            true
+        }
     }
 
     fn stub(id: &str) -> Box<dyn AIProviderAdapter> {
@@ -560,7 +587,10 @@ mod tests {
         assert!(!r.is_registered("dmr"));
 
         let available = r.available();
-        assert!(!available.contains(&"dmr"), "dmr must be gone from available()");
+        assert!(
+            !available.contains(&"dmr"),
+            "dmr must be gone from available()"
+        );
         assert!(available.contains(&"vulkan"));
         assert!(available.contains(&"cloud"));
     }

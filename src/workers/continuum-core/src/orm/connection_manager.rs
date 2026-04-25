@@ -62,7 +62,15 @@ impl Default for ConnectionManagerConfig {
 struct ManagedPool {
     /// The underlying adapter
     adapter: Arc<RwLock<SqliteAdapter>>,
-    /// Last access time for LRU tracking
+    /// Last access time for LRU tracking. Stored in NANOSECONDS since
+    /// UNIX_EPOCH so that two consecutive operations within the same
+    /// millisecond produce strictly increasing timestamps. Storing
+    /// milliseconds caused `test_lru_eviction` to flake because all
+    /// three pool ops in the test happened within < 1 ms, leaving
+    /// `evict_lru` to break ties via DashMap iteration order
+    /// (non-deterministic). Nanos cast u128 → u64 truncates the high
+    /// bits but the current epoch nanos (~1.7e18) fit in u64 with
+    /// hundreds of years of headroom.
     last_access: AtomicU64,
     /// Database path (stored for debugging/logging)
     #[allow(dead_code)]
@@ -73,25 +81,25 @@ impl ManagedPool {
     fn new(adapter: SqliteAdapter, path: PathBuf) -> Self {
         Self {
             adapter: Arc::new(RwLock::new(adapter)),
-            last_access: AtomicU64::new(Self::now_millis()),
+            last_access: AtomicU64::new(Self::now_nanos()),
             path,
         }
     }
 
     fn touch(&self) {
         self.last_access
-            .store(Self::now_millis(), Ordering::Relaxed);
+            .store(Self::now_nanos(), Ordering::Relaxed);
     }
 
-    fn last_access_millis(&self) -> u64 {
+    fn last_access_nanos(&self) -> u64 {
         self.last_access.load(Ordering::Relaxed)
     }
 
-    fn now_millis() -> u64 {
+    fn now_nanos() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as u64
+            .as_nanos() as u64
     }
 }
 
@@ -161,7 +169,7 @@ impl ConnectionManager {
         let mut oldest: Option<(PathBuf, u64)> = None;
 
         for entry in self.pools.iter() {
-            let last_access = entry.value().last_access_millis();
+            let last_access = entry.value().last_access_nanos();
             match &oldest {
                 None => oldest = Some((entry.key().clone(), last_access)),
                 Some((_, oldest_time)) if last_access < *oldest_time => {
@@ -184,13 +192,13 @@ impl ConnectionManager {
 
     /// Evict pools that have been idle too long
     pub async fn evict_idle(&self) -> Result<usize, String> {
-        let cutoff = ManagedPool::now_millis() - self.config.idle_timeout.as_millis() as u64;
+        let cutoff = ManagedPool::now_nanos() - self.config.idle_timeout.as_nanos() as u64;
         let mut evicted = 0;
 
         let idle_paths: Vec<PathBuf> = self
             .pools
             .iter()
-            .filter(|entry| entry.value().last_access_millis() < cutoff)
+            .filter(|entry| entry.value().last_access_nanos() < cutoff)
             .map(|entry| entry.key().clone())
             .collect();
 

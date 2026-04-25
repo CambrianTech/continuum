@@ -409,7 +409,7 @@ npx tsx tests/integration/genome-fine-tuning-e2e.test.ts
 
 ### Test Data
 ```
-/Volumes/FlashGordon/cambrian/datasets/prepared/fine-tuning-test.jsonl
+/Volumes/<external-drive>/cambrian/datasets/prepared/fine-tuning-test.jsonl
 ```
 
 Small dataset (< 100 examples) for testing with real APIs.

@@ -12,13 +12,11 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::ai::types::CostPer1kTokens;
 use crate::ai::{
     AIProviderAdapter, ActiveAdapterRequest, AdapterCapabilities, AdapterConfig, ApiStyle,
     FinishReason, HealthState, HealthStatus, LoRAAdapterInfo, LoRACapabilities, ModelCapability,
     ModelInfo, RoutingInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
-};
-use crate::ai::types::{
-    CostPer1kTokens,
 };
 use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
@@ -113,6 +111,21 @@ impl CandleAdapter {
         let config = backends::llamacpp::LlamaCppConfig {
             model_path: std::path::PathBuf::from(model_path),
             n_seq_max: local_inference_capacity() as u32,
+            // Clamp to 32768 tokens. Qwen3.5-4b's GGUF advertises
+            // n_ctx_train=262144, but allocating F16 KV cache for
+            // that window on a Mac's unified memory (3 seq × 262144
+            // × 32 layers × 2 × 128 head_dim × 4 kv_heads × 2 bytes
+            // ≈ 51 GB) reliably fails first-decode with
+            // `llama_decode returned -3` — not a batch issue, a
+            // "context create nominally succeeded but the first
+            // batch couldn't find enough KV scratch" failure. 32768
+            // tokens matches DMR's default and comfortably holds
+            // the largest persona RAG context we currently build
+            // (system+history+tools < 8k tokens for every persona
+            // path I've observed). Raise this ceiling only after
+            // the footprint_registry can report actual KV bytes
+            // per seq and we have telemetry proving headroom.
+            context_length: Some(32768),
             ..Default::default()
         };
         let backend = backends::llamacpp::LlamaCppBackend::load(config)?;
@@ -411,8 +424,7 @@ fn inference_inner(
     if backend_guard.is_none() {
         log.info(&format!("Loading model: {}", resolved_model));
         let model: Box<dyn ModelBackend> = if use_quantized {
-            load_default_quantized()
-                .map_err(|e| format!("Failed to load quantized model: {e}"))?
+            load_default_quantized().map_err(|e| format!("Failed to load quantized model: {e}"))?
         } else if let Some(local_dir) = find_local_model(resolved_model) {
             // Local GGUF model found — load from disk (no download needed)
             log.info(&format!("Found local model: {:?}", local_dir));
@@ -427,13 +439,20 @@ fn inference_inner(
         let vram_bytes = model.estimated_vram_bytes();
         log.info(&format!(
             "Model loaded: arch={}, format={:?}, context_length={}, model_id={}, vram={:.0}MB",
-            model.architecture(), model.format(), model.context_length(), model.model_id(),
+            model.architecture(),
+            model.format(),
+            model.context_length(),
+            model.model_id(),
             vram_bytes as f64 / (1024.0 * 1024.0)
         ));
 
         if let Some(mgr) = &gpu_mgr {
             if vram_bytes > 0 {
-                match mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Interactive) {
+                match mgr.allocate(
+                    GpuSubsystem::Inference,
+                    vram_bytes,
+                    GpuPriority::Interactive,
+                ) {
                     Ok(guard) => {
                         mgr.eviction_registry.register(make_entry(
                             &format!("candle:model:{}", model.model_id()),
@@ -546,7 +565,10 @@ impl AIProviderAdapter for CandleAdapter {
                     }
                     let path_str = match local_gguf.to_str() {
                         Some(s) => s.to_string(),
-                        None => { log.warn("Eager-load: non-utf8 GGUF path"); return; }
+                        None => {
+                            log.warn("Eager-load: non-utf8 GGUF path");
+                            return;
+                        }
                     };
                     let load_start = std::time::Instant::now();
                     let n_seq_max = local_inference_capacity() as u32;
@@ -557,7 +579,8 @@ impl AIProviderAdapter for CandleAdapter {
                             ..Default::default()
                         };
                         backends::llamacpp::LlamaCppBackend::load(config)
-                    }).await;
+                    })
+                    .await;
                     match result {
                         Ok(Ok(backend)) => {
                             log.info(&format!(
@@ -575,7 +598,9 @@ impl AIProviderAdapter for CandleAdapter {
                     }
                 });
             } else {
-                log.info("Eager-load skipped: no local GGUF found in ~/.cache/huggingface or models dir");
+                log.info(
+                    "Eager-load skipped: no local GGUF found in ~/.cache/huggingface or models dir",
+                );
             }
         }
         Ok(())
@@ -603,10 +628,14 @@ impl AIProviderAdapter for CandleAdapter {
             self.use_quantized, self as *const _
         ));
 
-        let max_tokens = request.max_tokens
-            .ok_or_else(|| "max_tokens is required for local inference".to_string())? as usize;
-        let temperature = request.temperature
-            .ok_or_else(|| "temperature is required for local inference".to_string())? as f64;
+        let max_tokens = request
+            .max_tokens
+            .ok_or_else(|| "max_tokens is required for local inference".to_string())?
+            as usize;
+        let temperature = request
+            .temperature
+            .ok_or_else(|| "temperature is required for local inference".to_string())?
+            as f64;
         // Build sampling config — all values from caller, no silent defaults.
         // top_k=0 and top_p=1.0 mean "disabled" — these are safe defaults
         // because they don't change behavior (no filtering applied).
@@ -616,6 +645,9 @@ impl AIProviderAdapter for CandleAdapter {
             repeat_penalty: request.repeat_penalty.unwrap_or(1.0),
             top_k: request.top_k.unwrap_or(0) as usize,
             top_p: request.top_p.unwrap_or(1.0) as f64,
+            // Grammar wiring disabled pending diagnosis (see llamacpp_adapter
+            // commit revert note). Cognition parser tolerates non-JSON.
+            grammar: None,
         };
 
         // Apply LoRA adapters if requested
@@ -629,11 +661,12 @@ impl AIProviderAdapter for CandleAdapter {
         // Resolve requested model — MUST be explicitly provided.
         // Silent defaults to models that may not exist on the user's machine cause
         // mysterious failures or wrong-model bugs.
-        let requested_model = request.model.as_deref()
-            .ok_or_else(|| format!(
+        let requested_model = request.model.as_deref().ok_or_else(|| {
+            format!(
                 "model is required for local inference. Available: 'coder' (14B GGUF), \
                  'coder-bf16' (14B BF16). Got no model in request."
-            ))?;
+            )
+        })?;
         let model_id = resolve_model_id(requested_model);
 
         // Build prompt using the correct chat template for this model.
@@ -671,7 +704,11 @@ impl AIProviderAdapter for CandleAdapter {
             if let Err(e) = std::fs::write(prompt_file, &prompt) {
                 log.warn(&format!("Failed to dump prompt to {}: {}", prompt_file, e));
             } else {
-                log.info(&format!("Prompt dumped to {} ({} chars)", prompt_file, prompt.len()));
+                log.info(&format!(
+                    "Prompt dumped to {} ({} chars)",
+                    prompt_file,
+                    prompt.len()
+                ));
             }
         }
 
@@ -685,7 +722,11 @@ impl AIProviderAdapter for CandleAdapter {
             let backend_guard = self.backend.read();
             backend_guard.as_ref().and_then(|wrapper| {
                 let loaded = wrapper.0.model_id();
-                if loaded != model_id { Some(loaded.to_string()) } else { None }
+                if loaded != model_id {
+                    Some(loaded.to_string())
+                } else {
+                    None
+                }
             })
         };
         if let Some(old_model_id) = needs_switch {
@@ -699,7 +740,8 @@ impl AIProviderAdapter for CandleAdapter {
             self.active_adapters.write().clear();
             self.adapter_guards.write().clear();
             if let Some(mgr) = &self.gpu_manager {
-                mgr.eviction_registry.unregister(&format!("candle:model:{}", old_model_id));
+                mgr.eviction_registry
+                    .unregister(&format!("candle:model:{}", old_model_id));
             }
         }
 
@@ -731,7 +773,8 @@ impl AIProviderAdapter for CandleAdapter {
             self.llamacpp_backend.clone(),
             self.llamacpp_load_gate.clone(),
             &model_id,
-        ).await?;
+        )
+        .await?;
 
         // The continuous-batching scheduler IS the gate now: capacity is
         // bounded by `n_seq_max` inside llama.cpp, and overflow requests
@@ -746,18 +789,27 @@ impl AIProviderAdapter for CandleAdapter {
         // no block_in_place pinning a worker, no guard held across await.
         // We clone the Arc<LlamaCppBackend> out of the RwLock so the guard
         // is dropped before we cross into the blocking task.
-        let llama_arc = self.llamacpp_backend.read()
+        let llama_arc = self
+            .llamacpp_backend
+            .read()
             .as_ref()
             .cloned()
             .ok_or_else(|| "llama.cpp backend not loaded after load attempt".to_string())?;
         let prompt_for_gen = prompt.clone();
-        let temperature = sampling.temperature as f32;
+        let sampling_for_gen = sampling.clone();
         let (output_text, completion_tokens) = tokio::task::spawn_blocking(move || {
             let stop_tokens: [&str; 2] = ["<|im_end|>", "<|endoftext|>"];
-            llama_arc.generate(&prompt_for_gen, max_tokens, temperature, &stop_tokens, &[])
-        }).await
-            .map_err(|e| format!("llama.cpp generate task panicked: {e}"))?
-            .map_err(|e| format!("llama.cpp generate failed: {e}"))?;
+            llama_arc.generate(
+                &prompt_for_gen,
+                max_tokens,
+                sampling_for_gen,
+                &stop_tokens,
+                &[],
+            )
+        })
+        .await
+        .map_err(|e| format!("llama.cpp generate task panicked: {e}"))?
+        .map_err(|e| format!("llama.cpp generate failed: {e}"))?;
         let new_model_guard: Option<GpuAllocationGuard> = None;
 
         // Store model guard if this was a first load
@@ -852,8 +904,11 @@ impl AIProviderAdapter for CandleAdapter {
             capabilities: vec![ModelCapability::TextGeneration, ModelCapability::Chat],
             context_window: DEFAULT_CONTEXT_WINDOW,
             max_output_tokens: 4096,
-            cost_per_1k_tokens: CostPer1kTokens { input: 0.0, output: 0.0 },
-                    tokens_per_second: 15.0, // Local inference — updated at runtime from actual measurements
+            cost_per_1k_tokens: CostPer1kTokens {
+                input: 0.0,
+                output: 0.0,
+            },
+            tokens_per_second: 15.0, // Local inference — updated at runtime from actual measurements
             supports_streaming: false,
             supports_tools: false,
         }]
@@ -899,7 +954,10 @@ impl AIProviderAdapter for CandleAdapter {
 /// Model registry entry loaded from model_registry.json (embedded at compile time).
 /// TypeScript gets these types via ts-rs — NO hand-written duplicates.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../shared/generated/inference/ModelRegistryEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/inference/ModelRegistryEntry.ts"
+)]
 pub struct ModelRegistryEntry {
     /// HuggingFace repo ID (canonical source)
     pub repo: String,
@@ -922,7 +980,10 @@ pub struct ModelRegistryEntry {
 
 /// Full model registry — maps aliases to model entries.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../shared/generated/inference/ModelRegistry.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/inference/ModelRegistry.ts"
+)]
 pub struct ModelRegistry {
     pub models: HashMap<String, ModelRegistryEntry>,
 }
@@ -932,7 +993,9 @@ pub fn load_registry() -> ModelRegistry {
     let json = include_str!("model_registry.json");
     serde_json::from_str(json).unwrap_or_else(|e| {
         runtime::logger("candle").error(&format!("Failed to parse model registry: {e}"));
-        ModelRegistry { models: HashMap::new() }
+        ModelRegistry {
+            models: HashMap::new(),
+        }
     })
 }
 
@@ -958,7 +1021,8 @@ pub fn resolve_model_id(requested: &str) -> String {
 
     // Fallback: treat as HF repo ID
     runtime::logger("candle").warn(&format!(
-        "Model '{}' not in registry — treating as HuggingFace repo ID", requested
+        "Model '{}' not in registry — treating as HuggingFace repo ID",
+        requested
     ));
     requested.to_string()
 }
@@ -999,15 +1063,23 @@ fn storage_root() -> std::path::PathBuf {
 fn find_first_local_gguf() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let hf_cache = std::path::PathBuf::from(&home).join(".cache/huggingface/hub");
-    if !hf_cache.exists() { return None; }
+    if !hf_cache.exists() {
+        return None;
+    }
     for entry in std::fs::read_dir(&hf_cache).ok()?.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if !name_str.starts_with("models--") { continue; }
+        if !name_str.starts_with("models--") {
+            continue;
+        }
         let snapshots = entry.path().join("snapshots");
-        let Ok(snaps) = std::fs::read_dir(&snapshots) else { continue; };
+        let Ok(snaps) = std::fs::read_dir(&snapshots) else {
+            continue;
+        };
         for snap in snaps.flatten() {
-            let Ok(files) = std::fs::read_dir(snap.path()) else { continue; };
+            let Ok(files) = std::fs::read_dir(snap.path()) else {
+                continue;
+            };
             for f in files.flatten() {
                 let p = f.path();
                 if p.extension().and_then(|s| s.to_str()) == Some("gguf") {
@@ -1047,8 +1119,7 @@ async fn ensure_llamacpp_loaded_async(
             "No GGUF for model '{}'. Ensure the model is downloaded to ~/.continuum/genome/models or HF cache.",
             model_id
         ))?;
-    let path_str = gguf_path.to_str()
-        .ok_or("non-utf8 model path")?.to_string();
+    let path_str = gguf_path.to_str().ok_or("non-utf8 model path")?.to_string();
     log.info(&format!("Loading llama.cpp backend: {}", path_str));
     let load_start = std::time::Instant::now();
     let backend = tokio::task::spawn_blocking(move || {
@@ -1058,8 +1129,9 @@ async fn ensure_llamacpp_loaded_async(
             ..Default::default()
         };
         backends::llamacpp::LlamaCppBackend::load(config)
-    }).await
-        .map_err(|e| format!("llama.cpp load task panicked: {e}"))??;
+    })
+    .await
+    .map_err(|e| format!("llama.cpp load task panicked: {e}"))??;
     log.info(&format!(
         "llama.cpp backend ready ({:.2}s)",
         load_start.elapsed().as_secs_f64()
@@ -1088,12 +1160,18 @@ fn find_local_gguf(model_id: &str) -> Option<std::path::PathBuf> {
     // Fall back to HF cache
     let home = std::env::var("HOME").ok()?;
     let hf_cache = std::path::PathBuf::from(&home).join(".cache/huggingface/hub");
-    if !hf_cache.exists() { return None; }
+    if !hf_cache.exists() {
+        return None;
+    }
     for entry in std::fs::read_dir(&hf_cache).ok()?.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         // Match "models--*<model_id>*" or a fuzzy match on slug
-        if name_str.starts_with("models--") && name_str.to_lowercase().contains(&model_id.to_lowercase().replace('/', "--")) {
+        if name_str.starts_with("models--")
+            && name_str
+                .to_lowercase()
+                .contains(&model_id.to_lowercase().replace('/', "--"))
+        {
             // Look inside snapshots/<hash>/ for a .gguf file
             let snapshots = entry.path().join("snapshots");
             if let Ok(snaps) = std::fs::read_dir(&snapshots) {
@@ -1156,15 +1234,13 @@ fn find_model_in_dir(model_id: &str, models_dir: &std::path::Path) -> Option<std
         let has_gguf = std::fs::read_dir(&path)
             .ok()
             .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .any(|e| {
-                        e.path()
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            .map(|ext| ext == "gguf")
-                            .unwrap_or(false)
-                    })
+                entries.filter_map(|e| e.ok()).any(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext == "gguf")
+                        .unwrap_or(false)
+                })
             })
             .unwrap_or(false);
 
@@ -1177,8 +1253,10 @@ fn find_model_in_dir(model_id: &str, models_dir: &std::path::Path) -> Option<std
 
             // Match "continuum-ai/qwen2.5-coder-32b-compacted" against "qwen32b-compacted-v3"
             // Must also match size indicator (14b, 32b) to avoid confusing 14B and 32B models
-            if model_lower.contains("qwen") && model_lower.contains("compacted")
-                && dir_name.contains("qwen") && dir_name.contains("compacted")
+            if model_lower.contains("qwen")
+                && model_lower.contains("compacted")
+                && dir_name.contains("qwen")
+                && dir_name.contains("compacted")
             {
                 // Extract size indicator from model_id (e.g., "14b", "32b")
                 let size_match = ["14b", "32b", "7b", "3b", "1b"]
@@ -1394,7 +1472,10 @@ mod tests {
 
     #[test]
     fn test_qwen2_prompt_with_system() {
-        let messages = vec![msg("system", "You are a coding agent."), msg("user", "Write code")];
+        let messages = vec![
+            msg("system", "You are a coding agent."),
+            msg("user", "Write code"),
+        ];
         let prompt = build_prompt_from_messages(&messages, "qwen2");
 
         assert!(prompt.contains("<|im_start|>system\nYou are a coding agent.<|im_end|>"));

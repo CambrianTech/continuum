@@ -252,26 +252,17 @@ impl ExternalWebviewAuthService {
         let config_arc = config.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = run_redirect_catcher(
-                config_arc,
-                pending_arc,
-                tokens_arc,
-                http_arc,
-                ready_tx,
-            )
-            .await
+            if let Err(e) =
+                run_redirect_catcher(config_arc, pending_arc, tokens_arc, http_arc, ready_tx).await
             {
                 eprintln!("[auth] Redirect catcher error: {e}");
             }
         });
 
-        let actual_port = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            ready_rx,
-        )
-        .await
-        .map_err(|_| "Redirect server did not start within 5 seconds".to_string())?
-        .map_err(|_| "Redirect server channel dropped".to_string())??;
+        let actual_port = tokio::time::timeout(std::time::Duration::from_secs(5), ready_rx)
+            .await
+            .map_err(|_| "Redirect server did not start within 5 seconds".to_string())?
+            .map_err(|_| "Redirect server channel dropped".to_string())??;
 
         open_browser(&auth_url);
 
@@ -434,20 +425,17 @@ async fn run_redirect_catcher(
     use axum::{extract::Query, response::Html, routing::get, Router};
     use std::collections::HashMap as QMap;
 
-    let listener = match tokio::net::TcpListener::bind(
-        format!("127.0.0.1:{}", config.redirect_port),
-    )
-    .await
-    {
-        Ok(l) => l,
-        Err(e) => {
-            let _ = ready_tx.send(Err(format!(
-                "Cannot bind redirect server on port {}: {e}",
-                config.redirect_port
-            )));
-            return Err(e.to_string());
-        }
-    };
+    let listener =
+        match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", config.redirect_port)).await {
+            Ok(l) => l,
+            Err(e) => {
+                let _ = ready_tx.send(Err(format!(
+                    "Cannot bind redirect server on port {}: {e}",
+                    config.redirect_port
+                )));
+                return Err(e.to_string());
+            }
+        };
 
     let actual_port = listener
         .local_addr()
@@ -481,8 +469,7 @@ async fn run_redirect_catcher(
                 let http = http.clone();
                 let done = done.clone();
                 async move {
-                    let result =
-                        handle_callback(params, config, pending, tokens, http).await;
+                    let result = handle_callback(params, config, pending, tokens, http).await;
                     // Trigger graceful shutdown after the first callback.
                     if let Some(tx) = done.lock().await.take() {
                         let _ = tx.send(());
@@ -604,8 +591,9 @@ fn build_auth_url(config: &OAuthClientConfig, code_challenge: &str, state: &str)
         let mut out = String::with_capacity(s.len());
         for b in s.bytes() {
             match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-                | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char)
+                }
                 _ => out.push_str(&format!("%{b:02X}")),
             }
         }
@@ -637,16 +625,10 @@ fn parse_token_response(resp: &Value) -> TokenSet {
     });
 
     TokenSet {
-        access_token: resp["access_token"]
-            .as_str()
-            .unwrap_or("")
-            .to_string(),
+        access_token: resp["access_token"].as_str().unwrap_or("").to_string(),
         refresh_token: resp["refresh_token"].as_str().map(str::to_string),
         expires_at: expires_at.unwrap_or(0),
-        token_type: resp["token_type"]
-            .as_str()
-            .unwrap_or("bearer")
-            .to_string(),
+        token_type: resp["token_type"].as_str().unwrap_or("bearer").to_string(),
         scope: resp["scope"].as_str().map(str::to_string),
     }
 }
@@ -656,8 +638,14 @@ fn parse_token_response(resp: &Value) -> TokenSet {
 fn persist_tokens(provider_id: &str, token_set: &TokenSet) -> Result<(), String> {
     let prefix = provider_id.to_uppercase().replace('-', "_");
     let mut updates = vec![
-        (format!("{prefix}_ACCESS_TOKEN"), token_set.access_token.clone()),
-        (format!("{prefix}_TOKEN_EXPIRES_AT"), token_set.expires_at.to_string()),
+        (
+            format!("{prefix}_ACCESS_TOKEN"),
+            token_set.access_token.clone(),
+        ),
+        (
+            format!("{prefix}_TOKEN_EXPIRES_AT"),
+            token_set.expires_at.to_string(),
+        ),
     ];
     if let Some(rt) = &token_set.refresh_token {
         updates.push((format!("{prefix}_REFRESH_TOKEN"), rt.clone()));

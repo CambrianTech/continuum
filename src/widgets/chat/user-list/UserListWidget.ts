@@ -31,6 +31,32 @@ import './PersonaTile';
 // Verbose logging helper
 const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
 
+/**
+ * Compact model identifier for the persona-tile badge. Strips publisher
+ * prefixes (`continuum-ai/`, `unsloth/`, etc.) and trailing variant suffixes
+ * (`-instruct`, `-Instruct`, `-GGUF`, `-forged`) so what's left is the part
+ * the user recognizes. Falls back to the provider when no model is set.
+ *
+ * Examples:
+ *   `qwen2-vl-7b-instruct`                  → `qwen2-vl-7b`
+ *   `continuum-ai/qwen3.5-4b-code-forged`   → `qwen3.5-4b-code`
+ *   `claude-opus-4-7`                       → `claude-opus-4-7`
+ *   `gpt-4o-mini`                           → `gpt-4o-mini`
+ */
+function formatModelBadge(model: string, provider: string): string {
+  const raw = model || provider || '';
+  if (!raw) return '';
+  // Drop everything before the final `/` — that's a publisher / namespace,
+  // not part of the model name the user recognizes.
+  const lastSlash = raw.lastIndexOf('/');
+  let name = lastSlash >= 0 ? raw.slice(lastSlash + 1) : raw;
+  // Drop common variant suffixes — they're noise on the badge.
+  name = name.replace(/-(instruct|Instruct|chat|Chat|GGUF|gguf|forged|Forged)$/i, '');
+  // Cap length so long ids don't blow the layout.
+  if (name.length > 18) name = name.slice(0, 17) + '…';
+  return name;
+}
+
 export class UserListWidget extends ReactiveListWidget<UserEntity> {
   readonly collection = UserEntity.collection;
 
@@ -163,15 +189,21 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     const isSelected = this._selectedUserId === user.id;
     const lastActive = user.lastActiveAt ? this.formatTimestamp(user.lastActiveAt) : '';
 
-    // Model info for AI
+    // Model info for AI. The badge previously showed "LOCAL" / "ANTHROPIC"
+    // — provider class, not what the user actually wants to see. Now: surface
+    // the model name (the truth of "what's answering you"). Locality stays
+    // visible as a class-driven glyph (☁ remote / no glyph local) so the
+    // local-vs-cloud distinction is still glanceable without taking a line.
     let modelInfo = '';
     let modelBadge = '';
+    let isLocal = false;
     if (user.type === 'persona' || user.type === 'agent') {
       const provider = user.modelConfig?.provider || (user.personaConfig?.responseModel ? 'candle' : '');
       const model = user.modelConfig?.model || user.personaConfig?.responseModel || '';
       if (provider) {
         modelInfo = model ? `${provider}/${model}` : provider;
-        modelBadge = provider.substring(0, 8).toUpperCase();
+        modelBadge = formatModelBadge(model, provider);
+        isLocal = provider === 'local' || provider === 'candle' || provider === 'llamacpp-local' || provider === 'docker-model-runner';
       }
     }
 
@@ -200,6 +232,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
           .speciality=${user.speciality || ''}
           .modelInfo=${modelInfo}
           .modelBadge=${modelBadge}
+          .isLocalModel=${isLocal}
           .requiresMention=${requiresMention}
           .ragCertified=${ragCertified}
           .lastActive=${lastActive}

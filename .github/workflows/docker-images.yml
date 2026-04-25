@@ -1,4 +1,33 @@
-name: Build Docker Images
+name: Verify Docker Images
+
+# CI's job here is to CHECK, not BUILD. All Docker image builds happen
+# on dev machines via the pre-push hook + scripts/push-current-arch.sh
+# (which wraps scripts/push-image.sh). CI's role shrinks to:
+#   1. Verify that every required image variant is in the registry at
+#      the right tag for this PR / branch / SHA.
+#   2. Verify that the requested architectures are in each manifest.
+#   3. Smoke-pull one architecture per image so we catch registry
+#      corruption / layer auth / network issues before merge.
+#
+# Previous workflow tried to build everything in CI via QEMU cross-
+# compilation. linux/arm64 emulation on amd64 GHA runners took 5-6
+# hours per image and timed out every PR on the Rust-heavy variants
+# (continuum-core, continuum-core-vulkan, livekit-bridge). That's what
+# blocked PR #950 for days.
+#
+# New rule (Joel, 2026-04-23): "CI is for CHECK, not BUILD."
+# Docker builds move entirely off CI:
+#   - BigMama (Linux amd64 + Nvidia 5090) pushes amd64 of all variants:
+#     core, vulkan, cuda, livekit-bridge. Vulkan slice covers Linux +
+#     Windows WSL2 consumer GPUs.
+#   - Mac M-series pushes arm64 of core + livekit-bridge. No arm64 vulkan
+#     (Mac Docker Desktop has no GPU passthrough; arm64 vulkan has no
+#     consumer story worth shipping). No CUDA (no Nvidia hardware).
+#   - Either machine pushes node-server / model-init / widgets (they're
+#     TS-only, build in under a minute on either arch).
+#
+# See docs/architecture/PERSONA-AS-RUST-LIBRARY-PLAN.md for the full
+# rationale and scripts/push-current-arch.sh for the entry point.
 
 on:
   push:
@@ -14,387 +43,38 @@ on:
     paths:
       - 'src/workers/**'
       - 'docker/**'
-  # Manual trigger — rebuild all images on demand
   workflow_dispatch:
 
-# Auto-cancel in-progress runs when a new commit lands on the same branch.
-# Without this, rapid-fire pushes stack up concurrent multi-arch builds that
-# fight each other for runners + GHA cache + registry storage — which we hit
-# on this branch when three runs piled up during the Vulkan wall-march. The
-# `group` scopes cancellation per branch/PR so main + feature branches don't
-# interfere with each other. cancel-in-progress=true cancels obsolete builds
-# the moment a newer commit supersedes them.
+# Cancel superseded runs per branch/PR so verify passes don't stack.
 concurrency:
-  group: docker-images-${{ github.ref }}
+  group: verify-docker-images-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
-  # Every image gets both architectures. Docker picks the right one at pull time.
-  # Ubuntu users get amd64. Mac users get arm64. Nobody gets the wrong arch. Ever.
-  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
-  # ── Rust Core ─────────────────────────────────────────────
-  continuum-core:
-    runs-on: ubuntu-latest
-    # Runs on PR too — validates the Dockerfile builds on every change.
-    # `push` step inside build-push-action below already gates ghcr upload
-    # on non-PR events, so PR runs are smoke-only.
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # QEMU enables building arm64 images on amd64 runners (and vice versa).
-      # Without this, the arm64 build fails with "exec format error".
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-core
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src/workers
-          file: ./docker/continuum-core.Dockerfile
-          # entity_schemas.json (Phase 2 codegen) lives outside the workers
-          # context. Mirrors docker-compose.yml's `additional_contexts:`.
-          # Without this the build fails: `error: couldn't read entity_schemas.json`.
-          build-contexts: |
-            shared-generated=./src/shared/generated
-          platforms: ${{ env.PLATFORMS }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-core:buildcache
-          cache-to: type=gha,mode=max
-          # Avatar VRM models are NOT shipped via build-context anymore —
-          # src/models/avatars is git-ignored (133MB), so a fresh CI checkout
-          # has nothing to mount. Dockerfiles now create an empty /app/avatars
-          # placeholder. When LFS / model-init download / curl-from-CC0
-          # avatar provisioning lands, restore this `build-contexts` line.
-
-  # ── Rust Core (CUDA variant) ─────────────────────────────
-  # The cuda image is referenced by docker-compose.gpu.yml. Prior to this
-  # job the Dockerfile was orphaned: it existed on disk but no workflow
-  # built or published it, so `docker compose --profile gpu up` failed
-  # with a pull error (no such image in ghcr.io). amd64-only because
-  # NVIDIA Container Toolkit + CUDA is a practical-amd64 concern; arm64
-  # CUDA is Jetson-class and not the gpu-profile's target.
-  continuum-core-cuda:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp needs to be populated
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-core-cuda
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src/workers
-          file: ./docker/continuum-core-cuda.Dockerfile
-          # entity_schemas.json (Phase 2 codegen) lives outside the workers
-          # context. Required by the cargo build step.
-          build-contexts: |
-            shared-generated=./src/shared/generated
-          # amd64-only: CUDA devel image + NVIDIA Container Toolkit
-          # target amd64 hosts in practice.
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha,scope=continuum-core-cuda
-            type=registry,ref=ghcr.io/cambriantech/continuum-core-cuda:buildcache
-          cache-to: type=gha,mode=max,scope=continuum-core-cuda
-          # Avatar build-context removed — see continuum-core job above
-          # for full reasoning. Dockerfile creates an empty /app/avatars.
-
-  # ── Rust Core (Vulkan) ────────────────────────────────────
-  # The Carl-on-Mac GPU path. Apple's hypervisor exposes no GPU to Linux
-  # containers (Docker Desktop / Apple container / krunkit all blocked by
-  # Apple), but Podman + krunkit routes Vulkan API calls out to MoltenVK
-  # on the host Mac, which translates to Metal. ~80% of native Metal perf
-  # on the reference llama.cpp benchmark (M2 Max, Phi-3: 63 vs 78 tok/s).
-  # Same image is valid on Nvidia/AMD Linux hosts with libvulkan.
-  continuum-core-vulkan:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp needs to be populated
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # QEMU for cross-arch build. Carl-on-Mac is linux/arm64 under krunkit.
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-core-vulkan
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src/workers
-          file: ./docker/continuum-core-vulkan.Dockerfile
-          # entity_schemas.json (Phase 2 codegen) lives outside the workers
-          # context. Required by the cargo build step.
-          build-contexts: |
-            shared-generated=./src/shared/generated
-          # Multi-arch: linux/arm64 for Carl-on-Mac via Podman+krunkit,
-          # linux/amd64 for generic Linux GPU hosts (AMD, Intel, virtio).
-          platforms: ${{ env.PLATFORMS }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha,scope=continuum-core-vulkan
-            type=registry,ref=ghcr.io/cambriantech/continuum-core-vulkan:buildcache
-          cache-to: type=gha,mode=max,scope=continuum-core-vulkan
-
-  # ── LiveKit Bridge (was missing from CI!) ─────────────────
-  livekit-bridge:
-    runs-on: ubuntu-latest
-    # Same PR-smoke policy as continuum-core.
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-livekit-bridge
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src/workers
-          file: ./docker/livekit-bridge.Dockerfile
-          platforms: ${{ env.PLATFORMS }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-livekit-bridge:buildcache
-          cache-to: type=gha,mode=max
-
-  # ── Node Server ───────────────────────────────────────────
-  node-server:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-node
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src
-          file: ./docker/node-server.Dockerfile
-          platforms: ${{ env.PLATFORMS }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-node:buildcache
-          cache-to: type=gha,mode=max
-
-  # ── Model Init ────────────────────────────────────────────
-  model-init:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-model-init
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src
-          file: ./docker/model-init.Dockerfile
-          platforms: ${{ env.PLATFORMS }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-model-init:buildcache
-          cache-to: type=gha,mode=max
-
-  # ── Widget Server ─────────────────────────────────────────
-  widget-server:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/llama.cpp + whisper.cpp needed by Dockerfile COPY/build
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/cambriantech/continuum-widgets
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: ./src
-          file: ./docker/widget-server.Dockerfile
-          platforms: ${{ env.PLATFORMS }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=ghcr.io/cambriantech/continuum-widgets:buildcache
-          cache-to: type=gha,mode=max
-
   # ── Verify Image Coverage ─────────────────────────────────
-  # Runs AFTER all builds, on EVERY trigger (PR + main), even when some
-  # build jobs failed. Three responsibilities:
-  #   1. Coverage gate — every variant we ship must have a manifest at
-  #      the right tag. Missing image = failed build = merge BLOCKED.
-  #      (Previously this job was `if: github.event_name != 'pull_request'`
-  #       which meant a PR could merge with broken images — exactly the
-  #       'CI passed missing slices' state Joel called out.)
-  #   2. Tag selection — `:pr-<N>` on PR builds, `:latest` on main, `:<sha>`
-  #      always present. Picks the right tag for the trigger.
-  #   3. Architecture check — multi-arch manifests must include all
-  #      expected platforms. amd64-only is OK only for cuda.
+  # Pulls every required image at the right tag and asserts each has
+  # the expected architectures. No building, no QEMU, no caches —
+  # just registry reads. Runs in ~1 minute (previously: blocked by
+  # 5-6 hour build jobs that timed out).
   verify-architectures:
     runs-on: ubuntu-latest
-    # Run on every trigger (was: only main pushes — that gap let PRs
-    # merge with broken images).
-    # Run even when individual build jobs failed — that's the whole
-    # point of this gate. Without `if: always()`, GHA skips the dependent
-    # when any need fails, hiding the coverage gap.
-    if: always()
-    needs: [continuum-core, continuum-core-cuda, continuum-core-vulkan, livekit-bridge, node-server, model-init, widget-server]
+    outputs:
+      stale_amd64: ${{ steps.gate.outputs.stale_amd64 }}
+      stale_arm64: ${{ steps.gate.outputs.stale_arm64 }}
+      tag: ${{ steps.tag.outputs.tag }}
+      expected_sha: ${{ steps.gate.outputs.expected_sha }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history needed for verify-image-revisions.sh's smart staleness
+          # check: it diffs the LABEL sha against HEAD to decide if a "stale"
+          # revision is actually a real source change or just a non-context
+          # commit (workflow YAML, docs, etc.) that wouldn't change the bits.
+          # fetch-depth=0 means the older labeled SHAs are present locally.
+          fetch-depth: 0
       - uses: docker/setup-qemu-action@v3
 
       - name: Determine image tag (pr-<N> | latest | <sha>)
@@ -407,65 +87,161 @@ jobs:
             TAG="latest"
           else
             TAG="${{ github.sha }}"
-            TAG="${TAG:0:40}"  # full sha — metadata-action strips to short, we use full to be safe
+            TAG="${TAG:0:40}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Verifying coverage at tag: $TAG"
 
-      - name: Report build job results (so failures are loud)
-        run: |
-          echo "━━━ Per-variant build results ━━━"
-          echo "  continuum-core:         ${{ needs.continuum-core.result }}"
-          echo "  continuum-core-cuda:    ${{ needs.continuum-core-cuda.result }}"
-          echo "  continuum-core-vulkan:  ${{ needs.continuum-core-vulkan.result }}"
-          echo "  livekit-bridge:         ${{ needs.livekit-bridge.result }}"
-          echo "  node-server:            ${{ needs.node-server.result }}"
-          echo "  model-init:             ${{ needs.model-init.result }}"
-          echo "  widget-server:          ${{ needs.widget-server.result }}"
+      - name: Login to ghcr (read access for inspect, write for alias)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify amd64-only cuda image
+      - name: Alias :<sha> → :pr-<N> if needed (closes the first-push chicken-egg)
+        if: github.event_name == 'pull_request'
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          IMAGE="ghcr.io/cambriantech/continuum-core-cuda:$TAG"
-          echo "━━━ Checking $IMAGE (amd64-only) ━━━"
-          if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
-            echo "  ❌ MISSING — image not in registry. Build job result: ${{ needs.continuum-core-cuda.result }}"
-            echo "  $MANIFEST"
-            exit 1
-          fi
-          if echo "$MANIFEST" | grep -q "linux/amd64"; then
-            echo "  ✅ linux/amd64 present"
-          else
-            echo "  ❌ linux/amd64 MISSING"
-            exit 1
-          fi
+          # Closes the chicken-and-egg between pre-push and PR creation:
+          # the pre-push hook only knows the PR number AFTER the PR exists,
+          # so the very first push to a new feature branch tags images as
+          # :<sha> and :<branch> only — the :pr-<N> tag doesn't exist yet.
+          # When the developer opens the PR, CI fires here, sees :<sha> in
+          # the registry, and aliases it as :pr-<N> via a cheap manifest-
+          # only registry op (no rebuild, no data transfer). Verify-
+          # architectures below then finds :pr-<N> and passes.
+          #
+          # Subsequent pushes to the same PR have :pr-<N> already (pre-push
+          # picks it up via gh pr list), so the alias is a no-op. Idempotent.
+          PR_TAG="pr-${{ github.event.pull_request.number }}"
+          # github.event.pull_request.head.sha is the PR branch's HEAD commit.
+          # push-image.sh tags images with `git rev-parse --short HEAD` (7 chars
+          # by default), so we slice the same length here for the alias source.
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          SHORT_SHA="${HEAD_SHA:0:7}"
+          echo "PR_TAG=$PR_TAG  SHORT_SHA=$SHORT_SHA"
 
-      - name: Verify multi-arch images exist for both architectures
-        run: |
-          TAG="${{ steps.tag.outputs.tag }}"
           IMAGES=(
+            continuum-core
+            continuum-core-vulkan
+            continuum-core-cuda
+            continuum-livekit-bridge
+            continuum-node
+            continuum-model-init
+            continuum-widgets
+          )
+          for IMG in "${IMAGES[@]}"; do
+            FULL="ghcr.io/cambriantech/$IMG"
+            if docker buildx imagetools inspect "$FULL:$PR_TAG" >/dev/null 2>&1; then
+              echo "  ✅ $FULL:$PR_TAG already exists"
+              continue
+            fi
+            if docker buildx imagetools inspect "$FULL:$SHORT_SHA" >/dev/null 2>&1; then
+              echo "  → Aliasing $FULL:$SHORT_SHA → $FULL:$PR_TAG"
+              docker buildx imagetools create --tag "$FULL:$PR_TAG" "$FULL:$SHORT_SHA"
+            else
+              echo "  ⚠️  $FULL: neither :$PR_TAG nor :$SHORT_SHA in registry"
+              echo "     Verify step below will report this as missing."
+            fi
+          done
+
+      - name: Verify portable Rust images (amd64 hard, arm64 warning)
+        run: |
+          # Portable Rust images — buildable on either arch:
+          #   core: CPU baseline
+          #   livekit-bridge: WebRTC bridge, CPU only
+          # amd64 is the hard gate (BigMama or any Linux amd64 machine).
+          # arm64 is warning-only in v1 until the manifest-combine step
+          # lands (arm64 lives at a different tag while single-arch push
+          # overwrites the main tag).
+          TAG="${{ steps.tag.outputs.tag }}"
+          PORTABLE_IMAGES=(
             "ghcr.io/cambriantech/continuum-core:$TAG"
-            "ghcr.io/cambriantech/continuum-core-vulkan:$TAG"
             "ghcr.io/cambriantech/continuum-livekit-bridge:$TAG"
+          )
+          FAILED=0
+          for IMAGE in "${PORTABLE_IMAGES[@]}"; do
+            echo "━━━ $IMAGE ━━━"
+            if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
+              echo "  ❌ MISSING in registry"
+              echo "     Run on a Linux amd64 host: scripts/push-current-arch.sh"
+              echo "  Error: $MANIFEST"
+              FAILED=1
+              continue
+            fi
+            if echo "$MANIFEST" | grep -q "linux/amd64"; then
+              echo "  ✅ linux/amd64 present"
+            else
+              echo "  ❌ linux/amd64 MISSING"
+              echo "     Run on a Linux amd64 host: scripts/push-current-arch.sh"
+              FAILED=1
+            fi
+            if echo "$MANIFEST" | grep -q "linux/arm64"; then
+              echo "  ✅ linux/arm64 present"
+            else
+              echo "  ⚠️  linux/arm64 missing (warning-only until manifest-combine lands)"
+              echo "     Run on Mac M-series: scripts/push-current-arch.sh"
+            fi
+          done
+
+          # GPU variants are amd64-only by design:
+          #   vulkan: Mac Docker Desktop has no GPU passthrough; arm64
+          #           vulkan has no consumer use case. Linux + WSL2 GPUs
+          #           are amd64.
+          #   cuda:   NVIDIA Container Toolkit is practical-amd64.
+          # Both come from BigMama. Check them separately so "arm64
+          # warning" messages don't confuse readers.
+          GPU_IMAGES=(
+            "ghcr.io/cambriantech/continuum-core-vulkan:$TAG"
+            "ghcr.io/cambriantech/continuum-core-cuda:$TAG"
+          )
+          for IMAGE in "${GPU_IMAGES[@]}"; do
+            echo "━━━ $IMAGE (amd64-only by design) ━━━"
+            if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
+              echo "  ❌ MISSING in registry"
+              echo "     Run on BigMama (Linux amd64 + Nvidia): scripts/push-current-arch.sh"
+              FAILED=1
+              continue
+            fi
+            if echo "$MANIFEST" | grep -q "linux/amd64"; then
+              echo "  ✅ linux/amd64 present"
+            else
+              echo "  ❌ linux/amd64 MISSING"
+              echo "     Run on BigMama: scripts/push-current-arch.sh"
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "❌ RUST-IMAGE COVERAGE FAILED — see errors above."
+            echo "   Dev machines are authoritative for Docker builds."
+            echo "   Run scripts/push-current-arch.sh on a host with the"
+            echo "   right native arch, then re-trigger this workflow."
+            exit 1
+          fi
+
+      - name: Verify TS-only images (both arches required)
+        run: |
+          # TS-only images: node-server, model-init, widgets. No Rust
+          # compile, so building them on either arch is fast. Dev
+          # machines push both arches for these (push-current-arch.sh
+          # handles via QEMU since the cost is low on TS-only builds).
+          TAG="${{ steps.tag.outputs.tag }}"
+          LIGHT_IMAGES=(
             "ghcr.io/cambriantech/continuum-node:$TAG"
             "ghcr.io/cambriantech/continuum-model-init:$TAG"
             "ghcr.io/cambriantech/continuum-widgets:$TAG"
           )
-
           FAILED=0
-
-          for IMAGE in "${IMAGES[@]}"; do
-            echo "━━━ Checking $IMAGE ━━━"
-
-            # First: does the manifest exist at all? Missing = build failed
-            # or never pushed. Either way: blocks the merge.
+          for IMAGE in "${LIGHT_IMAGES[@]}"; do
+            echo "━━━ $IMAGE ━━━"
             if ! MANIFEST=$(docker buildx imagetools inspect "$IMAGE" 2>&1); then
-              echo "  ❌ MISSING — image not in registry"
-              echo "  $MANIFEST"
+              echo "  ❌ MISSING in registry"
+              echo "     Run: scripts/push-current-arch.sh (either machine is fine)"
               FAILED=1
               continue
             fi
-
             for ARCH in amd64 arm64; do
               if echo "$MANIFEST" | grep -q "linux/$ARCH"; then
                 echo "  ✅ linux/$ARCH present"
@@ -474,36 +250,286 @@ jobs:
                 FAILED=1
               fi
             done
-
-            # Actually pull and run for amd64 (native on runner)
-            echo "  Testing amd64 pull + run..."
-            docker pull --platform linux/amd64 "$IMAGE" > /dev/null 2>&1
-            if docker run --rm --platform linux/amd64 "$IMAGE" true 2>/dev/null || \
-               docker run --rm --platform linux/amd64 "$IMAGE" echo "ok" 2>/dev/null; then
-              echo "  ✅ amd64 runs"
+            # Smoke-pull amd64 on the runner (native arch, fast)
+            echo "  Testing amd64 pull..."
+            if docker pull --platform linux/amd64 "$IMAGE" > /dev/null 2>&1; then
+              echo "  ✅ amd64 pulls cleanly"
             else
-              # Some images need specific entrypoints — just verify the pull worked
-              echo "  ✅ amd64 pulled (entrypoint needs services)"
-            fi
-
-            # Pull arm64 via QEMU (verifies the image actually contains valid arm64 binaries)
-            echo "  Testing arm64 pull..."
-            if docker pull --platform linux/arm64 "$IMAGE" > /dev/null 2>&1; then
-              echo "  ✅ arm64 pulled"
-            else
-              echo "  ❌ arm64 pull FAILED"
+              echo "  ❌ amd64 pull FAILED"
               FAILED=1
             fi
-
-            echo ""
           done
-
           if [ "$FAILED" -ne 0 ]; then
-            echo "❌ IMAGE COVERAGE GATE FAILED"
-            echo "One or more required images are missing OR missing an architecture."
-            echo "If this is a PR build, the merge is BLOCKED until all variants publish."
-            echo "Run scripts/push-image.sh on the right hardware to bypass slow CI."
+            echo ""
+            echo "❌ TS-IMAGE COVERAGE FAILED — see errors above."
             exit 1
           fi
+          echo ""
+          echo "✅ All images verified at tag $TAG"
+          echo "   Rust-heavy (core/vulkan/livekit-bridge): amd64 hard, arm64 warning"
+          echo "   Rust-CUDA (continuum-core-cuda): amd64 only (by design)"
+          echo "   TS-only (node/model-init/widgets): both arches required"
 
-          echo "✅ All images verified at tag $TAG (coverage + architectures)"
+      - name: Verify image revision matches HEAD SHA (no stale aliased images)
+        id: gate
+        run: |
+          # All revision-check logic lives in scripts/verify-image-revisions.sh
+          # so the same code runs here AND in the post-rebuild verify pass
+          # below AND when a developer runs it manually. Joel rule
+          # (2026-04-23): "you can't have one [check] that's yaml and
+          # another that's shell. you have to reuse otherwise they
+          # diverge." See script header for the full per-arch policy.
+          if [[ -n "${{ github.event.pull_request.head.sha }}" ]]; then
+            EXPECTED_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            EXPECTED_SHA="${{ github.sha }}"
+          fi
+          # Emit early so downstream jobs always have it (even on FAIL).
+          echo "expected_sha=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+          export EXPECTED_SHA
+          export TAG="${{ steps.tag.outputs.tag }}"
+          export GHCR_USER="${{ github.actor }}"
+          export GHCR_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          export STALE_AMD64_OUT="$RUNNER_TEMP/stale-amd64.txt"
+          export STALE_ARM64_OUT="$RUNNER_TEMP/stale-arm64.txt"
+          # Don't `set -e` exit-on-error here; the script returns 1 only
+          # for amd64 mismatches and we want to capture the stale lists
+          # in either case so the rebuild matrix has them.
+          GATE_RC=0
+          bash scripts/verify-image-revisions.sh || GATE_RC=$?
+          # Emit stale lists as JSON arrays for the rebuild-stale matrix
+          # job to consume. Use `jq -R` to read raw lines + `jq -s` to
+          # slurp into an array; empty file → '[]'.
+          STALE_AMD64_JSON=$(jq -R . < "$STALE_AMD64_OUT" | jq -s . | jq -c .)
+          STALE_ARM64_JSON=$(jq -R . < "$STALE_ARM64_OUT" | jq -s . | jq -c .)
+          echo "stale_amd64=$STALE_AMD64_JSON" >> "$GITHUB_OUTPUT"
+          echo "stale_arm64=$STALE_ARM64_JSON" >> "$GITHUB_OUTPUT"
+          # Initial gate exits non-zero on amd64 stale, but the final
+          # gate (after rebuild) is what actually blocks the merge. So
+          # we let this initial check report status but not hard-fail
+          # the workflow if the rebuild can fix it. The rebuild jobs
+          # are conditional on the stale outputs being non-empty.
+          if [ "$GATE_RC" -ne 0 ]; then
+            echo "::warning::amd64 image(s) stale — rebuild-stale-amd64 job will refresh them"
+          fi
+
+      # ── Install-and-run gate ─────────────────────────────────────────
+      # Existence in the registry is necessary but not sufficient. The
+      # only honest test that the image set actually works for Carl is
+      # to RUN it. We bring up the CPU-only compose stack against the
+      # PR's images, wait for the widget-server health endpoint to
+      # respond, and tear down. If any service crash-loops or fails
+      # health, this fails — same surface Carl would hit on a fresh
+      # install.
+      #
+      # Scope: CPU-only (no GPU on standard GHA runners). The cuda /
+      # vulkan variants are still verified-by-existence above; their
+      # actual runtime gets tested whenever a GPU runner picks up the
+      # job (future work) or when bigmama runs the full DinD test on
+      # a real Nvidia host. This gate catches the fast majority of
+      # Carl-class breakage (image entrypoints, compose wiring,
+      # service health, port bindings, docker-compose.yml syntax) at
+      # PR time, not post-merge.
+      - name: Install-and-run gate (CPU-only Carl path)
+        timeout-minutes: 12
+        env:
+          CONTINUUM_IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+        # Delegated to scripts/ci/install-and-run-gate.sh so CI and humans
+        # (bigmama-wsl, anvil, anyone) run the EXACT same gate via:
+        #   CONTINUUM_IMAGE_TAG=pr-950 bash scripts/ci/install-and-run-gate.sh
+        # Single source of truth, identical failure surface, easy local testing.
+        run: bash scripts/ci/install-and-run-gate.sh
+
+  # ── Rebuild Stale Arches (CI auto-rebuild fallback) ────────────────
+  # Closes the cross-developer push race that the SHA-revision gate
+  # surfaces: when one dev pushes, their arch is current but the other
+  # dev's arch goes stale. Without this job, the off-host dev would
+  # have to manually rebuild on their machine before the gate passes —
+  # serial coordination dance that blocks every cross-dev PR.
+  #
+  # Per Joel (2026-04-23): "you can't have one [check] that's yaml and
+  # another that's shell. you have to reuse otherwise they diverge."
+  # So this job is THIN: pick the right native runner via matrix,
+  # set up registry auth, then invoke the SAME `scripts/push-current-arch.sh`
+  # the developer pre-push hook calls. No build logic in CI yaml. When
+  # push-current-arch.sh changes (new variant, new --label, new arch),
+  # CI inherits the change automatically.
+  #
+  # Slice efficiency: registry buildcache (--cache-from on push-image.sh)
+  # means unchanged layers (rust base, apt installs, cargo-chef workspace
+  # deps) replay from cache. Typical incremental rebuild: 5-15 min on
+  # cache hit, well under the GHA timeout.
+  #
+  # See #965 for the full design rationale.
+  rebuild-stale-amd64:
+    needs: verify-architectures
+    if: needs.verify-architectures.outputs.stale_amd64 != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # CRITICAL: check out the PR HEAD, NOT the synthetic merge commit
+          # GitHub creates by default. Without this, push-current-arch.sh's
+          # `git rev-parse HEAD` returns the merge SHA, images get labeled
+          # with that SHA, and verify-image-revisions.sh (which expects
+          # github.event.pull_request.head.sha) flags them STALE forever.
+          # 2026-04-24: hit this exact failure — labels said 9dc97ea (merge
+          # SHA), expected 056978cde (PR HEAD), every rebuild produced more
+          # mismatched labels.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Full history needed for the re-check step to invoke
+          # verify-image-revisions.sh's smart staleness diff (compares
+          # the older labeled SHA against HEAD to skip rebuilds for
+          # non-context changes).
+          fetch-depth: 0
+          # Recursive submodules required: vendor/llama.cpp is checked out
+          # as a submodule and the docker build CACHED layer references its
+          # CMakeLists.txt presence. Without this, the rebuild dies with
+          # "vendor/llama.cpp is empty — host submodule not initialized."
+          # Bigmama caught this 2026-04-24 after the rebuild-stale-amd64 job
+          # first fired post-stale-image-gate-restoration.
+          submodules: recursive
+      - name: Login to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Install Rust toolchain (push-current-arch may invoke pre-build cargo checks)
+        run: |
+          # We don't actually need a host-side cargo build — push-image.sh
+          # builds inside the docker buildx context — but if push-current-arch.sh
+          # ever runs `cargo test` as Phase 0, we need the toolchain present.
+          # Cheap when not used, prevents a future surprise.
+          if ! command -v cargo >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Re-check staleness (skip if a human caught up between gate and now)
+        id: recheck_amd64
+        env:
+          EXPECTED_SHA: ${{ needs.verify-architectures.outputs.expected_sha }}
+          TAG: pr-${{ github.event.pull_request.number }}
+          STALE_AMD64_OUT: ${{ runner.temp }}/stale-amd64-recheck.txt
+          STALE_ARM64_OUT: /dev/null
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The verify-architectures gate's stale list is a SNAPSHOT from
+          # gate-time. If a developer (bigmama on amd64, anvil on arm64)
+          # pushed the missing arch between gate-time and rebuild-time, the
+          # rebuild would otherwise burn 30+ min of GHA on work that's
+          # already done — pure waste. Re-check now and exit early if the
+          # human path beat us. Costs ~5-10s.
+          bash scripts/verify-image-revisions.sh || true
+          if [ ! -s "$STALE_AMD64_OUT" ]; then
+            echo "✅ amd64 staleness resolved between gate and rebuild — skipping."
+            echo "still_stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "amd64 still stale, proceeding with rebuild:"
+            cat "$STALE_AMD64_OUT"
+            echo "still_stale=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Rebuild stale amd64 images via push-current-arch.sh
+        if: steps.recheck_amd64.outputs.still_stale == 'true'
+        env:
+          # SKIP_PHASE_0=1: push-image.sh's cargo-test phase needs models on disk
+          # which CI doesn't have. The slice tests inside test-slices.sh still run
+          # (HTTP probe + container liveness) — those don't need models.
+          SKIP_PHASE_0: '1'
+          # PR_NUMBER lets push-current-arch.sh emit the :pr-<N> tag. Without
+          # this it falls back to gh-cli lookup which works if gh is logged in.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo "Rebuilding amd64 images that drifted from HEAD."
+          echo "Stale list: ${{ needs.verify-architectures.outputs.stale_amd64 }}"
+          bash scripts/push-current-arch.sh
+
+  rebuild-stale-arm64:
+    needs: verify-architectures
+    if: needs.verify-architectures.outputs.stale_arm64 != '[]'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}  # PR HEAD, not merge commit — see amd64 job comment
+          fetch-depth: 0  # full history — see amd64 job comment
+          submodules: recursive  # vendor/llama.cpp — see amd64 job comment
+      - name: Login to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Install Rust toolchain (push-current-arch may invoke pre-build cargo checks)
+        run: |
+          if ! command -v cargo >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Re-check staleness (skip if a human caught up between gate and now)
+        id: recheck_arm64
+        env:
+          EXPECTED_SHA: ${{ needs.verify-architectures.outputs.expected_sha }}
+          TAG: pr-${{ github.event.pull_request.number }}
+          STALE_AMD64_OUT: /dev/null
+          STALE_ARM64_OUT: ${{ runner.temp }}/stale-arm64-recheck.txt
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # See amd64 job comment — re-check at job start so we don't burn
+          # 30+ min of arm64 GHA when anvil already pushed from a Mac.
+          bash scripts/verify-image-revisions.sh || true
+          if [ ! -s "$STALE_ARM64_OUT" ]; then
+            echo "✅ arm64 staleness resolved between gate and rebuild — skipping."
+            echo "still_stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "arm64 still stale, proceeding with rebuild:"
+            cat "$STALE_ARM64_OUT"
+            echo "still_stale=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Rebuild stale arm64 images via push-current-arch.sh
+        if: steps.recheck_arm64.outputs.still_stale == 'true'
+        env:
+          SKIP_PHASE_0: '1'
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo "Rebuilding arm64 images that drifted from HEAD."
+          echo "Stale list: ${{ needs.verify-architectures.outputs.stale_arm64 }}"
+          bash scripts/push-current-arch.sh
+
+  # ── Final verification (post-rebuild) ────────────────────────────
+  # Re-runs the SAME revision-check script after any rebuilds. This
+  # job is the actual merge gate — verify-architectures' initial run
+  # is informational + matrix-input only. With both rebuilds done
+  # (or skipped because nothing was stale), every image at the
+  # expected tag should now have its revision label matching HEAD.
+  verify-after-rebuild:
+    needs: [verify-architectures, rebuild-stale-amd64, rebuild-stale-arm64]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history needed for verify-image-revisions.sh's smart staleness
+          # check: it diffs the LABEL sha against HEAD to decide if a "stale"
+          # revision is actually a real source change or just a non-context
+          # commit (workflow YAML, docs, etc.) that wouldn't change the bits.
+          # fetch-depth=0 means the older labeled SHAs are present locally.
+          fetch-depth: 0
+      - uses: docker/setup-qemu-action@v3
+      - name: Login to ghcr (read access for inspect)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Final revision check (same script as initial gate)
+        env:
+          EXPECTED_SHA: ${{ needs.verify-architectures.outputs.expected_sha }}
+          TAG: ${{ needs.verify-architectures.outputs.tag }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/verify-image-revisions.sh

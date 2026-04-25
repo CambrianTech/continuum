@@ -797,10 +797,9 @@ mod tests {
     #[test]
     fn test_evict_under_pressure_no_op_when_below_target() {
         let mut engine = GenomePagingEngine::new(100.0);
-        engine.active.insert(
-            "a".into(),
-            make_adapter("a", "code", 30.0, 0.5, true, 1000),
-        );
+        engine
+            .active
+            .insert("a".into(), make_adapter("a", "code", 30.0, 0.5, true, 1000));
         engine.memory_used_mb = 30.0; // pressure = 0.30
         let bytes_freed = engine.evict_under_pressure(0.75);
         assert_eq!(bytes_freed, 0, "below-target should not evict");
@@ -824,7 +823,7 @@ mod tests {
             make_adapter("newest", "creative", 30.0, 0.5, true, 9000),
         );
         engine.memory_used_mb = 90.0; // pressure = 0.90
-        // Drop to ≤ 0.50. Need to free until used ≤ 50 MB → drop two.
+                                      // Drop to ≤ 0.50. Need to free until used ≤ 50 MB → drop two.
         let bytes_freed = engine.evict_under_pressure(0.50);
         assert!(bytes_freed > 0);
         assert!(engine.memory_used_mb <= 50.0);
@@ -846,8 +845,8 @@ mod tests {
             make_adapter("critical_b", "chat", 40.0, 0.95, true, 5000),
         );
         engine.memory_used_mb = 80.0; // pressure = 0.80
-        // Asks for 0.30 — but every remaining is critical, so loop terminates
-        // honestly with what was achievable (zero bytes).
+                                      // Asks for 0.30 — but every remaining is critical, so loop terminates
+                                      // honestly with what was achievable (zero bytes).
         let bytes_freed = engine.evict_under_pressure(0.30);
         assert_eq!(bytes_freed, 0, "all-critical pool yields nothing");
         assert!(engine.active.contains_key("critical_a"));
@@ -870,9 +869,15 @@ mod tests {
         // Engine has no gpu_manager set → allocation_guards stays empty,
         // but the unregister/remove path should still execute cleanly.
         let bytes_freed = engine.evict_under_pressure(0.50);
-        assert!(bytes_freed >= 60 * 1024 * 1024, "freed at least the ancient adapter");
+        assert!(
+            bytes_freed >= 60 * 1024 * 1024,
+            "freed at least the ancient adapter"
+        );
         assert!(!engine.active.contains_key("ancient"));
-        assert!(engine.available.contains_key("ancient"), "evicted moves to available");
+        assert!(
+            engine.available.contains_key("ancient"),
+            "evicted moves to available"
+        );
     }
 
     // ── Engine: Sync State ────────────────────────────────────────────
@@ -1059,7 +1064,10 @@ mod tests {
         engine.activate_skill("normal", 2000);
 
         assert!((engine.memory_used_mb - 85.0).abs() < 0.001);
-        assert!(engine.memory_pressure() < 0.5, "Should be well under budget");
+        assert!(
+            engine.memory_pressure() < 0.5,
+            "Should be well under budget"
+        );
     }
 
     #[test]

@@ -19,26 +19,26 @@ use tracing::{error, info, warn};
 /// Adding a module here ensures it cannot be forgotten during registration.
 /// The server will fail to start if any expected module is missing.
 pub const EXPECTED_MODULES: &[&str] = &[
-    "gpu",       // Phase 0: GPU memory management
-    "health",    // Phase 1: stateless health checks
-    "cognition", // Phase 2: persona cognition engines
-    "channel",   // Phase 2: persona channel registries
-    "models",    // Phase 3: async model discovery
-    "memory",    // Phase 3: persona memory manager
-    "rag",       // Phase 3: batched RAG composition
-    "live",      // Phase 3: live experience (voice, video, transport)
-    "code",      // Phase 3: file engines, shell sessions
-    "data",      // Phase 4: database ORM operations
-    "logger",    // Phase 4a: structured logging
-    "search",    // Phase 4b: BM25, TF-IDF, vector search
-    "embedding", // Phase 4c: fastembed vector generation
-    "grid",      // Grid transport: inter-node routing (Tailscale, Reticulum)
-    "runtime",   // RuntimeModule: metrics and control
-    "mcp",       // MCP server: dynamic tool discovery
-    "system",    // System resources: CPU, memory, process monitoring
-    "avatar",              // Avatar snapshots: Bevy 3D renders → PNG
-    "dataset",             // Dataset import/management for Academy training
-    "persona_allocator",   // Hardware-aware persona allocation decisions
+    "gpu",               // Phase 0: GPU memory management
+    "health",            // Phase 1: stateless health checks
+    "cognition",         // Phase 2: persona cognition engines
+    "channel",           // Phase 2: persona channel registries
+    "models",            // Phase 3: async model discovery
+    "memory",            // Phase 3: persona memory manager
+    "rag",               // Phase 3: batched RAG composition
+    "live",              // Phase 3: live experience (voice, video, transport)
+    "code",              // Phase 3: file engines, shell sessions
+    "data",              // Phase 4: database ORM operations
+    "logger",            // Phase 4a: structured logging
+    "search",            // Phase 4b: BM25, TF-IDF, vector search
+    "embedding",         // Phase 4c: fastembed vector generation
+    "grid",              // Grid transport: inter-node routing (Tailscale, Reticulum)
+    "runtime",           // RuntimeModule: metrics and control
+    "mcp",               // MCP server: dynamic tool discovery
+    "system",            // System resources: CPU, memory, process monitoring
+    "avatar",            // Avatar snapshots: Bevy 3D renders → PNG
+    "dataset",           // Dataset import/management for Academy training
+    "persona_allocator", // Hardware-aware persona allocation decisions
 ];
 
 pub struct Runtime {

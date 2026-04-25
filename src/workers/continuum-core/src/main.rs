@@ -37,6 +37,23 @@ use tracing_subscriber::FmtSubscriber;
 
 /// Install signal handlers that kill all sentinel process groups on shutdown.
 /// This prevents orphaned training processes from eating memory after npm stop.
+///
+/// Exit semantics: we use `libc::_exit` (the syscall) instead of
+/// `std::process::exit` (which runs C++ static destructors via
+/// `__cxa_finalize_ranges`). Reason: the process holds raw pointers to
+/// llama.cpp objects (Model, Context, LoraAdapter, MtmdContext) whose Rust
+/// `Drop` impls call `llama_*_free` from libllama. If those drops race with
+/// libllama's own static destructors during atexit teardown, we double-free
+/// and SIGABRT. The crash signature is:
+///   `tokio-rt-worker → __cxa_finalize_ranges → continuum-core destructor → abort()`
+///
+/// `_exit` skips all atexit handlers + Rust drops + libc cleanup → kernel
+/// reclaims memory + closes FDs + unmaps mmaps. Buffered stdout would be
+/// lost, but tracing writes to stderr per-line and we eprintln! the
+/// shutdown message before exiting, so no diagnostic loss in practice.
+///
+/// The `Drop` impls remain correct for normal lifetime — model unload,
+/// context swap, etc. We're only short-circuiting the process-exit path.
 fn install_shutdown_handlers() {
     // SIGTERM (from npm stop / kill / system-stop.sh)
     tokio::spawn(async {
@@ -47,7 +64,7 @@ fn install_shutdown_handlers() {
             eprintln!("[continuum-core] SIGTERM — killing sentinel process groups");
             continuum_core::modules::sentinel::shutdown_all_sentinels();
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            std::process::exit(0);
+            unsafe { libc::_exit(0) };
         }
     });
 
@@ -60,7 +77,7 @@ fn install_shutdown_handlers() {
             eprintln!("[continuum-core] SIGINT — killing sentinel process groups");
             continuum_core::modules::sentinel::shutdown_all_sentinels();
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            std::process::exit(0);
+            unsafe { libc::_exit(0) };
         }
     });
 }
@@ -74,11 +91,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    // Parse command line arguments
+    // Parse command line arguments. argv[1] is the IPC socket path (positional)
+    // — but intercept flag-like values FIRST so `--version` and `--help` don't
+    // get treated as a socket path. Without this, `continuum-core-server
+    // --version` boots the server with "/--version" as the socket path
+    // and prints "IPC Socket: --version" — confusing for anyone trying to
+    // verify the binary works (Carl's first instinct after `docker pull`).
     let args: Vec<String> = env::args().collect();
+    if args.len() >= 2 {
+        match args[1].as_str() {
+            "-V" | "--version" | "version" => {
+                println!("continuum-core-server {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "-h" | "--help" | "help" => {
+                println!("Usage: {} <socket-path>", args[0]);
+                println!("Example: {} /tmp/continuum-core.sock", args[0]);
+                println!();
+                println!("Flags:");
+                println!("  -V, --version    Print version and exit");
+                println!("  -h, --help       Print this help and exit");
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
     if args.len() < 2 {
         eprintln!("Usage: {} <socket-path>", args[0]);
         eprintln!("Example: {} /tmp/continuum-core.sock", args[0]);
+        eprintln!("Try `{} --help` for more.", args[0]);
         std::process::exit(1);
     }
 
@@ -152,11 +193,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ),
                 );
                 pm_clone.add_reporter(reporter);
-                info!("🧠 Bevy memory reporter registered (attempt {})", attempt + 1);
+                info!(
+                    "🧠 Bevy memory reporter registered (attempt {})",
+                    attempt + 1
+                );
                 return;
             }
         }
-        tracing::warn!("🧠 Bevy memory reporter NOT registered after 30s — Bevy may not be running");
+        tracing::warn!(
+            "🧠 Bevy memory reporter NOT registered after 30s — Bevy may not be running"
+        );
     });
 
     // Initialize TTS/STT in background (non-blocking - happens after startup)
@@ -218,8 +264,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = result {
             // ORT panics when libonnxruntime.dylib is missing — catch it here
             // instead of letting it poison the tokio runtime
-            tracing::error!("⚠️  TTS/STT initialization panicked (ORT dylib missing?): {:?}", e);
-            tracing::error!("   Voice features disabled. Install libonnxruntime or set ORT_DYLIB_PATH.");
+            tracing::error!(
+                "⚠️  TTS/STT initialization panicked (ORT dylib missing?): {:?}",
+                e
+            );
+            tracing::error!(
+                "   Voice features disabled. Install libonnxruntime or set ORT_DYLIB_PATH."
+            );
         }
     });
 

@@ -165,10 +165,7 @@ pub fn quantize_block_q2(values: &[f32]) -> (Vec<u8>, f32) {
         return (vec![], 0.0);
     }
 
-    let absmax = values
-        .iter()
-        .map(|v| v.abs())
-        .fold(0.0_f32, f32::max);
+    let absmax = values.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
 
     // Scale maps the range to [-1, 2], so max positive = 2 * scale
     let scale = if absmax > 0.0 { absmax / 2.0 } else { 1.0 };
@@ -214,10 +211,7 @@ pub fn quantize_block_q4(values: &[f32]) -> (Vec<u8>, f32) {
         return (vec![], 0.0);
     }
 
-    let absmax = values
-        .iter()
-        .map(|v| v.abs())
-        .fold(0.0_f32, f32::max);
+    let absmax = values.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
 
     let scale = if absmax > 0.0 { absmax / 7.0 } else { 1.0 };
 
@@ -264,10 +258,7 @@ pub fn quantize_block_q8(values: &[f32]) -> (Vec<i8>, f32) {
         return (vec![], 0.0);
     }
 
-    let absmax = values
-        .iter()
-        .map(|v| v.abs())
-        .fold(0.0_f32, f32::max);
+    let absmax = values.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
 
     let scale = if absmax > 0.0 { absmax / 127.0 } else { 1.0 };
 
@@ -325,10 +316,7 @@ pub fn estimate_layer_savings(
 }
 
 /// Estimate total memory savings across all layers.
-pub fn estimate_total_savings(
-    topology: &HeadTopology,
-    hidden_size: usize,
-) -> (u64, u64) {
+pub fn estimate_total_savings(topology: &HeadTopology, hidden_size: usize) -> (u64, u64) {
     let mut total_original = 0u64;
     let mut total_quantized = 0u64;
 
@@ -371,7 +359,11 @@ mod tests {
         // 10 values should pack into 2 bytes (5 per byte)
         let values = vec![1.0, -1.0, 0.0, 1.0, -1.0, 0.5, -0.5, 0.0, 0.0, 1.0];
         let (packed, _scale) = quantize_block_ternary(&values);
-        assert_eq!(packed.len(), 2, "10 ternary values should pack into 2 bytes");
+        assert_eq!(
+            packed.len(),
+            2,
+            "10 ternary values should pack into 2 bytes"
+        );
     }
 
     #[test]
@@ -583,7 +575,10 @@ mod tests {
         };
 
         let (orig, quant) = estimate_layer_savings(&layer, 64, 512);
-        assert!(quant < orig, "Mixed precision should save memory: orig={orig}, quant={quant}");
+        assert!(
+            quant < orig,
+            "Mixed precision should save memory: orig={orig}, quant={quant}"
+        );
         // Ternary at 0.2 bytes/param is 10x smaller than BF16 at 2 bytes/param
         // The savings should be substantial with sub-4-bit tiers
     }

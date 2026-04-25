@@ -194,7 +194,7 @@ interface CodeReadResult extends CommandResult {
 ```
 
 **Safety Constraints**:
-- ✅ Path must be within repo bounds (`/Volumes/FlashGordon/cambrian/continuum/`)
+- ✅ Path must be within repo bounds (`/Volumes/<external-drive>/cambrian/continuum/`)
 - ✅ Cannot read dotfiles (`.env`, `.git/config`, etc.) - explicit whitelist only
 - ✅ Cannot read binary files (check file header)
 - ✅ Max file size: 1MB (configurable)
@@ -1417,7 +1417,7 @@ class ToolValidator {
   private blockedPatterns: RegExp[];
 
   constructor() {
-    this.repoRoot = path.resolve('/Volumes/FlashGordon/cambrian/continuum');
+    this.repoRoot = path.resolve('/Volumes/<external-drive>/cambrian/continuum');
     this.blockedPaths = new Set([
       '.env',
       '.git/config',

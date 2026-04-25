@@ -20,13 +20,160 @@ static BACKEND_INIT: Once = Once::new();
 /// backends are populated before the first model load. Without this, the
 /// llama_model_load path can segfault in ggml_backend_dev_type() when the
 /// backend registry is empty.
+///
+/// On macOS with the metal feature we ALSO call `ggml_backend_metal_reg()`
+/// directly. Verified 2026-04-19: even with `+whole-archive=ggml-metal`,
+/// `nm` on the linked binary showed zero `ggml_backend_metal_*` symbols,
+/// causing `load_tensors: layer N assigned to device CPU` for ALL 32 layers
+/// of qwen3.5-4b — i.e. inference was running 100% on CPU at 33 tok/s. The
+/// explicit register call from Rust creates a live reference path the
+/// linker can't strip, forcing the Metal backend to load and register
+/// before the first model is read. Same defensive pattern for CUDA on
+/// Linux + Vulkan on Linux when those features are enabled.
 pub fn backend_init() {
     BACKEND_INIT.call_once(|| {
         unsafe {
             sys::llama_backend_init();
             sys::ggml_backend_load_all();
+
+            // Force-register statically linked GPU backends ONLY IF NOT
+            // ALREADY PRESENT. Earlier comment claimed
+            // `ggml_backend_register` was idempotent — it is NOT. Reading
+            // ggml-backend-reg.cpp, register_backend() unconditionally
+            // push_backs onto the backends vector, with no identity check.
+            // Verified 2026-04-21 against Qwen2-VL-7B: when Metal was
+            // double-registered (static-init path ran AND we called the
+            // defensive register), the vision encoder's first-token
+            // logits diverged dramatically — top token became
+            // `<|box_start|>` (bbox detection) instead of `A` (natural
+            // language description). Same model files via brew's
+            // mtmd-cli → correct output. Same C reproducer linking the
+            // SAME vendored .a files → correct output. Only the Rust
+            // path with the duplicate register call diverged. Removing
+            // the duplicate register restored vision behavior end-to-end.
+            //
+            // The defensive register from #38 still earns its keep when
+            // dead_strip DID drop the static initializer (otherwise we
+            // silently run on CPU). Guard it so it only fires in that
+            // case: scan the registered backends by name and skip if the
+            // expected one is already there.
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            ensure_backend_registered("Metal", || sys::ggml_backend_metal_reg());
+
+            #[cfg(all(feature = "cuda", target_os = "linux"))]
+            ensure_backend_registered("CUDA", || sys::ggml_backend_cuda_reg());
+
+            #[cfg(all(feature = "vulkan", target_os = "linux"))]
+            ensure_backend_registered("Vulkan", || sys::ggml_backend_vk_reg());
+
+            // Fail-hard guard. If we're on a platform that should have a GPU
+            // backend but the registry only contains CPU after registration,
+            // we're about to silently run inference on CPU at ~5x slower than
+            // GPU — exactly the regression we just diagnosed and fixed. Per
+            // the no-silent-degrade rule, panic loudly with an actionable
+            // message rather than ship CPU performance dressed as Metal.
+            //
+            // The check counts non-CPU registered devices via the public
+            // backend registry API. If it fails, the build has lost the
+            // GPU backend somewhere between cmake config, link, and load.
+            assert_gpu_backend_registered_when_expected();
         }
     });
+}
+
+/// Register `reg_factory()`'s backend iff its exact `ggml_backend_reg_t`
+/// pointer is NOT already in the registry. Guards against
+/// double-registration — `ggml_backend_register` does NOT dedup (verified
+/// 2026-04-21 by reading ggml-backend-reg.cpp::register_backend, which
+/// unconditionally push_backs onto the backends vector).
+///
+/// Pointer identity is the right comparison here: `ggml_backend_metal_reg()`
+/// (and its CUDA/Vulkan peers) returns a pointer to a process-wide static
+/// registry entry. If the static initializer already registered it, the
+/// same pointer is already in the list. Name-matching would also work but
+/// drifts with upstream string choices (Metal's name is "MTL" not "Metal").
+///
+/// Double-registration symptom (2026-04-21): Qwen2-VL-7B vision encoder
+/// first-token logits diverged — top token became `<|box_start|>` (bbox
+/// detection mode) instead of `A` (natural-language description). The
+/// model files + prompt + context params were identical to brew's
+/// mtmd-cli and a C reproducer; only the Rust path hit this because only
+/// Rust was calling the defensive register after ggml_backend_load_all.
+#[allow(dead_code)] // used only under GPU feature gates
+unsafe fn ensure_backend_registered(
+    _tag: &str,
+    reg_factory: impl FnOnce() -> sys::ggml_backend_reg_t,
+) {
+    let candidate = reg_factory();
+    if candidate.is_null() {
+        return; // factory returned nothing — nothing to register
+    }
+    let n = sys::ggml_backend_reg_count();
+    for i in 0..n {
+        if sys::ggml_backend_reg_get(i) == candidate {
+            return; // static init or load_all already added this exact backend
+        }
+    }
+    // Not present — the defensive path from #38: static init got
+    // stripped, so register explicitly.
+    sys::ggml_backend_register(candidate);
+}
+
+/// Walks the registered backend devices and asserts that — if the build
+/// expected a GPU backend (Mac+metal, Linux+cuda, Linux+vulkan) — at least
+/// one non-CPU device is present. Panics with an actionable message if not.
+///
+/// The point is to catch the failure mode we discovered 2026-04-19: a build
+/// that thinks it has Metal but actually only has CPU because the feature
+/// flag wasn't propagated. That used to silently run at ~33 tok/s instead
+/// of GPU speed; now it crashes at startup so the cause is unmissable.
+unsafe fn assert_gpu_backend_registered_when_expected() {
+    let expects_gpu = cfg!(any(
+        all(feature = "metal", target_os = "macos"),
+        all(feature = "cuda", target_os = "linux"),
+        all(feature = "vulkan", target_os = "linux"),
+    ));
+    if !expects_gpu {
+        return;
+    }
+
+    let n_devices = sys::ggml_backend_dev_count();
+    let mut found_gpu = false;
+    let mut device_names: Vec<String> = Vec::new();
+    for i in 0..n_devices {
+        let dev = sys::ggml_backend_dev_get(i);
+        if dev.is_null() {
+            continue;
+        }
+        let dev_type = sys::ggml_backend_dev_type(dev);
+        let name_ptr = sys::ggml_backend_dev_name(dev);
+        let name = if name_ptr.is_null() {
+            "<unnamed>".to_string()
+        } else {
+            std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+        };
+        // Anything that isn't CPU counts as a GPU/accelerator device for
+        // this purpose. ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_CPU
+        // is the constant we're excluding; everything else (GPU, ACCEL)
+        // satisfies the guard.
+        if dev_type != sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_CPU {
+            found_gpu = true;
+        }
+        device_names.push(format!("{}({:?})", name, dev_type));
+    }
+
+    if !found_gpu {
+        panic!(
+            "FATAL: build expected a GPU backend (Mac+metal / Linux+cuda / \
+             Linux+vulkan) but the ggml backend registry only has CPU \
+             devices after init. Refusing to run inference at CPU speeds \
+             dressed as GPU. Registered devices: {:?}. Fix: rebuild with \
+             the appropriate `--features` flag (`metal`, `cuda`, `vulkan`) \
+             OR update llama/build.rs so the static GPU backend archive \
+             actually links into the binary.",
+            device_names
+        );
+    }
 }
 
 /// A loaded llama model. Thread-safe (contexts are single-threaded but model is shared).
@@ -36,6 +183,99 @@ pub struct Model {
 
 unsafe impl Send for Model {}
 unsafe impl Sync for Model {}
+
+/// One message in a chat sequence: role + content. Input to `render_chat`.
+#[derive(Debug, Clone)]
+pub struct ChatMsg {
+    pub role: String,
+    pub content: String,
+}
+
+/// Render a chat sequence through a Jinja-style template string, using
+/// llama.cpp's built-in template engine. Pure function — takes the
+/// template directly so it's unit-testable without loading a GGUF.
+///
+/// `template`: the model's `tokenizer.chat_template` string, typically
+/// obtained from `Model::chat_template()`. If you pass a non-existent
+/// template string llama.cpp falls back to a chatml default — prefer
+/// making the caller decide what to do when the model doesn't carry one.
+///
+/// `add_assistant`: append the assistant-turn-start tokens, telling the
+/// model "now generate a reply." Set true for inference, false for
+/// evaluating an existing assistant message.
+///
+/// Returns the rendered prompt string ready for tokenization. Callers
+/// must NEVER hand-roll `<|im_start|>...` prefixes — different models
+/// use different boundary tokens, and getting it wrong causes the model
+/// to emit the boundary tokens as text (the `<|im_end<|>` leak we saw
+/// in Teacher AI output 2026-04-20).
+pub fn render_chat(
+    template: Option<&str>,
+    messages: &[ChatMsg],
+    add_assistant: bool,
+) -> Result<String, String> {
+    if messages.is_empty() {
+        return Err("render_chat: messages empty".to_string());
+    }
+    // None → pass NULL to llama.cpp; it falls back to its built-in chatml
+    // default. Useful for GGUFs that don't embed a template in metadata
+    // (continuum-ai/qwen3.5-4b-code-forged is one such model — see
+    // forge recipe TODO to add tokenizer.chat_template at next bake).
+    let tmpl_c = template.map(|t| CString::new(t).map_err(|e| format!("template has nul byte: {e}"))).transpose()?;
+    let owned: Vec<(CString, CString)> = messages
+        .iter()
+        .map(|m| {
+            let r = CString::new(m.role.as_str()).map_err(|e| format!("role {e}"))?;
+            let c = CString::new(m.content.as_str()).map_err(|e| format!("content {e}"))?;
+            Ok::<(CString, CString), String>((r, c))
+        })
+        .collect::<Result<_, _>>()?;
+    let chat: Vec<sys::llama_chat_message> = owned
+        .iter()
+        .map(|(r, c)| sys::llama_chat_message { role: r.as_ptr(), content: c.as_ptr() })
+        .collect();
+
+    let tmpl_ptr = tmpl_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+    let render = |buf: &mut Vec<i8>| -> i32 {
+        unsafe {
+            sys::llama_chat_apply_template(
+                tmpl_ptr,
+                chat.as_ptr(),
+                chat.len(),
+                add_assistant,
+                // Cast to *mut c_char so the call type-checks on both
+                // macOS (c_char = i8) and Linux (c_char = u8). Without
+                // this cast the bare *mut i8 from Vec<i8>::as_mut_ptr()
+                // mismatches Linux's *mut u8 expectation, breaking the
+                // docker Linux build (caught by pre-push docker phase
+                // on commit fa4b1034d's push attempt).
+                buf.as_mut_ptr() as *mut std::os::raw::c_char,
+                buf.len() as i32,
+            )
+        }
+    };
+
+    let initial: usize = messages
+        .iter()
+        .map(|m| m.role.len() + m.content.len())
+        .sum::<usize>()
+        * 2
+        + 256;
+    let mut buf = vec![0i8; initial];
+    let mut n = render(&mut buf);
+    if n < 0 {
+        return Err(format!("llama_chat_apply_template rc={n}"));
+    }
+    if (n as usize) > buf.len() {
+        buf.resize(n as usize, 0);
+        n = render(&mut buf);
+        if n < 0 || (n as usize) > buf.len() {
+            return Err(format!("llama_chat_apply_template retry rc={n}"));
+        }
+    }
+    let bytes: Vec<u8> = buf.into_iter().take(n as usize).map(|b| b as u8).collect();
+    String::from_utf8(bytes).map_err(|e| format!("template output not utf-8: {e}"))
+}
 
 /// Model load parameters.
 #[derive(Debug, Clone)]
@@ -83,12 +323,36 @@ impl Model {
         unsafe { sys::llama_model_n_embd(self.ptr.as_ptr()) }
     }
 
+    /// Trained context length, as recorded in the GGUF metadata
+    /// (`<arch>.context_length`). This is the model's OWN ceiling — not
+    /// a system default, not a RAG budget guess. Use this everywhere a
+    /// "context window" is needed; if a smaller `n_ctx` is intentional
+    /// (e.g. memory pressure on a tier with low VRAM), pass it explicitly
+    /// rather than redefining the model's natural capability.
+    pub fn n_ctx_train(&self) -> u32 {
+        let n = unsafe { sys::llama_model_n_ctx_train(self.ptr.as_ptr()) };
+        if n > 0 { n as u32 } else { 0 }
+    }
+
     /// Create an inference context.
     pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
         let mut ffi = unsafe { sys::llama_context_default_params() };
         ffi.n_ctx = params.n_ctx;
         ffi.n_batch = params.n_batch;
         ffi.n_seq_max = params.n_seq_max;
+        ffi.flash_attn_type = match params.flash_attn {
+            FlashAttn::Auto => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_AUTO,
+            FlashAttn::Enabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_ENABLED,
+            FlashAttn::Disabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_DISABLED,
+        };
+        ffi.type_k = match params.type_k {
+            KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
+            KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
+        };
+        ffi.type_v = match params.type_v {
+            KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
+            KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
+        };
 
         let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
         let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
@@ -152,6 +416,18 @@ impl Model {
         Ok(tokens)
     }
 
+    /// The model's embedded chat template string (GGUF metadata
+    /// `tokenizer.chat_template`). `None` if the model carries no
+    /// template — caller can pass a default to `render_chat` or error.
+    pub fn chat_template(&self) -> Option<String> {
+        let p = unsafe { sys::llama_model_chat_template(self.ptr.as_ptr(), std::ptr::null()) };
+        if p.is_null() {
+            None
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(p) }.to_str().ok().map(String::from)
+        }
+    }
+
     /// Convert a token to its UTF-8 string representation.
     pub fn token_to_piece(&self, token: i32) -> String {
         let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
@@ -175,6 +451,17 @@ impl Model {
     pub fn is_eog_token(&self, token: i32) -> bool {
         let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
         unsafe { sys::llama_vocab_is_eog(vocab, token) }
+    }
+}
+
+impl Model {
+    /// Raw pointer to the underlying llama_model. Required by sibling
+    /// crates that bind to FFI APIs taking `const llama_model*` as input
+    /// (e.g., the multimodal projector via `mtmd_init_from_file`). The
+    /// pointer remains valid for the Model's lifetime; callers MUST NOT
+    /// free it.
+    pub fn as_ptr(&self) -> *mut sys::llama_model {
+        self.ptr.as_ptr()
     }
 }
 
@@ -205,6 +492,30 @@ impl Drop for LoraAdapter {
 
 // ─── Context ─────────────────────────────────────────────────────────────
 
+/// Flash-attention selection for the context.
+///
+/// `Auto` (the default) lets the runtime decide per-backend — on Metal +
+/// supported head dims (qwen3.5-4b's V head_dim=256 qualifies) llama.cpp
+/// enables FA automatically. `Enabled` forces it on (will error if the
+/// shape isn't supported). `Disabled` reverts to the unfused attention
+/// path, which is what the binding's prior behavior was implicitly doing
+/// because we never set the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashAttn {
+    Auto,
+    Enabled,
+    Disabled,
+}
+
+/// KV cache element type. f16 is the lossless default. q8_0 halves the KV
+/// memory footprint with <1% quality loss — enables more parallel sequences
+/// and longer contexts at the same VRAM budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KvCacheType {
+    F16,
+    Q8_0,
+}
+
 /// Context parameters.
 #[derive(Debug, Clone)]
 pub struct ContextParams {
@@ -216,11 +527,24 @@ pub struct ContextParams {
     /// prompts >1k tokens fail `llama_decode` with rc=1 ("no KV slot").
     /// Single-persona chat only uses sequence 0, so default to 1.
     pub n_seq_max: u32,
+    /// Flash attention setting. Default `Auto` — runtime picks per-backend.
+    pub flash_attn: FlashAttn,
+    /// KV cache element type for K. Default `F16` (lossless).
+    pub type_k: KvCacheType,
+    /// KV cache element type for V. Default `F16` (lossless).
+    pub type_v: KvCacheType,
 }
 
 impl Default for ContextParams {
     fn default() -> Self {
-        Self { n_ctx: 4096, n_batch: 512, n_seq_max: 1 }
+        Self {
+            n_ctx: 4096,
+            n_batch: 512,
+            n_seq_max: 1,
+            flash_attn: FlashAttn::Auto,
+            type_k: KvCacheType::F16,
+            type_v: KvCacheType::F16,
+        }
     }
 }
 
@@ -231,9 +555,32 @@ pub struct Context<'m> {
 }
 
 impl<'m> Context<'m> {
+    /// Raw pointer to the underlying llama_context. Required by sibling
+    /// crates that bind to FFI APIs taking `llama_context*` (e.g., the
+    /// multimodal projector via `mtmd_helper_eval_chunks`). Pointer is
+    /// valid for the Context's lifetime; callers MUST NOT free it.
+    pub fn as_ptr(&mut self) -> *mut sys::llama_context {
+        self.ptr.as_ptr()
+    }
+
     /// Context window size.
     pub fn n_ctx(&self) -> u32 {
         unsafe { sys::llama_n_ctx(self.ptr.as_ptr()) }
+    }
+
+    /// Bytes llama.cpp has actually committed to the KV cache for the given
+    /// sequence id. The honest source of truth for per-seq KV size — works
+    /// across any model architecture (uniform attention, hybrid attention+SSM
+    /// like qwen3.5 where only some layers carry KV, MoE) because llama.cpp
+    /// computes it from the actual cache layout it built, not from a Rust-side
+    /// "just multiply n_layer × n_head_kv × head_dim" estimate that drifts on
+    /// hybrid arches.
+    ///
+    /// Returns 0 if the seq doesn't exist or has no committed KV (e.g.,
+    /// before its first decode). Used by the FootprintRegistry to attribute
+    /// per-persona KV bytes — see `inference::footprint_registry`.
+    pub fn seq_state_bytes(&self, seq_id: i32) -> u64 {
+        unsafe { sys::llama_state_seq_get_size(self.ptr.as_ptr(), seq_id) as u64 }
     }
 
     /// Process a batch through the model (updates KV cache, produces logits
@@ -575,6 +922,35 @@ impl SamplerChainBuilder {
     /// Probabilistic final step. Usually the last thing in a chain.
     pub fn dist(self, seed: u32) -> Self {
         let s = unsafe { sys::llama_sampler_init_dist(seed) };
+        self.add(s)
+    }
+
+    /// Add a GBNF grammar constraint. Forces output to match the grammar
+    /// — invalid tokens get probability zero. `grammar_root` is the
+    /// start-symbol name in the grammar (typically "root"). Use this to
+    /// enforce JSON output or any other structured format.
+    ///
+    /// Needs the model's vocab — pass the loaded `Model` so the chain
+    /// can wire the grammar against the right token table. Belongs early
+    /// in the chain (before temp / dist), so the constraint applies
+    /// before probabilistic sampling.
+    pub fn grammar(self, model: &Model, grammar_str: &str, grammar_root: &str) -> Self {
+        let g = std::ffi::CString::new(grammar_str).expect("grammar contains nul");
+        let r = std::ffi::CString::new(grammar_root).expect("grammar_root contains nul");
+        let s = unsafe {
+            let vocab = sys::llama_model_get_vocab(model.ptr.as_ptr());
+            sys::llama_sampler_init_grammar(vocab, g.as_ptr(), r.as_ptr())
+        };
+        // llama.cpp returns NULL on grammar parse failure. Adding a null
+        // sampler to the chain crashes inside llama_sampler_sample on
+        // first use (verified 2026-04-20: 'scheduler closed without Done
+        // event' for all personas when JSON grammar didn't parse). Skip
+        // the null pointer rather than ship a corrupted chain — caller
+        // gets unconstrained sampling instead of a crash.
+        if s.is_null() {
+            eprintln!("[safe.rs] grammar parse failed for root='{grammar_root}' — skipping (chain unconstrained)");
+            return self;
+        }
         self.add(s)
     }
 

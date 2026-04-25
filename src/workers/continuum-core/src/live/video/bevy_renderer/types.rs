@@ -351,9 +351,9 @@ impl SnapshotTracker {
             }
             let png_path = avatar_dir.join(format!("{identity}.png"));
 
-            if let Some(img) = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-                width, height, rgba_data,
-            ) {
+            if let Some(img) =
+                image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(width, height, rgba_data)
+            {
                 if img.save(&png_path).is_ok() {
                     crate::clog_info!(
                         "📸 Snapshot saved for '{}': {}",
@@ -367,7 +367,9 @@ impl SnapshotTracker {
 
     fn avatar_dir() -> std::path::PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        std::path::PathBuf::from(home).join(".continuum").join("avatars")
+        std::path::PathBuf::from(home)
+            .join(".continuum")
+            .join("avatars")
     }
 }
 

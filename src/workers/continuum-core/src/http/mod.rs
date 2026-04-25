@@ -38,8 +38,8 @@ use anthropic_compat::{
 };
 
 use crate::ai::{
-    ActiveAdapterRequest, ChatMessage, MessageContent, TextGenerationRequest,
-    adapter::InferenceDevice,
+    adapter::InferenceDevice, ActiveAdapterRequest, ChatMessage, MessageContent,
+    TextGenerationRequest,
 };
 
 use axum::{
@@ -71,9 +71,7 @@ pub async fn port() -> Option<u16> {
 /// Returns the port number.
 pub async fn start_if_needed() -> Result<u16, String> {
     SERVER_INIT
-        .get_or_try_init(|| async {
-            start_server().await
-        })
+        .get_or_try_init(|| async { start_server().await })
         .await
         .map_err(|e| format!("HTTP server failed to start: {}", e))?;
 
@@ -183,7 +181,13 @@ async fn messages_handler(
     let tools_count = req.tools.as_ref().map(|t| t.len()).unwrap_or(0);
     eprintln!(
         "[http] Request: model={}, context_window={}, system={}chars, messages={}chars ({}msgs), tools={}, max_tokens={}",
-        req.model, context_window, system_chars, msg_chars, req.messages.len(), tools_count, req.max_tokens
+        req.model,
+        context_window,
+        system_chars,
+        msg_chars,
+        req.messages.len(),
+        tools_count,
+        req.max_tokens
     );
 
     // Convert Anthropic messages → internal format (no truncation — pass through faithfully)
@@ -211,14 +215,19 @@ async fn messages_handler(
         top_k: req.top_k,
         repeat_penalty: req.repeat_penalty,
         stop_sequences: req.stop_sequences.clone(),
-        tools: None,       // Tool calls handled by Claude Code, not the local model
+        tools: None, // Tool calls handled by Claude Code, not the local model
         tool_choice: None,
         response_format: None,
         active_adapters,
-        request_id: Some(format!("msg_{}", uuid::Uuid::new_v4().to_string().replace('-', ""))),
+        request_id: Some(format!(
+            "msg_{}",
+            uuid::Uuid::new_v4().to_string().replace('-', "")
+        )),
         user_id: None,
         room_id: None,
         purpose: Some("local-coding-agent".to_string()),
+        // External coding-agent caller (not a persona-owned conversation).
+        persona_id: None,
     };
 
     let response = adapter.generate_text(gen_request).await.map_err(|e| {
@@ -267,10 +276,7 @@ async fn messages_handler(
     if req.stream {
         // SSE streaming response (single burst for now — full text in one event sequence)
         let events = build_sse_events(&anthropic_response);
-        let body = events
-            .iter()
-            .map(|e| e.to_sse_string())
-            .collect::<String>();
+        let body = events.iter().map(|e| e.to_sse_string()).collect::<String>();
 
         Ok(axum::response::Response::builder()
             .status(StatusCode::OK)
@@ -354,7 +360,9 @@ fn convert_messages(messages: &[anthropic_compat::AnthropicMessage]) -> Vec<Chat
                 AnthropicContent::Text(s) => MessageContent::Text(s.clone()),
                 AnthropicContent::Blocks(blocks) => {
                     // If all blocks are text, flatten to single text
-                    let all_text = blocks.iter().all(|b| matches!(b, ContentBlock::Text { .. }));
+                    let all_text = blocks
+                        .iter()
+                        .all(|b| matches!(b, ContentBlock::Text { .. }));
                     if all_text {
                         let text = blocks
                             .iter()
@@ -374,9 +382,7 @@ fn convert_messages(messages: &[anthropic_compat::AnthropicMessage]) -> Vec<Chat
                             .iter()
                             .filter_map(|b| match b {
                                 ContentBlock::Text { text } => {
-                                    Some(crate::ai::ContentPart::Text {
-                                        text: text.clone(),
-                                    })
+                                    Some(crate::ai::ContentPart::Text { text: text.clone() })
                                 }
                                 ContentBlock::ToolUse { id, name, input } => {
                                     Some(crate::ai::ContentPart::ToolUse {

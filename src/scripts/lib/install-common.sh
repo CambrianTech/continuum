@@ -373,6 +373,13 @@ ic_detect_hardware() {
         IC_PLATFORM="linux"
       fi
       ;;
+    MINGW*|MSYS*|CYGWIN*)
+      # Native Windows under Git Bash / MSYS2 / Cygwin. uname -s returns
+      # MINGW64_NT-10.0-... or similar. Bug-fixed 2026-04-24 — previously
+      # fell through to "unknown", which caused install.sh to silently skip
+      # the model pull (Carl's first chat then errored on missing models).
+      IC_PLATFORM="windows"
+      ;;
     *) IC_PLATFORM="unknown" ;;
   esac
   IC_ARCH="$(uname -m)"
@@ -384,6 +391,18 @@ ic_detect_hardware() {
       ;;
     linux|wsl)
       IC_RAM_MIB=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo)
+      ;;
+    windows)
+      # Git Bash inherits PowerShell's wmic / Get-CimInstance. wmic is the
+      # most portable across Windows versions (Win10 + Win11). Total physical
+      # memory in bytes → MiB.
+      if command -v wmic >/dev/null 2>&1; then
+        local total_bytes
+        total_bytes="$(wmic computersystem get TotalPhysicalMemory /value 2>/dev/null | tr -d '\r' | awk -F= '/TotalPhysicalMemory=/{print $2}')"
+        IC_RAM_MIB=$(( ${total_bytes:-0} / 1048576 ))
+      else
+        IC_RAM_MIB=0
+      fi
       ;;
     *)
       IC_RAM_MIB=0
@@ -402,6 +421,20 @@ ic_detect_hardware() {
         IC_GPU_KIND="metal"
         IC_GPU_NAME="Apple Silicon"
         IC_VRAM_GB="$IC_RAM_GB"   # Apple unified memory — GPU shares with CPU
+      fi
+      ;;
+    windows)
+      # nvidia-smi.exe is on PATH for any machine with NVIDIA drivers
+      # installed (system32). Vulkan via vulkaninfo.exe (Vulkan SDK or
+      # bundled with most modern GPU drivers).
+      if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
+        IC_GPU_KIND="cuda"
+        IC_GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | tr -d '\r')"
+        local vram_mib="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d '\r')"
+        IC_VRAM_GB=$(( ${vram_mib:-0} / 1024 ))
+      elif command -v vulkaninfo >/dev/null 2>&1 && vulkaninfo --summary 2>/dev/null | grep -q deviceName; then
+        IC_GPU_KIND="vulkan"
+        IC_GPU_NAME="$(vulkaninfo --summary 2>/dev/null | awk -F= '/deviceName/{gsub(/^[[:space:]]*/,"",$2);print $2;exit}' | tr -d '\r')"
       fi
       ;;
     linux|wsl)
@@ -456,10 +489,17 @@ ic_decide_gpu_path() {
       IC_DMR_BACKEND="llama.cpp"
       IC_DMR_GPU_FLAG="rocm"
       ;;
-    linux:vulkan|wsl:vulkan)
+    linux:vulkan|wsl:vulkan|windows:vulkan)
       IC_GPU_PATH="llama-vulkan"
       IC_DMR_BACKEND=""   # not DMR; handled by continuum-core's llama adapter
       IC_DMR_GPU_FLAG=""
+      ;;
+    windows:cuda)
+      # Native Windows + NVIDIA. Docker Desktop on Windows supports NVIDIA
+      # passthrough via WSL2 backend; same DMR/llama.cpp path as linux:cuda.
+      IC_GPU_PATH="dmr-cuda"
+      IC_DMR_BACKEND="llama.cpp"
+      IC_DMR_GPU_FLAG="cuda"
       ;;
     *)
       IC_GPU_PATH="unsupported"

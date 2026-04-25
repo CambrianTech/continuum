@@ -114,7 +114,7 @@ case "$OS" in
     fi
     # ── Docker Desktop VM memory (Mac Option B — continuum-core NATIVE) ─────
     # The previous 80%-of-RAM target crashed Docker Desktop mid-run on 32GB
-    # M1 during matrix testing (FlashGordon 2026-04-16): Docker VM at 25.6GB
+    # M1 during matrix testing (<external-drive> 2026-04-16): Docker VM at 25.6GB
     # + native continuum-core at ~11GB RSS + macOS overhead ~6GB ≈ 43GB on a
     # 32GB physical box → heavy swap → Docker daemon died, DMR endpoint
     # disappeared, Helper AI fell back to Candle (5x slower) and never
@@ -269,6 +269,32 @@ if type ic_detect_hardware &>/dev/null; then
   ic_decide_gpu_path
   ic_describe_hardware
 
+  # Hard-fail on unsupported. Previously this case fell through silently:
+  # install.sh "completed", continuum runtime then errored on missing models.
+  # That's the silent-failure-is-failure rule — Carl deserves an actionable
+  # error at install time, not a confusing model-not-found at first chat.
+  if [ "$IC_GPU_PATH" = "unsupported" ]; then
+    cat >&2 <<EOF
+
+ERROR: Continuum can't auto-detect a supported GPU path on this machine.
+  Detected:  IC_PLATFORM=$IC_PLATFORM, IC_GPU_KIND=$IC_GPU_KIND
+  Supported: macos:metal, linux:cuda, linux:rocm, linux:vulkan,
+             wsl:cuda, wsl:vulkan, windows:cuda, windows:vulkan
+
+If your hardware IS one of those, the detector missed something. Check:
+  - macOS: 'sysctl -n machdep.cpu.brand_string' should mention "Apple"
+  - Linux/WSL CUDA: 'nvidia-smi' should print GPU info
+  - Linux ROCm: 'rocminfo' should print GPU info
+  - Linux/WSL/Windows Vulkan: 'vulkaninfo --summary' should list deviceName
+  - Windows CUDA: 'nvidia-smi' (Windows native) should print GPU info
+
+If your hardware truly isn't supported, Continuum can't run reliably here.
+File an issue at https://github.com/CambrianTech/continuum/issues with the
+output of: uname -a + nvidia-smi (if installed) + vulkaninfo --summary.
+EOF
+    exit 1
+  fi
+
   # Pull default persona model into DMR so Carl's first chat is instant.
   # Only for DMR paths — Vulkan path loads models differently (local GGUF).
   PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF"
@@ -350,6 +376,91 @@ if type ic_detect_hardware &>/dev/null; then
       warn "No supported GPU detected. Local chat will error until a GPU adapter is available."
       ;;
   esac
+fi
+
+# ── Vision-capable model (Qwen2-VL-7B) — pull if missing ───────────
+# The Vision AI persona uses the in-process llama.cpp adapter against
+# Qwen2-VL-7B-Instruct + its multimodal projector (mmproj). Without
+# both files on disk, AIProviderModule registers the adapter then logs
+# the gap, and any image upload falls through to the text-bridge path
+# (VisionDescriptionService) instead of going to a model that natively
+# sees pixels — defeats the README's "see + speak" thesis.
+#
+# Total ~5.5 GB on disk (Q4_K_M GGUF + f16 mmproj). Pull with `hf
+# download` (HuggingFace CLI; installed via `pip install huggingface-hub`
+# which already happens earlier in install for the python deps). Skips
+# cleanly if the files are already there.
+#
+# Path matches `models.toml::qwen2-vl-7b-instruct.gguf_local_path`
+# (today: `~/models/qwen2-vl-7b/`). Loader expand_path resolves `~`.
+QWEN2_VL_DIR="${HOME}/models/qwen2-vl-7b"
+QWEN2_VL_GGUF="${QWEN2_VL_DIR}/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
+QWEN2_VL_MMPROJ="${QWEN2_VL_DIR}/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
+if [[ -f "$QWEN2_VL_GGUF" && -f "$QWEN2_VL_MMPROJ" ]]; then
+  ok "Vision model already on disk: $QWEN2_VL_DIR"
+else
+  info "Pulling Vision AI model — Qwen2-VL-7B-Instruct (~5.5 GB, first install only)..."
+  mkdir -p "$QWEN2_VL_DIR"
+  if command -v hf >/dev/null 2>&1; then
+    # `hf download` (huggingface-cli successor) — copies into local-dir
+    # by default, no symlink dance. Both files in one call.
+    if hf download bartowski/Qwen2-VL-7B-Instruct-GGUF \
+        Qwen2-VL-7B-Instruct-Q4_K_M.gguf \
+        mmproj-Qwen2-VL-7B-Instruct-f16.gguf \
+        --local-dir "$QWEN2_VL_DIR" 2>/dev/null; then
+      ok "Vision model pulled to $QWEN2_VL_DIR"
+    else
+      warn "Vision model pull failed. Manual: hf download bartowski/Qwen2-VL-7B-Instruct-GGUF Qwen2-VL-7B-Instruct-Q4_K_M.gguf mmproj-Qwen2-VL-7B-Instruct-f16.gguf --local-dir $QWEN2_VL_DIR"
+      warn "Until pulled, the Vision AI persona will register but image uploads will hard-error."
+    fi
+  else
+    warn "'hf' (huggingface-cli) not on PATH — can't auto-pull vision model."
+    warn "Install: pip install huggingface-hub"
+    warn "Then: hf download bartowski/Qwen2-VL-7B-Instruct-GGUF Qwen2-VL-7B-Instruct-Q4_K_M.gguf mmproj-Qwen2-VL-7B-Instruct-f16.gguf --local-dir $QWEN2_VL_DIR"
+  fi
+fi
+
+# ── Audio-capable model (Qwen2-Audio-7B) — pull if missing ─────────
+# Symmetric to the vision pull above. Audio AI persona uses the SAME
+# in-process llama.cpp + libmtmd path the vision side uses
+# (`backend.generate_with_audio()` → `MtmdContext::eval_audio()`),
+# verified end-to-end 2026-04-22. Without both the GGUF + audio mmproj
+# on disk, the adapter registers and any audio attachment falls through
+# to the STT bridge — lossy: tone, pacing, non-speech sounds gone.
+#
+# mradermacher carries both files; bartowski / second-state / gaianet
+# have weights only and are useless for libmtmd.
+#
+# Total ~5.7 GB on disk (Q4_K_M GGUF + f16 mmproj).
+QWEN2_AUDIO_DIR="${HOME}/models/qwen2-audio-7b"
+QWEN2_AUDIO_GGUF="${QWEN2_AUDIO_DIR}/Qwen2-Audio-7B-Instruct-Q4_K_M.gguf"
+QWEN2_AUDIO_MMPROJ="${QWEN2_AUDIO_DIR}/mmproj-Qwen2-Audio-7B-Instruct-f16.gguf"
+if [[ -f "$QWEN2_AUDIO_GGUF" && -f "$QWEN2_AUDIO_MMPROJ" ]]; then
+  ok "Audio model already on disk: $QWEN2_AUDIO_DIR"
+else
+  info "Pulling Audio AI model — Qwen2-Audio-7B-Instruct (~5.7 GB, first install only)..."
+  mkdir -p "$QWEN2_AUDIO_DIR"
+  if command -v hf >/dev/null 2>&1; then
+    # Note: mradermacher's repo names files with `.` separators (e.g.
+    # `Qwen2-Audio-7B-Instruct.Q4_K_M.gguf`). Renamed locally to the
+    # `-` convention models.toml expects so paths are consistent with
+    # the vision sibling.
+    if hf download mradermacher/Qwen2-Audio-7B-Instruct-GGUF \
+        Qwen2-Audio-7B-Instruct.Q4_K_M.gguf \
+        Qwen2-Audio-7B-Instruct.mmproj-f16.gguf \
+        --local-dir "$QWEN2_AUDIO_DIR" 2>/dev/null && \
+       mv "$QWEN2_AUDIO_DIR/Qwen2-Audio-7B-Instruct.Q4_K_M.gguf" "$QWEN2_AUDIO_GGUF" 2>/dev/null && \
+       mv "$QWEN2_AUDIO_DIR/Qwen2-Audio-7B-Instruct.mmproj-f16.gguf" "$QWEN2_AUDIO_MMPROJ" 2>/dev/null; then
+      ok "Audio model pulled to $QWEN2_AUDIO_DIR"
+    else
+      warn "Audio model pull failed. Manual: hf download mradermacher/Qwen2-Audio-7B-Instruct-GGUF Qwen2-Audio-7B-Instruct.Q4_K_M.gguf Qwen2-Audio-7B-Instruct.mmproj-f16.gguf --local-dir $QWEN2_AUDIO_DIR"
+      warn "Until pulled, the Audio AI persona will register but audio uploads will fall back to STT bridge."
+    fi
+  else
+    warn "'hf' (huggingface-cli) not on PATH — can't auto-pull audio model."
+    warn "Install: pip install huggingface-hub"
+    warn "Then: hf download mradermacher/Qwen2-Audio-7B-Instruct-GGUF Qwen2-Audio-7B-Instruct.Q4_K_M.gguf Qwen2-Audio-7B-Instruct.mmproj-f16.gguf --local-dir $QWEN2_AUDIO_DIR"
+  fi
 fi
 
 # ── Per-service memory caps — auto-calculated from host RAM ────────

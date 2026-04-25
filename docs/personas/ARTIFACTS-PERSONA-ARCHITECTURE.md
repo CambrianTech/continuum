@@ -413,7 +413,7 @@ PersonaUser
   ↓ Uses AIProvider interface
 NeuroplasticAdapter (implements AIProvider)
   ↓ Calls Python via exec
-Sentinel-AI Python (/Volumes/FlashGordon/cambrian/sentinel-ai)
+Sentinel-AI Python (/Volumes/<external-drive>/cambrian/sentinel-ai)
   ↓ Inference + Training
 Model Checkpoints (stored via ArtifactsAPI)
   ↓ Per-persona at $HOME/.continuum/personas/{uuid}/checkpoints/neuroplastic/
@@ -434,7 +434,7 @@ export class NeuroplasticAdapter implements AIProvider {
 
   private personaId: string;
   private checkpointPath?: string;
-  private sentinelPath = '/Volumes/FlashGordon/cambrian/sentinel-ai';
+  private sentinelPath = '/Volumes/<external-drive>/cambrian/sentinel-ai';
 
   async loadCheckpoint(relativePath: string): Promise<void> {
     const artifacts = getArtifactsAPI();
@@ -527,7 +527,7 @@ async enterAcademy(trainingConfig: AcademyConfig): Promise<void> {
 
   // 3. Execute Sentinel-AI training script
   const configPath = `~/.continuum/personas/${this.id}/training_config.json`;
-  const sentinelPath = '/Volumes/FlashGordon/cambrian/sentinel-ai';
+  const sentinelPath = '/Volumes/<external-drive>/cambrian/sentinel-ai';
 
   await execAsync(`
     cd ${sentinelPath} &&
@@ -822,7 +822,7 @@ await jtag.commands.execute<SyncParams, SyncResult>('ai/sync-checkpoint', {
 ### For Researchers
 
 1. **Sentinel-AI Integration:**
-   - Review `/Volumes/FlashGordon/cambrian/sentinel-ai/NEURAL_PLASTICITY_README.md`
+   - Review `/Volumes/<external-drive>/cambrian/sentinel-ai/NEURAL_PLASTICITY_README.md`
    - Design Python→TypeScript bridge
    - Plan checkpoint format
 

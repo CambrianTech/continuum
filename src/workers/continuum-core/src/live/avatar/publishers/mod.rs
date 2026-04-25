@@ -17,7 +17,9 @@ pub mod gpu_bridge;
 /// Stub: GPU bridge unavailable (non-macOS or livekit-webrtc disabled).
 #[cfg(not(all(feature = "livekit-webrtc", target_os = "macos")))]
 pub mod gpu_bridge {
-    pub fn has_bridge<T>(_slot_id: T) -> bool { false }
+    pub fn has_bridge<T>(_slot_id: T) -> bool {
+        false
+    }
 }
 
 /// Cross-platform GPU-accelerated I420 publisher via wgpu compute shader.

@@ -17,7 +17,10 @@ async fn test_human_speech_routes_to_all_models() {
 
     // Add participants
     router
-        .add_participant(RoutedParticipant::human("human-1".into(), "test-user".into()))
+        .add_participant(RoutedParticipant::human(
+            "human-1".into(),
+            "test-user".into(),
+        ))
         .await;
 
     router

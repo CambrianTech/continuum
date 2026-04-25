@@ -96,18 +96,47 @@ export class VisionDescriptionService {
   ): Promise<VisionDescription | null> {
     const key = this._cache.contentKey(base64Data);
 
-    // L1 cache hit — instant return
+    // L1 cache hit — instant return (per-process, lost on restart)
     const cached = this._cache.get(key);
     if (cached) {
       console.log(`[VisionDescription] Cache hit (key=${key.slice(0, 8)}), skipping inference`);
       return cached;
     }
 
-    // L1.5 cache (Rust HashMap) — survives TS restarts, sub-ms IPC
+    // L1.5 cache (Rust HashMap) — sub-ms IPC, lost on Rust restart
     const rustCached = await this._cache.getFromRust(key);
     if (rustCached) {
       console.log(`[VisionDescription] Rust L1.5 hit (key=${key.slice(0, 8)}), skipping inference`);
       return rustCached;
+    }
+
+    // L2 sidecar JSON on disk — survives every restart. Joel's
+    // 2026-04-21 directive: "we run yolo or whatever ONCE per data
+    // and keep track of it". Content-addressed sidecar means every
+    // unique image gets exactly one vision-inference per machine
+    // forever, regardless of how many TS/Rust process bounces happen.
+    // Cheap (single file stat + JSON.parse) so safe to check on the
+    // hot path.
+    const blobHash = `sha256:${key}`;  // contentKey is already hex sha256 of binary
+    try {
+      const { MediaBlobService } = await import('../storage/MediaBlobService');
+      const sidecar = await MediaBlobService.readSidecar(blobHash);
+      if (sidecar?.description) {
+        const fromDisk: VisionDescription = {
+          description: sidecar.description,
+          modelId: sidecar.generatedBy ?? 'sidecar',
+          provider: 'sidecar',
+          timestamp: new Date(sidecar.generatedAtMs ?? Date.now()).toISOString(),
+          responseTimeMs: 0,
+        };
+        // Promote to L1 + L1.5 so subsequent calls in this process
+        // don't even hit the disk.
+        this._cache.put(key, fromDisk);
+        console.log(`[VisionDescription] Sidecar L2 hit (key=${key.slice(0, 8)}), skipping inference`);
+        return fromDisk;
+      }
+    } catch {
+      // Sidecar lookup is best-effort. Fall through to inference.
     }
 
     // In-flight deduplication — coalesce with existing request
@@ -125,6 +154,20 @@ export class VisionDescriptionService {
       const result = await promise;
       if (result) {
         this._cache.put(key, result);
+        // Persist to L2 sidecar so the next process restart finds it
+        // without re-running inference. Fire-and-forget — sidecar write
+        // failure shouldn't fail the request, but log for diagnostics.
+        try {
+          const { MediaBlobService } = await import('../storage/MediaBlobService');
+          await MediaBlobService.writeSidecar(blobHash, {
+            description: result.description,
+            mimeType,
+            generatedBy: result.modelId,
+            generatedAtMs: Date.now(),
+          });
+        } catch (err) {
+          console.warn(`[VisionDescription] sidecar write failed for ${blobHash.slice(0, 16)}:`, err);
+        }
       }
       return result;
     } finally {

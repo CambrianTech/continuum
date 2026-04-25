@@ -1,8 +1,8 @@
 use crate::code::{FileEngine, ShellSession};
 use crate::gpu::GpuMemoryManager;
 use crate::modules::agent::AgentModule;
-use crate::modules::auth::ExternalWebviewAuthModule;
 use crate::modules::ai_provider::AIProviderModule;
+use crate::modules::auth::ExternalWebviewAuthModule;
 use crate::modules::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
 use crate::modules::code::{CodeModule, CodeState};
@@ -14,11 +14,11 @@ use crate::modules::gpu::GpuModule;
 use crate::modules::grid::GridModule;
 use crate::modules::health::HealthModule;
 use crate::modules::inference::InferenceModule;
-use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::live::{VoiceModule, VoiceState};
 use crate::modules::logger::LoggerModule;
 use crate::modules::memory::{MemoryModule, MemoryState};
 use crate::modules::models::ModelsModule;
+use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::rag::{RagModule, RagState};
 use crate::modules::search::SearchModule;
 use crate::modules::sentinel::SentinelModule;
@@ -62,14 +62,22 @@ trait IpcStream: Read + Write + Send + Sized + 'static {
 }
 
 impl IpcStream for UnixStream {
-    fn try_clone_stream(&self) -> std::io::Result<Self> { self.try_clone() }
-    fn peer_addr_str(&self) -> String { format!("{:?}", self.peer_addr().ok()) }
+    fn try_clone_stream(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
+    fn peer_addr_str(&self) -> String {
+        format!("{:?}", self.peer_addr().ok())
+    }
 }
 
 impl IpcStream for TcpStream {
-    fn try_clone_stream(&self) -> std::io::Result<Self> { self.try_clone() }
+    fn try_clone_stream(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
     fn peer_addr_str(&self) -> String {
-        self.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string())
+        self.peer_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
     }
 }
 
@@ -162,10 +170,10 @@ fn current_rss_mb() -> u64 {
     0 // No-op on non-macOS
 }
 
+use std::collections::HashMap;
 /// Periodic RSS reporter — logs every 10s so we can see growth trends.
 /// Also tracks per-command cumulative deltas to identify the leaker.
 use std::sync::Mutex;
-use std::collections::HashMap;
 static COMMAND_MEMORY_DELTAS: once_cell::sync::Lazy<Mutex<HashMap<String, i64>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -201,11 +209,7 @@ fn dump_memory_report() {
             .take(10)
             .map(|(cmd, delta)| format!("{}:+{}MB", cmd, delta))
             .collect();
-        eprintln!(
-            "[MEMLEAK] RSS={}MB | Top leakers: {}",
-            rss,
-            top.join(", ")
-        );
+        eprintln!("[MEMLEAK] RSS={}MB | Top leakers: {}", rss, top.join(", "));
     }
 }
 // See modules/health.rs, cognition.rs, channel.rs, voice.rs, code.rs, memory.rs,
@@ -793,6 +797,24 @@ pub fn start_server(
 
     log_info!("ipc", "server", "Starting IPC server on {}", socket_path);
 
+    // Load the model_registry BEFORE any ServiceModule is constructed.
+    // Several adapters (AnthropicAdapter, LlamaCppAdapter, …) read from
+    // `model_registry::global()` in their constructors — if init hasn't
+    // happened yet those panic at module registration time. Failure here
+    // is fatal: the registry is the single source of truth for model ids
+    // and a missing config is a boot-order / packaging bug, not a runtime
+    // condition we can recover from.
+    match crate::model_registry::init_global() {
+        Ok(reg) => log_info!(
+            "ipc",
+            "server",
+            "model_registry loaded: {} models across {} providers",
+            reg.models().count(),
+            reg.providers().count()
+        ),
+        Err(e) => panic!("failed to load model_registry: {e}"),
+    }
+
     // Create modular runtime
     log_info!("ipc", "server", "Initializing modular runtime...");
     let runtime = Arc::new(Runtime::new());
@@ -931,9 +953,7 @@ pub fn start_server(
     // PlasticityModule: Adaptive neural plasticity optimization engine
     // Provides plasticity/analyze, plasticity/compact, plasticity/topology
     // Per-head utilization-aware pruning, mixed-precision quantization, GQA-aware
-    runtime.register(Arc::new(
-        crate::modules::plasticity::PlasticityModule::new(),
-    ));
+    runtime.register(Arc::new(crate::modules::plasticity::PlasticityModule::new()));
 
     // AvatarModule: Bevy 3D avatar snapshots for profile pictures
     // Provides avatar/snapshot — allocates render slot, captures frame, saves PNG
@@ -955,7 +975,11 @@ pub fn start_server(
         .join("grid");
     let local_has_gpu = gpu_manager.total_vram_bytes() > 0;
     let local_vram_mb = gpu_manager.total_vram_bytes() / (1024 * 1024);
-    runtime.register(Arc::new(GridModule::new(grid_dir, local_has_gpu, local_vram_mb)));
+    runtime.register(Arc::new(GridModule::new(
+        grid_dir,
+        local_has_gpu,
+        local_vram_mb,
+    )));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {
@@ -1038,7 +1062,12 @@ pub fn start_server(
                                         let state = tcp_state.clone();
                                         std::thread::spawn(move || {
                                             if let Err(e) = handle_client(stream, state) {
-                                                log_error!("ipc", "server", "TCP client error: {}", e);
+                                                log_error!(
+                                                    "ipc",
+                                                    "server",
+                                                    "TCP client error: {}",
+                                                    e
+                                                );
                                             }
                                         });
                                     }
@@ -1050,7 +1079,13 @@ pub fn start_server(
                         });
                     }
                     Err(e) => {
-                        log_error!("ipc", "server", "TCP listener failed to bind {}: {}", bind_addr, e);
+                        log_error!(
+                            "ipc",
+                            "server",
+                            "TCP listener failed to bind {}: {}",
+                            bind_addr,
+                            e
+                        );
                     }
                 }
             }

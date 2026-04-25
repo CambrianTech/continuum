@@ -203,7 +203,12 @@ where
     entries: RwLock<HashMap<K, PoolEntry<V>>>,
     /// Single-flight in-flight loaders. tokio::sync::Mutex because we
     /// hold this across awaits.
-    inflight: Mutex<HashMap<K, futures::future::Shared<Pin<Box<dyn Future<Output = Result<V, String>> + Send>>>>>,
+    inflight: Mutex<
+        HashMap<
+            K,
+            futures::future::Shared<Pin<Box<dyn Future<Output = Result<V, String>> + Send>>>,
+        >,
+    >,
     /// Atomic counters — concurrent get/load callers update without lock contention.
     hits: AtomicU64,
     misses: AtomicU64,
@@ -408,7 +413,9 @@ where
             evicted_count += 1;
         }
         if evicted_count > 0 {
-            self.inner.evictions.fetch_add(evicted_count, Ordering::Relaxed);
+            self.inner
+                .evictions
+                .fetch_add(evicted_count, Ordering::Relaxed);
         }
         initial_bytes.saturating_sub(total_bytes)
     }
@@ -644,7 +651,10 @@ mod tests {
             "expected total_bytes <= max_bytes (100) after eviction firings, got {}",
             stats.total_bytes
         );
-        assert!(stats.eviction_count > 0, "eviction should have fired at least once");
+        assert!(
+            stats.eviction_count > 0,
+            "eviction should have fired at least once"
+        );
     }
 
     #[tokio::test]

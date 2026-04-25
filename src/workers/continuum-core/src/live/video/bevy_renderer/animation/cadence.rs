@@ -2,9 +2,9 @@
 
 use bevy::prelude::*;
 
-use super::components::*;
-use super::super::types::{RenderSchedule, ActiveSpeechClips};
 use super::super::scene::SlotRegistry;
+use super::super::types::{ActiveSpeechClips, RenderSchedule};
+use super::components::*;
 
 /// Staggered render cadence — controls which cameras render each frame.
 pub(in crate::live::video::bevy_renderer) fn manage_render_cadence(

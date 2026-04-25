@@ -35,15 +35,21 @@ pub fn discover_shards(model_dir: &Path) -> Result<Vec<PathBuf>, String> {
 
     // Check for multi-shard pattern
     let mut shards: Vec<PathBuf> = Vec::new();
-    let entries = std::fs::read_dir(model_dir)
-        .map_err(|e| format!("Failed to read model directory {}: {}", model_dir.display(), e))?;
+    let entries = std::fs::read_dir(model_dir).map_err(|e| {
+        format!(
+            "Failed to read model directory {}: {}",
+            model_dir.display(),
+            e
+        )
+    })?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read dir entry: {e}"))?;
         let path = entry.path();
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             // Match pattern: model-NNNNN-of-NNNNN.safetensors
-            if name.starts_with("model-") && name.ends_with(".safetensors") && name.contains("-of-") {
+            if name.starts_with("model-") && name.ends_with(".safetensors") && name.contains("-of-")
+            {
                 shards.push(path);
             }
         }
@@ -96,13 +102,20 @@ pub fn compact_model(
 
     let tensor_refs: Vec<(&str, &[u8], &[usize], Dtype)> = tensor_views
         .iter()
-        .map(|(name, shape, dtype, data)| (name.as_str(), data.as_slice(), shape.as_slice(), *dtype))
+        .map(|(name, shape, dtype, data)| {
+            (name.as_str(), data.as_slice(), shape.as_slice(), *dtype)
+        })
         .collect();
 
     let serialized = serialize_tensors(&tensor_refs)?;
 
-    std::fs::write(output_path, &serialized)
-        .map_err(|e| format!("Failed to write compacted model to {}: {}", output_path.display(), e))?;
+    std::fs::write(output_path, &serialized).map_err(|e| {
+        format!(
+            "Failed to write compacted model to {}: {}",
+            output_path.display(),
+            e
+        )
+    })?;
 
     // Save topology alongside
     let topology_path = output_path.with_extension("topology.json");
@@ -172,13 +185,20 @@ pub fn compact_model_sharded(
     // Serialize all tensors into a single output file
     let tensor_refs: Vec<(&str, &[u8], &[usize], Dtype)> = all_output_tensors
         .iter()
-        .map(|(name, data, shape, dtype)| (name.as_str(), data.as_slice(), shape.as_slice(), *dtype))
+        .map(|(name, data, shape, dtype)| {
+            (name.as_str(), data.as_slice(), shape.as_slice(), *dtype)
+        })
         .collect();
 
     let serialized = serialize_tensors(&tensor_refs)?;
 
-    std::fs::write(output_path, &serialized)
-        .map_err(|e| format!("Failed to write compacted model to {}: {}", output_path.display(), e))?;
+    std::fs::write(output_path, &serialized).map_err(|e| {
+        format!(
+            "Failed to write compacted model to {}: {}",
+            output_path.display(),
+            e
+        )
+    })?;
 
     // Save topology alongside
     let topology_path = output_path.with_extension("topology.json");
@@ -371,7 +391,9 @@ fn compact_attention_tensor(
                         let byte_offset = row_offset + c * elem_size;
                         let end = byte_offset + elem_size;
                         if end > data.len() {
-                            return Err(format!("o_proj.weight: element ({row}, {c}) out of bounds"));
+                            return Err(format!(
+                                "o_proj.weight: element ({row}, {c}) out of bounds"
+                            ));
                         }
                         output.extend_from_slice(&data[byte_offset..end]);
                     }
@@ -435,9 +457,7 @@ fn dtype_size(dtype: Dtype) -> usize {
 }
 
 /// Serialize tensors to safetensors format.
-fn serialize_tensors(
-    tensors: &[(&str, &[u8], &[usize], Dtype)],
-) -> Result<Vec<u8>, String> {
+fn serialize_tensors(tensors: &[(&str, &[u8], &[usize], Dtype)]) -> Result<Vec<u8>, String> {
     // Build tensor views for serialization
     let tensor_views: Vec<(String, TensorView<'_>)> = tensors
         .iter()
@@ -490,10 +510,7 @@ mod tests {
             parse_attention_tensor_name("model.embed_tokens.weight"),
             None
         );
-        assert_eq!(
-            parse_attention_tensor_name("lm_head.weight"),
-            None
-        );
+        assert_eq!(parse_attention_tensor_name("lm_head.weight"), None);
     }
 
     #[test]
@@ -607,10 +624,10 @@ mod tests {
             .collect();
 
         // Row 0: should have columns 0, 1, 4, 5 from original
-        assert_eq!(floats[0], 0.0);  // (0, 0)
-        assert_eq!(floats[1], 1.0);  // (0, 1)
-        assert_eq!(floats[2], 4.0);  // (0, 4)
-        assert_eq!(floats[3], 5.0);  // (0, 5)
+        assert_eq!(floats[0], 0.0); // (0, 0)
+        assert_eq!(floats[1], 1.0); // (0, 1)
+        assert_eq!(floats[2], 4.0); // (0, 4)
+        assert_eq!(floats[3], 5.0); // (0, 5)
 
         // Row 1: columns 0, 1, 4, 5
         assert_eq!(floats[4], 10.0); // (1, 0)
@@ -641,8 +658,18 @@ mod tests {
 
         let shards = discover_shards(dir.path()).unwrap();
         assert_eq!(shards.len(), 3);
-        assert!(shards[0].file_name().unwrap().to_str().unwrap().contains("00001"));
-        assert!(shards[2].file_name().unwrap().to_str().unwrap().contains("00003"));
+        assert!(shards[0]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("00001"));
+        assert!(shards[2]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("00003"));
     }
 
     #[test]

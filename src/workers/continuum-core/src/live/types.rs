@@ -27,7 +27,10 @@ pub enum SpeakerType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/live/VoiceParticipant.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/live/VoiceParticipant.ts"
+)]
 pub struct VoiceParticipant {
     #[ts(type = "string")]
     pub user_id: Uuid,

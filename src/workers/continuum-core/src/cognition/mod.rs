@@ -28,9 +28,18 @@
 //!                                  `ResponderDecision`)
 
 pub mod response_orchestrator;
+pub mod response_validator;
 pub mod shared_analysis;
+pub mod tool_executor;
 pub mod types;
 
-pub use response_orchestrator::{orchestrate, score_persona, PersonaSlot, DEFAULT_RELEVANCE_THRESHOLD};
+pub use response_orchestrator::{
+    orchestrate, score_persona, PersonaSlot, DEFAULT_RELEVANCE_THRESHOLD,
+};
+pub use response_validator::{clean_and_validate, is_hard_failure, ValidationOutcome};
 pub use shared_analysis::{analyze, AnalysisInput, RecentMessage};
+pub use tool_executor::{
+    MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite,
+    ToolExecutionContext, ToolExecutor, ToolInvocation, ToolOutcome,
+};
 pub use types::*;

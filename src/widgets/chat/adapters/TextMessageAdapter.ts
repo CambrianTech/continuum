@@ -51,8 +51,22 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
 
   renderContent(data: TextContentData, _currentUserId: string): string {
     try {
+      // Extract <tool_use> blocks BEFORE HTML escaping. Replace each with a
+      // unique placeholder token so escaping + markdown don't touch them,
+      // then restore them as styled inline indicators after parsing. This
+      // is how Claude Code and similar surfaces render tool calls — small
+      // visual chip showing tool name + (optional) parameters, never raw
+      // XML markup leaking as visible text.
+      //
+      // Why pre-extract instead of post-replace: marked.parse + the HTML
+      // escape step would mangle the angle brackets and break the regex.
+      // Placeholder pass-through is the only way to keep the markup intact
+      // for restoration without re-parsing the model output multiple times.
+      const { processed: textWithPlaceholders, restorations } =
+        this.extractToolUseBlocks(data.text);
+
       // Pre-process: Escape HTML tags that aren't in code blocks (backticks or fences)
-      const processedText = this.escapeHtmlInPlainText(data.text);
+      const processedText = this.escapeHtmlInPlainText(textWithPlaceholders);
 
       // Parse markdown to HTML
       let htmlContent = marked.parse(processedText) as string;
@@ -66,6 +80,11 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
       // Make file paths clickable
       htmlContent = this.linkifyFilePaths(htmlContent);
 
+      // Restore tool-use placeholders as styled indicators. Done LAST so
+      // none of the upstream transforms try to re-process the inserted
+      // HTML (which could escape the chip markup back into visible text).
+      htmlContent = this.restoreToolUseBlocks(htmlContent, restorations);
+
       return `
         <div class="text-message-content markdown-body">
           ${htmlContent}
@@ -76,6 +95,69 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
       // Fallback to plain text with escaping
       return `<div class="text-message-content"><p>${this.escapeHtml(data.text)}</p></div>`;
     }
+  }
+
+  /**
+   * Pull <tool_use>...</tool_use> blocks out of the model's response text
+   * and replace each with a unique placeholder token. Returns the text
+   * with placeholders + a map from placeholder → ready-to-inject HTML.
+   *
+   * Why this matters: the model sometimes wraps replies in tool-use
+   * markup (especially when discouraged-but-not-blocked from calling
+   * collaboration/chat/send for the current room). Without this step
+   * the raw XML would reach the user as visible text — broken UX.
+   */
+  private extractToolUseBlocks(text: string): {
+    processed: string;
+    restorations: Map<string, string>;
+  } {
+    const restorations = new Map<string, string>();
+    let counter = 0;
+    const processed = text.replace(
+      /<tool_use>([\s\S]*?)<\/tool_use>/g,
+      (_match, content: string) => {
+        const toolName =
+          /<tool_name>([\s\S]*?)<\/tool_name>/.exec(content)?.[1]?.trim() ?? 'unknown';
+        const placeholder = ` TOOL_USE_PLACEHOLDER_${counter} `;
+        const paramsBlock =
+          /<parameters>([\s\S]*?)<\/parameters>/.exec(content)?.[1]?.trim() ?? '';
+        const escapedName = this.escapeHtml(toolName);
+        // Pretty-print params if JSON; else raw. Tool calls arrive as
+        // either JSON or nested XML — render whatever's there indented.
+        let prettyParams = paramsBlock;
+        if (paramsBlock.startsWith('{') || paramsBlock.startsWith('[')) {
+          try {
+            prettyParams = JSON.stringify(JSON.parse(paramsBlock), null, 2);
+          } catch {
+            // Not valid JSON — fall through and show raw text
+          }
+        }
+        const escapedParams = this.escapeHtml(prettyParams);
+        // Native <details>/<summary> = browser-handled click toggle,
+        // zero JS. Same UX shape as makeErrorsCollapsible() uses for
+        // long error blocks.
+        restorations.set(
+          placeholder,
+          `<details class="chat-tool-call">` +
+            `<summary class="chat-tool-call-summary">⏺ <code>${escapedName}</code></summary>` +
+            (paramsBlock
+              ? `<pre class="chat-tool-call-body"><code>${escapedParams}</code></pre>`
+              : '') +
+            `</details>`,
+        );
+        counter++;
+        return placeholder;
+      },
+    );
+    return { processed, restorations };
+  }
+
+  private restoreToolUseBlocks(html: string, restorations: Map<string, string>): string {
+    let out = html;
+    for (const [placeholder, replacement] of restorations) {
+      out = out.split(placeholder).join(replacement);
+    }
+    return out;
   }
 
   async handleContentLoading(_element: HTMLElement): Promise<void> {
@@ -97,6 +179,61 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
       .text-message-content {
         word-wrap: break-word;
         overflow-wrap: break-word;
+      }
+
+      /* Tool-call collapsible indicators — model output of <tool_use>...</tool_use>
+         renders as a clickable chip (⏺ tool/name); click to expand the
+         parameters block, click again to collapse. Native <details>/<summary>
+         = browser-handled toggle, no JS. Same shape as makeErrorsCollapsible
+         uses for long error blocks. */
+      .chat-tool-call {
+        display: inline-block;
+        margin: 2px 0;
+      }
+      .chat-tool-call > .chat-tool-call-summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: rgba(120, 120, 120, 0.12);
+        border: 1px solid rgba(120, 120, 120, 0.25);
+        font-size: 0.85em;
+        color: inherit;
+        opacity: 0.85;
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
+      }
+      .chat-tool-call > .chat-tool-call-summary::-webkit-details-marker {
+        display: none;
+      }
+      .chat-tool-call[open] > .chat-tool-call-summary {
+        opacity: 1;
+        background: rgba(120, 120, 120, 0.20);
+      }
+      .chat-tool-call > .chat-tool-call-body {
+        margin: 4px 0 4px 8px;
+        padding: 8px 10px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.18);
+        border: 1px solid rgba(120, 120, 120, 0.20);
+        font-size: 0.85em;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap;
+        overflow-x: auto;
+      }
+      .chat-tool-call > .chat-tool-call-body code {
+        background: none;
+        padding: 0;
+        font-size: 1em;
+        color: inherit;
+      }
+      .chat-tool-call code {
+        background: none;
+        padding: 0;
+        font-size: 1em;
+        color: inherit;
       }
 
       /* Markdown Body Styles */

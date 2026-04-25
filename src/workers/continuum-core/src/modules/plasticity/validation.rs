@@ -263,7 +263,11 @@ mod tests {
         let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
 
         let model = CompactLlama::load(vb, &config, &topology);
-        assert!(model.is_ok(), "CompactLlama should load with uniform heads: {:?}", model.err());
+        assert!(
+            model.is_ok(),
+            "CompactLlama should load with uniform heads: {:?}",
+            model.err()
+        );
     }
 
     #[test]
@@ -295,7 +299,10 @@ mod tests {
         let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
 
         let model = CompactLlama::load(vb, &config, &topology);
-        assert!(model.is_ok(), "CompactLlama should load with aggressive pruning");
+        assert!(
+            model.is_ok(),
+            "CompactLlama should load with aggressive pruning"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -369,7 +376,11 @@ mod tests {
             .unwrap();
         let logits = model.forward(&input, 0);
 
-        assert!(logits.is_ok(), "Multi-token forward should succeed: {:?}", logits.err());
+        assert!(
+            logits.is_ok(),
+            "Multi-token forward should succeed: {:?}",
+            logits.err()
+        );
         let logits = logits.unwrap();
         // Output is last token's logits: [batch, vocab_size]
         assert_eq!(logits.dims(), &[1, 32]);
@@ -395,18 +406,12 @@ mod tests {
         assert_eq!(logits.dims(), &[1, 32]);
 
         // Generate: token at position 3
-        let next_input = Tensor::new(&[5u32], &device)
-            .unwrap()
-            .unsqueeze(0)
-            .unwrap();
+        let next_input = Tensor::new(&[5u32], &device).unwrap().unsqueeze(0).unwrap();
         let logits = model.forward(&next_input, 3).unwrap();
         assert_eq!(logits.dims(), &[1, 32]);
 
         // Generate: token at position 4
-        let next_input = Tensor::new(&[7u32], &device)
-            .unwrap()
-            .unsqueeze(0)
-            .unwrap();
+        let next_input = Tensor::new(&[7u32], &device).unwrap().unsqueeze(0).unwrap();
         let logits = model.forward(&next_input, 4).unwrap();
         assert_eq!(logits.dims(), &[1, 32]);
     }
@@ -467,8 +472,7 @@ mod tests {
             uniform_params
         );
 
-        let reduction_pct =
-            (1.0 - compact_params as f64 / uniform_params as f64) * 100.0;
+        let reduction_pct = (1.0 - compact_params as f64 / uniform_params as f64) * 100.0;
         assert!(
             reduction_pct > 10.0,
             "Should achieve >10% attention parameter reduction, got {:.1}%",
@@ -491,8 +495,7 @@ mod tests {
         let topology = make_test_topology(&[(4, 2), (4, 2), (4, 2), (4, 2)], head_dim);
         let compact_params = compact_attention_params(&topology, hidden_size);
 
-        let reduction_pct =
-            (1.0 - compact_params as f64 / uniform_params as f64) * 100.0;
+        let reduction_pct = (1.0 - compact_params as f64 / uniform_params as f64) * 100.0;
         assert!(
             reduction_pct > 40.0,
             "Aggressive pruning should achieve >40% attention parameter reduction, got {:.1}%",
@@ -572,8 +575,7 @@ mod tests {
         assert_eq!(layers.len(), num_layers);
 
         // Build topology
-        let precision_profile =
-            scoring::compute_precision_profile(&layers, num_heads, num_layers);
+        let precision_profile = scoring::compute_precision_profile(&layers, num_heads, num_layers);
 
         let topology = HeadTopology {
             base_model: "test-model".to_string(),
@@ -622,7 +624,10 @@ mod tests {
 
         // Verify non-NaN
         let vals: Vec<f32> = logits.to_vec2::<f32>().unwrap()[0].clone();
-        assert!(vals.iter().all(|&x| !x.is_nan()), "E2E logits should not be NaN");
+        assert!(
+            vals.iter().all(|&x| !x.is_nan()),
+            "E2E logits should not be NaN"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -657,7 +662,11 @@ mod tests {
         let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
 
         let model = CompactLlama::load(vb, &config, &loaded_topo);
-        assert!(model.is_ok(), "Load from saved topology failed: {:?}", model.err());
+        assert!(
+            model.is_ok(),
+            "Load from saved topology failed: {:?}",
+            model.err()
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -729,8 +738,16 @@ mod tests {
 
         for layer in &layers {
             // All GQA constraints satisfied
-            assert!(layer.num_heads > 0, "Layer {} must have >0 heads", layer.layer_index);
-            assert!(layer.num_kv_heads > 0, "Layer {} must have >0 KV heads", layer.layer_index);
+            assert!(
+                layer.num_heads > 0,
+                "Layer {} must have >0 heads",
+                layer.layer_index
+            );
+            assert!(
+                layer.num_kv_heads > 0,
+                "Layer {} must have >0 KV heads",
+                layer.layer_index
+            );
             assert_eq!(
                 layer.num_heads % layer.num_kv_heads,
                 0,
@@ -777,10 +794,7 @@ mod tests {
         assert_eq!(backend.eos_token_ids(), &[128001, 128009]);
         assert!(!backend.supports_lora());
         assert_eq!(backend.topology().layers.len(), 2);
-        assert_eq!(
-            (backend.topology().parameter_reduction * 100.0) as u32,
-            25
-        );
+        assert_eq!((backend.topology().parameter_reduction * 100.0) as u32, 25);
     }
 
     #[test]
@@ -813,7 +827,11 @@ mod tests {
         // Forward via ModelBackend trait
         let input = Tensor::new(&[1u32], &device).unwrap().unsqueeze(0).unwrap();
         let logits = backend.forward(&input, 0);
-        assert!(logits.is_ok(), "Backend forward should work: {:?}", logits.err());
+        assert!(
+            logits.is_ok(),
+            "Backend forward should work: {:?}",
+            logits.err()
+        );
 
         // Clear cache via trait
         assert!(backend.clear_cache().is_ok());
@@ -841,7 +859,11 @@ mod tests {
         for layer_idx in 0..num_layers {
             let mut scores = vec![0.5; num_heads];
             // First and last layers: fewer dead heads (important for model quality)
-            let dead_count = if layer_idx < 4 || layer_idx >= 24 { 2 } else { 6 };
+            let dead_count = if layer_idx < 4 || layer_idx >= 24 {
+                2
+            } else {
+                6
+            };
             for i in 0..dead_count {
                 scores[i] = 0.02 + (i as f64) * 0.01;
             }
@@ -873,9 +895,8 @@ mod tests {
         }
 
         // Estimate savings
-        let uniform_params = uniform_attention_params(
-            num_layers, num_heads, num_kv_heads, head_dim, hidden_size,
-        );
+        let uniform_params =
+            uniform_attention_params(num_layers, num_heads, num_kv_heads, head_dim, hidden_size);
 
         let topo = HeadTopology {
             base_model: "meta-llama/Llama-3.2-3B".to_string(),
@@ -957,14 +978,19 @@ mod tests {
         assert!(total > 0, "Profile should have non-zero counts");
 
         // Some heads should be removed (entire KV groups dead)
-        assert!(profile.removed > 0, "Should have removed heads (full KV groups dead)");
+        assert!(
+            profile.removed > 0,
+            "Should have removed heads (full KV groups dead)"
+        );
         // Some should be BF16 (utilization > 0.7)
         assert!(profile.bf16 > 0, "Should have BF16 heads");
         // GQA ratio maintained for all layers
         for layer in &layers {
             assert_eq!(
-                layer.num_heads % layer.num_kv_heads, 0,
-                "GQA ratio must be integer for layer {}", layer.layer_index
+                layer.num_heads % layer.num_kv_heads,
+                0,
+                "GQA ratio must be integer for layer {}",
+                layer.layer_index
             );
         }
     }

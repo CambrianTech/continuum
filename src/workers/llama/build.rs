@@ -25,6 +25,18 @@ fn main() {
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_TESTS", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
+        // We want libmtmd (multimodal projector + image/audio encoder) so
+        // the in-process LlamaCppAdapter can route ContentPart::Image to
+        // the model natively instead of dropping it. mtmd lives under
+        // tools/mtmd in the upstream tree; tools/CMakeLists.txt adds it
+        // via add_subdirectory(mtmd) only when LLAMA_BUILD_TOOLS=ON, and
+        // tools/ itself is gated on (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TOOLS).
+        // So both flags must flip to ON. Side effect: a handful of tool
+        // executables get built (llama-bench, llama-tokenize, etc.); they
+        // produce static archives that we link selectively below — the
+        // executable binaries themselves don't ship with us.
+        .define("LLAMA_BUILD_COMMON", "ON")
+        .define("LLAMA_BUILD_TOOLS", "ON")
         .define("BUILD_SHARED_LIBS", "OFF")
         // Static archives produced here get linked into continuum-core,
         // which is crate-type = ["cdylib", "rlib"] — lib.rs builds a
@@ -130,10 +142,24 @@ fn main() {
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-search=native={}/build/ggml/src", dst.display());
     println!("cargo:rustc-link-search=native={}/build/src", dst.display());
+    println!(
+        "cargo:rustc-link-search=native={}/build/tools/mtmd",
+        dst.display()
+    );
+    println!(
+        "cargo:rustc-link-search=native={}/build/common",
+        dst.display()
+    );
     println!("cargo:rustc-link-lib=static=llama");
     println!("cargo:rustc-link-lib=static=ggml");
     println!("cargo:rustc-link-lib=static=ggml-base");
     println!("cargo:rustc-link-lib=static=ggml-cpu");
+    // libmtmd: multimodal projector + image/audio encoder. Loaded via
+    // mtmd_init_from_file(mmproj_path, model, params); produces image
+    // tokens that get evaluated alongside text via mtmd_helper_eval_chunks.
+    // Depends on libcommon (string utils, base64 decoder).
+    println!("cargo:rustc-link-lib=static=mtmd");
+    println!("cargo:rustc-link-lib=static=common");
     // GGML backends register via C++ static initializers inside the backend's
     // static archive. Without +whole-archive, ld --as-needed / dead_strip
     // drops the archive because nothing from the main llama archive directly
@@ -171,19 +197,60 @@ fn main() {
         println!("cargo:rustc-link-lib=gomp");
     }
 
-    // Generate FFI bindings for llama.h
-    let header = submodule.join("include").join("llama.h");
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
-    let bindings = bindgen::Builder::default()
-        .header(header.to_str().unwrap())
+    // Generate FFI bindings for llama.h.
+    //
+    // We additionally include `ggml-metal.h` on Mac with the metal feature so
+    // bindgen emits `ggml_backend_metal_reg` etc. — the symbols our
+    // `backend_init()` calls explicitly to force-register the static Metal
+    // backend.
+    //
+    // Why explicit registration is needed even with +whole-archive on Mac:
+    // verified 2026-04-19 that `nm` on the linked test binary shows ZERO
+    // `ggml_backend_metal_*` symbols even though `libggml-metal.a` defines
+    // them and `libggml.a`'s `ggml-backend-reg.cpp` references them via
+    // `register_backend(ggml_backend_metal_reg())` (which runs only if
+    // `GGML_USE_METAL` is `#define`d — it is, per the CMake cache). Apple's
+    // ld translates rustc's `+whole-archive=ggml-metal` to `-force_load` but
+    // dead_strip can still drop the symbols when the only consumer is a
+    // C++ static initializer in a sibling archive. Calling the registration
+    // function explicitly from Rust at startup creates a hard reference
+    // path the linker cannot strip — fixes "all 32 layers assigned to
+    // device CPU" symptom that was forcing CPU-only inference at 33 tok/s
+    // on M5.
+    let llama_header = submodule.join("include").join("llama.h");
+    let mtmd_header = submodule.join("tools").join("mtmd").join("mtmd.h");
+    let mtmd_helper_header = submodule.join("tools").join("mtmd").join("mtmd-helper.h");
+    let mut builder = bindgen::Builder::default()
+        .header(llama_header.to_str().unwrap())
+        .header(mtmd_header.to_str().unwrap())
+        .header(mtmd_helper_header.to_str().unwrap())
         .clang_arg(format!("-I{}", submodule.join("ggml").join("include").display()))
+        .clang_arg(format!("-I{}", submodule.join("include").display()))
+        .clang_arg(format!("-I{}", submodule.join("tools").join("mtmd").display()))
         .allowlist_function("llama_.*")
         .allowlist_function("ggml_.*")
+        .allowlist_function("mtmd_.*")
         .allowlist_type("llama_.*")
         .allowlist_type("ggml_.*")
+        .allowlist_type("mtmd_.*")
         .allowlist_var("LLAMA_.*")
-        .generate()
-        .expect("Failed to generate bindings");
+        .allowlist_var("MTMD_.*");
+
+    if cfg!(feature = "metal") && target_os == "macos" {
+        let metal_header = submodule.join("ggml").join("include").join("ggml-metal.h");
+        builder = builder.header(metal_header.to_str().unwrap());
+    }
+    if cfg!(feature = "cuda") && target_os == "linux" {
+        let cuda_header = submodule.join("ggml").join("include").join("ggml-cuda.h");
+        builder = builder.header(cuda_header.to_str().unwrap());
+    }
+    if cfg!(feature = "vulkan") && target_os == "linux" {
+        let vk_header = submodule.join("ggml").join("include").join("ggml-vulkan.h");
+        builder = builder.header(vk_header.to_str().unwrap());
+    }
+
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
+    let bindings = builder.generate().expect("Failed to generate bindings");
     bindings.write_to_file(&out_path)
         .expect("Failed to write bindings");
 }

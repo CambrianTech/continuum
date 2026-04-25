@@ -981,11 +981,59 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   // Custom footer with message input
   protected renderFooter(): string {
     return `
+      <div class="attachment-preview" id="attachmentPreview"></div>
       <div class="input-container">
         <textarea class="message-input" id="messageInput" placeholder="Type a message... (or drag & drop files)" rows="1"></textarea>
         <button class="send-button" id="sendButton">Send</button>
       </div>
     `;
+  }
+
+  /**
+   * Render thumbnail chips for pendingAttachments above the textarea.
+   * Image attachments get a thumbnail; non-image attachments get a filename chip.
+   * Each chip carries an X button to remove that specific attachment.
+   */
+  private renderAttachmentPreview(): void {
+    const previewEl = this.shadowRoot?.getElementById('attachmentPreview') as HTMLElement | null;
+    if (!previewEl) return;
+
+    if (this.pendingAttachments.length === 0) {
+      previewEl.innerHTML = '';
+      previewEl.style.display = 'none';
+      return;
+    }
+
+    previewEl.style.display = '';
+    previewEl.innerHTML = this.pendingAttachments.map((att, idx) => {
+      const isImage = att.type === 'image' && att.base64 && att.mimeType;
+      const thumb = isImage
+        ? `<img class="attachment-chip-thumb" src="data:${att.mimeType};base64,${att.base64}" alt="${att.filename ?? ''}">`
+        : `<span class="attachment-chip-icon">📎</span>`;
+      const label = att.filename ?? att.type;
+      return `<div class="attachment-chip" data-attachment-index="${idx}">
+        ${thumb}
+        <span class="attachment-chip-name" title="${label}">${label}</span>
+        <button type="button" class="attachment-chip-remove" data-action="remove-attachment" data-index="${idx}" aria-label="Remove ${label}">×</button>
+      </div>`;
+    }).join('');
+
+    // Wire up the remove buttons (delegated would be nicer but the existing
+    // MessageEventDelegator is scoped to messages, not the input area).
+    previewEl.querySelectorAll('.attachment-chip-remove').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const idx = parseInt((e.currentTarget as HTMLElement).dataset.index ?? '-1', 10);
+        if (idx >= 0 && idx < this.pendingAttachments.length) {
+          this.pendingAttachments.splice(idx, 1);
+          this.renderAttachmentPreview();
+          if (this.messageInput) {
+            this.messageInput.placeholder = this.pendingAttachments.length > 0
+              ? `Type a message... (${this.pendingAttachments.length} file${this.pendingAttachments.length > 1 ? 's' : ''} attached)`
+              : 'Type a message... (or drag & drop files)';
+          }
+        }
+      }, { once: true });
+    });
   }
 
   // Override to setup message composer after EntityScroller initialization
@@ -1975,6 +2023,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     const savedAttachments = this.pendingAttachments.length > 0 ? [...this.pendingAttachments] : undefined;
     this.pendingAttachments = [];
     this.messageInput.placeholder = 'Type a message... (or drag & drop files)';
+    this.renderAttachmentPreview(); // Hide the chip row now that attachments are sent
 
     // Reset textarea height to single row
     this.autoGrowTextarea();
@@ -2112,6 +2161,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         // Focus input so user can press Enter to send attachments
         this.messageInput.focus();
       }
+
+      // Show thumbnail chips above the textarea so the user can confirm what
+      // they're about to send and remove individual attachments before posting.
+      this.renderAttachmentPreview();
     }
   }
 

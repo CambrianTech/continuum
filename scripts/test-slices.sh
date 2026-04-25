@@ -13,16 +13,19 @@
 #   - Exits non-zero on failure with a specific message
 #
 # Slices per variant:
-#   core   — boot + socket + no-panic
-#   cuda   — above + nvidia-smi visible + CUDA runtime linked
-#   vulkan — above + Vulkan ICD enumerates a device (via llvmpipe fallback
-#            on non-GPU hosts; via venus on krunkit; via venus/radv/anv on
-#            real Linux GPU hosts)
+#   core           — boot + socket + no-panic
+#   cuda           — above + nvidia-smi visible + CUDA runtime linked
+#   vulkan         — above + Vulkan ICD enumerates a device (via llvmpipe
+#                    fallback on non-GPU hosts; via venus on krunkit; via
+#                    venus/radv/anv on real Linux GPU hosts)
+#   livekit-bridge — image-available + boot (no socket; this service exposes
+#                    HTTP not the continuum-core IPC socket) + no-panic
 #
 # Usage:
 #   scripts/test-slices.sh <variant> [image-tag]
 #
 #   image-tag defaults to ghcr.io/cambriantech/continuum-core-<variant>:<sha>
+#   (or ghcr.io/cambriantech/continuum-livekit-bridge:<sha> for that variant)
 #   where <sha> is the current git HEAD (7-char short).
 #
 # Exit codes:
@@ -39,18 +42,26 @@ VARIANT="${1:-}"
 if [[ -z "$VARIANT" ]]; then
   cat >&2 <<EOF
 Usage: $0 <variant> [image-tag]
-Variants: core | cuda | vulkan
+Variants: core | cuda | vulkan | livekit-bridge
 EOF
   exit 1
 fi
 
 case "$VARIANT" in
-  core|cuda|vulkan) ;;
+  core|cuda|vulkan|livekit-bridge) ;;
   *) echo "ERROR: unknown variant '$VARIANT'" >&2; exit 1 ;;
 esac
 
 SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
-IMAGE_TAG="${2:-ghcr.io/cambriantech/continuum-core-$VARIANT:$SHA}"
+case "$VARIANT" in
+  livekit-bridge)
+    DEFAULT_IMAGE="ghcr.io/cambriantech/continuum-livekit-bridge:$SHA"
+    ;;
+  *)
+    DEFAULT_IMAGE="ghcr.io/cambriantech/continuum-core-$VARIANT:$SHA"
+    ;;
+esac
+IMAGE_TAG="${2:-$DEFAULT_IMAGE}"
 
 if ! command -v docker &>/dev/null; then
   echo "ERROR: docker CLI not found — can't run slice tests" >&2
@@ -126,21 +137,35 @@ if [[ -z "$CID" ]]; then
   exit 2
 fi
 
-# Wait up to 30s for the socket to appear. The healthcheck is identical.
-SOCKET_FOUND=false
-for _ in $(seq 1 30); do
-  if docker exec "$CID" test -S /root/.continuum/sockets/continuum-core.sock 2>/dev/null; then
-    SOCKET_FOUND=true
-    break
+# livekit-bridge doesn't expose the continuum-core IPC socket (it's an
+# HTTP service), so socket-presence isn't a meaningful health signal.
+# All we need is "container stayed up for 5s without crashing."
+if [[ "$VARIANT" == "livekit-bridge" ]]; then
+  sleep 5
+  if docker inspect -f '{{.State.Running}}' "$CID" 2>/dev/null | grep -q true; then
+    pass "boot (container running after 5s)"
+  else
+    fail "boot" "container exited within 5s"
+    echo "  docker logs:" >&2
+    docker logs "$CID" 2>&1 | tail -20 | sed 's/^/    /' >&2
   fi
-  sleep 1
-done
-if $SOCKET_FOUND; then
-  pass "boot (socket appeared within 30s)"
 else
-  fail "boot" "socket /root/.continuum/sockets/continuum-core.sock never appeared"
-  echo "  docker logs:" >&2
-  docker logs "$CID" 2>&1 | tail -20 | sed 's/^/    /' >&2
+  # Wait up to 30s for the socket to appear. The healthcheck is identical.
+  SOCKET_FOUND=false
+  for _ in $(seq 1 30); do
+    if docker exec "$CID" test -S /root/.continuum/sockets/continuum-core.sock 2>/dev/null; then
+      SOCKET_FOUND=true
+      break
+    fi
+    sleep 1
+  done
+  if $SOCKET_FOUND; then
+    pass "boot (socket appeared within 30s)"
+  else
+    fail "boot" "socket /root/.continuum/sockets/continuum-core.sock never appeared"
+    echo "  docker logs:" >&2
+    docker logs "$CID" 2>&1 | tail -20 | sed 's/^/    /' >&2
+  fi
 fi
 
 # ── Slice 3: no panic ──────────────────────────────────────────────

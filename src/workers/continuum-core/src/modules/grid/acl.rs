@@ -44,17 +44,31 @@ fn default_rules() -> &'static Vec<AccessRule> {
     DEFAULT_RULES.get_or_init(|| {
         let mut rules = vec![
             // Owner nodes: explicit sensitive operations
-            AccessRule { prefix: "data/delete",  access: CommandAccess::Owner },
-            AccessRule { prefix: "data/update",  access: CommandAccess::Owner },
-            AccessRule { prefix: commands::PAIR,  access: CommandAccess::Owner },
-            AccessRule { prefix: commands::TRUST, access: CommandAccess::Owner },
-
+            AccessRule {
+                prefix: "data/delete",
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
+                prefix: "data/update",
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
+                prefix: commands::PAIR,
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
+                prefix: commands::TRUST,
+                access: CommandAccess::Owner,
+            },
             // Owner nodes get everything else too (via the wildcard below).
             // When we add untrusted-node support, we'll add Trusted/Provisional rules here.
 
             // Wildcard: owner-trust nodes can run anything.
             // This means our own towers have full access across the grid.
-            AccessRule { prefix: "", access: CommandAccess::Owner },
+            AccessRule {
+                prefix: "",
+                access: CommandAccess::Owner,
+            },
         ];
 
         // Sort by prefix length descending (most specific first)
@@ -97,7 +111,10 @@ mod tests {
         assert!(is_command_authorized("genome/train", TrustLevel::Owner));
         assert!(is_command_authorized("screenshot", TrustLevel::Owner));
         assert!(is_command_authorized("data/list", TrustLevel::Owner));
-        assert!(is_command_authorized("collaboration/chat/send", TrustLevel::Owner));
+        assert!(is_command_authorized(
+            "collaboration/chat/send",
+            TrustLevel::Owner
+        ));
     }
 
     #[test]
@@ -122,8 +139,12 @@ mod tests {
         let rules = default_rules();
         // Verify longer prefixes come first
         for i in 1..rules.len() {
-            assert!(rules[i - 1].prefix.len() >= rules[i].prefix.len(),
-                "Rule {:?} should come after {:?}", rules[i-1], rules[i]);
+            assert!(
+                rules[i - 1].prefix.len() >= rules[i].prefix.len(),
+                "Rule {:?} should come after {:?}",
+                rules[i - 1],
+                rules[i]
+            );
         }
     }
 }

@@ -7,8 +7,8 @@
 use bevy::mesh::morph::MorphWeights;
 use bevy::prelude::*;
 
-use super::prng::SlotRng;
 use super::super::scene::avatar::{BoneInfo, VrmLookAtConfig};
+use super::prng::SlotRng;
 
 // =============================================================================
 // Morph Target Layout — discovered blend shape indices
@@ -35,8 +35,7 @@ pub struct MorphTargets {
 
 impl MorphTargets {
     pub fn has_blink(&self) -> bool {
-        self.blink.is_some()
-            || (self.blink_left.is_some() && self.blink_right.is_some())
+        self.blink.is_some() || (self.blink_left.is_some() && self.blink_right.is_some())
     }
 
     pub fn has_gaze(&self) -> bool {

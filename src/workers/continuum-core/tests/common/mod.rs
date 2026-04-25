@@ -179,3 +179,118 @@ pub fn ipc_request<T: Serialize>(
 pub fn server_is_running() -> bool {
     UnixStream::connect(ipc_socket_path()).is_ok()
 }
+
+// ============================================================================
+// Docker Model Runner (DMR) bundle resolution + auto-pull
+// ============================================================================
+//
+// Tests that need a specific model on disk MUST resolve through this helper
+// instead of hardcoding paths or SHA hashes. Hardcoded paths assume one
+// developer's HOME and break for everyone else; hardcoded SHAs go stale the
+// next time the model is reforged.
+//
+// Resolution flow:
+//   1. If `$TEST_MODEL_PATH_<NAME>` is set and points to a real file, use it.
+//   2. Otherwise, ask `docker model ls` for the matching MODEL ID and resolve
+//      to ~/.docker/models/bundles/sha256/<full-hash>/model/model.gguf.
+//   3. If the model isn't installed yet, `docker model pull <name>` it now
+//      (one-time cost, cached forever after) — so tests that need it just
+//      work on a fresh checkout, no separate manual step.
+//   4. Return None only if Docker/DMR isn't available at all (test should
+//      then skip with a clear error message naming the install).
+
+#[allow(dead_code)]
+pub fn dmr_model_gguf(model_name: &str) -> Option<std::path::PathBuf> {
+    let env_override_var = format!(
+        "TEST_MODEL_PATH_{}",
+        model_name
+            .to_uppercase()
+            .replace(['/', '.', '-', ':'], "_")
+    );
+    if let Ok(p) = std::env::var(&env_override_var) {
+        let pb = std::path::PathBuf::from(p);
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+
+    // First lookup pass — does DMR already have it?
+    if let Some(p) = lookup_dmr_bundle(model_name) {
+        return Some(p);
+    }
+
+    // Auto-pull. This is the "no one has to remember" path. The pull is
+    // idempotent (DMR no-ops if the bundle is already content-addressed
+    // present), and cached forever. We surface stderr so a real failure
+    // (no internet, model 404'd) is diagnosable.
+    eprintln!(
+        "→ {model_name} not found in DMR; auto-pulling via `docker model pull` (cached after this run)"
+    );
+    let pull = std::process::Command::new("docker")
+        .args(["model", "pull", model_name])
+        .status()
+        .ok()?;
+    if !pull.success() {
+        eprintln!(
+            "✗ `docker model pull {model_name}` failed (exit {pull:?}). \
+             Verify Docker Desktop is running and Model Runner is enabled."
+        );
+        return None;
+    }
+
+    // Re-lookup after pull
+    lookup_dmr_bundle(model_name)
+}
+
+fn lookup_dmr_bundle(model_name: &str) -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("docker")
+        .args(["model", "ls", "--format", "{{.Name}}\t{{.ID}}"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id_prefix = stdout.lines().find_map(|line| {
+        let mut parts = line.splitn(2, '\t');
+        let name = parts.next()?.trim();
+        let id = parts.next()?.trim();
+        if name.eq_ignore_ascii_case(model_name) {
+            Some(id.to_string())
+        } else {
+            None
+        }
+    })?;
+
+    let home = std::env::var("HOME").ok()?;
+    let bundles = std::path::PathBuf::from(home).join(".docker/models/bundles/sha256");
+    for entry in std::fs::read_dir(&bundles).ok()?.flatten() {
+        if let Some(name) = entry.file_name().to_str() {
+            if name.starts_with(&id_prefix) {
+                let gguf = entry.path().join("model").join("model.gguf");
+                if gguf.exists() {
+                    return Some(gguf);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Convenience for tests that need the qwen3.5-4b-code-forged GGUF. Resolves
+/// (and auto-pulls if missing) via DMR. Returns None only when Docker/DMR
+/// itself is unreachable, in which case the test should skip with a clear
+/// install hint.
+#[allow(dead_code)]
+pub fn qwen35_4b_code_gguf() -> Option<std::path::PathBuf> {
+    for name in [
+        "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf",
+        "hf.co/continuum-ai/qwen3.5-4b-code-forged-gguf",
+        "continuum-ai/qwen3.5-4b-code-forged-gguf",
+    ] {
+        if let Some(p) = dmr_model_gguf(name) {
+            return Some(p);
+        }
+    }
+    None
+}

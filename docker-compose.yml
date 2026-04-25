@@ -270,7 +270,16 @@ services:
   # ── Forge Worker (sentinel-ai) ────────────────────────────
   forge-worker:
     build: ../sentinel-ai
-    image: ghcr.io/cambriantech/forge-worker:${CONTINUUM_IMAGE_TAG:-latest}
+    # forge-worker is built and published by the sibling sentinel-ai repo
+    # (https://github.com/CambrianTech/sentinel-ai), which has its own release
+    # cadence independent of continuum's PR cycle. It does NOT get tagged with
+    # continuum's :pr-<N> or :<sha> — its tags are :latest + commit-shas of
+    # sentinel-ai pushes only. Coupling this to CONTINUUM_IMAGE_TAG made
+    # `docker compose --profile gpu pull` on a continuum PR tag fail with
+    # "manifest unknown" (caught 2026-04-23 during PR #950 Carl-GPU testing).
+    # Uses FORGE_WORKER_IMAGE_TAG (default :latest) so the two repos stay
+    # independently versioned.
+    image: ghcr.io/cambriantech/forge-worker:${FORGE_WORKER_IMAGE_TAG:-latest}
     profiles: ["gpu"]
     mem_limit: 28g
     deploy:
@@ -294,7 +303,14 @@ services:
 
   # ── Inference Server (GPU nodes only) ──────────────────────
   inference:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    # Pinned to a specific upstream digest. The floating `:server-cuda` tag is
+    # rebuilt by ggml-org on every merge to llama.cpp main; if Carl pulls on a
+    # day when upstream rolls a breaking change, every install silently breaks
+    # with no signal pointing at the cause and no way for us to reproduce. Pin
+    # forces deliberate updates where we verify behavior parity first. Bump
+    # the digest in a follow-up PR after smoke-testing the new upstream build.
+    # Issue #955.
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:11b71618f3f4b9c98e42818c058e37b62478f474806b4107ab698abd0be900f6
     restart: unless-stopped
     profiles: ["gpu"]
     mem_limit: 8g

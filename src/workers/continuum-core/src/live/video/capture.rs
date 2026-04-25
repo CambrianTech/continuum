@@ -271,12 +271,14 @@ async fn capture_video_stream(
 
             let mut jpeg_buf = Vec::with_capacity((width * height) as usize);
             let mut cursor = std::io::Cursor::new(&mut jpeg_buf);
-            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-                &mut cursor,
-                JPEG_QUALITY,
-            );
+            let encoder =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, JPEG_QUALITY);
             if let Err(e) = rgb_img.write_with_encoder(encoder) {
-                clog_warn!("👁 JPEG encode failed for '{}': {}", &id[..8.min(id.len())], e);
+                clog_warn!(
+                    "👁 JPEG encode failed for '{}': {}",
+                    &id[..8.min(id.len())],
+                    e
+                );
                 return (None, hash);
             }
 
@@ -348,7 +350,8 @@ fn compose_grid(participants: &[ParticipantSnapshot]) -> Option<ParticipantSnaps
     let grid_w = cols * cell_w;
     let grid_h = rows * cell_h;
 
-    let mut grid: image::RgbImage = ImageBuffer::from_pixel(grid_w, grid_h, image::Rgb([32, 32, 32]));
+    let mut grid: image::RgbImage =
+        ImageBuffer::from_pixel(grid_w, grid_h, image::Rgb([32, 32, 32]));
 
     for (i, snap) in participants.iter().enumerate() {
         let col = (i as u32) % cols;
@@ -357,8 +360,8 @@ fn compose_grid(participants: &[ParticipantSnapshot]) -> Option<ParticipantSnaps
         let y_offset = row * cell_h;
 
         // Decode participant JPEG
-        let reader = image::ImageReader::new(std::io::Cursor::new(&snap.jpeg))
-            .with_guessed_format();
+        let reader =
+            image::ImageReader::new(std::io::Cursor::new(&snap.jpeg)).with_guessed_format();
         let img = match reader {
             Ok(r) => match r.decode() {
                 Ok(img) => img,
@@ -393,7 +396,10 @@ fn compose_grid(participants: &[ParticipantSnapshot]) -> Option<ParticipantSnaps
         format!("{:016x}", hasher.finish())
     };
 
-    let names: Vec<&str> = participants.iter().map(|p| p.display_name.as_str()).collect();
+    let names: Vec<&str> = participants
+        .iter()
+        .map(|p| p.display_name.as_str())
+        .collect();
 
     Some(ParticipantSnapshot {
         jpeg: jpeg_buf,
@@ -408,7 +414,11 @@ fn compose_grid(participants: &[ParticipantSnapshot]) -> Option<ParticipantSnaps
 
 /// Convert I420 YUV buffer to RGBA pixel data.
 /// I420 layout: full-resolution Y plane, half-resolution U and V planes.
-fn i420_to_rgba(i420: &livekit::webrtc::video_frame::I420Buffer, width: u32, height: u32) -> Vec<u8> {
+fn i420_to_rgba(
+    i420: &livekit::webrtc::video_frame::I420Buffer,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
     let (data_y, data_u, data_v) = i420.data();
     let (stride_y, stride_u, stride_v) = i420.strides();
 
@@ -513,7 +523,12 @@ mod tests {
             }
         };
 
-        let snaps = vec![make_snap("A"), make_snap("B"), make_snap("C"), make_snap("D")];
+        let snaps = vec![
+            make_snap("A"),
+            make_snap("B"),
+            make_snap("C"),
+            make_snap("D"),
+        ];
         let result = compose_grid(&snaps);
         assert!(result.is_some());
         let grid = result.unwrap();

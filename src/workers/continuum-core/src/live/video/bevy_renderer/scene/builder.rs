@@ -38,7 +38,9 @@ pub struct SceneConfig {
 /// Generate a unique room background color from a persona identity hash.
 /// Produces dark, slightly saturated tones — each avatar's room has a distinct mood.
 pub fn room_color_from_identity(identity: &str) -> Color {
-    let hash = identity.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    let hash = identity
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
     let hue = (hash % 360) as f32;
     let saturation = 0.15 + (((hash >> 8) % 20) as f32 / 100.0);
     let lightness = 0.08 + (((hash >> 16) % 10) as f32 / 100.0);
@@ -67,7 +69,9 @@ pub fn build_scene(commands: &mut Commands, config: &SceneConfig) -> (Entity, En
 
     let root = commands
         .spawn((
-            SceneMarker { slot_id: config.slot_id },
+            SceneMarker {
+                slot_id: config.slot_id,
+            },
             Transform::default(),
             Visibility::default(),
             config.layer.clone(),
@@ -118,8 +122,8 @@ pub fn spawn_global_lights(commands: &mut Commands, max_slots: u8) {
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.5,                             // 29° down from above
-            std::f32::consts::PI - 0.4,       // from the right side
+            -0.5,                       // 29° down from above
+            std::f32::consts::PI - 0.4, // from the right side
             0.0,
         )),
         layers.clone(),
@@ -135,8 +139,8 @@ pub fn spawn_global_lights(commands: &mut Commands, max_slots: u8) {
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -0.2,                             // slight downward angle
-            std::f32::consts::PI + 0.4,       // from the left
+            -0.2,                       // slight downward angle
+            std::f32::consts::PI + 0.4, // from the left
             0.0,
         )),
         layers.clone(),
@@ -151,12 +155,7 @@ pub fn spawn_global_lights(commands: &mut Commands, max_slots: u8) {
             color: Color::srgb(0.85, 0.9, 1.0),
             ..default()
         },
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::XYZ,
-            -0.6,
-            0.2,
-            0.0,
-        )),
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.6, 0.2, 0.0)),
         layers,
         SceneLight,
     ));
