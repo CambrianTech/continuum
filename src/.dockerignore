@@ -1,6 +1,8 @@
 # Docker build context exclusions for node-server.
-# Goal: exclude Rust compilation artifacts and large binary files.
-# Keep ALL TypeScript source (tsx needs it at runtime).
+# Goal: exclude Rust artifacts, build-time-only TS, vendored C++ submodules,
+# tests, docs, and editor junk that the entrypoint never touches at runtime.
+# Keep TypeScript source reachable from server/docker-entrypoint.ts (tsx
+# executes from src/ on demand).
 
 # Rust build output (the big one — gigabytes)
 workers/target/
@@ -19,12 +21,18 @@ workers/Cargo.lock
 workers/*/Cargo.toml
 workers/*/*.toml
 
+# Vendored C++ submodules — node-server doesn't compile or load them.
+# (continuum-core image still gets them via its own Dockerfile +
+# workers/.dockerignore, which is more selective.)
+workers/vendor/
+
 # Dev artifacts
 node_modules/
 dist/
 .continuum/
 .git/
 *.log
+*.tsbuildinfo
 
 # Models and media (downloaded at runtime)
 models/
@@ -39,5 +47,31 @@ datasets/
 # Projects (ML training notebooks, not runtime)
 projects/
 
-# Test fixtures
+# Tests — runtime entrypoint never loads them. (~5MB on disk.)
+tests/
 **/__tests__/
+**/*.test.ts
+**/*.spec.ts
+
+# Build-time-only TS — generators / scripts run during npm run build:ts
+# from the host BEFORE docker build. The image's `RUN npm run build:ts`
+# step does need them, so we keep generator/ for that single step. Scripts/
+# is build/dev tooling only.
+scripts/
+
+# Examples — entrypoint sets workingDir to examples/widget-ui (KEEP)
+# but the rest are never loaded at runtime.
+examples/test-bench/
+examples/auto-discovery-demo.ts
+examples/widget-ui/dist/
+examples/widget-ui/dist-vite/
+
+# Documentation — never read at runtime
+docs/
+*.md
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+**/.DS_Store
