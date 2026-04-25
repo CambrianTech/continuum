@@ -114,26 +114,80 @@ if [[ -z "$PR_NUMBER" ]] && command -v gh >/dev/null 2>&1; then
   PR_NUMBER="$(gh pr list --head "$BRANCH" --json number --jq '.[0].number // empty' 2>/dev/null || true)"
 fi
 
-# ── TOCTOU guard (issue #953) ────────────────────────────────────────
-# Docker buildx re-reads the live working tree PER VARIANT build, but this
-# script snapshots the tag SHA once at startup. If the working tree changes
-# between the first and last variant (contributor git-pulls / rebases mid-
-# push, cargo-edit tweaks a Cargo.toml, an IDE autoformat fires), the tag
-# will say :$SHA but the image bits will be from a later tree. Caught 2026-
-# 04: a rebase mid-push caused cuda to ship post-commit source under a pre-
-# commit SHA tag. Subtle contributor-class bug.
-#
-# Two guards, one at startup and one per variant:
-#   1. Startup: refuse to run with modified tracked files (untracked OK;
-#      docker build context already ignores them via .dockerignore).
-#   2. Per-variant: verify HEAD hasn't moved. Die loud if it did; any
-#      variants already pushed up to that point have inconsistent source
-#      and need re-running.
+# ── Working-tree cleanliness guard ───────────────────────────────────
+# git worktree add checks out the committed tree at $STARTUP_SHA_FULL, so
+# ANY uncommitted modifications to tracked files would silently NOT make
+# it into the build. Forbid the situation up front so the contributor sees
+# the right error ("commit or stash") instead of "why isn't my fix in the
+# image?" 30 minutes later.
 if ! git diff --quiet HEAD -- 2>/dev/null; then
   echo "ERROR: Working tree has modified tracked files. Push would mix source states." >&2
   echo "       Commit or stash first:  git status" >&2
   exit 1
 fi
+
+# ── Frozen build context via git worktree (replaces TOCTOU guard) ────
+# 2026-04-24: contributor pushed at SHA A, made follow-up commits during the
+# 20-min image build, prepush hook's per-variant assert_sha_unchanged fired,
+# killed the push partway through. Result: stale image at :A pushed for
+# some variants, others unpushed, refs not pushed at all, contributor needs
+# `git reset --hard A` (lossy) or rerun (race fires again on next commit).
+#
+# The fix is structural: pin the build to a checkout that CAN'T move. git
+# worktree gives us exactly that — a separate working directory at a frozen
+# commit, sharing the .git database (so creation is fast, ~5-10s + a file
+# materialization pass). The main checkout stays free to receive new
+# commits during the long docker build; this one doesn't see them.
+#
+# Submodules: `git worktree add` materializes superproject files only —
+# submodule directories appear as empty placeholders. We `submodule update
+# --init --recursive` inside the worktree so vendor/llama.cpp + vendor/
+# whisper.cpp are populated for the cmake step.
+#
+# Cleanup: trap on EXIT removes the worktree (force-remove tolerates the
+# dirty state docker leaves behind in target/). Layer cache lives in the
+# registry, so removal doesn't lose any work.
+WORKTREE_DIR="${WORKTREE_DIR:-/tmp/continuum-build-${STARTUP_SHA_FULL:0:12}}"
+
+if [ -e "$WORKTREE_DIR" ]; then
+  # Stale worktree from a previous run that crashed. Try the clean removal
+  # first, fall back to rm -rf + worktree prune. Either way the path is gone
+  # before we add a new one.
+  echo "→ Cleaning stale worktree at $WORKTREE_DIR"
+  git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
+  rm -rf "$WORKTREE_DIR"
+  git worktree prune 2>/dev/null || true
+fi
+
+echo "→ Creating frozen worktree at $WORKTREE_DIR (pinned at $STARTUP_SHA_FULL)"
+git worktree add --detach "$WORKTREE_DIR" "$STARTUP_SHA_FULL" >/dev/null
+
+cleanup_worktree() {
+  local rc=$?
+  if [ -d "$WORKTREE_DIR" ]; then
+    echo "→ Cleaning up worktree $WORKTREE_DIR"
+    git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
+    git worktree prune 2>/dev/null || true
+  fi
+  exit "$rc"
+}
+trap cleanup_worktree EXIT
+
+# Initialize submodules INSIDE the worktree (git worktree doesn't auto-init).
+# Without this, vendor/llama.cpp/CMakeLists.txt is missing and the cmake
+# build fails ~15 min in with the wrong error (the existing fast-fail check
+# in continuum-core.Dockerfile catches it but only inside docker — better
+# to fail at the host before we burn buildkit cycles).
+echo "→ Initializing submodules in worktree (vendor/llama.cpp + vendor/whisper.cpp)"
+( cd "$WORKTREE_DIR" && git submodule update --init --recursive --depth 1 ) >/dev/null
+
+# All build steps from here run from the worktree, not $REPO_ROOT. The main
+# checkout is now free to receive new commits during the build — they won't
+# leak into the docker context. SCRIPT_DIR moves with us so the inner
+# push-image.sh derives its own REPO_ROOT from $WORKTREE_DIR/scripts/.
+REPO_ROOT="$WORKTREE_DIR"
+SCRIPT_DIR="$WORKTREE_DIR/scripts"
+cd "$WORKTREE_DIR"
 
 # ── Stop in-flight stale builds (energy + correctness) ────────────────
 # A push that fires while a previous push is still building wastes CPU
@@ -170,15 +224,13 @@ if [ "$STOP_PRIOR" = "1" ] && command -v docker >/dev/null 2>&1; then
     fi
   fi
 fi
+# assert_sha_unchanged() is now a no-op: the worktree is pinned at
+# $STARTUP_SHA_FULL and can't move, so HEAD movement in the main checkout
+# (the original race) doesn't affect the build context. Kept as a stub so
+# any future re-introduction of the check fails loudly rather than silently
+# being undefined.
 assert_sha_unchanged() {
-  local current_sha
-  current_sha="$(git rev-parse HEAD)"
-  if [ "$current_sha" != "$STARTUP_SHA_FULL" ]; then
-    echo "ERROR: HEAD moved during push ($STARTUP_SHA_FULL → $current_sha)." >&2
-    echo "       Image bits would no longer match the :$SHA tag." >&2
-    echo "       Reset and rerun:  git reset --hard $STARTUP_SHA_FULL  &&  $0" >&2
-    exit 1
-  fi
+  : # no-op — worktree-pinned build, see header
 }
 
 echo ""
