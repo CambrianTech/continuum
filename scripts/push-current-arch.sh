@@ -154,24 +154,40 @@ if [ -e "$WORKTREE_DIR" ]; then
   # first, fall back to rm -rf + worktree prune. Either way the path is gone
   # before we add a new one.
   echo "→ Cleaning stale worktree at $WORKTREE_DIR"
-  git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
+  git -C "$REPO_ROOT" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
   rm -rf "$WORKTREE_DIR"
-  git worktree prune 2>/dev/null || true
+  git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
 fi
 
 echo "→ Creating frozen worktree at $WORKTREE_DIR (pinned at $STARTUP_SHA_FULL)"
-git worktree add --detach "$WORKTREE_DIR" "$STARTUP_SHA_FULL" >/dev/null
+git -C "$REPO_ROOT" worktree add --detach "$WORKTREE_DIR" "$STARTUP_SHA_FULL" >/dev/null
+
+# Capture the original $REPO_ROOT so the cleanup trap can find the .git
+# database after we re-point $REPO_ROOT at the worktree below.
+ORIGINAL_REPO_ROOT="$REPO_ROOT"
 
 cleanup_worktree() {
   local rc=$?
   if [ -d "$WORKTREE_DIR" ]; then
     echo "→ Cleaning up worktree $WORKTREE_DIR"
-    git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
-    git worktree prune 2>/dev/null || true
+    # -C "$ORIGINAL_REPO_ROOT" so the cleanup operates on the main .git db
+    # regardless of cwd or any inherited GIT_DIR.
+    git -C "$ORIGINAL_REPO_ROOT" worktree remove --force "$WORKTREE_DIR" 2>/dev/null \
+      || rm -rf "$WORKTREE_DIR"
+    git -C "$ORIGINAL_REPO_ROOT" worktree prune 2>/dev/null || true
   fi
   exit "$rc"
 }
 trap cleanup_worktree EXIT
+
+# Drop the inherited GIT_DIR / GIT_WORK_TREE that the pre-push hook set up
+# pointing at the main repo. Inside the worktree we want git to discover the
+# correct context via parent-directory walk (worktree's .git is a file
+# pointing back at the shared db). Without this, `git submodule update` runs
+# against the main repo's GIT_DIR but cwd of the worktree, which trips
+# "git-submodule cannot be used without a working tree" — the exact failure
+# Joel hit on the first push attempt with this script.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
 
 # Initialize submodules INSIDE the worktree (git worktree doesn't auto-init).
 # Without this, vendor/llama.cpp/CMakeLists.txt is missing and the cmake
