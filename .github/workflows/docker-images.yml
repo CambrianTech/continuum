@@ -68,6 +68,13 @@ jobs:
       expected_sha: ${{ steps.gate.outputs.expected_sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history needed for verify-image-revisions.sh's smart staleness
+          # check: it diffs the LABEL sha against HEAD to decide if a "stale"
+          # revision is actually a real source change or just a non-context
+          # commit (workflow YAML, docs, etc.) that wouldn't change the bits.
+          # fetch-depth=0 means the older labeled SHAs are present locally.
+          fetch-depth: 0
       - uses: docker/setup-qemu-action@v3
 
       - name: Determine image tag (pr-<N> | latest | <sha>)
@@ -364,10 +371,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The push-current-arch.sh script needs full git history for
-          # `git rev-parse HEAD` and the working-tree-clean assertion.
-          # Default fetch-depth=1 (shallow) is fine for HEAD ops.
-          fetch-depth: 1
+          # Full history needed for the re-check step to invoke
+          # verify-image-revisions.sh's smart staleness diff (compares
+          # the older labeled SHA against HEAD to skip rebuilds for
+          # non-context changes).
+          fetch-depth: 0
           # Recursive submodules required: vendor/llama.cpp is checked out
           # as a submodule and the docker build CACHED layer references its
           # CMakeLists.txt presence. Without this, the rebuild dies with
@@ -439,7 +447,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0  # full history — see amd64 job comment
           submodules: recursive  # vendor/llama.cpp — see amd64 job comment
       - name: Login to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -494,6 +502,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history needed for verify-image-revisions.sh's smart staleness
+          # check: it diffs the LABEL sha against HEAD to decide if a "stale"
+          # revision is actually a real source change or just a non-context
+          # commit (workflow YAML, docs, etc.) that wouldn't change the bits.
+          # fetch-depth=0 means the older labeled SHAs are present locally.
+          fetch-depth: 0
       - uses: docker/setup-qemu-action@v3
       - name: Login to ghcr (read access for inspect)
         uses: docker/login-action@v3

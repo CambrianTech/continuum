@@ -68,6 +68,53 @@ echo ""
 FAILED=0
 WARN_ARM64=0
 
+# image_relevant_paths — given a full image ref, return the
+# space-separated git path globs that affect this image's docker bits.
+# Used by the smart staleness check below: if a stale revision label
+# differs from HEAD but the diff between them touches NONE of these
+# paths, the image bits would be identical — skip the rebuild.
+#
+# Conservative by design: when in doubt, include the path. A false
+# positive (we list a path that doesn't actually affect the image)
+# costs us a wasted rebuild we'd have done anyway under the old
+# behavior. A false negative (we miss a path that DOES affect the
+# image) silently ships stale bits — much worse. Add paths
+# generously, prune only when proven unused.
+image_relevant_paths() {
+  local ref="$1"
+  case "$ref" in
+    *continuum-core-cuda*|*continuum-core-vulkan*|*continuum-core*|*continuum-livekit-bridge*)
+      echo "src/workers docker/continuum-core.Dockerfile docker/continuum-core-cuda.Dockerfile docker/continuum-core-vulkan.Dockerfile docker/livekit-bridge.Dockerfile docker/livekit-entrypoint.sh docker/livekit.yaml"
+      ;;
+    *continuum-node*)
+      # node-server bakes most of src/ + node_modules/ via npm ci. Anything
+      # under src/ that isn't workers/* affects this image. Cargo files
+      # included because the Dockerfile reads workers/*/Cargo.* metadata.
+      echo "src docker/node-server.Dockerfile"
+      ;;
+    *continuum-widgets*)
+      echo "src/widgets src/browser src/shared docker/widget-server.Dockerfile"
+      ;;
+    *continuum-model-init*)
+      echo "src/scripts/install-livekit.sh src/scripts/download-voice-models.sh docker/model-init.Dockerfile"
+      ;;
+    *)
+      # Unknown image — be safe, treat any change as relevant.
+      echo "."
+      ;;
+  esac
+}
+
+# can_diff_locally — return 0 if both SHAs are present in the local git
+# repo and a `git diff` between them will succeed. CI runners typically
+# checkout fetch-depth=1 so older SHAs may be missing; fall back to
+# treat-as-stale when we can't introspect the diff.
+can_diff_locally() {
+  local a="$1"
+  local b="$2"
+  git cat-file -e "$a^{commit}" 2>/dev/null && git cat-file -e "$b^{commit}" 2>/dev/null
+}
+
 # fetch_revision_label — given a repo (without tag) and the per-arch
 # manifest digest, walk index → manifest → config blob → labels and
 # extract `org.opencontainers.image.revision`. Returns empty if any
@@ -165,6 +212,21 @@ for IMAGE in "${IMAGE_ARRAY[@]}"; do
         WARN_ARM64=1
       fi
     elif [[ "$REV" != "$EXPECTED_SHA" ]]; then
+      # Smart staleness check: a label-vs-HEAD SHA mismatch isn't a real
+      # stale unless the diff between them touches files that affect this
+      # image's docker bits. Workflow YAML / docs / non-context changes
+      # produce IDENTICAL image layers across SHAs — rebuilding for a
+      # label update is pure waste (we hit this 2026-04-24, ~30min GHA
+      # for byte-identical bits). Skip the rebuild when the diff doesn't
+      # touch this image's relevant paths.
+      RELEVANT_PATHS=$(image_relevant_paths "$IMAGE")
+      if can_diff_locally "$REV" "$EXPECTED_SHA"; then
+        if [[ -n "$RELEVANT_PATHS" ]] \
+           && ! git diff --name-only "$REV" "$EXPECTED_SHA" -- $RELEVANT_PATHS 2>/dev/null | grep -q .; then
+          echo "  ✅ $ARCH: revision $REV ≠ HEAD $EXPECTED_SHA but no image-relevant diff — bits match, skipping rebuild"
+          continue
+        fi
+      fi
       if [[ "$ARCH" == "amd64" ]]; then
         echo "  ❌ amd64: STALE (revision $REV ≠ HEAD $EXPECTED_SHA) — Linux dev rebuild required"
         echo "$REF" >> "$STALE_AMD64_OUT"
