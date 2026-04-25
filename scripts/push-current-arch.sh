@@ -129,12 +129,26 @@ REGISTRY="ghcr.io/cambriantech"
 STARTUP_SHA_FULL=""
 if [[ -n "${EXPECTED_SHA:-}" ]]; then
   STARTUP_SHA_FULL="$EXPECTED_SHA"
-elif [[ -n "${GITHUB_ACTIONS:-}" && "${GITHUB_EVENT_NAME:-}" == "pull_request" ]] \
-     && command -v gh >/dev/null 2>&1; then
-  PR_NUM_FOR_SHA="$(jq -r '.pull_request.number // empty' "${GITHUB_EVENT_PATH:-/dev/null}" 2>/dev/null || true)"
-  if [[ -n "$PR_NUM_FOR_SHA" ]]; then
-    STARTUP_SHA_FULL="$(gh pr view "$PR_NUM_FOR_SHA" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
-    [[ -n "$STARTUP_SHA_FULL" ]] && echo "→ STARTUP_SHA_FULL resolved to PR #$PR_NUM_FOR_SHA HEAD via gh api: $STARTUP_SHA_FULL"
+elif [[ -n "${GITHUB_ACTIONS:-}" && "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
+  # GHA pull_request fallback. Two paths in priority order:
+  #   1. Read PR head sha directly from $GITHUB_EVENT_PATH JSON
+  #      (.pull_request.head.sha). Always available, no auth needed,
+  #      no network call. Most robust path.
+  #   2. gh CLI / curl via GITHUB_TOKEN. Kept as a belt for the case
+  #      where GITHUB_EVENT_PATH is not the synthetic-merge event blob
+  #      we expect.
+  if [[ -f "${GITHUB_EVENT_PATH:-}" ]] && command -v jq >/dev/null 2>&1; then
+    STARTUP_SHA_FULL="$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH" 2>/dev/null || true)"
+    [[ -n "$STARTUP_SHA_FULL" ]] && echo "→ STARTUP_SHA_FULL resolved via GITHUB_EVENT_PATH .pull_request.head.sha: $STARTUP_SHA_FULL"
+  fi
+  if [[ -z "$STARTUP_SHA_FULL" && -n "${GITHUB_TOKEN:-}" ]]; then
+    PR_NUM_FOR_SHA="$(jq -r '.pull_request.number // empty' "${GITHUB_EVENT_PATH:-/dev/null}" 2>/dev/null || true)"
+    if [[ -n "$PR_NUM_FOR_SHA" && -n "${GITHUB_REPOSITORY:-}" ]]; then
+      STARTUP_SHA_FULL="$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+        "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM_FOR_SHA" \
+        2>/dev/null | jq -r '.head.sha // empty' 2>/dev/null || true)"
+      [[ -n "$STARTUP_SHA_FULL" ]] && echo "→ STARTUP_SHA_FULL resolved via GitHub API: $STARTUP_SHA_FULL"
+    fi
   fi
 fi
 [[ -z "$STARTUP_SHA_FULL" ]] && STARTUP_SHA_FULL="$(git rev-parse HEAD)"
