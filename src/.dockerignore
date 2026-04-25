@@ -53,11 +53,17 @@ tests/
 **/*.test.ts
 **/*.spec.ts
 
-# Build-time-only TS — generators / scripts run during npm run build:ts
-# from the host BEFORE docker build. The image's `RUN npm run build:ts`
-# step does need them, so we keep generator/ for that single step. Scripts/
-# is build/dev tooling only.
-scripts/
+# Build-time TS — generator/ produces version.ts/config.ts/entity_schemas.json
+# at image-build time via the Dockerfile's `RUN npm run build:ts` step. scripts/
+# is needed by the same step (build:ts ends with `npx tsx scripts/
+# build-with-loud-failure.ts`). Both stay in the context.
+#
+# An earlier revision of this file excluded scripts/ on the (wrong) theory
+# that it was host-side-only — the in-image build:ts then died with
+# "Cannot find module '/app/scripts/build-with-loud-failure.ts'". Empirical
+# 2026-04-24, hour 5 of the docker push race. If you're tempted to exclude
+# scripts/ again, audit npm run build:ts AND the runtime entrypoint chain
+# AND every npx-tsx call reachable from scripts/* itself.
 
 # Examples — entrypoint sets workingDir to examples/widget-ui (KEEP)
 # but the rest are never loaded at runtime.
