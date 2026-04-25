@@ -87,35 +87,70 @@ RS_FILES=$(cd .. && git diff --cached --name-only --diff-filter=ACMR | grep -E '
 LINT_FAILED=false
 
 if [ -n "$TS_FILES" ]; then
-    echo "TypeScript files to lint:"
+    echo "TypeScript files staged:"
     echo "$TS_FILES" | sed 's/^/  • /' | head -10
     TS_COUNT=$(echo "$TS_FILES" | wc -l | tr -d ' ')
     [ "$TS_COUNT" -gt 10 ] && echo "  ... and $((TS_COUNT - 10)) more"
     echo ""
 
-    # Run ESLint on modified files only (paths relative to jtag dir)
-    # --no-warn-ignored: silence the "File ignored because of a matching
-    # ignore pattern" warning that fires when a staged file matches the
-    # eslint.config ignore globs (e.g., scripts/**). The hook explicitly
-    # selects staged TS files and we'd rather lint nothing on the
-    # ignored ones than fail the commit on a meta-warning. Real lint
-    # errors on non-ignored files still fire normally under --max-warnings 0.
-    LINT_OUTPUT=$(cd .. && echo "$TS_FILES" | xargs npx eslint --max-warnings 0 --no-warn-ignored 2>&1) || {
-        echo ""
-        echo "╔════════════════════════════════════════════════════════════════╗"
-        echo "║  ❌ TYPESCRIPT LINT FAILED - BLOCKING COMMIT                   ║"
-        echo "╠════════════════════════════════════════════════════════════════╣"
-        echo "║  Common violations:                                            ║"
-        echo "║  • Using 'any'          → Use specific types                   ║"
-        echo "║  • Using ||             → Use ?? (nullish coalescing)          ║"
-        echo "║  • Missing return type  → Add explicit return type             ║"
-        echo "║  • Unused variables     → Remove or prefix with _              ║"
-        echo "╚════════════════════════════════════════════════════════════════╝"
-        echo ""
-        echo "$LINT_OUTPUT"
+    # Two-tier ESLint gate. The previous --max-warnings 0 per-file mode
+    # was unworkable: any commit touching a file with pre-existing
+    # violations forced --no-verify, which let new debt land freely.
+    # The new gate mirrors git-prepush.sh's baseline-tolerant approach
+    # but adds a fast path so most commits don't pay the repo-wide cost.
+    #
+    # Tier 1 (fast, ~5s): lint just the staged files. If they're clean
+    #                     (zero violations), the commit can't have added
+    #                     anything — pass immediately.
+    # Tier 2 (slow, ~2m): if staged files carry violations, run the
+    #                     repo-wide check and compare to eslint-baseline.txt.
+    #                     Pass if total <= baseline (no new debt added).
+    #
+    # Update baseline after a real cleanup pass:
+    #   cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 \
+    #     | grep -cE "error\s+" > eslint-baseline.txt
+    BASELINE_FILE="$(git rev-parse --show-toplevel)/src/eslint-baseline.txt"
+
+    # Tier 1: staged-files-only fast lint.
+    STAGED_LINT_LOG="$(mktemp)"
+    (cd .. && echo "$TS_FILES" | xargs npx eslint --no-warn-ignored --quiet 2>&1 > "$STAGED_LINT_LOG") || true
+    STAGED_ERRORS=$(grep -cE "error\s+" "$STAGED_LINT_LOG" || true)
+    rm -f "$STAGED_LINT_LOG"
+
+    if [ "$STAGED_ERRORS" -eq 0 ]; then
+        echo "✅ ESLint: staged files clean (fast path, no repo-wide check needed)"
+    elif [ ! -f "$BASELINE_FILE" ]; then
+        echo "⚠️  eslint-baseline.txt not present — falling back to strict per-file gate."
+        echo "   Generate once with: cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE \"error\\s+\" > eslint-baseline.txt"
         LINT_FAILED=true
-    }
-    [ "$LINT_FAILED" = false ] && echo "✅ TypeScript lint: PASSED"
+    else
+        # Tier 2: staged files carry violations. Verify the commit didn't
+        # ADD any by running the same repo-wide gate as prepush.
+        echo "ℹ️  Staged files carry $STAGED_ERRORS pre-existing violation(s); running repo-wide baseline check..."
+        BASELINE=$(tr -d '[:space:]' < "$BASELINE_FILE")
+        LINT_START=$(date +%s)
+        CURRENT=$(npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE "error\s+" || true)
+        LINT_DUR=$(( $(date +%s) - LINT_START ))
+        if [ "$CURRENT" -le "$BASELINE" ]; then
+            if [ "$CURRENT" -lt "$BASELINE" ]; then
+                DROPPED=$(( BASELINE - CURRENT ))
+                echo "✅ ESLint: $CURRENT errors (baseline $BASELINE, dropped $DROPPED — update src/eslint-baseline.txt to lock the win) (${LINT_DUR}s)"
+            else
+                echo "✅ ESLint: $CURRENT errors at baseline ($BASELINE) (${LINT_DUR}s)"
+            fi
+        else
+            DELTA=$(( CURRENT - BASELINE ))
+            echo ""
+            echo "╔════════════════════════════════════════════════════════════════╗"
+            echo "║  ❌ ESLINT: $DELTA NEW VIOLATION(S) — BLOCKING COMMIT          ║"
+            echo "╠════════════════════════════════════════════════════════════════╣"
+            echo "║  Current: $CURRENT  Baseline: $BASELINE                                       ║"
+            echo "║  Run to see what's new:                                        ║"
+            echo "║    cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet   ║"
+            echo "╚════════════════════════════════════════════════════════════════╝"
+            LINT_FAILED=true
+        fi
+    fi
 else
     echo "⏭️  No TypeScript files staged - skipping ESLint"
 fi
