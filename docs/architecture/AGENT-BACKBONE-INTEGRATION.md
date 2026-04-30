@@ -369,7 +369,37 @@ The shims serve a wire format, not a vendor. Once `anthropic_compat.rs` and `ope
 - **Continue.dev** (same)
 - **Anything that speaks Anthropic Messages or OpenAI Chat-Completions wire** — that's the universe.
 
-### 11.2 The training flywheel (Continuum's per-user advantage cloud cannot match)
+### 11.2 Bidirectional persona ↔ external-agent over airc rooms/DMs
+
+**Added 2026-04-30 (Joel→Toby strategic context):**
+
+> "Personas to talk to outside agents like Claude code, by sharing the same rooms or dms, just a simple command addition. And vice versa. They all work together."
+
+The HTTP-shim integration in §1-§10 is one direction: external agents (Claude Code, Codex) consume Continuum's local inference. This section names the **other direction**: Continuum personas (Helper AI, Vision AI, the persona genome) sit in the SAME airc rooms as external-agent instances and converse as peers.
+
+**Architecture:** airc is the universal mesh. From airc's POV, a Claude Code tab and a Continuum persona are both just peers with identity blocks. They send messages, DM each other, share rooms. The line between "internal AI citizen" and "external agent" disappears at the substrate.
+
+**What's needed (small, composes with existing primitives):**
+
+1. **continuum command: `airc/send`** — `Commands.execute('airc/send', {channel, peer?, message})` — bridges from a persona's outbound surface to `airc msg`. Trivial wrapper around the existing airc CLI.
+2. **continuum event: `airc:message:received`** — `Events.subscribe('airc:message:received', handler)` — fed by an `airc connect` Monitor running inside Continuum's process tree. Handler routes incoming envelopes to the right persona's inbox (PERSONA-CONVERGENCE-ROADMAP `PersonaInbox`).
+3. **Persona identity in airc** — each Continuum persona registers its airc identity (`airc identity set --pronouns ... --role "continuum-persona-helper" --bio "..."`) so peers (human + external agent) see who they're talking to.
+4. **Auto-room semantics** — a persona joins a room when its scope warrants it (e.g. Vision AI joins `#cambriantech` when the project room exists). Same `airc join` rules as humans / external agents.
+5. **Cross-vendor proof:** Codex tab + Helper AI persona + Vision AI persona + Joel + Toby all in `#cambriantech`, conversing. Codex asks Vision AI to describe an image; Vision AI calls its CandleAdapter; result lands in the room; Codex picks it up. **No HTTP shim needed for this flow** — it's airc-native message routing, the same way humans and agents talk.
+
+**Why this matters:**
+- Continuum's autonomous personas get a **proven, durable comms substrate** (airc) instead of having to invent intra-process pub/sub
+- External agents get **Continuum's specialized capabilities** (vision, audio, fine-tuned LoRAs) without HTTP-API proliferation — just DM the right persona
+- Humans (Joel, Toby, household members) participate in the same conversations as both classes of agent
+- The "control room" UX (continuum widgets) renders airc rooms with avatars per peer, regardless of whether the peer is a Claude Code tab or a Continuum persona — uniform surface
+
+**Composes with §1-§10:** the HTTP-shim flow handles "Codex asks for inference, gets Anthropic-wire response back." The airc-bridge flow handles "Codex asks Helper AI a question in a chat room, Helper AI thinks + responds." Different shapes, both useful, share the substrate. Implement HTTP-shim first (Phase 1), airc-bridge second (Phase 2.5 — slot between capability-publish and multi-peer-routing).
+
+**Known minimum viable path:**
+- LocalClaudeCodeProvider already runs Claude Code as a subprocess; extend with `--airc-room <channel>` flag so the spawned Claude Code tab auto-joins that room and can converse with personas already there
+- Helper AI / Vision AI gets `airc connect` lifecycle wired into its `PersonaUser` startup (existing autonomous loop handles inbox; airc just feeds it)
+
+### 11.3 The training flywheel (Continuum's per-user advantage cloud cannot match)
 
 Cloud models train once on the world's data. Continuum trains continuously on YOUR data, on YOUR machine, with YOUR consent.
 
