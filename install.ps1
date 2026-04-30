@@ -106,10 +106,9 @@ Install-WSL2
 # ── section: docker desktop AI settings auto-toggle ─────────────────────
 # Highest-leverage friction kill. Without these toggles continuum's
 # personas run on CPU at ~10 tok/s instead of GPU at ~80-237 tok/s, OR
-# the core container can't reach Docker Model Runner at all. Today the
-# README has these as a "manual one-time step" and every fresh dev hits
-# it. Programmatically write the keys + bounce Docker Desktop so the
-# user never has to think about it.
+# the core container can't reach Docker Model Runner at all. Write the
+# keys programmatically + bounce Docker Desktop so the user never has to
+# think about it.
 #
 # Key reference (from inspecting %APPDATA%\Docker\settings-store.json
 # on a real Docker Desktop 4.x install with both toggles set):

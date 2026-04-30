@@ -4,7 +4,7 @@ How continuum's installers stay maintainable across macOS, Linux, and Windows wi
 
 ## Goal
 
-A first-time dev on any supported OS runs **one command** in their default shell and ends up with continuum running locally + a `continuum` command on PATH. Zero manual steps after that one command. No "now also do X in Docker Desktop settings."
+A first-time dev on any supported OS runs **one command** in their default shell and ends up with continuum running locally + a `continuum` command on PATH. Zero manual Docker Desktop settings steps after that one command. If Docker Desktop has never been launched on the machine, the installer may ask for that first launch/EULA so the settings store exists.
 
 ## The challenge
 
@@ -90,10 +90,10 @@ and the small entry-point surface meant the check was cheap.
 
 Today's `setup.bat` + `bootstrap.ps1` together leave these gaps:
 
-- **Docker Desktop AI settings are a manual step.** The README says
-  "enable GPU-backed inference + host-side TCP support" — every fresh
-  dev hits this. The new install.ps1 (and install.sh) writes the
-  settings.json directly + bounces Docker Desktop. Zero manual toggles.
+- **Docker Desktop AI settings are auto-written.** The installer writes
+  the Docker Desktop settings file directly and bounces Docker Desktop.
+  The only first-run caveat is that Docker Desktop must have launched at
+  least once so the settings store exists.
 - **`setup.bat` infinite `wait_loop`** on widget-server health (no
   timeout). Replaced with a bounded wait + actionable failure message.
 - **`setup.bat` relative-path quirks** in the WSL handoff (`cp src/...`
