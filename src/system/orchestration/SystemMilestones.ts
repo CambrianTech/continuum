@@ -25,11 +25,19 @@ export const SYSTEM_MILESTONES = {
   DEPLOY_PORTS_ALLOCATED: 'deploy_ports_allocated',
   DEPLOY_COMPLETE: 'deploy_complete',
   
+  // Rust Core Phase Milestones (continuum#722 — supervised lifecycle)
+  // continuum-core-server is the Rust IPC backbone. Pre-fix it was BUILT
+  // by parallel-start.sh but never LAUNCHED — users had to manually spawn
+  // it in another tab. SystemOrchestrator now owns its lifecycle (spawn,
+  // health-gate, auto-restart on crash with panic-loop detection).
+  CORE_START: 'core_start',
+  CORE_READY: 'core_ready',
+
   // Server Phase Milestones
   SERVER_START: 'server_start',
   SERVER_PROCESS_READY: 'server_process_ready',
   SERVER_WEBSOCKET_READY: 'server_websocket_ready',
-  SERVER_HTTP_READY: 'server_http_ready', 
+  SERVER_HTTP_READY: 'server_http_ready',
   SERVER_BOOTSTRAP_COMPLETE: 'server_bootstrap_complete',
   SERVER_COMMANDS_LOADED: 'server_commands_loaded',
   SERVER_READY: 'server_ready',
@@ -64,14 +72,22 @@ export const MILESTONE_DEPENDENCIES: Record<SystemMilestone, readonly SystemMile
   [SYSTEM_MILESTONES.DEPLOY_FILES_COMPLETE]: [],
   [SYSTEM_MILESTONES.DEPLOY_COMPLETE]: [],
   
+  // Rust core startup — runs in parallel with the TS server (different
+  // socket / process). SERVER_READY waits for CORE_READY so widgets that
+  // mount on first browser load find a live IPC pool — pre-fix the Rust
+  // core was never spawned, leading to the all-widgets-blank-on-refresh
+  // bug (continuum#722).
+  [SYSTEM_MILESTONES.CORE_START]: [],
+  [SYSTEM_MILESTONES.CORE_READY]: [SYSTEM_MILESTONES.CORE_START],
+
   // Essential server startup sequence
   [SYSTEM_MILESTONES.SERVER_START]: [],
   [SYSTEM_MILESTONES.SERVER_PROCESS_READY]: [SYSTEM_MILESTONES.SERVER_START],
   [SYSTEM_MILESTONES.SERVER_WEBSOCKET_READY]: [SYSTEM_MILESTONES.SERVER_START],
-  [SYSTEM_MILESTONES.SERVER_HTTP_READY]: [SYSTEM_MILESTONES.SERVER_START], 
+  [SYSTEM_MILESTONES.SERVER_HTTP_READY]: [SYSTEM_MILESTONES.SERVER_START],
   [SYSTEM_MILESTONES.SERVER_BOOTSTRAP_COMPLETE]: [SYSTEM_MILESTONES.SERVER_START],
   [SYSTEM_MILESTONES.SERVER_COMMANDS_LOADED]: [SYSTEM_MILESTONES.SERVER_START],
-  [SYSTEM_MILESTONES.SERVER_READY]: [SYSTEM_MILESTONES.SERVER_START],
+  [SYSTEM_MILESTONES.SERVER_READY]: [SYSTEM_MILESTONES.SERVER_START, SYSTEM_MILESTONES.CORE_READY],
   
   // CRITICAL: Browser launch MUST wait for server ready
   [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED]: [SYSTEM_MILESTONES.SERVER_READY],
@@ -191,6 +207,24 @@ export const MILESTONE_COMPLETION_CRITERIA = {
     processes: [],
     ports: ['websocket_server', 'http_server'],
     signals: ['server_ready', 'system_healthy']
+  },
+
+  // Rust core milestones (continuum#722) — see SystemOrchestrator.executeCoreReady
+  [SYSTEM_MILESTONES.CORE_START]: {
+    description: 'continuum-core-server process spawned (or skipped in docker mode)',
+    checkFunction: 'checkCoreStart',
+    files: [],
+    processes: ['continuum-core-server'],
+    ports: [],
+    signals: ['core_start']
+  },
+  [SYSTEM_MILESTONES.CORE_READY]: {
+    description: 'continuum-core-server Unix socket accepting connections',
+    checkFunction: 'checkCoreReady',
+    files: ['.continuum/sockets/continuum-core.sock'],
+    processes: ['continuum-core-server'],
+    ports: [],
+    signals: ['core_ready']
   },
   
   // Browser milestones - CRITICAL ORDERING

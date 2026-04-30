@@ -10,7 +10,10 @@
 import { EventEmitter } from 'events';
 import { spawn, spawnSync, ChildProcess, exec } from 'child_process';
 import { promisify } from 'util';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { stat } from 'fs/promises';
+import * as net from 'net';
+import * as path from 'path';
 import { WorkingDirConfig } from '../core/config/WorkingDirConfig';
 
 const execAsync = promisify(exec);
@@ -77,6 +80,20 @@ export class SystemOrchestrator extends EventEmitter {
   private signaler: SystemReadySignaler;
   private serverProcess: ChildProcess | null = null;
   private currentEntryPoint: string = 'unknown';
+
+  // continuum#722 — Rust core supervisor state
+  private coreProcess: ChildProcess | null = null;
+  private coreShuttingDown = false;
+  // Panic-loop detector: track restart timestamps within a rolling window.
+  // If we see >5 restarts within 60s the binary is structurally broken
+  // (e.g. missing dylib, port collision, model dir gone). Stop restarting
+  // and surface the failure rather than burning CPU on a doomed loop.
+  private coreRestartTimestamps: number[] = [];
+  private static readonly CORE_RESTART_WINDOW_MS = 60_000;
+  private static readonly CORE_RESTART_LIMIT = 5;
+  private static readonly CORE_READY_TIMEOUT_MS = 30_000;
+  private static readonly CORE_RESTART_BACKOFF_BASE_MS = 1_000;
+  private static readonly CORE_RESTART_BACKOFF_MAX_MS = 30_000;
   
   constructor() {
     super();
@@ -353,6 +370,12 @@ export class SystemOrchestrator extends EventEmitter {
         case SYSTEM_MILESTONES.DEPLOY_COMPLETE:
           return await this.executeDeployComplete();
           
+        case SYSTEM_MILESTONES.CORE_START:
+          return await this.executeCoreStart();
+
+        case SYSTEM_MILESTONES.CORE_READY:
+          return await this.executeCoreReady();
+
         case SYSTEM_MILESTONES.SERVER_START:
           return await this.executeServerStart();
           
@@ -485,6 +508,277 @@ export class SystemOrchestrator extends EventEmitter {
       this.currentEntryPoint
     );
     return true;
+  }
+
+  /**
+   * RUST CORE MILESTONES (continuum#722)
+   *
+   * continuum-core-server is the Rust IPC backbone — Unix socket at
+   * .continuum/sockets/continuum-core.sock, talked to by the data daemon
+   * (ORMRustClient), AI provider daemon, code daemon, etc. Pre-fix the
+   * binary was BUILT by parallel-start.sh:203 but never LAUNCHED — users
+   * ended up with the all-widgets-blank-on-refresh symptom because every
+   * IPC call returned "All IPC connections to continuum-core failed."
+   *
+   * The orchestrator now owns the core's lifecycle:
+   *   - executeCoreStart spawns the binary (or yields if one is already
+   *     running per pidfile / socket-existence — supports the "user
+   *     manually launched it in another tab" case)
+   *   - executeCoreReady waits for the socket to accept a TCP-equivalent
+   *     connect (for Unix sockets, just connect() succeeds when the
+   *     server is listen()ing) — gates SERVER_READY which the browser
+   *     depends on
+   *   - on('exit') handler restarts the binary with exponential backoff
+   *     up to a panic-loop cap (5 restarts / 60s rolling window)
+   *
+   * Skip the spawn entirely when JTAG_SKIP_HTTP is set — that's the
+   * Docker-mode signal (widget-server container handles HTTP, the
+   * continuum-core container handles the Rust core, orchestrator does
+   * neither).
+   */
+  private async executeCoreStart(): Promise<boolean> {
+    if (process.env.JTAG_SKIP_HTTP) {
+      console.debug('⏭️ Skipping core spawn (JTAG_SKIP_HTTP set — docker stack owns continuum-core-server)');
+      await milestoneEmitter.completeMilestone(
+        SYSTEM_MILESTONES.CORE_START,
+        this.currentEntryPoint
+      );
+      return true;
+    }
+
+    // If a continuum-core-server is already running (user pre-launched it
+    // in another tab, or a previous orchestrator left one), don't double-
+    // spawn. Detect via socket existence + a connect-test. The pgrep route
+    // in parallel-start.sh:74 also detects this; we use the socket because
+    // it's what we actually depend on.
+    const socketPath = await this.getCoreSocketPath();
+    if (await this.isCoreSocketAlive(socketPath)) {
+      console.debug(`✅ continuum-core-server already running (socket ${socketPath} alive) — skipping spawn`);
+      await milestoneEmitter.completeMilestone(
+        SYSTEM_MILESTONES.CORE_START,
+        this.currentEntryPoint
+      );
+      return true;
+    }
+
+    const corePath = await this.resolveCoreBinaryPath();
+    if (!corePath) {
+      console.error('❌ continuum-core-server binary not found — run npm start to build it (parallel-start.sh:203)');
+      console.error('   Searched: src/workers/target/release/, workers/target/release/');
+      await milestoneEmitter.failMilestone(
+        SYSTEM_MILESTONES.CORE_START,
+        this.currentEntryPoint,
+        'continuum-core-server binary not found'
+      );
+      return false;
+    }
+
+    this.spawnCoreProcess(corePath, socketPath);
+
+    await milestoneEmitter.completeMilestone(
+      SYSTEM_MILESTONES.CORE_START,
+      this.currentEntryPoint
+    );
+    return true;
+  }
+
+  private async executeCoreReady(): Promise<boolean> {
+    if (process.env.JTAG_SKIP_HTTP) {
+      console.debug('⏭️ Skipping core readiness gate (JTAG_SKIP_HTTP — docker stack health-checks separately)');
+      await milestoneEmitter.completeMilestone(
+        SYSTEM_MILESTONES.CORE_READY,
+        this.currentEntryPoint
+      );
+      return true;
+    }
+
+    const socketPath = await this.getCoreSocketPath();
+    const deadline = Date.now() + SystemOrchestrator.CORE_READY_TIMEOUT_MS;
+    const pollMs = 200;
+
+    console.debug(`⏳ Waiting for continuum-core-server to accept connections (socket ${socketPath})...`);
+
+    while (Date.now() < deadline) {
+      if (await this.isCoreSocketAlive(socketPath)) {
+        const elapsedMs = SystemOrchestrator.CORE_READY_TIMEOUT_MS - (deadline - Date.now());
+        console.debug(`✅ continuum-core-server ready (${elapsedMs}ms)`);
+        await milestoneEmitter.completeMilestone(
+          SYSTEM_MILESTONES.CORE_READY,
+          this.currentEntryPoint
+        );
+        return true;
+      }
+      // Cheap exit check — if the spawn errored synchronously, don't burn 30s.
+      if (this.coreProcess && this.coreProcess.exitCode !== null) {
+        console.error(`❌ continuum-core-server exited code=${this.coreProcess.exitCode} during startup`);
+        await milestoneEmitter.failMilestone(
+          SYSTEM_MILESTONES.CORE_READY,
+          this.currentEntryPoint,
+          `continuum-core-server exited code=${this.coreProcess.exitCode} before becoming ready`
+        );
+        return false;
+      }
+      await new Promise(r => setTimeout(r, pollMs));
+    }
+
+    console.error(`❌ continuum-core-server did not become ready within ${SystemOrchestrator.CORE_READY_TIMEOUT_MS}ms`);
+    await milestoneEmitter.failMilestone(
+      SYSTEM_MILESTONES.CORE_READY,
+      this.currentEntryPoint,
+      `continuum-core-server readiness timeout (${SystemOrchestrator.CORE_READY_TIMEOUT_MS}ms)`
+    );
+    return false;
+  }
+
+  /**
+   * Resolve the absolute path of the continuum-core-server binary.
+   * Candidates ordered by likelihood given typical CWD on `npm start`:
+   *   1. <repoRoot>/src/workers/target/release/continuum-core-server
+   *   2. <repoRoot>/workers/target/release/continuum-core-server
+   *   3. <repoRoot>/src/workers/target/debug/continuum-core-server  (dev fallback)
+   */
+  private async resolveCoreBinaryPath(): Promise<string | null> {
+    const repoRoot = await this.findRepoRoot();
+    const candidates = [
+      path.join(repoRoot, 'src/workers/target/release/continuum-core-server'),
+      path.join(repoRoot, 'workers/target/release/continuum-core-server'),
+      path.join(repoRoot, 'src/workers/target/debug/continuum-core-server'),
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  /**
+   * Find repo root by walking up from CWD looking for a marker (package.json
+   * with the right name, or .git directory). Falls back to CWD if nothing found.
+   */
+  private async findRepoRoot(): Promise<string> {
+    let dir = process.cwd();
+    const root = path.parse(dir).root;
+    while (dir !== root) {
+      if (existsSync(path.join(dir, '.git'))) return dir;
+      const pkgPath = path.join(dir, 'package.json');
+      if (existsSync(pkgPath)) {
+        try {
+          const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+          if (pkg.name === 'continuum' || pkg.name === '@continuum/root') return dir;
+        } catch { /* ignore parse errors */ }
+      }
+      dir = path.dirname(dir);
+    }
+    return process.cwd();
+  }
+
+  /**
+   * Get the canonical Unix socket path for continuum-core-server.
+   * Mirror of the bindings' getContinuumCoreSocketPath() to avoid pulling
+   * in the entire bindings module here (which has its own initialization
+   * order concerns).
+   */
+  private async getCoreSocketPath(): Promise<string> {
+    const repoRoot = await this.findRepoRoot();
+    return path.join(repoRoot, '.continuum/sockets/continuum-core.sock');
+  }
+
+  /**
+   * Probe a Unix socket for liveness. Returns true if connect() succeeds
+   * AND the socket exists as a file (kernel has bound it for accept()).
+   *
+   * Why both checks: the file can exist as a stale socket file from a
+   * crashed previous process. connect() will fail in that case (ECONNREFUSED)
+   * — that's the discriminator. We treat any connect error as "not alive."
+   */
+  private async isCoreSocketAlive(socketPath: string): Promise<boolean> {
+    try {
+      const stats = await stat(socketPath);
+      if (!stats.isSocket()) return false;
+    } catch {
+      return false;
+    }
+    return new Promise<boolean>((resolve) => {
+      const sock = net.createConnection(socketPath);
+      const cleanup = () => {
+        try { sock.destroy(); } catch { /* ignore */ }
+      };
+      const timer = setTimeout(() => { cleanup(); resolve(false); }, 1000);
+      sock.once('connect', () => { clearTimeout(timer); cleanup(); resolve(true); });
+      sock.once('error', () => { clearTimeout(timer); cleanup(); resolve(false); });
+    });
+  }
+
+  /**
+   * Spawn continuum-core-server with lifecycle handlers. The on('exit')
+   * handler restarts the process unless we're shutting down OR the panic-
+   * loop detector trips.
+   */
+  private spawnCoreProcess(corePath: string, socketPath: string): void {
+    console.debug(`🦀 Spawning continuum-core-server: ${corePath} ${socketPath}`);
+
+    const childCwd = path.dirname(path.dirname(path.dirname(corePath))); // workers/target/release → workers
+    this.coreProcess = spawn(corePath, [socketPath], {
+      cwd: childCwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Detached false: tie lifecycle to orchestrator; if orchestrator dies,
+      // node sends SIGTERM to the group on cleanup. Detached true would
+      // orphan the core to launchd reaping which we don't want here.
+      detached: false,
+      env: { ...process.env },
+    });
+
+    this.coreProcess.stdout?.on('data', (data) => {
+      // Filter to debug — core writes a LOT to stdout in dev. Aggregating
+      // it here keeps it findable while not dominating the orchestrator log.
+      console.debug(`[core] ${data.toString().trimEnd()}`);
+    });
+    this.coreProcess.stderr?.on('data', (data) => {
+      console.error(`[core:err] ${data.toString().trimEnd()}`);
+    });
+
+    this.coreProcess.on('error', (err) => {
+      console.error(`❌ continuum-core-server spawn error: ${err.message}`);
+    });
+
+    this.coreProcess.on('exit', (code, signal) => {
+      const ts = Date.now();
+      console.debug(`📋 continuum-core-server exited: code=${code} signal=${signal}`);
+      this.coreProcess = null;
+
+      if (this.coreShuttingDown) {
+        console.debug('   (orchestrator shutting down — not restarting)');
+        return;
+      }
+
+      // Panic-loop detection: prune timestamps outside the rolling window,
+      // then check the rate.
+      const cutoff = ts - SystemOrchestrator.CORE_RESTART_WINDOW_MS;
+      this.coreRestartTimestamps = this.coreRestartTimestamps.filter(t => t >= cutoff);
+      this.coreRestartTimestamps.push(ts);
+
+      if (this.coreRestartTimestamps.length > SystemOrchestrator.CORE_RESTART_LIMIT) {
+        console.error(
+          `❌ continuum-core-server panic-loop: ${this.coreRestartTimestamps.length} restarts in ` +
+          `${SystemOrchestrator.CORE_RESTART_WINDOW_MS / 1000}s — STOPPING auto-restart.`
+        );
+        console.error('   The binary is structurally broken (missing dylib, port collision, model dir gone, etc).');
+        console.error('   Inspect the core stderr above + restart orchestrator after fixing.');
+        return;
+      }
+
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s.
+      const attemptIdx = this.coreRestartTimestamps.length - 1;
+      const delay = Math.min(
+        SystemOrchestrator.CORE_RESTART_BACKOFF_BASE_MS * Math.pow(2, attemptIdx),
+        SystemOrchestrator.CORE_RESTART_BACKOFF_MAX_MS
+      );
+      console.debug(`🔁 Restarting continuum-core-server in ${delay}ms (attempt ${this.coreRestartTimestamps.length})`);
+      setTimeout(() => {
+        if (!this.coreShuttingDown) {
+          this.spawnCoreProcess(corePath, socketPath);
+        }
+      }, delay);
+    });
   }
 
   /**
@@ -988,9 +1282,21 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   /**
-   * Cleanup resources
+   * Cleanup resources — sets shutdown flag FIRST so the core's
+   * on('exit') handler doesn't restart the process during teardown.
    */
   async cleanup(): Promise<void> {
+    // Set shutdown flag before killing — without this the on('exit')
+    // handler would interpret the SIGTERM as a crash and respawn (#722
+    // panic-loop self-inflicted).
+    this.coreShuttingDown = true;
+
+    if (this.coreProcess) {
+      console.debug('🛑 Cleaning up continuum-core-server process...');
+      try { this.coreProcess.kill('SIGTERM'); } catch { /* already dead */ }
+      this.coreProcess = null;
+    }
+
     if (this.serverProcess) {
       console.debug('🛑 Cleaning up server process...');
       this.serverProcess.kill('SIGTERM');
