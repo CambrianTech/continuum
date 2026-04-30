@@ -12,24 +12,22 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
- * Hello Command Parameters
+ * Hello Command Parameters — no command-specific params; CommandParams
+ * (context + sessionId + userId) is the full payload shape. Type alias
+ * (not `extends CommandParams {}` with `_noParams: never` marker) so
+ * the type is genuinely empty + structurally identical to CommandParams,
+ * not a phantom-marker pseudo-extension.
  */
-export interface HelloParams extends CommandParams {
-  _noParams?: never; // Marker to avoid empty interface
-}
+export type HelloParams = CommandParams;
 
 /**
- * Factory function for creating HelloParams
+ * Factory function for creating HelloParams. Hello is a system-scoped
+ * command (system-issued, not user-issued) — userId is the SYSTEM scope.
  */
 export const createHelloParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Record<string, never>
-): HelloParams => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
-
-  ...data
-});
+): HelloParams => createPayload(context, sessionId, { userId: SYSTEM_SCOPES.SYSTEM });
 
 /**
  * Hello Command Result

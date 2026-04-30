@@ -13,22 +13,12 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 /**
  * {{COMMAND_NAME}} Command Parameters
  */
-export interface {{CLASS_NAME}}Params extends CommandParams {
-{{PARAM_FIELDS}}
-}
+{{PARAMS_TYPE_DECL}}
 
 /**
  * Factory function for creating {{CLASS_NAME}}Params
  */
-export const create{{CLASS_NAME}}Params = (
-  context: JTAGContext,
-  sessionId: UUID,
-  data: {{FACTORY_DATA_TYPE}}
-): {{CLASS_NAME}}Params => createPayload(context, sessionId, {
-  // userId is auto-injected by infrastructure at runtime
-{{FACTORY_DEFAULTS}}
-  ...data
-}) as {{CLASS_NAME}}Params;
+{{PARAMS_FACTORY_DECL}}
 
 /**
  * {{COMMAND_NAME}} Command Result

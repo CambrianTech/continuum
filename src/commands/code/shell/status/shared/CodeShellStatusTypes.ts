@@ -12,24 +12,23 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
- * Code Shell Status Command Parameters
+ * Code Shell Status Command Parameters — no command-specific params;
+ * CommandParams (context + sessionId + userId) is the full payload.
+ * Type alias (not `extends CommandParams {}` with `_noParams: never`)
+ * so the type is genuinely empty + structurally identical to
+ * CommandParams.
  */
-export interface CodeShellStatusParams extends CommandParams {
-  _noParams?: never; // Marker to avoid empty interface
-}
+export type CodeShellStatusParams = CommandParams;
 
 /**
- * Factory function for creating CodeShellStatusParams
+ * Factory function for creating CodeShellStatusParams. System-scoped:
+ * issued by the shell-management system, not a user — userId is always
+ * SYSTEM_SCOPES.SYSTEM.
  */
 export const createCodeShellStatusParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Record<string, never>
-): CodeShellStatusParams => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
-
-  ...data
-});
+): CodeShellStatusParams => createPayload(context, sessionId, { userId: SYSTEM_SCOPES.SYSTEM });
 
 /**
  * Code Shell Status Command Result
