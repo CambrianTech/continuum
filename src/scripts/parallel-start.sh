@@ -447,8 +447,30 @@ fi
 # Critical: Browser must connect AFTER seeding so findSeededHumanOwner() finds Joel.
 # Without this, browser connects → anonymous user created → wrong userId in session.
 echo -e "\n${YELLOW}Phase 5.5: Ensuring database is seeded...${NC}"
+# Capture data:seed's exit code via PIPESTATUS — without this the pipe
+# to sed always succeeds and we'd print "✅ Seed complete" even after
+# seed failed (#980 Bug 3, observed live on M1 Carl pass: seed timed
+# out at 480s, then this script printed "✅ Seed complete" + "🎉 System
+# is UP!" anyway, then chat went silent because no personas existed).
+# Same PIPESTATUS pattern as the TS build subshell at ~line 278.
 npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
-echo -e "  ${GREEN}✅ Seed complete${NC}"
+SEED_RC=${PIPESTATUS[0]}
+SEED_OK=true
+if [ "$SEED_RC" -ne 0 ]; then
+  SEED_OK=false
+  echo -e "  ${RED}❌ Seeding failed (exit $SEED_RC) — first chat will likely have no AI responder.${NC}"
+  echo -e "  ${YELLOW}   Common cause: continuum-core didn't register commands within the seed${NC}"
+  echo -e "  ${YELLOW}   wait window (480s). Check orchestrator + core logs for SIGABRT / crash:${NC}"
+  echo -e "  ${YELLOW}     tail -100 \$HOME/.continuum/jtag/logs/system/orchestrator.log${NC}"
+  echo -e "  ${YELLOW}     tail -100 \$HOME/.continuum/jtag/logs/system/continuum-core.log${NC}"
+  echo -e "  ${YELLOW}   System will still start, but chat won't have personas. Re-seed after fixing:${NC}"
+  echo -e "  ${YELLOW}     npm run data:seed${NC}"
+  # Don't exit here — system may still be partially usable + user can
+  # re-seed once they've fixed the underlying core failure. But the
+  # final "System is UP" banner below tells the truth (degraded vs ok).
+else
+  echo -e "  ${GREEN}✅ Seed complete${NC}"
+fi
 
 # Phase 6: Browser launch is handled by SystemOrchestrator.detectAndManageBrowser()
 # The orchestrator runs as a daemon and manages browser lifecycle — open, detect, reconnect.
@@ -470,7 +492,13 @@ fi
 
 END_TIME=$(date +%s)
 TOTAL_ELAPSED=$((END_TIME - START_TIME))
-if [ "$HOT_RESTART" = true ] && [ "$BROWSER_CONNECTED" = true ]; then
+# Banner reflects the truth: if seed failed, system is DEGRADED (no
+# personas, chat silent). Per Joel's silent-success-is-failure rule
+# we don't print 🎉 over a known-broken state. #980 Bug 3.
+if [ "$SEED_OK" != true ]; then
+  echo -e "\n${RED}⚠️  System started in DEGRADED mode (${TOTAL_ELAPSED}s) — seed failed, chat will not have personas.${NC}"
+  echo -e "${YELLOW}   See seeding error above + log paths for diagnosis.${NC}"
+elif [ "$HOT_RESTART" = true ] && [ "$BROWSER_CONNECTED" = true ]; then
   echo -e "\n${GREEN}🎉 Hot restart complete! (${TOTAL_ELAPSED}s) — browser refreshed${NC}"
 elif [ "$HOT_RESTART" = true ]; then
   echo -e "\n${GREEN}🎉 Hot restart complete! (${TOTAL_ELAPSED}s)${NC}"
