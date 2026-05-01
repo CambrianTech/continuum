@@ -204,20 +204,47 @@ if [ ! -f "target/release/continuum-core-server" ]; then
   echo -e "  [Rust] ${YELLOW}First build detected — this takes 5-15 minutes. Showing progress...${NC}"
   CARGO_QUIET=""
 fi
+
+# Wrapper around `cargo build -p <pkg>`. On incremental builds (CARGO_QUIET
+# non-empty) we capture-then-display, which keeps the log clean. On first
+# builds (CARGO_QUIET empty) we tee so cargo's "Compiling crate vX.Y.Z"
+# lines stream live to the terminal — without this, the user saw the
+# "First build detected — Showing progress..." banner then total silence
+# for 5-15 minutes because $(cargo ...) blocks until cargo exits. We still
+# capture into $OUT for preflight_check_cargo_xcode + the failure path.
+build_pkg() {
+  local pkg="$1"; shift
+  if [ -n "$CARGO_QUIET" ]; then
+    OUT=$(cargo build --release -p "$pkg" "$@" --quiet 2>&1) \
+      || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  else
+    local tmp
+    tmp=$(mktemp)
+    cargo build --release -p "$pkg" "$@" 2>&1 | tee "$tmp"
+    local rc=${PIPESTATUS[0]}
+    OUT=$(cat "$tmp")
+    rm -f "$tmp"
+    if [ "$rc" -ne 0 ]; then
+      BUILD_OUTPUT+="$OUT"
+      RESULT=1
+    fi
+  fi
+}
+
 for pkg in archive-worker jtag-mcp; do
-  OUT=$(cargo build --release -p $pkg $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg "$pkg"
 done
 # continuum-core: all GPU features (metal+accelerate on macOS, cuda on Linux)
 if [ -n "$GPU_FEAT" ]; then
-  OUT=$(cargo build --release -p continuum-core --features "$GPU_FEAT" $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg continuum-core --features "$GPU_FEAT"
 else
-  OUT=$(cargo build --release -p continuum-core $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg continuum-core
 fi
 # inference-grpc: GPU backend only (metal or cuda, no accelerate)
 if [ -n "$GPU_BACKEND" ]; then
-  OUT=$(cargo build --release -p inference-grpc --features "$GPU_BACKEND" $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg inference-grpc --features "$GPU_BACKEND"
 else
-  OUT=$(cargo build --release -p inference-grpc $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg inference-grpc
 fi
 # Filter ts-rs noise and display
 echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'

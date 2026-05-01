@@ -127,13 +127,13 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo ""
 case "$MODE" in
   browser)
-    echo -e "  UI:        ${GREEN}http://localhost:9000${NC}"
+    echo -e "  UI:        ${GREEN}http://localhost:9003${NC}"
     ;;
   cli)
     echo -e "  CLI:       ${GREEN}./jtag${NC}"
     ;;
   headless)
-    echo -e "  Server:    ${GREEN}http://localhost:9000${NC} (API only)"
+    echo -e "  Server:    ${GREEN}http://localhost:9003${NC} (API only)"
     ;;
 esac
 echo -e "  Stop:      ${GREEN}cd $INSTALL_DIR/src && npm stop${NC}"

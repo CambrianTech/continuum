@@ -21,13 +21,62 @@ REPO="https://github.com/CambrianTech/continuum.git"
 INSTALL_DIR="${CONTINUUM_DIR:-$HOME/continuum}"
 CONTINUUM_DATA="$HOME/.continuum"
 
+# ── Friendly-failure infrastructure ─────────────────────────
+# When install.sh fails partway, Carl needs to know WHICH phase died,
+# not just what bash printed. PHASE gets updated as we enter each
+# section; the ERR trap reads it + maps to phase-specific guidance.
+# Empirically (2026-04-25): existing failures dump bash's last line
+# of stderr with no context. Carl can't tell if it's a Docker thing,
+# a Tailscale thing, a model-download thing, or a Rust build thing
+# without reading install.sh source.
+PHASE="(starting up)"
+INSTALL_LOG="${INSTALL_LOG:-/tmp/continuum-install-$$.log}"
+exec > >(tee -a "$INSTALL_LOG") 2>&1
+
+phase_guidance() {
+  case "$PHASE" in
+    *"detect environment"*) echo "Verify uname -s + uname -m return expected values; check disk space (df -h /).";;
+    *"pre-clone bootstrap"*) echo "Install git + docker first; on Mac, ensure Docker Desktop is running.";;
+    *"clone"*|*"update repo"*) echo "Check network: ping github.com; verify INSTALL_DIR ($INSTALL_DIR) is writable.";;
+    *"shared modules"*) echo "Re-clone may be incomplete; rm -rf $INSTALL_DIR && re-run installer.";;
+    *"configuration"*) echo "Check $CONTINUUM_DATA exists + is writable; mkdir -p $CONTINUUM_DATA && chmod 700 $CONTINUUM_DATA.";;
+    *"TLS certs"*) echo "Tailscale + cert step is optional; export CONTINUUM_NO_TLS=1 and re-run.";;
+    *"compose files"*) echo "Verify docker-compose.yml exists in $INSTALL_DIR; the install repo may be incomplete.";;
+    *"pull"*|*"images"*) echo "Network or GHCR auth issue; docker login ghcr.io and retry.";;
+    *"start support services"*|*"bring up"*) echo "Check Docker Desktop has enough RAM (≥30GB). docker compose -f $INSTALL_DIR/docker-compose.yml logs --tail=100";;
+    *"widget-server health"*) echo "Compose came up but widget-server isn't serving. docker compose -f $INSTALL_DIR/docker-compose.yml logs widget-server --tail=100";;
+    *) echo "Capture full log + open an issue: cat $INSTALL_LOG | gh issue create -t 'install fail @ $PHASE' -b -";;
+  esac
+}
+
+on_install_fail() {
+  local rc=$?
+  # Trap fires on any non-zero exit (set -e). Avoid recursing if the
+  # ERR trap itself trips a sub-shell.
+  trap - ERR EXIT
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  ❌ Install failed during phase: $PHASE  (exit $rc)"
+  echo ""
+  echo "  Suggestion: $(phase_guidance)"
+  echo ""
+  echo "  Full log: $INSTALL_LOG"
+  echo "  Last 30 lines:"
+  tail -30 "$INSTALL_LOG" | sed 's/^/    /'
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  exit "$rc"
+}
+trap on_install_fail ERR
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Continuum Installer"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Log: $INSTALL_LOG"
 echo ""
 
 # ── 1. Detect environment ───────────────────────────────────
+PHASE="detect environment"
 info "Detecting environment..."
 
 OS="$(uname -s)"
@@ -49,6 +98,7 @@ case "$OS" in
 esac
 
 # ── 2. Pre-clone bootstrap: git + minimal Docker presence check ────
+PHASE="pre-clone bootstrap"
 # We can't source the canonical module library yet (lives in the repo).
 # Just verify prerequisites so the clone can happen. Deeper checks live
 # in the canonical modules that run after the clone.
@@ -532,6 +582,7 @@ case "$OS" in
 esac
 
 # ── 3. Clone / update repo ─────────────────────────────────
+PHASE="clone / update repo"
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "Updating existing installation..."
   cd "$INSTALL_DIR"
@@ -543,6 +594,7 @@ else
 fi
 
 # ── 4. Shared modules (same code that Dev runs via npm start) ────
+PHASE="shared modules"
 # docs/infrastructure/INSTALL-ARCHITECTURE.md §Module-shape: the canonical
 # module library at src/scripts/lib/install-common.sh defines
 # mod_submodules_init + mod_docker_wsl_integration + log/sudo primitives.
@@ -577,6 +629,7 @@ ok "Source: $INSTALL_DIR"
 mod_continuum_bin_link "$INSTALL_DIR/bin/continuum"
 
 # ── 4. Configuration ───────────────────────────────────────
+PHASE="configuration"
 mkdir -p "$CONTINUUM_DATA"
 
 CONFIG_FILE="$CONTINUUM_DATA/config.env"
@@ -600,6 +653,7 @@ else
 fi
 
 # ── 5. TLS certs (Tailscale) ──────────────────────────────
+PHASE="TLS certs (optional)"
 TS_HOSTNAME=""
 if command -v tailscale &>/dev/null; then
   TS_HOSTNAME=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
@@ -624,6 +678,7 @@ else
 fi
 
 # ── 6. Pick compose files + profile ───────────────────────
+PHASE="compose files"
 # Base file is always loaded. On GPU hosts, layer docker-compose.gpu.yml
 # so continuum-core picks up the cuda image override (otherwise compose
 # silently uses the CPU image and inference falls back to CPU). The same
@@ -654,6 +709,7 @@ elif [[ "$HAS_GPU" == "true" ]]; then
 fi
 
 # ── 7. Pull support-service images ─────────────────────────
+PHASE="pull images"
 # Image tag resolution: compose files honor ${CONTINUUM_IMAGE_TAG:-latest}.
 # Main-branch installs (Carl's default) use :latest. Reviewers validating
 # a PR before merge can pin the PR's staged image set:
@@ -669,6 +725,7 @@ info "Pulling container images (tag: ${CONTINUUM_IMAGE_TAG:-latest})..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
 
 # ── 8. Start support services ──────────────────────────────
+PHASE="start support services"
 # Inverse of parallel-start.sh's cross-mode detection: if native Dev-mode
 # processes (continuum-core-server, tsx orchestrator) are running, docker
 # compose up will collide on ports 9001/9100/7880-82/9003/5432. Warn so
@@ -717,33 +774,71 @@ if [[ "$OS" == "Darwin" ]]; then
     warn "npm start failed — check logs at ~/.continuum/jtag/logs/system/continuum-core.log"
 fi
 
-# ── 8. Wait for health ─────────────────────────────────────
-info "Waiting for services..."
-for i in {1..30}; do
-  if curl -sf http://localhost:9003 &>/dev/null || curl -sf https://localhost:9003 -k &>/dev/null; then
+# ── 8. Wait for widget-server health ───────────────────────
+PHASE="widget-server health"
+# Carl's experience hinges on this gate: if we open the browser before
+# widget-server is actually serving, Chrome lands on the failed URL,
+# replaces the location bar with chrome-error://chromewebdata/, and any
+# subsequent reload tries to navigate from chrome-error back to http: —
+# which the browser blocks as a cross-scheme navigation. Carl is then
+# stuck on an error page with no clean recovery. Empirically: 2026-04-25
+# joel hit "Unsafe attempt to load URL http://localhost:9003/ from frame
+# with URL chrome-error://chromewebdata/" exactly because of this race.
+#
+# Two changes vs the prior 'curl -sf' wait:
+#   1. Hit /health specifically (widget-server's health endpoint at
+#      JTAGEndpoints.HEALTH = '/health'). A 200 here means widget-server
+#      is actually serving HTTP, not just that the port is open.
+#   2. If we never get a 200 in HEALTH_TIMEOUT_SEC, DO NOT open the
+#      browser. Print actionable diagnostic + a manual-open command for
+#      Carl to use after he checks the logs. Opening to a not-yet-ready
+#      server is the bug; refusing to open is the correct behavior.
+info "Waiting for widget-server health (timeout ${HEALTH_TIMEOUT_SEC:=120}s)..."
+HEALTH_OK=0
+for i in $(seq 1 "$HEALTH_TIMEOUT_SEC"); do
+  # --fail returns non-zero on 4xx/5xx; --max-time keeps each probe snappy
+  # so the loop stays close to a 1s cadence even when the server hangs.
+  if curl -sf --max-time 2 http://localhost:9003/health >/dev/null 2>&1 \
+     || curl -sfk --max-time 2 https://localhost:9003/health >/dev/null 2>&1; then
+    HEALTH_OK=1
+    ok "widget-server healthy after ${i}s"
     break
   fi
-  [ $i -eq 30 ] && warn "Services still starting — check: $CONTAINER_CMD compose logs"
-  sleep 2
+  sleep 1
 done
 
-# ── 9. Determine URL + open browser ────────────────────────
+# ── 9. Determine URL + open browser (only if healthy) ──────
+PHASE="open browser"
 if [ -n "$TS_HOSTNAME" ] && [ -f "$CONTINUUM_DATA/$TS_HOSTNAME.crt" ]; then
   URL="https://$TS_HOSTNAME:9003"
 else
   URL="http://localhost:9003"
 fi
 
-case "$OS" in
-  Darwin) open "$URL" 2>/dev/null || true ;;
-  Linux)
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-      cmd.exe /c start "" "$URL" 2>/dev/null || true
-    else
-      xdg-open "$URL" 2>/dev/null || true
-    fi
-    ;;
-esac
+if [ "$HEALTH_OK" -eq 1 ]; then
+  case "$OS" in
+    Darwin) open "$URL" 2>/dev/null || true ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        cmd.exe /c start "" "$URL" 2>/dev/null || true
+      else
+        xdg-open "$URL" 2>/dev/null || true
+      fi
+      ;;
+  esac
+else
+  warn "widget-server not healthy after ${HEALTH_TIMEOUT_SEC}s — NOT opening browser."
+  warn "  Opening Chrome to a not-yet-ready URL traps you on a chrome-error page"
+  warn "  that cannot cleanly recover. Diagnose + retry instead:"
+  echo ""
+  echo "    Logs:   $CONTAINER_CMD compose -f $INSTALL_DIR/docker-compose.yml logs --tail=200"
+  echo "    Status: $CONTAINER_CMD compose -f $INSTALL_DIR/docker-compose.yml ps"
+  echo "    Retry:  curl -v http://localhost:9003/health"
+  echo ""
+  echo "    Once the health endpoint returns 200, open the URL manually:"
+  echo "      $URL"
+  echo ""
+fi
 
 # ── Done ────────────────────────────────────────────────────
 echo ""
