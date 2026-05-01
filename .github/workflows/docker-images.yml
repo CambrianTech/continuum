@@ -39,22 +39,32 @@ on:
       - 'docker/**'
       - 'docker-compose.yml'
   pull_request:
-    # Run on PRs targeting main OR canary. Canary is the working
-    # integration branch (per Joel's airc canary-direct workflow); the
-    # original [main]-only filter meant every canary-targeted PR
-    # silently never fired the workflow → ruleset's required-status-
-    # checks (verify-architectures + verify-after-rebuild) were never
-    # produced → permanently un-mergeable. #974 root cause.
-    branches: [main, canary]
-    # NO paths filter at the trigger level. The job decides what to
-    # do based on what changed (see "detect-relevant-changes" step
-    # below). This is the "self-aware required check" pattern: the
-    # workflow ALWAYS produces a result, auto-passing when the
-    # change doesn't affect Docker images, running real verification
-    # otherwise. Pre-fix the path filter excluded TS-only PRs from
-    # firing the workflow at all, which made non-Docker PRs
-    # un-mergeable to canary even when the ruleset check is
-    # structurally not their concern. #974 fix.
+    # Run ONLY on PRs targeting main. Canary deliberately excluded:
+    # canary is the working integration branch (per Joel's canary-direct
+    # workflow). Per his architectural refinement (2026-05-01) docker
+    # image verification is a MAIN-promotion gate, not a per-PR gate.
+    # Docker images get collected at canary level via the existing dev
+    # pre-push pipeline (scripts/push-current-arch.sh); they're not
+    # required to exist at every PR's SHA. The previous [main, canary]
+    # trigger generated noise on every canary PR — verify-architectures
+    # + verify-after-rebuild always failed because no per-PR images
+    # existed. Those failures weren't blocking (canary has no required
+    # checks now) but cost CI minutes + drowned signal in noise.
+    #
+    # Phase A history: #974 hit the inverse — [main]-only combined with
+    # a paths filter meant TS-only PRs to canary couldn't produce the
+    # gate at all + were stuck behind a check ruleset that canary did
+    # require at the time. Phase A (#982) added canary to the trigger
+    # to make the gate produce a result; later the canary ruleset was
+    # removed entirely, so the gate's existence on canary became pure
+    # overhead. This is the cleanup.
+    #
+    # NO paths filter at the trigger level. For PRs to main the job
+    # decides what to do based on what changed (see "detect-relevant-
+    # changes" step below). Self-aware required check pattern: the
+    # workflow ALWAYS produces a result, auto-passing when the change
+    # doesn't affect Docker images, running real verification otherwise.
+    branches: [main]
   workflow_dispatch:
 
 # Cancel superseded runs per branch/PR so verify passes don't stack.
