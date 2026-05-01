@@ -287,6 +287,23 @@ PYEOF
       docker desktop enable model-runner --tcp=12434 --cors=all 2>&1 | tail -3 || \
         warn "Could not enable Model Runner TCP — continuum-core will fall back to Candle (slower). Enable manually: docker desktop enable model-runner --tcp=12434 --cors=all"
     fi
+    # cmake — required by the vendored llama.cpp build (Phase 2a of `npm
+    # start`). Carl's M1 install pass (#980 Bug 1) hit
+    #   thread 'main' panicked at cmake-0.1.57/src/lib.rs:1132:5:
+    #   failed to execute command: No such file or directory (os error 2)
+    #   is `cmake` not installed?
+    # because install.sh said "✅ Continuum Tower installed!" without
+    # checking cmake, then npm start died inside the cargo build of the
+    # llama crate. Auto-install via brew matches the node pattern below
+    # so fresh-Mac users have a working build path out of the box.
+    if ! command -v cmake &>/dev/null; then
+      if command -v brew &>/dev/null; then
+        info "cmake not found — installing via Homebrew (needed by vendored llama.cpp build)…"
+        brew install cmake
+      else
+        fail "cmake required for vendored llama.cpp build. Install Homebrew + run 'brew install cmake', or use 'xcode-select --install' to get the macOS CLI tools that include cmake."
+      fi
+    fi
     # Rust toolchain — continuum-core-server is built natively on Mac (not
     # containerized) so it can link Metal for Candle embeddings, Bevy, vision,
     # and audio MPS paths. Build happens during `npm start` at end of install.
