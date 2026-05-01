@@ -183,21 +183,16 @@ impl TextToSpeech for PiperTTS {
 
         let session = {
             let mut builder = Session::builder()?;
-            // GPU EP first → fall back to CPU for unsupported ops. Without
-            // this, Piper TTS matmul lands on MLAS CPU kernels (per-response
-            // CPU spike). See #964. Only attaches when the corresponding
-            // build feature + target_os are enabled — non-Mac/non-CUDA paths
-            // remain CPU-only with no behavior change.
-            #[cfg(all(feature = "coreml", target_os = "macos"))]
-            {
-                use ort::execution_providers::CoreMLExecutionProvider;
-                builder = builder.with_execution_providers([CoreMLExecutionProvider::default().build()])?;
-            }
-            #[cfg(all(feature = "cuda", not(target_os = "macos")))]
-            {
-                use ort::execution_providers::CUDAExecutionProvider;
-                builder = builder.with_execution_providers([CUDAExecutionProvider::default().build()])?;
-            }
+            // GPU execution providers via the centralized helper. Per
+            // architecture, CPU fallback is forbidden — TTS matmul must
+            // land on GPU. The prior cfg gate (`feature = "coreml"`)
+            // didn't match any actual cargo feature, so the CoreML EP
+            // was never added — ORT's implicit CPU EP took every op
+            // (#964 family). The helper uses the correct `feature =
+            // "metal"` gate that matches Cargo.toml.
+            let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
+                .map_err(|e| TTSError::ModelNotLoaded(format!("ORT GPU EP setup failed (Piper TTS): {e}")))?;
+            builder = builder.with_execution_providers(providers)?;
             builder
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(num_cpus::get().min(4))?
