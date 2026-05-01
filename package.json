@@ -2,7 +2,8 @@
   "scripts": {
     "start": "bash src/scripts/parallel-start.sh",
     "stop": "bash src/scripts/system-stop.sh",
-    "install": "bash src/scripts/install.sh"
+    "install": "bash src/scripts/install.sh",
+    "postinstall": "bash src/scripts/setup-git-hooks.sh || echo '⚠️  setup-git-hooks failed (non-fatal — pre-commit gate skipped); run manually:  bash src/scripts/setup-git-hooks.sh'"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",

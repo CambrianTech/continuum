@@ -22,6 +22,7 @@ pub mod kv_quant;
 pub mod llamacpp_adapter;
 pub mod lora;
 pub mod model;
+pub mod ort_providers;
 pub mod quantized;
 pub mod recipe_budget;
 pub mod vendored;
