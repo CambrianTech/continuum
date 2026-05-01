@@ -94,7 +94,24 @@ export class SystemOrchestrator extends EventEmitter {
   private static readonly CORE_READY_TIMEOUT_MS = 30_000;
   private static readonly CORE_RESTART_BACKOFF_BASE_MS = 1_000;
   private static readonly CORE_RESTART_BACKOFF_MAX_MS = 30_000;
-  
+
+  // M5-QA Task 8 (live-observed 2026-05-01): if parallel-start.sh
+  // (or a previous orchestrator, or a manual user spawn) put a
+  // continuum-core-server up before our executeCoreStart ran, the
+  // pre-existing socket-alive check makes us SKIP the spawn — which
+  // means we have no this.coreProcess + no on('exit') handler. When
+  // that core dies (SIGABRT on Mac Metal init = NEW-A), the supervisor
+  // is blind to the death + doesn't respawn.
+  //
+  // Fix: when we skip the spawn, attach a PID-poll watcher. If the
+  // adopted core dies, we spawn a managed replacement (which we DO
+  // own via on('exit') for further restarts). After the first death-
+  // detect, the watcher is no longer needed because the replacement
+  // is in this.coreProcess.
+  private adoptedCorePid: number | null = null;
+  private adoptedCoreWatcher: ReturnType<typeof setInterval> | null = null;
+  private static readonly ADOPTED_CORE_POLL_MS = 2_000;
+
   constructor() {
     super();
     this.signaler = new SystemReadySignaler();
@@ -547,13 +564,25 @@ export class SystemOrchestrator extends EventEmitter {
     }
 
     // If a continuum-core-server is already running (user pre-launched it
-    // in another tab, or a previous orchestrator left one), don't double-
-    // spawn. Detect via socket existence + a connect-test. The pgrep route
-    // in parallel-start.sh:74 also detects this; we use the socket because
-    // it's what we actually depend on.
+    // in another tab, or a previous orchestrator left one, or
+    // parallel-start.sh's Phase 3 spawn beat us to it), don't double-
+    // spawn. Detect via socket existence + a connect-test.
+    //
+    // M5-QA T8 fix (2026-05-01): we ALSO need to attach a PID-poll
+    // watcher on the inherited core so we still notice + respawn when
+    // it dies. Pre-fix this branch just returned, which left no
+    // on('exit') handler anywhere → SIGABRT in inherited core → no
+    // respawn → user-visible "AI dead" with no recovery.
     const socketPath = await this.getCoreSocketPath();
+    const corePath = await this.resolveCoreBinaryPath();
+
     if (await this.isCoreSocketAlive(socketPath)) {
-      console.debug(`✅ continuum-core-server already running (socket ${socketPath} alive) — skipping spawn`);
+      console.debug(`✅ continuum-core-server already running (socket ${socketPath} alive) — adopting via PID watcher`);
+      if (corePath) {
+        await this.adoptInheritedCore(corePath, socketPath);
+      } else {
+        console.warn('   ⚠ corePath not resolvable — adopted core won\'t be re-spawnable on death; will surface as orchestrator-blind crash');
+      }
       await milestoneEmitter.completeMilestone(
         SYSTEM_MILESTONES.CORE_START,
         this.currentEntryPoint
@@ -561,7 +590,6 @@ export class SystemOrchestrator extends EventEmitter {
       return true;
     }
 
-    const corePath = await this.resolveCoreBinaryPath();
     if (!corePath) {
       console.error('❌ continuum-core-server binary not found — run npm start to build it (parallel-start.sh:203)');
       console.error('   Searched: src/workers/target/release/, workers/target/release/');
@@ -580,6 +608,87 @@ export class SystemOrchestrator extends EventEmitter {
       this.currentEntryPoint
     );
     return true;
+  }
+
+  /**
+   * Adopt an externally-spawned continuum-core-server.
+   *
+   * Set up a PID-poll watcher (kill -0 every ADOPTED_CORE_POLL_MS) that
+   * fires `spawnCoreProcess` when the adopted PID dies. Once we spawn
+   * a replacement, that one is fully owned (this.coreProcess +
+   * on('exit') handler from spawnCoreProcess), so subsequent restarts
+   * use the normal supervisor path.
+   *
+   * If we can't find the PID via `pgrep`, log loudly + skip the watcher
+   * — the inherited core will be invisible to supervision, but the rest
+   * of the orchestrator's milestones still complete. Same intent as the
+   * never-swallow-errors rule (CLAUDE.md): the gap is real + we surface
+   * it rather than pretend everything's fine.
+   */
+  private async adoptInheritedCore(corePath: string, socketPath: string): Promise<void> {
+    const pid = await this.findCoreProcessPid();
+    if (pid <= 0) {
+      console.warn('   ⚠ couldn\'t resolve adopted core PID via pgrep — supervisor will be blind to its death');
+      return;
+    }
+    this.adoptedCorePid = pid;
+    console.debug(`   adopted PID ${pid}; watcher polling every ${SystemOrchestrator.ADOPTED_CORE_POLL_MS}ms`);
+
+    this.adoptedCoreWatcher = setInterval(() => {
+      if (this.coreShuttingDown) {
+        return;
+      }
+      const adoptedPid = this.adoptedCorePid;
+      if (adoptedPid === null) {
+        return;
+      }
+      try {
+        // kill -0: signal-0 only checks if PID exists + we have permission.
+        // Throws ESRCH if dead, EPERM if alive-but-not-ours (we're the
+        // user that started it via parallel-start.sh, so EPERM
+        // shouldn't happen here — if it does, treat as not-ours +
+        // stop watching).
+        process.kill(adoptedPid, 0);
+      } catch (err) {
+        // PID is gone (or permission flipped). Stop watching, spawn a
+        // managed replacement.
+        const code = (err as NodeJS.ErrnoException).code;
+        console.warn(`📋 adopted continuum-core-server PID ${adoptedPid} no longer alive (${code ?? 'unknown'}); spawning managed replacement`);
+        this.stopAdoptedCoreWatcher();
+        this.adoptedCorePid = null;
+        this.spawnCoreProcess(corePath, socketPath);
+      }
+    }, SystemOrchestrator.ADOPTED_CORE_POLL_MS);
+  }
+
+  /**
+   * Find the PID of the running continuum-core-server via `pgrep -x`.
+   * Returns 0 if not found.
+   */
+  private async findCoreProcessPid(): Promise<number> {
+    return new Promise<number>((resolve) => {
+      const child = spawn('pgrep', ['-x', 'continuum-core-server'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
+      child.on('error', () => resolve(0));
+      child.on('close', () => {
+        const firstLine = stdout.trim().split('\n')[0] ?? '';
+        const pid = Number.parseInt(firstLine, 10);
+        resolve(Number.isFinite(pid) && pid > 0 ? pid : 0);
+      });
+    });
+  }
+
+  /**
+   * Stop the adopted-core PID watcher (interval timer). Idempotent.
+   */
+  private stopAdoptedCoreWatcher(): void {
+    if (this.adoptedCoreWatcher !== null) {
+      clearInterval(this.adoptedCoreWatcher);
+      this.adoptedCoreWatcher = null;
+    }
   }
 
   private async executeCoreReady(): Promise<boolean> {
@@ -1288,8 +1397,14 @@ export class SystemOrchestrator extends EventEmitter {
   async cleanup(): Promise<void> {
     // Set shutdown flag before killing — without this the on('exit')
     // handler would interpret the SIGTERM as a crash and respawn (#722
-    // panic-loop self-inflicted).
+    // panic-loop self-inflicted). The same flag stops the adopted-core
+    // PID watcher from re-spawning during shutdown.
     this.coreShuttingDown = true;
+
+    // Stop the adopted-core PID watcher first (M5-QA T8 path); it
+    // doesn't own a process, just an interval timer.
+    this.stopAdoptedCoreWatcher();
+    this.adoptedCorePid = null;
 
     if (this.coreProcess) {
       console.debug('🛑 Cleaning up continuum-core-server process...');
