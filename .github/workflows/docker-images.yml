@@ -39,10 +39,22 @@ on:
       - 'docker/**'
       - 'docker-compose.yml'
   pull_request:
-    branches: [main]
-    paths:
-      - 'src/workers/**'
-      - 'docker/**'
+    # Run on PRs targeting main OR canary. Canary is the working
+    # integration branch (per Joel's airc canary-direct workflow); the
+    # original [main]-only filter meant every canary-targeted PR
+    # silently never fired the workflow → ruleset's required-status-
+    # checks (verify-architectures + verify-after-rebuild) were never
+    # produced → permanently un-mergeable. #974 root cause.
+    branches: [main, canary]
+    # NO paths filter at the trigger level. The job decides what to
+    # do based on what changed (see "detect-relevant-changes" step
+    # below). This is the "self-aware required check" pattern: the
+    # workflow ALWAYS produces a result, auto-passing when the
+    # change doesn't affect Docker images, running real verification
+    # otherwise. Pre-fix the path filter excluded TS-only PRs from
+    # firing the workflow at all, which made non-Docker PRs
+    # un-mergeable to canary even when the ruleset check is
+    # structurally not their concern. #974 fix.
   workflow_dispatch:
 
 # Cancel superseded runs per branch/PR so verify passes don't stack.
@@ -62,12 +74,64 @@ jobs:
   verify-architectures:
     runs-on: ubuntu-latest
     outputs:
-      stale_amd64: ${{ steps.gate.outputs.stale_amd64 }}
-      stale_arm64: ${{ steps.gate.outputs.stale_arm64 }}
-      tag: ${{ steps.tag.outputs.tag }}
-      expected_sha: ${{ steps.gate.outputs.expected_sha }}
+      # Fallback chain: skip-pass step writes safe defaults when the
+      # job took the no-docker-relevant short-circuit; gate step writes
+      # real values when verification ran. The two are mutually
+      # exclusive via `if: steps.detect.outputs.docker_relevant == ...`
+      # so only one populates these on any given run.
+      stale_amd64: ${{ steps.skip-pass.outputs.stale_amd64 || steps.gate.outputs.stale_amd64 }}
+      stale_arm64: ${{ steps.skip-pass.outputs.stale_arm64 || steps.gate.outputs.stale_arm64 }}
+      tag: ${{ steps.skip-pass.outputs.tag || steps.tag.outputs.tag }}
+      expected_sha: ${{ steps.skip-pass.outputs.expected_sha || steps.gate.outputs.expected_sha }}
+      # #974 self-aware-check: downstream rebuild + verify-after-rebuild
+      # jobs read this to decide whether to skip the actual image work.
+      # When false, all subsequent steps in this job no-op + the job
+      # exits SUCCESS (the required-status-check is satisfied without
+      # touching ghcr).
+      docker_relevant: ${{ steps.detect.outputs.docker_relevant }}
     steps:
+      # ── #974 fix: self-aware required check ─────────────────
+      # The required-status-check `verify-architectures` MUST exist on
+      # every PR (per the canary ruleset). Pre-fix, the workflow's
+      # pull_request.paths filter excluded TS-only PRs from firing the
+      # workflow at all → required check never produced → PR
+      # un-mergeable to canary even though the change isn't relevant
+      # to image verification. THIS step decides whether the rest of
+      # the job actually verifies anything OR auto-passes ("nothing
+      # to verify, the change doesn't affect Docker images").
+      #
+      # docker_relevant == true  → run real verification (existing flow)
+      # docker_relevant == false → skip subsequent steps + exit SUCCESS
+      - name: Detect docker-relevant changes
+        id: detect
+        uses: dorny/paths-filter@v3
+        with:
+          # On push events (no base ref), force docker_relevant=true so
+          # we always verify after main lands a commit. On pull_request
+          # events, dorny/paths-filter compares HEAD to the PR base.
+          filters: |
+            docker_relevant:
+              - 'src/workers/continuum-core/**'
+              - 'src/workers/**/Cargo.toml'
+              - 'src/workers/**/Cargo.lock'
+              - 'docker/**'
+              - 'docker-compose.yml'
+              - 'Dockerfile*'
+              - '.github/workflows/docker-images.yml'
+      - name: Auto-pass when no docker-relevant changes
+        id: skip-pass
+        if: steps.detect.outputs.docker_relevant == 'false'
+        run: |
+          echo "::notice title=Self-aware skip::No docker-relevant paths changed in this PR. Skipping image verification per #974 fix — the required-status-check 'verify-architectures' is satisfied because nothing in this PR could invalidate the existing ghcr images. See docs/infrastructure/CI-AUTOMATION-PLAN.md."
+          # Safe defaults for downstream job outputs (fallback chain
+          # in the job's outputs: block reads from skip-pass OR gate
+          # depending on which path ran).
+          echo "stale_amd64=[]" >> "$GITHUB_OUTPUT"
+          echo "stale_arm64=[]" >> "$GITHUB_OUTPUT"
+          echo "tag=skip-no-docker-changes" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=skip" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: steps.detect.outputs.docker_relevant == 'true'
         with:
           # Full history needed for verify-image-revisions.sh's smart staleness
           # check: it diffs the LABEL sha against HEAD to decide if a "stale"
@@ -76,8 +140,10 @@ jobs:
           # fetch-depth=0 means the older labeled SHAs are present locally.
           fetch-depth: 0
       - uses: docker/setup-qemu-action@v3
+        if: steps.detect.outputs.docker_relevant == 'true'
 
       - name: Determine image tag (pr-<N> | latest | <sha>)
+        if: steps.detect.outputs.docker_relevant == 'true'
         id: tag
         run: |
           # PR builds → :pr-<N>. main pushes → :latest. Otherwise → :<sha>.
@@ -93,6 +159,7 @@ jobs:
           echo "Verifying coverage at tag: $TAG"
 
       - name: Login to ghcr (read access for inspect, write for alias)
+        if: steps.detect.outputs.docker_relevant == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -100,7 +167,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Alias :<sha> → :pr-<N> if needed (closes the first-push chicken-egg)
-        if: github.event_name == 'pull_request'
+        if: steps.detect.outputs.docker_relevant == 'true' && github.event_name == 'pull_request'
         run: |
           # Closes the chicken-and-egg between pre-push and PR creation:
           # the pre-push hook only knows the PR number AFTER the PR exists,
@@ -146,6 +213,7 @@ jobs:
           done
 
       - name: Verify portable Rust images (amd64 hard, arm64 warning)
+        if: steps.detect.outputs.docker_relevant == 'true'
         run: |
           # Portable Rust images — buildable on either arch:
           #   core: CPU baseline
@@ -222,6 +290,7 @@ jobs:
           fi
 
       - name: Verify TS-only images (both arches required)
+        if: steps.detect.outputs.docker_relevant == 'true'
         run: |
           # TS-only images: node-server, model-init, widgets. No Rust
           # compile, so building them on either arch is fast. Dev
@@ -271,6 +340,7 @@ jobs:
           echo "   TS-only (node/model-init/widgets): both arches required"
 
       - name: Verify image revision matches HEAD SHA (no stale aliased images)
+        if: steps.detect.outputs.docker_relevant == 'true'
         id: gate
         run: |
           # All revision-check logic lives in scripts/verify-image-revisions.sh
@@ -331,6 +401,7 @@ jobs:
       # service health, port bindings, docker-compose.yml syntax) at
       # PR time, not post-merge.
       - name: Install-and-run gate (CPU-only Carl path)
+        if: steps.detect.outputs.docker_relevant == 'true'
         timeout-minutes: 12
         env:
           CONTINUUM_IMAGE_TAG: ${{ steps.tag.outputs.tag }}
@@ -508,10 +579,23 @@ jobs:
   # expected tag should now have its revision label matching HEAD.
   verify-after-rebuild:
     needs: [verify-architectures, rebuild-stale-amd64, rebuild-stale-arm64]
+    # always() so this job runs even if rebuild-stale-* skipped (which
+    # they do when verify-architectures had nothing stale OR when no
+    # docker-relevant changes per the #974 self-aware-skip path).
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # ── #974 fix: same self-aware skip pattern as verify-architectures.
+      # The required-status-check `verify-after-rebuild` MUST exist on
+      # every PR. When verify-architectures took the
+      # no-docker-relevant-changes auto-pass path, there's nothing to
+      # re-verify — emit a notice + exit SUCCESS without touching ghcr.
+      - name: Auto-pass when no docker-relevant changes (mirror of verify-architectures gate)
+        if: needs.verify-architectures.outputs.docker_relevant == 'false'
+        run: |
+          echo "::notice title=Self-aware skip::No docker-relevant paths in this PR. Skipping post-rebuild verification per #974 fix — there's nothing to re-verify because nothing was rebuilt. The required-status-check 'verify-after-rebuild' is satisfied. See docs/infrastructure/CI-AUTOMATION-PLAN.md."
       - uses: actions/checkout@v4
+        if: needs.verify-architectures.outputs.docker_relevant == 'true'
         with:
           # Full history needed for verify-image-revisions.sh's smart staleness
           # check: it diffs the LABEL sha against HEAD to decide if a "stale"
@@ -520,13 +604,16 @@ jobs:
           # fetch-depth=0 means the older labeled SHAs are present locally.
           fetch-depth: 0
       - uses: docker/setup-qemu-action@v3
+        if: needs.verify-architectures.outputs.docker_relevant == 'true'
       - name: Login to ghcr (read access for inspect)
+        if: needs.verify-architectures.outputs.docker_relevant == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Final revision check (same script as initial gate)
+        if: needs.verify-architectures.outputs.docker_relevant == 'true'
         env:
           EXPECTED_SHA: ${{ needs.verify-architectures.outputs.expected_sha }}
           TAG: ${{ needs.verify-architectures.outputs.tag }}

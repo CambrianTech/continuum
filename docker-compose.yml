@@ -1,3 +1,7 @@
+# Comment touch (#974/#981 fix-PR trigger): forcing this PR through the existing
+# docker-images.yml `paths` filter so the workflow fires on it. After Phase A
+# lands, future PRs trigger the workflow regardless of paths touched.
+
 # Continuum — docker compose up
 #
 # FIRST-TIME SETUP (fresh clone): populate vendored substrates before build.
