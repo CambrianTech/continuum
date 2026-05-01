@@ -30,6 +30,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
@@ -40,6 +42,35 @@ export class AircSendServerCommand extends CommandBase<AircSendParams, AircSendR
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('airc/send', context, subpath, commander);
+  }
+
+  /**
+   * Walk up from CWD looking for the repo root (.git or package.json
+   * with name='continuum'). Falls back to CWD if neither is found.
+   *
+   * Static so spawnAirc can call it without an instance + so it's
+   * trivially memoizable in a future BaseAircCommand extraction (per
+   * the file header note about pulling 2nd-airc-CLI-wrapping command's
+   * shared logic into a base class).
+   *
+   * Mirrors SystemOrchestrator.findRepoRoot's logic intentionally —
+   * compression-deferred until both are needed in a third place.
+   */
+  private static findRepoRoot(): string {
+    let dir = process.cwd();
+    const root = path.parse(dir).root;
+    while (dir !== root) {
+      if (existsSync(path.join(dir, '.git'))) return dir;
+      const pkgPath = path.join(dir, 'package.json');
+      if (existsSync(pkgPath)) {
+        try {
+          const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { name?: string };
+          if (pkg.name === 'continuum' || pkg.name === '@continuum/root') return dir;
+        } catch { /* ignore parse errors */ }
+      }
+      dir = path.dirname(dir);
+    }
+    return process.cwd();
   }
 
   async execute(params: AircSendParams): Promise<AircSendResult> {
@@ -121,13 +152,22 @@ export class AircSendServerCommand extends CommandBase<AircSendParams, AircSendR
    * surface to the caller.
    */
   private async spawnAirc(argv: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    // Resolve repo root so airc auto-scopes from continuum's git remote
+    // (→ #cambriantech), AND set AIRC_HOME explicitly so airc doesn't
+    // walk up looking for a .airc/ from whatever CWD the daemon happens
+    // to be in. M5-QA T7 (live-observed 2026-05-01) caught this:
+    // calling jtag from src/ caused airc to look for .airc/ at src/.airc/
+    // (doesn't exist) instead of the repo-root .airc/ scope. Both cwd
+    // AND env: belt-and-suspenders so the spawn is unambiguous about
+    // which scope it's targeting.
+    const repoRoot = AircSendServerCommand.findRepoRoot();
+    const aircHome = path.join(repoRoot, '.airc');
+
     return new Promise((resolve, reject) => {
       const child = spawn('airc', argv, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        // No CWD override — airc auto-scopes from CWD's git remote, so
-        // running from continuum's repo root scopes to the cambriantech
-        // org room. That's the desired behavior: persona messages land
-        // in the project room.
+        cwd: repoRoot,
+        env: { ...process.env, AIRC_HOME: aircHome },
       });
 
       let stdout = '';
