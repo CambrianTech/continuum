@@ -38,6 +38,26 @@ Ran a full `npm start` from `feat/airc-send-command` (= `main` + 3 stacked PRs: 
 | #963 | Model name has TWO sources of truth: `PersonaConfig.modelId` vs `models.toml`/`Constants.ts` | Compression-principle violation per CLAUDE.md | Tracked | — |
 | #946 | Module command-prefix collision: PersonaAllocatorModule and CognitionModule both own 'persona/' — dispatcher picks allocator, new verbs disappear | Routing bug | Tracked | — |
 
+### Real-time chat-test findings (2026-05-01 afternoon, M5 QA-Watcher tab)
+
+After the morning npm-start validation, ran a chat-with-personas test session via `./jtag collaboration/chat/{send,export}` per Joel "you guys need to all remember to chat with the ais." Three additional findings surfaced:
+
+| # | Symptom | Root cause | Severity | Maps to |
+|---|---|---|---|---|
+| **F1** (= #75) | Personas reply but with **identical canned text** ("Hello! I'm here to assist with any code review and analysis tasks...") regardless of message content. Multiple personas reply with the same text. Recursive replies-to-replies create an echo cascade. | The cognition pipeline isn't actually engaging the message; it falls back to a generic greeting template. Same root cause as #75 task entry "tool-use markup leak, sentinel marker leak, echo loops." LIVE-CONFIRMED — sent messages with specific content + got generic greeting back. **THIS is the reason "AI doesn't really talk."** | **BLOCKING — demo path** | #75 (in_progress) |
+| **F2** (NEW) | After core SIGKILL+respawn, `ai/local-inference/start` reports `running: false` even though the underlying core is back. The Anthropic-compat HTTP server died with the core + did NOT auto-restart. | The HTTP server is initialized once at core startup via `OnceCell` (per `workers/continuum-core/src/http/mod.rs`). When the core restarts, the new core's IPC accepts requests but the server-start logic isn't re-triggered. External agents pointing `ANTHROPIC_BASE_URL` would silently break on any core restart. | NEW — important for AGENT-BACKBONE Phase 1 reliability | NEEDS NEW ISSUE |
+| **F4** (NEW, CRITICAL) | After SIGKILL + manual respawn of `continuum-core-server`, the TS daemon's IPC client pool can't recover. `./jtag ping` HANGS 15s+, `./jtag collaboration/chat/send` TIMES OUT 60s. Sockets exist + accept connections + the new core is alive — but commands don't complete. **Full `npm stop && npm start` required to recover.** | The IPC client pool's reconnect logic (#977 Layer B "never give up") gets the connection back to "_connected = true" against the new core, but the request/response correlation is wedged. The pool may be holding pending requests that were dispatched to the OLD core's socket descriptor + never get responses (since old core is dead) + the new requests block behind them. | **CARL-KILLER** — every NEW-A SIGABRT in the wild puts users in this state | NEEDS NEW ISSUE — this is the empirical form of #722 + #793 |
+
+**F4 supersedes the "#977 closes #722" claim.** #977's Layer B (unlimited IPC reconnect) was supposed to handle the recover-from-crash case. It re-establishes the SOCKET but the REQUEST PIPELINE is wedged. The fix needs to:
+
+1. Drain pending requests with a "core restarted, reissue" error before reconnecting (so callers can retry)
+2. OR refuse to send new requests until the pool has cleanly drained
+3. OR re-create the entire pool (drop all connections, recreate) on detected core restart
+
+This is a separate scope from Layer B's reconnect — Layer B handles SOCKET, the missing piece is the REQUEST QUEUE.
+
+**Composes with Task 8 (supervisor-doesn't-own-pre-existing-cores)**: even when the supervisor adopts an inherited core, the IPC layer still needs to handle the "core just changed under us" event. F4 is true regardless of who spawned the core.
+
 ### #722 regression — decoupling browser from CORE_READY
 
 In #977 (already merged in this branch as commit d77826205), I made `SERVER_READY` depend on `CORE_READY`. The intent was correct (widgets find a live IPC pool on first browser load) but the consequence was **bad**: when the SIGABRT (NEW-A above) prevents CORE_READY from completing, the orchestrator's milestone graph stops at CORE_READY → BROWSER_LAUNCH_INITIATED never fires → user sees no browser at all.
