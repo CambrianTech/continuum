@@ -73,10 +73,18 @@ export const MILESTONE_DEPENDENCIES: Record<SystemMilestone, readonly SystemMile
   [SYSTEM_MILESTONES.DEPLOY_COMPLETE]: [],
   
   // Rust core startup — runs in parallel with the TS server (different
-  // socket / process). SERVER_READY waits for CORE_READY so widgets that
-  // mount on first browser load find a live IPC pool — pre-fix the Rust
-  // core was never spawned, leading to the all-widgets-blank-on-refresh
-  // bug (continuum#722).
+  // socket / process). CORE_READY does NOT block SERVER_READY or
+  // BROWSER_LAUNCH (corrected from initial #977 design): if the Rust
+  // core SIGABRTs (e.g. vendored llama.cpp Metal cleanup assert, the
+  // original #56 bug observed live 2026-05-01), the user must still
+  // see a browser — widgets handle missing-IPC gracefully (the original
+  // #722 symptom of "blank widgets on refresh" is preferable to "no
+  // browser at all"; the deferred Layer D from #977 will surface a
+  // "Core offline" banner so users know what's degraded).
+  //
+  // SYSTEM_HEALTHY composes BOTH SERVER_READY + CORE_READY — that's
+  // the right "everything green" signal for monitoring + health checks
+  // without gating user-facing entry points on the Rust core.
   [SYSTEM_MILESTONES.CORE_START]: [],
   [SYSTEM_MILESTONES.CORE_READY]: [SYSTEM_MILESTONES.CORE_START],
 
@@ -87,16 +95,23 @@ export const MILESTONE_DEPENDENCIES: Record<SystemMilestone, readonly SystemMile
   [SYSTEM_MILESTONES.SERVER_HTTP_READY]: [SYSTEM_MILESTONES.SERVER_START],
   [SYSTEM_MILESTONES.SERVER_BOOTSTRAP_COMPLETE]: [SYSTEM_MILESTONES.SERVER_START],
   [SYSTEM_MILESTONES.SERVER_COMMANDS_LOADED]: [SYSTEM_MILESTONES.SERVER_START],
-  [SYSTEM_MILESTONES.SERVER_READY]: [SYSTEM_MILESTONES.SERVER_START, SYSTEM_MILESTONES.CORE_READY],
-  
+  // SERVER_READY does NOT depend on CORE_READY — see comment above on
+  // CORE_READY. TS server can serve the browser without the Rust core
+  // being healthy; widgets fall back to cached data + show degraded
+  // surface.
+  [SYSTEM_MILESTONES.SERVER_READY]: [SYSTEM_MILESTONES.SERVER_START],
+
   // CRITICAL: Browser launch MUST wait for server ready
   [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED]: [SYSTEM_MILESTONES.SERVER_READY],
   [SYSTEM_MILESTONES.BROWSER_PROCESS_STARTED]: [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED],
   [SYSTEM_MILESTONES.BROWSER_WEBSOCKET_CONNECTED]: [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED],
   [SYSTEM_MILESTONES.BROWSER_INTERFACE_LOADED]: [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED],
   [SYSTEM_MILESTONES.BROWSER_READY]: [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED],
-  
-  [SYSTEM_MILESTONES.SYSTEM_HEALTHY]: [SYSTEM_MILESTONES.SERVER_READY],
+
+  // SYSTEM_HEALTHY = BOTH server + core green (the monitoring signal).
+  // Distinct from per-entry-point requirements above so the browser
+  // doesn't gate on a degraded core.
+  [SYSTEM_MILESTONES.SYSTEM_HEALTHY]: [SYSTEM_MILESTONES.SERVER_READY, SYSTEM_MILESTONES.CORE_READY],
   [SYSTEM_MILESTONES.SYSTEM_READY]: [SYSTEM_MILESTONES.SERVER_READY, SYSTEM_MILESTONES.BROWSER_READY]
 };
 

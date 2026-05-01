@@ -1,10 +1,78 @@
 # Alpha Gap Analysis — Master Plan
 
-**Updated**: 2026-04-17
-**Status**: **PR #891 (feature/inference-perf) closing.** Docker Model Runner is THE inference runtime (Metal Mac, CUDA Windows/Linux). Candle off chat routing. ORM abstraction sealed (handles not URLs). SQLite default (postgres opt-in). Full matrix GREEN: M5 Mac × {Docker, npm}, BigMama Win/WSL2 × Docker. Zero API keys required for first chat. Image pipeline: dev builds on metal → pushes to ghcr → CI validates (never builds). 4 personas chat via DMR GPU on both platforms.
-**Branch**: `feature/inference-perf` → merging to `main`
+**Updated**: 2026-05-01 (live-verified post-`npm start` deployment)
+**Branch**: `feat/airc-send-command` (stacks #977 supervisor + #978 local-inference cmds + #979 airc/send on top of `main`)
+**Status header**: see [Today's Snapshot](#todays-snapshot-2026-05-01-live-verified) for the current truth (live-observed). The April 17 snapshot is preserved in [What Changed Since April 6](#what-changed-since-april-6-pr-891-session--2026-04-1617) below for historical context but is now superseded by today's findings.
 
-This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
+This document is the **single source of truth** for remaining continuum work — Carl install path, dev workflow, and everything beyond. Each phase is ordered by dependency. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
+
+**Two predecessor docs were consolidated INTO this one on 2026-05-01 and DELETED:**
+- `docs/PRE-ALPHA-GAP-ANALYSIS.md` (121 lines, 2026-Mar-ish; predates DMR pivot, model published, PR891 architecture)
+- `docs/planning/CARL-AND-DEV-PATH-TO-WORKING.md` (interim doc created earlier today; content folded into [Today's Snapshot](#todays-snapshot-2026-05-01-live-verified) + [The Shortest Path](#the-shortest-path-from-todays-snapshot-to-install-talk-to-ai))
+
+---
+
+## Today's Snapshot (2026-05-01, live-verified)
+
+Ran a full `npm start` from `feat/airc-send-command` (= `main` + 3 stacked PRs: #977 #978 #979). Total 546-689s (cold cargo + tsc + worker spawn + seed). Observed end-to-end so this is **measured, not aspirational**.
+
+### What WORKED on this run
+
+- ✅ Build phase: cargo + tsc + browser bundle (~178s)
+- ✅ Workers spawned: `archive` + `continuum-core-server` (PID 39109) — registered 20 modules
+- ✅ TS server bound, HTTP 200 on http://localhost:9000
+- ✅ #977 supervisor caught the SIGABRT (see below) + attempted respawn with exponential backoff (attempt 5 in 60s window) + correctly failed `CORE_READY` milestone after 30s timeout. Lifecycle behavior is exactly as designed.
+- ✅ Browser opened on second `npm start` after my dep-graph regression fix (decoupled `SERVER_READY` from `CORE_READY` — see [#722 regression note](#722-regression-decoupling-browser-from-core_ready) below)
+- ✅ `airc/send` (#979) sent a message into the airc mesh — Joel confirmed it landed
+
+### What's BROKEN (live-observed)
+
+| # | Symptom | Root cause | Severity | Maps to |
+|---|---|---|---|---|
+| **NEW-A** | `continuum-core-server` SIGABRTs during seed-time model load | `ggml-metal-device.m:612: GGML_ASSERT([rsets->data count] == 0) failed` in vendored llama.cpp Metal `llm_build_smallthinker` cleanup. Concrete stack trace captured in `$HOME/.continuum/jtag/logs/system/orchestrator.log`. This IS the long-tracked SIGABRT (was internal task #56, never had a GitHub issue) | **BLOCKING — first user demo** | NEEDS NEW ISSUE |
+| **NEW-B** | `seed-continuum.ts` retries `./jtag ping` 21+ times across 480s before giving up; 8 minutes of UX rot for any user (Carl, dev, anyone) on the install path | Seed doesn't read orchestrator's milestone state — keeps probing even when CORE_READY has officially failed | Phase 0 already lists "Seeding fragile on fresh installs" (BUG status) — **CONCRETE FIX DESIGNED** | Updates Phase 0 entry below |
+| **NEW-C** | `shared/config.ts` has `/Users/joelteply/.continuum/sockets/...` HARDCODED for SOCKETS.CONTINUUM_CORE / ARCHIVE / INFERENCE | The path needs to be derived from `$HOME` at build time (or runtime). On Carl's machine the path will point at Joel's username and IPC will silently fail | **BLOCKING — Carl install** | NEEDS NEW ISSUE |
+| #960 | Mac Metal generation throughput 5-7 tok/s (45x slower than CUDA) | Vendored llama.cpp Metal kernel coverage gap | Tracked, post-launch | — |
+| #964 | ONNX Runtime running on CPU (MLAS) instead of Metal — 800-900% CPU spike during chat | fastembed/TTS/STT/vision-bridge initialization wrong | Tracked | — |
+| #948 | DMR concurrency: reqwest 'error sending request' when 4+ local personas hit DMR simultaneously | Connection pool / concurrency limit | Tracked | — |
+| #963 | Model name has TWO sources of truth: `PersonaConfig.modelId` vs `models.toml`/`Constants.ts` | Compression-principle violation per CLAUDE.md | Tracked | — |
+| #946 | Module command-prefix collision: PersonaAllocatorModule and CognitionModule both own 'persona/' — dispatcher picks allocator, new verbs disappear | Routing bug | Tracked | — |
+
+### #722 regression — decoupling browser from CORE_READY
+
+In #977 (already merged in this branch as commit d77826205), I made `SERVER_READY` depend on `CORE_READY`. The intent was correct (widgets find a live IPC pool on first browser load) but the consequence was **bad**: when the SIGABRT (NEW-A above) prevents CORE_READY from completing, the orchestrator's milestone graph stops at CORE_READY → BROWSER_LAUNCH_INITIATED never fires → user sees no browser at all.
+
+**Trade-off I got wrong**:
+- Pre-fix #722 symptom: browser launches but widgets show "Rust IPC dead" (silent failure)
+- Post-fix #977 (broken): no browser at all (loud failure but worse UX)
+- **Right design**: browser launches always; widgets handle missing core gracefully ("Layer D" from #977 design that was deferred)
+
+**Fix in working tree** (committed as part of this PR refresh): `SystemMilestones.ts` — `SERVER_READY` no longer depends on `CORE_READY`. `SYSTEM_HEALTHY` (the monitoring signal) still requires both. Verified live: browser opens despite SIGABRT-looping core.
+
+### The shortest path from today's snapshot to "Install. Talk to AI."
+
+Three things, in order, get to the demo:
+
+1. **Don't gate user-facing surfaces on the Rust core** (DONE, commit pending)
+2. **Make the SIGABRT not fatal to the experience**:
+   - **(a) Stopgap — DMR-only on Mac**: Per architectural pivot (PR891), DMR is THE chat inference runtime on Mac. Candle (where the SIGABRT lives) shouldn't be on the chat hot path. Trace WHY seed is hitting `llm_build_smallthinker` (a Candle/llama.cpp init), then route through DMR or skip
+   - **(b) Fix-the-assert path**: Patch `ggml-metal-device.m:612` to log + soft-fail instead of `abort()`. Larger blast (vendored code) but a quick unblock
+   - **Lean (a)** — aligns with existing pivot. Need: trace seed's Rust-side call chain
+3. **Seed must fail-fast + UX-honestly** when core is dead: detect "core in restart loop" via orchestrator's CORE_READY failure milestone, abort within 30s with actionable message ("install DMR, OR add cloud API key, OR set `CONTINUUM_SKIP_LOCAL_MODELS=1`"). ~30 LOC in `seed-continuum.ts`
+
+**After those 3 land:** Carl runs `curl ... | bash` → bootstrap installs deps + builds → `npm start` auto-launches → workers spawn → IF DMR present → AI chat works; IF not, browser opens with banner + Carl knows what to install. **That's ship-pretty-well-first.**
+
+### Open PRs (today)
+
+| PR | What | Status | Path through this plan |
+|---|---|---|---|
+| [continuum#976](https://github.com/CambrianTech/continuum/pull/976) | AGENT-BACKBONE-INTEGRATION design doc + §11.2 bidirectional persona ↔ external-agent over airc | Mergeable | Strategic frame |
+| [continuum#977](https://github.com/CambrianTech/continuum/pull/977) | Rust core supervisor (closes the original #722) — + the dep-graph regression fix from this session | Mergeable, needs final commit + verify | Phase 0 |
+| [continuum#978](https://github.com/CambrianTech/continuum/pull/978) | `ai/local-inference/{start,status}` + repo-wide cleanup of `_noParams: never`/`as unknown as` typing smell across 11 generated files + the generator template | Mergeable | Phase 1 (typing) + Phase 12 (agent-backbone discovery) |
+| [continuum#979](https://github.com/CambrianTech/continuum/pull/979) | `airc/send` outbox command (closes outbox half of #967) | Mergeable, manually tested ✓ | Phase 2.5 (agent-backbone airc bridge) |
+| [airc#387](https://github.com/CambrianTech/airc/pull/387) | Error classification (gone, secondary_rate_limit) + jittered backoff | Mergeable, all 4 gates green | Substrate reliability for #979 |
+
+**Workflow note**: Per Joel 2026-05-01 "we will use airc later for trying carl user installs e2e" + "merge into canary once features and integration tests succeed" — the goal is NOT PR-and-wait; it's validate + merge to canary. These PRs are documentation of intent + CI gates; the merge to `canary` happens once each is exercised live (e.g. on Joel's M1 stock-dev test bed for Carl-path validation).
 
 ---
 
@@ -119,8 +187,48 @@ This document is the **single source of truth** for remaining work. Each phase i
 | [#795](https://github.com/CambrianTech/continuum/issues/795) | **Duplicate tabs** | TODO | Same room opens multiple tab entries. `contentItemsMatch()` dedup has gaps. |
 | [#855](https://github.com/CambrianTech/continuum/pull/855) | **Multi-arch Docker images** | PR READY | amd64 + arm64 builds. Fixes Mac/Ubuntu install. Verification gate. |
 | [#856](https://github.com/CambrianTech/continuum/issues/856) | **Grid event streaming** ⚠️ CRITICAL | TODO | Persistent WS event channels between nodes. Blocks open-eyes, factory live updates, OpenClaw, Hermes. Polling at 10s is incompatible with real-time. |
+| [#722](https://github.com/CambrianTech/continuum/issues/722) | **All widgets fail on refresh — Rust core IPC dies + doesn't recover** | PR #977 OPEN | SystemOrchestrator now spawns + supervises continuum-core-server. ORMRustClient never gives up reconnecting. Panic-loop detector. **Live-tested 2026-05-01**: supervisor correctly caught a real SIGABRT + retried + failed loud. The dep-graph regression I introduced (browser blocked on CORE_READY) is fixed in same PR. |
+| **NEW-A** | **continuum-core-server SIGABRT in vendored llama.cpp Metal `llm_build_smallthinker` cleanup** | **NEEDS NEW ISSUE** | Live-observed 2026-05-01: `ggml-metal-device.m:612: GGML_ASSERT([rsets->data count] == 0) failed`. Triggered during seed-time model load. THE blocker for "AI talks back" demo. Path forward in [Today's Snapshot](#todays-snapshot-2026-05-01-live-verified) — lean DMR-only on Mac per PR891 architectural pivot. |
+| **NEW-C** | **shared/config.ts has Joel's home-dir HARDCODED** | **NEEDS NEW ISSUE** | `SOCKETS.CONTINUUM_CORE = '/Users/joelteply/.continuum/sockets/...'` — fails for any other user (Carl, Toby on M1, every dev). Must derive from `$HOME` at build/runtime. Carl-blocker. |
 
-**Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes. AI responses appear in real-time without refresh. Grid events stream between nodes in real time.
+**Recently closed (2026-04-17 → 2026-05-01)** — these were Phase 0 items now resolved:
+
+- **#959** PersonaUser daemons stop responding after data:reseed (subscriptions reference invalidated user IDs) — DONE
+- **#957** syncPersonaProviders silently overwrites persona modelId with provider default (Vision AI gets qwen3.5-4b instead of qwen2-vl-7b) — DONE
+- **#919** Personas go silent after first response wave — DONE
+- **#907** seed-in-process.ts: sync persona providers on every restart — DONE
+- **#898** install.sh Mac: npm start launches node-server+widget-server locally, conflicts with containerized versions — DONE
+- **#893** docker: Dockerfile COPY . . assumes submodules populated — fresh clone build fails silently — DONE
+- **#887** Inference capacity: consolidate to adapter-owned, delete duplicate gates — DONE
+- **#769** Ship with Qwen3.5 as default local model — DONE
+- **#906** install: CI validates staged images, never builds from scratch — DONE
+- **#965** CI auto-rebuilds stale arches on GitHub-hosted arm64/amd64 runners — DONE
+
+**Newly filed since 2026-04-17 (Phase 0 candidates)** — these are post-master-plan Phase 0 candidates:
+
+- **#974** ci(workflow): Verify Docker Images PR-trigger paths too narrow — non-Rust/non-docker PRs perpetually BLOCKED — meta-blocker
+- **#964** ONNX Runtime running on CPU (MLAS) instead of Metal — 800-900% CPU spike during chat
+- **#963** Model name has TWO sources of truth: PersonaConfig.modelId vs models.toml/Constants.ts (compression-principle violation)
+- **#962** Chat scroll-up infinite-scroll history paging broken (regression) — should use ORM cursor + IntersectionObserver
+- **#961** Phantom 'General' tab with UUID title persists across refresh — localStorage holds stale roomId after reseed/room-delete
+- **#960** Mac Metal generation throughput 5-7 tok/s (45x slower than CUDA) — vendored llama.cpp Metal kernel coverage gap
+- **#958** DMR/openai_adapter sends no repetition penalty — Linux/CUDA personas verbatim-echo each other (pr-950-blocker)
+- **#956** install.sh: HTTP_PORT/WS_PORT/CONTINUUM_DATA hardcoded — blocks multi-Carl-on-one-host (testing)
+- **#955** docker-compose.yml: pin ghcr.io/ggml-org/llama.cpp:server-cuda to specific digest (currently floating tag)
+- **#954** Pre-commit hook does not auto-install on fresh clones (contributors silently skip the gate)
+- **#952** WSL2 install-tailscale.sh: detect Windows-side Tailscale to avoid 2-node confusion
+- **#951** install.sh: detect AMD/Intel Vulkan GPUs (currently silently CPU-only on non-Nvidia)
+- **#948** DMR concurrency: reqwest 'error sending request' when 4+ local personas hit DMR simultaneously
+- **#946** Module command-prefix collision: PersonaAllocatorModule and CognitionModule both own 'persona/' — dispatcher picks allocator
+- **#945** data/query: memory leak under load (4.8GB cumulative observed)
+- **#944** CodebaseIndexer: runaway embedding loop with 0% cache hits + 4GB+ data/query memleak
+- **#915** TTS: Kokoro ONNX model session creation deadlocks on M1 Metal
+- **#911** Mac Option B: 16GB MacBook Air can't run the full stack (product scope decision)
+- **#910** DMR CUDA on Windows Docker Desktop requires manual Settings toggle (not scriptable)
+- **#909** Local persona tool execution: cloud wired, Candle/DMR local path not wired
+- **#908** Windows/WSL2: npm start should route through docker compose (native can't reach DMR)
+
+**Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes. AI responses appear in real-time without refresh. Grid events stream between nodes in real time. **AND the "Today's Snapshot" demo path works end-to-end without manual intervention.**
 
 ---
 

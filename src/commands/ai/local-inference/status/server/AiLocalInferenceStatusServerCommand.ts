@@ -38,8 +38,8 @@ export class AiLocalInferenceStatusServerCommand extends CommandBase<AiLocalInfe
     return createAiLocalInferenceStatusResultFromParams(params, {
       success: true,
       running,
-      url: running ? (probe.url || '') : '',
-      port: running ? (probe.port || 0) : 0,
+      url: running ? (probe.url ?? '') : '',
+      port: running ? (probe.port ?? 0) : 0,
       // Only Anthropic-compat is shipped today (workers/continuum-core/src/http/anthropic_compat.rs).
       // Will be 'openai' OR a comma-separated list once openai_compat.rs lands per AGENT-BACKBONE §4.1.
       protocol: 'anthropic',

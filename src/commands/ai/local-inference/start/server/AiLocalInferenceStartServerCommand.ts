@@ -41,7 +41,7 @@ export class AiLocalInferenceStartServerCommand extends CommandBase<AiLocalInfer
 
     if (!result.success || !result.url || !result.port) {
       throw new Error(
-        `Failed to start local inference HTTP server: ${result.error || 'unknown'}. ` +
+        `Failed to start local inference HTTP server: ${result.error ?? 'unknown'}. ` +
         `Check that continuum-core-server is running (continuum#722 covers the supervised lifecycle).`
       );
     }
