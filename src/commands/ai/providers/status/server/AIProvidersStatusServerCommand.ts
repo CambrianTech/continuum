@@ -129,8 +129,16 @@ export class AIProvidersStatusServerCommand extends AIProvidersStatusCommand {
 
     const providers: ProviderStatus[] = PROVIDER_CONFIG.map(config => {
       // Candle is always available — it's local inference, no API key needed
-      const isConfigured = config.category === 'local' ? true : secrets.has(config.key);
-      const rawKey = isConfigured && config.category !== 'local' ? secrets.get(config.key) : undefined;
+      //
+      // For non-local providers: SecretManager.has(key) returns true when the
+      // key NAME is present in config.env even if its VALUE is empty (the
+      // shipped fresh config has ANTHROPIC_API_KEY=, OPENAI_API_KEY=,
+      // DEEPSEEK_API_KEY= as empty placeholders). So has(key) gave false-
+      // positive isConfigured=true for every fresh install, leading users to
+      // attempt chat and hit an opaque 401. Check the actual value length
+      // instead. (#980 Bug 5.)
+      const rawKey = config.category === 'local' ? undefined : secrets.get(config.key);
+      const isConfigured = config.category === 'local' ? true : (rawKey?.length ?? 0) > 0;
 
       return {
         provider: config.provider,
