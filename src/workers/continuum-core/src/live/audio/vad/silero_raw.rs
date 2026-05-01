@@ -157,9 +157,17 @@ impl VoiceActivityDetection for SileroRawVAD {
             )));
         }
 
+        // GPU execution providers via the centralized helper (#985 / #964).
+        // Per architecture, CPU fallback is forbidden — Silero VAD inference
+        // must run on GPU. Pre-this-PR Silero never configured an EP at all,
+        // so ORT's implicit CPU EP took every op silently.
+        let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
+            .map_err(|e| VADError::ModelNotLoaded(format!("ORT GPU EP setup failed (Silero VAD raw): {e}")))?;
         // Load ONNX model
         let session = Session::builder()
             .map_err(|e| VADError::ModelNotLoaded(e.to_string()))?
+            .with_execution_providers(providers)
+            .map_err(|e| VADError::ModelNotLoaded(format!("Silero raw EP register: {e}")))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| VADError::ModelNotLoaded(e.to_string()))?
             .with_intra_threads(num_cpus::get().min(4))
