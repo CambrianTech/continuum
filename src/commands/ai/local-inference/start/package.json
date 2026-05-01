@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/ai/local-inference/start",
+  "version": "1.0.0",
+  "description": "Ensure Continuum's local inference HTTP server is running and return its URL. Idempotent — if already running, returns the existing URL without restarting. External agents (Claude Code via ANTHROPIC_BASE_URL, future Codex via OPENAI_BASE_URL) should call this once at startup, then use the returned URL. First-class surface for the AGENT-BACKBONE integration story (PR #976 §1-§4); previously only reachable as the Sentinel-internal sentinel/local-inference-start IPC command.",
+  "main": "server/AiLocalInferenceStartServerCommand.ts",
+  "types": "shared/AiLocalInferenceStartTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/AiLocalInferenceStartIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "ai/local-inference/start"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

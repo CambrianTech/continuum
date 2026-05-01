@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/ai/local-inference/status",
+  "version": "1.0.0",
+  "description": "Query Continuum's local inference HTTP server (Anthropic-compatible Messages API). Returns whether the server is running and the URL external agents (Claude Code via ANTHROPIC_BASE_URL, future Codex via OPENAI_BASE_URL) should point at to use local Continuum models instead of cloud APIs. First-class surface for the AGENT-BACKBONE integration story (PR #976 §1-§4).",
+  "main": "server/AiLocalInferenceStatusServerCommand.ts",
+  "types": "shared/AiLocalInferenceStatusTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/AiLocalInferenceStatusIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "ai/local-inference/status"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

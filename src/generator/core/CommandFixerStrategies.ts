@@ -120,7 +120,7 @@ export function extractTypeInfo(content: string, commandName: string): Extracted
 
 /**
  * Extract fields from a TypeScript interface body.
- * Skips inherited fields (context, sessionId, userId, success, error, _noParams).
+ * Skips inherited fields (context, sessionId, userId, success, error).
  */
 function extractInterfaceFields(content: string, interfaceName: string): InterfaceField[] {
   const fields: InterfaceField[] = [];
@@ -135,7 +135,11 @@ function extractInterfaceFields(content: string, interfaceName: string): Interfa
   if (!match) return fields;
 
   const body = match[1];
-  const inherited = new Set(['context', 'sessionId', 'userId', 'success', 'error', '_noParams']);
+  // Inherited fields the generator never emits as own-fields. `_noParams`
+  // marker (legacy generator pre-cleanup) is no longer in this list —
+  // empty-params commands now use `export type FooParams = CommandParams`
+  // (type alias) so they have no interface body to filter at all.
+  const inherited = new Set(['context', 'sessionId', 'userId', 'success', 'error']);
   const seen = new Set<string>();
 
   // Line-by-line field extraction — simpler and more reliable than complex regex

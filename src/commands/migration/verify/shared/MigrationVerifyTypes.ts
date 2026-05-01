@@ -11,24 +11,23 @@ import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
- * Migration Verify Command Parameters
+ * Migration Verify Command Parameters — no command-specific params;
+ * CommandParams (context + sessionId + userId) is the full payload.
+ * Type alias (not `extends CommandParams {}` with `_noParams: never`)
+ * so the type is genuinely empty + structurally identical to
+ * CommandParams.
  */
-export interface MigrationVerifyParams extends CommandParams {
-  _noParams?: never; // Marker to avoid empty interface
-}
+export type MigrationVerifyParams = CommandParams;
 
 /**
- * Factory function for creating MigrationVerifyParams
+ * Factory function for creating MigrationVerifyParams. System-scoped:
+ * issued by the migration system, not a user — userId is always
+ * SYSTEM_SCOPES.SYSTEM.
  */
 export const createMigrationVerifyParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Record<string, never>
-): MigrationVerifyParams => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
-
-  ...data
-});
+): MigrationVerifyParams => createPayload(context, sessionId, { userId: SYSTEM_SCOPES.SYSTEM });
 
 /**
  * Migration Verify Command Result

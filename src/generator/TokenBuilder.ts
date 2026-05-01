@@ -49,8 +49,14 @@ export class TokenBuilder {
    */
   static buildParamFields(params: ParamSpec[]): string {
     if (params.length === 0) {
-      // Use a marker property to avoid empty interface lint error
-      return '  _noParams?: never; // Marker to avoid empty interface';
+      // Empty params: callers should use `buildParamsTypeDecl` to emit a
+      // type alias instead of an empty interface. Returning '' here lets
+      // legacy templates still compile, but new templates use the
+      // dedicated decl builder so we never ship `_noParams?: never`
+      // marker fields again (the lint workaround that became a typing
+      // bug — TS sees the marker and refuses structural-equivalence
+      // casts).
+      return '';
     }
 
     return params
@@ -60,6 +66,66 @@ export class TokenBuilder {
         return `${comment}  ${param.name}${optional}: ${param.type};`;
       })
       .join('\n');
+  }
+
+  /**
+   * Build the params TYPE DECLARATION block.
+   *
+   * For empty-params commands: emits a type alias to CommandParams
+   * (genuinely empty + structurally identical). For non-empty: emits an
+   * interface extending CommandParams with the typed fields.
+   *
+   * Replaces the old `interface FooParams extends CommandParams { _noParams?: never }`
+   * pattern that:
+   *   (a) lied about emptiness via the never marker
+   *   (b) made the type structurally-incompatible with CommandParams
+   *       so the factory's createPayload return required `as unknown as`
+   *       casts to compile — which violated Joel's typing rule (no
+   *       `unknown`, no `any`, types must be true to the wire shape)
+   */
+  static buildParamsTypeDecl(spec: CommandSpec): string {
+    const naming = new CommandNaming(spec);
+    if (spec.params.length === 0) {
+      return `export type ${naming.paramsType} = CommandParams;`;
+    }
+    return `export interface ${naming.paramsType} extends CommandParams {\n${this.buildParamFields(spec.params)}\n}`;
+  }
+
+  /**
+   * Build the params FACTORY function block.
+   *
+   * For empty-params commands: factory takes (context, sessionId, userId)
+   * — userId is REQUIRED on CommandParams; createPayload wraps it cleanly
+   * so the result is structurally CommandParams with NO casts needed.
+   *
+   * For non-empty: factory takes (context, sessionId, userId, data) where
+   * data is the typed param fields. Same no-cast guarantee.
+   */
+  static buildParamsFactoryDecl(spec: CommandSpec): string {
+    const naming = new CommandNaming(spec);
+    if (spec.params.length === 0) {
+      return [
+        `export const create${naming.baseName}Params = (`,
+        `  context: JTAGContext,`,
+        `  sessionId: UUID,`,
+        `  userId: UUID,`,
+        `): ${naming.paramsType} => createPayload(context, sessionId, { userId });`,
+      ].join('\n');
+    }
+    const dataType = this.buildFactoryDataType(spec.params);
+    const defaults = this.buildFactoryDefaults(spec.params);
+    const defaultsBlock = defaults ? `${defaults}\n` : '';
+    return [
+      `export const create${naming.baseName}Params = (`,
+      `  context: JTAGContext,`,
+      `  sessionId: UUID,`,
+      `  userId: UUID,`,
+      `  data: ${dataType},`,
+      `): ${naming.paramsType} => createPayload(context, sessionId, {`,
+      `  userId,`,
+      `${defaultsBlock}  ...data,`,
+      `});`,
+    ].join('\n');
   }
 
   /**
@@ -324,6 +390,12 @@ export class TokenBuilder {
       IMPLEMENTATION: naming.implementation,
       FACTORY_DATA_TYPE: this.buildFactoryDataType(spec.params),
       FACTORY_DEFAULTS: this.buildFactoryDefaults(spec.params),
+      // Type-safe replacements for the legacy
+      // `interface Foo extends CommandParams { _noParams: never }`
+      // + cast-laden factory pattern. See buildParamsTypeDecl /
+      // buildParamsFactoryDecl for the rationale.
+      PARAMS_TYPE_DECL: this.buildParamsTypeDecl(spec),
+      PARAMS_FACTORY_DECL: this.buildParamsFactoryDecl(spec),
       RESULT_FACTORY_DATA_TYPE: this.buildResultFactoryDataType(spec.results),
       RESULT_FACTORY_DEFAULTS: this.buildResultFactoryDefaults(spec.results),
       RESULT_FIELD_EXAMPLES: this.buildResultFieldExamples(spec.results)

@@ -11,24 +11,23 @@ import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
- * Migration Resume Command Parameters
+ * Migration Resume Command Parameters — no command-specific params;
+ * CommandParams (context + sessionId + userId) is the full payload.
+ * Type alias (not `extends CommandParams {}` with `_noParams: never`)
+ * so the type is genuinely empty + structurally identical to
+ * CommandParams.
  */
-export interface MigrationResumeParams extends CommandParams {
-  _noParams?: never; // Marker to avoid empty interface
-}
+export type MigrationResumeParams = CommandParams;
 
 /**
- * Factory function for creating MigrationResumeParams
+ * Factory function for creating MigrationResumeParams. System-scoped:
+ * issued by the migration system, not a user — userId is always
+ * SYSTEM_SCOPES.SYSTEM.
  */
 export const createMigrationResumeParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Record<string, never>
-): MigrationResumeParams => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
-
-  ...data
-});
+): MigrationResumeParams => createPayload(context, sessionId, { userId: SYSTEM_SCOPES.SYSTEM });
 
 /**
  * Migration Resume Command Result
