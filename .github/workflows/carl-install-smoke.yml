@@ -87,7 +87,7 @@ jobs:
           SKIP_TEARDOWN: '0'
         run: bash scripts/ci/carl-install-smoke.sh
 
-      - name: Upload install + page artifacts on failure
+      - name: Upload install + page + chat artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -95,5 +95,6 @@ jobs:
           path: |
             /tmp/carl-smoke-*.install.log
             /tmp/carl-smoke-*.page.html
+            /tmp/carl-smoke-*.chat.log
           retention-days: 7
           if-no-files-found: ignore
