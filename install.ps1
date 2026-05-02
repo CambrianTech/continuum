@@ -85,7 +85,15 @@ Install-IfMissing -Name 'Docker Desktop'     -WingetId 'Docker.DockerDesktop' `
 function Install-WSL2 {
     $wslExe = Get-Command wsl.exe -ErrorAction SilentlyContinue
     if ($wslExe) {
-        $distros = & wsl.exe --list --quiet 2>$null
+        # wsl.exe writes its --list output as UTF-16 LE; PowerShell reads
+        # as UTF-8 by default, so each character ends up interspersed with
+        # null bytes ("U`0b`0u`0n`0t`0u`0") and the regex 'Ubuntu' never
+        # matches even when Ubuntu is genuinely installed and running.
+        # Pre-fix this caused install.ps1 to false-flag WSL2 as missing
+        # and demand admin elevation on every fresh-Windows-validator run.
+        # Caught by continuum-b69f 2026-05-02 during Carl-OOTB Windows test.
+        # Strip the embedded nulls before matching.
+        $distros = (& wsl.exe --list --quiet 2>$null) -replace "`0", ""
         $hasUbuntu = $distros | Where-Object { $_ -match 'Ubuntu' }
         if ($hasUbuntu) { Write-Ok 'WSL2 + Ubuntu already installed'; return }
     }
