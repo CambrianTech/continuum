@@ -207,6 +207,39 @@ if ($userPath -notlike "*$shimDir*") {
 }
 Write-Ok "continuum CLI shim installed at $shimPath"
 
+# ── section: probe WSL2 networking before delegating ────────────────────
+# bootstrap.sh inside WSL needs to curl raw.githubusercontent.com. If the
+# WSL2 VM has lost network reachability (vEthernet/HNS corruption is
+# common on Win10/11 after sleep cycles or driver updates), the curl
+# inside the bootstrap step takes 30+ seconds to time out with a cryptic
+# error — and the user has no idea their issue is environmental, not
+# continuum-related. Probe upfront with a 5s budget; if external HTTP
+# from inside WSL is broken, surface explicit remediation instead of
+# delegating into a doom-spiral. Caught by continuum-b69f 2026-05-02
+# (issue #1006) when their WSL2 NAT broke after a system update.
+Write-Step 'Probing WSL2 networking (5s budget) ...'
+$probeOutput = & wsl.exe bash -c "curl -sfI -m 5 https://raw.githubusercontent.com/CambrianTech/continuum/main/bootstrap.sh -o /dev/null 2>&1; echo EXIT=`$?"
+$probeExit = $LASTEXITCODE
+$probeOk = ($probeExit -eq 0) -and ($probeOutput -match 'EXIT=0')
+if (-not $probeOk) {
+    Write-Fail 'WSL2 networking is broken — cannot reach raw.githubusercontent.com from inside WSL.'
+    Write-Host ''
+    Write-Host '  Probe output:'
+    if ($probeOutput) { $probeOutput | ForEach-Object { Write-Host "    $_" } }
+    Write-Host "    (LASTEXITCODE=$probeExit)"
+    Write-Host ''
+    Write-Host '  This is a Windows-side WSL2 issue (vEthernet / HNS corruption is the usual culprit).'
+    Write-Host '  Try in order:'
+    Write-Host '    1. wsl --shutdown                                 # forces VM restart, often heals NAT'
+    Write-Host '    2. (as admin)  Restart-Service hns -Force         # reset Host Networking Service'
+    Write-Host '    3. Reboot Windows'
+    Write-Host '    4. Edit %USERPROFILE%\.wslconfig — add  [wsl2]  then  networkingMode=NAT  on next line'
+    Write-Host ''
+    Write-Host '  Then re-run:  irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex'
+    exit 1
+}
+Write-Ok 'WSL2 networking OK'
+
 # ── section: delegate to bootstrap.sh inside WSL ────────────────────────
 # bootstrap.sh is the canonical install body -- clones the repo, pulls
 # docker compose images, brings the stack up, opens the browser. Runs
