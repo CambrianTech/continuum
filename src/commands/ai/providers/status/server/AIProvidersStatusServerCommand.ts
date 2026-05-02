@@ -22,11 +22,20 @@ const PROVIDER_CONFIG: Array<{
   billingUrl?: string;
 }> = [
   {
-    provider: 'Candle',
-    key: 'CANDLE_ENABLED',
+    // Local inference goes through Docker Model Runner via Rust IPC
+    // (AIProviderDaemon.generateText → ai/generate). The previous entry
+    // was "Candle" with a similar description, but Candle is a training
+    // framework (LoRA, autodiff, fine-tuning), NOT inference — Joel's
+    // correction in #980 Bug 6. Training callers access Candle through
+    // the training/plasticity module directly; it doesn't belong in the
+    // user-facing inference-providers list. AIProviderDaemonServer.ts
+    // line 146-150 confirms: Candle is NOT registered in the inference
+    // adapter registry.
+    provider: 'Docker Model Runner',
+    key: 'DMR_ENABLED',
     category: 'local',
-    description: 'Local AI server via Candle - free, private, no API key needed',
-    getKeyUrl: 'https://github.com/huggingface/candle'
+    description: 'Local LLM inference via Docker Desktop Model Runner (Metal on Apple Silicon, CUDA on Nvidia, Vulkan on AMD/Intel)',
+    getKeyUrl: 'https://docs.docker.com/desktop/features/model-runner/'
   },
   {
     provider: 'Anthropic',
