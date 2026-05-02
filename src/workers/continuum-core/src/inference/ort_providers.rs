@@ -87,20 +87,49 @@ pub fn build_ort_gpu_execution_providers() -> Result<Vec<ExecutionProviderDispat
         providers.push(CUDAExecutionProvider::default().build());
     }
 
+    // ROCm — Linux + AMD GPU. Builds when --features rocm + ROCm runtime
+    // libs are installed. Carl on Linux+AMD picks this path.
+    #[cfg(all(feature = "rocm", target_os = "linux"))]
+    {
+        use ort::execution_providers::ROCmExecutionProvider;
+        providers.push(ROCmExecutionProvider::default().build());
+    }
+
+    // DirectML — Windows native. Works with any DX12-compatible GPU
+    // (Nvidia / AMD / Intel). Carl on Windows-native picks this path.
+    #[cfg(all(feature = "directml", target_os = "windows"))]
+    {
+        use ort::execution_providers::DirectMLExecutionProvider;
+        providers.push(DirectMLExecutionProvider::default().build());
+    }
+
+    // OpenVINO — Intel CPU/GPU/VPU. Linux + Windows. NOT a CPU fallback
+    // (OpenVINO targets Intel's accelerators specifically). Carl on
+    // Intel-Arc Linux or Windows picks this path.
+    #[cfg(feature = "openvino")]
+    {
+        use ort::execution_providers::OpenVINOExecutionProvider;
+        providers.push(OpenVINOExecutionProvider::default().build());
+    }
+
     if providers.is_empty() {
         return Err(format!(
             "No GPU Execution Provider configured for ORT on this build. \
              Per architecture, CPU fallback is forbidden — ORT consumers \
              (embedding, TTS, STT, vision) must run on GPU. \
              Build with the appropriate cargo feature: \
-             '--features metal' (Mac, Apple Silicon GPU via CoreML EP) or \
-             '--features cuda' (Linux+Nvidia, WSL+Nvidia, Windows+Nvidia). \
-             Detected: target_os={}, features=(metal={}, cuda={}). \
-             If your hardware needs ROCm / Vulkan / DirectML coverage, that \
-             EP needs wiring in inference/ort_providers.rs (currently a gap).",
+             '--features metal' (Mac, Apple Silicon GPU via CoreML EP), \
+             '--features cuda' (Linux+Nvidia, WSL+Nvidia, Windows+Nvidia), \
+             '--features rocm' (Linux+AMD), \
+             '--features directml' (Windows-native, any DX12 GPU), \
+             '--features openvino' (Linux+Intel / Windows+Intel). \
+             Detected: target_os={}, features=(metal={}, cuda={}, rocm={}, directml={}, openvino={}).",
             std::env::consts::OS,
             cfg!(feature = "metal"),
             cfg!(feature = "cuda"),
+            cfg!(feature = "rocm"),
+            cfg!(feature = "directml"),
+            cfg!(feature = "openvino"),
         ));
     }
 
