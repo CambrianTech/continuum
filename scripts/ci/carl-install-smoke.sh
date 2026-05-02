@@ -160,10 +160,127 @@ done
 
 echo "✅ root page looks like real HTML (${ROOT_BYTES} bytes, no failure markers)"
 
+# ── 4. End-to-end chat: Carl types a message, expects an AI reply ─────
+# Per Joel's "OOTB on MacBook Air, free, accessible" + "canary e2e
+# working from curl, Carl's case" — page-render is necessary but not
+# sufficient. The actual user-facing target is "Carl can chat with the
+# AI." This step closes that gap: send a message via jtag/chat/send
+# (which goes through the same code path the widget uses), poll
+# chat/export for an AI reply, fail loudly if none arrives.
+#
+# Exit codes for this section:
+#   4 — chat/send didn't accept the message (system not ready for chat)
+#   5 — no AI reply within CARL_CHAT_TIMEOUT_SEC (default 90s)
+#       — root cause: no personas seeded, persona allocation failed,
+#         model not loaded, or inference path broken (DMR not running,
+#         GPU EP misconfigured, etc.). Each of those should now hard-
+#         fail with an actionable error per the #964 + #980 series.
+#   6 — chat/send accepted but the warning marker from #994 fires
+#       (no listener) — distinguishes "no AI" from "AI didn't respond"
+echo ""
+echo "━━ end-to-end chat: send message, expect AI reply ━━"
+CARL_CHAT_TIMEOUT_SEC="${CARL_CHAT_TIMEOUT_SEC:-90}"
+CHAT_PROBE_MSG="carl-smoke-probe-$(date +%s)"
+CHAT_LOG="${CARL_INSTALL_DIR}.chat.log"
+
+# Locate jtag — install.sh symlinks it into BIN_DIR for the user
+# (typically $HOME/.local/bin/jtag). Carl's install used CONTINUUM_DIR.
+JTAG_BIN=""
+for cand in \
+  "$CARL_INSTALL_DIR/src/jtag" \
+  "$HOME/.local/bin/jtag" \
+  "$(command -v jtag 2>/dev/null)"; do
+  if [ -n "$cand" ] && [ -x "$cand" ]; then
+    JTAG_BIN="$cand"; break
+  fi
+done
+
+if [ -z "$JTAG_BIN" ]; then
+  echo "❌ chat probe: couldn't locate jtag binary"
+  echo "  Searched: \$CARL_INSTALL_DIR/src/jtag, \$HOME/.local/bin/jtag, PATH"
+  echo "  CARL_INSTALL_DIR=$CARL_INSTALL_DIR"
+  exit 4
+fi
+echo "  jtag binary: $JTAG_BIN"
+
+# Send. The jtag/chat/send command returns a JSON envelope; we extract
+# the messageId from the response to track the thread.
+echo "  → sending probe: '$CHAT_PROBE_MSG'"
+SEND_OUT=$("$JTAG_BIN" collaboration/chat/send --room=general --message="$CHAT_PROBE_MSG" 2>&1)
+SEND_RC=$?
+echo "$SEND_OUT" | sed 's/^/    /' > "$CHAT_LOG"
+if [ $SEND_RC -ne 0 ]; then
+  echo "❌ chat probe: chat/send command FAILED (exit $SEND_RC)"
+  echo "  Output:"
+  echo "$SEND_OUT" | head -10 | sed 's/^/    /'
+  exit 4
+fi
+
+# Detect the no-listener warning (#994). If chat/send accepted but
+# warned about no AI personas, that's a distinct failure mode from
+# "AI silent" — surface the difference.
+if echo "$SEND_OUT" | grep -q "No AI personas in system"; then
+  echo "❌ chat probe: chat/send accepted, but reported NO PERSONAS in system"
+  echo "  This means seed didn't successfully allocate persona-users."
+  echo "  Cascades from a failed install seed (#980 Bug 3) or a"
+  echo "  continuum-core that didn't register commands in time."
+  echo "  Diagnose: $JTAG_BIN data/list --collection=users --filter='{\"type\":\"persona\"}'"
+  exit 6
+fi
+
+echo "  ✓ chat/send accepted (some persona is listening)"
+
+# Poll chat/export for an AI reply. The probe message is unique;
+# we look for any message in the room AFTER our probe whose senderType
+# is 'persona' or 'bot' (i.e. the AI replying to us).
+echo "  → polling for AI reply (timeout ${CARL_CHAT_TIMEOUT_SEC}s)…"
+REPLY_OK=0
+REPLY_LATENCY=0
+for i in $(seq 1 "$CARL_CHAT_TIMEOUT_SEC"); do
+  EXPORT_OUT=$("$JTAG_BIN" collaboration/chat/export --room=general --limit=20 2>/dev/null || true)
+  # Find the first message AFTER our probe that's NOT from the human sender
+  # (rough heuristic — chat/export markdown output is line-oriented per msg).
+  # Look for any line after the probe-msg line that starts with a non-Joel sender.
+  if echo "$EXPORT_OUT" | awk -v probe="$CHAT_PROBE_MSG" '
+      $0 ~ probe { found_probe=1; next }
+      found_probe && /^\*\*[a-zA-Z0-9_-]+\*\*/ && !/Joel|joel|human/ { print; exit }
+    ' | grep -q .; then
+    REPLY_OK=1
+    REPLY_LATENCY=$i
+    echo "  ✓ AI reply detected after ${i}s"
+    break
+  fi
+  sleep 1
+done
+
+if [ $REPLY_OK -ne 1 ]; then
+  echo "❌ chat probe: no AI reply within ${CARL_CHAT_TIMEOUT_SEC}s"
+  echo ""
+  echo "  This is the classic Carl-blocker: chat goes silent."
+  echo "  Likely root causes (post-#980 series):"
+  echo "    - continuum-core inference path not reaching DMR (check #997's"
+  echo "      'local' default actually routes correctly)"
+  echo "    - DMR not running (Docker Model Runner needs Docker Desktop 4.62+)"
+  echo "    - GPU EP not configured (#985 / #991 cfg fixes — verify metal feature)"
+  echo "    - Persona model not pulled into DMR (install.sh's docker model pull)"
+  echo "    - SIGABRT in continuum-core (NEW-A — upstream llama.cpp bug,"
+  echo "      tracked at ggml-org/llama.cpp#22593)"
+  echo ""
+  echo "  Last 30 lines of room export:"
+  echo "$EXPORT_OUT" | tail -30 | sed 's/^/    /'
+  echo ""
+  echo "  Diagnose:"
+  echo "    $JTAG_BIN ai/providers/status"
+  echo "    $JTAG_BIN ai/local-inference/status"
+  echo "    docker compose -f $CARL_INSTALL_DIR/docker-compose.yml logs --tail=100 continuum-core"
+  exit 5
+fi
+
 # ── Done ──────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ✅ carl-install-smoke PASSED"
+echo "  ✅ carl-install-smoke PASSED — Carl can install + chat with AI"
 echo "  Install duration: ${INSTALL_DUR}s"
 echo "  Health latency:   $(( $(date +%s) - INSTALL_START - INSTALL_DUR ))s after install"
+echo "  Chat reply latency: ${REPLY_LATENCY}s after first message"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
