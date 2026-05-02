@@ -219,11 +219,21 @@ async function smartBuild(): Promise<void> {
         break;
       case 'TypeScript':
         runBuildStep('TypeScript compilation', 'npm run build:ts');
-        // Only run postbuild if clean generator output exists (optional optimization)
-        const cleanConfigPath = path.join(__dirname, '../.continuum/generator/path-mappings.json');
-        if (fs.existsSync(cleanConfigPath)) {
-          runBuildStep('Post-build processing', 'npm run postbuild');
-        }
+        // ALWAYS run postbuild — not optional. postbuild includes
+        // `npm run build:cli` which builds dist/cli-bundle.js, and
+        // src/jtag's fast path REQUIRES that bundle. Without it,
+        // jtag falls back to `tsx cli.ts` which can't resolve
+        // tsconfig path aliases (@system/core/...) at runtime →
+        // ERR_MODULE_NOT_FOUND on every fresh-install jtag invocation.
+        // Carl-install-smoke chat-probe was failing this way on every
+        // CI run — chat.log artifact (PR #1012) made the silent
+        // failure visible. Pre-fix the postbuild step was gated on
+        // `.continuum/generator/path-mappings.json` existing, but
+        // that file isn't generated until `npm run pack` (release
+        // builds only), so the gate effectively skipped postbuild
+        // forever in CI + fresh installs. The "optional optimization"
+        // comment was wrong — bundle is required, not nice-to-have.
+        runBuildStep('Post-build processing', 'npm run postbuild');
         break;
       case 'Browser bundle':
         runBuildStep('Browser esbuild bundle', 'cd examples/widget-ui && node ../../scripts/build-browser-example.js');
