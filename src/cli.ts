@@ -220,6 +220,36 @@ async function main() {
     // This allows `./jtag help screenshot` instead of `./jtag help commandName=screenshot`
     const positional = params._positional;
     if (Array.isArray(positional) && positional.length > 0) {
+      // #980 Bug 10: if the first positional arg is a JSON object literal,
+      // unpack it into named params. Pre-fix `./jtag collab/chat/send
+      // '{"message":"hello"}'` left the JSON blob in _positional and the
+      // command's validator failed with "Message must have either text
+      // content or media" — confusing, looked like a malformed message
+      // when it was actually a CLI param-shape mismatch. Now the user
+      // can pass a JSON blob OR --key=value flags interchangeably; both
+      // work, the validator sees the same params object either way.
+      const firstPositional = positional[0];
+      if (typeof firstPositional === 'string' && (firstPositional.startsWith('{') || firstPositional.startsWith('['))) {
+        try {
+          const parsed: unknown = JSON.parse(firstPositional);
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            // Merge each top-level key into params. Explicit --flags win
+            // over JSON-blob keys (so users can override one field while
+            // keeping the rest of a JSON template).
+            for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+              if (params[k] === undefined) {
+                params[k] = v as ParsedValue;
+              }
+            }
+            positional.shift();  // consume the JSON blob
+            params._positional = positional;
+          }
+        } catch {
+          // Not valid JSON — fall through to existing positional handling.
+          // The command's own param validator will surface a clear error.
+        }
+      }
+
       // Map of commands to their primary parameter name
       const singleParamCommands: Record<string, string> = {
         'help': 'commandName',
