@@ -143,6 +143,30 @@ fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(workspace_root)
+        // Strip git-context env vars that would otherwise pin git to
+        // the parent repo regardless of cwd. Without this, when
+        // run_git is invoked from a process that itself was launched
+        // by git (the most common case: pre-push / pre-commit hooks
+        // invoking `cargo test`), git sets GIT_DIR/GIT_PREFIX/etc and
+        // those propagate to every child. Concrete failure:
+        // git_bridge::tests' tempdir `git commit` inherited GIT_DIR
+        // pointing at the parent worktree's .git, then ran the
+        // worktree's pre-commit hook (whose paths don't exist in the
+        // tempdir context) and panicked. Caught 2026-05-02 wedging the
+        // whole git_bridge::tests cluster every time the pre-push hook
+        // ran them. Stripping these makes run_git context-clean — git
+        // discovers from current_dir(workspace_root) only, no parent
+        // contamination.
+        // GIT_CEILING_DIRECTORIES caps any residual upward discovery
+        // at workspace_root (defense in depth — env_remove handles the
+        // documented vars; ceiling handles anything new git might add
+        // in future versions).
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_PREFIX")
+        .env("GIT_CEILING_DIRECTORIES", workspace_root)
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
 
