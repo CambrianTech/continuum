@@ -193,15 +193,52 @@ case "$OS" in
     PHYS_MIB=$((PHYS_BYTES / 1048576))
     PHYS_GB=$((PHYS_MIB / 1024))
 
-    # Reserve headroom for native continuum-core (12GB) + macOS (6GB).
-    NATIVE_RESERVE_MIB=$((12 * 1024))
+    # Hardware tier — sets NATIVE_RESERVE + PERSONA_MODEL to fit available RAM.
+    # Per Joel's "MacBook Air on up, accessible, high-school-computer" target:
+    # 16GB MBA must be a working OOTB chat experience, not a 28GB-floor reject.
+    # Tier breakdown (continuum-ai's published smaller models all public):
+    #   8-15GB  → reject; even minimal config doesn't fit (macOS 6GB +
+    #             Docker 4GB minimum + minimal continuum-core 3GB + small
+    #             model + working set ≈ 14-15GB working set, no headroom)
+    #   16-23GB → MBA tier: smaller persona model, no Bevy/vision/audio
+    #             pre-pull at install time (chat-only OOTB; multimodal
+    #             enables when user attaches an image / opens video chat —
+    #             those code paths still load lazily). Native budget 5GB.
+    #   24-31GB → mid tier: still chat-focused but slightly larger model;
+    #             Bevy/vision/audio available. Native budget 8GB.
+    #   32GB+   → primary tier: full Qwen 4B code-forged + multimodal +
+    #             everything pre-pulled. Native budget 12GB (original).
+    #
+    # PERSONA_MODEL also tiers (set later when ic_decide_gpu_path runs;
+    # this just sets the byte budget for Docker VM sizing). The tiered
+    # PERSONA_MODEL is referenced by the docker model pull section below.
+    if [[ "$PHYS_MIB" -lt $((16 * 1024)) ]]; then
+      fail "This Mac has ${PHYS_GB}GB physical RAM. Continuum's minimum is 16GB:
+  - macOS itself reserves ~6GB
+  - Docker Desktop VM needs at least ~4GB
+  - Native continuum-core needs at least ~3GB (smallest persona model + working set)
+  - Total minimum: 13-15GB, leaves no headroom under 16GB
+For 16GB MBA: chat-only OOTB works (smaller model). For 32GB+: full multimodal experience."
+    elif [[ "$PHYS_MIB" -lt $((24 * 1024)) ]]; then
+      # MBA tier
+      NATIVE_RESERVE_MIB=$((5 * 1024))
+      CONTINUUM_TIER="mba"
+      info "Hardware tier: MBA (${PHYS_GB}GB) — chat-only OOTB with smaller persona model"
+    elif [[ "$PHYS_MIB" -lt $((32 * 1024)) ]]; then
+      # Mid tier
+      NATIVE_RESERVE_MIB=$((8 * 1024))
+      CONTINUUM_TIER="mid"
+      info "Hardware tier: mid (${PHYS_GB}GB) — multimodal available with mid-size persona model"
+    else
+      # Primary tier (original behavior)
+      NATIVE_RESERVE_MIB=$((12 * 1024))
+      CONTINUUM_TIER="primary"
+      info "Hardware tier: primary (${PHYS_GB}GB) — full multimodal + Qwen 4B code-forged"
+    fi
+    export CONTINUUM_TIER
     MACOS_RESERVE_MIB=$((6 * 1024))
     HEADROOM_MIB=$((NATIVE_RESERVE_MIB + MACOS_RESERVE_MIB))
-    DOCKER_FLOOR_MIB=$((10 * 1024))
-
-    if [[ "$PHYS_MIB" -lt $((HEADROOM_MIB + DOCKER_FLOOR_MIB)) ]]; then
-      fail "This Mac has ${PHYS_GB}GB physical RAM. Mac Option B (continuum-core native + Docker Desktop for support services) needs at least $(( (HEADROOM_MIB + DOCKER_FLOOR_MIB) / 1024 ))GB: ~12GB for native continuum-core (Qwen 4B + Bevy + vision + audio), ~6GB for macOS itself, and a ${DOCKER_FLOOR_MIB}MiB floor for the Docker VM. Below that, Docker Desktop crashes under combined memory pressure (verified on a 32GB box with the old 80%-target formula). Get a 32GB+ M-series for the primary audience experience."
-    fi
+    DOCKER_FLOOR_MIB=$((4 * 1024))
 
     TARGET_MIB=$((PHYS_MIB - HEADROOM_MIB))
     if [[ "$TARGET_MIB" -lt "$DOCKER_FLOOR_MIB" ]]; then
@@ -364,7 +401,28 @@ EOF
 
   # Pull default persona model into DMR so Carl's first chat is instant.
   # Only for DMR paths — Vulkan path loads models differently (local GGUF).
-  PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF"
+  #
+  # Tiered by CONTINUUM_TIER (set in the Mac RAM-tier block above; Linux
+  # paths skip this block since CONTINUUM_TIER isn't set there → defaults
+  # to the primary model). Lets a 16GB MBA install with a model that fits
+  # rather than failing the install or OOMing on first chat.
+  case "${CONTINUUM_TIER:-primary}" in
+    mba)
+      # 16-23GB: 0.8B general (~500MB GGUF). Chat-functional + leaves
+      # headroom for macOS + Docker + native continuum-core working set.
+      PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-0.8b-general-forged"
+      info "Persona model tier: MBA → qwen3.5-0.8b-general-forged (~500MB)"
+      ;;
+    mid)
+      # 24-31GB: 2B general (~1.4GB GGUF). Bigger context window viable.
+      PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-2b-general-forged"
+      info "Persona model tier: mid → qwen3.5-2b-general-forged (~1.4GB)"
+      ;;
+    *)
+      # 32GB+: original code-forged 4B (~2.7GB GGUF). Multimodal headroom.
+      PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF"
+      ;;
+  esac
   case "$IC_GPU_PATH" in
     dmr-*)
       if ! docker model ls 2>/dev/null | grep -q "qwen3.5-4b-code-forged"; then
