@@ -181,9 +181,34 @@ export class ChatSendServerCommand extends ChatSendCommand {
     // 7. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
     const shortId = storedEntity.id.slice(-6);
 
+    // 8. No-listener warning (#980 Bug 8): if zero persona-users exist in
+    // the system, the message is stored successfully but no AI will ever
+    // respond to it. Carl's #980 caught this: chat-send returned success,
+    // user typed "hello" + got nothing back, no signal anywhere that the
+    // message had no listener. Cascade from seed-failure (Bug 3): no
+    // personas seeded → agent/list returns []. Surface a clear "stored
+    // but no listener" warning so the user knows to investigate.
+    //
+    // Cheap query: count how many persona-type users exist (limit 1 — we
+    // only need to distinguish 0 vs ≥1). Non-blocking on the result
+    // payload — message is still stored either way; this just adds a
+    // warning string when listeners are absent.
+    const personaCheck = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
+      collection: UserEntity.collection,
+      filter: { type: 'persona' },
+      limit: 1,
+      context: params.context,
+      sessionId: params.sessionId,
+    });
+    const hasListener = personaCheck.success && (personaCheck.items?.length ?? 0) > 0;
+    const successMessage = hasListener
+      ? `Message sent to ${resolved.displayName} (#${shortId})`
+      : `Message sent to ${resolved.displayName} (#${shortId}) ⚠️ No AI personas in system — message stored but won't get a reply. Check: ./jtag data/list --collection=users --filter='{"type":"persona"}'  (likely cascade from a failed seed; re-run: npm run data:seed)`;
+
     return transformPayload(params, {
       success: true,
-      message: `Message sent to ${resolved.displayName} (#${shortId})`,
+      message: successMessage,
       messageEntity: storedEntity,
       shortId: shortId,
       roomId: resolved.id
