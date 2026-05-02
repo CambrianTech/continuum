@@ -197,6 +197,21 @@ cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama
 # to MoltenVK on the host, which translates to Metal. Also valid on Linux
 # Nvidia/AMD hosts with libvulkan available.
 vulkan = ["llama/vulkan"]
+# ORT execution providers for the broader Carl-OOTB matrix (#964 series
+# follow-up). Each adds a cfg branch in inference/ort_providers.rs so
+# fastembed / Piper-TTS / Moonshine-STT / Kokoro / Orpheus / Silero VAD
+# pick up the right GPU EP per platform — no silent CPU fallback per
+# the architectural rule. Linux runs continuum-core in containers with
+# the matching GPU passthrough; native dev hosts pick whichever feature
+# matches their hardware.
+#
+#   rocm     → AMD GPU (Linux). ort/rocm needs ROCm runtime libs at link.
+#   directml → Windows native + DirectX 12 (Nvidia / AMD / Intel).
+#   openvino → Intel CPU/GPU/VPU (Linux + Windows). Different from CPU
+#              fallback: OpenVINO is Intel's GPU/NPU acceleration path.
+rocm = ["ort/rocm"]
+directml = ["ort/directml"]
+openvino = ["ort/openvino"]
 # MLX — Apple Silicon native inference path (phases A–E of continuum#897).
 # Only compiles on macOS/aarch64; the adapter module is guarded by this feature
 # AND by cfg(target_os = "macos") so non-Mac targets simply don't see the code.
