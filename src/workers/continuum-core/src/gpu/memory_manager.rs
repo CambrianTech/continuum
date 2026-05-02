@@ -179,8 +179,13 @@ const TTS_BUDGET_PCT: f64 = 0.10;
 const RENDERING_BUDGET_PCT: f64 = 0.10;
 const RESERVE_PCT: f64 = 0.05;
 
-/// CPU-only fallback: use 25% of system RAM as "GPU" budget.
-const CPU_FALLBACK_RAM_PCT: f64 = 0.25;
+// CPU_FALLBACK_RAM_PCT removed (#964 series PR #3 / #980 GPU-fallback
+// audit). Per Joel's architectural rule "lack of GPU integration is
+// forbidden", continuum-core refuses to start when no GPU is detected
+// rather than silently degrading to a CPU-budget pretend-GPU. Same shape
+// as install.sh's hard-fail on `IC_GPU_PATH=unsupported` — surface the
+// problem at startup with an actionable error instead of a slow-and-bad
+// runtime.
 
 /// Pressure thresholds.
 pub const PRESSURE_WARNING: f32 = 0.60;
@@ -745,8 +750,26 @@ fn detect_gpu() -> (u64, String) {
         }
     }
 
-    // CPU fallback
-    detect_cpu_fallback()
+    // No GPU detected. Per architecture, CPU fallback is forbidden
+    // (#964 series / #980 GPU-fallback audit). Hard-fail with the same
+    // shape install.sh's `IC_GPU_PATH=unsupported` branch uses: name
+    // what's supported, point at the diagnostic command, exit cleanly.
+    panic!(
+        "No GPU detected (Metal on macOS / CUDA on Linux+Nvidia). \
+         continuum-core requires GPU acceleration — CPU fallback is forbidden \
+         per architectural rule. Supported paths: macos:metal, linux:cuda, \
+         linux:rocm, linux:vulkan, wsl:cuda, wsl:vulkan, windows:cuda, \
+         windows:vulkan. If your hardware IS one of those, the detector \
+         missed something. Diagnose: \
+         - macOS: 'system_profiler SPDisplaysDataType' should list a Metal device \
+         - Linux/WSL CUDA: 'nvidia-smi' should print GPU info \
+         - Linux ROCm: 'rocminfo' should print GPU info \
+         - Linux/WSL/Windows Vulkan: 'vulkaninfo --summary' should list a deviceName \
+         If your hardware truly isn't supported, continuum-core can't run \
+         reliably on this machine. File an issue at \
+         https://github.com/CambrianTech/continuum/issues with the output of \
+         'uname -a' + nvidia-smi/rocminfo/vulkaninfo as applicable."
+    );
 }
 
 /// Metal detection via metal-rs crate.
@@ -795,21 +818,8 @@ fn detect_cuda() -> Option<(u64, String)> {
     Some((total_bytes, name))
 }
 
-/// CPU fallback: use 25% of system RAM.
-fn detect_cpu_fallback() -> (u64, String) {
-    let total_ram = get_system_ram();
-    let budget = (total_ram as f64 * CPU_FALLBACK_RAM_PCT) as u64;
-
-    log_info!(
-        "gpu",
-        "manager",
-        "No GPU detected — using CPU fallback: {}MB of {}MB system RAM",
-        budget / (1024 * 1024),
-        total_ram / (1024 * 1024)
-    );
-
-    (budget, "CPU (no GPU)".to_string())
-}
+// detect_cpu_fallback() removed — see detect_gpu()'s panic for rationale.
+// CPU fallback is forbidden architecturally; absent GPU = absent system.
 
 /// Get total system RAM.
 #[cfg(target_os = "macos")]
