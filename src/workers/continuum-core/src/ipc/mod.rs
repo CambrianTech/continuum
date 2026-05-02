@@ -1013,6 +1013,22 @@ pub fn start_server(
     crate::runtime::init_executor(runtime.registry_arc());
 
     let listener = UnixListener::bind(socket_path)?;
+    // Make the socket world-rw so callers running under a different UID
+    // than the server can connect. Concrete failure (#1008): on Windows
+    // WSL2 + Docker Desktop, continuum-core runs as root inside the
+    // container and binds the socket; the host-side jtag (running as
+    // the WSL user, uid 1000) gets EACCES connecting to the root-owned
+    // socket. Mac/Linux dev mode (server + caller both run as the same
+    // user) is unaffected. 0o666 is appropriate for an IPC substrate
+    // socket that lives in a path the caller can already see — same
+    // blast radius as anything reading /tmp. Failing-loud (no `?` here
+    // would suppress the error; let it propagate) is intentional per
+    // the global "evidence is for the debugger" rule. Caught live by
+    // continuum-b69f 2026-05-02 during Carl-OOTB Windows Phase 4.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))?;
+    }
     let state = Arc::new(ServerState::new_with_shared_state(
         rt_handle,
         memory_manager,
