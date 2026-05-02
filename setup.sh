@@ -162,6 +162,51 @@ print('   Updated: memoryMiB=${TARGET_MEM_MIB}, cpus=${TARGET_CPUS}')
   fi
 fi
 
+# ── Enable Docker Desktop AI settings ──────────────────────
+# The Windows installer already writes these keys directly. Do the same on
+# macOS so the release path doesn't leave GPU-backed inference and host TCP
+# to a hand flip in Docker Desktop.
+if [ -n "${DD_FILE:-}" ] && [ -f "$DD_FILE" ]; then
+  AI_SETTINGS_STATUS=$(
+    python3 -c "
+import json, os, shutil
+path = os.path.expanduser('$DD_FILE')
+with open(path) as f:
+    cfg = json.load(f)
+changed = False
+for key in ('EnableDockerAI', 'EnableInferenceGPUVariant', 'EnableInferenceTCP'):
+    if cfg.get(key) is not True:
+        cfg[key] = True
+        changed = True
+if changed:
+    shutil.copy2(path, path + '.continuum-bak')
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+    print('changed')
+else:
+    print('already')
+"
+  )
+
+  if [ "$AI_SETTINGS_STATUS" = "changed" ]; then
+    echo "   Docker Desktop AI settings enabled (GPU-backed inference + host-side TCP)"
+    echo "   Restarting Docker Desktop so the toggles apply ..."
+    docker desktop restart >/dev/null 2>&1 || true
+    for _ in $(seq 1 30); do
+      if docker info &>/dev/null 2>&1; then break; fi
+      sleep 4
+    done
+    if ! docker info &>/dev/null 2>&1; then
+      echo "   Warning: Docker Desktop did not come back cleanly after the AI-toggle restart."
+    fi
+  else
+    echo "   Docker Desktop AI settings already enabled (GPU + host TCP)"
+  fi
+elif [[ "$PLATFORM" == "mac" ]]; then
+  echo "   Docker Desktop AI settings file not found yet."
+  echo "   Launch Docker Desktop once, accept the EULA, then re-run this script."
+fi
+
 # ── Install continuum CLI ─────────────────────────
 INSTALL_DIR="${HOME}/.local/bin"
 mkdir -p "$INSTALL_DIR"
@@ -300,10 +345,9 @@ if command -v docker &>/dev/null && docker model --help &>/dev/null 2>&1; then
   # DMR runs the model on CPU even with a GPU present — fast machine, slow
   # first chat, "Continuum feels broken" review.
   echo ""
-  echo "  ℹ️  Manual one-time step: enable GPU acceleration in Docker Desktop"
-  echo "       Settings → AI → ✓ Enable GPU-backed inference"
-  echo "                       ✓ Enable host-side TCP support (port 12434)"
-  echo "       Without these, inference runs on CPU. See docs/SETUP.md for details."
+  echo "  ℹ️  Docker Desktop AI settings are auto-enabled when Docker Desktop has"
+  echo "       a settings store to write. If this is a fresh Docker Desktop install,"
+  echo "       launch Docker Desktop once, accept the EULA, and rerun setup."
 else
   echo ""
   echo "  ⚠️ Docker Model Runner CLI not available."
