@@ -162,10 +162,17 @@ fn detect_gpu_type(gpu_name: &str) -> &'static str {
         "cuda"
     } else if lower.contains("apple") || lower.contains("metal") {
         "metal"
-    } else if lower == "cpu" || lower.contains("cpu fallback") {
-        "cpu"
     } else {
-        // Unknown GPU — assume metal on macOS, cuda elsewhere
+        // Unknown GPU name — fall back to OS-default GPU type. The pre-fix
+        // "cpu" branch (`lower == "cpu" || lower.contains("cpu fallback")`)
+        // was removed: per architecture (#964 series, #980 GPU-fallback
+        // audit) the gpu_name "CPU" should be unreachable post-#998 since
+        // memory_manager::detect_gpu() panics rather than synthesizing a
+        // CPU-shaped fake GPU. If somehow a "cpu" gpu_name still arrives
+        // here, returning the OS-default type ("metal" on Mac, "cuda" on
+        // Linux) is a best-guess that lets the caller proceed with
+        // a real GPU subsystem rather than configuring a non-existent
+        // "cpu" subsystem that no inference path actually serves.
         #[cfg(target_os = "macos")]
         {
             "metal"
@@ -469,7 +476,16 @@ mod tests {
     fn test_detect_gpu_type() {
         assert_eq!(detect_gpu_type("NVIDIA GeForce RTX 5090"), "cuda");
         assert_eq!(detect_gpu_type("Apple M3 Max"), "metal");
-        assert_eq!(detect_gpu_type("CPU"), "cpu");
+        // Removed: assert_eq!(detect_gpu_type("CPU"), "cpu");
+        // Per #998 + #964-series GPU-fallback audit, "cpu" gpu_name is
+        // unreachable in production (memory_manager panics first). The
+        // "cpu" branch was removed; an unknown gpu_name now falls back
+        // to the OS-default GPU type rather than configuring a "cpu"
+        // subsystem no inference path serves.
+        #[cfg(target_os = "macos")]
+        assert_eq!(detect_gpu_type("CPU"), "metal");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(detect_gpu_type("CPU"), "cuda");
     }
 
     #[test]
