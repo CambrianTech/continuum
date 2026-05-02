@@ -10,10 +10,18 @@ if [[ "$*" == *"--verbose"* ]]; then
   echo "🔗 JTAG CLI - Connecting to existing server..."
 fi
 
-# Use bundled CLI if available (faster), otherwise fall back to tsx
+# Use bundled CLI if available (faster), otherwise fall back to tsx.
+# Pre-fix `npx tsx cli.ts` resolved cli.ts relative to cwd — broken
+# when invoked from anywhere other than src/ (e.g. CI's chat-probe
+# runs from /home/runner/work/continuum/continuum). Use SCRIPT_DIR
+# so the path resolves to src/cli.ts regardless of cwd. Caught
+# 2026-05-02 via PR #1012's chat.log artifact upload making the
+# `ERR_MODULE_NOT_FOUND: Cannot find module ... /cli.ts` failure
+# visible — exactly the silent-failure-revealing-via-evidence
+# pattern.
 if [[ -f "$BUNDLE" ]]; then
   node "$BUNDLE" "$@"
 else
   echo "⚠️ Bundle not found. Using slower tsx (run: npm run build:cli)" >&2
-  npx tsx cli.ts "$@"
+  npx tsx "$SCRIPT_DIR/cli.ts" "$@"
 fi
