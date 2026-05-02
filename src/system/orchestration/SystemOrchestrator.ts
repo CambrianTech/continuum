@@ -632,7 +632,10 @@ export class SystemOrchestrator extends EventEmitter {
       return;
     }
     this.adoptedCorePid = pid;
-    console.debug(`   adopted PID ${pid}; watcher polling every ${SystemOrchestrator.ADOPTED_CORE_POLL_MS}ms`);
+    // Promoted debug → info: this is the supervisor's adoption signal +
+    // critical to seeing in logs when later debugging "why didn't respawn fire?"
+    // (#980 Bug 4 + the silent-success-is-failure rule applied to supervisor).
+    console.info(`   adopted continuum-core-server PID ${pid}; watcher polling every ${SystemOrchestrator.ADOPTED_CORE_POLL_MS}ms`);
 
     this.adoptedCoreWatcher = setInterval(() => {
       if (this.coreShuttingDown) {
@@ -666,17 +669,47 @@ export class SystemOrchestrator extends EventEmitter {
    * Returns 0 if not found.
    */
   private async findCoreProcessPid(): Promise<number> {
+    // Use pgrep -f (full command-line match) instead of -x (exact comm
+    // match). On Linux `pgrep -x` checks /proc/PID/comm which is
+    // truncated to 15 chars (TASK_COMM_LEN); the binary name
+    // `continuum-core-server` is 22 chars → -x silently fails to match
+    // on Linux even when the process is running. macOS pgrep doesn't
+    // have this limit, but using -f works on both. Without this the
+    // adopted-core PID watcher silently never installs on Linux →
+    // supervisor blind to inherited-core death (#980 Bug 4 family).
     return new Promise<number>((resolve) => {
-      const child = spawn('pgrep', ['-x', 'continuum-core-server'], {
+      const child = spawn('pgrep', ['-f', 'continuum-core-server'], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
       child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
       child.on('error', () => resolve(0));
       child.on('close', () => {
-        const firstLine = stdout.trim().split('\n')[0] ?? '';
-        const pid = Number.parseInt(firstLine, 10);
-        resolve(Number.isFinite(pid) && pid > 0 ? pid : 0);
+        // pgrep -f also matches the orchestrator's own pgrep invocation
+        // (briefly) + any tail/grep on the log. Filter to PIDs where the
+        // process name is exactly continuum-core-server using a second pass.
+        const candidates = stdout.trim().split('\n')
+          .map(line => Number.parseInt(line, 10))
+          .filter(n => Number.isFinite(n) && n > 0);
+        if (candidates.length === 0) { resolve(0); return; }
+        // Cross-check via ps to find the candidate whose argv[0] basename is the binary.
+        // Best-effort — if ps fails, fall back to first candidate.
+        const ps = spawn('ps', ['-o', 'pid=,comm=', ...candidates.flatMap(p => ['-p', String(p)])], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let psOut = '';
+        ps.stdout.on('data', (c: Buffer) => { psOut += c.toString('utf8'); });
+        ps.on('error', () => resolve(candidates[0] ?? 0));
+        ps.on('close', () => {
+          for (const line of psOut.trim().split('\n')) {
+            const m = line.trim().match(/^(\d+)\s+(.+)$/);
+            if (m && (m[2].endsWith('continuum-core-server') || m[2].includes('continuum-core'))) {
+              resolve(Number.parseInt(m[1], 10));
+              return;
+            }
+          }
+          resolve(candidates[0] ?? 0);
+        });
       });
     });
   }
@@ -851,11 +884,15 @@ export class SystemOrchestrator extends EventEmitter {
 
     this.coreProcess.on('exit', (code, signal) => {
       const ts = Date.now();
-      console.debug(`📋 continuum-core-server exited: code=${code} signal=${signal}`);
+      // Promoted from debug → info so the supervisor's lifecycle is
+      // visible in default logs. Carl's #980 Bug 4 reported "no respawn"
+      // partly because the respawn-related debug logs weren't visible —
+      // can't diagnose what didn't happen if the logs hide what did.
+      console.info(`📋 continuum-core-server exited: code=${code} signal=${signal}`);
       this.coreProcess = null;
 
       if (this.coreShuttingDown) {
-        console.debug('   (orchestrator shutting down — not restarting)');
+        console.info('   (orchestrator shutting down — not restarting)');
         return;
       }
 
@@ -881,9 +918,10 @@ export class SystemOrchestrator extends EventEmitter {
         SystemOrchestrator.CORE_RESTART_BACKOFF_BASE_MS * Math.pow(2, attemptIdx),
         SystemOrchestrator.CORE_RESTART_BACKOFF_MAX_MS
       );
-      console.debug(`🔁 Restarting continuum-core-server in ${delay}ms (attempt ${this.coreRestartTimestamps.length})`);
+      console.info(`🔁 Restarting continuum-core-server in ${delay}ms (attempt ${this.coreRestartTimestamps.length})`);
       setTimeout(() => {
         if (!this.coreShuttingDown) {
+          console.info(`🔁 Spawning continuum-core-server now (restart attempt ${this.coreRestartTimestamps.length})`);
           this.spawnCoreProcess(corePath, socketPath);
         }
       }, delay);

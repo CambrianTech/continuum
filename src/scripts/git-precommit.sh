@@ -109,7 +109,15 @@ if [ -n "$TS_FILES" ]; then
     # Update baseline after a real cleanup pass:
     #   cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 \
     #     | grep -cE "error\s+" > eslint-baseline.txt
-    BASELINE_FILE="$(git rev-parse --show-toplevel)/src/eslint-baseline.txt"
+    # Use a script-relative path instead of `git rev-parse --show-toplevel`.
+    # When invoked from a git worktree's `src/` cwd (which the hook does at
+    # line 5 + 52), `--show-toplevel` returned the cwd `/repo/src` rather
+    # than the worktree root `/repo`, producing an incorrect double-`src`
+    # path `/repo/src/src/eslint-baseline.txt`. The hook ALWAYS lives at
+    # `<src>/scripts/git-precommit.sh`, so the baseline is one dir up from
+    # the script's parent dir — deterministic, no git resolution needed.
+    HOOK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    BASELINE_FILE="$(dirname "$HOOK_SCRIPT_DIR")/eslint-baseline.txt"
 
     # Tier 1: staged-files-only fast lint.
     STAGED_LINT_LOG="$(mktemp)"
