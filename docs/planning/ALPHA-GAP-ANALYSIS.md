@@ -83,17 +83,80 @@ Three things, in order, get to the demo:
 
 **After those 3 land:** Carl runs `curl ... | bash` → bootstrap installs deps + builds → `npm start` auto-launches → workers spawn → IF DMR present → AI chat works; IF not, browser opens with banner + Carl knows what to install. **That's ship-pretty-well-first.**
 
-### Open PRs (today)
+### Open PRs (today, EARLIER session)
 
 | PR | What | Status | Path through this plan |
 |---|---|---|---|
-| [continuum#976](https://github.com/CambrianTech/continuum/pull/976) | AGENT-BACKBONE-INTEGRATION design doc + §11.2 bidirectional persona ↔ external-agent over airc | Mergeable | Strategic frame |
-| [continuum#977](https://github.com/CambrianTech/continuum/pull/977) | Rust core supervisor (closes the original #722) — + the dep-graph regression fix from this session | Mergeable, needs final commit + verify | Phase 0 |
-| [continuum#978](https://github.com/CambrianTech/continuum/pull/978) | `ai/local-inference/{start,status}` + repo-wide cleanup of `_noParams: never`/`as unknown as` typing smell across 11 generated files + the generator template | Mergeable | Phase 1 (typing) + Phase 12 (agent-backbone discovery) |
-| [continuum#979](https://github.com/CambrianTech/continuum/pull/979) | `airc/send` outbox command (closes outbox half of #967) | Mergeable, manually tested ✓ | Phase 2.5 (agent-backbone airc bridge) |
+| [continuum#976](https://github.com/CambrianTech/continuum/pull/976) | AGENT-BACKBONE-INTEGRATION design doc + §11.2 bidirectional persona ↔ external-agent over airc | Merged | Strategic frame |
+| [continuum#977](https://github.com/CambrianTech/continuum/pull/977) | Rust core supervisor (closes the original #722) — + the dep-graph regression fix from this session | Merged | Phase 0 |
+| [continuum#978](https://github.com/CambrianTech/continuum/pull/978) | `ai/local-inference/{start,status}` + repo-wide cleanup of `_noParams: never`/`as unknown as` typing smell across 11 generated files + the generator template | Merged | Phase 1 (typing) + Phase 12 (agent-backbone discovery) |
+| [continuum#979](https://github.com/CambrianTech/continuum/pull/979) | `airc/send` outbox command (closes outbox half of #967) | Merged | Phase 2.5 (agent-backbone airc bridge) |
 | [airc#387](https://github.com/CambrianTech/airc/pull/387) | Error classification (gone, secondary_rate_limit) + jittered backoff | Mergeable, all 4 gates green | Substrate reliability for #979 |
 
-**Workflow note**: Per Joel 2026-05-01 "we will use airc later for trying carl user installs e2e" + "merge into canary once features and integration tests succeed" — the goal is NOT PR-and-wait; it's validate + merge to canary. These PRs are documentation of intent + CI gates; the merge to `canary` happens once each is exercised live (e.g. on Joel's M1 stock-dev test bed for Carl-path validation).
+### Today's PR storm (2026-05-01 evening) — Carl OOTB end-to-end push
+
+After the morning #976-979 batch, opened 23 more PRs targeting "100% free OOTB on MacBook Air on up, install→chat with AI flawlessly." All landed on canary unless noted.
+
+**airc** (4 PRs):
+| PR | What |
+|---|---|
+| [airc#389](https://github.com/CambrianTech/airc/pull/389) | gh-auth self-heal — airc instigates `gh auth login --web` on detect of invalid keyring token |
+| [airc#390](https://github.com/CambrianTech/airc/pull/390) | Cross-platform daemon detect (Windows/WSL HKCU Run-key) + AIRC_INSTALL_YES ordering |
+| [airc#391](https://github.com/CambrianTech/airc/pull/391) | env_token_invalid state — distinguish GH_TOKEN-poisoned from keyring-invalid |
+| [airc#392](https://github.com/CambrianTech/airc/pull/392) | detect_scope walks up to enclosing .airc/ ancestor (no more .airc/.airc) |
+
+**continuum** (19 PRs, in order):
+| PR | What |
+|---|---|
+| [#984](https://github.com/CambrianTech/continuum/pull/984) | Root postinstall → setup-git-hooks (other-mac) |
+| [#985](https://github.com/CambrianTech/continuum/pull/985) | #964 ORT GPU EP cfg fix — embedding/TTS/STT use Metal/CUDA correctly (was broken `coreml` cfg gate, dead path) |
+| [#986](https://github.com/CambrianTech/continuum/pull/986) | docker-images workflow main-only trigger — kills verify-architectures noise on canary PRs |
+| [#987](https://github.com/CambrianTech/continuum/pull/987) | install.sh auto-installs cmake on Mac (#980 Bug 1 — Carl-blocker) |
+| [#988](https://github.com/CambrianTech/continuum/pull/988) | isConfigured false for empty cloud keys (other-mac, #980 Bug 5) |
+| [#989](https://github.com/CambrianTech/continuum/pull/989) | parallel-start.sh seed-success-lies fix (#980 Bug 3) |
+| [#990](https://github.com/CambrianTech/continuum/pull/990) | rust-bindings timeout 300s→900s (other-mac, #980 Bug 2) |
+| [#991](https://github.com/CambrianTech/continuum/pull/991) | GPU EP for kokoro/orpheus/silero (#964 series PR #2) |
+| [#992](https://github.com/CambrianTech/continuum/pull/992) | supervisor visibility + IPC reconnect counter + Linux pgrep + git-precommit worktree-path (#980 Bug 4) |
+| [#993](https://github.com/CambrianTech/continuum/pull/993) | Replace Candle (training) with Docker Model Runner in providers/status (#980 Bug 6) |
+| [#994](https://github.com/CambrianTech/continuum/pull/994) | chat/send no-listener warning (#980 Bug 8) |
+| [#996](https://github.com/CambrianTech/continuum/pull/996) | jtag CLI accepts JSON-blob first positional (#980 Bug 10) |
+| [#997](https://github.com/CambrianTech/continuum/pull/997) | ai/generate default to 'local' not 'candle' — never silent cloud fallback (#980 Bug 7) |
+| [#998](https://github.com/CambrianTech/continuum/pull/998) | memory_manager hard-fail on no-GPU instead of silent CPU 25%-RAM fallback |
+| [#999](https://github.com/CambrianTech/continuum/pull/999) | persona/allocator drop "cpu" gpu_type branch (post-#998 dead code) |
+| [#1000](https://github.com/CambrianTech/continuum/pull/1000) | carl-install-smoke E2E chat probe — exit codes 4/5/6 distinguish chat-failure modes |
+| [#1001](https://github.com/CambrianTech/continuum/pull/1001) | ROCm / DirectML / OpenVINO ORT EP cfg branches (Carl-OOTB matrix) |
+| [#1002](https://github.com/CambrianTech/continuum/pull/1002) | cargo-features.sh detects ROCm + Vulkan + DirectML, not just CUDA |
+| [#1003](https://github.com/CambrianTech/continuum/pull/1003) | install.sh tier hardware (MBA / mid / primary) for "OOTB on MacBook Air on up" |
+
+**Carl-OOTB chain status post this push:**
+
+```
+curl install.sh | bash    →  ✓ #987 cmake auto-install
+                          →  ✓ #1003 hardware tier (16GB+ MBA accepted)
+                          →  ✓ #1003 PERSONA_MODEL sized to RAM (0.8B/2B/4B)
+npm start (continuum-core) →  ✓ #998+#999 hard-fail on no-GPU (no silent CPU)
+                          →  ✓ #985 + #991 ORT GPU EP correctly configured
+                          →  ✓ #1001 + #1002 multi-arch GPU coverage (Mac/CUDA/ROCm/DML/OpenVINO)
+                          →  ✓ #992 supervisor respawns + reconnect counter increments
+seed (Phase 5.5)          →  ✓ #989 truthful failure when seed times out
+                          →  (#980 Bug 9 1GB embedding leak — UNFIXED, needs live RCA)
+chat-with-AI               →  ✓ #997 default routes to local DMR (not cloud)
+                          →  ✓ #993 providers/status accurate (DMR not Candle)
+                          →  ✓ #988 cloud isConfigured truthful
+                          →  ✓ #994 chat/send warns when no listener
+                          →  ✓ #1000 CI gate now exercises this E2E
+```
+
+**What's known broken / unfixed / pending live RCA:**
+- **#980 Bug 9** — 1GB embedding leak in continuum-core. Cold inspection suggests model_cache or sizer undercount; needs `npm start` + RSS-watch to confirm. Out of cold-fix scope.
+- **#75 echo loops** (in_progress) — persona output quality, dev-tab scope, big cognition pipeline change.
+- **NEW-A** Metal SIGABRT — UPSTREAM tracking [ggml-org/llama.cpp#22593](https://github.com/ggml-org/llama.cpp/pull/22595). Continuum-side: bump submodule when upstream lands.
+
+**Worktree pattern (lessons learned):** Two AIs racing on the same git workspace causes commit cross-contamination (had this happen 3× today). Solution: per-AI worktree (`git worktree add /tmp/continuum-mac canary` for each AI) + SHA-to-ref push as escape valve when rescue is needed.
+
+### Workflow note (carry-forward from morning)
+
+Per Joel "we will use airc later for trying carl user installs e2e" + "merge into canary once features and integration tests succeed" — goal is NOT PR-and-wait; it's validate + merge to canary. The 23 PRs above followed this pattern: ship, gate via CI, merge if green. Live validation pending hardware-on-airc (M2 Air at home, BigMama Linux+Nvidia, 5090 Windows box later).
 
 ---
 
