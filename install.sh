@@ -732,15 +732,21 @@ fi
 if ! command -v npm >/dev/null 2>&1; then
   fail "npm not found on PATH but required for host-side jtag CLI bundle. Install Node.js (https://nodejs.org) and re-run."
 fi
-info "Building host-side jtag CLI bundle (~30s — first install)..."
+info "Building host-side jtag CLI bundle (~30-60s — first install)..."
+# build:cli takes dist/cli.js as INPUT (esbuild input file). dist/cli.js
+# is OUTPUT of build:ts. So the right invocation is `npm run build`
+# (which is build:ts → postbuild → build:cli per package.json scripts).
+# Pre-fix only ran build:cli → esbuild's missing-input failed silently
+# (the script suppresses stderr with `2>/dev/null`), no bundle written,
+# install completed "successfully" with broken jtag.
 (
   set -e
   cd "$INSTALL_DIR/src"
-  echo "  → npm install (silent, ~10s)..."
-  npm install --silent 2>&1 | tail -3 || { echo "  ✗ npm install failed"; exit 1; }
-  echo "  → npm run build:cli (esbuild, ~5s)..."
-  npm run build:cli 2>&1 | tail -3 || { echo "  ✗ npm run build:cli failed"; exit 1; }
-) || fail "Host-side bundle build failed (see lines above). jtag CLI cannot work without dist/cli-bundle.js. Manually retry: cd $INSTALL_DIR/src && npm install && npm run build:cli"
+  echo "  → npm install (~10s)..."
+  npm install 2>&1 | tail -5 || { echo "  ✗ npm install failed"; exit 1; }
+  echo "  → npm run build (TypeScript compile + esbuild bundle, ~30-50s)..."
+  npm run build 2>&1 | tail -10 || { echo "  ✗ npm run build failed"; exit 1; }
+) || fail "Host-side bundle build failed (see lines above). jtag CLI cannot work without dist/cli-bundle.js. Manually retry: cd $INSTALL_DIR/src && npm install && npm run build"
 # Verify the bundle actually exists — npm exit 0 + missing file = silent failure.
 if [ ! -f "$INSTALL_DIR/src/dist/cli-bundle.js" ]; then
   fail "dist/cli-bundle.js was NOT created by build:cli (esbuild silently failed?). Manually retry: cd $INSTALL_DIR/src && npm install && npm run build:cli — and inspect output."
