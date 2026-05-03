@@ -760,6 +760,14 @@ ok "jtag CLI bundle ready ($INSTALL_DIR/src/dist/cli-bundle.js)"
 # fallback (~/.local/bin) when sudo would prompt without a TTY.
 mod_continuum_bin_link "$INSTALL_DIR/bin/continuum"
 
+# Also place `jtag` on PATH — symlinked, not copied, so the launcher's
+# BASH_SOURCE-based dist lookup keeps working. Without this, post-install
+# `jtag <command>` (per CLAUDE.md / skill docs) returns command-not-found
+# because src/jtag never gets a PATH entry. airc-8a5e 2026-05-03 Carl-UX
+# QA caught this — chat-probe simulates `./jtag` from inside the install
+# tree but real users follow the documented `jtag` form.
+mod_jtag_bin_link "$INSTALL_DIR/src/jtag"
+
 # ── 4. Configuration ───────────────────────────────────────
 PHASE="configuration"
 mkdir -p "$CONTINUUM_DATA"
