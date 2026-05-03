@@ -35,11 +35,57 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; DIM='\033[0;2m'; RESET='\033[0m'
 # ── Find docker-compose.yml ────────────────────────────────
 find_compose() {
   [ -n "$COMPOSE_DIR" ] && return 0
-  # Current directory
+  # Priority 1: ask Docker about any RUNNING continuum project — this is
+  # the most authoritative source. Catches install.sh fresh-mode installs
+  # that mktemp into /var/folders/... (Mac) or /tmp/continuum-fresh-* (Linux)
+  # AND avoids false-positives where the cwd/walk-up finds a stale compose
+  # file for a project that isn't actually running. Without this priority,
+  # `continuum status` reports "Local: not running" even when 4 containers
+  # ARE healthy + the UI is responding, because the local docker-compose.yml
+  # belongs to a different project name (Carl-UX QA #95 from codex-b741
+  # 2026-05-03).
+  #
+  # Note: docker compose ls doesn't accept custom Go templates (--format
+  # only supports 'table' and 'json'), so parse the default tabular output.
+  # The ConfigFiles column is always the LAST whitespace-separated field,
+  # which is reliable even when the STATUS column contains spaces (e.g.
+  # "restarting(2), running(2)").
+  if command -v docker &>/dev/null; then
+    # Get project name AND first config-file path from `docker compose ls`.
+    # The yml path may NOT exist on disk if the install used a temp dir
+    # that macOS or systemd-tmpfiles reaped — the project is still alive
+    # in docker, but the compose file is gone. Fall back to setting just
+    # COMPOSE_PROJECT_NAME so subsequent `docker compose ps` calls find
+    # the project by name without needing a cd.
+    local found_line proj cfg first_cfg
+    found_line=$(docker compose ls 2>/dev/null | awk '
+      NR > 1 && tolower($1) ~ /continuum/ {
+        # name = $1; ConfigFiles = $NF (comma-separated)
+        print $1 "\t" $NF
+        exit
+      }
+    ')
+    if [ -n "$found_line" ]; then
+      proj="${found_line%%	*}"
+      cfg="${found_line#*	}"
+      first_cfg="${cfg%%,*}"
+      if [ -f "$first_cfg" ]; then
+        COMPOSE_DIR="$(dirname "$first_cfg")"
+      else
+        # Compose file gone but project still alive — set project name
+        # so `docker compose -p NAME ps` works without cd.
+        COMPOSE_PROJECT_NAME="$proj"
+        export COMPOSE_PROJECT_NAME
+        COMPOSE_DIR="/tmp"  # cd anywhere, project name overrides
+      fi
+      return 0
+    fi
+  fi
+  # Priority 2: Current directory (for `continuum start` from the repo)
   if [ -f "./docker-compose.yml" ] && [ -d "./src/system" ]; then
     COMPOSE_DIR="$(pwd)"; return 0
   fi
-  # Walk up
+  # Priority 3: Walk up
   local dir="$(pwd)"
   while [ "$dir" != "/" ]; do
     if [ -f "$dir/docker-compose.yml" ] && [ -d "$dir/src/system" ]; then
@@ -47,7 +93,7 @@ find_compose() {
     fi
     dir="$(dirname "$dir")"
   done
-  # Common locations
+  # Priority 4: Common locations
   for d in "$HOME/continuum" "/opt/continuum"; do
     if [ -f "$d/docker-compose.yml" ] && [ -d "$d/src/system" ]; then
       COMPOSE_DIR="$d"; return 0
@@ -230,7 +276,11 @@ cmd_status() {
     cd "$COMPOSE_DIR"
     local containers; containers=$(docker compose ps --format '{{.Name}} {{.Status}} {{.Health}}' 2>/dev/null || echo "")
     if [ -n "$containers" ]; then
-      echo -e "  ${GREEN}Local${RESET}  $COMPOSE_DIR"
+      # When find_compose set COMPOSE_PROJECT_NAME (file gone, project name
+      # known), show the project name instead of the dummy /tmp dir.
+      local label="$COMPOSE_DIR"
+      [ -n "${COMPOSE_PROJECT_NAME:-}" ] && [ "$COMPOSE_DIR" = "/tmp" ] && label="(project: $COMPOSE_PROJECT_NAME)"
+      echo -e "  ${GREEN}Local${RESET}  $label"
       echo "$containers" | while read -r name status health; do
         local icon="⚪"
         case "$health" in
