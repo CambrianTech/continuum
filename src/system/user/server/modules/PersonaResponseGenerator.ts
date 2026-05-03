@@ -120,12 +120,29 @@ function synthesizeDeterministicUuid(msg: LLMMessage): string {
  * back into its turn) and `<thinking>...</thinking>` blocks (some models
  * leak their chain-of-thought when prompted with one-shot examples that
  * contain a thinking block — same shape of leak, same fix).
+ *
+ * 2026-05-03 follow-up (codex-b741, observed on canary E2E test post-#1024):
+ * with `<tool_use>` blocks now stripped, models still emit the inner
+ * `<tool_name>` + `<parameters>` shape WITHOUT the outer `<tool_use>`
+ * wrapper. Example: `'code/shell/execute'<parameters>{cmd: cargo test ...}
+ * </parameters>`. The original strip regex anchored on `<tool_use>` so
+ * these escaped. Strip them too — same justification (no Rust executor
+ * yet, so the markup is dead noise that pollutes prose + history).
  */
 function stripLeakedToolMarkup(text: string): string {
   return text
     .replace(/<tool_use\b[^>]*>[\s\S]*?<\/tool_use>/gi, '')
     .replace(/<tool_result\b[^>]*>[\s\S]*?<\/tool_result>/gi, '')
     .replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, '')
+    // Inner shapes that escape when the outer <tool_use> wrapper is missing.
+    .replace(/<tool_name\b[^>]*>[\s\S]*?<\/tool_name>/gi, '')
+    .replace(/<parameters\b[^>]*>[\s\S]*?<\/parameters>/gi, '')
+    .replace(/<arguments\b[^>]*>[\s\S]*?<\/arguments>/gi, '')
+    // Quoted bare tool refs left over after stripping (e.g. `'code/shell/execute'`).
+    // Conservative: only strip when followed by trailing whitespace + EOL or
+    // another stripped marker — avoids false-positives on prose mentioning a
+    // command name in quotes.
+    .replace(/['"`][a-z][a-z0-9_-]*\/[a-z0-9_/-]+['"`](?=\s*$)/gim, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
