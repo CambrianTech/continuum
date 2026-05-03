@@ -414,5 +414,55 @@ export async function seedDatabase(): Promise<boolean> {
   console.log(`  ✅ ${recipeCount} recipes`);
 
   console.log(`🎉 Seeded in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+
+  // ── Read-back verify (Phase 4 chat-probe debugging, 2026-05-02) ────────
+  //
+  // The seed claims success when DataCreate.execute returns; that's not
+  // proof the write actually landed in the configured backend. b69f's
+  // deep dive 2026-05-02 found a divergence:
+  //   - seed log: `🔔 ORM.store emitting: data:rooms:created` × 8
+  //   - main.db mtime: unchanged (April 17 state, 2 weeks stale)
+  //   - subsequent `data/list --collection=rooms` returns 0 items
+  //   - chat-probe (`jtag collaboration/chat/send --room=general`)
+  //     fails with `Room not found: general`
+  //
+  // i.e. the create path emitted events BUT data wasn't queryable. Either
+  // ORM.store goes through an in-memory buffer that never flushes, the
+  // write hits a different backend than the read does (DATABASE_URL race
+  // between node-server and continuum-core), or the IPC to Rust silently
+  // returns success without persisting. None of those are visible at the
+  // seed boundary today — caller proceeds, downstream chat fails, signal
+  // is lost.
+  //
+  // Read-back asserts that what we just wrote can be read back via the
+  // same DataList path the chat surface uses. If not, fail loudly here
+  // with the diagnostic the next debugger needs (expected/got counts,
+  // dbHandle in use, hint at root-cause classes). Per the global "loud-
+  // fail / no silent failure" rule.
+  const verifyRooms = await DataList.execute<RoomEntity>({
+    collection: RoomEntity.collection,
+    limit: ROOMS.length + 1,
+    dbHandle: 'default',
+  });
+  const verifyCount = verifyRooms?.items?.length ?? 0;
+  if (verifyCount < ROOMS.length) {
+    const verifyError = verifyRooms?.error ?? '(no error reported by DataList)';
+    throw new Error(
+      `Seed FATAL: post-write verify failed — wrote ${ROOMS.length} rooms ` +
+      `but DataList returned ${verifyCount} via dbHandle='default'. ` +
+      `This means create-emit succeeded but the data is not queryable on ` +
+      `the same backend the chat surface reads from. Likely causes: ` +
+      `(1) ORM.store wrote to a different backend than DataList reads ` +
+      `(check DATABASE_URL — empty in node-server vs continuum-core), ` +
+      `(2) write went to in-memory buffer never flushed (Rust IPC issue), ` +
+      `(3) DATABASE_URL changed mid-run (postgres profile activated/deactivated). ` +
+      `DataList result error: ${verifyError}. ` +
+      `Investigate: docker exec node-server env | grep DATABASE_URL; ` +
+      `docker exec continuum-core env | grep DATABASE_URL; ` +
+      `mtime of \$AIRC_HOME/.continuum/database/main.db before+after seed.`
+    );
+  }
+  console.log(`  ✅ Verified ${verifyCount} rooms readable via dbHandle='default'`);
+
   return true;
 }
