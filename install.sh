@@ -658,13 +658,26 @@ esac
 
 # ── 3. Clone / update repo ─────────────────────────────────
 PHASE="clone / update repo"
+# CONTINUUM_REF env override: clone a specific branch/sha instead of
+# default (origin/HEAD). Used by carl-install-smoke CI to validate PR
+# src/ changes — without it, install.sh always cloned origin/main and
+# PR src/ edits never got tested by CI. 2026-05-03: this gap meant
+# every fix to src/jtag, src/scripts/install.sh, etc landed via PR
+# but couldn't be validated by carl-install-smoke until merged. Joel:
+# "months of trying to get continuum working out-of-box for Carl."
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "Updating existing installation..."
   cd "$INSTALL_DIR"
   git pull --ff-only 2>/dev/null || warn "Could not update — using existing version"
 else
-  info "Cloning Continuum..."
-  git clone --depth 1 "$REPO" "$INSTALL_DIR"
+  if [ -n "${CONTINUUM_REF:-}" ]; then
+    info "Cloning Continuum at ref ${CONTINUUM_REF}..."
+    git clone --depth 1 --branch "$CONTINUUM_REF" "$REPO" "$INSTALL_DIR" 2>/dev/null \
+      || git clone "$REPO" "$INSTALL_DIR" && (cd "$INSTALL_DIR" && git checkout "$CONTINUUM_REF")
+  else
+    info "Cloning Continuum..."
+    git clone --depth 1 "$REPO" "$INSTALL_DIR"
+  fi
   cd "$INSTALL_DIR"
 fi
 
@@ -697,29 +710,42 @@ ok "$CONTAINER_CMD $($CONTAINER_CMD version --format '{{.Client.Version}}' 2>/de
 ok "Source: $INSTALL_DIR"
 
 # ── 3a. Build host-side CLI bundle (REQUIRED for jtag fast path) ──
-# carl-install-smoke chat-probe failure 2026-05-02 root cause: jtag's
-# tsx fallback at src/jtag fails with ERR_MODULE_NOT_FOUND because
-# tsconfig path aliases (@system/core/...) can't be resolved at
-# runtime. The bundle (src/dist/cli-bundle.js) pre-resolves all
-# aliases via esbuild — but it's only built when `npm run build`
-# fires postbuild, which the install.sh path skipped entirely on
-# Linux (Docker-only flow, no host-side npm activity).
+# Without dist/cli-bundle.js, src/jtag falls back to `tsx cli.ts`
+# which can't resolve tsconfig path aliases at runtime → every jtag
+# invocation fails with ERR_MODULE_NOT_FOUND. The bundle is what
+# every host-side jtag user actually needs. Pre-2026-05-03 install.sh
+# never built it on Linux (Docker-only flow); fresh users' first
+# jtag invocation has been broken for months. Joel: "months of
+# trying to get continuum working out-of-box for Carl."
 #
-# Fix: explicit host-side bundle build right after clone. Adds
-# ~30s to install (npm install + esbuild bundle), eliminates the
-# silent-fallback-fails pattern that was failing every CI run AND
-# every fresh-install user's first jtag invocation.
-#
-# Mac-native path also passes through here (npm install at line 848
-# was a no-op duplicate; bundle now exists pre-npm-start).
+# 2026-05-03 reliability fix: be LOUD about success/failure. Pre-fix
+# wrapped npm in `| tail -2` which silently ate exit codes. Now uses
+# explicit set -o pipefail equivalent via PIPESTATUS check, AND
+# verifies dist/cli-bundle.js exists post-build. Loud success = user
+# sees "✅ jtag bundle ready"; loud failure = user sees the actual
+# npm error + a die() so installation can't claim success while
+# leaving jtag broken.
 PHASE="host-side jtag CLI bundle"
-if command -v npm >/dev/null 2>&1; then
-  info "Building host-side jtag CLI bundle (~30s)..."
-  (cd "$INSTALL_DIR/src" && npm install --silent 2>&1 | tail -2 && npm run build:cli 2>&1 | tail -1) || \
-    warn "Host-side bundle build failed — jtag will fall back to slower tsx (which may also fail on path aliases). Re-run: cd $INSTALL_DIR/src && npm install && npm run build:cli"
-else
-  warn "npm not found — skipping host-side bundle build. jtag will fall back to slower tsx (may fail on path aliases)."
+if [ ! -f "$INSTALL_DIR/src/package.json" ]; then
+  fail "src/package.json missing in $INSTALL_DIR — clone incomplete? Re-run with: rm -rf $INSTALL_DIR && curl ... | bash"
 fi
+if ! command -v npm >/dev/null 2>&1; then
+  fail "npm not found on PATH but required for host-side jtag CLI bundle. Install Node.js (https://nodejs.org) and re-run."
+fi
+info "Building host-side jtag CLI bundle (~30s — first install)..."
+(
+  set -e
+  cd "$INSTALL_DIR/src"
+  echo "  → npm install (silent, ~10s)..."
+  npm install --silent 2>&1 | tail -3 || { echo "  ✗ npm install failed"; exit 1; }
+  echo "  → npm run build:cli (esbuild, ~5s)..."
+  npm run build:cli 2>&1 | tail -3 || { echo "  ✗ npm run build:cli failed"; exit 1; }
+) || fail "Host-side bundle build failed (see lines above). jtag CLI cannot work without dist/cli-bundle.js. Manually retry: cd $INSTALL_DIR/src && npm install && npm run build:cli"
+# Verify the bundle actually exists — npm exit 0 + missing file = silent failure.
+if [ ! -f "$INSTALL_DIR/src/dist/cli-bundle.js" ]; then
+  fail "dist/cli-bundle.js was NOT created by build:cli (esbuild silently failed?). Manually retry: cd $INSTALL_DIR/src && npm install && npm run build:cli — and inspect output."
+fi
+ok "jtag CLI bundle ready ($INSTALL_DIR/src/dist/cli-bundle.js)"
 
 # ── 3b. Install continuum command (modular, headless-safe) ─
 # Was an inline `sudo cp` that crashed on "no TTY for password" when the
