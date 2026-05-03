@@ -21,7 +21,6 @@ import { Events } from '../../system/core/shared/Events';
 import { jtagGlobal } from '../../system/core/types/GlobalAugmentations';
 import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
-import { ROOM_UNIQUE_IDS } from '../../system/data/constants/RoomConstants';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
@@ -41,7 +40,9 @@ export class MainWidget extends ReactiveWidget {
   ] as CSSResultGroup;
 
   // Reactive state
-  @reactive() private currentPath = `/chat/${ROOM_UNIQUE_IDS.GENERAL}`;
+  // Joel 2026-05-03: was defaulted to `/chat/general` — same phantom-tab
+  // antipattern. setupUrlRouting() sets currentPath from the actual URL.
+  @reactive() private currentPath = '';
 
   // Non-reactive state (internal tracking)
   private contentManager!: ContentInfoManager;
@@ -175,18 +176,28 @@ export class MainWidget extends ReactiveWidget {
     });
 
     // Initialize from current URL
-    let initialPath = window.location.pathname;
+    const initialPath = window.location.pathname;
+    this.currentPath = initialPath;
 
-    // Default route: / or /chat without room → /chat/general
-    const defaultPath = `/chat/${ROOM_UNIQUE_IDS.GENERAL}`;
-    if (!initialPath || initialPath === '/' || initialPath === '/chat' || initialPath === '/chat/') {
-      initialPath = defaultPath;
-      window.history.replaceState({ path: initialPath }, '', initialPath);
-      this.log(`Redirected to default route: ${initialPath}`);
+    // Joel 2026-05-03: NO default tab on root. The previous redirect from
+    // `/` → `/chat/general` was the source of the phantom "General" tab
+    // that appeared with a stale UUID + "Loading members..." forever
+    // (same antipattern family as the long-fixed stringToUUID('General')
+    // ghost — see system/data/domains/DefaultEntities.ts header). Empty
+    // root means empty content area; persisted tabs (if any) restore
+    // via initializeContentTabs() above and the user picks from the
+    // sidebar / opens what they want.
+    const isRootPath = !initialPath || initialPath === '/' || initialPath === '/chat' || initialPath === '/chat/';
+    if (isRootPath) {
+      this.log('Root path — no default tab; persisted tabs (if any) restore from contentState');
+      return;
     }
 
-    this.currentPath = initialPath;
     const { type, entityId } = parseContentPath(initialPath);
+    if (!type) {
+      this.log(`Unrecognized initial route '${initialPath}' — no tab opened`);
+      return;
+    }
     this.log(`Initial route: ${type}/${entityId || 'default'}`);
 
     // Wait for JTAG client to be connected before resolving routes.
@@ -405,6 +416,10 @@ export class MainWidget extends ReactiveWidget {
 
   async navigateToPath(newPath: string): Promise<void> {
     const { type, entityId } = parseContentPath(newPath);
+    if (!type) {
+      this.log(`Unrecognized navigation path '${newPath}' — ignoring`);
+      return;
+    }
 
     if (type === 'chat' && entityId) {
       await this.ensureRoomExists(entityId);
