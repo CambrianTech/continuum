@@ -4,6 +4,23 @@ set -e  # Exit immediately on any error
 # Navigate to the correct working directory
 cd "$(dirname "$0")/.."
 
+require_node_deps() {
+    if [ -x "node_modules/.bin/tsx" ] \
+        && [ -x "node_modules/.bin/eslint" ] \
+        && [ -d "node_modules/typescript" ]; then
+        return 0
+    fi
+
+    echo "❌ Node dependencies are not installed in this worktree."
+    echo "   Expected: $(pwd)/node_modules with tsx, eslint, and typescript."
+    echo "   Run:"
+    echo "     cd $(pwd) && npm install"
+    echo "   Then retry the commit."
+    echo ""
+    echo "   This is a worktree setup failure, not a TypeScript/Rust failure."
+    exit 1
+}
+
 # ==============================================================================
 # LOAD CONFIGURATION
 # ==============================================================================
@@ -58,6 +75,7 @@ if [ "$ENABLE_TYPESCRIPT_CHECK" = true ]; then
     echo "-------------------------------------"
 
     echo "🔨 Running TypeScript compilation..."
+    require_node_deps
     npm run build:ts
     # Restore version.ts to avoid timestamp-only changes in commit
     cd ..
@@ -87,6 +105,7 @@ RS_FILES=$(cd .. && git diff --cached --name-only --diff-filter=ACMR | grep -E '
 LINT_FAILED=false
 
 if [ -n "$TS_FILES" ]; then
+    require_node_deps
     echo "TypeScript files staged:"
     echo "$TS_FILES" | sed 's/^/  • /' | head -10
     TS_COUNT=$(echo "$TS_FILES" | wc -l | tr -d ' ')

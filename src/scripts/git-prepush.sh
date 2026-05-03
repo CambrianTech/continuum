@@ -10,17 +10,69 @@ START_TIME=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUST_DIR="$SRC_DIR/workers/continuum-core"
+REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
+
+require_node_deps() {
+    if [ -x "$SRC_DIR/node_modules/.bin/tsx" ] \
+        && [ -x "$SRC_DIR/node_modules/.bin/eslint" ] \
+        && [ -d "$SRC_DIR/node_modules/typescript" ]; then
+        return 0
+    fi
+
+    echo "❌ Node dependencies are not installed in this worktree."
+    echo "   Expected: $SRC_DIR/node_modules with tsx, eslint, and typescript."
+    echo "   Run:"
+    echo "     cd $SRC_DIR && npm install"
+    echo "   Then retry the push."
+    echo ""
+    echo "   This is a worktree setup failure, not a TypeScript/Rust failure."
+    exit 1
+}
+
+changed_files_for_push() {
+    local input="${PREPUSH_STDIN:-}"
+    if [ -z "$input" ]; then
+        input="$(cat 2>/dev/null || true)"
+    fi
+
+    local zero_sha="0000000000000000000000000000000000000000"
+    if [ -n "$input" ]; then
+        while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+            [ -z "$local_sha" ] && continue
+            [ "$local_sha" = "$zero_sha" ] && continue
+            local range base
+            if [ "$remote_sha" = "$zero_sha" ]; then
+                base="$(git merge-base "$local_sha" origin/canary 2>/dev/null \
+                    || git merge-base "$local_sha" origin/main 2>/dev/null \
+                    || echo "$local_sha")"
+                range="$base..$local_sha"
+            else
+                range="$remote_sha..$local_sha"
+            fi
+            git diff --name-only "$range" 2>/dev/null || true
+        done <<< "$input"
+    else
+        git diff --name-only HEAD 2>/dev/null || true
+        git diff --cached --name-only 2>/dev/null || true
+    fi
+}
 
 echo "🚀 PRE-PUSH: Compilation + test gate"
 echo "====================================="
 
 FAILED=0
+CHANGED_FILES="$(changed_files_for_push | sort -u)"
+RUST_RELEVANT=0
+if echo "$CHANGED_FILES" | grep -qE "^(src/workers/|docker/|src/shared/generated/|Cargo\.(toml|lock)$|src/workers/.*/Cargo\.(toml|lock)$)"; then
+    RUST_RELEVANT=1
+fi
 
 # Phase 1: TypeScript compilation (<15s)
 echo ""
 echo "📋 Phase 1: TypeScript compilation"
 echo "-----------------------------------"
 TS_START=$(date +%s)
+require_node_deps
 if cd "$SRC_DIR" && npm run build:ts > /dev/null 2>&1; then
     echo "✅ TypeScript: clean ($(( $(date +%s) - TS_START ))s)"
 else
@@ -90,7 +142,9 @@ echo ""
 echo "📋 Phase 2: Rust compilation"
 echo "----------------------------"
 RUST_START=$(date +%s)
-if [ -d "$RUST_DIR" ]; then
+if [ "$RUST_RELEVANT" -eq 0 ]; then
+    echo "⏭️  No Rust-relevant changes in this push — skipping cargo check."
+elif [ -d "$RUST_DIR" ]; then
     # shellcheck source=shared/cargo-features.sh
     source "$(dirname "$0")/shared/cargo-features.sh"
     if (cd "$RUST_DIR" && cargo check $CARGO_GPU_FEATURES 2>/dev/null); then
@@ -116,7 +170,9 @@ echo ""
 echo "📋 Phase 3: Rust tests"
 echo "----------------------"
 TEST_START=$(date +%s)
-if [ -d "$RUST_DIR" ]; then
+if [ "$RUST_RELEVANT" -eq 0 ]; then
+    echo "⏭️  No Rust-relevant changes in this push — skipping cargo test."
+elif [ -d "$RUST_DIR" ]; then
     if (cd "$RUST_DIR" && cargo test --lib $CARGO_GPU_FEATURES > /tmp/git-prepush-cargo.log 2>&1); then
         echo "✅ Rust tests: passed ($(( $(date +%s) - TEST_START ))s) ${CARGO_GPU_FEATURES:-[cpu-only]}"
     else
@@ -144,34 +200,8 @@ echo ""
 echo "📋 Phase 4: Native-arch Docker images (if Rust/docker changed)"
 echo "---------------------------------------------------------------"
 
-REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
 DOCKER_PUSH_START=$(date +%s)
-
-# Git gives the pre-push hook a stdin stream of "local_ref local_sha
-# remote_ref remote_sha" lines. Read each range; if any touches Rust or
-# Docker paths, rebuild.
-if [ -z "${PREPUSH_STDIN:-}" ]; then
-    PREPUSH_STDIN="$(cat 2>/dev/null || true)"
-fi
-
-DOCKER_RELEVANT=0
-ZERO_SHA="0000000000000000000000000000000000000000"
-if [ -n "$PREPUSH_STDIN" ]; then
-    while IFS=' ' read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
-        [ -z "$LOCAL_SHA" ] && continue
-        [ "$LOCAL_SHA" = "$ZERO_SHA" ] && continue  # branch deletion
-        if [ "$REMOTE_SHA" = "$ZERO_SHA" ]; then
-            RANGE="$(git merge-base "$LOCAL_SHA" origin/main 2>/dev/null || echo "$LOCAL_SHA")..$LOCAL_SHA"
-        else
-            RANGE="$REMOTE_SHA..$LOCAL_SHA"
-        fi
-        CHANGED="$(git diff --name-only "$RANGE" 2>/dev/null || true)"
-        if echo "$CHANGED" | grep -qE "^(src/workers/|docker/|src/shared/generated/|Cargo\.(toml|lock)$)"; then
-            DOCKER_RELEVANT=1
-            break
-        fi
-    done <<< "$PREPUSH_STDIN"
-fi
+DOCKER_RELEVANT="$RUST_RELEVANT"
 
 if [ "$DOCKER_RELEVANT" -eq 0 ]; then
     echo "⏭️  No Rust/docker changes in this push — skipping native-arch build."
