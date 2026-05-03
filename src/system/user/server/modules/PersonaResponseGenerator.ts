@@ -91,6 +91,45 @@ function synthesizeDeterministicUuid(msg: LLMMessage): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
+/**
+ * Strip leaked tool-invocation markup from a persona's response text before
+ * it lands in the chat log.
+ *
+ * Why this exists (Joel 2026-05-03, chat-probe runaway): until cognition's
+ * tool agent loop fully migrates to Rust (see header comment about Joel's
+ * 2026-04-20 "REMOVE THESE FUCKING FALLBACKS" instruction), Rust returns
+ * the model's raw text — INCLUDING any `<tool_use>...</tool_use>` XML the
+ * model emitted as part of its response. The TS shim does no parsing and
+ * posts that text verbatim, so users see a wall of `<tool_use><tool_name>
+ * collaboration/decision/vote</tool_name>...` markup interleaved with the
+ * persona's actual prose. With multiple personas in a room replying to
+ * each other, the leaked block becomes the dominant pattern in history,
+ * personas treat it as a continuation example, and the room collapses
+ * into an echo loop of identical templated tool-use ghosts (200+ msgs
+ * observed inside 10 minutes on a fresh Mac install).
+ *
+ * Interim fix: silently drop the leaked blocks here. The tool itself is
+ * a no-op anyway (Rust isn't executing it yet); stripping the markup
+ * leaves the persona's actual prose intact, which is the only thing the
+ * user wanted to see. When Rust's cognition::tool_executor takes over
+ * the tool agent loop, the model's `<tool_use>` will be consumed before
+ * the response text reaches this shim and this function becomes a no-op
+ * — at which point it can be deleted.
+ *
+ * Also strips `<tool_result>` blocks (model can echo a previous result
+ * back into its turn) and `<thinking>...</thinking>` blocks (some models
+ * leak their chain-of-thought when prompted with one-shot examples that
+ * contain a thinking block — same shape of leak, same fix).
+ */
+function stripLeakedToolMarkup(text: string): string {
+  return text
+    .replace(/<tool_use\b[^>]*>[\s\S]*?<\/tool_use>/gi, '')
+    .replace(/<tool_result\b[^>]*>[\s\S]*?<\/tool_result>/gi, '')
+    .replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export interface ResponseGenerationResult {
   success: boolean;
   messageId?: UUID;
@@ -649,10 +688,20 @@ export class PersonaResponseGenerator {
       // FALLBACKS". Tool calling will be re-added inside Rust as part
       // of the cognition migration; until then a persona's spoken text
       // is exactly what Rust returned.
-      const finalText = response.text.trim();
+      const rawText = response.text.trim();
+      const finalText = stripLeakedToolMarkup(rawText);
       if (!finalText) {
-        this.log(`⚠️ ${this.personaName}: Rust returned empty text — skipping post`);
+        // Either Rust returned empty, OR everything was leaked tool markup
+        // that we just stripped. Either way, nothing post-worthy.
+        if (rawText && !finalText) {
+          this.log(`⚠️ ${this.personaName}: Response was 100% leaked tool markup (${rawText.length} chars stripped) — skipping post to avoid echo loop`);
+        } else {
+          this.log(`⚠️ ${this.personaName}: Rust returned empty text — skipping post`);
+        }
         return { success: false, error: 'Empty response from Rust', storedToolResultIds: allStoredResultIds };
+      }
+      if (rawText.length !== finalText.length) {
+        this.log(`🧹 ${this.personaName}: Stripped ${rawText.length - finalText.length} chars of leaked tool markup`);
       }
 
       const phase35Start = Date.now();
