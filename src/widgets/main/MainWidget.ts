@@ -21,6 +21,7 @@ import { Events } from '../../system/core/shared/Events';
 import { jtagGlobal } from '../../system/core/types/GlobalAugmentations';
 import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import type { ContentItem } from '../../system/data/entities/UserStateEntity';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
@@ -53,6 +54,35 @@ export class MainWidget extends ReactiveWidget {
 
   // Widget cache - persist widgets instead of destroying them on tab switch
   private widgetCache = new Map<string, HTMLElement>();
+
+  /**
+   * Drop the legacy phantom General tab.
+   *
+   * Canary previously opened `/chat/general` by default and older state code
+   * persisted a tab whose `entityId`/`id` was the literal uniqueId "general",
+   * not the room UUID. That tab cannot hydrate members correctly and survives
+   * reloads because persisted contentState restores it before routing runs.
+   * A real General tab has `uniqueId: "general"` plus a UUID entityId; keep
+   * that if the user explicitly opened it.
+   */
+  private sanitizePersistedContentItems(openItems: ContentItem[], currentItemId?: UUID): {
+    openItems: ContentItem[];
+    currentItemId?: UUID;
+  } {
+    const sanitized = openItems.filter(item => {
+      const isLegacyGeneral =
+        item.type === 'chat' &&
+        item.title === 'General' &&
+        (item.id === 'general' || item.entityId === 'general');
+
+      return !isLegacyGeneral;
+    });
+
+    return {
+      openItems: sanitized,
+      currentItemId: sanitized.some(item => item.id === currentItemId) ? currentItemId : undefined
+    };
+  }
 
   constructor() {
     super({
@@ -499,9 +529,10 @@ export class MainWidget extends ReactiveWidget {
     }
 
     if (userStateLoaded) {
-      const openItems = this.userState!.contentState.openItems || [];
-      const currentItemId = this.userState!.contentState.currentItemId;
-      console.log(`✅ initializeContentTabs: Found ${openItems.length} items, currentItemId=${currentItemId}`);
+      const rawOpenItems = this.userState!.contentState.openItems || [];
+      const rawCurrentItemId = this.userState!.contentState.currentItemId;
+      const { openItems, currentItemId } = this.sanitizePersistedContentItems(rawOpenItems, rawCurrentItemId);
+      console.log(`✅ initializeContentTabs: Found ${rawOpenItems.length} items, using ${openItems.length}, currentItemId=${currentItemId}`);
       contentState.initialize(openItems, currentItemId);
       this.log(`Initialized global contentState with ${openItems.length} items`);
     } else {
@@ -514,8 +545,10 @@ export class MainWidget extends ReactiveWidget {
   private syncUserStateToContentState(): void {
     if (!this.userState?.contentState) return;
 
-    const openItems = this.userState.contentState.openItems || [];
-    const currentItemId = this.userState.contentState.currentItemId;
+    const { openItems, currentItemId } = this.sanitizePersistedContentItems(
+      this.userState.contentState.openItems || [],
+      this.userState.contentState.currentItemId
+    );
     contentState.update(openItems, currentItemId);
     this.log(`Synced ${openItems.length} items from server to global contentState`);
   }
