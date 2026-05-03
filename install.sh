@@ -696,6 +696,31 @@ fi
 ok "$CONTAINER_CMD $($CONTAINER_CMD version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
 ok "Source: $INSTALL_DIR"
 
+# ── 3a. Build host-side CLI bundle (REQUIRED for jtag fast path) ──
+# carl-install-smoke chat-probe failure 2026-05-02 root cause: jtag's
+# tsx fallback at src/jtag fails with ERR_MODULE_NOT_FOUND because
+# tsconfig path aliases (@system/core/...) can't be resolved at
+# runtime. The bundle (src/dist/cli-bundle.js) pre-resolves all
+# aliases via esbuild — but it's only built when `npm run build`
+# fires postbuild, which the install.sh path skipped entirely on
+# Linux (Docker-only flow, no host-side npm activity).
+#
+# Fix: explicit host-side bundle build right after clone. Adds
+# ~30s to install (npm install + esbuild bundle), eliminates the
+# silent-fallback-fails pattern that was failing every CI run AND
+# every fresh-install user's first jtag invocation.
+#
+# Mac-native path also passes through here (npm install at line 848
+# was a no-op duplicate; bundle now exists pre-npm-start).
+PHASE="host-side jtag CLI bundle"
+if command -v npm >/dev/null 2>&1; then
+  info "Building host-side jtag CLI bundle (~30s)..."
+  (cd "$INSTALL_DIR/src" && npm install --silent 2>&1 | tail -2 && npm run build:cli 2>&1 | tail -1) || \
+    warn "Host-side bundle build failed — jtag will fall back to slower tsx (which may also fail on path aliases). Re-run: cd $INSTALL_DIR/src && npm install && npm run build:cli"
+else
+  warn "npm not found — skipping host-side bundle build. jtag will fall back to slower tsx (may fail on path aliases)."
+fi
+
 # ── 3b. Install continuum command (modular, headless-safe) ─
 # Was an inline `sudo cp` that crashed on "no TTY for password" when the
 # install ran headless (curl|bash without -t, BigMama SSH dry-run, CI).
