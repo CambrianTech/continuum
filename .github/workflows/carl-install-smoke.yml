@@ -83,6 +83,10 @@ jobs:
           CARL_INSTALL_TIMEOUT_SEC: '1500'
           # Generous health wait — model-init can take 3-5min on cold pull.
           CARL_HEALTH_TIMEOUT_SEC: '300'
+          # Cold persona load on no-GPU CI runner (Linux ubuntu-latest, no
+          # --gpus passthrough) takes 2-5min for first inference. Default 90s
+          # in the smoke script is fine for local runs but tight for CI.
+          CARL_CHAT_TIMEOUT_SEC: '300'
           # CI shouldn't leave docker compose stacks running.
           SKIP_TEARDOWN: '0'
         run: bash scripts/ci/carl-install-smoke.sh
