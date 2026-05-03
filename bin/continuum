@@ -163,6 +163,16 @@ is_native_core_running() {
   [ -S "$CONTINUUM_HOME/sockets/continuum-core.sock" ] || return 1
 }
 
+print_native_core_status() {
+  local pids="$1"
+  [ -n "$pids" ] || return 0
+  echo -e "    ${GREEN}●${RESET}  continuum-core-server        running (pid $pids)"
+  echo -e "    ${GREEN}●${RESET}  IPC                          $CONTINUUM_HOME/sockets/continuum-core.sock"
+  if command -v lsof &>/dev/null && lsof -nP -iTCP:9100 -sTCP:LISTEN &>/dev/null; then
+    echo -e "    ${GREEN}●${RESET}  TCP                          listening on :9100"
+  fi
+}
+
 # ── Get best URL ────────────────────────────────────────────
 get_url() {
   # Local Docker running?
@@ -281,6 +291,7 @@ cmd_status() {
       local label="$COMPOSE_DIR"
       [ -n "${COMPOSE_PROJECT_NAME:-}" ] && [ "$COMPOSE_DIR" = "/tmp" ] && label="(project: $COMPOSE_PROJECT_NAME)"
       echo -e "  ${GREEN}Local${RESET}  $label"
+      print_native_core_status "$native_pids"
       echo "$containers" | while read -r name status health; do
         local icon="⚪"
         case "$health" in
@@ -302,11 +313,7 @@ cmd_status() {
       fi
     elif [ -n "$native_pids" ]; then
       echo -e "  ${GREEN}Local${RESET}  native continuum-core"
-      echo -e "    ${GREEN}●${RESET}  continuum-core-server        running (pid $native_pids)"
-      echo -e "    ${GREEN}●${RESET}  IPC                          $CONTINUUM_HOME/sockets/continuum-core.sock"
-      if command -v lsof &>/dev/null && lsof -nP -iTCP:9100 -sTCP:LISTEN &>/dev/null; then
-        echo -e "    ${GREEN}●${RESET}  TCP                          listening on :9100"
-      fi
+      print_native_core_status "$native_pids"
       echo ""
     else
       echo -e "  ${DIM}Local: not running${RESET}"
@@ -314,11 +321,7 @@ cmd_status() {
     fi
   elif [ -n "$native_pids" ]; then
     echo -e "  ${GREEN}Local${RESET}  native continuum-core"
-    echo -e "    ${GREEN}●${RESET}  continuum-core-server        running (pid $native_pids)"
-    echo -e "    ${GREEN}●${RESET}  IPC                          $CONTINUUM_HOME/sockets/continuum-core.sock"
-    if command -v lsof &>/dev/null && lsof -nP -iTCP:9100 -sTCP:LISTEN &>/dev/null; then
-      echo -e "    ${GREEN}●${RESET}  TCP                          listening on :9100"
-    fi
+    print_native_core_status "$native_pids"
     echo ""
   else
     echo -e "  ${DIM}Local: no installation found${RESET}"
