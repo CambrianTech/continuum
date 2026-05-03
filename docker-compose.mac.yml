@@ -24,7 +24,11 @@
 #                              or localhost (since it's also on the host).
 #   Support services         → IN CONTAINERS (this file):
 #                              postgres, node-server, widget-server,
-#                              livekit-bridge, model-init.
+#                              model-init.
+#   livekit-bridge           → NATIVE process on host. It exposes a Unix
+#                              socket consumed by native continuum-core, and
+#                              Docker Desktop bind mounts cannot host Unix
+#                              socket creation reliably (Linux errno 95).
 #
 # This override sets continuum-core's `deploy.replicas: 0` so `docker compose
 # up` on Mac brings up everything EXCEPT continuum-core. The install.sh
@@ -53,6 +57,14 @@ services:
   # reason as the gpu profile. Personas talk to native continuum-core's
   # scheduler + Docker Model Runner's vllm endpoint.
   inference:
+    deploy:
+      replicas: 0
+
+  # livekit-bridge also stays native on Mac. Containerizing it requires
+  # binding /root/.continuum/sockets/livekit-bridge.sock on a host-mounted
+  # ~/.continuum/sockets directory; Docker Desktop returns ENOTSUP for that
+  # socket bind. npm start launches the native binary via workers-config.json.
+  livekit-bridge:
     deploy:
       replicas: 0
 

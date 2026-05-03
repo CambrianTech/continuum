@@ -220,6 +220,15 @@ if [ $SEND_RC -ne 0 ]; then
   echo "❌ chat probe: chat/send command FAILED (exit $SEND_RC)"
   echo "  Output:"
   echo "$SEND_OUT" | head -10 | sed 's/^/    /'
+  {
+    echo ""
+    echo "━━ diagnostics after chat/send failure ━━"
+    echo "$ $JTAG_BIN data/list --collection=rooms --filter='{\"uniqueId\":\"general\"}' --limit=3"
+    "$JTAG_BIN" data/list --collection=rooms --filter='{"uniqueId":"general"}' --limit=3 2>&1 || true
+    echo ""
+    echo "$ $JTAG_BIN collaboration/chat/export --room=general --limit=1"
+    "$JTAG_BIN" collaboration/chat/export --room=general --limit=1 2>&1 || true
+  } | sed 's/^/    /' >> "$CHAT_LOG"
   exit 4
 fi
 

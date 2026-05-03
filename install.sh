@@ -850,9 +850,16 @@ fi
 
 # ── 7. Pull support-service images ─────────────────────────
 PHASE="pull images"
-# Image tag resolution: compose files honor ${CONTINUUM_IMAGE_TAG:-latest}.
+# Image tag resolution: compose files honor ${CONTINUUM_IMAGE_TAG:-latest}
+# for the light TypeScript/downloader services. Heavy Rust services are
+# deliberately split: continuum-core honors ${CONTINUUM_CORE_IMAGE_TAG:-latest}
+# and livekit-bridge honors ${CONTINUUM_LIVEKIT_BRIDGE_IMAGE_TAG:-latest}.
+# Canary publishes light images more frequently than the heavy Rust images;
+# splitting the tags lets canary installs test fresh node/widget code without
+# falling back to multi-hour local Rust image builds.
+#
 # Main-branch installs (Carl's default) use :latest. Reviewers validating
-# a PR before merge can pin the PR's staged image set:
+# a PR before merge can pin the PR's staged light-image set:
 #   CONTINUUM_IMAGE_TAG=pr-891 curl -fsSL install.sh | bash
 # CI tags every PR build with pr-<number> (see .github/workflows/docker-images.yml).
 # Merging to main promotes that image set to :latest, so main and :latest
@@ -861,7 +868,7 @@ PHASE="pull images"
 # On Mac: `continuum-core` is not pulled (replicas=0 in docker-compose.mac.yml);
 # only support services (postgres, node-server, widget-server, livekit-bridge,
 # model-init) are pulled. continuum-core runs natively from `npm start` below.
-info "Pulling container images (tag: ${CONTINUUM_IMAGE_TAG:-latest})..."
+info "Pulling container images (light=${CONTINUUM_IMAGE_TAG:-latest}, core=${CONTINUUM_CORE_IMAGE_TAG:-latest}, livekit-bridge=${CONTINUUM_LIVEKIT_BRIDGE_IMAGE_TAG:-latest})..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
 
 # ── 8. Start support services ──────────────────────────────
@@ -878,6 +885,36 @@ if pgrep -x 'continuum-core-server' >/dev/null 2>&1 \
 fi
 info "Starting support services..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS up -d
+
+# Some published continuum-core images may predate the in-binary socket chmod
+# fix. On Linux installs the host-side jtag CLI connects to the bind-mounted
+# core socket, so make the install path resilient until every architecture's
+# heavy core image has been refreshed.
+fix_core_socket_permissions() {
+  local socket_dir="$CONTINUUM_DATA/sockets"
+  local core_socket="$socket_dir/continuum-core.sock"
+
+  [ -d "$socket_dir" ] || return 1
+
+  chmod 755 "$socket_dir" 2>/dev/null \
+    || sudo -n chmod 755 "$socket_dir" 2>/dev/null \
+    || warn "Could not chmod $socket_dir; host jtag may get EACCES"
+
+  [ -S "$core_socket" ] || return 1
+
+  chmod 666 "$core_socket" 2>/dev/null \
+    || sudo -n chmod 666 "$core_socket" 2>/dev/null \
+    || warn "Could not chmod $core_socket; host jtag may get EACCES"
+}
+
+if [[ "$OS" != "Darwin" ]]; then
+  for _ in $(seq 1 60); do
+    if fix_core_socket_permissions; then
+      break
+    fi
+    sleep 1
+  done
+fi
 
 # ── 8b. Start continuum-core natively on Mac ───────────────
 # Mac runs continuum-core as a native host process so it can link Metal
@@ -942,10 +979,71 @@ for i in $(seq 1 "$HEALTH_TIMEOUT_SEC"); do
      || curl -sfk --max-time 2 https://localhost:9003/health >/dev/null 2>&1; then
     HEALTH_OK=1
     ok "widget-server healthy after ${i}s"
+    if [[ "$OS" != "Darwin" ]]; then
+      fix_core_socket_permissions || true
+    fi
     break
   fi
   sleep 1
 done
+
+# ── 8c. Wait for first-chat seed readiness ─────────────────
+PHASE="chat seed readiness"
+wait_for_general_room() {
+  local jtag_bin=""
+  local out=""
+  local cand
+
+  for cand in \
+    "$INSTALL_DIR/src/jtag" \
+    "$HOME/.local/bin/jtag" \
+    "$(command -v jtag 2>/dev/null)"; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then
+      jtag_bin="$cand"
+      break
+    fi
+  done
+
+  if [ -z "$jtag_bin" ]; then
+    warn "jtag CLI not found; cannot verify seeded #general room before browser open"
+    return 1
+  fi
+
+  # Probe the same routing path first chat uses. Raw data/list can prove a
+  # room row exists, but chat/send resolves through RoutingService; the user
+  # is not ready until that resolver accepts "general".
+  out=$("$jtag_bin" collaboration/chat/export --room=general --limit=1 2>&1 || true)
+  if echo "$out" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
+    return 0
+  fi
+
+  return 1
+}
+
+if [ "$HEALTH_OK" -eq 1 ]; then
+  info "Waiting for chat seed readiness (timeout ${CHAT_READY_TIMEOUT_SEC:=120}s)..."
+  CHAT_READY_OK=0
+  for i in $(seq 1 "$CHAT_READY_TIMEOUT_SEC"); do
+    if wait_for_general_room; then
+      CHAT_READY_OK=1
+      ok "chat seed ready after ${i}s (#general exists)"
+      break
+    fi
+    sleep 1
+  done
+
+  if [ "$CHAT_READY_OK" -ne 1 ]; then
+    warn "Chat seed did not become ready after ${CHAT_READY_TIMEOUT_SEC}s — #general is not resolvable by chat commands."
+    warn "  The UI may load, but first chat will fail until auto-seed catches up."
+    echo ""
+    echo "    Diagnose:"
+    echo "      $CONTAINER_CMD compose $COMPOSE_FILES logs --tail=200 node-server continuum-core"
+    echo "      $INSTALL_DIR/src/jtag data/list --collection=rooms --filter='{\"uniqueId\":\"general\"}' --limit=1"
+    echo "      $INSTALL_DIR/src/jtag collaboration/chat/export --room=general --limit=1"
+    echo ""
+    fail "Chat seed readiness failed"
+  fi
+fi
 
 # ── 9. Determine URL + open browser (only if healthy) ──────
 PHASE="open browser"

@@ -231,7 +231,7 @@ build_pkg() {
   fi
 }
 
-for pkg in archive-worker jtag-mcp; do
+for pkg in archive-worker jtag-mcp livekit-bridge; do
   build_pkg "$pkg"
 done
 # continuum-core: all GPU features (metal+accelerate on macOS, cuda on Linux)

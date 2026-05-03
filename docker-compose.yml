@@ -78,7 +78,7 @@ services:
         # --no-default-features excludes livekit-webrtc (handled by livekit-bridge).
         # load-dynamic-ort loads ONNX Runtime as shared lib (runtime discovery).
         GPU_FEATURES: "--no-default-features --features load-dynamic-ort"
-    image: ghcr.io/cambriantech/continuum-core:${CONTINUUM_IMAGE_TAG:-latest}
+    image: ghcr.io/cambriantech/continuum-core:${CONTINUUM_CORE_IMAGE_TAG:-latest}
     restart: unless-stopped
     # Sized for mission: Qwen 4-8B Q4 + KV cache for 5 personas + embeddings
     # + Bevy render + vision + audio. Auto-calculated by install.sh from host
@@ -138,7 +138,7 @@ services:
     build:
       context: ./src/workers
       dockerfile: ../../docker/livekit-bridge.Dockerfile
-    image: ghcr.io/cambriantech/continuum-livekit-bridge:${CONTINUUM_IMAGE_TAG:-latest}
+    image: ghcr.io/cambriantech/continuum-livekit-bridge:${CONTINUUM_LIVEKIT_BRIDGE_IMAGE_TAG:-latest}
     restart: unless-stopped
     # WebRTC encode/decode buffers + multi-stream. Scales with host RAM —
     # install.sh sets LIVEKIT_BRIDGE_MEM to max(2, host_gb/8). Default 2g

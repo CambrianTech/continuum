@@ -77,6 +77,10 @@ jobs:
           # THIS PR (not main). Falls back to manual workflow_dispatch input
           # when not in a PR context.
           CARL_INSTALL_REF: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
+          # Canary is the integration sync point. A canary PR/push must test
+          # the image set that agents are actually validating from canary,
+          # not stale :latest images from main.
+          CONTINUUM_IMAGE_TAG: ${{ (github.event.pull_request.base.ref == 'canary' || github.ref_name == 'canary') && 'canary' || 'latest' }}
           # 25-min cap on the docker-only install. Hybrid (Mac source-build)
           # path would exceed this — by design, that's the gate firing on
           # the README/install mismatch.
