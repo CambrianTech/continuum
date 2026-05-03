@@ -74,9 +74,16 @@ INSTALL_URL="https://raw.githubusercontent.com/CambrianTech/continuum/${CARL_INS
 # experience). Hybrid Mac path (with Rust source build) will exceed this on
 # a fresh runner — that's fine, it'll fail the gate, which is the design
 # (the README claims docker-only; install should match).
+# Pass CONTINUUM_REF so install.sh clones the PR's src/ tree, not main.
+# Pre-2026-05-03 install.sh always cloned main → PR src/ changes never
+# got validated by carl-install-smoke. This made Carl-install testing
+# limited to install.sh-internal changes only — every src/ fix had to
+# merge to main before the smoke could test it. Real-world impact:
+# months of "the smoke is broken because main's broken" loop with no
+# way to validate PR fixes. CONTINUUM_REF closes the loop.
 INSTALL_START=$(date +%s)
 if ! timeout "$CARL_INSTALL_TIMEOUT_SEC" bash -c \
-     "CONTINUUM_DIR='$CARL_INSTALL_DIR' bash <(curl -fsSL '$INSTALL_URL')" \
+     "CONTINUUM_DIR='$CARL_INSTALL_DIR' CONTINUUM_REF='$CARL_INSTALL_REF' bash <(curl -fsSL '$INSTALL_URL')" \
      >"$INSTALL_LOG" 2>&1; then
   INSTALL_DUR=$(( $(date +%s) - INSTALL_START ))
   echo "❌ install.sh failed or timed out after ${INSTALL_DUR}s"
