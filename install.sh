@@ -792,6 +792,44 @@ else
   ok "Config exists: $CONFIG_FILE"
 fi
 
+# WSL2 + Docker Desktop quirk: the bind mount `~/.continuum/config.env` in
+# docker-compose.yml expands `~` on the Docker daemon side. On Windows the
+# daemon runs as the Windows user so `~` resolves to C:\Users\<WinUser>,
+# NOT the WSL user's /home/<linuxUser>. Without the file existing on the
+# Windows-side path, Docker auto-vivifies an EMPTY DIRECTORY there — and
+# then `compose up` fails with "mounting a directory onto a file" when it
+# tries to mount that dir over /root/.continuum/config.env (a file path
+# inside the container). Caught live by Carl-Windows install on
+# bigmama-1 (continuum-b69f, 2026-05-03).
+#
+# Fix: on WSL2, mirror config.env to the Windows user's home so the file
+# mount has a valid source. The OTHER bind mounts (`~/.continuum` dir)
+# survive Docker's auto-vivify because dir-on-dir mount is fine, but the
+# file mount needs the source to exist first.
+#
+# This is a no-op on Linux (no /mnt/c) and Mac (no /proc/version match).
+if grep -qi microsoft /proc/version 2>/dev/null && [ -d /mnt/c ]; then
+  WIN_USER="$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r' | tr -d '\n')"
+  if [ -n "$WIN_USER" ] && [ -d "/mnt/c/Users/$WIN_USER" ]; then
+    WIN_CONTINUUM="/mnt/c/Users/$WIN_USER/.continuum"
+    mkdir -p "$WIN_CONTINUUM"
+    # If Docker auto-vivified an empty DIRECTORY where the file should
+    # be, blow it away so we can write the file. rmdir refuses
+    # non-empty dirs (so we don't clobber real user data); rm -rf only
+    # if rmdir failed AND the dir is empty.
+    if [ -d "$WIN_CONTINUUM/config.env" ]; then
+      rmdir "$WIN_CONTINUUM/config.env" 2>/dev/null \
+        || warn "Windows-side $WIN_CONTINUUM/config.env is a non-empty directory (likely user data); leaving it. May still hit the mount error — manually rm -rf and re-run if needed."
+    fi
+    if [ ! -e "$WIN_CONTINUUM/config.env" ]; then
+      cp "$CONFIG_FILE" "$WIN_CONTINUUM/config.env"
+      ok "Mirrored config.env to Windows path: $WIN_CONTINUUM/config.env"
+    fi
+  else
+    warn "WSL2 detected but Windows username/home not found; config.env may not mount on Docker Desktop."
+  fi
+fi
+
 # ── 5. TLS certs (Tailscale) ──────────────────────────────
 PHASE="TLS certs (optional)"
 TS_HOSTNAME=""
