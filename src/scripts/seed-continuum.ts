@@ -398,40 +398,40 @@ async function seedViaJTAG() {
       console.log('🏗️ Creating rooms before other users (for auto-join to work)...');
 
       const rooms = [
-        createRoom(ROOM_IDS.GENERAL, ROOM_CONFIG.GENERAL.NAME, ROOM_CONFIG.GENERAL.NAME, ROOM_CONFIG.GENERAL.DESCRIPTION,
+        createRoom(generateUUID(), ROOM_CONFIG.GENERAL.NAME, ROOM_CONFIG.GENERAL.NAME, ROOM_CONFIG.GENERAL.DESCRIPTION,
           "Welcome to general discussion! Introduce yourself and chat about anything.", 0,
           ["general", "welcome", "discussion"], humanUser.id, 'general'),
-        createRoom(ROOM_IDS.ACADEMY, ROOM_CONFIG.ACADEMY.NAME, ROOM_CONFIG.ACADEMY.NAME, ROOM_CONFIG.ACADEMY.DESCRIPTION,
+        createRoom(generateUUID(), ROOM_CONFIG.ACADEMY.NAME, ROOM_CONFIG.ACADEMY.NAME, ROOM_CONFIG.ACADEMY.DESCRIPTION,
           "Share knowledge, tutorials, and collaborate on learning", 0,
           ["academy", "learning", "education"], humanUser.id, 'academy'),
-        createRoom(ROOM_IDS.PANTHEON, 'pantheon', 'Pantheon', 'Elite discussion room for top-tier SOTA AI models',
+        createRoom(generateUUID(), 'pantheon', 'Pantheon', 'Elite discussion room for top-tier SOTA AI models',
           "Advanced reasoning and multi-model collaboration", 0,
           ["sota", "elite", "reasoning"], humanUser.id, 'pantheon'),
-        createRoom(ROOM_IDS.DEV_UPDATES, 'dev-updates', 'Dev Updates', 'GitHub PRs, CI/CD, and development activity notifications',
+        createRoom(generateUUID(), 'dev-updates', 'Dev Updates', 'GitHub PRs, CI/CD, and development activity notifications',
           "Real-time development feed - where the team learns together", 0,
           ["github", "ci", "development", "training"], humanUser.id, 'dev-updates'),
-        createRoom(ROOM_IDS.HELP, 'help', 'Help', 'Get help from AI assistants - ask anything about using Continuum',
+        createRoom(generateUUID(), 'help', 'Help', 'Get help from AI assistants - ask anything about using Continuum',
           "Your AI helpers are here to assist you getting started", 0,
           ["help", "support", "onboarding", "getting-started", "system"], humanUser.id, 'help', 'help'),
-        createRoom(ROOM_IDS.SETTINGS, 'settings', 'Settings', 'Configure your Continuum experience with AI assistance',
+        createRoom(generateUUID(), 'settings', 'Settings', 'Configure your Continuum experience with AI assistance',
           "Get help configuring API keys, preferences, and system settings", 0,
           ["settings", "config", "preferences", "system"], humanUser.id, 'settings', 'settings'),
-        createRoom(ROOM_IDS.UNIVERSE, 'universe', 'Universe', 'Design complete experiences with AI-assisted universe creation',
+        createRoom(generateUUID(), 'universe', 'Universe', 'Design complete experiences with AI-assisted universe creation',
           "Design universes — complete visual, audio, and interaction experiences with AI assistance", 0,
           ["universe", "design", "customization", "experience", "system"], humanUser.id, 'universe', 'universe'),
-        createRoom(ROOM_IDS.CANVAS, 'canvas', 'Canvas', 'Collaborative drawing discussions with AI assistance',
+        createRoom(generateUUID(), 'canvas', 'Canvas', 'Collaborative drawing discussions with AI assistance',
           "Share drawing tips, get AI feedback on your artwork, and collaborate on visual projects", 0,
           ["canvas", "drawing", "art", "collaboration", "system"], humanUser.id, 'canvas', 'canvas'),
-        createRoom(ROOM_IDS.OUTREACH, 'outreach', 'Outreach', 'Social media strategy, community building, and external engagement',
+        createRoom(generateUUID(), 'outreach', 'Outreach', 'Social media strategy, community building, and external engagement',
           "Discuss what to post, share interesting finds, coordinate outreach on Moltbook and other platforms", 0,
           ["social", "outreach", "community", "moltbook"], humanUser.id, 'outreach', 'outreach'),
-        createRoom(ROOM_IDS.NEWSROOM, 'newsroom', 'Newsroom', 'Current events, breaking news, and world awareness for all personas',
+        createRoom(generateUUID(), 'newsroom', 'Newsroom', 'Current events, breaking news, and world awareness for all personas',
           "Share and discuss current events to keep the community informed", 0,
           ["news", "current-events", "awareness"], humanUser.id, 'newsroom', 'newsroom'),
-        createRoom(ROOM_IDS.CODE, 'code', 'Code', 'Collaborative coding — reading, writing, reviewing, and shipping code as a team',
+        createRoom(generateUUID(), 'code', 'Code', 'Collaborative coding — reading, writing, reviewing, and shipping code as a team',
           "Software development with real tools and real agent loops", 0,
           ["coding", "development", "engineering"], humanUser.id, 'code', 'coding'),
-        createRoom(ROOM_IDS.FACTORY, 'factory', 'Factory', 'Model forge production floor — forge, benchmark, and publish models',
+        createRoom(generateUUID(), 'factory', 'Factory', 'Model forge production floor — forge, benchmark, and publish models',
           "Monitor active forges, test model quality, manage the device ladder", 0,
           ["factory", "forge", "models", "benchmark", "production"], humanUser.id, 'factory', 'factory'),
       ];
@@ -709,10 +709,10 @@ async function seedViaJTAG() {
     const contentTypes = createDefaultContentTypes();
 
     // Training sessions
-    const trainingSessions = [
+    const trainingSessions = academyRoomId ? [
       {
         id: 'ts-js-fundamentals',
-        roomId: ROOM_IDS.ACADEMY,
+        roomId: academyRoomId,
         teacherUserId: claudeUser?.id ?? humanUser.id,
         studentUserId: humanUser.id,
         sessionName: 'JavaScript Fundamentals',
@@ -773,7 +773,7 @@ async function seedViaJTAG() {
         additionalParticipants: [],
         isArchived: false
       }
-    ];
+    ] : [];
 
     // Seed remaining data
     await seedRecords(ChatMessageEntity.collection, messages,
