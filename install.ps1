@@ -245,7 +245,15 @@ Write-Ok 'WSL2 networking OK'
 # inside WSL2 here on Windows.
 
 Write-Step 'Handing off to bootstrap.sh inside WSL ...'
-& wsl.exe bash -ic "curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/bootstrap.sh | bash -s -- --mode=$Mode"
+# CONTINUUM_REF env override: when set, fetch bootstrap.sh + clone
+# repo at the specified branch/sha. Used by CI (Windows install
+# validation of PR src/) and power users testing pre-merge changes.
+# Defaults to main when unset. Without this, Windows installs always
+# fetched bootstrap.sh from main + cloned main — same chicken-and-egg
+# as install.sh had before CONTINUUM_REF support.
+$BootstrapRef = if ($env:CONTINUUM_REF) { $env:CONTINUUM_REF } else { 'main' }
+$BootstrapUrl = "https://raw.githubusercontent.com/CambrianTech/continuum/$BootstrapRef/bootstrap.sh"
+& wsl.exe bash -ic "CONTINUUM_REF='$BootstrapRef' curl -fsSL '$BootstrapUrl' | bash -s -- --mode=$Mode"
 $bootstrapExit = $LASTEXITCODE
 
 # ── section: post-install guidance ──────────────────────────────────────
