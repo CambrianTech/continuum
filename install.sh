@@ -665,19 +665,25 @@ PHASE="clone / update repo"
 # every fix to src/jtag, src/scripts/install.sh, etc landed via PR
 # but couldn't be validated by carl-install-smoke until merged. Joel:
 # "months of trying to get continuum working out-of-box for Carl."
+# Default ref is canary, NOT origin/HEAD (= main). main is intentionally
+# behind canary until release cadence promotes the branch on schedule;
+# 2026-05-03 main is 79 commits BEHIND canary, including critical install
+# fixes (mod_jtag_bin_link, WSL2 config.env mirror, .env image-tag writer,
+# resolveRoomIdentifier, stripLeakedToolMarkup, phantom-tab sanitize,
+# socket chmod 666, etc). Default Carl install used to clone main and
+# fail at line 769 with "mod_jtag_bin_link: command not found".
+# Per Joel 2026-05-03: "Everyone uses current code period."
+DEFAULT_CONTINUUM_REF="canary"
+RESOLVED_CONTINUUM_REF="${CONTINUUM_REF:-$DEFAULT_CONTINUUM_REF}"
+
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "Updating existing installation..."
   cd "$INSTALL_DIR"
   git pull --ff-only 2>/dev/null || warn "Could not update — using existing version"
 else
-  if [ -n "${CONTINUUM_REF:-}" ]; then
-    info "Cloning Continuum at ref ${CONTINUUM_REF}..."
-    git clone --depth 1 --branch "$CONTINUUM_REF" "$REPO" "$INSTALL_DIR" 2>/dev/null \
-      || git clone "$REPO" "$INSTALL_DIR" && (cd "$INSTALL_DIR" && git checkout "$CONTINUUM_REF")
-  else
-    info "Cloning Continuum..."
-    git clone --depth 1 "$REPO" "$INSTALL_DIR"
-  fi
+  info "Cloning Continuum at ref $RESOLVED_CONTINUUM_REF..."
+  git clone --depth 1 --branch "$RESOLVED_CONTINUUM_REF" "$REPO" "$INSTALL_DIR" 2>/dev/null \
+    || (git clone "$REPO" "$INSTALL_DIR" && cd "$INSTALL_DIR" && git checkout "$RESOLVED_CONTINUUM_REF")
   cd "$INSTALL_DIR"
 fi
 
