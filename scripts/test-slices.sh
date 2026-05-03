@@ -130,6 +130,7 @@ pass "image-available ($IMAGE_TAG)"
 # ── Slice 2: boot ───────────────────────────────────────────────────
 # Start the container and verify the IPC socket appears within a timeout.
 # If this fails the binary is panicking or entrypoint is wrong.
+BOOT_OK=false
 CID="$(docker run "${RUN_FLAGS[@]}" "$IMAGE_TAG" 2>/dev/null || true)"
 if [[ -z "$CID" ]]; then
   fail "boot" "docker run exited immediately"
@@ -144,6 +145,7 @@ if [[ "$VARIANT" == "livekit-bridge" ]]; then
   sleep 5
   if docker inspect -f '{{.State.Running}}' "$CID" 2>/dev/null | grep -q true; then
     pass "boot (container running after 5s)"
+    BOOT_OK=true
   else
     fail "boot" "container exited within 5s"
     echo "  docker logs:" >&2
@@ -161,6 +163,7 @@ else
   done
   if $SOCKET_FOUND; then
     pass "boot (socket appeared within 30s)"
+    BOOT_OK=true
   else
     fail "boot" "socket /root/.continuum/sockets/continuum-core.sock never appeared"
     echo "  docker logs:" >&2
@@ -180,50 +183,59 @@ else
 fi
 
 # ── Slice 4 (variant-specific): device visibility ──────────────────
-case "$VARIANT" in
-  cuda)
-    # nvidia-smi should list at least one device with any VRAM at all.
-    if docker exec "$CID" nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | grep -q .; then
-      pass "cuda-device-visible"
-    else
-      fail "cuda-device-visible" "nvidia-smi produced no GPU rows (host NVIDIA runtime missing?)"
-    fi
-    # Check the binary was built with CUDA linkage — ldd should show libcudart.
-    if docker exec "$CID" sh -c 'ldd $(which continuum-core-server) 2>/dev/null | grep -qE "libcudart|libcuda\.so"'; then
-      pass "cuda-runtime-linked"
-    else
-      fail "cuda-runtime-linked" "continuum-core-server does not link libcudart — feature flag didn't propagate?"
-    fi
-    ;;
-  vulkan)
-    # vulkan-tools in the runtime image ships vulkaninfo. Expect at least one
-    # device, even if it's llvmpipe (software). A device count of 0 means the
-    # ICD loader couldn't find ANY driver — the image is broken.
-    VKINFO=$(docker exec "$CID" vulkaninfo --summary 2>&1 || true)
-    if echo "$VKINFO" | grep -qE "deviceName|deviceType"; then
-      DEVNAME=$(echo "$VKINFO" | grep -E "deviceName" | head -1 | sed 's/.*= *//')
-      pass "vulkan-device-visible ($DEVNAME)"
-    else
-      fail "vulkan-device-visible" "vulkaninfo enumerated no devices — ICD loader can't find a driver"
-      echo "  vulkaninfo output: $(echo "$VKINFO" | head -10)" >&2
-    fi
-    # Check binary is linked against libvulkan.
-    if docker exec "$CID" sh -c 'ldd $(which continuum-core-server) 2>/dev/null | grep -q libvulkan'; then
-      pass "vulkan-runtime-linked"
-    else
-      fail "vulkan-runtime-linked" "continuum-core-server does not link libvulkan — feature flag didn't propagate?"
-    fi
-    ;;
-  core)
-    # CPU-only variant — just sanity that OpenMP runtime is present
-    # (ggml-cpu uses it).
-    if docker exec "$CID" sh -c 'ldd $(which continuum-core-server) 2>/dev/null | grep -q libgomp'; then
-      pass "openmp-linked"
-    else
-      fail "openmp-linked" "libgomp missing"
-    fi
-    ;;
-esac
+if ! $BOOT_OK; then
+  echo "  - runtime probes skipped: boot did not reach the expected ready state" >&2
+else
+  case "$VARIANT" in
+    cuda)
+      # nvidia-smi should list at least one device with any VRAM at all.
+      if docker exec "$CID" nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | grep -q .; then
+        pass "cuda-device-visible"
+      else
+        fail "cuda-device-visible" "nvidia-smi produced no GPU rows (host NVIDIA runtime missing?)"
+      fi
+      # Check the binary was built with CUDA linkage — ldd should show libcudart.
+      if docker exec "$CID" sh -c 'ldd $(which continuum-core-server) 2>/dev/null | grep -qE "libcudart|libcuda\.so"'; then
+        pass "cuda-runtime-linked"
+      else
+        fail "cuda-runtime-linked" "continuum-core-server does not link libcudart — feature flag didn't propagate?"
+      fi
+      ;;
+    vulkan)
+      # vulkan-tools in the runtime image ships vulkaninfo. Expect at least one
+      # device, even if it's llvmpipe (software). A device count of 0 means the
+      # ICD loader couldn't find ANY driver — the image is broken.
+      VKINFO=$(docker exec "$CID" vulkaninfo --summary 2>&1 || true)
+      if echo "$VKINFO" | grep -qE "deviceName|deviceType"; then
+        DEVNAME=$(echo "$VKINFO" | grep -E "deviceName" | head -1 | sed 's/.*= *//')
+        pass "vulkan-device-visible ($DEVNAME)"
+      else
+        fail "vulkan-device-visible" "vulkaninfo enumerated no devices — ICD loader can't find a driver"
+        echo "  vulkaninfo output: $(echo "$VKINFO" | head -10)" >&2
+      fi
+      # Check binary is linked against libvulkan.
+      if docker exec "$CID" sh -c 'ldd $(which continuum-core-server) 2>/dev/null | grep -q libvulkan'; then
+        pass "vulkan-runtime-linked"
+      else
+        fail "vulkan-runtime-linked" "continuum-core-server does not link libvulkan — feature flag didn't propagate?"
+      fi
+      ;;
+    core)
+      # CPU-only variant — just sanity that OpenMP runtime is present
+      # (ggml-cpu uses it).
+      if docker exec "$CID" sh -c 'ldconfig -p 2>/dev/null | grep -q libgomp'; then
+        pass "openmp-runtime-present"
+      else
+        fail "openmp-runtime-present" "libgomp runtime package is missing from the image"
+      fi
+      if docker exec "$CID" sh -c 'ldd $(which continuum-core-server) 2>/dev/null | grep -q libgomp'; then
+        pass "openmp-linked"
+      else
+        fail "openmp-linked" "continuum-core-server is not dynamically linked to libgomp"
+      fi
+      ;;
+  esac
+fi
 
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
