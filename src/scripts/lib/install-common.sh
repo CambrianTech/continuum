@@ -278,6 +278,75 @@ mod_continuum_bin_link() {
   module_done "continuum-bin"
 }
 
+# ── mod_jtag_bin_link ───────────────────────────────────────
+# Place the `jtag` CLI on PATH. SYMLINK (not cp) because src/jtag is a
+# bash launcher that uses `dirname "${BASH_SOURCE[0]}"` to locate
+# dist/cli-bundle.js relative to its own directory — `cp` would put
+# the launcher at /usr/local/bin/jtag where SCRIPT_DIR resolves to
+# /usr/local/bin and the bundle lookup fails. A symlink preserves
+# BASH_SOURCE traversal back to the install dir's src/, so the
+# launcher finds dist/cli-bundle.js correctly.
+#
+# Bug origin: airc-8a5e 2026-05-03 Carl-UX QA caught that
+# CLAUDE.md / skill docs reference `./jtag` and `jtag <command>` as
+# the chat surface, but install.sh only ever symlinked `continuum` —
+# `jtag` was at $INSTALL_DIR/src/jtag with no PATH entry. Users hit
+# command-not-found and never got to the chat probe at all.
+#
+# Same tier-fallback shape as mod_continuum_bin_link: try writable
+# system path, then sudo, then user-space fallback. Idempotent re-run
+# (skip when symlink already current).
+#
+# Args:
+#   $1 — absolute path to the source jtag launcher (typically
+#        $INSTALL_DIR/src/jtag).
+mod_jtag_bin_link() {
+  local src="$1"
+  if [ -z "$src" ] || [ ! -f "$src" ]; then
+    module_fail "jtag-bin" "source binary missing at: $src"
+  fi
+
+  # Idempotency: existing symlink already points at this src.
+  if [ -L "/usr/local/bin/jtag" ] && [ "$(readlink "/usr/local/bin/jtag")" = "$src" ]; then
+    module_skip "jtag-bin" "/usr/local/bin/jtag already symlinked to $src"
+    return 0
+  fi
+  if [ -L "$HOME/.local/bin/jtag" ] && [ "$(readlink "$HOME/.local/bin/jtag")" = "$src" ]; then
+    module_skip "jtag-bin" "~/.local/bin/jtag already symlinked to $src"
+    return 0
+  fi
+
+  # Tier 1: writable system path.
+  if [ -w "/usr/local/bin" ]; then
+    module_start "jtag-bin" "Symlinking jtag CLI → /usr/local/bin/jtag"
+    ln -sf "$src" "/usr/local/bin/jtag" \
+      || module_fail "jtag-bin" "ln -s to /usr/local/bin failed"
+    module_done "jtag-bin"
+    return 0
+  fi
+
+  # Tier 2: sudo with TTY.
+  if command -v sudo &>/dev/null && [ -t 0 ]; then
+    module_start "jtag-bin" "Symlinking jtag CLI → /usr/local/bin/jtag (needs sudo)"
+    ensure_sudo_warmed
+    sudo ln -sf "$src" "/usr/local/bin/jtag" \
+      || module_fail "jtag-bin" "sudo ln -s to /usr/local/bin failed"
+    module_done "jtag-bin"
+    return 0
+  fi
+
+  # Tier 3: user-space fallback.
+  module_start "jtag-bin" "Symlinking jtag CLI → ~/.local/bin/jtag (user-space fallback, no sudo)"
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$src" "$HOME/.local/bin/jtag" \
+    || module_fail "jtag-bin" "ln -s to ~/.local/bin failed"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) warn "~/.local/bin is not in your PATH. Add: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  esac
+  module_done "jtag-bin"
+}
+
 # ── mod_tailscale_check ─────────────────────────────────────
 # Tailscale powers cross-machine peer discovery + TLS for the grid
 # story. Optional for pure-localhost installs but the install-time
