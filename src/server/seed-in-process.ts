@@ -14,6 +14,7 @@ import { RoomEntity, type RoomType } from '../system/data/entities/RoomEntity';
 import { UserProfileEntity, type UserSpecialityType } from '../system/data/entities/UserProfileEntity';
 import type { UUID } from '../system/core/types/CrossPlatformUUID';
 import { PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel } from '../scripts/seed/personas';
+import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
 import { CONTENT_TYPE_CONFIGS } from '../shared/generated/ContentTypes';
 import { DataList } from '../commands/data/list/shared/DataListTypes';
 import { DataCreate } from '../commands/data/create/shared/DataCreateTypes';
@@ -337,11 +338,26 @@ export async function seedDatabase(): Promise<boolean> {
   console.log('🌱 Seeding database (in-process)...');
   const start = Date.now();
 
-  // Owner
-  const owner = await seeder.findOrCreateUser('joel', 'Developer', 'human');
+  // Owner — uses DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN ('owner') as the
+  // canonical uniqueId. SessionDaemonServer.findSeededHumanOwner() returns
+  // the FIRST type='human' user; if seed-in-process used a divergent
+  // uniqueId (e.g. hardcoded 'joel'), the find would still return SOMEONE
+  // type=human but rooms get created with the wrong owner_id, jtag CLI
+  // sessions auth as the canonical 'owner', and DataList rooms returns 0
+  // because owner_id doesn't match session-user.id.
+  // Pre-fix b69f 2026-05-02: chat-probe failed with "Room not found:
+  // general" precisely because seed wrote rooms.owner_id pointing at the
+  // 'joel' user but session-daemon picked 'owner'. Now: single source of
+  // truth via the canonical constant — matches scripts/seed-continuum.ts
+  // (line 182, 386) which has used PRIMARY_HUMAN correctly all along.
+  const owner = await seeder.findOrCreateUser(
+    DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN,
+    'Developer',
+    'human',
+  );
   // Emit event so SessionDaemon upgrades anonymous browser sessions to this owner
   void Events.emit('data:users:created', owner);
-  console.log(`  ✅ Owner: ${owner.displayName}`);
+  console.log(`  ✅ Owner: ${owner.displayName} (uniqueId: ${owner.uniqueId})`);
 
   // Rooms — validate recipeIds exist before creating anything
   const validRecipes = new Set(Object.keys(CONTENT_TYPE_CONFIGS));
