@@ -106,6 +106,17 @@ is_local_running() {
   docker compose ps node-server --format '{{.Health}}' 2>/dev/null | grep -q healthy
 }
 
+native_core_pids() {
+  pgrep -fl "continuum-core-server" 2>/dev/null | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'
+}
+
+is_native_core_running() {
+  local pids
+  pids=$(native_core_pids)
+  [ -n "$pids" ] || return 1
+  [ -S "$CONTINUUM_HOME/sockets/continuum-core.sock" ] || return 1
+}
+
 # ── Get best URL ────────────────────────────────────────────
 get_url() {
   # Local Docker running?
@@ -210,6 +221,11 @@ cmd_status() {
   echo ""
 
   # Local
+  local native_pids=""
+  if is_native_core_running; then
+    native_pids=$(native_core_pids)
+  fi
+
   if find_compose 2>/dev/null; then
     cd "$COMPOSE_DIR"
     local containers; containers=$(docker compose ps --format '{{.Name}} {{.Status}} {{.Health}}' 2>/dev/null || echo "")
@@ -234,10 +250,26 @@ cmd_status() {
         echo -e "  ${DIM}→ $url${RESET}"
         echo ""
       fi
+    elif [ -n "$native_pids" ]; then
+      echo -e "  ${GREEN}Local${RESET}  native continuum-core"
+      echo -e "    ${GREEN}●${RESET}  continuum-core-server        running (pid $native_pids)"
+      echo -e "    ${GREEN}●${RESET}  IPC                          $CONTINUUM_HOME/sockets/continuum-core.sock"
+      if command -v lsof &>/dev/null && lsof -nP -iTCP:9100 -sTCP:LISTEN &>/dev/null; then
+        echo -e "    ${GREEN}●${RESET}  TCP                          listening on :9100"
+      fi
+      echo ""
     else
       echo -e "  ${DIM}Local: not running${RESET}"
       echo ""
     fi
+  elif [ -n "$native_pids" ]; then
+    echo -e "  ${GREEN}Local${RESET}  native continuum-core"
+    echo -e "    ${GREEN}●${RESET}  continuum-core-server        running (pid $native_pids)"
+    echo -e "    ${GREEN}●${RESET}  IPC                          $CONTINUUM_HOME/sockets/continuum-core.sock"
+    if command -v lsof &>/dev/null && lsof -nP -iTCP:9100 -sTCP:LISTEN &>/dev/null; then
+      echo -e "    ${GREEN}●${RESET}  TCP                          listening on :9100"
+    fi
+    echo ""
   else
     echo -e "  ${DIM}Local: no installation found${RESET}"
     echo ""
@@ -522,7 +554,7 @@ cmd_tray_data() {
   local healthy=0 total=0
   if [ "$docker_ok" = "true" ] && find_compose 2>/dev/null; then
     cd "$COMPOSE_DIR"
-    healthy=$(docker compose ps --format '{{.Health}}' 2>/dev/null | grep -c healthy || echo 0)
+    healthy=$(docker compose ps --format '{{.Health}}' 2>/dev/null | awk '$0 == "healthy" { count++ } END { print count + 0 }')
     total=$(docker compose ps --format '{{.Name}}' 2>/dev/null | wc -l | tr -d ' ')
   fi
 
@@ -557,17 +589,27 @@ cmd_tray_data() {
 
   # Status
   local online_count
-  online_count=$(echo "$nodes_json" | grep -o '"online":true' | wc -l | tr -d ' ')
+  online_count=$(echo "$nodes_json" | awk 'BEGIN { count = 0 } { while (match($0, /"online":true/)) { count++; $0 = substr($0, RSTART + RLENGTH) } } END { print count }')
 
   local status="red" status_text="Not running"
+  local native_core="false"
+  if is_native_core_running; then
+    native_core="true"
+  fi
   if [ "$docker_ok" = "false" ] && [ "$online_count" -gt 0 ]; then
     status="yellow"; status_text="Docker off, $online_count grid nodes"
   elif [ "$docker_ok" = "false" ]; then
-    status="red"; status_text="Docker not running"
+    if [ "$native_core" = "true" ]; then
+      status="green"; status_text="Native core running, Docker off"
+    else
+      status="red"; status_text="Docker not running"
+    fi
   elif [ "$healthy" -ge 4 ]; then
     status="green"; status_text="$healthy services, $online_count nodes"
   elif [ "$healthy" -gt 0 ]; then
     status="yellow"; status_text="$healthy services, $online_count nodes"
+  elif [ "$native_core" = "true" ]; then
+    status="green"; status_text="Native core running"
   elif [ "$online_count" -gt 0 ]; then
     status="yellow"; status_text="$online_count grid nodes"
   fi
@@ -577,6 +619,7 @@ cmd_tray_data() {
   "status": "$status",
   "statusText": "$status_text",
   "docker": $docker_ok,
+  "nativeCore": $native_core,
   "services": {"healthy": $healthy, "total": $total},
   "tailnet": "$suffix",
   "nodes": $nodes_json,
