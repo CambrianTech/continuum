@@ -587,7 +587,21 @@ cmd_update() {
   fi
   cd "$COMPOSE_DIR"
   echo -e "${BLUE}📥 Updating...${RESET}"
-  git pull origin main
+  # Was `git pull origin main` — fails with 'divergent branches' whenever
+  # the local checkout has commits not on main (canary worktrees, agent
+  # tab branches, anything that's wandered off main). Carl-UX QA #101
+  # from codex-b741 2026-05-03: every continuum-update on Joel's canary
+  # install bailed here. Switch to a destructive-but-correct fast-forward:
+  # fetch + reset --hard to origin/main. The install dir is meant to be
+  # a managed deployment, not a place to keep local edits — anyone with
+  # commits to keep should be working in a separate worktree, which the
+  # bare-repo + worktree pattern already supports.
+  git fetch origin main || { echo -e "${RED}❌ git fetch failed${RESET}"; exit 1; }
+  if ! git diff --quiet HEAD || ! git diff --cached --quiet; then
+    echo -e "${YELLOW}⚠️  Uncommitted changes in $COMPOSE_DIR — stashing as 'continuum-update-backup-$(date +%s)'${RESET}"
+    git stash push -u -m "continuum-update-backup-$(date +%s)" || true
+  fi
+  git reset --hard origin/main || { echo -e "${RED}❌ git reset failed${RESET}"; exit 1; }
   echo -e "${BLUE}🔨 Rebuilding...${RESET}"
   docker compose build --parallel
   echo -e "${BLUE}🔄 Restarting...${RESET}"
