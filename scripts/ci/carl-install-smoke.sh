@@ -180,6 +180,33 @@ done
 
 echo "✅ root page looks like real HTML (${ROOT_BYTES} bytes, no failure markers)"
 
+# ── 3b. Headless screenshot — what Carl ACTUALLY sees in the browser ──
+# curl gives the server-rendered HTML shell. The chat UI itself loads via
+# JS — could be a blank chat with no personas or an empty room and curl
+# wouldn't catch it. Use chromium headless to capture what a real browser
+# renders. Wait a few seconds for the JS to populate tabs, personas,
+# rooms before snapping. Continue on screenshot failure (chrome may not
+# be on the PATH for non-CI runs); this is diagnostic, not gating.
+PAGE_PNG="${CARL_INSTALL_DIR}.page.png"
+CHROME_BIN="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+if [ -n "$CHROME_BIN" ]; then
+  echo ""
+  echo "━━━ headless screenshot via $CHROME_BIN (waits 8s for JS to render) ━━━"
+  sleep 8
+  "$CHROME_BIN" --headless --disable-gpu --no-sandbox --hide-scrollbars \
+    --window-size=1280,1024 \
+    --screenshot="$PAGE_PNG" \
+    --virtual-time-budget=8000 \
+    "http://localhost:9003/" >/dev/null 2>&1 || true
+  if [ -f "$PAGE_PNG" ]; then
+    echo "  ✓ screenshot saved: $PAGE_PNG ($(stat -c%s "$PAGE_PNG" 2>/dev/null || stat -f%z "$PAGE_PNG") bytes)"
+  else
+    echo "  ⚠ screenshot capture failed (non-fatal)"
+  fi
+else
+  echo "  ⚠ no chromium/chrome on PATH — skipping browser screenshot"
+fi
+
 # ── 4. End-to-end chat: Carl types a message, expects an AI reply ─────
 # Per Joel's "OOTB on MacBook Air, free, accessible" + "canary e2e
 # working from curl, Carl's case" — page-render is necessary but not

@@ -134,7 +134,7 @@ jobs:
             done
             docker compose -f "$dir/docker-compose.yml" ps -a > "${dir}.compose-ps.log" 2>&1
           done
-      - name: Upload install + page + chat + docker logs artifacts on failure
+      - name: Upload install + page + chat + docker logs + screenshot artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -142,6 +142,7 @@ jobs:
           path: |
             /tmp/carl-smoke-*.install.log
             /tmp/carl-smoke-*.page.html
+            /tmp/carl-smoke-*.page.png
             /tmp/carl-smoke-*.chat.log
             /tmp/carl-smoke-*.continuum-core.log
             /tmp/carl-smoke-*.node-server.log
