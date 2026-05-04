@@ -29,25 +29,24 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')})`);
+  // Seed BEFORE declaring the server ready. Old code fired auto-seed
+  // via setTimeout(5000) and swallowed errors to console.warn — health
+  // probes returned 200 before any room/persona existed, so chat/send
+  // probes hit "Room not found: general" silently. Carl-install-smoke
+  // caught this on PR #1038. Now seed is a blocking milestone: server
+  // ready ≡ rooms + personas exist. Seed errors propagate to exit 1.
+  try {
+    const { seedDatabase } = await import('./seed-in-process');
+    const seeded = await seedDatabase();
+    console.log(seeded ? '✅ Database seeded' : '✅ Database already seeded');
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`❌ Auto-seed FAILED: ${msg}`);
+    console.error('   Server cannot serve chat without seeded rooms/personas. Exiting.');
+    process.exit(1);
+  }
 
-  // Auto-seed database if empty (first run).
-  // In-process via Commands.execute() — zero subprocess spawns.
-  // ~200MB instead of 2GB, <5 seconds instead of 30+.
-  setTimeout(async () => {
-    try {
-      const { seedDatabase } = await import('./seed-in-process');
-      const seeded = await seedDatabase();
-      if (seeded) {
-        console.log('✅ Database seeded');
-      } else {
-        console.log('✅ Database already seeded');
-      }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn(`⚠️ Auto-seed: ${msg}`);
-    }
-  }, 5000);
+  console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')} → seed)`);
 
   // Keep process alive — server event loop runs in background
 }
