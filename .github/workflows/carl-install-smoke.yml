@@ -71,12 +71,37 @@ jobs:
       - name: Login to ghcr.io (so install.sh can pull pre-built images)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      - name: Compute SHORT_SHA for image tag pin
+        id: shortsha
+        run: |
+          # SHA-pinned image tag. Why: smoke MUST exercise images built
+          # from THIS PR's source — :latest / :canary are mutable and have
+          # historically gone stale (April 2026: a 2-week-old :canary tag
+          # silently passed smoke against pre-fix bits, validating nothing
+          # about the actual PR). 7-char short SHA matches what
+          # push-image.sh / push-current-arch.sh tag on push (`git rev-parse
+          # --short HEAD` is 7 by default). The image either exists at this
+          # exact ref (dev pushed for this SHA) or smoke fails with
+          # "manifest unknown" — at which point the dev applies the
+          # `ci-build:<slice>` label OR rebases onto canary HEAD where a
+          # fresh image exists. Either way, smoke can never silently pull
+          # stale bits.
+          FULL_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          SHORT_SHA="${FULL_SHA:0:7}"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Pinning CONTINUUM_IMAGE_TAG=$SHORT_SHA (from $FULL_SHA)"
+
       - name: Run carl-install smoke
         env:
           # Pass the PR HEAD sha so the smoke fetches the install.sh from
           # THIS PR (not main). Falls back to manual workflow_dispatch input
           # when not in a PR context.
           CARL_INSTALL_REF: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
+          # See "Compute SHORT_SHA" step above for the rationale on
+          # SHA-pinning. install.sh honors $CONTINUUM_IMAGE_TAG and
+          # substitutes it into docker-compose's
+          # `ghcr.io/cambriantech/continuum-*:${CONTINUUM_IMAGE_TAG:-latest}`.
+          CONTINUUM_IMAGE_TAG: ${{ steps.shortsha.outputs.short_sha }}
           # 25-min cap on the docker-only install. Hybrid (Mac source-build)
           # path would exceed this — by design, that's the gate firing on
           # the README/install mismatch.

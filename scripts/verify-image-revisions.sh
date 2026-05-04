@@ -261,14 +261,21 @@ if [ "$WARN_ARM64" -ne 0 ]; then
   echo ""
   echo "⚠️  arm64 stale on $(wc -l < "$STALE_ARM64_OUT" | tr -d ' ') image(s):"
   while IFS= read -r REF; do echo "     - $REF"; done < "$STALE_ARM64_OUT"
-  echo "   Mac M-series dev: run \`scripts/push-current-arch.sh\` to refresh."
-  echo "   Not blocking — CI auto-rebuild will catch this once #965 lands GitHub arm64 runner support."
+  echo "   Mac M-series dev: \`cd src && npm run docker:push\` to refresh,"
+  echo "   OR apply ci-build:arm64 / ci-build:core / ci-build:livekit-bridge label to PR."
 fi
 
 if [ "$FAILED" -ne 0 ]; then
   echo ""
   echo "❌ STALE-IMAGE GATE FAILED — amd64 image(s) at :$TAG built from a different commit."
-  echo "   The user-facing target must always be current. Re-push from the Linux/amd64 host and re-run."
+  echo ""
+  echo "   To unblock:"
+  echo "     1) Preferred — Linux/amd64 host:  cd src && npm run docker:push"
+  echo "        (Phase 0 cargo test + Phase 2 slice tests on real hardware)"
+  echo "     2) Escape hatch — apply ci-build:<slice> label to the PR:"
+  echo "        ci-build:vulkan | ci-build:cuda | ci-build:core |"
+  echo "        ci-build:livekit-bridge | ci-build:amd64 | ci-build:all"
+  echo "        (CI builds the slice; Phase 0 skipped — no GPU/models in CI)"
   exit 1
 fi
 echo ""
