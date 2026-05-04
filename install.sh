@@ -425,12 +425,14 @@ EOF
   esac
   case "$IC_GPU_PATH" in
     dmr-*)
-      if ! docker model ls 2>/dev/null | grep -q "qwen3.5-4b-code-forged"; then
-        info "Pulling default persona model into Docker Model Runner (~2.7GB, first install only)..."
-        docker model pull "$PERSONA_MODEL" || warn "Model pull failed — chat will error until model is available. Retry: docker model pull $PERSONA_MODEL"
-      else
-        ok "Persona model already in DMR: $PERSONA_MODEL"
-      fi
+      # Per Joel 2026-05-04: "all the models must download and run on GPU"
+      # + "we MUST have this work from ONE source of truth". DMR's
+      # `docker model pull` was the Mac-only path that didn't work on
+      # Linux. Models now download via the model-init container reading
+      # src/shared/models.json — same path on Mac/Linux/Windows. The DMR
+      # branch here remains for KV-cache-config + vLLM-MLX install (which
+      # are still useful tuning), but no longer pulls the model.
+      ok "Persona model download deferred to model-init container (reads src/shared/models.json)"
       # Cap llama-server's per-slot KV cache reservation, sized to actual
       # physical RAM. Without this cap each slot reserves the full model
       # context (262144 tokens for Qwen3.5), ballooning
@@ -483,11 +485,10 @@ EOF
             # Pull MLX-format Qwen3.5-4B for vllm-metal routing.
             # DMR auto-routes MLX models to vllm-metal when installed.
             MLX_MODEL="hf.co/mlx-community/Qwen3.5-4B-MLX-4bit"
-            if ! docker model ls 2>/dev/null | grep -q "Qwen3.5-4B-MLX"; then
-              info "Pulling MLX-format Qwen3.5-4B (~2.5GB, for 3x faster inference)..."
-              docker model pull "$MLX_MODEL" \
-                || warn "MLX model pull failed. GGUF via llama.cpp will be used instead."
-            fi
+            # MLX-format model also moves to registry-driven download.
+            # Add MLX entry to src/shared/models.json + auto_download.always
+            # if/when we want vllm-metal to find it on disk.
+            ok "MLX model download deferred to model-init (add to src/shared/models.json to enable)"
           else
             warn "vLLM install failed (requires Docker Desktop 4.62+). llama.cpp Metal will be used."
           fi

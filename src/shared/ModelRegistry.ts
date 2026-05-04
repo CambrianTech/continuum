@@ -20,6 +20,31 @@ import * as path from 'path';
 export type ModelKind = 'chat-llm' | 'vision-llm' | 'embedding' | 'stt' | 'tts' | 'tts-trainable' | 'vad' | 'chat-llm-fast';
 export type Tier = 'mba' | 'mid' | 'full';
 
+/**
+ * Canonical symbolic refs that personas store in DB. Code reads these
+ * constants — never hardcode the underlying strings. Joel rule
+ * 2026-05-04: "define constants not magic strings".
+ *
+ * Adding a new symbolic ref: add the constant here, add the entry to
+ * src/shared/models.json `symbolic_refs{}`, document below.
+ */
+export const SYMBOLIC_REFS = {
+  /** Local chat model — tier-resolved. Resolves to tiers[host_tier].default_chat. */
+  LOCAL_DEFAULT: 'local-default',
+  /** Native-vision model. Currently bound to qwen2-vl-7b. */
+  VISION_DEFAULT: 'vision-default',
+  /** Fast classification/gating model. */
+  GATING: 'gating',
+} as const;
+export type SymbolicRef = typeof SYMBOLIC_REFS[keyof typeof SYMBOLIC_REFS];
+
+/** Tier constants — code uses these instead of bare 'mba' / 'mid' / 'full' strings. */
+export const TIERS = {
+  MBA: 'mba' as const,
+  MID: 'mid' as const,
+  FULL: 'full' as const,
+};
+
 export interface ModelSpec {
   kind: ModelKind;
   hf_repo: string;

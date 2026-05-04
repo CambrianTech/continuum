@@ -16,6 +16,7 @@
 
 import { generateUniqueId } from '../../system/data/utils/UniqueIdUtils';
 import { LOCAL_MODELS } from '../../system/shared/Constants';
+import { SYMBOLIC_REFS } from '../../shared/ModelRegistry';
 import { execSync } from 'child_process';
 
 export interface PersonaConfig {
@@ -24,7 +25,15 @@ export interface PersonaConfig {
   provider?: string;
   type: 'agent' | 'persona';
   voiceId?: string;  // TTS speaker ID (0-246 for LibriTTS multi-speaker model)
-  modelId?: string;  // AI model ID (e.g., 'qwen3-omni-flash-realtime' for audio-native)
+  modelId?: string;  // Concrete AI model ID — LEGACY/cached. Prefer modelRef.
+  modelRef?: string;  // Symbolic ref into src/shared/models.json
+                     // ('local-default', 'vision-default', 'gating'). Resolved
+                     // at request time by ModelRegistry → current registry
+                     // value picks up automatically when models.json changes.
+                     // Per Joel 2026-05-04: "update the existing seeded values
+                     // so the personas PICK UP THE MODEL change and arent
+                     // stuck in the past." Symbolic refs eliminate stale-DB
+                     // drift entirely.
   isAudioNative?: boolean;  // True if model supports direct audio I/O (no STT/TTS needed)
   apiKeyEnv?: string;  // Environment variable name for the API key (e.g., 'ANTHROPIC_API_KEY')
   minVramGB?: number;  // Minimum VRAM in GB for local inference (candle provider)
@@ -56,9 +65,9 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   // error if neither is available. Never silent Candle-CPU fallback.
   // 4B GGUF is the universal default — fits every supported machine, fast
   // on Metal/Vulkan/CUDA. Power users upgrade to 27B manually (HF-gated).
-  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'local', type: 'persona', voiceId: '50', minVramGB: 3, modelId: LOCAL_MODELS.DEFAULT },
-  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'local', type: 'persona', voiceId: '75', minVramGB: 5, modelId: LOCAL_MODELS.DEFAULT },
-  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'local', type: 'persona', voiceId: '100', minVramGB: 5, modelId: LOCAL_MODELS.DEFAULT },
+  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'local', type: 'persona', voiceId: '50', minVramGB: 3, modelRef: SYMBOLIC_REFS.LOCAL_DEFAULT },
+  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'local', type: 'persona', voiceId: '75', minVramGB: 5, modelRef: SYMBOLIC_REFS.LOCAL_DEFAULT },
+  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'local', type: 'persona', voiceId: '100', minVramGB: 5, modelRef: SYMBOLIC_REFS.LOCAL_DEFAULT },
 
   // Cloud provider personas (each needs its own API key)
   { uniqueId: generateUniqueId('DeepSeek'), displayName: 'DeepSeek Assistant', provider: 'deepseek', type: 'persona', voiceId: '125', apiKeyEnv: 'DEEPSEEK_API_KEY' },
@@ -68,7 +77,7 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   { uniqueId: generateUniqueId('Grok'), displayName: 'Grok', provider: 'xai', type: 'persona', voiceId: '220', apiKeyEnv: 'XAI_API_KEY' },
   { uniqueId: generateUniqueId('Together'), displayName: 'Together Assistant', provider: 'together', type: 'persona', voiceId: '30', apiKeyEnv: 'TOGETHER_API_KEY' },
   { uniqueId: generateUniqueId('Fireworks'), displayName: 'Fireworks AI', provider: 'fireworks', type: 'persona', voiceId: '60', apiKeyEnv: 'FIREWORKS_API_KEY' },
-  { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', provider: 'local', type: 'persona', voiceId: '90', minVramGB: 4, modelId: LOCAL_MODELS.DEFAULT },
+  { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', provider: 'local', type: 'persona', voiceId: '90', minVramGB: 4, modelRef: SYMBOLIC_REFS.LOCAL_DEFAULT },
   { uniqueId: generateUniqueId('Sentinel'), displayName: 'Sentinel', provider: 'sentinel', type: 'persona', voiceId: '240' },
   { uniqueId: generateUniqueId('Gemini'), displayName: 'Gemini', provider: 'google', type: 'persona', voiceId: '115', apiKeyEnv: 'GOOGLE_API_KEY' },
 
@@ -91,7 +100,7 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
     type: 'persona',
     voiceId: '105',
     minVramGB: 5,
-    modelId: LOCAL_MODELS.VISION,
+    modelRef: SYMBOLIC_REFS.VISION_DEFAULT,
   },
 
   // Audio AI persona is intentionally NOT seeded yet. The Qwen2-Audio-7B

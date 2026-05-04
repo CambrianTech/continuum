@@ -295,15 +295,31 @@ async function syncPersonaProviders(_seeder: DatabaseSeeder): Promise<void> {
       // Vision AI on docker carl ended up running a code model with no
       // vision capability — see #957. Pass config.modelId through so the
       // persona seed's declared model survives every resync.
+      //
+      // 2026-05-04: PersonaConfig now prefers symbolic modelRef (e.g.
+      // 'local-default', 'vision-default') over hardcoded modelId. This
+      // resolves to the CURRENT registry value at seed time so changing
+      // src/shared/models.json automatically updates seeded personas
+      // ("update the existing seeded values so the personas PICK UP THE
+      // MODEL change and arent stuck in the past" — Joel 2026-05-04).
+      // The reconciler check below + this resolve will UPDATE existing
+      // rows when the registry changes.
       const currentModelId = (user as Record<string, unknown>).modelConfig
         ? ((user as Record<string, unknown>).modelConfig as Record<string, unknown>).model
         : undefined;
-      const desiredModelId = config.modelId;
+      let desiredModelId = config.modelId;
+      if (!desiredModelId && config.modelRef) {
+        const { resolveModel, tierFromRamGB } = await import('../shared/ModelRegistry');
+        const ramGB = Math.round((require('os').totalmem() / 1024 / 1024 / 1024));
+        const tier = tierFromRamGB(ramGB);
+        const spec = resolveModel(config.modelRef, tier);
+        desiredModelId = spec.hf_repo;
+      }
       const providerChanged = currentProvider !== config.provider;
       const modelChanged = desiredModelId !== undefined && currentModelId !== desiredModelId;
 
       if (providerChanged || modelChanged) {
-        const newConfig = getModelConfigForProvider(config.provider, config.modelId);
+        const newConfig = getModelConfigForProvider(config.provider, desiredModelId);
         await DataUpdate.execute({
           collection: 'users',
           dbHandle: 'default',
@@ -381,14 +397,31 @@ export async function seedDatabase(): Promise<boolean> {
   const localModel = selectLocalModel(0);
   const created: Map<string, UserEntity> = new Map();
 
+  // Resolve symbolic modelRef → concrete modelId via ModelRegistry. Each
+  // persona's stored modelId stays synced with src/shared/models.json so
+  // changing the registry value updates seeded personas on next startup
+  // (Joel 2026-05-04: "personas PICK UP THE MODEL change and arent stuck
+  // in the past").
+  const { resolveModel, tierFromRamGB } = await import('../shared/ModelRegistry');
+  const seedRamGB = Math.round(require('os').totalmem() / 1024 / 1024 / 1024);
+  const seedTier = tierFromRamGB(seedRamGB);
+
   for (const config of personas) {
     try {
+      let resolvedModelId = config.modelId;
+      if (!resolvedModelId && config.modelRef) {
+        try {
+          resolvedModelId = resolveModel(config.modelRef, seedTier).hf_repo;
+        } catch (e) {
+          console.warn(`  ⚠️ ${config.displayName}: modelRef '${config.modelRef}' did not resolve: ${e}`);
+        }
+      }
       const user = await seeder.findOrCreateUser(
         config.uniqueId,
         config.displayName,
         config.type === 'agent' ? 'agent' : 'persona',
         config.provider,
-        config.modelId,
+        resolvedModelId,
       );
       created.set(config.uniqueId, user);
     } catch (err) {
