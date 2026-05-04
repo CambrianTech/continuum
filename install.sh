@@ -943,6 +943,39 @@ fi
 info "Starting support services..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS up -d
 
+
+# Some published continuum-core images may predate the in-binary socket chmod
+# fix (#1011). On Linux installs the host-side jtag CLI connects to the
+# bind-mounted core socket — when the running image is older than #1011, the
+# socket comes up root-owned without world-perms and host jtag gets EACCES.
+# Workaround at install time until every architecture's heavy core image
+# is refreshed past #1011.
+fix_core_socket_permissions() {
+  local socket_dir="$CONTINUUM_DATA/sockets"
+  local core_socket="$socket_dir/continuum-core.sock"
+
+  [ -d "$socket_dir" ] || return 1
+
+  chmod 755 "$socket_dir" 2>/dev/null \
+    || sudo -n chmod 755 "$socket_dir" 2>/dev/null \
+    || warn "Could not chmod $socket_dir; host jtag may get EACCES"
+
+  [ -S "$core_socket" ] || return 1
+
+  chmod 666 "$core_socket" 2>/dev/null \
+    || sudo -n chmod 666 "$core_socket" 2>/dev/null \
+    || warn "Could not chmod $core_socket; host jtag may get EACCES"
+}
+
+if [[ "$OS" != "Darwin" ]]; then
+  for _ in $(seq 1 60); do
+    if fix_core_socket_permissions; then
+      break
+    fi
+    sleep 1
+  done
+fi
+
 # ── 8b. Start continuum-core natively on Mac ───────────────
 # Mac runs continuum-core as a native host process so it can link Metal
 # directly. `npm start` drives the full build (cargo build --release
