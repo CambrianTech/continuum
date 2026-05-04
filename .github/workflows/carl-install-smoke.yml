@@ -68,6 +68,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Install mesa-vulkan-drivers (llvmpipe ICD for no-GPU CI runner)
+        # The default continuum-core-vulkan binary calls Vulkan via the loader.
+        # On ubuntu-latest there's no GPU hardware → no real ICD → loader returns
+        # zero devices → binary panics per Joel's "lack of GPU integration is
+        # forbidden" rule. mesa-vulkan-drivers installs the llvmpipe software
+        # ICD so the loader returns a (software) device, the binary sees a real
+        # Vulkan API surface, and the GPU code path is exercised exactly like
+        # it would be on a hardware-GPU host. vulkan-tools provides vulkaninfo
+        # for the slice probes (test-slices.sh).
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          echo "vulkaninfo summary:"
+          vulkaninfo --summary 2>&1 | head -20 || true
+
       - name: Login to ghcr.io (so install.sh can pull pre-built images)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 

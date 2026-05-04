@@ -887,9 +887,24 @@ elif [[ "$HAS_GPU" == "true" ]]; then
   if [ -f "docker-compose.gpu.yml" ]; then
     COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.gpu.yml"
   else
-    warn "docker-compose.gpu.yml missing — GPU detected but cuda override won't apply. Continuing on CPU images."
+    warn "docker-compose.gpu.yml missing — GPU detected but cuda override won't apply. Continuing on Vulkan base image (still GPU-API; will use llvmpipe ICD if no vulkan driver)."
   fi
   COMPOSE_ARGS="--profile gpu"
+fi
+# Linux without a CUDA GPU: base docker-compose.yml uses continuum-core-vulkan.
+# On real-driver hosts (Intel/AMD with vulkan) this picks up the hardware ICD;
+# on hosts without a driver, mesa-vulkan-drivers (apt) provides llvmpipe as a
+# software ICD so the Vulkan code path runs without panicking. Joel's
+# 2026-04-23 rule: GPU integration is forbidden to fall back. Vulkan-via-
+# llvmpipe is GPU integration (loader + ICD), not a CPU fallback.
+if [[ "$OS" == "Linux" ]] && [[ "$HAS_GPU" != "true" ]]; then
+  if ! command -v vulkaninfo >/dev/null 2>&1; then
+    warn "vulkaninfo not found — install mesa-vulkan-drivers vulkan-tools so the Vulkan loader has the llvmpipe software ICD: sudo apt-get install -y mesa-vulkan-drivers vulkan-tools"
+  elif ! vulkaninfo --summary 2>/dev/null | grep -qE "deviceName"; then
+    warn "Vulkan loader present but enumerated zero devices. continuum-core-vulkan will panic on startup. Install: sudo apt-get install -y mesa-vulkan-drivers"
+  else
+    info "Vulkan loader OK — will use $(vulkaninfo --summary 2>/dev/null | grep -E 'deviceName' | head -1 | sed 's/.*= *//')"
+  fi
 fi
 
 # ── 7. Pull support-service images ─────────────────────────
