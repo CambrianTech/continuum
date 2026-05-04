@@ -112,7 +112,29 @@ jobs:
           SKIP_TEARDOWN: '0'
         run: bash scripts/ci/carl-install-smoke.sh
 
-      - name: Upload install + page + chat artifacts on failure
+      - name: Capture docker logs from all containers on failure (continuum-core,
+          node-server, model-init, widget-server, livekit-bridge)
+        if: failure()
+        run: |
+          # Find the carl-smoke compose project and dump every container's
+          # logs. Without this we get install.log + page + chat — all OUTSIDE
+          # the containers — but never see WHY continuum-core / node-server
+          # didn't reply (silent inference failure was the actual blocker
+          # 2026-05-04 on PR #1038). Capture per-container so the artifact
+          # shows the inference path, not just the smoke wrapper output.
+          set +e
+          for dir in /tmp/carl-smoke-*; do
+            [ -d "$dir" ] || continue
+            [ -f "$dir/docker-compose.yml" ] || continue
+            for svc in continuum-core node-server model-init widget-server livekit-bridge; do
+              docker compose -f "$dir/docker-compose.yml" logs --no-color --timestamps "$svc" \
+                > "${dir}.${svc}.log" 2>&1
+              docker compose -f "$dir/docker-compose.yml" ps "$svc" \
+                > "${dir}.${svc}.ps" 2>&1
+            done
+            docker compose -f "$dir/docker-compose.yml" ps -a > "${dir}.compose-ps.log" 2>&1
+          done
+      - name: Upload install + page + chat + docker logs artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -121,5 +143,12 @@ jobs:
             /tmp/carl-smoke-*.install.log
             /tmp/carl-smoke-*.page.html
             /tmp/carl-smoke-*.chat.log
+            /tmp/carl-smoke-*.continuum-core.log
+            /tmp/carl-smoke-*.node-server.log
+            /tmp/carl-smoke-*.model-init.log
+            /tmp/carl-smoke-*.widget-server.log
+            /tmp/carl-smoke-*.livekit-bridge.log
+            /tmp/carl-smoke-*.compose-ps.log
+            /tmp/carl-smoke-*.*.ps
           retention-days: 7
           if-no-files-found: ignore
