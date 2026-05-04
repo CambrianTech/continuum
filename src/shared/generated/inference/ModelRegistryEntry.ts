@@ -3,14 +3,27 @@
 /**
  * Single source of truth for local model metadata.
  *
- * Model registry entry loaded from model_registry.json (embedded at compile time).
- * TypeScript gets these types via ts-rs — NO hand-written duplicates.
+ * Model registry entry deserialized from src/shared/models.json (embedded at
+ * compile time). TypeScript gets these types via ts-rs — NO hand-written
+ * duplicates.
+ *
+ * **Schema mirrors `src/shared/ModelRegistry.ts`'s `ModelSpec`** so both
+ * runtimes read the same JSON. Field names use the new SSOT shape
+ * (`hf_repo`, `min_ram_gb`); legacy aliases (`repo`, `min_memory_gb`)
+ * kept via `serde(alias = ...)` so any third-party consumer of the old
+ * embedded JSON keeps working until it migrates.
  */
 export type ModelRegistryEntry = { 
 /**
- * HuggingFace repo ID (canonical source)
+ * HuggingFace repo ID (canonical source).
+ * New SSOT field name; `repo` accepted as legacy alias.
  */
-repo: string, 
+hf_repo: string, 
+/**
+ * Model kind: "chat-llm", "vision-llm", "embedding", "stt", "tts", "vad".
+ * Optional for back-compat with the legacy schema.
+ */
+kind?: string, 
 /**
  * Serialization format: "gguf" or "safetensors"
  */
@@ -20,14 +33,27 @@ format?: string,
  */
 architecture?: string, 
 /**
+ * Files belonging to this model (relative to repo root).
+ */
+files?: Array<string>, 
+/**
+ * Approximate disk footprint in GB.
+ */
+size_gb?: number, 
+/**
+ * Minimum host RAM in GB to run this model.
+ * New SSOT field name; `min_memory_gb` accepted as legacy alias.
+ */
+min_ram_gb?: number, 
+/**
  * Human-readable description
  */
 description?: string, 
 /**
- * Minimum GPU memory in GB to run this model
- */
-min_memory_gb?: number, 
-/**
  * Chat template name: "qwen2", "llama3", "chatml"
  */
-chat_template?: string, };
+chat_template?: string, 
+/**
+ * Whether this model is auto-loaded at startup (informational).
+ */
+auto_load?: boolean, };

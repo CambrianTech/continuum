@@ -109,6 +109,26 @@
       "size_gb": 0.5,
       "chat_template": "qwen2",
       "description": "Tiny gating/classification model. Fast, low-latency decisions before full inference."
+    },
+    "coder": {
+      "kind": "chat-llm",
+      "hf_repo": "continuum-ai/qwen2.5-coder-14b-compacted",
+      "format": "gguf",
+      "architecture": "qwen2",
+      "size_gb": 9.0,
+      "min_ram_gb": 12,
+      "chat_template": "qwen2",
+      "description": "Coding agent — Qwen2.5-Coder-14B compacted (Q5_K_S, 9GB). Used by LocalModelRouter via LOCAL_MODELS.CODING_AGENT."
+    },
+    "coder-bf16": {
+      "kind": "chat-llm",
+      "hf_repo": "continuum-ai/qwen2.5-coder-14b-compacted",
+      "format": "safetensors",
+      "architecture": "qwen2",
+      "size_gb": 28.0,
+      "min_ram_gb": 32,
+      "chat_template": "qwen2",
+      "description": "Coding agent BF16 batch-prefill variant — explicitly selects safetensors backend (32GB+)."
     }
   },
 

@@ -80,8 +80,28 @@ let _cached: RegistryFile | null = null;
 
 function load(): RegistryFile {
   if (_cached) return _cached;
-  const registryPath = path.join(__dirname, 'models.json');
-  const raw = fs.readFileSync(registryPath, 'utf8');
+  // Resolve registry across three runtime shapes:
+  //   1. Compiled: __dirname=dist/shared, JSON copied alongside by build script.
+  //   2. tsx dev: __dirname=src/shared, JSON sits next to ModelRegistry.ts.
+  //   3. dist-without-copy: __dirname=dist/shared, source JSON at ../../src/shared/.
+  // Try each in order so the first one that exists wins. Surface a clear
+  // error if none — no silent fallback to default model.
+  const candidates = [
+    path.join(__dirname, 'models.json'),
+    path.join(__dirname, '..', '..', 'src', 'shared', 'models.json'),
+    path.join(__dirname, '..', '..', '..', 'src', 'shared', 'models.json'),
+  ];
+  let found: string | undefined;
+  for (const p of candidates) {
+    if (fs.existsSync(p)) { found = p; break; }
+  }
+  if (!found) {
+    throw new Error(
+      `ModelRegistry: models.json not found. Tried: ${candidates.join(', ')}. ` +
+      `Build script must copy shared/models.json → dist/shared/models.json.`
+    );
+  }
+  const raw = fs.readFileSync(found, 'utf8');
   _cached = JSON.parse(raw) as RegistryFile;
   return _cached;
 }
