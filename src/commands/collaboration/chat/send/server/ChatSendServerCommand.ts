@@ -58,14 +58,17 @@ export class ChatSendServerCommand extends ChatSendCommand {
     }
 
     // 2. Get sender — resolve identity from whoever initiated the command.
-    // Priority: explicit senderId > params.userId (auto-injected) > human owner fallback.
+    // Priority: explicit senderId (if it resolves) > seeded human owner.
     // Skip system UUID (00000...) — sentinels/Academy run as SYSTEM but can't be a chat sender.
+    // CLI and agent sessions inject session-scoped UUIDs in params.userId that are
+    // NOT seeded users — attempting to find them throws. Fall back to the seeded
+    // human owner instead so attribution lands on the actual person, not on an
+    // ephemeral session ID. Caught by carl-install-smoke 2026-05-04 (PR #1038).
     const { isSystemUUID } = await import('@system/core/types/SystemScopes');
     const rawSenderId = params.senderId || params.userId;
     const senderId = rawSenderId && !isSystemUUID(rawSenderId as UUID) ? rawSenderId : undefined;
-    const sender = senderId
-      ? await this.findUserById(senderId as UUID, params)
-      : await this.findHumanOwnerOrFallback(params);
+    const explicit = senderId ? await this.findUserByIdOrNull(senderId as UUID, params) : null;
+    const sender = explicit ?? await this.findHumanOwnerOrFallback(params);
 
     // 3. Create message entity
     const messageEntity = new ChatMessageEntity();
@@ -236,14 +239,22 @@ export class ChatSendServerCommand extends ChatSendCommand {
       return { id: owner.id, entity: owner };
     }
 
-    // No human owner seeded yet — fall back to session userId
-    return this.findUserById(params.userId, params);
+    // No human owner seeded yet — try the session userId one more time.
+    // If that's also missing, fail loudly with a clear message — chat without
+    // any seeded user is broken state worth surfacing.
+    const fallback = await this.findUserByIdOrNull(params.userId, params);
+    if (fallback) return fallback;
+    throw new Error(
+      `No seeded human owner found and session userId ${params.userId} doesn't exist either. ` +
+      `Seed appears broken — run 'npm run data:seed' or check orchestrator logs.`
+    );
   }
 
   /**
-   * Find user by ID
+   * Find user by ID, returning null if not found (no throw).
+   * Callers compose with `?? fallback`.
    */
-  private async findUserById(userId: UUID, params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
+  private async findUserByIdOrNull(userId: UUID, params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity } | null> {
     const result = await DataList.execute<UserEntity>({
         dbHandle: 'default',
         collection: UserEntity.collection,
@@ -258,8 +269,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
       const user = result.items[0];
       return { id: user.id, entity: user };
     }
-
-    throw new Error(`User not found: ${userId}`);
+    return null;
   }
 
 
