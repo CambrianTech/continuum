@@ -31,23 +31,10 @@ async function main(): Promise<void> {
 
   console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')})`);
 
-  // Auto-seed database if empty (first run).
-  // In-process via Commands.execute() — zero subprocess spawns.
-  // ~200MB instead of 2GB, <5 seconds instead of 30+.
-  setTimeout(async () => {
-    try {
-      const { seedDatabase } = await import('./seed-in-process');
-      const seeded = await seedDatabase();
-      if (seeded) {
-        console.log('✅ Database seeded');
-      } else {
-        console.log('✅ Database already seeded');
-      }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn(`⚠️ Auto-seed: ${msg}`);
-    }
-  }, 5000);
+  // Seed runs synchronously inside SystemOrchestrator before SERVER_READY
+  // milestone fires (see SystemOrchestrator.ts). No duplicate seed here —
+  // the previous setTimeout(5000) raced the orchestrator's setTimeout(3000)
+  // and could re-enter findOrCreateRoom on a partially-committed table.
 
   // Keep process alive — server event loop runs in background
 }
