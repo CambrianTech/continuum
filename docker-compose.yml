@@ -212,7 +212,8 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     depends_on:
-      - node-server
+      node-server:
+        condition: service_healthy
     ports:
       - "9003:9003"   # HTTP
     volumes:

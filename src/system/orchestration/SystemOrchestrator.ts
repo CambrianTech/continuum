@@ -1111,23 +1111,18 @@ export class SystemOrchestrator extends EventEmitter {
     console.debug('✅ Server is ready');
 
     // Auto-seed database if empty (first run or after data:clear).
-    // In-process via Commands.execute() — zero subprocess spawns, works in both
-    // Docker and bare metal. The old npm run data:seed approach spawns jtag CLI
-    // subprocesses that connect via WebSocket, which is fragile and slow.
-    setTimeout(async () => {
-      try {
-        const { seedDatabase } = await import('../../server/seed-in-process');
-        const seeded = await seedDatabase();
-        if (seeded) {
-          console.log('✅ Database seeded (in-process)');
-        } else {
-          console.log('✅ Database already seeded');
-        }
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`⚠️ Auto-seed failed: ${msg}`);
-      }
-    }, 3000);
+    // This is part of readiness, not background maintenance: chat/send,
+    // room routing, persona allocation, and Carl's first-page experience all
+    // require seeded rooms/users to exist. Fire-and-forget seeding let
+    // widget-server become healthy while #general was still missing.
+    try {
+      const { seedDatabase } = await import('../../server/seed-in-process');
+      const seeded = await seedDatabase();
+      console.log(seeded ? '✅ Database seeded (in-process)' : '✅ Database already seeded');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`Auto-seed failed before server readiness: ${msg}`);
+    }
 
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_READY,

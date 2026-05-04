@@ -10,12 +10,17 @@
 
 import { systemOrchestrator } from '../system/orchestration/SystemOrchestrator';
 import { getActiveExampleName } from '../examples/server/ExampleConfigServer';
+import { mkdir, rm, writeFile } from 'fs/promises';
+import { dirname } from 'path';
+
+const READINESS_FILE = process.env.CONTINUUM_NODE_READY_FILE || '/root/.continuum/run/node-server.ready';
 
 async function main(): Promise<void> {
   const activeExample = getActiveExampleName();
   const workingDir = `examples/${activeExample}`;
 
   console.log(`🐳 Docker node-server starting (example: ${activeExample})`);
+  await rm(READINESS_FILE, { force: true });
 
   const result = await systemOrchestrator.orchestrate('cli-command', {
     workingDir,
@@ -29,24 +34,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Seed BEFORE declaring the server ready. Old code fired auto-seed
-  // via setTimeout(5000) and swallowed errors to console.warn — health
-  // probes returned 200 before any room/persona existed, so chat/send
-  // probes hit "Room not found: general" silently. Carl-install-smoke
-  // caught this on PR #1038. Now seed is a blocking milestone: server
-  // ready ≡ rooms + personas exist. Seed errors propagate to exit 1.
-  try {
-    const { seedDatabase } = await import('./seed-in-process');
-    const seeded = await seedDatabase();
-    console.log(seeded ? '✅ Database seeded' : '✅ Database already seeded');
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error(`❌ Auto-seed FAILED: ${msg}`);
-    console.error('   Server cannot serve chat without seeded rooms/personas. Exiting.');
-    process.exit(1);
-  }
+  await mkdir(dirname(READINESS_FILE), { recursive: true });
+  await writeFile(READINESS_FILE, `${new Date().toISOString()}\n`, 'utf8');
 
-  console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')} → seed)`);
+  console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')})`);
 
   // Keep process alive — server event loop runs in background
 }
