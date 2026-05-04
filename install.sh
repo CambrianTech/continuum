@@ -1026,6 +1026,38 @@ for i in $(seq 1 "$HEALTH_TIMEOUT_SEC"); do
   sleep 1
 done
 
+# ── 8c. Wait for node-server seed to populate the default room ──────
+# widget-server /health on port 9003 only proves that container is up.
+# node-server (port 9001) runs auto-seed in docker-entrypoint.ts which
+# creates the "general" room + personas. If the user opens the page or
+# chat probe runs BEFORE seed completes, chat/send returns "Room not
+# found: general" or "User not found" silently. Probe directly for the
+# general room via jtag — fast, no new endpoint needed, deterministic.
+# Caught by carl-install-smoke 2026-05-04 (PR #1038).
+SEED_TIMEOUT_SEC="${SEED_TIMEOUT_SEC:-60}"
+JTAG_BIN="$(command -v jtag 2>/dev/null || true)"
+[ -z "$JTAG_BIN" ] && JTAG_BIN="$INSTALL_DIR/src/jtag"
+if [ -x "$JTAG_BIN" ] && [ "$HEALTH_OK" -eq 1 ]; then
+  info "Waiting for seed to populate default room (timeout ${SEED_TIMEOUT_SEC}s)..."
+  SEED_OK=0
+  for i in $(seq 1 "$SEED_TIMEOUT_SEC"); do
+    # data/list returns success+items when the room exists. Empty items
+    # means seed hasn't created it yet.
+    if "$JTAG_BIN" data/list --collection=rooms --filter='{"uniqueId":"general"}' --limit=1 2>/dev/null \
+       | grep -q '"success":true.*"items":\[{'; then
+      SEED_OK=1
+      ok "default room seeded after ${i}s"
+      break
+    fi
+    sleep 1
+  done
+  if [ "$SEED_OK" -ne 1 ]; then
+    warn "general room not present after ${SEED_TIMEOUT_SEC}s — seed may have failed."
+    warn "  Chat will return 'Room not found' until seed completes."
+    warn "  Diagnose: $CONTAINER_CMD compose -f $INSTALL_DIR/docker-compose.yml logs node-server | tail -50"
+  fi
+fi
+
 # ── 9. Determine URL + open browser (only if healthy) ──────
 PHASE="open browser"
 if [ -n "$TS_HOSTNAME" ] && [ -f "$CONTINUUM_DATA/$TS_HOSTNAME.crt" ]; then
