@@ -86,24 +86,18 @@ jobs:
       - name: Login to ghcr.io (so install.sh can pull pre-built images)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Compute SHORT_SHA for image tag pin
-        id: shortsha
-        run: |
-          # Pin docker images to PR-head SHORT_SHA. :latest / :canary are
-          # mutable and have gone stale (April 2026: 9-14 days). SHA-pinned
-          # = either fresh (dev pushed) or fails fast with manifest unknown.
-          FULL_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
-          echo "short_sha=${FULL_SHA:0:7}" >> "$GITHUB_OUTPUT"
-
       - name: Run carl-install smoke
         env:
-          # Pass the PR HEAD sha so the smoke fetches the install.sh from
-          # THIS PR (not main). Falls back to manual workflow_dispatch input
-          # when not in a PR context.
+          # PR HEAD sha so smoke fetches install.sh from THIS PR.
           CARL_INSTALL_REF: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
-          # SHA-pinned image tag (see step above). install.sh honors
-          # $CONTINUUM_IMAGE_TAG and substitutes it into compose.
-          CONTINUUM_IMAGE_TAG: ${{ steps.shortsha.outputs.short_sha }}
+          # Pin docker images to :pr-N (PR-scoped, mutable per push). Refreshed
+          # by push-image.sh on every dev push, so always reflects this PR's
+          # latest source — but never collides with another PR or canary.
+          # Slices the dev didn't push directly are aliased from :canary by the
+          # dev script (manifest copy, no rebuild). :latest was the prior
+          # default and went 9-14 days stale in April 2026 — never use it for
+          # smoke.
+          CONTINUUM_IMAGE_TAG: pr-${{ github.event.pull_request.number }}
           # 25-min cap on the docker-only install. Hybrid (Mac source-build)
           # path would exceed this — by design, that's the gate firing on
           # the README/install mismatch.
