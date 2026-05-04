@@ -48,6 +48,19 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 teardown() {
   local rc=$?
+  # Capture per-container docker logs BEFORE `docker compose down` kills
+  # the containers and makes their logs unrecoverable. Without this the
+  # workflow's `if: failure()` step fires after smoke exit when containers
+  # are already gone — exactly the silent-evidence-loss the per-container
+  # logs are supposed to prevent. Capture on every exit (success or
+  # failure) since the file glob in the workflow upload is failure-only.
+  if [ -d "$CARL_INSTALL_DIR" ] && [ -f "$CARL_INSTALL_DIR/docker-compose.yml" ]; then
+    for svc in continuum-core node-server model-init widget-server livekit-bridge; do
+      ( cd "$CARL_INSTALL_DIR" && docker compose logs --no-color --timestamps "$svc" \
+        > "${CARL_INSTALL_DIR}.${svc}.log" 2>&1 ) || true
+    done
+    ( cd "$CARL_INSTALL_DIR" && docker compose ps -a > "${CARL_INSTALL_DIR}.compose-ps.log" 2>&1 ) || true
+  fi
   if [ "$SKIP_TEARDOWN" != "1" ] && [ -d "$CARL_INSTALL_DIR" ]; then
     echo ""
     echo "━━━ tearing down $CARL_INSTALL_DIR ━━━"
