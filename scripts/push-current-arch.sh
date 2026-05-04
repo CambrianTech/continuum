@@ -46,31 +46,31 @@ ARCH="$(uname -m)"
 # the builder image's repo tree (vendored or pullable).
 case "$OS/$ARCH" in
   Darwin/arm64)
-    # Mac M-series: linux/arm64 is natively buildable via Docker Desktop's
-    # Linux VM. Mac uses Metal natively (continuum-core base, not vulkan)
-    # and Docker Desktop has no GPU passthrough — there's no point shipping
-    # vulkan/arm64 from this host. Core + livekit-bridge cover the arm64
-    # leg. Vulkan + CUDA come from BigMama (linux/amd64).
+    # Mac M-series via Docker Desktop's linux/arm64 VM. Docker Desktop has
+    # NO GPU passthrough → inside the container there's no Metal (we're in
+    # Linux), no CUDA, no Vulkan device. continuum-core enforces "lack of
+    # GPU integration is forbidden" and panics at startup. So core is NOT
+    # shippable from this host — only livekit-bridge (CPU-only).
     HOST_PLATFORM="linux/arm64"
-    HEAVY_VARIANTS=("core" "livekit-bridge")
+    HEAVY_VARIANTS=("livekit-bridge")
     ;;
   Linux/x86_64)
-    # Linux amd64 (BigMama, Windows WSL2): native platform. Core + vulkan
-    # + livekit-bridge always; CUDA only when Nvidia driver is present
-    # (nvidia-smi reports a GPU). Vulkan here covers Linux + Windows WSL2
-    # consumer GPU users.
+    # Linux amd64 (BigMama, Windows WSL2): vulkan + livekit-bridge always
+    # (vulkan covers Linux + Windows WSL2 consumer GPUs via mesa or vendor
+    # ICD). CUDA only when Nvidia driver is present. core variant is being
+    # deprecated (CPU-only is unshippable per architectural rule); not
+    # built here.
     HOST_PLATFORM="linux/amd64"
-    HEAVY_VARIANTS=("core" "vulkan" "livekit-bridge")
+    HEAVY_VARIANTS=("vulkan" "livekit-bridge")
     if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
       HEAVY_VARIANTS+=("cuda")
     fi
     ;;
   Linux/aarch64 | Linux/arm64)
-    # Linux arm64 (e.g. Raspberry Pi, Nvidia Jetson, ARM cloud host).
-    # Same logic as Mac: no realistic vulkan/arm64 consumer story, so
-    # core + livekit-bridge only.
+    # Linux arm64 (Pi, Jetson, ARM cloud). Same GPU-passthrough constraint
+    # as Mac arm64 → only livekit-bridge.
     HOST_PLATFORM="linux/arm64"
-    HEAVY_VARIANTS=("core" "livekit-bridge")
+    HEAVY_VARIANTS=("livekit-bridge")
     ;;
   *)
     echo "ERROR: push-current-arch.sh — unsupported host $OS/$ARCH" >&2
