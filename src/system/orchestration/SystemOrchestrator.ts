@@ -1110,24 +1110,24 @@ export class SystemOrchestrator extends EventEmitter {
 
     console.debug('✅ Server is ready');
 
-    // Auto-seed database if empty (first run or after data:clear).
-    // In-process via Commands.execute() — zero subprocess spawns, works in both
-    // Docker and bare metal. The old npm run data:seed approach spawns jtag CLI
-    // subprocesses that connect via WebSocket, which is fragile and slow.
-    setTimeout(async () => {
-      try {
-        const { seedDatabase } = await import('../../server/seed-in-process');
-        const seeded = await seedDatabase();
-        if (seeded) {
-          console.log('✅ Database seeded (in-process)');
-        } else {
-          console.log('✅ Database already seeded');
-        }
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`⚠️ Auto-seed failed: ${msg}`);
+    // Auto-seed database if empty BEFORE declaring SERVER_READY.
+    // Was setTimeout(3000) → fired-and-forget; orchestrator returned ready
+    // while seed was still running. carl-install-smoke probed chat/send 7-21s
+    // after install completed and intermittently hit "Room not found: general"
+    // because rooms hadn't landed yet. Awaiting seed here closes that race —
+    // by the time downstream sees SERVER_READY, rooms+personas exist.
+    try {
+      const { seedDatabase } = await import('../../server/seed-in-process');
+      const seeded = await seedDatabase();
+      if (seeded) {
+        console.log('✅ Database seeded (in-process)');
+      } else {
+        console.log('✅ Database already seeded');
       }
-    }, 3000);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`⚠️ Auto-seed failed: ${msg}`);
+    }
 
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_READY,
