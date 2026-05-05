@@ -1110,11 +1110,20 @@ export class SystemOrchestrator extends EventEmitter {
 
     console.debug('✅ Server is ready');
 
-    // Auto-seed database if empty (first run or after data:clear).
-    // This is part of readiness, not background maintenance: chat/send,
-    // room routing, persona allocation, and Carl's first-page experience all
-    // require seeded rooms/users to exist. Fire-and-forget seeding let
-    // widget-server become healthy while #general was still missing.
+    // Auto-seed database if empty BEFORE declaring SERVER_READY.
+    // Was setTimeout(3000) → fired-and-forget; orchestrator returned ready
+    // while seed was still running. carl-install-smoke probed chat/send 7-21s
+    // after install completed and intermittently hit "Room not found: general"
+    // because rooms hadn't landed yet. Awaiting seed here closes that race —
+    // by the time downstream sees SERVER_READY, rooms+personas exist.
+    //
+    // Throws (not warns) on failure: chat/send, room routing, persona
+    // allocation, and Carl's first-page experience all require seeded
+    // rooms/users to exist. A warn-and-continue path just masks the
+    // real failure — observed in run 25403866714 where the smoke saw
+    // 'general room not present after 60s' as a soft warning while the
+    // actual seed had silently broken upstream. Loud failure surfaces
+    // the bug per Joel's no-suppression rule.
     try {
       const { seedDatabase } = await import('../../server/seed-in-process');
       const seeded = await seedDatabase();

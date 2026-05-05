@@ -37,6 +37,10 @@ async function main(): Promise<void> {
   await mkdir(dirname(READINESS_FILE), { recursive: true });
   await writeFile(READINESS_FILE, `${new Date().toISOString()}\n`, 'utf8');
 
+  // Seed runs synchronously inside SystemOrchestrator before SERVER_READY
+  // milestone fires (see SystemOrchestrator.ts). No duplicate seed here —
+  // the previous setTimeout(5000) raced the orchestrator's setTimeout(3000)
+  // and could re-enter findOrCreateRoom on a partially-committed table.
   console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')})`);
 
   // Keep process alive — server event loop runs in background
