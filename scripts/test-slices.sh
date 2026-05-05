@@ -219,6 +219,54 @@ else
       else
         fail "vulkan-runtime-linked" "continuum-core-server does not link libvulkan — feature flag didn't propagate?"
       fi
+      # Slice 3: continuum-core RUNTIME actually USED Vulkan (not just linked
+      # it). On boot, GpuMemoryManager logs "GPU detected: <name> — <N>MB VRAM"
+      # via log_info!("gpu", "manager", ...). If we don't see that line, the
+      # binary either skipped GPU detection (feature flag broken) or panicked
+      # silently before the log fired. Either way, image isn't shippable.
+      # 30s window covers normal boot + GpuMemoryManager init.
+      VK_BOOT_SEEN=false
+      for _ in $(seq 1 30); do
+        if docker logs "$CID" 2>&1 | grep -qE "GPU detected: .* — [0-9]+MB VRAM"; then
+          VK_BOOT_SEEN=true
+          break
+        fi
+        sleep 1
+      done
+      if $VK_BOOT_SEEN; then
+        VK_DEV=$(docker logs "$CID" 2>&1 | grep -oE "GPU detected: [^—]+ — [0-9]+MB VRAM" | head -1)
+        pass "vulkan-runtime-used-by-core ($VK_DEV)"
+      else
+        fail "vulkan-runtime-used-by-core" "continuum-core never logged GPU detection within 30s — binary linked libvulkan but didn't enumerate devices through it"
+        echo "  recent core logs:" >&2
+        docker logs --tail 20 "$CID" 2>&1 | sed 's/^/    /' >&2
+      fi
+      # Slice 4: continuum-core IPC reports the GPU it actually picked.
+      # gpu/stats returns the manager's view: total_vram_mb + per-subsystem
+      # budgets. If totals are 0 or the call errors, the runtime contract is
+      # broken even though boot logged a device. Probe via netcat over the
+      # bind-mounted unix socket — minimal IPC handshake, no python/node deps.
+      GPU_STATS=$(docker exec "$CID" sh -c '
+        SOCK=/root/.continuum/sockets/continuum-core.sock
+        [ -S "$SOCK" ] || exit 1
+        printf "%s" "{\"command\":\"gpu/stats\",\"params\":null}" | nc -U -w 5 "$SOCK" 2>/dev/null
+      ' 2>&1 || true)
+      if echo "$GPU_STATS" | grep -qE '"total_vram_mb"\s*:\s*[1-9]'; then
+        VRAM=$(echo "$GPU_STATS" | grep -oE '"total_vram_mb"\s*:\s*[0-9]+' | grep -oE '[0-9]+$')
+        pass "vulkan-ipc-reports-gpu (${VRAM}MB)"
+      elif echo "$GPU_STATS" | grep -q '"total_vram_mb"'; then
+        fail "vulkan-ipc-reports-gpu" "gpu/stats returned 0 total_vram_mb — manager initialized but didn't claim memory"
+      else
+        # nc may not be in the runtime image — skip with a note rather than
+        # fail, since slice 3 above already proves runtime use via boot logs.
+        # Image rebuild can add netcat to bring this probe online.
+        if ! docker exec "$CID" which nc >/dev/null 2>&1; then
+          echo "  - vulkan-ipc-reports-gpu skipped: nc not in runtime image (boot-log slice covers runtime-use)" >&2
+        else
+          fail "vulkan-ipc-reports-gpu" "gpu/stats IPC didn't return expected shape"
+          echo "  raw response: $(echo "$GPU_STATS" | head -5)" >&2
+        fi
+      fi
       ;;
     core)
       # CPU-only variant — just sanity that OpenMP runtime is present

@@ -10,12 +10,17 @@
 
 import { systemOrchestrator } from '../system/orchestration/SystemOrchestrator';
 import { getActiveExampleName } from '../examples/server/ExampleConfigServer';
+import { mkdir, rm, writeFile } from 'fs/promises';
+import { dirname } from 'path';
+
+const READINESS_FILE = process.env.CONTINUUM_NODE_READY_FILE || '/root/.continuum/run/node-server.ready';
 
 async function main(): Promise<void> {
   const activeExample = getActiveExampleName();
   const workingDir = `examples/${activeExample}`;
 
   console.log(`🐳 Docker node-server starting (example: ${activeExample})`);
+  await rm(READINESS_FILE, { force: true });
 
   const result = await systemOrchestrator.orchestrate('cli-command', {
     workingDir,
@@ -29,12 +34,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')})`);
+  await mkdir(dirname(READINESS_FILE), { recursive: true });
+  await writeFile(READINESS_FILE, `${new Date().toISOString()}\n`, 'utf8');
 
   // Seed runs synchronously inside SystemOrchestrator before SERVER_READY
   // milestone fires (see SystemOrchestrator.ts). No duplicate seed here —
   // the previous setTimeout(5000) raced the orchestrator's setTimeout(3000)
   // and could re-enter findOrCreateRoom on a partially-committed table.
+  console.log(`✅ Server ready (milestones: ${result.completedMilestones.join(' → ')})`);
 
   // Keep process alive — server event loop runs in background
 }

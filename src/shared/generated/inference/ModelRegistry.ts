@@ -2,6 +2,8 @@
 import type { ModelRegistryEntry } from "./ModelRegistryEntry";
 
 /**
- * Full model registry — maps aliases to model entries.
+ * Full model registry — mirrors `src/shared/models.json` SSOT shape.
+ * Extra fields (`personas`, `auto_download`, `chat_templates`) are
+ * silently ignored by serde for the in-Rust subset we consume here.
  */
 export type ModelRegistry = { models: { [key in string]: ModelRegistryEntry }, };

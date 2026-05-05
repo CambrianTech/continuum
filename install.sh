@@ -425,12 +425,14 @@ EOF
   esac
   case "$IC_GPU_PATH" in
     dmr-*)
-      if ! docker model ls 2>/dev/null | grep -q "qwen3.5-4b-code-forged"; then
-        info "Pulling default persona model into Docker Model Runner (~2.7GB, first install only)..."
-        docker model pull "$PERSONA_MODEL" || warn "Model pull failed — chat will error until model is available. Retry: docker model pull $PERSONA_MODEL"
-      else
-        ok "Persona model already in DMR: $PERSONA_MODEL"
-      fi
+      # Per Joel 2026-05-04: "all the models must download and run on GPU"
+      # + "we MUST have this work from ONE source of truth". DMR's
+      # `docker model pull` was the Mac-only path that didn't work on
+      # Linux. Models now download via the model-init container reading
+      # src/shared/models.json — same path on Mac/Linux/Windows. The DMR
+      # branch here remains for KV-cache-config + vLLM-MLX install (which
+      # are still useful tuning), but no longer pulls the model.
+      ok "Persona model download deferred to model-init container (reads src/shared/models.json)"
       # Cap llama-server's per-slot KV cache reservation, sized to actual
       # physical RAM. Without this cap each slot reserves the full model
       # context (262144 tokens for Qwen3.5), ballooning
@@ -483,11 +485,10 @@ EOF
             # Pull MLX-format Qwen3.5-4B for vllm-metal routing.
             # DMR auto-routes MLX models to vllm-metal when installed.
             MLX_MODEL="hf.co/mlx-community/Qwen3.5-4B-MLX-4bit"
-            if ! docker model ls 2>/dev/null | grep -q "Qwen3.5-4B-MLX"; then
-              info "Pulling MLX-format Qwen3.5-4B (~2.5GB, for 3x faster inference)..."
-              docker model pull "$MLX_MODEL" \
-                || warn "MLX model pull failed. GGUF via llama.cpp will be used instead."
-            fi
+            # MLX-format model also moves to registry-driven download.
+            # Add MLX entry to src/shared/models.json + auto_download.always
+            # if/when we want vllm-metal to find it on disk.
+            ok "MLX model download deferred to model-init (add to src/shared/models.json to enable)"
           else
             warn "vLLM install failed (requires Docker Desktop 4.62+). llama.cpp Metal will be used."
           fi
@@ -887,9 +888,24 @@ elif [[ "$HAS_GPU" == "true" ]]; then
   if [ -f "docker-compose.gpu.yml" ]; then
     COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.gpu.yml"
   else
-    warn "docker-compose.gpu.yml missing — GPU detected but cuda override won't apply. Continuing on CPU images."
+    warn "docker-compose.gpu.yml missing — GPU detected but cuda override won't apply. Continuing on Vulkan base image (still GPU-API; will use llvmpipe ICD if no vulkan driver)."
   fi
   COMPOSE_ARGS="--profile gpu"
+fi
+# Linux without a CUDA GPU: base docker-compose.yml uses continuum-core-vulkan.
+# On real-driver hosts (Intel/AMD with vulkan) this picks up the hardware ICD;
+# on hosts without a driver, mesa-vulkan-drivers (apt) provides llvmpipe as a
+# software ICD so the Vulkan code path runs without panicking. Joel's
+# 2026-04-23 rule: GPU integration is forbidden to fall back. Vulkan-via-
+# llvmpipe is GPU integration (loader + ICD), not a CPU fallback.
+if [[ "$OS" == "Linux" ]] && [[ "$HAS_GPU" != "true" ]]; then
+  if ! command -v vulkaninfo >/dev/null 2>&1; then
+    warn "vulkaninfo not found — install mesa-vulkan-drivers vulkan-tools so the Vulkan loader has the llvmpipe software ICD: sudo apt-get install -y mesa-vulkan-drivers vulkan-tools"
+  elif ! vulkaninfo --summary 2>/dev/null | grep -qE "deviceName"; then
+    warn "Vulkan loader present but enumerated zero devices. continuum-core-vulkan will panic on startup. Install: sudo apt-get install -y mesa-vulkan-drivers"
+  else
+    info "Vulkan loader OK — will use $(vulkaninfo --summary 2>/dev/null | grep -E 'deviceName' | head -1 | sed 's/.*= *//')"
+  fi
 fi
 
 # ── 7. Pull support-service images ─────────────────────────
@@ -1043,6 +1059,38 @@ for i in $(seq 1 "$HEALTH_TIMEOUT_SEC"); do
   fi
   sleep 1
 done
+
+# ── 8c. Wait for node-server seed to populate the default room ──────
+# widget-server /health on port 9003 only proves that container is up.
+# node-server (port 9001) runs auto-seed in docker-entrypoint.ts which
+# creates the "general" room + personas. If the user opens the page or
+# chat probe runs BEFORE seed completes, chat/send returns "Room not
+# found: general" or "User not found" silently. Probe directly for the
+# general room via jtag — fast, no new endpoint needed, deterministic.
+# Caught by carl-install-smoke 2026-05-04 (PR #1038).
+SEED_TIMEOUT_SEC="${SEED_TIMEOUT_SEC:-60}"
+JTAG_BIN="$(command -v jtag 2>/dev/null || true)"
+[ -z "$JTAG_BIN" ] && JTAG_BIN="$INSTALL_DIR/src/jtag"
+if [ -x "$JTAG_BIN" ] && [ "$HEALTH_OK" -eq 1 ]; then
+  info "Waiting for seed to populate default room (timeout ${SEED_TIMEOUT_SEC}s)..."
+  SEED_OK=0
+  for i in $(seq 1 "$SEED_TIMEOUT_SEC"); do
+    # data/list returns success+items when the room exists. Empty items
+    # means seed hasn't created it yet.
+    if "$JTAG_BIN" data/list --collection=rooms --filter='{"uniqueId":"general"}' --limit=1 2>/dev/null \
+       | grep -q '"success":true.*"items":\[{'; then
+      SEED_OK=1
+      ok "default room seeded after ${i}s"
+      break
+    fi
+    sleep 1
+  done
+  if [ "$SEED_OK" -ne 1 ]; then
+    warn "general room not present after ${SEED_TIMEOUT_SEC}s — seed may have failed."
+    warn "  Chat will return 'Room not found' until seed completes."
+    warn "  Diagnose: $CONTAINER_CMD compose -f $INSTALL_DIR/docker-compose.yml logs node-server | tail -50"
+  fi
+fi
 
 # ── 9. Determine URL + open browser (only if healthy) ──────
 PHASE="open browser"

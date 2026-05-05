@@ -951,34 +951,84 @@ impl AIProviderAdapter for CandleAdapter {
 
 /// Single source of truth for local model metadata.
 ///
-/// Model registry entry loaded from model_registry.json (embedded at compile time).
-/// TypeScript gets these types via ts-rs — NO hand-written duplicates.
+/// Model registry entry deserialized from src/shared/models.json (embedded at
+/// compile time). TypeScript gets these types via ts-rs — NO hand-written
+/// duplicates.
+///
+/// **Schema mirrors `src/shared/ModelRegistry.ts`'s `ModelSpec`** so both
+/// runtimes read the same JSON. Field names use the new SSOT shape
+/// (`hf_repo`, `min_ram_gb`); legacy aliases (`repo`, `min_memory_gb`)
+/// kept via `serde(alias = ...)` so any third-party consumer of the old
+/// embedded JSON keeps working until it migrates.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(
     export,
     export_to = "../../../shared/generated/inference/ModelRegistryEntry.ts"
 )]
 pub struct ModelRegistryEntry {
-    /// HuggingFace repo ID (canonical source)
-    pub repo: String,
+    /// HuggingFace repo ID (canonical source).
+    /// New SSOT field name; `repo` accepted as legacy alias.
+    #[serde(alias = "repo")]
+    pub hf_repo: String,
+    /// Model kind: "chat-llm", "vision-llm", "embedding", "stt", "tts", "vad".
+    /// Optional for back-compat with the legacy schema.
+    #[ts(optional)]
+    #[serde(default)]
+    pub kind: Option<String>,
     /// Serialization format: "gguf" or "safetensors"
     #[ts(optional)]
+    #[serde(default)]
     pub format: Option<String>,
     /// Model architecture: "qwen2", "llama", "phi", etc.
     #[ts(optional)]
+    #[serde(default)]
     pub architecture: Option<String>,
+    /// Files belonging to this model (relative to repo root).
+    #[ts(optional, type = "Array<string>")]
+    #[serde(default)]
+    pub files: Option<Vec<String>>,
+    /// Approximate disk footprint in GB.
+    #[ts(optional, type = "number")]
+    #[serde(default)]
+    pub size_gb: Option<f64>,
+    /// Minimum host RAM in GB to run this model.
+    /// New SSOT field name; `min_memory_gb` accepted as legacy alias.
+    #[ts(optional, type = "number")]
+    #[serde(default, alias = "min_memory_gb")]
+    pub min_ram_gb: Option<f64>,
     /// Human-readable description
     #[ts(optional)]
+    #[serde(default)]
     pub description: Option<String>,
-    /// Minimum GPU memory in GB to run this model
-    #[ts(optional, type = "number")]
-    pub min_memory_gb: Option<f64>,
     /// Chat template name: "qwen2", "llama3", "chatml"
     #[ts(optional)]
+    #[serde(default)]
     pub chat_template: Option<String>,
+    /// Whether this model is auto-loaded at startup (informational).
+    #[ts(optional)]
+    #[serde(default)]
+    pub auto_load: Option<bool>,
 }
 
-/// Full model registry — maps aliases to model entries.
+/// Tier specification used by symbolic-ref resolution.
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+#[serde(default)]
+struct TierSpec {
+    pub default_chat: String,
+}
+
+/// Symbolic ref: either tier-bound (resolves via `tiers[host_tier].default_chat`)
+/// or model-bound (resolves to the named registry key directly).
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+#[serde(default)]
+struct SymbolicRefSpec {
+    pub by_tier: bool,
+    pub model: Option<String>,
+}
+
+/// Full model registry — mirrors `src/shared/models.json` SSOT shape.
+/// Extra fields (`personas`, `auto_download`, `chat_templates`) are
+/// silently ignored by serde for the in-Rust subset we consume here.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(
     export,
@@ -988,40 +1038,134 @@ pub struct ModelRegistry {
     pub models: HashMap<String, ModelRegistryEntry>,
 }
 
-/// Load the model registry from the embedded JSON.
-pub fn load_registry() -> ModelRegistry {
-    let json = include_str!("model_registry.json");
-    serde_json::from_str(json).unwrap_or_else(|e| {
-        runtime::logger("candle").error(&format!("Failed to parse model registry: {e}"));
-        ModelRegistry {
+/// Internal full-shape view used for symbolic-ref + tier resolution.
+/// Not exported to TS (TS has its own ModelRegistry.ts reader for this).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct FullRegistry {
+    pub models: HashMap<String, ModelRegistryEntry>,
+    #[serde(default)]
+    pub tiers: HashMap<String, TierSpec>,
+    #[serde(default)]
+    pub symbolic_refs: HashMap<String, SymbolicRefSpec>,
+}
+
+/// Embedded SSOT registry. Path is relative to *this file*:
+///   workers/continuum-core/src/inference/candle_adapter.rs
+///   → ../../../../shared/models.json (= src/shared/models.json)
+/// Joel rule 2026-05-04: "we MUST have this work from ONE source of truth".
+const REGISTRY_JSON: &str = include_str!("../../../../shared/models.json");
+
+fn load_full_registry() -> FullRegistry {
+    serde_json::from_str(REGISTRY_JSON).unwrap_or_else(|e| {
+        runtime::logger("candle").error(&format!(
+            "Failed to parse src/shared/models.json: {e}"
+        ));
+        FullRegistry {
             models: HashMap::new(),
+            tiers: HashMap::new(),
+            symbolic_refs: HashMap::new(),
         }
     })
 }
 
+/// Load the model registry from the embedded JSON (legacy public API —
+/// returns the lower-fidelity `ModelRegistry` view for back-compat).
+pub fn load_registry() -> ModelRegistry {
+    ModelRegistry {
+        models: load_full_registry().models,
+    }
+}
+
+/// Pick host tier from total RAM. Mirrors the TS `tierFromRamGB` logic
+/// in `src/shared/ModelRegistry.ts` so install-time and runtime resolve
+/// to the same default model.
+fn tier_from_host_ram() -> &'static str {
+    let bytes = sysinfo_total_memory_bytes();
+    let gb = (bytes / 1024 / 1024 / 1024) as u32;
+    if gb >= 32 {
+        "full"
+    } else if gb >= 24 {
+        "mid"
+    } else {
+        "mba"
+    }
+}
+
+/// Total host memory in bytes. Cheap to call repeatedly; caller decides cache.
+fn sysinfo_total_memory_bytes() -> u64 {
+    // Minimal probe — avoids pulling in a sysinfo dep just for this.
+    // Linux: /proc/meminfo. macOS: sysctl hw.memsize. Fallback: 16GB so
+    // we land on the "mba" tier (smallest model) rather than crashing.
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(s) = std::fs::read_to_string("/proc/meminfo") {
+            for line in s.lines() {
+                if let Some(rest) = line.strip_prefix("MemTotal:") {
+                    if let Some(kb_str) = rest.trim().split_whitespace().next() {
+                        if let Ok(kb) = kb_str.parse::<u64>() {
+                            return kb * 1024;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        if let Ok(out) = Command::new("sysctl").args(["-n", "hw.memsize"]).output() {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                if let Ok(b) = s.trim().parse::<u64>() {
+                    return b;
+                }
+            }
+        }
+    }
+    16 * 1024 * 1024 * 1024
+}
+
 pub fn resolve_model_id(requested: &str) -> String {
-    // Already a HuggingFace repo ID
+    // Already a HuggingFace repo ID — pass through.
     if requested.contains('/') {
         return requested.to_string();
     }
 
     let normalized = requested.trim().to_lowercase();
-    let registry = load_registry();
+    let reg = load_full_registry();
 
-    // Look up in registry (supports "coder", "smollm2:1.7b", "llama3.2:3b", etc.)
-    if let Some(entry) = registry.models.get(&normalized) {
-        return entry.repo.clone();
+    // 1. Symbolic ref ('local-default', 'vision-default', 'gating') — resolve
+    //    via tiers + symbolic_refs. Reads current registry on every call so
+    //    DB rows storing symbolic refs auto-pick-up registry edits.
+    if let Some(sym) = reg.symbolic_refs.get(&normalized) {
+        if sym.by_tier {
+            let tier = tier_from_host_ram();
+            if let Some(t) = reg.tiers.get(tier) {
+                if let Some(entry) = reg.models.get(&t.default_chat) {
+                    return entry.hf_repo.clone();
+                }
+            }
+        } else if let Some(model_key) = sym.model.as_deref() {
+            if let Some(entry) = reg.models.get(model_key) {
+                return entry.hf_repo.clone();
+            }
+        }
     }
 
-    // Try with common alias patterns: "smollm2-1.7b" → "smollm2:1.7b"
+    // 2. Direct registry key lookup ('coder', 'qwen2-vl-7b', 'qwen3.5-4b-code-forged').
+    if let Some(entry) = reg.models.get(&normalized) {
+        return entry.hf_repo.clone();
+    }
+
+    // 3. Common alias pattern: 'smollm2-1.7b' → 'smollm2:1.7b'.
     let dash_to_colon = normalized.replacen('-', ":", 1);
-    if let Some(entry) = registry.models.get(&dash_to_colon) {
-        return entry.repo.clone();
+    if let Some(entry) = reg.models.get(&dash_to_colon) {
+        return entry.hf_repo.clone();
     }
 
-    // Fallback: treat as HF repo ID
+    // 4. Fallback: treat as HF repo ID. Loud so unknown models stay diagnosable.
     runtime::logger("candle").warn(&format!(
-        "Model '{}' not in registry — treating as HuggingFace repo ID",
+        "Model '{}' not in registry (no symbolic ref, no key match) — \
+         treating as HuggingFace repo ID",
         requested
     ));
     requested.to_string()
@@ -1502,11 +1646,43 @@ mod tests {
 
     #[test]
     fn test_resolve_chat_template() {
+        // Live registry keys (post-SSOT migration to src/shared/models.json).
         assert_eq!(resolve_chat_template("coder"), "qwen2");
-        assert_eq!(resolve_chat_template("coder-14b"), "qwen2");
-        assert_eq!(resolve_chat_template("coder-32b"), "qwen2");
-        assert_eq!(resolve_chat_template("llama3.2:3b"), "llama3");
-        assert_eq!(resolve_chat_template("smollm2"), "chatml");
+        assert_eq!(resolve_chat_template("coder-bf16"), "qwen2");
+        assert_eq!(resolve_chat_template("qwen3.5-4b-code-forged"), "qwen2");
+        assert_eq!(resolve_chat_template("qwen2-vl-7b"), "qwen2");
+        // Heuristic fallback: name-based inference for unknown models.
+        assert_eq!(resolve_chat_template("some-qwen-thing"), "qwen2");
+        assert_eq!(resolve_chat_template("smollm2-future"), "chatml");
         assert_eq!(resolve_chat_template("unknown-model"), "llama3"); // default fallback
+    }
+
+    #[test]
+    fn test_resolve_model_id_symbolic_refs() {
+        // Symbolic refs resolve via src/shared/models.json. Tier resolves
+        // from host RAM at runtime — we only assert that resolution
+        // succeeds (non-passthrough) for tier-bound refs and that
+        // model-bound refs always resolve to the same concrete model.
+        let local = resolve_model_id("local-default");
+        assert_ne!(local, "local-default", "local-default must resolve to a concrete repo");
+        assert!(local.contains('/'), "resolved model must look like an HF repo: got {local}");
+
+        let vision = resolve_model_id("vision-default");
+        assert_eq!(vision, "Qwen/Qwen2-VL-7B-Instruct-GGUF");
+
+        let gating = resolve_model_id("gating");
+        assert_eq!(gating, "Qwen/Qwen2-0.5B-Instruct");
+
+        // Direct registry-key lookup.
+        assert_eq!(
+            resolve_model_id("coder"),
+            "continuum-ai/qwen2.5-coder-14b-compacted"
+        );
+
+        // Pass-through for raw HF IDs.
+        assert_eq!(
+            resolve_model_id("Qwen/Qwen2-7B-Instruct"),
+            "Qwen/Qwen2-7B-Instruct"
+        );
     }
 }

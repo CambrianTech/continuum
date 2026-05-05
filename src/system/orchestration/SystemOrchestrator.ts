@@ -1116,17 +1116,21 @@ export class SystemOrchestrator extends EventEmitter {
     // after install completed and intermittently hit "Room not found: general"
     // because rooms hadn't landed yet. Awaiting seed here closes that race —
     // by the time downstream sees SERVER_READY, rooms+personas exist.
+    //
+    // Throws (not warns) on failure: chat/send, room routing, persona
+    // allocation, and Carl's first-page experience all require seeded
+    // rooms/users to exist. A warn-and-continue path just masks the
+    // real failure — observed in run 25403866714 where the smoke saw
+    // 'general room not present after 60s' as a soft warning while the
+    // actual seed had silently broken upstream. Loud failure surfaces
+    // the bug per Joel's no-suppression rule.
     try {
       const { seedDatabase } = await import('../../server/seed-in-process');
       const seeded = await seedDatabase();
-      if (seeded) {
-        console.log('✅ Database seeded (in-process)');
-      } else {
-        console.log('✅ Database already seeded');
-      }
+      console.log(seeded ? '✅ Database seeded (in-process)' : '✅ Database already seeded');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.warn(`⚠️ Auto-seed failed: ${msg}`);
+      throw new Error(`Auto-seed failed before server readiness: ${msg}`);
     }
 
     await milestoneEmitter.completeMilestone(

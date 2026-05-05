@@ -45,6 +45,10 @@ on:
         description: 'Git ref to fetch install.sh from (sha / branch / tag)'
         required: false
         default: ''
+      image_tag:
+        description: 'Docker image tag to pull (default: canary). Useful values: canary, latest, pr-<N>, <sha-prefix>.'
+        required: false
+        default: 'canary'
 
 jobs:
   carl-install-smoke-amd64:
@@ -68,15 +72,46 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Install mesa-vulkan-drivers (llvmpipe ICD for no-GPU CI runner)
+        # The default continuum-core-vulkan binary calls Vulkan via the loader.
+        # On ubuntu-latest there's no GPU hardware → no real ICD → loader returns
+        # zero devices → binary panics per Joel's "lack of GPU integration is
+        # forbidden" rule. mesa-vulkan-drivers installs the llvmpipe software
+        # ICD so the loader returns a (software) device, the binary sees a real
+        # Vulkan API surface, and the GPU code path is exercised exactly like
+        # it would be on a hardware-GPU host. vulkan-tools provides vulkaninfo
+        # for the slice probes (test-slices.sh).
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          echo "vulkaninfo summary:"
+          vulkaninfo --summary 2>&1 | head -20 || true
+
       - name: Login to ghcr.io (so install.sh can pull pre-built images)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Run carl-install smoke
         env:
-          # Pass the PR HEAD sha so the smoke fetches the install.sh from
-          # THIS PR (not main). Falls back to manual workflow_dispatch input
-          # when not in a PR context.
+          # PR HEAD sha so smoke fetches install.sh from THIS PR.
           CARL_INSTALL_REF: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
+          # Pin docker images to :pr-N (PR-scoped, mutable per push). Refreshed
+          # by push-image.sh on every dev push, so always reflects this PR's
+          # latest source — but never collides with another PR or canary.
+          # Slices the dev didn't push directly are aliased from :canary by the
+          # dev script (manifest copy, no rebuild). :latest was the prior
+          # default and went 9-14 days stale in April 2026 — never use it for
+          # smoke.
+          #
+          # Resolution priority: PR# > input.image_tag > 'canary'.
+          # On workflow_dispatch (no PR context) the bare `pr-${{ ... }}`
+          # interpolated to 'pr-' (empty after dash), causing install.sh to
+          # miss the registry and fall back to 'will build locally' — which
+          # then ran a full Rust compile of continuum-core-vulkan on the
+          # no-GPU runner and hit the 25-min runner cap (observed run
+          # 25400718464). The conditional below makes manual triggers
+          # default to the canary tag (the cadence we publish on) and lets
+          # operators override via the image_tag input from the UI.
+          CONTINUUM_IMAGE_TAG: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
           # 25-min cap on the docker-only install. Hybrid (Mac source-build)
           # path would exceed this — by design, that's the gate firing on
           # the README/install mismatch.
@@ -91,7 +126,29 @@ jobs:
           SKIP_TEARDOWN: '0'
         run: bash scripts/ci/carl-install-smoke.sh
 
-      - name: Upload install + page + chat artifacts on failure
+      - name: Capture docker logs from all containers on failure (continuum-core,
+          node-server, model-init, widget-server, livekit-bridge)
+        if: failure()
+        run: |
+          # Find the carl-smoke compose project and dump every container's
+          # logs. Without this we get install.log + page + chat — all OUTSIDE
+          # the containers — but never see WHY continuum-core / node-server
+          # didn't reply (silent inference failure was the actual blocker
+          # 2026-05-04 on PR #1038). Capture per-container so the artifact
+          # shows the inference path, not just the smoke wrapper output.
+          set +e
+          for dir in /tmp/carl-smoke-*; do
+            [ -d "$dir" ] || continue
+            [ -f "$dir/docker-compose.yml" ] || continue
+            for svc in continuum-core node-server model-init widget-server livekit-bridge; do
+              docker compose -f "$dir/docker-compose.yml" logs --no-color --timestamps "$svc" \
+                > "${dir}.${svc}.log" 2>&1
+              docker compose -f "$dir/docker-compose.yml" ps "$svc" \
+                > "${dir}.${svc}.ps" 2>&1
+            done
+            docker compose -f "$dir/docker-compose.yml" ps -a > "${dir}.compose-ps.log" 2>&1
+          done
+      - name: Upload install + page + chat + docker logs + screenshot artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -99,6 +156,14 @@ jobs:
           path: |
             /tmp/carl-smoke-*.install.log
             /tmp/carl-smoke-*.page.html
+            /tmp/carl-smoke-*.page.png
             /tmp/carl-smoke-*.chat.log
+            /tmp/carl-smoke-*.continuum-core.log
+            /tmp/carl-smoke-*.node-server.log
+            /tmp/carl-smoke-*.model-init.log
+            /tmp/carl-smoke-*.widget-server.log
+            /tmp/carl-smoke-*.livekit-bridge.log
+            /tmp/carl-smoke-*.compose-ps.log
+            /tmp/carl-smoke-*.*.ps
           retention-days: 7
           if-no-files-found: ignore
