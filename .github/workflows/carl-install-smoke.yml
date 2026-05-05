@@ -45,6 +45,10 @@ on:
         description: 'Git ref to fetch install.sh from (sha / branch / tag)'
         required: false
         default: ''
+      image_tag:
+        description: 'Docker image tag to pull (default: canary). Useful values: canary, latest, pr-<N>, <sha-prefix>.'
+        required: false
+        default: 'canary'
 
 jobs:
   carl-install-smoke-amd64:
@@ -97,7 +101,17 @@ jobs:
           # dev script (manifest copy, no rebuild). :latest was the prior
           # default and went 9-14 days stale in April 2026 — never use it for
           # smoke.
-          CONTINUUM_IMAGE_TAG: pr-${{ github.event.pull_request.number }}
+          #
+          # Resolution priority: PR# > input.image_tag > 'canary'.
+          # On workflow_dispatch (no PR context) the bare `pr-${{ ... }}`
+          # interpolated to 'pr-' (empty after dash), causing install.sh to
+          # miss the registry and fall back to 'will build locally' — which
+          # then ran a full Rust compile of continuum-core-vulkan on the
+          # no-GPU runner and hit the 25-min runner cap (observed run
+          # 25400718464). The conditional below makes manual triggers
+          # default to the canary tag (the cadence we publish on) and lets
+          # operators override via the image_tag input from the UI.
+          CONTINUUM_IMAGE_TAG: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
           # 25-min cap on the docker-only install. Hybrid (Mac source-build)
           # path would exceed this — by design, that's the gate firing on
           # the README/install mismatch.
