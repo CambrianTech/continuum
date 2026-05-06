@@ -52,7 +52,7 @@ if [[ -z "${TAG:-}" ]]; then
 fi
 
 REGISTRY_HOST="ghcr.io"
-DEFAULT_IMAGES="ghcr.io/cambriantech/continuum-core:ghcr.io/cambriantech/continuum-core-vulkan:ghcr.io/cambriantech/continuum-core-cuda:ghcr.io/cambriantech/continuum-livekit-bridge:ghcr.io/cambriantech/continuum-node:ghcr.io/cambriantech/continuum-model-init:ghcr.io/cambriantech/continuum-widgets"
+DEFAULT_IMAGES="ghcr.io/cambriantech/continuum-core-vulkan:ghcr.io/cambriantech/continuum-core-cuda:ghcr.io/cambriantech/continuum-livekit-bridge:ghcr.io/cambriantech/continuum-node:ghcr.io/cambriantech/continuum-model-init:ghcr.io/cambriantech/continuum-widgets"
 IMAGES="${IMAGES:-$DEFAULT_IMAGES}"
 
 STALE_ARM64_OUT="${STALE_ARM64_OUT:-/dev/null}"
