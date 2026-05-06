@@ -97,6 +97,10 @@ COPY . .
 # CI must pass `build-contexts: shared-generated=./src/shared/generated`.
 COPY --from=shared-generated entity_schemas.json /shared/generated/entity_schemas.json
 
+# Model registry SSOT used by candle_adapter.rs include_str!:
+# ../../../../shared/models.json resolves to /shared/models.json here.
+COPY --from=shared models.json /shared/models.json
+
 # Fail fast if submodules are uninitialized.
 RUN test -f vendor/llama.cpp/CMakeLists.txt || ( \
     echo "ERROR: vendor/llama.cpp is empty — host submodule not initialized." >&2 && \
