@@ -262,13 +262,19 @@ if [ "$WARN_ARM64" -ne 0 ]; then
   echo "⚠️  arm64 stale on $(wc -l < "$STALE_ARM64_OUT" | tr -d ' ') image(s):"
   while IFS= read -r REF; do echo "     - $REF"; done < "$STALE_ARM64_OUT"
   echo "   Mac M-series dev: run \`scripts/push-current-arch.sh\` to refresh."
-  echo "   Not blocking — CI auto-rebuild will catch this once #965 lands GitHub arm64 runner support."
+  echo "   Not blocking today, but CI will not rebuild this automatically."
 fi
 
 if [ "$FAILED" -ne 0 ]; then
   echo ""
   echo "❌ STALE-IMAGE GATE FAILED — amd64 image(s) at :$TAG built from a different commit."
-  echo "   The user-facing target must always be current. Re-push from the Linux/amd64 host and re-run."
+  echo "   The user-facing target must always be current."
+  echo ""
+  echo "   Fix:"
+  echo "     Linux/amd64 host: run \`scripts/push-current-arch.sh\`"
+  echo "     Then re-run this workflow."
+  echo ""
+  echo "   CI is a check here, not a builder; it will not auto-rebuild stale Rust images."
   exit 1
 fi
 echo ""
