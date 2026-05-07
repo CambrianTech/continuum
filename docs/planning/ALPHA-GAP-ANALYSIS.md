@@ -82,7 +82,7 @@ Implementation posture:
 | Issue | Priority | Direction | Test gate |
 |---|---:|---|---|
 | #1048 mmproj/mtmd init mutex | P0 | one mtmd-capable backend may enter Metal pipeline/mmproj init at a time | Rust concurrency test: parallel vision/audio backend init serializes and all callers receive a sane result |
-| #1049 backend recovery state machine | P0 | represent backend as `Healthy`, `Initializing`, `Recovering`, `Dead`, `Unavailable`; recover/drop/recreate on OOM/dead backend | Rust test with injected backend failure recovers or reports `Unavailable`, never hangs |
+| #1050 backend recovery state machine | P0 | represent backend as `Healthy`, `Initializing`, `Recovering`, `Dead`, `Unavailable`; recover/drop/recreate on OOM/dead backend | Rust test with injected backend failure recovers or reports `Unavailable`, never hangs |
 | #960 Mac Metal throughput 5-7 tok/s | P0 | measure and fix actual GPU path; do not route through slow CPU-shaped fallback | benchmark shows expected Metal path and records tok/s |
 | #964 ONNX Runtime CPU spike | P0 | enforce Metal/GPU provider selection for fastembed/TTS/STT/vision bridge or fail loud | test/log proves provider is Metal/GPU; CPU fallback is explicit |
 | #948 DMR concurrency failure | P1 | add bounded request scheduling/backpressure around DMR | 4+ persona concurrency test passes without reqwest cascade |
@@ -135,7 +135,7 @@ Near-term PR sequence:
 |---|---:|---|---|
 | docs/architecture/UNIFIED-PAGING.md | P0 reference | `PagedResourcePool` is the primitive; migrate consumers one at a time | pool tests plus consumer-specific tests |
 | docs/architecture/PERSONA-CONTEXT-PAGING.md | P0 reference | KV/persona context paging policy | tests prove bounded memory with multiple personas |
-| #1050 PressureBroker admission gate | P0 | broker must deny unsafe allocations, not just observe them | admission test refuses second unsafe mtmd/backend creation |
+| #1049 PressureBroker admission gate | P0 | broker must deny unsafe allocations, not just observe them | admission test refuses second unsafe mtmd/backend creation |
 | #1051 MtmdContext pooling | P0 | reuse multimodal context instead of fresh multi-GB allocation per image/frame | replay test avoids repeated context allocation |
 | #945 data/query memory leak | P0 | apply resource attribution and leak tests | load test stays within memory envelope |
 | #944 embedding loop/cache misses | P1 | migrate embedding cache to shared paging primitive | repeated index pass has cache hits and bounded memory |
@@ -218,10 +218,10 @@ Design rule:
 | Order | Branch | Base | Issue(s) | Deliverable | Required validation before canary merge |
 |---:|---|---|---|---|---|
 | 1 | `codex/alpha-gap-stability-plan` | `canary` | planning doc | this document; shared execution map | docs lint/readability, AIRC review |
-| 2 | `fix/gpu-backend-lifecycle` | `canary` | #1048, #1049, #960, #964 | mutex + backend state/recovery | Rust tests with injected failure; GPU provider evidence |
+| 2 | `fix/gpu-backend-lifecycle` | `canary` | #1048, #1050, #960, #964 | mutex + backend state/recovery | Rust tests with injected failure; GPU provider evidence |
 | 3 | `fix/docker-alpha-profiles` | `canary` | #892, #955, #834, #776, #796 | modular Docker profile cleanup | compose profile smoke; image size report |
 | 4 | `feature/persona-rust-replay` | `canary` | #969, #909 | Rust persona replay/tool-loop foundation | `cargo test`; net-negative TS cognition lines |
-| 5 | `feature/pressure-broker-gate` | `canary` | #1050, #1051, #945, #944 | admission gate + first resource consumer | memory/load tests; no Node required |
+| 5 | `feature/pressure-broker-gate` | `canary` | #1049, #1051, #945, #944 | admission gate + first resource consumer | memory/load tests; no Node required |
 | 6 | `fix/realtime-core-reconnect` | `canary` | #793, #794, #773 | core restart + realtime browser recovery | kill core, command recovers, browser receives AI message |
 | 7 | `feature/airc-persona-peer` | `canary` | #967, PR #1046 | Continuum persona as AIRC participant | AIRC -> Continuum -> AIRC round trip |
 | 8 | `test/fresh-install-e2e` | `canary` | #770, #1006-#1008, #983 | install validation matrix | Mac + Windows logs; no silent waits |
@@ -310,6 +310,7 @@ This document owns execution order and alpha gates. Detailed architecture remain
 - [Persona Cognition Rust Migration](../architecture/PERSONA-COGNITION-RUST-MIGRATION.md)
 - [Unified Paging](../architecture/UNIFIED-PAGING.md)
 - [Persona Context Paging](../architecture/PERSONA-CONTEXT-PAGING.md)
+- `src/shared/models.json` and `src/shared/ModelRegistry.ts`
 - [Docker Node Architecture](../grid/DOCKER-NODE-ARCHITECTURE.md)
 - [Grid Architecture](../grid/GRID-ARCHITECTURE.md)
 - [AIRC Continuum Bridge](../grid/AIRC-CONTINUUM-BRIDGE.md)
@@ -321,8 +322,8 @@ If those docs disagree with this one on sequence, update this one first or expli
 1. Land this doc to `canary`.
 2. Use the newly filed alpha substrate issues as implementation anchors:
    - #1048 mmproj/mtmd init mutex
-   - #1049 backend recovery state machine
-   - #1050 PressureBroker admission gate
+   - #1050 backend recovery state machine
+   - #1049 PressureBroker admission gate
    - #1051 MtmdContext pooling
 3. Ask Mac/Windows agents to review the issue mapping and mark any issue stale/misclassified.
 4. Start `fix/gpu-backend-lifecycle` from `canary`.
