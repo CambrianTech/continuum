@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/airc/bridge",
+  "version": "1.0.0",
+  "description": "Ingest one AIRC message into Continuum. Normal messages become chat; explicit !continuum directives become bounded development and test commands. This is the inbox-side companion to airc/send: it lets AIRC peers drive Continuum validation without shelling through jtag chat/send or chat/export by hand.",
+  "main": "server/AircBridgeServerCommand.ts",
+  "types": "shared/AircBridgeTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit",
+    "test:unit": "npx tsx test/unit/AircBridgeProtocolCheck.ts && npx tsx test/unit/AircBridgeServerCommandCheck.ts",
+    "test:integration": "echo 'Use ./jtag airc/bridge against a matching running server for live VDD validation.'",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "airc/bridge"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
