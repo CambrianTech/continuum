@@ -218,15 +218,71 @@ Design rule:
 | Order | Branch | Base | Issue(s) | Deliverable | Required validation before canary merge |
 |---:|---|---|---|---|---|
 | 1 | `codex/alpha-gap-stability-plan` | `canary` | planning doc | this document; shared execution map | docs lint/readability, AIRC review |
-| 2 | `fix/gpu-backend-lifecycle` | `canary` | #1048, #1050, #960, #964 | mutex + backend state/recovery | Rust tests with injected failure; GPU provider evidence |
-| 3 | `fix/docker-alpha-profiles` | `canary` | #892, #955, #834, #776, #796 | modular Docker profile cleanup | compose profile smoke; image size report |
-| 4 | `feature/persona-rust-replay` | `canary` | #969, #909 | Rust persona replay/tool-loop foundation | `cargo test`; net-negative TS cognition lines |
-| 5 | `feature/pressure-broker-gate` | `canary` | #1049, #1051, #945, #944 | admission gate + first resource consumer | memory/load tests; no Node required |
-| 6 | `fix/realtime-core-reconnect` | `canary` | #793, #794, #773 | core restart + realtime browser recovery | kill core, command recovers, browser receives AI message |
-| 7 | `feature/airc-persona-peer` | `canary` | #967, PR #1046 | Continuum persona as AIRC participant | AIRC -> Continuum -> AIRC round trip |
-| 8 | `test/fresh-install-e2e` | `canary` | #770, #1006-#1008, #983 | install validation matrix | Mac + Windows logs; no silent waits |
+| 2 | `fix/gpu-backend-lifecycle` | `canary` | #1048, #1050, #960, #964 | mutex + backend state/recovery | Contract TDD for injected failure; Residency VDD for GPU provider; Performance VDD for tok/s |
+| 3 | `fix/docker-alpha-profiles` | `canary` | #892, #955, #834, #776, #796 | modular Docker profile cleanup | Failure TDD for health boundaries; Cross-platform VDD for compose profiles; image size report |
+| 4 | `feature/persona-rust-replay` | `canary` | #969, #909 | Rust persona replay/tool-loop foundation | Contract TDD via `cargo test`; Accuracy VDD via replay fixture and repeated-run stability; net-negative TS cognition lines |
+| 5 | `feature/pressure-broker-gate` | `canary` | #1049, #1051, #945, #944 | admission gate + first resource consumer | Contract TDD for admission decisions; Resource/Residency VDD for memory envelope; no Node required |
+| 6 | `fix/realtime-core-reconnect` | `canary` | #793, #794, #773 | core restart + realtime browser recovery | Failure TDD for killed core; Timing VDD for reconnect/event timestamps; UX VDD for browser receive |
+| 7 | `feature/airc-persona-peer` | `canary` | #967, PR #1046 | Continuum persona as AIRC participant | Protocol TDD for bridge mapping; Timing VDD for round trip; AIRC -> Continuum -> AIRC live smoke |
+| 8 | `test/fresh-install-e2e` | `canary` | #770, #1006-#1008, #983 | install validation matrix | Cross-platform VDD for Mac/Windows logs; Failure TDD for missing network/Docker/GPU; no silent waits |
 
 This order can change when a blocker is discovered, but changes must be made in this document and on the issue/PR thread, not only in chat.
+
+## VDD/TDD Operating Loop
+
+Continuum cannot be validated by integration tests alone. It has ML quality, GPU residency, timing, and recovery requirements that can regress while normal tests stay green. The alpha loop is therefore **TDD + VDD**:
+
+- **TDD**: deterministic unit, integration, and protocol tests that prove contracts and failure modes.
+- **VDD**: validation-driven development for measured behavior: latency, throughput, GPU provider, memory pressure, model accuracy, recovery time, and live UX.
+
+Every alpha PR must choose its validation class up front. A PR may use more than one class, but it may not claim broad stability from a single browser smoke or Docker boot.
+
+| Class | Proves | Typical evidence | Examples |
+|---|---|---|---|
+| Contract TDD | API/state/protocol invariants | unit test, Rust test, type-level regression | `PageState.clear()` emits `null`; pressure gate refuses unsafe allocation |
+| Failure TDD | known failure recovers or fails loud | injected fault test, stale fixture, bounded timeout | dead core reconnect, stale room ID, missing model, gone channel |
+| Performance VDD | speed stays inside alpha budget | benchmark output with baseline delta | tok/s, first-token latency, boot time, chat round-trip |
+| Resource VDD | memory, handles, queues, and cache growth stay bounded over time | soak/load output, monotonic-growth check, resource envelope delta | no ORM/query leak over N iterations; KV cache stays under budget |
+| Accuracy VDD | model output quality and repeatability stay acceptable | replay fixture score, golden semantic check, repeated-run variance, human spot-check note | no echo loop, tool-call XML stripped, vision marker preserved, stable tool choice over N runs |
+| Residency VDD | correct hardware path is used | provider log, GPU counter, no silent CPU fallback | Metal/CUDA provider active; CPU fallback logged as degraded |
+| Timing VDD | async/realtime behavior is observed | event timestamp trace, reconnect timing, race replay | AI message renders without refresh; cold start emits progress |
+| UX VDD | user-visible workflow works | browser screenshot/log, concise manual steps | close all tabs -> empty center; `/chat/general` -> one tab |
+| Cross-platform VDD | Mac/Windows/Linux path works | platform logs from canary, issue/PR comment | WSL install, Mac Metal, Docker profile |
+
+### PR Validation Template
+
+Each PR body should include this block, filled in concretely:
+
+```text
+Validation class:
+Issue(s):
+Core contract test:
+Failure injection / stale fixture:
+Performance/latency budget:
+Resource/memory evidence:
+Accuracy/replay evidence:
+GPU/provider evidence:
+Browser/UX evidence:
+Migration evidence:
+Platform coverage:
+Known gaps:
+Canary agents/humans asked to test:
+Canary ACK/BLOCKER evidence:
+```
+
+Rules:
+
+1. Every template line is required; use `n/a — <reason>` when a field does not apply.
+2. Core behavior needs a fast non-browser proof when feasible.
+3. Browser tests prove browser responsibilities only.
+4. Docker tests prove packaging and service boundaries, not core algorithm correctness.
+5. ML behavior needs replay fixtures or scored checks, not only "the command returned"; variance-sensitive paths need repeated-run evidence.
+6. Timing-sensitive behavior needs measured timestamps or bounded waits.
+7. GPU-critical behavior must prove provider/residency or fail as degraded. CPU fallback is never silent.
+8. Memory/resource behavior needs a bounded-envelope or leak test when touching caches, pools, queues, ORM cursors, model contexts, or long-lived handles.
+9. State/data shape changes need migration evidence against old persisted state, or `n/a — no state/schema change`.
+10. Install and postinstall must be bounded, explicit, and resumable. Large downloads must not hide inside unrelated validation.
+11. Canary peer testing must close the loop: agents/humans reply with `ACK` or `BLOCKER` plus measured evidence, and the PR records or links that evidence.
 
 ## Test Strategy
 
@@ -288,8 +344,9 @@ Every alpha PR must answer:
 
 - Which issue does this advance?
 - Why does this belong in Rust, TS, Docker, or docs?
+- Which validation class(es) does this PR use: Contract TDD, Failure TDD, Performance VDD, Accuracy VDD, Residency VDD, Timing VDD, UX VDD, Cross-platform VDD?
 - What command proves the core behavior without browser/Node?
-- What canary validation was run?
+- What canary validation was run, and what measured evidence was attached?
 - What platforms were covered?
 - What remains untested?
 - Did it reduce Node/TS logic or at least avoid adding new TS logic?
