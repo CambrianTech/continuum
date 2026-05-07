@@ -409,6 +409,24 @@ export class MainWidget extends ReactiveWidget {
     this.log(`Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}`);
   }
 
+  private clearContentView(): void {
+    this.widgetCache.forEach((widget, tag) => {
+      if (widget.style.display !== 'none') {
+        widget.style.display = 'none';
+        if (isContentViewWidget(widget) && widget.onDeactivate) {
+          widget.onDeactivate();
+        }
+        this.log(`Deactivated ${tag}`);
+      }
+    });
+    this.currentViewType = null;
+    this.currentViewEntityId = undefined;
+    Events.emit(UI_EVENTS.RIGHT_PANEL_CONFIGURE, {
+      widget: null,
+      contentType: null
+    });
+  }
+
   private updateUrl(path: string): void {
     if (this.currentPath !== path) {
       this.currentPath = path;
@@ -665,7 +683,11 @@ export class MainWidget extends ReactiveWidget {
 
     this.createMountEffect(() => {
       const unsubscribe = pageState.subscribe((state) => {
-        if (state?.contentType) {
+        if (!state) {
+          this.clearContentView();
+          return;
+        }
+        if (state.contentType) {
           if (state.contentType !== this.currentViewType ||
               state.entityId !== this.currentViewEntityId) {
             this.switchContentView(state.contentType, state.entityId);

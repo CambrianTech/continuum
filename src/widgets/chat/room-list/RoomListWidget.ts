@@ -261,6 +261,10 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     // Subscribe to pageState - single source of truth for current room
     this.createMountEffect(() => {
       const unsubscribe = pageState.subscribe((state) => {
+        if (!state) {
+          this.currentRoomId = null;
+          return;
+        }
         if (state.entityId) {
           const matchingRoom = this.entities.find(
             (room: RoomEntity) => room.id === state.entityId || room.uniqueId === state.entityId
