@@ -136,7 +136,10 @@ impl ServiceModule for CognitionModule {
             command_prefixes: &["cognition/", "inbox/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
-            max_concurrency: 0,
+            // Persona response can invoke RAG, embeddings, and generation.
+            // Keep a single cognition response in flight until the pressure
+            // broker can perform explicit multi-persona batching.
+            max_concurrency: 1,
             tick_interval: None,
         }
     }
@@ -828,8 +831,7 @@ impl ServiceModule for CognitionModule {
                 let response = crate::persona::response::respond(input).await?;
 
                 Ok(CommandResult::Json(
-                    serde_json::to_value(&response)
-                        .map_err(|e| format!("Serialize error: {e}"))?,
+                    serde_json::to_value(&response).map_err(|e| format!("Serialize error: {e}"))?,
                 ))
             }
 
