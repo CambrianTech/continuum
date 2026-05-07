@@ -427,7 +427,7 @@ export class SystemOrchestrator extends EventEmitter {
           return await this.executeBrowserInterface();
           
         case SYSTEM_MILESTONES.BROWSER_READY:
-          return await this.executeBrowserReady();
+          return await this.executeBrowserReady(options);
           
         case SYSTEM_MILESTONES.SYSTEM_HEALTHY:
           return await this.executeSystemHealthy();
@@ -1328,7 +1328,16 @@ export class SystemOrchestrator extends EventEmitter {
     return true;
   }
 
-  private async executeBrowserReady(): Promise<boolean> {
+  private async executeBrowserReady(options: OrchestrationOptions): Promise<boolean> {
+    if (options.skipBrowser) {
+      console.debug('⏭️ Browser readiness deferred (skipBrowser option)');
+      await milestoneEmitter.completeMilestone(
+        SYSTEM_MILESTONES.BROWSER_READY,
+        this.currentEntryPoint
+      );
+      return true;
+    }
+
     console.debug('⏳ Waiting for browser to be ready...');
     
     // For now, assume browser is ready after launch

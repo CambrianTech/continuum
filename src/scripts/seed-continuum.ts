@@ -15,6 +15,7 @@ import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities'
 import { ROOM_UNIQUE_IDS } from '../system/data/constants/RoomConstants';
 import { generateUUID } from '../system/core/types/CrossPlatformUUID';
 import { UserEntity } from '../system/data/entities/UserEntity';
+import { BaseEntity } from '../system/data/entities/BaseEntity';
 import { RoomEntity } from '../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
 import { ContentTypeEntity } from '../system/data/entities/ContentTypeEntity';
@@ -39,6 +40,7 @@ import {
   execWithRetry,
 } from './seed/helpers';
 
+const execRawAsync = promisify(exec);
 const execAsync = execWithRetry;
 
 /** Sync recipe JSON files to database — truly idempotent, ignores "already exists" */
@@ -46,22 +48,75 @@ async function syncRecipesFromJson(): Promise<void> {
   const recipesDir = path.join(__dirname, '..', 'system', 'recipes');
   const recipeFiles = fs.readdirSync(recipesDir).filter(f => f.endsWith('.json'));
   console.log(`  [Seed] 📝 Syncing ${recipeFiles.length} recipes...`);
+  const existingIds = new Set<string>();
+  try {
+    const { stdout } = await execRawAsync('./jtag data/list --collection=recipes --limit=1000 --skipCount=true --select=id', { timeout: 10000 });
+    const parsed = JSON.parse(stdout);
+    for (const item of parsed.items || []) {
+      if (typeof item.id === 'string') existingIds.add(item.id);
+    }
+  } catch {
+    // Continue with create-first behavior if discovery fails. The per-record
+    // update fallback below still keeps the seed idempotent.
+  }
   let created = 0;
-  let existing = 0;
+  let updated = 0;
+  let unchanged = 0;
+  let failed = 0;
   for (const f of recipeFiles) {
     const data = JSON.parse(fs.readFileSync(path.join(recipesDir, f), 'utf-8'));
     const id = data.uniqueId;
     if (!id) continue;
+    const recipe = {
+      ...data,
+      id,
+      view: data.view || data.uniqueId,
+      entityType: data.entityType || null,
+      createdBy: data.createdBy || '00000000-0000-0000-0000-000000000000',
+      usageCount: data.usageCount || 0,
+      lastUsedAt: data.lastUsedAt || new Date().toISOString(),
+      tags: data.tags || [],
+      isPublic: data.isPublic !== false,
+    };
     try {
-      const wasCreated = await createRecord('recipes', { ...data, id }, id, data.displayName || id);
-      if (wasCreated) created++;
-      else existing++;
+      if (!existingIds.has(id)) {
+        const wasCreated = await createRecord('recipes', recipe, id, data.displayName || id);
+        if (wasCreated) {
+          existingIds.add(id);
+          created++;
+          continue;
+        }
+      }
+
+      const { stdout: readStdout } = await execRawAsync(`./jtag data/read --collection=recipes --id='${id}'`, { timeout: 10000 });
+      const readResult = JSON.parse(readStdout);
+      if (readResult?.found && readResult?.data && !BaseEntity.hasContentDelta(readResult.data, recipe, {
+        ignoreFields: ['createdBy', 'lastUsedAt', 'usageCount']
+      })) {
+        unchanged++;
+        continue;
+      }
+
+      const updateData = { ...recipe };
+      delete updateData.createdBy;
+      delete updateData.lastUsedAt;
+      delete updateData.usageCount;
+      const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
+      const { stdout } = await execAsync(`./jtag data/update --collection=recipes --id='${id}' --data='${dataArg}' --suppressEvents=true`);
+      if (stdout.includes('"success": true') || stdout.includes('"success":true')) {
+        updated++;
+      } else {
+        failed++;
+        console.error(`  [Seed] ❌ Failed to update recipe ${data.displayName || id}: ${stdout.slice(0, 300)}`);
+      }
     } catch {
-      // "Record already exists" or other non-fatal error — skip silently
-      existing++;
+      failed++;
     }
   }
-  console.log(`  [Seed] ✅ Synced recipes (${created} new, ${existing} existing)`);
+  if (failed > 0) {
+    throw new Error(`Failed to sync ${failed}/${recipeFiles.length} recipes`);
+  }
+  console.log(`  [Seed] ✅ Synced recipes (${created} new, ${updated} updated, ${unchanged} unchanged)`);
 }
 
 // ===== PERSONA PROFILE DATA (single source of truth for all persona bios + colors) =====
@@ -261,7 +316,7 @@ async function waitForJTAGReady(maxWaitSeconds: number = 480): Promise<boolean> 
 
   while (Date.now() - startTime < maxWaitSeconds * 1000) {
     try {
-      const { stdout } = await execAsync('./jtag ping');
+      const { stdout } = await execRawAsync('./jtag ping', { timeout: 10000 });
 
       // ROBUST: Extract JSON from potentially polluted output
       const firstBrace = stdout.indexOf('{');
@@ -279,7 +334,13 @@ async function waitForJTAGReady(maxWaitSeconds: number = 480): Promise<boolean> 
           response.server?.health?.commandsRegistered > 0) {
         // Also verify Rust IPC is connected — seed depends on data/create which goes through Rust ORM
         try {
-          const { stdout: dbCheck } = await execAsync('./jtag data/list --collection=users --limit=1', { timeout: 10000 });
+          // Use the real Rust-backed ORM path, but keep the probe cheap. The
+          // previous `data/list --collection=users --limit=1` performed a COUNT
+          // plus a full-row query every retry; on cold start that turned the
+          // health check itself into data/query memory churn. `skipCount` and a
+          // single-column projection prove the data path is alive without
+          // competing with seed/persona startup.
+          const { stdout: dbCheck } = await execRawAsync('./jtag data/list --collection=users --limit=1 --skipCount=true --select=id', { timeout: 10000 });
           if (dbCheck.includes('"success":true') || dbCheck.includes('"success": true')) {
             console.log(`✅ JTAG ready with ${response.server.health.commandsRegistered} commands + Rust IPC confirmed`);
             return true;
@@ -293,6 +354,7 @@ async function waitForJTAGReady(maxWaitSeconds: number = 480): Promise<boolean> 
           if (attempts % 5 === 0) {
             console.log(`   TS server ready but Rust worker not responding...`);
             console.log(`   DEBUG: ${dbErr?.message || dbErr}`);
+            console.log(`   DEBUG stdout: ${dbErr?.stdout?.slice?.(0, 500) || 'none'}`);
             console.log(`   DEBUG stderr: ${dbErr?.stderr?.slice?.(0, 200) || 'none'}`);
           }
         }

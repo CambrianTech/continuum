@@ -386,13 +386,27 @@ echo -e "\n${YELLOW}Phase 4: Launch system${NC}"
 
 # Ensure log directory exists
 mkdir -p "$CONTINUUM_ROOT/jtag/logs/system"
+STARTUP_AUTONOMOUS_PAUSE="$CONTINUUM_ROOT/jtag/startup-autonomous-work.paused"
+echo "$$" > "$STARTUP_AUTONOMOUS_PAUSE"
+cleanup_startup_pause() {
+  rm -f "$STARTUP_AUTONOMOUS_PAUSE"
+}
+trap cleanup_startup_pause EXIT
 
 # Start the orchestrator as a daemon — it runs forever (WebSocket server is in-process).
-# Redirect output to log file. system-stop.sh finds it by pattern "launch-active-example".
-nohup npx tsx scripts/launch-active-example.ts \
-  >> $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log 2>&1 &
-LAUNCH_PID=$!
-disown $LAUNCH_PID
+# Use the project-local tsx binary directly; `npx` is a short-lived wrapper and
+# has caused false "daemon" starts where the launcher dies after npm start exits.
+# Redirect stdin as well as output so parent shell/PTY teardown cannot touch it.
+# system-stop.sh finds it by pattern "launch-active-example".
+# Browser attachment happens after seed below. Starting the orchestrator with
+# browser management enabled lets stale tabs reconnect during seed and trigger
+# persona/RAG/model work while the database is still being synchronized.
+TSX_BIN="$PROJECT_DIR/node_modules/.bin/tsx"
+LAUNCH_PID=$(node "$PROJECT_DIR/scripts/spawn-detached.mjs" \
+  --cwd "$PROJECT_DIR" \
+  --log "$CONTINUUM_ROOT/jtag/logs/system/orchestrator.log" \
+  --env CONTINUUM_DEFER_BROWSER=1 \
+  -- "$TSX_BIN" scripts/launch-active-example.ts)
 echo "$LAUNCH_PID" > $CONTINUUM_ROOT/jtag/logs/system/npm-start.pid
 echo -e "  Orchestrator started (PID $LAUNCH_PID, log: $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log)"
 
@@ -471,11 +485,28 @@ if [ "$SEED_RC" -ne 0 ]; then
 else
   echo -e "  ${GREEN}✅ Seed complete${NC}"
 fi
+cleanup_startup_pause
 
-# Phase 6: Browser launch is handled by SystemOrchestrator.detectAndManageBrowser()
-# The orchestrator runs as a daemon and manages browser lifecycle — open, detect, reconnect.
-# Shell script does NOT open the browser to avoid duplicate tabs (#335).
+# Phase 6: Browser attach happens only after seed. This script owns the final
+# post-seed refresh/open so the orchestrator cannot race UI hydration against
+# database synchronization.
 BROWSER_CONNECTED=false
+if [ "$SEED_OK" = true ]; then
+  echo -e "  ${YELLOW}Attaching browser after seed...${NC}"
+  PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
+  if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
+    if ./jtag interface/navigate >/dev/null 2>&1; then
+      BROWSER_CONNECTED=true
+      echo -e "  ${GREEN}Browser refreshed after seed${NC}"
+    else
+      ./jtag development/exec --code="location.reload()" >/dev/null 2>&1 || true
+    fi
+  elif command -v open >/dev/null 2>&1; then
+    open "http://localhost:9000/chat/general" >/dev/null 2>&1 || true
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "http://localhost:9000/chat/general" >/dev/null 2>&1 || true
+  fi
+fi
 if [ "$HOT_RESTART" = true ]; then
   # Hot restart: give existing tab time to reconnect via WebSocket
   echo -e "  ⏳ Waiting for browser to reconnect..."

@@ -113,16 +113,16 @@ export class PersonaLifecycleManager {
 
     console.log(`✅ PersonaLifecycleManager: ${created} persona(s) activated on startup`);
 
-    // Cold-start prewarming: fire a tiny no-op generation per local persona
-    // so DMR loads the model + warms the slot BEFORE the user's first message.
-    // Without this, the first real chat eats a ~6s model-load cold start
-    // PLUS the normal generation time — felt like an eternity ("ais take a
-    // long time to load"). With prewarm, the model is resident and ready;
-    // first chat hits a warm slot.
-    //
-    // Fire-and-forget: doesn't block boot, doesn't fail boot if DMR is down.
-    // Cloud personas are skipped — their providers are already "warm" by API.
-    void this.prewarmAllPersonas(allocation.allocations);
+    // Local model prewarm allocates the full model/KV context. Doing that at
+    // boot competes with seed, browser reconnect, and first room hydration, and
+    // on unified-memory Macs can push continuum-core into OS pressure before
+    // the system is actually ready. Keep it as an explicit performance knob,
+    // not default startup behavior.
+    if (process.env.CONTINUUM_PREWARM_PERSONAS === '1' || process.env.CONTINUUM_PREWARM_PERSONAS === 'true') {
+      void this.prewarmAllPersonas(allocation.allocations);
+    } else {
+      console.log('⏭️ PersonaLifecycleManager: local model prewarm skipped (set CONTINUUM_PREWARM_PERSONAS=1 to enable)');
+    }
   }
 
   /**

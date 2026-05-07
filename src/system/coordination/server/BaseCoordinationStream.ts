@@ -21,10 +21,8 @@
  */
 
 import { EventEmitter } from 'events';
-import * as path from 'path';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { Logger, FileMode, type ComponentLogger } from '../../core/logging/Logger';
-import { SystemPaths } from '../../core/config/SystemPaths';
+import { Logger, type ComponentLogger } from '../../core/logging/Logger';
 
 /**
  * Domain-agnostic thought (claim to respond)
@@ -187,15 +185,11 @@ export abstract class BaseCoordinationStream<
   }
 
   /**
-   * Hook: Get probabilistic max responders
+   * Hook: Get max responders.
    * Subclasses can customize slot allocation
    */
   protected getMaxResponders(): number {
-    // Default: probabilistic (70% = 1, 25% = 2, 5% = 3)
-    const rand = Math.random();
-    if (rand < 0.70) return 1;
-    if (rand < 0.95) return 2;
-    return 3;
+    return this.config.maxResponders;
   }
 
   /**

@@ -1234,7 +1234,12 @@ export class PersonaUser extends AIUser {
   /**
    * Catch up on messages since last processed bookmark
    * Uses roomReadState from UserStateEntity to track per-room progress
-   * Ensures no messages are missed even after system restart
+   * Startup policy:
+   * - Default: bookmark the current tail for every room; do not generate from
+   *   historical backlog during boot. Restart is not a "catch up" moment:
+   *   generating from old room traffic caused startup storms and stale replies.
+   * - Opt-in: CONTINUUM_PROCESS_STARTUP_BACKLOG=1 consolidates backlog into one
+   *   latest-room signal per room for explicit replay tests.
    */
   private async catchUpOnRecentMessages(): Promise<void> {
     try {
@@ -1245,12 +1250,43 @@ export class PersonaUser extends AIUser {
       }
 
       let totalCaughtUp = 0;
+      let totalBookmarked = 0;
+      const processStartupBacklog = process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === '1' ||
+        process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === 'true';
 
       // Process each room's bookmark independently
       for (const roomId of roomIds) {
+        const latest = await ORM.query<ChatMessageEntity>({
+          collection: COLLECTIONS.CHAT_MESSAGES,
+          filter: {
+            roomId,
+            senderId: { $ne: this.id },
+            senderType: { $ne: 'system' }
+          },
+          sort: [{ field: 'timestamp', direction: 'desc' }],
+          limit: 1
+        }, 'default');
+
+        const latestMessage = latest.success && latest.data?.[0]?.data;
+        if (!latestMessage) {
+          continue;
+        }
+
+        if (!processStartupBacklog) {
+          await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
+          totalBookmarked += 1;
+          continue;
+        }
+
         // Direct property access (state may be plain object from DB)
         const roomState = this.state.roomReadState?.[roomId];
-        const cutoffTime = roomState?.lastReadMessageTimestamp || new Date(0).toISOString();
+        const cutoffTime = roomState?.lastReadMessageTimestamp;
+
+        if (!cutoffTime) {
+          await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
+          totalBookmarked += 1;
+          continue;
+        }
 
         const recentMessages = await ORM.query<ChatMessageEntity>({
           collection: COLLECTIONS.CHAT_MESSAGES,
@@ -1269,17 +1305,19 @@ export class PersonaUser extends AIUser {
         }
 
         const messages = recentMessages.data.map(r => r.data);
-        this.log.info(`🔄 ${this.displayName}: Catching up on ${messages.length} messages in room ${roomId.slice(0,8)}`);
+        const latestBacklogMessage = messages[messages.length - 1];
+        this.log.info(`🔄 ${this.displayName}: Consolidating ${messages.length} catch-up messages in room ${roomId.slice(0,8)} into one latest-room signal`);
 
-        for (const message of messages) {
-          await this.handleChatMessage(message);
-        }
-
-        totalCaughtUp += messages.length;
+        await this.handleChatMessage(latestBacklogMessage);
+        totalCaughtUp += 1;
       }
 
       if (totalCaughtUp > 0) {
-        this.log.info(`✅ ${this.displayName}: Catch-up complete (${totalCaughtUp} messages)`);
+        this.log.info(`✅ ${this.displayName}: Catch-up complete (${totalCaughtUp} consolidated room signal(s))`);
+      }
+
+      if (totalBookmarked > 0) {
+        this.log.info(`🔖 ${this.displayName}: Startup catch-up advanced ${totalBookmarked} room bookmark(s) to current tail; backlog generation disabled`);
       }
     } catch (error) {
       this.log.warn(`⚠️ ${this.displayName}: Catch-up failed (non-fatal):`, error);
