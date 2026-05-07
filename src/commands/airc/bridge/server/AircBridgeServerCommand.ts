@@ -20,6 +20,7 @@ import { createAircBridgeResultFromParams } from '../shared/AircBridgeTypes';
 interface BridgeHandlerResult {
   responseText: string;
   commandResult?: unknown;
+  mirrorError?: string;
 }
 
 export class AircBridgeServerCommand extends AircBridgeCommand {
@@ -41,13 +42,14 @@ export class AircBridgeServerCommand extends AircBridgeCommand {
 
     try {
       const result = await this.handleParsedMessage(params, parsed);
-      const mirrored = await this.mirrorResponseIfRequested(params, parsed.channel, result.responseText);
+      const mirror = await this.mirrorResponseIfRequested(params, parsed.channel, result.responseText);
       return createAircBridgeResultFromParams(params, {
         success: true,
         handled: true,
         parsed,
-        mirrored,
         ...result,
+        mirrored: mirror.mirrored,
+        mirrorError: mirror.error,
       });
     } catch (error) {
       return this.failed(params, parsed, error);
@@ -92,6 +94,7 @@ export class AircBridgeServerCommand extends AircBridgeCommand {
     parsed: ParsedAircBridgeMessage,
   ): Promise<BridgeHandlerResult> {
     const handlers: Record<string, () => Promise<BridgeHandlerResult>> = {
+      skip: () => Promise.resolve({ responseText: 'skipped Continuum-origin mirror echo' }),
       chat: () => this.handleChat(params, parsed),
       ping: () => Promise.resolve({ responseText: `continuum-airc-bridge ok (${parsed.room})`, commandResult: { ok: true } }),
       status: () => this.handleStatus(params, parsed),
@@ -222,15 +225,24 @@ export class AircBridgeServerCommand extends AircBridgeCommand {
     params: AircBridgeParams,
     channel: string,
     responseText: string,
-  ): Promise<boolean> {
-    if (!params.mirrorResponse || !responseText.trim()) return false;
-    const result = await this.spawnAirc([
-      'msg',
-      '--channel',
-      channel,
-      `[continuum] ${summarizeBridgeResponse(responseText, 1200)}`,
-    ]);
-    return result.exitCode === 0;
+  ): Promise<{ mirrored: boolean; error?: string }> {
+    if (!params.mirrorResponse || !responseText.trim()) return { mirrored: false };
+    try {
+      const result = await this.spawnAirc([
+        'msg',
+        '--channel',
+        channel,
+        `[continuum] ${summarizeBridgeResponse(responseText, 1200)}`,
+      ]);
+      return result.exitCode === 0
+        ? { mirrored: true }
+        : { mirrored: false, error: result.stderr || `airc exited ${result.exitCode}` };
+    } catch (error) {
+      return {
+        mirrored: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   private spawnAirc(argv: string[]): Promise<{ exitCode: number; stderr: string }> {

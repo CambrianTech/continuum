@@ -13,6 +13,7 @@ export type AircBridgeAction =
   | 'export'
   | 'assert-seen'
   | 'activity-list'
+  | 'skip'
   | 'unknown';
 
 export interface ParsedAircBridgeMessage {
@@ -47,6 +48,7 @@ const DEFAULT_PREFIX = '!continuum';
 const DEFAULT_ROOM = 'general';
 const DEFAULT_SENDER = 'airc-peer';
 const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 500;
 
 export function roomFromAircChannel(channel?: string, fallback = DEFAULT_ROOM): string {
   const normalized = (channel ?? '').trim().replace(/^#/, '');
@@ -60,6 +62,13 @@ export function parseAircBridgeMessage(
   const prefix = options.commandPrefix ?? DEFAULT_PREFIX;
   const context = createParseContext(text, options);
   const trimmed = text.trim();
+
+  if (trimmed.startsWith('[continuum]')) {
+    return createParsed(context, 'skip', {
+      isDirective: false,
+      message: text,
+    });
+  }
 
   if (!trimmed.startsWith(prefix)) {
     return createParsed(context, 'chat', { isDirective: false, message: text });
@@ -87,7 +96,7 @@ function createParseContext(text: string, options: ParseAircBridgeOptions): Pars
     originalText: text,
     senderNick,
     channel: roomFromAircChannel(options.channel, fallbackRoom),
-    room: explicitRoom ?? roomFromAircChannel(options.channel, fallbackRoom),
+    room: explicitRoom ?? fallbackRoom,
   };
 }
 
@@ -150,10 +159,10 @@ function parseAssert(context: ParseContext, tokens: string[]): ParsedAircBridgeM
 }
 
 function parseChat(context: ParseContext, tokens: string[]): ParsedAircBridgeMessage {
-  const targetRoom = tokens.length > 1 && !tokens[0].startsWith('--') ? tokens.shift() : context.room;
+  const targetRoom = readStringFlag(tokens, 'room') ?? context.room;
   const message = tokens.join(' ').trim();
   if (!message) {
-    return createParsed(context, 'unknown', { error: 'Expected: !continuum chat [room] <message>' });
+    return createParsed(context, 'unknown', { error: 'Expected: !continuum chat [--room room] <message>' });
   }
   return createParsed(context, 'chat', { room: targetRoom, message });
 }
@@ -248,5 +257,6 @@ function readIntFlag(tokens: string[], name: string): number | undefined {
   const raw = readStringFlag(tokens, name);
   if (!raw) return undefined;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.min(parsed, MAX_LIMIT);
 }

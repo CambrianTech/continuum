@@ -21,7 +21,7 @@ export interface AircBridgeParams extends CommandParams {
   /** AIRC channel without or with leading #. Defaults to #general. */
   channel?: string;
 
-  /** Continuum room override. Defaults to the AIRC channel name. */
+  /** Continuum room override. Defaults to general; AIRC channel is preserved separately. */
   room?: string;
 
   /** Directive prefix for test/control messages. Defaults to !continuum. */
@@ -30,7 +30,7 @@ export interface AircBridgeParams extends CommandParams {
   /** Parse and report intent without executing Continuum commands. */
   dryRun?: boolean;
 
-  /** Send command responses back to AIRC via airc/send. */
+  /** Send command responses back to AIRC via the airc CLI. */
   mirrorResponse?: boolean;
 }
 
@@ -40,6 +40,7 @@ export interface AircBridgeResult extends CommandResult {
   parsed: ParsedAircBridgeMessage;
   responseText?: string;
   mirrored?: boolean;
+  mirrorError?: string;
   commandResult?: unknown;
   error?: string;
 }
