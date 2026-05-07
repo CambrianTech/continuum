@@ -97,6 +97,17 @@ class CommandConstantsGenerator {
       commandNames.push(commandName);
     }
 
+    // Also support no-command-specific-param aliases:
+    //   export type FooParams = CommandParams;
+    // These are the clean form for zero-param commands. They must still
+    // appear in generated constants and schemas.
+    const paramsAliasRegex = /export\s+type\s+(\w+Params)\s*=\s*CommandParams\s*;/g;
+    while ((match = paramsAliasRegex.exec(content)) !== null) {
+      const interfaceName = match[1];
+      const commandName = this.deriveCommandName(interfaceName, basePath);
+      commandNames.push(commandName);
+    }
+
     return commandNames;
   }
 

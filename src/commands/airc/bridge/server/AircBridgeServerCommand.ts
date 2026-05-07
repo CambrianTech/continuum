@@ -1,35 +1,50 @@
-import { spawn } from 'node:child_process';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
-import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+/**
+ * Airc Bridge Command - Server Implementation
+ *
+ * Ingest one AIRC message into Continuum. Normal messages become chat;
+ * explicit !continuum directives become bounded development/test commands.
+ */
+
+import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import type { JTAGContext, CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
 import { ValidationError } from '@system/core/types/ErrorTypes';
-import { DataList } from '@commands/data/list/shared/DataListTypes';
-import type { RoomEntity } from '@system/data/entities/RoomEntity';
-import { ChatSend } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
-import { ChatExport } from '@commands/collaboration/chat/export/shared/ChatExportTypes';
-import { ActivityList } from '@commands/collaboration/activity/list/shared/ActivityListTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import {
   formatAircBridgeChatText,
   parseAircBridgeMessage,
   summarizeBridgeResponse,
+  type ParsedAircBridgeMessage,
 } from '@system/airc-bridge/shared/AircBridgeProtocol';
-import type { ParsedAircBridgeMessage } from '@system/airc-bridge/shared/AircBridgeProtocol';
-import { AircBridgeCommand } from '../shared/AircBridgeCommand';
 import type { AircBridgeParams, AircBridgeResult } from '../shared/AircBridgeTypes';
 import { createAircBridgeResultFromParams } from '../shared/AircBridgeTypes';
 
-interface BridgeHandlerResult {
-  responseText: string;
-  commandResult?: unknown;
-  mirrorError?: string;
+interface CommandLikeResult {
+  success?: boolean;
+  error?: unknown;
+  message?: unknown;
+  markdown?: unknown;
+  commands?: unknown;
+  totalCount?: unknown;
 }
 
-export class AircBridgeServerCommand extends AircBridgeCommand {
+function isCommandLikeResult(value: unknown): value is CommandLikeResult {
+  return typeof value === 'object' && value !== null;
+}
+
+export class AircBridgeServerCommand extends CommandBase<AircBridgeParams, AircBridgeResult> {
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
-    super(context, subpath, commander);
+    super('airc/bridge', context, subpath, commander);
   }
 
-  protected async executeAircBridge(params: AircBridgeParams): Promise<AircBridgeResult> {
-    this.validateParams(params);
+  async execute(params: AircBridgeParams): Promise<AircBridgeResult> {
+    if (!params.message?.trim()) {
+      throw new ValidationError('message', 'Missing required AIRC message body.');
+    }
 
     const parsed = parseAircBridgeMessage(params.message, {
       senderNick: params.senderNick,
@@ -38,221 +53,218 @@ export class AircBridgeServerCommand extends AircBridgeCommand {
       commandPrefix: params.commandPrefix,
     });
 
-    if (params.dryRun) return this.dryRun(params, parsed);
-
-    try {
-      const result = await this.handleParsedMessage(params, parsed);
-      const mirror = await this.mirrorResponseIfRequested(params, parsed.channel, result.responseText);
+    if (params.dryRun) {
       return createAircBridgeResultFromParams(params, {
         success: true,
-        handled: true,
+        handled: false,
         parsed,
-        ...result,
-        mirrored: mirror.mirrored,
-        mirrorError: mirror.error,
+        responseText: `dry-run: ${parsed.action} -> ${parsed.room}`,
       });
-    } catch (error) {
-      return this.failed(params, parsed, error);
     }
-  }
 
-  private validateParams(params: AircBridgeParams): void {
-    if (!params.message || params.message.trim() === '') {
-      throw new ValidationError(
-        'message',
-        'Missing required parameter message. Pass the raw AIRC message body to ingest.',
-      );
+    const handled = await this.handleParsedMessage(params, parsed);
+
+    if (params.mirrorResponse && handled.responseText) {
+      await this.mirrorToAirc(handled.responseText);
+      return createAircBridgeResultFromParams(params, {
+        ...handled,
+        mirrored: true,
+      });
     }
-  }
 
-  private dryRun(params: AircBridgeParams, parsed: ParsedAircBridgeMessage): AircBridgeResult {
-    return createAircBridgeResultFromParams(params, {
-      success: true,
-      handled: false,
-      parsed,
-      responseText: `dry-run: ${parsed.action} -> ${parsed.room}`,
-    });
-  }
-
-  private failed(
-    params: AircBridgeParams,
-    parsed: ParsedAircBridgeMessage,
-    error: unknown,
-  ): AircBridgeResult {
-    const message = error instanceof Error ? error.message : String(error);
-    return createAircBridgeResultFromParams(params, {
-      success: false,
-      handled: false,
-      parsed,
-      error: message,
-      responseText: `airc bridge failed: ${message}`,
-    });
+    return createAircBridgeResultFromParams(params, handled);
   }
 
   private async handleParsedMessage(
     params: AircBridgeParams,
     parsed: ParsedAircBridgeMessage,
-  ): Promise<BridgeHandlerResult> {
-    const handlers: Record<string, () => Promise<BridgeHandlerResult>> = {
-      skip: () => Promise.resolve({ responseText: 'skipped Continuum-origin mirror echo' }),
-      chat: () => this.handleChat(params, parsed),
-      ping: () => Promise.resolve({ responseText: `continuum-airc-bridge ok (${parsed.room})`, commandResult: { ok: true } }),
-      status: () => this.handleStatus(params, parsed),
-      rooms: () => this.handleRooms(params, parsed),
-      'activity-list': () => this.handleActivityList(params, parsed),
-      export: () => this.handleExport(params, parsed),
-      'assert-seen': () => this.handleAssertSeen(params, parsed),
-    };
-
-    const handler = handlers[parsed.action];
-    if (!handler) {
-      throw new Error(parsed.error ?? 'unknown AIRC bridge directive');
+  ): Promise<Omit<AircBridgeResult, 'context' | 'sessionId' | 'userId'>> {
+    switch (parsed.action) {
+      case 'skip':
+        return { success: true, handled: false, parsed, responseText: 'skipped continuum-origin echo' };
+      case 'ping':
+        return { success: true, handled: true, parsed, responseText: 'pong from Continuum airc/bridge' };
+      case 'chat':
+        return this.bridgeChat(params, parsed);
+      case 'status':
+        return this.commandResponse(params, parsed, 'system/resources', {}, 'Continuum status');
+      case 'rooms':
+        return this.commandResponse(params, parsed, 'workspace/list', {}, 'Continuum rooms/workspaces');
+      case 'activity-list':
+        return this.commandResponse(params, parsed, 'list', { includeDescription: false }, 'Continuum command list');
+      case 'export':
+        return this.exportChat(params, parsed);
+      case 'assert-seen':
+        return this.assertSeen(params, parsed);
+      case 'unknown':
+        throw new ValidationError('message', parsed.error ?? 'Unknown AIRC bridge directive.');
     }
-    return handler();
   }
 
-  private async handleChat(
+  private async bridgeChat(
     params: AircBridgeParams,
     parsed: ParsedAircBridgeMessage,
-  ): Promise<BridgeHandlerResult> {
-    const commandResult = await ChatSend.execute({
-      room: parsed.room,
+  ): Promise<Omit<AircBridgeResult, 'context' | 'sessionId' | 'userId'>> {
+    const commandResult = await this.executeContinuumCommand(params, 'collaboration/chat/send', {
       message: formatAircBridgeChatText(parsed),
-      context: params.context,
-      sessionId: params.sessionId,
-    });
-    return {
-      commandResult,
-      responseText: `bridged chat from ${parsed.senderNick} into ${parsed.room}`,
-    };
-  }
-
-  private async handleStatus(
-    params: AircBridgeParams,
-    parsed: ParsedAircBridgeMessage,
-  ): Promise<BridgeHandlerResult> {
-    const rooms = await this.listRooms(parsed.limit ?? 25, params);
-    return {
-      commandResult: rooms,
-      responseText: `continuum-airc-bridge ok; rooms=${rooms.length}; room=${parsed.room}`,
-    };
-  }
-
-  private async handleRooms(
-    params: AircBridgeParams,
-    parsed: ParsedAircBridgeMessage,
-  ): Promise<BridgeHandlerResult> {
-    const rooms = await this.listRooms(parsed.limit ?? 50, params);
-    const labels = rooms.map(room => room.name || room.uniqueId || room.id).join(', ');
-    return {
-      commandResult: rooms,
-      responseText: labels ? `rooms: ${labels}` : 'rooms: none',
-    };
-  }
-
-  private async handleActivityList(
-    params: AircBridgeParams,
-    parsed: ParsedAircBridgeMessage,
-  ): Promise<BridgeHandlerResult> {
-    const commandResult = await ActivityList.execute({
-      limit: parsed.limit ?? 50,
-      context: params.context,
-      sessionId: params.sessionId,
-    });
-    const result = commandResult as { success?: boolean; activities?: Array<{ displayName?: string; id?: string }> };
-    return {
-      commandResult,
-      responseText: result.success
-        ? `activities: ${this.formatActivityLabels(result.activities)}`
-        : 'activity list failed',
-    };
-  }
-
-  private async handleExport(
-    params: AircBridgeParams,
-    parsed: ParsedAircBridgeMessage,
-  ): Promise<BridgeHandlerResult> {
-    const commandResult = await ChatExport.execute({
       room: parsed.room,
-      limit: parsed.limit ?? 50,
-      context: params.context,
-      sessionId: params.sessionId,
+      isSystemTest: false,
     });
-    const result = commandResult as { success?: boolean; markdown?: string; message?: string };
+    this.assertCommandSuccess(commandResult, 'collaboration/chat/send');
+
     return {
+      success: true,
+      handled: true,
+      parsed,
+      responseText: `bridged chat into #${parsed.room}`,
       commandResult,
-      responseText: result.success
-        ? summarizeBridgeResponse(result.markdown ?? result.message ?? '')
-        : `export failed: ${result.message ?? 'unknown error'}`,
     };
   }
 
-  private async handleAssertSeen(
+  private async exportChat(
     params: AircBridgeParams,
     parsed: ParsedAircBridgeMessage,
-  ): Promise<BridgeHandlerResult> {
-    const commandResult = await ChatExport.execute({
+  ): Promise<Omit<AircBridgeResult, 'context' | 'sessionId' | 'userId'>> {
+    const commandResult = await this.executeContinuumCommand(params, 'collaboration/chat/export', {
       room: parsed.room,
-      limit: parsed.limit ?? 50,
+      limit: parsed.limit,
       includeSystem: true,
       includeTests: true,
-      context: params.context,
-      sessionId: params.sessionId,
     });
-    const result = commandResult as { markdown?: string };
-    const found = Boolean(parsed.marker && result.markdown?.includes(parsed.marker));
-    if (!found) throw new Error(`assert seen failed: ${parsed.marker ?? '(missing marker)'}`);
-    return { commandResult, responseText: `assert seen ok: ${parsed.marker}` };
+    this.assertCommandSuccess(commandResult, 'collaboration/chat/export');
+
+    const text = this.readStringField(commandResult, 'markdown') ?? this.readStringField(commandResult, 'message') ?? 'export completed';
+    return {
+      success: true,
+      handled: true,
+      parsed,
+      responseText: summarizeBridgeResponse(text),
+      commandResult,
+    };
   }
 
-  private async listRooms(limit: number, params: AircBridgeParams): Promise<RoomEntity[]> {
-    const result = await DataList.execute<RoomEntity>({
-      collection: 'rooms',
-      limit,
-      orderBy: [{ field: 'lastMessageAt', direction: 'desc' }],
-      context: params.context,
-      sessionId: params.sessionId,
-    });
-    return result.success ? [...result.items] : [];
-  }
-
-  private formatActivityLabels(activities?: Array<{ displayName?: string; id?: string }>): string {
-    const labels = activities?.map(a => a.displayName ?? a.id).filter(Boolean).join(', ') ?? '';
-    return labels.length > 0 ? labels : 'none';
-  }
-
-  private async mirrorResponseIfRequested(
+  private async assertSeen(
     params: AircBridgeParams,
-    channel: string,
-    responseText: string,
-  ): Promise<{ mirrored: boolean; error?: string }> {
-    if (!params.mirrorResponse || !responseText.trim()) return { mirrored: false };
-    try {
-      const result = await this.spawnAirc([
-        'msg',
-        '--channel',
-        channel,
-        `[continuum] ${summarizeBridgeResponse(responseText, 1200)}`,
-      ]);
-      return result.exitCode === 0
-        ? { mirrored: true }
-        : { mirrored: false, error: result.stderr || `airc exited ${result.exitCode}` };
-    } catch (error) {
-      return {
-        mirrored: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
+    parsed: ParsedAircBridgeMessage,
+  ): Promise<Omit<AircBridgeResult, 'context' | 'sessionId' | 'userId'>> {
+    if (!parsed.marker) {
+      throw new ValidationError('message', 'Expected: !continuum assert seen <marker>');
+    }
+
+    const commandResult = await this.executeContinuumCommand(params, 'collaboration/chat/export', {
+      room: parsed.room,
+      limit: parsed.limit,
+      includeSystem: true,
+      includeTests: true,
+    });
+    this.assertCommandSuccess(commandResult, 'collaboration/chat/export');
+
+    const exported = this.readStringField(commandResult, 'markdown') ?? '';
+    if (!exported.includes(parsed.marker)) {
+      throw new ValidationError('marker', `Marker not found in #${parsed.room}: ${parsed.marker}`);
+    }
+
+    return {
+      success: true,
+      handled: true,
+      parsed,
+      responseText: `marker seen in #${parsed.room}: ${parsed.marker}`,
+      commandResult,
+    };
+  }
+
+  private async commandResponse(
+    params: AircBridgeParams,
+    parsed: ParsedAircBridgeMessage,
+    commandName: string,
+    data: Record<string, unknown>,
+    label: string,
+  ): Promise<Omit<AircBridgeResult, 'context' | 'sessionId' | 'userId'>> {
+    const commandResult = await this.executeContinuumCommand(params, commandName, data);
+    this.assertCommandSuccess(commandResult, commandName);
+
+    return {
+      success: true,
+      handled: true,
+      parsed,
+      responseText: summarizeBridgeResponse(`${label}: ${JSON.stringify(commandResult)}`),
+      commandResult,
+    };
+  }
+
+  private async executeContinuumCommand(
+    params: AircBridgeParams,
+    commandName: string,
+    data: Record<string, unknown>,
+  ): Promise<unknown> {
+    return Commands.execute<CommandParams, CommandResult>(commandName, {
+      context: params.context,
+      sessionId: params.sessionId,
+      userId: params.userId ?? SYSTEM_SCOPES.SYSTEM,
+      ...data,
+    });
+  }
+
+  private assertCommandSuccess(result: unknown, commandName: string): void {
+    if (!isCommandLikeResult(result)) return;
+    if (result.success === false) {
+      const detail = result.error ?? result.message ?? 'no error detail';
+      throw new Error(`${commandName} failed: ${String(detail)}`);
     }
   }
 
-  private spawnAirc(argv: string[]): Promise<{ exitCode: number; stderr: string }> {
-    return new Promise((resolve, reject) => {
-      const child = spawn('airc', argv, { stdio: ['ignore', 'ignore', 'pipe'] });
-      let stderr = '';
+  private readStringField(result: unknown, fieldName: keyof CommandLikeResult): string | undefined {
+    if (!isCommandLikeResult(result)) return undefined;
+    const value = result[fieldName];
+    return typeof value === 'string' ? value : undefined;
+  }
 
-      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+  private async mirrorToAirc(responseText: string): Promise<void> {
+    const message = `[continuum] ${summarizeBridgeResponse(responseText, 1200)}`;
+    const result = await this.spawnAirc(['msg', message]);
+    if (result.exitCode !== 0) {
+      throw new Error(`AIRC mirror failed: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
+    }
+  }
+
+  private spawnAirc(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const repoRoot = this.findRepoRoot(process.cwd());
+      const child = spawn('airc', args, {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          AIRC_HOME: path.join(repoRoot, '.airc'),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+      child.stderr.on('data', chunk => { stderr += chunk.toString(); });
       child.on('error', reject);
-      child.on('close', exitCode => resolve({ exitCode: exitCode ?? -1, stderr }));
+      child.on('close', code => {
+        resolve({ exitCode: code ?? 1, stdout: stdout.trim(), stderr: stderr.trim() });
+      });
     });
+  }
+
+  private findRepoRoot(startDir: string): string {
+    let current = startDir;
+    while (current !== path.dirname(current)) {
+      if (path.basename(current) === 'src' && this.pathExists(path.join(current, '..', '.git'))) {
+        return path.dirname(current);
+      }
+      if (this.pathExists(path.join(current, '.git'))) {
+        return current;
+      }
+      current = path.dirname(current);
+    }
+    return startDir;
+  }
+
+  private pathExists(targetPath: string): boolean {
+    return fs.existsSync(targetPath);
   }
 }
