@@ -55,35 +55,6 @@ export class MainWidget extends ReactiveWidget {
   // Widget cache - persist widgets instead of destroying them on tab switch
   private widgetCache = new Map<string, HTMLElement>();
 
-  /**
-   * Drop the legacy phantom General tab.
-   *
-   * Canary previously opened `/chat/general` by default and older state code
-   * persisted a tab whose `entityId`/`id` was the literal uniqueId "general",
-   * not the room UUID. That tab cannot hydrate members correctly and survives
-   * reloads because persisted contentState restores it before routing runs.
-   * A real General tab has `uniqueId: "general"` plus a UUID entityId; keep
-   * that if the user explicitly opened it.
-   */
-  private sanitizePersistedContentItems(openItems: ContentItem[], currentItemId?: UUID): {
-    openItems: ContentItem[];
-    currentItemId?: UUID;
-  } {
-    const sanitized = openItems.filter(item => {
-      const isLegacyGeneral =
-        item.type === 'chat' &&
-        item.title === 'General' &&
-        (item.id === 'general' || item.entityId === 'general');
-
-      return !isLegacyGeneral;
-    });
-
-    return {
-      openItems: sanitized,
-      currentItemId: sanitized.some(item => item.id === currentItemId) ? currentItemId : undefined
-    };
-  }
-
   constructor() {
     super({
       widgetName: 'MainWidget'
@@ -113,7 +84,10 @@ export class MainWidget extends ReactiveWidget {
       () => this.userState,
       {
         name: 'MainWidget',
-        onStateChange: () => offMainThread(() => this.syncUserStateToContentState(), 1000),
+        onStateChange: () => offMainThread(() => {
+          void this.syncUserStateToContentState()
+            .catch(error => console.error('❌ MainWidget: syncUserStateToContentState failed:', error));
+        }, 1000),
         onViewSwitch: (contentType, entityId) => offMainThread(() => this.switchContentView(contentType, entityId)),
         onUrlUpdate: (contentType, identifier) => {
           queueMicrotask(() => {
@@ -531,7 +505,7 @@ export class MainWidget extends ReactiveWidget {
     if (userStateLoaded) {
       const rawOpenItems = this.userState!.contentState.openItems || [];
       const rawCurrentItemId = this.userState!.contentState.currentItemId;
-      const { openItems, currentItemId } = this.sanitizePersistedContentItems(rawOpenItems, rawCurrentItemId);
+      const { openItems, currentItemId } = await this.sanitizePersistedContentItems(rawOpenItems, rawCurrentItemId);
       console.log(`✅ initializeContentTabs: Found ${rawOpenItems.length} items, using ${openItems.length}, currentItemId=${currentItemId}`);
       contentState.initialize(openItems, currentItemId);
       this.log(`Initialized global contentState with ${openItems.length} items`);
@@ -542,15 +516,86 @@ export class MainWidget extends ReactiveWidget {
     }
   }
 
-  private syncUserStateToContentState(): void {
+  private async syncUserStateToContentState(): Promise<void> {
     if (!this.userState?.contentState) return;
 
-    const { openItems, currentItemId } = this.sanitizePersistedContentItems(
+    const { openItems, currentItemId } = await this.sanitizePersistedContentItems(
       this.userState.contentState.openItems || [],
       this.userState.contentState.currentItemId
     );
     contentState.update(openItems, currentItemId);
     this.log(`Synced ${openItems.length} items from server to global contentState`);
+  }
+
+  private async sanitizePersistedContentItems(openItems: ContentItem[], currentItemId?: UUID): Promise<{
+    openItems: ContentItem[];
+    currentItemId?: UUID;
+  }> {
+    type ValidationResult =
+      | { status: 'keep'; item: ContentItem }
+      | { status: 'drop'; item: ContentItem };
+
+    const validatedItems = await Promise.all(openItems.map(async (item): Promise<ValidationResult> => {
+      const identifier = item.uniqueId || item.entityId;
+      if (!identifier || !ContentService.getCollectionForContentType(item.type)) {
+        return { status: 'keep', item };
+      }
+
+      let resolved: Awaited<ReturnType<typeof RoutingService.resolve>> | null = null;
+      try {
+        resolved = await RoutingService.resolve(item.type, identifier);
+        if (!resolved && item.entityId && item.entityId !== identifier) {
+          resolved = await RoutingService.resolve(item.type, item.entityId);
+        }
+      } catch (error) {
+        console.warn(`⚠️ MainWidget: could not validate persisted ${item.type}/${identifier}:`, error);
+        return { status: 'keep', item };
+      }
+
+      if (!resolved) {
+        console.warn(`⚠️ MainWidget: dropping stale persisted tab ${item.type}/${identifier} (${item.title})`);
+        return { status: 'drop', item };
+      }
+
+      return {
+        status: 'keep',
+        item: {
+          ...item,
+          entityId: resolved.id,
+          uniqueId: resolved.uniqueId,
+          title: resolved.displayName || item.title,
+        }
+      };
+    }));
+
+    const sanitized = validatedItems
+      .filter((result): result is Extract<ValidationResult, { status: 'keep' }> => result.status === 'keep')
+      .map(result => result.item);
+
+    const deduped: ContentItem[] = [];
+    const duplicateCurrentTargets = new Map<UUID, UUID>();
+    for (const item of sanitized) {
+      const existing = deduped.find(candidate => {
+        const candidatePath = buildContentPath(candidate.type, candidate.uniqueId || candidate.entityId);
+        const itemPath = buildContentPath(item.type, item.uniqueId || item.entityId);
+        return candidatePath === itemPath;
+      });
+      if (existing) {
+        duplicateCurrentTargets.set(item.id, existing.id);
+        continue;
+      }
+      deduped.push(item);
+    }
+
+    let resolvedCurrentItemId = currentItemId;
+    if (resolvedCurrentItemId && duplicateCurrentTargets.has(resolvedCurrentItemId)) {
+      resolvedCurrentItemId = duplicateCurrentTargets.get(resolvedCurrentItemId);
+    }
+    if (!resolvedCurrentItemId || !deduped.some(item => item.id === resolvedCurrentItemId)) {
+      resolvedCurrentItemId = deduped[0]?.id;
+    }
+
+    return { openItems: deduped, currentItemId: resolvedCurrentItemId };
   }
 
   // === HEADER CONTROLS ===
