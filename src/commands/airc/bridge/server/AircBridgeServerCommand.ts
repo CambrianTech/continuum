@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import { ValidationError } from '@system/core/types/ErrorTypes';
@@ -6,7 +7,6 @@ import type { RoomEntity } from '@system/data/entities/RoomEntity';
 import { ChatSend } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
 import { ChatExport } from '@commands/collaboration/chat/export/shared/ChatExportTypes';
 import { ActivityList } from '@commands/collaboration/activity/list/shared/ActivityListTypes';
-import { AircSend } from '../../send/shared/AircSendTypes';
 import {
   formatAircBridgeChatText,
   parseAircBridgeMessage,
@@ -224,12 +224,23 @@ export class AircBridgeServerCommand extends AircBridgeCommand {
     responseText: string,
   ): Promise<boolean> {
     if (!params.mirrorResponse || !responseText.trim()) return false;
-    const result = await AircSend.execute({
+    const result = await this.spawnAirc([
+      'msg',
+      '--channel',
       channel,
-      message: `[continuum] ${summarizeBridgeResponse(responseText, 1200)}`,
-      context: params.context,
-      sessionId: params.sessionId,
+      `[continuum] ${summarizeBridgeResponse(responseText, 1200)}`,
+    ]);
+    return result.exitCode === 0;
+  }
+
+  private spawnAirc(argv: string[]): Promise<{ exitCode: number; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn('airc', argv, { stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+      child.on('error', reject);
+      child.on('close', exitCode => resolve({ exitCode: exitCode ?? -1, stderr }));
     });
-    return Boolean(result.success && result.delivered);
   }
 }
