@@ -11,7 +11,9 @@ use super::module_context::ModuleContext;
 use super::registry::ModuleRegistry;
 use super::service_module::{CommandResult, ServiceModule};
 use super::shared_compute::SharedCompute;
+use dashmap::DashMap;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
@@ -47,6 +49,7 @@ pub struct Runtime {
     registry: Arc<ModuleRegistry>,
     bus: Arc<MessageBus>,
     compute: Arc<SharedCompute>,
+    concurrency_limits: Arc<DashMap<&'static str, Arc<Semaphore>>>,
 }
 
 impl Default for Runtime {
@@ -61,6 +64,7 @@ impl Runtime {
             registry: Arc::new(ModuleRegistry::new()),
             bus: Arc::new(MessageBus::new()),
             compute: Arc::new(SharedCompute::new()),
+            concurrency_limits: Arc::new(DashMap::new()),
         }
     }
 
@@ -76,6 +80,13 @@ impl Runtime {
         // Wire event subscriptions into the message bus
         for pattern in config.event_subscriptions {
             self.bus.subscribe(pattern, config.name, false);
+        }
+
+        if config.max_concurrency > 0 {
+            self.concurrency_limits.insert(
+                config.name,
+                Arc::new(Semaphore::new(config.max_concurrency)),
+            );
         }
 
         self.registry.register(module);
@@ -173,12 +184,28 @@ impl Runtime {
         let metrics = self.registry.get_metrics(module_name);
         let queued_at = std::time::Instant::now();
 
+        let permit = match self.concurrency_limits.get(module_name) {
+            Some(limit) => match limit.clone().acquire_owned().await {
+                Ok(permit) => Some(permit),
+                Err(_) => {
+                    return Some(Err(format!(
+                        "Runtime concurrency limiter for module '{module_name}' is closed"
+                    )));
+                }
+            },
+            None => None,
+        };
+
+        let tracker = metrics
+            .as_ref()
+            .map(|metrics| metrics.start_command(command, queued_at));
+
         // Execute command
         let result = module.handle_command(&full_cmd, params).await;
+        drop(permit);
 
         // Record timing (automatic for ALL commands)
-        if let Some(metrics) = metrics {
-            let tracker = metrics.start_command(command, queued_at);
+        if let (Some(metrics), Some(tracker)) = (metrics, tracker) {
             let timing = tracker.finish(result.is_ok());
             metrics.record(timing);
         }
@@ -204,12 +231,29 @@ impl Runtime {
         // Get metrics tracker for this module (created at registration)
         let metrics = self.registry.get_metrics(module_name);
         let queued_at = std::time::Instant::now();
+        let limit = self
+            .concurrency_limits
+            .get(module_name)
+            .map(|entry| entry.clone());
 
         // Use sync channel to bridge async -> sync safely
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
 
         rt_handle.spawn(async move {
+            let permit = match limit {
+                Some(limit) => match limit.acquire_owned().await {
+                    Ok(permit) => Some(permit),
+                    Err(_) => {
+                        let _ = tx.send(Err(format!(
+                            "Runtime concurrency limiter for module '{module_name}' is closed"
+                        )));
+                        return;
+                    }
+                },
+                None => None,
+            };
             let result = module.handle_command(&full_cmd, params).await;
+            drop(permit);
             let _ = tx.send(result);
         });
 

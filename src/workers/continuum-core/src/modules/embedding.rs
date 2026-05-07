@@ -1003,7 +1003,10 @@ impl ServiceModule for EmbeddingModule {
             command_prefixes: &["embedding/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
-            max_concurrency: 0,
+            // fastembed/ONNX uses its own native threadpool per invocation.
+            // Runtime-level serialization prevents multiple batches from
+            // multiplying CPU threadpools during persona bursts.
+            max_concurrency: 1,
             tick_interval: None,
         }
     }

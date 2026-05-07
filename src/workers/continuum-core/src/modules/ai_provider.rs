@@ -569,7 +569,11 @@ impl ServiceModule for AIProviderModule {
             command_prefixes: &["ai/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
-            max_concurrency: 10, // Allow parallel inference requests
+            // Local inference adapters fan out into GPU/ORT/llama threadpools.
+            // Letting every persona call ai/generate concurrently saturates the
+            // machine and lowers throughput. Queue at the runtime boundary; the
+            // backend scheduler can batch/serialize work deliberately.
+            max_concurrency: 1,
             // DMR watchdog cadence — see DMR_TICK_INTERVAL. The runtime's
             // `start_tick_loops` spawns one tokio task that calls `tick()`
             // on this interval; on every fire we probe DMR and reconcile
