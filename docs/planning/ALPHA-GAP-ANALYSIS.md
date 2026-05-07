@@ -1,890 +1,330 @@
-# Alpha Gap Analysis — Master Plan
+# Alpha Gap Analysis — Stability Plan
 
-**Updated**: 2026-05-01 (live-verified post-`npm start` deployment)
-**Branch**: `feat/airc-send-command` (stacks #977 supervisor + #978 local-inference cmds + #979 airc/send on top of `main`)
-**Status header**: see [Today's Snapshot](#todays-snapshot-2026-05-01-live-verified) for the current truth (live-observed). The April 17 snapshot is preserved in [What Changed Since April 6](#what-changed-since-april-6-pr-891-session--2026-04-1617) below for historical context but is now superseded by today's findings.
+<!-- markdownlint-disable MD013 MD060 -->
 
-This document is the **single source of truth** for remaining continuum work — Carl install path, dev workflow, and everything beyond. Each phase is ordered by dependency. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
+**Updated**: 2026-05-07
+**Branch policy**: every change lands as `PR -> canary -> validation -> PR -> main`
+**Status**: active planning document, shared by humans and agents
+**Operating rule**: Rust owns runtime logic. TypeScript is UI, schema, generated types, and thin command/transport glue.
 
-**Two predecessor docs were consolidated INTO this one on 2026-05-01 and DELETED:**
-- `docs/PRE-ALPHA-GAP-ANALYSIS.md` (121 lines, 2026-Mar-ish; predates DMR pivot, model published, PR891 architecture)
-- `docs/planning/CARL-AND-DEV-PATH-TO-WORKING.md` (interim doc created earlier today; content folded into [Today's Snapshot](#todays-snapshot-2026-05-01-live-verified) + [The Shortest Path](#the-shortest-path-from-todays-snapshot-to-install-talk-to-ai))
+This document is the alpha source of truth. Work should not proceed as disconnected chat threads or private agent branches. Each implementation PR must name the issue it advances, land in `canary`, publish validation evidence, and only then be considered for promotion to `main`.
 
----
+The previous 2026-05-01 alpha snapshot was useful but had become a historical log. This revision turns it into an execution plan for the current goal: **stable, GPU-first, Rust-centric Continuum with modular Docker and fast tests that do not depend on the Node/UI stack for core correctness.**
 
-## Today's Snapshot (2026-05-01, live-verified)
+## Alpha Definition
 
-Ran a full `npm start` from `feat/airc-send-command` (= `main` + 3 stacked PRs: #977 #978 #979). Total 546-689s (cold cargo + tsc + worker spawn + seed). Observed end-to-end so this is **measured, not aspirational**.
+Alpha is ready when a fresh user can install, boot, talk to personas, recover from common failures, and verify the system mostly through Rust-level tests.
 
-### What WORKED on this run
+The non-negotiable gates:
 
-- ✅ Build phase: cargo + tsc + browser bundle (~178s)
-- ✅ Workers spawned: `archive` + `continuum-core-server` (PID 39109) — registered 20 modules
-- ✅ TS server bound, HTTP 200 on http://localhost:9000
-- ✅ #977 supervisor caught the SIGABRT (see below) + attempted respawn with exponential backoff (attempt 5 in 60s window) + correctly failed `CORE_READY` milestone after 30s timeout. Lifecycle behavior is exactly as designed.
-- ✅ Browser opened on second `npm start` after my dep-graph regression fix (decoupled `SERVER_READY` from `CORE_READY` — see [#722 regression note](#722-regression-decoupling-browser-from-core_ready) below)
-- ✅ `airc/send` (#979) sent a message into the airc mesh — Joel confirmed it landed
+1. **GPU-first inference**: alpha-critical inference must use Metal/CUDA/Vulkan/DMR GPU paths. No silent CPU fallback.
+2. **Rust core owns behavior**: persona cognition, scheduling, resource pressure, paging, inference orchestration, replay, and recovery live in Rust.
+3. **Node/TS is thin**: browser UI, command adapters, schemas, generated types, and minimal transport glue only.
+4. **Docker is modular**: one opaque "build/seed/start everything" container is not alpha-ready. Services need independent health, logs, and restart boundaries.
+5. **Fast tests first**: core work must be covered by `cargo test` or Rust integration tests before Docker/browser tests.
+6. **Canary is the sync point**: every fix is merged to `canary` first and tested there by available Mac/Windows/Linux agents.
+7. **No silent success**: health checks, install steps, inference readiness, bridge delivery, and UI restore paths must fail loud with actionable evidence.
 
-### What's BROKEN (live-observed)
+## Current Snapshot
 
-| # | Symptom | Root cause | Severity | Maps to |
-|---|---|---|---|---|
-| **NEW-A** | `continuum-core-server` SIGABRTs during seed-time model load | `ggml-metal-device.m:612: GGML_ASSERT([rsets->data count] == 0) failed` in vendored llama.cpp Metal `llm_build_smallthinker` cleanup. Concrete stack trace captured in `$HOME/.continuum/jtag/logs/system/orchestrator.log`. This IS the long-tracked SIGABRT (was internal task #56, never had a GitHub issue) | **BLOCKING — first user demo** | NEEDS NEW ISSUE |
-| **NEW-B** | `seed-continuum.ts` retries `./jtag ping` 21+ times across 480s before giving up; 8 minutes of UX rot for any user (Carl, dev, anyone) on the install path | Seed doesn't read orchestrator's milestone state — keeps probing even when CORE_READY has officially failed | Phase 0 already lists "Seeding fragile on fresh installs" (BUG status) — **CONCRETE FIX DESIGNED** | Updates Phase 0 entry below |
-| **NEW-C** ✅ DONE | ~~`shared/config.ts` has `/Users/joelteply/.continuum/sockets/...` HARDCODED~~ | LANDED on canary as `75e4ad5c1` (2026-05-01 PM, M5-QA tab): generator now emits runtime `$HOME` resolution via `typeof process` guard. Defense-in-depth: file is gitignored but force-committed 5x historically; pulled copies are now portable. | RESOLVED | — |
-| **NEW-D** (Vulkan silent-download) | `install.sh` line 423 `llama-vulkan` path: `ok "Vulkan GPU path — model download handled by continuum-core at first inference"` — no model pulled at install time. First chat triggers a silent 2-7GB download with NO UI feedback. Carl on Linux+Vulkan types a message and waits 30-60s thinking the system is broken. | DMR path (line 354) downloads up-front during install with progress; Vulkan path defers to first-inference + lacks the chat-widget "loading model" UI hint. Same silent-success-is-failure shape as the original install→chat blocker family. | **HIGH — Linux+Vulkan first-chat UX** | NEEDS NEW ISSUE — surfaced by code-inspection QA, not yet live-validated on Vulkan hardware (no Linux+Vulkan box on M5; needs BigMama or Toby's machine to confirm) |
-| #960 | Mac Metal generation throughput 5-7 tok/s (45x slower than CUDA) | Vendored llama.cpp Metal kernel coverage gap | Tracked, post-launch | — |
-| #964 | ONNX Runtime running on CPU (MLAS) instead of Metal — 800-900% CPU spike during chat | fastembed/TTS/STT/vision-bridge initialization wrong | Tracked | — |
-| #948 | DMR concurrency: reqwest 'error sending request' when 4+ local personas hit DMR simultaneously | Connection pool / concurrency limit | Tracked | — |
-| #963 | Model name has TWO sources of truth: `PersonaConfig.modelId` vs `models.toml`/`Constants.ts` | Compression-principle violation per CLAUDE.md | Tracked | — |
-| #946 | Module command-prefix collision: PersonaAllocatorModule and CognitionModule both own 'persona/' — dispatcher picks allocator, new verbs disappear | Routing bug | Tracked | — |
-
-### Real-time chat-test findings (2026-05-01 afternoon, M5 QA-Watcher tab)
-
-After the morning npm-start validation, ran a chat-with-personas test session via `./jtag collaboration/chat/{send,export}` per Joel "you guys need to all remember to chat with the ais." Three additional findings surfaced:
-
-| # | Symptom | Root cause | Severity | Maps to |
-|---|---|---|---|---|
-| **F1** (= #75) | Personas reply but with **identical canned text** ("Hello! I'm here to assist with any code review and analysis tasks...") regardless of message content. Multiple personas reply with the same text. Recursive replies-to-replies create an echo cascade. | The cognition pipeline isn't actually engaging the message; it falls back to a generic greeting template. Same root cause as #75 task entry "tool-use markup leak, sentinel marker leak, echo loops." LIVE-CONFIRMED — sent messages with specific content + got generic greeting back. **THIS is the reason "AI doesn't really talk."** | **BLOCKING — demo path** | #75 (in_progress) |
-| **F2** (NEW) | After core SIGKILL+respawn, `ai/local-inference/start` reports `running: false` even though the underlying core is back. The Anthropic-compat HTTP server died with the core + did NOT auto-restart. | The HTTP server is initialized once at core startup via `OnceCell` (per `workers/continuum-core/src/http/mod.rs`). When the core restarts, the new core's IPC accepts requests but the server-start logic isn't re-triggered. External agents pointing `ANTHROPIC_BASE_URL` would silently break on any core restart. | NEW — important for AGENT-BACKBONE Phase 1 reliability | NEEDS NEW ISSUE |
-| **F4** (NEW, CRITICAL) | After SIGKILL + manual respawn of `continuum-core-server`, the TS daemon's IPC client pool can't recover. `./jtag ping` HANGS 15s+, `./jtag collaboration/chat/send` TIMES OUT 60s. Sockets exist + accept connections + the new core is alive — but commands don't complete. **Full `npm stop && npm start` required to recover.** | The IPC client pool's reconnect logic (#977 Layer B "never give up") gets the connection back to "_connected = true" against the new core, but the request/response correlation is wedged. The pool may be holding pending requests that were dispatched to the OLD core's socket descriptor + never get responses (since old core is dead) + the new requests block behind them. | **CARL-KILLER** — every NEW-A SIGABRT in the wild puts users in this state | NEEDS NEW ISSUE — this is the empirical form of #722 + #793 |
-
-**F4 supersedes the "#977 closes #722" claim.** #977's Layer B (unlimited IPC reconnect) was supposed to handle the recover-from-crash case. It re-establishes the SOCKET but the REQUEST PIPELINE is wedged. The fix needs to:
-
-1. Drain pending requests with a "core restarted, reissue" error before reconnecting (so callers can retry)
-2. OR refuse to send new requests until the pool has cleanly drained
-3. OR re-create the entire pool (drop all connections, recreate) on detected core restart
-
-This is a separate scope from Layer B's reconnect — Layer B handles SOCKET, the missing piece is the REQUEST QUEUE.
-
-**Composes with Task 8 (supervisor-doesn't-own-pre-existing-cores)**: even when the supervisor adopts an inherited core, the IPC layer still needs to handle the "core just changed under us" event. F4 is true regardless of who spawned the core.
-
-### #722 regression — decoupling browser from CORE_READY
-
-In #977 (already merged in this branch as commit d77826205), I made `SERVER_READY` depend on `CORE_READY`. The intent was correct (widgets find a live IPC pool on first browser load) but the consequence was **bad**: when the SIGABRT (NEW-A above) prevents CORE_READY from completing, the orchestrator's milestone graph stops at CORE_READY → BROWSER_LAUNCH_INITIATED never fires → user sees no browser at all.
-
-**Trade-off I got wrong**:
-- Pre-fix #722 symptom: browser launches but widgets show "Rust IPC dead" (silent failure)
-- Post-fix #977 (broken): no browser at all (loud failure but worse UX)
-- **Right design**: browser launches always; widgets handle missing core gracefully ("Layer D" from #977 design that was deferred)
-
-**Fix in working tree** (committed as part of this PR refresh): `SystemMilestones.ts` — `SERVER_READY` no longer depends on `CORE_READY`. `SYSTEM_HEALTHY` (the monitoring signal) still requires both. Verified live: browser opens despite SIGABRT-looping core.
-
-### The shortest path from today's snapshot to "Install. Talk to AI."
-
-Three things, in order, get to the demo:
-
-1. **Don't gate user-facing surfaces on the Rust core** (DONE, commit pending)
-2. **Make the SIGABRT not fatal to the experience**:
-   - **(a) Stopgap — DMR-only on Mac**: Per architectural pivot (PR891), DMR is THE chat inference runtime on Mac. Candle (where the SIGABRT lives) shouldn't be on the chat hot path. Trace WHY seed is hitting `llm_build_smallthinker` (a Candle/llama.cpp init), then route through DMR or skip
-   - **(b) Fix-the-assert path**: Patch `ggml-metal-device.m:612` to log + soft-fail instead of `abort()`. Larger blast (vendored code) but a quick unblock
-   - **Lean (a)** — aligns with existing pivot. Need: trace seed's Rust-side call chain
-3. **Seed must fail-fast + UX-honestly** when core is dead: detect "core in restart loop" via orchestrator's CORE_READY failure milestone, abort within 30s with actionable message ("install DMR, OR add cloud API key, OR set `CONTINUUM_SKIP_LOCAL_MODELS=1`"). ~30 LOC in `seed-continuum.ts`
-
-**After those 3 land:** Carl runs `curl ... | bash` → bootstrap installs deps + builds → `npm start` auto-launches → workers spawn → IF DMR present → AI chat works; IF not, browser opens with banner + Carl knows what to install. **That's ship-pretty-well-first.**
-
-### Open PRs (today, EARLIER session)
-
-| PR | What | Status | Path through this plan |
-|---|---|---|---|
-| [continuum#976](https://github.com/CambrianTech/continuum/pull/976) | AGENT-BACKBONE-INTEGRATION design doc + §11.2 bidirectional persona ↔ external-agent over airc | Merged | Strategic frame |
-| [continuum#977](https://github.com/CambrianTech/continuum/pull/977) | Rust core supervisor (closes the original #722) — + the dep-graph regression fix from this session | Merged | Phase 0 |
-| [continuum#978](https://github.com/CambrianTech/continuum/pull/978) | `ai/local-inference/{start,status}` + repo-wide cleanup of `_noParams: never`/`as unknown as` typing smell across 11 generated files + the generator template | Merged | Phase 1 (typing) + Phase 12 (agent-backbone discovery) |
-| [continuum#979](https://github.com/CambrianTech/continuum/pull/979) | `airc/send` outbox command (closes outbox half of #967) | Merged | Phase 2.5 (agent-backbone airc bridge) |
-| [airc#387](https://github.com/CambrianTech/airc/pull/387) | Error classification (gone, secondary_rate_limit) + jittered backoff | Mergeable, all 4 gates green | Substrate reliability for #979 |
-
-### Today's PR storm (2026-05-01 evening) — Carl OOTB end-to-end push
-
-After the morning #976-979 batch, opened 23 more PRs targeting "100% free OOTB on MacBook Air on up, install→chat with AI flawlessly." All landed on canary unless noted.
-
-**airc** (4 PRs):
-| PR | What |
-|---|---|
-| [airc#389](https://github.com/CambrianTech/airc/pull/389) | gh-auth self-heal — airc instigates `gh auth login --web` on detect of invalid keyring token |
-| [airc#390](https://github.com/CambrianTech/airc/pull/390) | Cross-platform daemon detect (Windows/WSL HKCU Run-key) + AIRC_INSTALL_YES ordering |
-| [airc#391](https://github.com/CambrianTech/airc/pull/391) | env_token_invalid state — distinguish GH_TOKEN-poisoned from keyring-invalid |
-| [airc#392](https://github.com/CambrianTech/airc/pull/392) | detect_scope walks up to enclosing .airc/ ancestor (no more .airc/.airc) |
-
-**continuum** (19 PRs, in order):
-| PR | What |
-|---|---|
-| [#984](https://github.com/CambrianTech/continuum/pull/984) | Root postinstall → setup-git-hooks (other-mac) |
-| [#985](https://github.com/CambrianTech/continuum/pull/985) | #964 ORT GPU EP cfg fix — embedding/TTS/STT use Metal/CUDA correctly (was broken `coreml` cfg gate, dead path) |
-| [#986](https://github.com/CambrianTech/continuum/pull/986) | docker-images workflow main-only trigger — kills verify-architectures noise on canary PRs |
-| [#987](https://github.com/CambrianTech/continuum/pull/987) | install.sh auto-installs cmake on Mac (#980 Bug 1 — Carl-blocker) |
-| [#988](https://github.com/CambrianTech/continuum/pull/988) | isConfigured false for empty cloud keys (other-mac, #980 Bug 5) |
-| [#989](https://github.com/CambrianTech/continuum/pull/989) | parallel-start.sh seed-success-lies fix (#980 Bug 3) |
-| [#990](https://github.com/CambrianTech/continuum/pull/990) | rust-bindings timeout 300s→900s (other-mac, #980 Bug 2) |
-| [#991](https://github.com/CambrianTech/continuum/pull/991) | GPU EP for kokoro/orpheus/silero (#964 series PR #2) |
-| [#992](https://github.com/CambrianTech/continuum/pull/992) | supervisor visibility + IPC reconnect counter + Linux pgrep + git-precommit worktree-path (#980 Bug 4) |
-| [#993](https://github.com/CambrianTech/continuum/pull/993) | Replace Candle (training) with Docker Model Runner in providers/status (#980 Bug 6) |
-| [#994](https://github.com/CambrianTech/continuum/pull/994) | chat/send no-listener warning (#980 Bug 8) |
-| [#996](https://github.com/CambrianTech/continuum/pull/996) | jtag CLI accepts JSON-blob first positional (#980 Bug 10) |
-| [#997](https://github.com/CambrianTech/continuum/pull/997) | ai/generate default to 'local' not 'candle' — never silent cloud fallback (#980 Bug 7) |
-| [#998](https://github.com/CambrianTech/continuum/pull/998) | memory_manager hard-fail on no-GPU instead of silent CPU 25%-RAM fallback |
-| [#999](https://github.com/CambrianTech/continuum/pull/999) | persona/allocator drop "cpu" gpu_type branch (post-#998 dead code) |
-| [#1000](https://github.com/CambrianTech/continuum/pull/1000) | carl-install-smoke E2E chat probe — exit codes 4/5/6 distinguish chat-failure modes |
-| [#1001](https://github.com/CambrianTech/continuum/pull/1001) | ROCm / DirectML / OpenVINO ORT EP cfg branches (Carl-OOTB matrix) |
-| [#1002](https://github.com/CambrianTech/continuum/pull/1002) | cargo-features.sh detects ROCm + Vulkan + DirectML, not just CUDA |
-| [#1003](https://github.com/CambrianTech/continuum/pull/1003) | install.sh tier hardware (MBA / mid / primary) for "OOTB on MacBook Air on up" |
-
-**Carl-OOTB chain status post this push:**
-
-```
-curl install.sh | bash    →  ✓ #987 cmake auto-install
-                          →  ✓ #1003 hardware tier (16GB+ MBA accepted)
-                          →  ✓ #1003 PERSONA_MODEL sized to RAM (0.8B/2B/4B)
-npm start (continuum-core) →  ✓ #998+#999 hard-fail on no-GPU (no silent CPU)
-                          →  ✓ #985 + #991 ORT GPU EP correctly configured
-                          →  ✓ #1001 + #1002 multi-arch GPU coverage (Mac/CUDA/ROCm/DML/OpenVINO)
-                          →  ✓ #992 supervisor respawns + reconnect counter increments
-seed (Phase 5.5)          →  ✓ #989 truthful failure when seed times out
-                          →  (#980 Bug 9 1GB embedding leak — UNFIXED, needs live RCA)
-chat-with-AI               →  ✓ #997 default routes to local DMR (not cloud)
-                          →  ✓ #993 providers/status accurate (DMR not Candle)
-                          →  ✓ #988 cloud isConfigured truthful
-                          →  ✓ #994 chat/send warns when no listener
-                          →  ✓ #1000 CI gate now exercises this E2E
-```
-
-**What's known broken / unfixed / pending live RCA:**
-- **#980 Bug 9** — 1GB embedding leak in continuum-core. Cold inspection suggests model_cache or sizer undercount; needs `npm start` + RSS-watch to confirm. Out of cold-fix scope.
-- **#75 echo loops** (in_progress) — persona output quality, dev-tab scope, big cognition pipeline change.
-- **NEW-A** Metal SIGABRT — UPSTREAM tracking [ggml-org/llama.cpp#22593](https://github.com/ggml-org/llama.cpp/pull/22595). Continuum-side: bump submodule when upstream lands.
-
-**Worktree pattern (lessons learned):** Two AIs racing on the same git workspace causes commit cross-contamination (had this happen 3× today). Solution: per-AI worktree (`git worktree add /tmp/continuum-mac canary` for each AI) + SHA-to-ref push as escape valve when rescue is needed.
-
-### Workflow note (carry-forward from morning)
-
-Per Joel "we will use airc later for trying carl user installs e2e" + "merge into canary once features and integration tests succeed" — goal is NOT PR-and-wait; it's validate + merge to canary. The 23 PRs above followed this pattern: ship, gate via CI, merge if green. Live validation pending hardware-on-airc (M2 Air at home, BigMama Linux+Nvidia, 5090 Windows box later).
-
----
-
-## What Changed Since April 6 (PR #891 Session — 2026-04-16/17)
-
-### Architecture Pivots
-- **Docker Model Runner = chat inference runtime.** DMR via Docker Desktop: Metal on Mac (~50 tok/s), CUDA on Windows/Linux (~237 tok/s). Candle relegated to training/LoRA only. No silent CPU fallback — hard error with install hint. (#905, closed)
-- **ORM abstraction sealed.** Callers pass opaque handles (`@main`, `@persona:<slug>`, `@metrics`), never URLs/paths/SQL. Rust resolves handles to backends via `entity_schemas.json` (build-time codegen from TS decorators). SQLite default; postgres opt-in via `--profile postgres`. Phase 2 complete (steps 1-4).
-- **Mac Option B.** Native continuum-core on host (Metal) + Docker support services. TCP listener (port 9100) bridges containerized node-server to native core via `host.docker.internal`. Docker VM sized to PHYS - 18GB headroom (not 80%).
-- **Windows Docker Desktop.** DMR reachable from containers at `model-runner.docker.internal` (not localhost:12434). CUDA backend requires Docker Desktop Settings → AI toggles (not scriptable yet, #910).
-
-### Infrastructure
-- **CI validates, doesn't build** (#906, closed — pipeline in place). `push-image.sh` on metal hardware → ghcr stages images → CI pulls + validates. Image-coverage gate checks `:pr-<N>` tags exist.
-- **Cross-mode collision detection.** `npm stop` kills BOTH Docker stack AND native processes. `npm start` detects if Docker stack already running (and vice versa). Port pre-flight fails fast on 9001/9100 instead of late EADDRINUSE.
-- **Heartbeat pre-flight.** Detects stale/duplicate native continuum-core-server on Mac. Fails loud with kill recipe.
-
-### Verified Matrix (PR #891)
-| Cell | Status | Detail |
+| Area | Current read | Alpha risk |
 |---|---|---|
-| M5 Mac × Docker | GREEN | DMR Metal, 50 tok/s, 4 personas |
-| M5 Mac × npm | GREEN | DMR Metal |
-| BigMama Win/WSL2 × Docker | GREEN | DMR CUDA, 237 tok/s, 4 personas, 13.6GB GPU |
-| M1 Mac × npm | GREEN (cloud) | Local Candle functional but slow |
-| M1 Mac × Docker | INFRA-FIXED | VM sizing bug fixed (31be8660a), needs Docker Desktop relaunch to retest |
+| AIRC collaboration | Usable enough for agent coordination; PR #1046 bridge harness is open; airc has carried PR review/status traffic | Continuum personas are not yet first-class AIRC peers; internal AI chat still needs bridge validation |
+| UI room state | PR #1047 merged to `canary` for stale duplicate General tab recovery | Needs live UI reload validation before `main` promotion |
+| Docker | Too much historical bulk and mixed responsibility; several open Docker issues remain | Docker can mask failures and slow iteration |
+| Rust core | Strong core exists, but GPU lifecycle, paging, and persona runtime boundaries are still incomplete | Core instability can make UI/Node fixes irrelevant |
+| Node/TS | Still owns too much cognition/command behavior | Adds latency, GC/IPC complexity, and harder cross-platform reuse |
+| Tests | Many tests exist, but the alpha loop still overuses `npm start`/browser/Docker as proof | Slow tests hide root causes and discourage TDD |
 
-### Issues Closed by PR #891
-- #769 Qwen3.5 as default model
-- #887 Inference capacity consolidation
-- #898 npm start port conflicts with Docker
-- #906 CI validates staged images pipeline
+## Issue-Driven Workstreams
 
-### New Issues Filed (Post-Merge Follow-ups)
-- #908 Windows npm start should route through docker compose
-- #909 Local persona tool execution (cloud wired, local not)
-- #910 DMR CUDA on Windows needs manual Docker Desktop toggle
-- #911 16GB MacBook Air can't run Option B (product scope decision)
+### 0. Canary Discipline And Collaboration
 
----
+**Goal**: stop parallel agents from diverging. Every agent should know the issue, branch, PR, validation command, and current blocker.
 
-## Current State (What Works)
-
-| Subsystem | Status | Notes |
-|-----------|--------|-------|
-| Live video calls | Working | Human + 14 AI avatars, 3D scenes, real-time voice |
-| Persona telemetry | Working | INT/NRG/ATN meters, cognitive diamonds, genome bars |
-| Memory pressure | Working | Graduated levels (normal/warning/high/critical), RSS bounded |
-| Persona cadence | Working | Pressure-aware adaptive timing |
-| Chat coordination | Working | ThoughtStream turn-taking, probabilistic responders |
-| LoRA training | Proven E2E | Train/discover/load/merge/inference pipeline |
-| Academy | Proven E2E | Dual-sentinel teacher/student, RealClassEval 53% pass (cloud) |
-| Sentinel pipeline | Working | 12 step types, 55 Rust tests, CodingAgent integration |
-| Sentinel workspaces | Working | Identity chain, git worktree isolation, lifecycle cleanup |
-| Dev CLI front door | Working | `--repoPath` on all dev commands |
-| Recipe-Sentinel convergence | Working | Recipes declare sentinelTemplates, RAG filters by recipe |
-| Recipe commands | Working | recipe/list, recipe/run, recipe/generate |
-| Capability registry | Working | Skill domains, all 10 adapters self-register |
-| ORM | Working | SQLite default + Postgres opt-in. Handle-based abstraction (Phase 2 complete). entity_schemas.json codegen. QW#1-3 perf wins. |
-| RAG (chat history) | Working | Tiered cache L1/L2, 30-50ms cached |
-| RAG (codebase) | Proven E2E | CodebaseIndexer + CodebaseSearchSource, auto-index on startup |
-| Vision pipeline | Proven E2E | Tiered perception, content-addressed cache |
-| Neural compression | Proven E2E | Head pruning + Q3_K_S: 32B model on 32GB MacBook, 5.3 tok/s |
-| Compression pipeline | Built | Planner + GGUF writer + pipeline orchestration, 142 tests |
-| HuggingFace distribution | Live | continuum-ai/qwen2.5-coder-14b-compacted published |
-| Local GGUF inference | Working | Docker Model Runner (Metal Mac / CUDA Win+Linux). Candle = training only. |
-| Auto model discovery | Working | DMR live catalog + resolve_dmr_model_name. install.sh pulls default model. |
-| Pressure system | Complete | ThoughtStream slots + voice broadcast gating (PR #304) |
-| Decision logging | Complete | CoordinationDecisionLogger, full RAG context capture |
-| Widget system | Working | 32 auto-discovered widgets, Lit + Shadow DOM |
-| Command system | Working | 339 auto-discovered commands, zero central registries |
-| AI providers | Working | 12 providers. GPU-always routing: DMR priority 0, Candle off chat path. InferenceDevice enum filters by GPU/CPU. No silent fallback. |
-| continuum-core | Working | 26 Rust modules, 1,179+ tests |
-
----
-
-## Phase 0: Critical Bugs (Ship-Blockers)
-
-> Fix before anything else. These break the first-run experience.
-
-### SECURITY — Identity & Sessions (BLOCKS GRID, MULTI-USER, EVERYTHING)
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#568](https://github.com/CambrianTech/continuum/issues/568) | **Session identity broken — all-zeros UUIDs** | PARTIAL | Browser sessions now get real userId (`./jtag ping` returns `18db7494`). Fixed: browser command, generator template (343 commands), session destroy. Remaining: CommandDaemon fallback, server-internal session. |
-| [#566](https://github.com/CambrianTech/continuum/issues/566) | **Tab reconnection — tabs multiply, sessions orphaned** | PARTIAL | CLI now works so browser detection on `npm start` can refresh existing tabs. Root cause of duplicate tabs: CLI was broken (generator main blocks in esbuild). Fixed. Remaining: proper session rebinding on WebSocket reconnect. |
-| [#565](https://github.com/CambrianTech/continuum/issues/565) | **WSL2 auto-start on boot** | PARTIAL | wsl-boot.sh fixed (uses LAN gateway DNS, not 8.8.8.8). PR #581 merged. Remaining: Windows scheduled task setup, `generateResolvConf=false` auto-config. |
-
-**Done when**: Every connection has a real UUID. Reconnecting tabs rebind to existing sessions. `userId` is required (not optional) on every contract. Zero-UUID requests are rejected.
-
-### Bugs
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#376](https://github.com/CambrianTech/continuum/issues/376) | **chat/send userId bug** | DONE (PR #387) | Fixed — resolves to human owner, not @cli/agent. |
-| [#335](https://github.com/CambrianTech/continuum/issues/335) | **Multiple browser tabs on npm start** | DONE (PR #387) | Fixed — removed shell script browser launch, orchestrator handles it. |
-| [#317](https://github.com/CambrianTech/continuum/issues/317) | **Live mode starts twice on page load** | DONE (PR #388) | Fixed — activation guard prevents duplicate join from racing code paths. |
-| [#385](https://github.com/CambrianTech/continuum/issues/385) | **install.sh incomplete on new nodes** | TODO | Tower needed manual pytest install, API keys uncommenting. Needs cross-platform testing. |
-| — | **Duplicate seed systems** | DONE | Dead code deleted (PR #608): RoomDataSeed, DataSeeder, UserDataSeed, seedUsers, seed-data, clear-data — 1,362 lines removed. Kept: SeedConstants, ActivityDataSeed, SystemIdentity (still used by seed-continuum.ts). |
-| — | **Seeding fragile on fresh installs** | BUG | Seeding is buggy, inefficient, and prone to complete failure on new installs. Needs single reliable path that works every time. |
-| [#599](https://github.com/CambrianTech/continuum/issues/599) | **Live mode STT broken** | DONE | Three-layer fix: orphan watchdog timeout 60s→600s (#600), spawn_blocking for ORT deadlock (#601), ORT_DYLIB_PATH in start-workers.sh, install.sh auto-installs onnxruntime (#604). |
-| [#585](https://github.com/CambrianTech/continuum/issues/585) | **Workspace root '/path/to/project'** | DONE | Reject LLM placeholder paths in coding-agent workspace bootstrap (#590). |
-| [#591](https://github.com/CambrianTech/continuum/issues/591) | **Tool expanders empty** | PARTIAL | Store truncated 2KB fullData preview (#592). Full lazy-load via command still TODO. |
-| [#564](https://github.com/CambrianTech/continuum/issues/564) | **Grid missing local machine** | DONE | Local node always appears as node zero (#595). |
-| [#606](https://github.com/CambrianTech/continuum/issues/606) | **Persona thundering herd** | DONE | 2s stagger between persona boot (#607). Verified — 5+ AIs responding. |
-| [#603](https://github.com/CambrianTech/continuum/issues/603) | **Rust memory leak 3.2GB** | TODO | continuum-core leaks on ai/generate, data/query. OOMs after ~30 min. Needs Rust profiling. |
-| — | **Content routing: all non-chat → chat-widget** | DONE | Generator reads new widgets[] format (#598), check generated config before async recipe service (#597). Live, factory, grid, logs all route correctly now. |
-| — | **CLI bundle broken (readFileSync on argv)** | DONE | Removed generator main blocks that esbuild executed at bundle time (#581). |
-| [#381](https://github.com/CambrianTech/continuum/issues/381) | **Headless health check timeout** | TODO | Grid nodes without browser can't be health-checked. Needs headless node to test. |
-| [#373](https://github.com/CambrianTech/continuum/issues/373) | **Rust compiler ICE on Linux/WSL2** | TODO | Can't build continuum-core on the 5090 tower. Needs tower access. |
-| [#792](https://github.com/CambrianTech/continuum/issues/792) | **ORT panic crashes server** | DONE | `tokio::task::spawn` catches ORT dylib panics. Voice degrades, core stays alive. |
-| [#793](https://github.com/CambrianTech/continuum/issues/793) | **IPC reconnection — Node doesn't recover** | TODO | When Rust core restarts, Node.js IPC client stays wedged. Total system death until `npm start`. |
-| [#794](https://github.com/CambrianTech/continuum/issues/794) | **AI messages don't reach browser** | TODO | Messages stored in DB but WebSocket event bridge doesn't forward `data:chat_messages:created` for AI senders. Requires page refresh. |
-| [#795](https://github.com/CambrianTech/continuum/issues/795) | **Duplicate tabs** | TODO | Same room opens multiple tab entries. `contentItemsMatch()` dedup has gaps. |
-| [#855](https://github.com/CambrianTech/continuum/pull/855) | **Multi-arch Docker images** | PR READY | amd64 + arm64 builds. Fixes Mac/Ubuntu install. Verification gate. |
-| [#856](https://github.com/CambrianTech/continuum/issues/856) | **Grid event streaming** ⚠️ CRITICAL | TODO | Persistent WS event channels between nodes. Blocks open-eyes, factory live updates, OpenClaw, Hermes. Polling at 10s is incompatible with real-time. |
-| [#722](https://github.com/CambrianTech/continuum/issues/722) | **All widgets fail on refresh — Rust core IPC dies + doesn't recover** | PR #977 OPEN | SystemOrchestrator now spawns + supervises continuum-core-server. ORMRustClient never gives up reconnecting. Panic-loop detector. **Live-tested 2026-05-01**: supervisor correctly caught a real SIGABRT + retried + failed loud. The dep-graph regression I introduced (browser blocked on CORE_READY) is fixed in same PR. |
-| **NEW-A** | **continuum-core-server SIGABRT in vendored llama.cpp Metal `llm_build_smallthinker` cleanup** | **NEEDS NEW ISSUE** | Live-observed 2026-05-01: `ggml-metal-device.m:612: GGML_ASSERT([rsets->data count] == 0) failed`. Triggered during seed-time model load. THE blocker for "AI talks back" demo. Path forward in [Today's Snapshot](#todays-snapshot-2026-05-01-live-verified) — lean DMR-only on Mac per PR891 architectural pivot. |
-| **NEW-C** ✅ | **shared/config.ts has Joel's home-dir HARDCODED** | RESOLVED on canary `75e4ad5c1` | Generator now emits runtime `$HOME` resolution. Defense-in-depth (file is gitignored; was force-committed 5x historically). |
-| **NEW-D** | **Vulkan path silent-downloads at first inference** | **NEEDS NEW ISSUE** | `install.sh:423` defers model download to first chat with no UI feedback. 2-7GB silent wait. Code-inspected; needs live Linux+Vulkan validation. |
-
-**Recently closed (2026-04-17 → 2026-05-01)** — these were Phase 0 items now resolved:
-
-- **#959** PersonaUser daemons stop responding after data:reseed (subscriptions reference invalidated user IDs) — DONE
-- **#957** syncPersonaProviders silently overwrites persona modelId with provider default (Vision AI gets qwen3.5-4b instead of qwen2-vl-7b) — DONE
-- **#919** Personas go silent after first response wave — DONE
-- **#907** seed-in-process.ts: sync persona providers on every restart — DONE
-- **#898** install.sh Mac: npm start launches node-server+widget-server locally, conflicts with containerized versions — DONE
-- **#893** docker: Dockerfile COPY . . assumes submodules populated — fresh clone build fails silently — DONE
-- **#887** Inference capacity: consolidate to adapter-owned, delete duplicate gates — DONE
-- **#769** Ship with Qwen3.5 as default local model — DONE
-- **#906** install: CI validates staged images, never builds from scratch — DONE
-- **#965** CI auto-rebuilds stale arches on GitHub-hosted arm64/amd64 runners — DONE
-
-**Newly filed since 2026-04-17 (Phase 0 candidates)** — these are post-master-plan Phase 0 candidates:
-
-- **#974** ci(workflow): Verify Docker Images PR-trigger paths too narrow — non-Rust/non-docker PRs perpetually BLOCKED — meta-blocker
-- **#964** ONNX Runtime running on CPU (MLAS) instead of Metal — 800-900% CPU spike during chat
-- **#963** Model name has TWO sources of truth: PersonaConfig.modelId vs models.toml/Constants.ts (compression-principle violation)
-- **#962** Chat scroll-up infinite-scroll history paging broken (regression) — should use ORM cursor + IntersectionObserver
-- **#961** Phantom 'General' tab with UUID title persists across refresh — localStorage holds stale roomId after reseed/room-delete
-- **#960** Mac Metal generation throughput 5-7 tok/s (45x slower than CUDA) — vendored llama.cpp Metal kernel coverage gap
-- **#958** DMR/openai_adapter sends no repetition penalty — Linux/CUDA personas verbatim-echo each other (pr-950-blocker)
-- **#956** install.sh: HTTP_PORT/WS_PORT/CONTINUUM_DATA hardcoded — blocks multi-Carl-on-one-host (testing)
-- **#955** docker-compose.yml: pin ghcr.io/ggml-org/llama.cpp:server-cuda to specific digest (currently floating tag)
-- **#954** Pre-commit hook does not auto-install on fresh clones (contributors silently skip the gate)
-- **#952** WSL2 install-tailscale.sh: detect Windows-side Tailscale to avoid 2-node confusion
-- **#951** install.sh: detect AMD/Intel Vulkan GPUs (currently silently CPU-only on non-Nvidia)
-- **#948** DMR concurrency: reqwest 'error sending request' when 4+ local personas hit DMR simultaneously
-- **#946** Module command-prefix collision: PersonaAllocatorModule and CognitionModule both own 'persona/' — dispatcher picks allocator
-- **#945** data/query: memory leak under load (4.8GB cumulative observed)
-- **#944** CodebaseIndexer: runaway embedding loop with 0% cache hits + 4GB+ data/query memleak
-- **#915** TTS: Kokoro ONNX model session creation deadlocks on M1 Metal
-- **#911** Mac Option B: 16GB MacBook Air can't run the full stack (product scope decision)
-- **#910** DMR CUDA on Windows Docker Desktop requires manual Settings toggle (not scriptable)
-- **#909** Local persona tool execution: cloud wired, Candle/DMR local path not wired
-- **#908** Windows/WSL2: npm start should route through docker compose (native can't reach DMR)
-
-**Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes. AI responses appear in real-time without refresh. Grid events stream between nodes in real time. **AND the "Today's Snapshot" demo path works end-to-end without manual intervention.**
-
----
-
-## Phase 1: Architectural Integrity (Code Quality)
-
-> Open-source contributors will copy these patterns. Fix the foundation before anyone sees it.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#333](https://github.com/CambrianTech/continuum/issues/333) | **Type safety — eliminate 831 `any` casts** | DONE (PR #408, #414) | 831 → 0. Next: ESLint no-explicit-any as error. |
-| [#363](https://github.com/CambrianTech/continuum/issues/363) | **Eliminate hardcoded switch statements** | DONE (investigated) | 150 switches are legitimate discriminated unions. Command name switches already eliminated by dynamic discovery. |
-| [#362](https://github.com/CambrianTech/continuum/issues/362) | **Unify content routing** | PARTIAL | Room selection now uses `room.recipeId` as contentType instead of hardcoded 'chat'. Factory, logs, canvas, help rooms route to correct widgets. ContentTypeRegistry still exists but delegates to RecipeLayoutService. Remaining: URL routing, full recipe-driven panel composition. |
-| [#356](https://github.com/CambrianTech/continuum/issues/356) | **Enforce generator usage** | TODO | Prevent manual module creation without spec. |
-| [#355](https://github.com/CambrianTech/continuum/issues/355) | **Generator v2: emit IPC mixins, health, ts-rs** | TODO | Generator must produce complete Rust+TS scaffolding. |
-| [#353](https://github.com/CambrianTech/continuum/issues/353) | **Generator v2: Rust modules + tokio** | TODO | Full Rust module generation with IPC and tests. |
-| [#351](https://github.com/CambrianTech/continuum/issues/351) | **Magic strings → command constants** | TODO | All Rust modules must use constants, not string literals. |
-| [#361](https://github.com/CambrianTech/continuum/issues/361) | **Maximum lint/clippy strictness** | TODO | Enforce across TypeScript and Rust. |
-| [#354](https://github.com/CambrianTech/continuum/issues/354) | **Git pre-push hooks** | TODO | Infrastructure and mission-critical test gates. |
-| [#352](https://github.com/CambrianTech/continuum/issues/352) | **Formalize test architecture** | TODO | Unit, integration, infrastructure, mission-critical tiers. |
-| [#379](https://github.com/CambrianTech/continuum/issues/379) | **Sentinel test coverage: 55 → 100+** | TODO | 12 step types need thorough coverage. Approve and WebResearch likely untested. |
-| [#334](https://github.com/CambrianTech/continuum/issues/334) | **Technical debt deep clean** | TODO | ESLint config, disabled systems, error handling audit, 14 failing Rust tests. |
-| [#360](https://github.com/CambrianTech/continuum/issues/360) | **ORM date/pagination/indexes** | INVESTIGATED | Dates work correctly (TIMESTAMPTZ/RFC3339). Composite indexes working for high-traffic tables. Cursor pagination unimplemented (OFFSET fine for alpha). |
-| [#412](https://github.com/CambrianTech/continuum/issues/412) | **chat/send sender identity** | DONE (PR #422) | Persona tool calls now show as persona. Uses params.userId (auto-injected). |
-
-**Previously completed:**
-- 1D: Magic number consolidation (PersonaTimingConfig.ts) — DONE
-- 1E: Rust panic safety — MOSTLY DONE (36 `.lock().unwrap()` intentional)
-- 1F: ts-rs exports — DONE (10 types across 4 modules)
-- God class decomposition — PARTIAL (DataSchemaManager, DataVectorOperations, JTAGClientConnections, PersonaAgentLoop extracted)
-
-**Remaining god classes:**
-
-| File | Lines | Target |
-|------|-------|--------|
-| PersonaUser.ts | ~2,200 | <500 |
-| RustWorkerStorageAdapter.ts | 1,234 | <500 |
-| ChatRAGBuilder.ts | 1,214 | <500 |
-| PersonaMessageEvaluator.ts | 909 | <500 |
-
-**Done when**: Zero `any` in production. All commands generator-backed. Lint/clippy clean. Pre-push hooks enforced. 100+ sentinel tests.
-
----
-
-## The Inference Design Goal — Multi-Persona Live Chat at Low Latency
-
-> **"We should be able to have a few ais in a live chat at LOW latency, focus on that."** — Joel, 2026-04-15
-
-This is THE workload the whole stack must serve. Not single-persona batch inference. Not benchmark-leaderboard throughput. **3-5 AI personas in live voice+video chat simultaneously**, with the full sensory pipeline (Bevy avatar render, Whisper STT, Piper TTS, LiveKit WebRTC encode/decode) running concurrently on the same machine.
-
-**Proven on this machine today**: 10ish AI chat (14 tested, strains the machine — all but 4 were cloud inference). That's the current ceiling with mostly-cloud backends. The target raises ALL of those to native local inference running at conversation pace.
-
-**Why Qwen3.5-4B+ is the pick:** [`project_m5_is_primary_audience.md`](../../memory/project_m5_is_primary_audience.md) — forged specifically to fit the concurrent-sensory slot on Apple Silicon unified memory. Q4_K_M ≈ 2.6GB per instance, KV shared via continuous-batching scheduler (`n_seq_max` sequences in ONE Context), leaves room for Bevy + Whisper + Piper + LiveKit all co-resident.
-
-**Audience tier (BMW M4 / Corvette / Ford Focus analogy):**
-- Primary: MacBook M3-M5 Pro/Max (BMW M4)
-- Entry: MacBook Air (BMW 2 Series) — aspirational, must work
-- Desktop enthusiast: Nvidia RTX 3090+ (Corvette / Mustang)
-- Non-audience: ThinkPads without GPU, integrated-only, pre-Apple-Silicon (Ford Focus)
-
-**Go-live is possible before the full vision-Qwen3.5 landing** (stopgap: text-Qwen3.5 + sensory bridges via `VisionDescriptionService`, Whisper, Piper/Orpheus — already in the codebase). But vision-Qwen3.5 is quickly needed post-launch and NOT insurmountable because **factory + sentinel-ai were built for this exact purpose** (PR891's parent narrative). Forging vision-enabled variants per device tier is the post-launch track.
-
-### Cross-referenced issues
-
-This goal cuts across phases; the work is tracked here:
-
-| # | Phase | Role in the goal |
+| Issue / PR | Role | Required action |
 |---|---|---|
-| [#582](https://github.com/CambrianTech/continuum/issues/582) | Phase 2 | Native multimodal pipeline — three parallel streams LISTEN+THINK+SPEAK, <2s latency for capable models |
-| [#799](https://github.com/CambrianTech/continuum/issues/799) | Phase 2 | Qwen3.5-Omni native audio — skip VAD→STT→LLM→TTS entirely |
-| [#800](https://github.com/CambrianTech/continuum/issues/800) | Phase 2 | `continuum-ai/whisper-forged` — forged STT model |
-| [#801](https://github.com/CambrianTech/continuum/issues/801) | Phase 2 | Per-persona TTS voice cloning |
-| [#652](https://github.com/CambrianTech/continuum/issues/652) | Phase 12 | Sub-100ms vision + real-time audio inference for personas |
-| [#649](https://github.com/CambrianTech/continuum/issues/649) | Phase 12 | LLaVA-style vision encoder — bolt-on vision via projection layer training |
-| [#650](https://github.com/CambrianTech/continuum/issues/650) | Phase 12 | Whisper-style audio encoder — hearing + speech natively |
-| [#579](https://github.com/CambrianTech/continuum/issues/579) | Phase 12 | Vision model forging — feature detector pruning, domain specialization |
-| [#894](https://github.com/CambrianTech/continuum/issues/894) | post-launch | Vision-Qwen3.5 variants per device tier — M5 default 4B-vision, MBA smaller, 3090+ larger |
-| [#895](https://github.com/CambrianTech/continuum/issues/895) | PR891 follow-up | Live multi-persona concurrency benchmark — 3-5 personas on M5, regression-gate for the scheduler |
-
-### What PR891 delivers toward this goal
-
-- **Continuous-batching scheduler** — shared Context, `n_seq_max` sequences (enables 3-5 concurrent persona streams from ONE model instance, KV pool shared not duplicated).
-- **Response-cap hard gate REMOVED** — personas can keep engaging in live chat without arbitrary silencing.
-- **Acceleration architecture committed** (no CPU fallback; UDP sidecar fallback designed for any case where a subsystem can't containerize) — guarantees every sensory subsystem stays GPU-close.
-- **Vulkan-in-container** for Mac Carl → Qwen3.5 at ~80% native Metal in a container, keeping Mac Carl install low-friction.
-- **Un-cheat sensory parity** (Phase 1 of RESTORE-FULL-PARITY-PLAN): whisper.cpp vendor, remove SKIP_STT/SKIP_TTS hatches, LiveKit default-features, avatars ship. Lands the sensory stack that makes "live chat" actually live.
-
----
-
-## Phase 2: Live Call Quality & Resource Management
-
-> The 3D video calls work but leak memory, have high latency, and break offline.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#331](https://github.com/CambrianTech/continuum/issues/331) | **Live call quality** ⚠️ CRITICAL | TODO | Avatar vertex corruption — most personas show shredded/exploded geometry in live view. 8 VRM models for 15 personas = overflow models garbled. Also: memory leaks, latency, simultaneous speech. |
-| ~~[#338](https://github.com/CambrianTech/continuum/issues/338)~~ | **Deterministic resource deallocation** | DONE | Merged into #331. |
-| [#582](https://github.com/CambrianTech/continuum/issues/582) | **Native multimodal pipeline** ⚠️ HIGH | TODO | Direct audio/vision for capable models (one hop, <2s), bridge only for text-only. Three parallel streams: LISTEN + THINK + SPEAK. Fundamental architecture fix. |
-| [#339](https://github.com/CambrianTech/continuum/issues/339) | **Live mode latency: 30s STT delay** | SUPERSEDED by #582 | STT→LLM→TTS pipeline too slow. #582 eliminates the pipeline entirely for multimodal models. |
-| ~~[#340](https://github.com/CambrianTech/continuum/issues/340)~~ | **AIs talk over each other** | DONE | Merged into #331. |
-| ~~[#318](https://github.com/CambrianTech/continuum/issues/318)~~ | **Avatar models eating 26GB** | DONE | Cleaned up — 8 CC0 VRoid models only. |
-| [#322](https://github.com/CambrianTech/continuum/issues/322) | **More CC0 avatar models** ⚠️ CRITICAL | TODO | Only 8 models for 15 personas. Overflow causes vertex corruption. Need 15+ working VRM 0.x models. |
-| ~~[#332](https://github.com/CambrianTech/continuum/issues/332)~~ | **Offline-first architecture** | DONE | No CDN deps. Works offline. |
-| ~~[#380](https://github.com/CambrianTech/continuum/issues/380)~~ | **GPU governor** | DONE | Superseded by #469 (Grid Governor). |
-| ~~[#399](https://github.com/CambrianTech/continuum/issues/399)~~ | **Persona response latency** | DONE | Priority boost (PR #423), event coalescing (PR #466), timeout fix (PR #460). |
-| [#409](https://github.com/CambrianTech/continuum/issues/409) | **Sensory system verification** | TODO | Vision, screenshots, live mode visual awareness. |
-| [#436](https://github.com/CambrianTech/continuum/issues/436) | **Cost/metrics widgets** | TODO | Auto-adjust time segments. |
-| [#473](https://github.com/CambrianTech/continuum/issues/473) | **Grid telemetry widget** | TODO | SCADA-style per-node CPU/MEM/GPU + sparklines. |
-
-| [#797](https://github.com/CambrianTech/continuum/issues/797) | **LiveKit + livekit-bridge Docker validation** | TODO | Validate three-binary split works in Docker. Bridge socket, audio pipeline, browser call join. |
-| [#799](https://github.com/CambrianTech/continuum/issues/799) | **Qwen3.5 native audio — skip VAD→STT→LLM→TTS** | TODO | Audio-native models bypass the entire pipeline. Router exists in `live/audio/router.rs`. Needs Qwen3.5-Omni GGUF. |
-| [#800](https://github.com/CambrianTech/continuum/issues/800) | **Custom forged STT model** | TODO | Whisper-equivalent trained on technical vocabulary. Publish as `continuum-ai/whisper-forged`. |
-| [#801](https://github.com/CambrianTech/continuum/issues/801) | **Custom TTS voices per persona** | TODO | Persona-specific voice synthesis via Pocket-TTS cloning + fine-tuning. |
-
-**Done when**: Avatar geometry works for ALL personas (no vertex corruption). Live call closes → memory baseline in 30s. Latency under 5s. All personas can see. Grid telemetry visible. Native audio models skip STT/TTS chain.
-
----
-
-## Phase 3: Tool Calling & Local Model Reliability
-
-> THE blocker for local-first AI. Personas can't reliably call tools with local models.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#324](https://github.com/CambrianTech/continuum/issues/324) | **Parser-per-model-family** | DONE (Rust) | 6 families in Rust (DeepSeek, Llama, Mistral, Hermes, Qwen, Generic) + Native protocol upstream. Closed. |
-| [#368](https://github.com/CambrianTech/continuum/issues/368) | **PersonaToolExecutor failures** | DONE (PR #400) | Fixed param serialization, agent loop cap, double correction, loop detection side-effect, tool group bias. |
-| [#366](https://github.com/CambrianTech/continuum/issues/366) | **Personas can't reliably write code** | PARTIAL | Sub-issues #367, #368, #371 done. Routing works. Remaining: #370 (e2e pipeline), #369 (quality gate). |
-| [#367](https://github.com/CambrianTech/continuum/issues/367) | **CodingAgent dispatch unreliable** | DONE (tested e2e) | Works — 3 workspace strategies, error handling, training capture. Closed. |
-| [#321](https://github.com/CambrianTech/continuum/issues/321) | **Local inference quality** | TODO | Compacted 14B gives poor responses. |
-| [#325](https://github.com/CambrianTech/continuum/issues/325) | **Ship 14B model, research 32B QAT** | TODO | 14B at Q5_K for MacBook Air. 32B QAT for 32GB machines. |
-| [#371](https://github.com/CambrianTech/continuum/issues/371) | **Per-task model routing** | DONE (PR #401) | Fixed hasTools false for XML providers — local personas now upgrade to cloud for tool use. |
-| [#343](https://github.com/CambrianTech/continuum/issues/343) | **Native multimodal** | TODO | Skip STT/TTS for models that handle audio/images directly. |
-| [#342](https://github.com/CambrianTech/continuum/issues/342) | **Vision feedback** | REOPENED | Pipes exist but full loop (see→fix→verify) not proven. Needs #493 + #480. |
-| [#341](https://github.com/CambrianTech/continuum/issues/341) | **API cost budgeting** | PARTIAL (PR #405) | Cost tracking fixed (used wrong provider). `ai/cost` command works. Budget limits still TODO. |
-| [#413](https://github.com/CambrianTech/continuum/issues/413) | **Sentinel logs: list available streams** | DONE (PR #421) | Error messages now list available streams. Found by AI team. |
-| [#417](https://github.com/CambrianTech/continuum/issues/417) | **Evaluate Qwen3.5-35B-A3B** | TODO | Opus reasoning distilled, 3B active MoE. Could replace Llama-3.2-3B as local model. |
-
-**Done when**: Local model reliably calls tools. Parser handles all model families. Per-task routing picks best model. Cost tracked.
-
----
-
-## Phase 4: End-to-End Development Orchestration
-
-> From "AI that chats" to "AI that ships code."
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#326](https://github.com/CambrianTech/continuum/issues/326) | **E2E dev orchestration** | TODO | Sentinel templates → auto-trigger → PR workflow → chat bridge. |
-| [#370](https://github.com/CambrianTech/continuum/issues/370) | **Coding pipeline never proven** | PARTIAL (PR #407) | sentinel/coding-agent works e2e. Persona→chat→code trigger needs proof. |
-| [#411](https://github.com/CambrianTech/continuum/issues/411) | **Self-improving system** | TODO | Personas autonomously propose → code → test → PR. The endgame. |
-| [#415](https://github.com/CambrianTech/continuum/issues/415) | **Dispatch classifier too trigger-happy** | DONE (PR #419) | Tightened patterns + technical context gate. |
-| [#416](https://github.com/CambrianTech/continuum/issues/416) | **sentinel/resume rejects BudgetExhausted** | DONE (PR #420) | Budget exhaustion now sets correct resumable status. |
-
-**Previously completed:**
-- 3 sentinel dev templates (build-feature, fix-bug, code-review) — DONE
-- TemplateRegistry — DONE
-- SentinelChatBridge — DONE
-- SentinelDispatchDecider — DONE
-
-**Remaining:**
-- [ ] 2 more templates (create-pr, refactor)
-- [ ] PR workflow commands (push, create, review, status)
-- [ ] Template parameter extraction from chat context
-- [ ] Prove the full loop: chat request → sentinel → code → tests → commit → PR
-
-**Done when**: Someone says "add rate limiting to the login endpoint" in chat → persona spawns sentinel → code written → tests pass → PR created. Proven, not theoretical.
-
----
-
-## Phase 5: Academy — Full Training Loop
-
-> The README promises personas get smarter every day. Prove it.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#377](https://github.com/CambrianTech/continuum/issues/377) | **Full academy session E2E** | TODO | All challenges → failures → LoRA trained → re-exam → measurable improvement. Never completed. |
-| [#369](https://github.com/CambrianTech/continuum/issues/369) | **RealClassEval trash with local models** | REOPENED | Solved by compaction + training, not API keys. Open until local model passes. |
-| [#374](https://github.com/CambrianTech/continuum/issues/374) | **Teacher needs cloud API** | REOPENED | Compacted 35B MoE IS the teacher. Needs #492 first. |
-| [#365](https://github.com/CambrianTech/continuum/issues/365) | **Training job persistence** | TODO | Checkpoint resume, crash recovery, auto-restart for weeks-long runs. |
-| [#344](https://github.com/CambrianTech/continuum/issues/344) | **Ship LoRA-tuned local model** | TODO | A model that passes coding challenges via our tool system. |
-| [#345](https://github.com/CambrianTech/continuum/issues/345) | **LoRA-tuned persona layer** | TODO | Teach personas to use Continuum's own systems. |
-| [#384](https://github.com/CambrianTech/continuum/issues/384) | **Team training** | TODO | Multi-persona project decomposition — roles, parallel training, collaborative building. |
-| [#359](https://github.com/CambrianTech/continuum/issues/359) | **Training env auto-bootstrap** | TODO | Any Grid node can train — zero manual intervention. |
-
-**The critical path:**
-```
-#374 (local teacher) → #377 (full session) → #369 (quality baseline)
-    → #344 (ship tuned model) → #384 (team training)
-```
-
-**Done when**: A full academy session completes on the 5090 tower using only local models. Student scores improve after training. Adapter published to HuggingFace.
-
----
-
-## Phase 6: Genome & Adapter Ecosystem
-
-> Personas carry skills in their genome. Skills page in/out. Skills are shared globally.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#382](https://github.com/CambrianTech/continuum/issues/382) | **Genome paging not wired** | TODO | activateSkill/evictLRU exists but not connected to persona loop or GPU governor. |
-| [#378](https://github.com/CambrianTech/continuum/issues/378) | **First HuggingFace adapter publication** | TODO | README promises `continuum:*` tags, searchable marketplace. Never published from system. |
-| [#330](https://github.com/CambrianTech/continuum/issues/330) | **Adapter management** | TODO | Docker-like ops: list, prune, info. 58 old adapters hit 21GB before manual cleanup. |
-| [#319](https://github.com/CambrianTech/continuum/issues/319) | **Separate install from start** | TODO | Detect if build needed. Don't rebuild every time. |
-
-**Done when**: Persona faces a Python task → genome pages in python-expertise adapter → processes task → publishes adapter to HuggingFace → another instance discovers and pulls it.
-
----
-
-## Phase 7: Autonomous Persona Life
-
-> Not agents you invoke. Teammates who live.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#383](https://github.com/CambrianTech/continuum/issues/383) | **Self-task generation** | TODO | generateSelfTasks() not implemented. Personas only react, never initiate. |
-| [#329](https://github.com/CambrianTech/continuum/issues/329) | **Persona-sentinel integration** | TODO | Autonomous dispatch, sentinel memory → RAG, NL → pipeline, multi-teacher. |
-| [#336](https://github.com/CambrianTech/continuum/issues/336) | **First-run onboarding** | TODO | Guide users to configure API keys, understand the system. |
-| [PR #709](https://github.com/CambrianTech/continuum/pull/709) | **Epistemic grounding** | DESIGN MERGED | 5-tier source hierarchy, EpistemicSource metadata on RAG artifacts, Devil's Advocate persona role, training data filters. Prerequisite for external communication. See [EPISTEMIC-GROUNDING.md](EPISTEMIC-GROUNDING.md). |
-| [PR #701](https://github.com/CambrianTech/continuum/pull/701) | **Social & calendar integrations** | DESIGN MERGED | Calendar → Discord → Slack → Newsroom/Email. IntegrationDaemon, command modules, RAG sources. Depends on epistemic grounding. See [SOCIAL-CALENDAR-INTEGRATIONS.md](SOCIAL-CALENDAR-INTEGRATIONS.md). |
-
-**Done when**: Leave the system running overnight → come back to find personas have consolidated memories, audited skills, searched HuggingFace for useful adapters, and initiated peer learning sessions. Personas know your calendar. External communication gated by epistemic verification. Without any human prompt.
-
----
-
-## Phase 8: Distillation & Training Flywheel
-
-> The competitive moat: every task makes the next task better.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#327](https://github.com/CambrianTech/continuum/issues/327) | **Distillation pipeline** | TODO | Capture → score → filter → train → evaluate → deploy → capture better data. |
-| [#357](https://github.com/CambrianTech/continuum/issues/357) | **Persistent learning layer** | TODO | Continuum as learning layer for Claude Code and other AI dev tools. |
-
-**Sub-tasks:**
-- [ ] Composite quality scoring (replace binary 0.9/0.3)
-- [ ] Quality-filtered training data pipeline (>0.7 threshold)
-- [ ] Evaluation sentinel (benchmark new adapter vs. previous)
-- [ ] Auto-rollback on regression
-- [ ] Negative example training (failed tool calls + corrections)
-- [ ] Flywheel automation: the full loop runs unattended
-
-**Done when**: Helper AI improves from 53% → 70%+ on RealClassEval after one training cycle. Measured, not assumed.
-
----
-
-## Phase 9: Codebase Intelligence
-
-> Know what you're changing before you change it.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#328](https://github.com/CambrianTech/continuum/issues/328) | **Tree-sitter + dep graph** | TODO | Symbol extraction, dependency graph, sentinel context enrichment, LSP. |
-
-**Sub-tasks:**
-- [ ] Tree-sitter Rust worker for symbol extraction (TS, Rust, Python, JS)
-- [ ] Symbol table storage via ORM (incremental, content-hashed)
-- [ ] Dependency graph from import analysis
-- [ ] `codebase/symbols` and `codebase/dependencies` commands
-- [ ] Sentinel LLM step `contextSources` field
-- [ ] Step-result summarization for long pipelines
-- [ ] (Future) LSP integration
-
-**Done when**: Persona modifying `auth.ts` automatically knows every file that imports it, every function that calls its methods, and every test that covers it — before writing a single line.
-
----
-
-## Phase 10: Grid — Multi-Node Mesh
-
-> Your machines form a single organism. Codename: **Ares** (the Governor).
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#323](https://github.com/CambrianTech/continuum/issues/323) | **Tailscale mesh for remote inference** | TODO | Multi-tower transparent command routing. |
-| [#364](https://github.com/CambrianTech/continuum/issues/364) | **Cross-node event forwarding** | TODO | Events must propagate across Grid nodes (Rust plumbing). |
-| [#349](https://github.com/CambrianTech/continuum/issues/349) | **Reticulum mesh** | TODO | MPC identity + encrypted transport. Replace Tailscale dependency. |
-| [#337](https://github.com/CambrianTech/continuum/issues/337) | **Distributed inference + training** | TODO | Shard models and training across towers. |
-| [#469](https://github.com/CambrianTech/continuum/issues/469) | **Ares — Grid Governor** | TODO | AI persona on every node. Peer gossip, resource commands, polite mode. Named for Greek god + Tron hero. |
-| [#499](https://github.com/CambrianTech/continuum/issues/499) | **Grid discovery + trust** | TODO | Three tiers: on-site, vouched peers, open mesh. No hardcoded IPs. |
-| [#501](https://github.com/CambrianTech/continuum/issues/501) | **Grid compute economy** | TODO | Earn credits hosting MoE experts. Route tokens across mesh. |
-| [#503](https://github.com/CambrianTech/continuum/issues/503) | **Grid model marketplace** | TODO | Share compacted models + experts + adapters across mesh + HuggingFace. |
-| [#505](https://github.com/CambrianTech/continuum/issues/505) | **Command marketplace** | TODO | Share commands as pluggable modules. Generator = SDK. DotNetNuke for AI. |
-| [#507](https://github.com/CambrianTech/continuum/issues/507) | **Grid fault tolerance** | TODO | Self-healing organism. Rescue downed nodes. Checkpoint everything. |
-| [#508](https://github.com/CambrianTech/continuum/issues/508) | **Multi-agent concurrent coding** | TODO | Worktree isolation + collaborative merge. AIs learn git through experience. |
-| [#516](https://github.com/CambrianTech/continuum/issues/516) | **First Grid experiment** | TODO | 5090 + 3090 + 1080 Ti + laptops. Heterogeneous dual-node proof. |
-| [#517](https://github.com/CambrianTech/continuum/issues/517) | **Onboarding crisis** ⚠️ CRITICAL | TODO | First external user hit walls. Install must be frictionless. Blocks everything. |
-
-**Available hardware (ready to mesh):**
-
-| Node | GPU | VRAM | RAM | Role | Status |
-|------|-----|------|-----|------|--------|
-| Joel 5090 tower | RTX 5090 | 32GB | 32GB | Primary forge, heavy training | Online (WSL2) |
-| Joel 1080Ti box | 3x GTX 1080Ti | 33GB total | 128GB | Distributed inference, CPU pruning, GGUF conversion | **OFFLINE — blocked on install.sh** |
-| Joel 970 box | GTX 970 | 4GB | ? | Light inference, testing | **OFFLINE** |
-| Joel MacBook Pro | M1 Pro | 32GB unified | 32GB | MLX inference, testing, dev | Online |
-| Joel MacBook Air | M1 | 8GB unified | 8GB | iPhone-class testing (same RAM budget) | Available |
-| Toby 3090 | RTX 3090 | 24GB | ? | Secondary forge, inference | **OFFLINE — blocked on install.sh** (PR #535) |
-| Toby 5050 | RTX 5050 | 8GB | ? | Light inference, edge testing | **OFFLINE** |
-
-**The 1080Ti box alone unblocks**: parallel GGUF conversion (128GB RAM), distributed inference (3 GPUs), CPU expert pruning without blocking the 5090 forge. Getting `install.sh` working is THE grid priority.
-
-| [#798](https://github.com/CambrianTech/continuum/issues/798) | **Route inference through grid to GPU nodes** | TODO | When BigMama online, route `ai/generate`, STT, TTS to 5090 instead of laptop. Grid router exists, needs wiring to AI provider. |
-| [#806](https://github.com/CambrianTech/continuum/issues/806) | **Tailscale ghost nodes on restart** | DONE (PR #809) | State volume persists identity. `TS_HOSTNAME` defaults to `{hostname}-grid`. No more orphaned devices. |
-| [#807](https://github.com/CambrianTech/continuum/issues/807) | **Auto grid profile when Tailscale configured** | TODO | `setup.sh` detects Tailscale → enables grid automatically. No manual `.env.grid` copy or `--profile grid`. |
-| [#808](https://github.com/CambrianTech/continuum/issues/808) | **Grid config provisioning** ⚠️ HIGH | TODO | `grid/provision` syncs config.env from primary node. No manual `scp`. One Tailscale key is the only manual step. |
-| [#811](https://github.com/CambrianTech/continuum/issues/811) | **Docker node shows 127.0.0.1 / no GPU** | PR #813 | Grid Overview fetches grid/status for real Tailscale IP and GPU capabilities. |
-| [#814](https://github.com/CambrianTech/continuum/issues/814) | **Self-healing — auto-wake and restart downed nodes** | TODO | Foreman detects offline → WoL via Tailscale → SSH restart. Grid is the immune system. |
-| [#815](https://github.com/CambrianTech/continuum/issues/815) | **In-browser terminal for node management** | TODO | AWS-style console. SSH button → terminal widget → Tailscale IP. Wake/restart/rebuild/logs from grid page. |
-
-**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges. Inference routes to BigMama when laptop is on Tailscale. Config propagates automatically to new nodes via `grid/provision`. Downed nodes auto-revive. Full node management from browser.
-
----
-
-## Phase 11: Docker — Full-Stack Containerization (PR #740)
-
-> `docker compose up` — Tailscale handles TLS, containers serve HTTP. Real HTTPS, no warnings.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#737](https://github.com/CambrianTech/continuum/issues/737) | **Docker architecture** | WORKING | docker-compose.yml: tailscale, postgres, continuum-core, node-server, widget-server, livekit, model-init, forge-worker, inference. All containers healthy on BigMama. |
-| — | **Tailscale sidecar TLS** | DONE | Tailscale container joins tailnet, provisions Let's Encrypt certs, reverse-proxies HTTPS/WSS to plain HTTP containers via TS_SERVE_CONFIG. No Caddy, no self-signed, no manual certs. Two prereqs: enable HTTPS certs in Tailscale DNS settings + generate auth key. |
-| — | **ONNX Runtime in Docker** | DONE | ONNX Runtime 1.24.4 installed in continuum-core image. ORT_DYLIB_PATH env var set. Silero VAD + Piper TTS work (persona hearing + speech). |
-| — | **Postgres in Docker** | DONE | SecretManager no longer overwrites Docker env vars with config.env values. DATABASE_URL from compose takes precedence. |
-| — | **WS localhost fallback bug** | DONE | TransportConfig.ts used `ws://localhost` for non-HTTPS pages. Now always uses `window.location.hostname` in browser. Vite bundle rebuilt. |
-| — | **IPC crash without Rust core** | DONE (PR #740) | Node-server no longer crashes if continuum-core socket missing. |
-| — | **Auto-seed on first run** | PARTIAL | docker-entrypoint.ts detects empty DB, runs seed-continuum.ts. Rooms seed (11/12). Personas fail (IPC drops under heavy seeding). Needs resilient seeding with retry. |
-| — | **ARM64 Docker: WebRTC** | DEFERRED | LiveKit runs as separate container. Rust binary built without livekit-webrtc feature (`--no-default-features`). |
-| — | **Persona seeding in Docker** | TODO | AI users not created. Seed script IPC connections fail under heavy load. Need: (a) batch seeding with delays between records, or (b) direct SQL seed for Docker. |
-| — | **Voice/avatar models** | TODO | model-init container exists but voice-models volume not populated on BigMama. Need `docker compose run model-init`. |
-| — | **CI multi-arch images** | TODO | GHCR publishing workflow exists but not tested on this branch. |
-| — | **WSS port routing** | DONE (PR #809) | Browser WebSocket now connects to configured WS_PORT (9001), not page port (443). Fixes Tailscale reverse proxy. |
-| — | **Port conflict Tailscale vs node-server** | DONE (PR #809) | Removed duplicate 9002:9001 host mapping from Tailscale. Tailscale serve proxies internally. |
-| — | **GHCR images rebuilt** | DONE | All 5 images rebuilt on BigMama and pushed to GHCR (2026-04-06). |
-| [#796](https://github.com/CambrianTech/continuum/issues/796) | **Docker E2E with live mode + grid** | PARTIAL | Chat works, AIs respond, HTTPS via Tailscale works, factory shows leaderboard. Remaining: live calls, grid discovery from browser. |
-
-**Prereqs** (one-time, per tailnet):
-1. Tailscale installed + HTTPS certificates enabled in DNS settings
-2. Auth key generated (reusable + ephemeral) → stored in `.env` as `TS_AUTHKEY`
-
-**Done when**: `docker compose up` on a fresh machine with Tailscale brings up the full system with all personas, avatars, and voice models. Accessible at `https://<hostname>.ts.net`.
-
----
-
-## Phase 12: Factory — Model Forge Production Line
-
-> Nature: forge base models. Nurture: academy trains personas. Factory is nature. The factory is the product's front door — the widget that brings people in and the grid that keeps them.
-
-The factory forges, benchmarks, and publishes base models for every device tier. HuggingFace is the app store — we provide the factory, community provides hardware. Models forged through our pipeline have known provenance enabling re-forging (the moat). Recipes are shareable end-to-end templates that encode the entire forge process.
-
-**Strategy**: HF leaderboards for benchmarks (don't reinvent). Right-panel sidebar for our leaderboard/stats. Competitive spirit drives adoption. Recipes are the apps, factory is the store, grid is the compute.
-
-### Core Factory Infrastructure
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#576](https://github.com/CambrianTech/continuum/issues/576) | **Factory widget** | IN PROGRESS | Event-driven widget with forge controls, live HF models, leaderboard-style published models. PR #644 (pruning controls), PR #645 (header tab), PR #654 (forge command + live HF data). |
-| [#653](https://github.com/CambrianTech/continuum/issues/653) | **Wire START FORGE + live status + queue** | PR #654 | model/forge command routes to BigMama via SSH/grid. Status polling emits events. Queue UX needed. |
-| [#638](https://github.com/CambrianTech/continuum/issues/638) | **Factory job queue** | TODO | RTOS-style task scheduling across grid nodes. Priority, estimated wait, queue position. |
-| [#646](https://github.com/CambrianTech/continuum/issues/646) | **Python↔Rust bridge** | TODO | Protobuf schema for forge events (like ts-rs for Rust↔TS). |
-| [#629](https://github.com/CambrianTech/continuum/issues/629) | **Mixed-precision GGUF** | TODO | Validate end-to-end, make it the default forge output. |
-| [#577](https://github.com/CambrianTech/continuum/issues/577) | **Architecture visualizer** | DESIGNED | Shared component for model surgery + cognition visualization. Canvas/WebGL. |
-| [#584](https://github.com/CambrianTech/continuum/issues/584) | **Custom prompt testing** | TODO | Run any prompt against forged model from the widget. |
-| [#583](https://github.com/CambrianTech/continuum/issues/583) | **Test results viewer** | TODO | Log-style pass/fail with click-to-expand. |
-
-### Recipe System (The Apps)
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#651](https://github.com/CambrianTech/continuum/issues/651) | **Recipe composition** | TODO | Stack multiple recipes on one base model. Sequential forge stages. |
-| [#648](https://github.com/CambrianTech/continuum/issues/648) | **Context window extension** | TODO | RoPE rescaling recipe. YaRN/NTK + long-context fine-tuning. |
-| [#649](https://github.com/CambrianTech/continuum/issues/649) | **Vision encoder (LLaVA-style)** | TODO | Bolt-on vision via projection layer training. |
-| [#650](https://github.com/CambrianTech/continuum/issues/650) | **Audio encoder (Whisper-style)** | TODO | Hearing + speech natively. |
-| [#578](https://github.com/CambrianTech/continuum/issues/578) | **Voice model forging** | TODO | Prune unused phoneme heads, specialize for accent/language. |
-| [#579](https://github.com/CambrianTech/continuum/issues/579) | **Vision model forging** | TODO | Feature detector pruning, domain specialization. |
-| [#580](https://github.com/CambrianTech/continuum/issues/580) | **Expert-as-a-service** | TODO | Dynamic MoE paging across grid. Hot experts local, cold experts from mesh. |
-
-### Lifecycle Pipeline (Factory → Academy → Sentinel)
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#655](https://github.com/CambrianTech/continuum/issues/655) | **End-to-end lifecycle** | MASTER ISSUE | Forge → Evaluate → Deploy → Learn → Re-forge. The full loop. |
-| [#656](https://github.com/CambrianTech/continuum/issues/656) | **Auto-submit to HF leaderboards** | TODO | After forge completes, submit to Open LLM, domain-specific boards. Pull results back. |
-| [#657](https://github.com/CambrianTech/continuum/issues/657) | **Re-forge from existing model** | TODO | THE MOAT. Known provenance enables deeper controls: swap adapters, adjust pruning, add modalities. |
-| [#658](https://github.com/CambrianTech/continuum/issues/658) | **Sentinel forge recipe** | TODO | Automated lifecycle: forge → evaluate → deploy → learn → re-forge. AI foreman orchestrates. |
-| [#652](https://github.com/CambrianTech/continuum/issues/652) | **Low-latency sensory pipeline** | TODO | Sub-100ms vision + real-time audio for personas. Inference speed, not training. |
-
-### ForgeAlloy — Portable Pipeline Format & Integrity
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#659](https://github.com/CambrianTech/continuum/issues/659) | **ForgeAlloy portable entity** | DONE | Public repo (CambrianTech/forge-alloy). Rust + Python + TypeScript. JSON schema. 7 tests. |
-| [#660](https://github.com/CambrianTech/continuum/issues/660) | **Factory widget: import/export alloys** | TODO | Load/save .alloy.json recipes. Display executed alloy results. |
-| [#661](https://github.com/CambrianTech/continuum/issues/661) | **Attestation verification in model/list-published** | TODO | Fetch .alloy.json from HF, display trust level and benchmarks. |
-| [fa #1](https://github.com/CambrianTech/forge-alloy/issues/1) | **JCS canonicalization + ES256 signing** | TODO | RFC 8785 implementation. verify_signature() in all three languages. Blocks all signed attestation. |
-| [fa #2](https://github.com/CambrianTech/forge-alloy/issues/2) | **Key registry** | TODO | Hosted service with revocation, rotation, supersededBy. |
-| [fa #3](https://github.com/CambrianTech/forge-alloy/issues/3) | **Hardware key signing** | TODO | Secure Enclave (macOS), StrongBox (Android), TPM (Windows). Phase 2. |
-| [fa #4](https://github.com/CambrianTech/forge-alloy/issues/4) | **Enclave execution** | TODO | TEE for tamper-proof attestation. Required for marketplace payments. Phase 4. |
-| [fa #5](https://github.com/CambrianTech/forge-alloy/issues/5) | **Dataset hashing** | TODO | RFC 6962 Merkle tree with domain separation. All three languages. |
-| [fa #6](https://github.com/CambrianTech/forge-alloy/issues/6) | **Post-quantum migration** | FUTURE | ML-DSA / SLH-DSA dual-signing. Enum ready, waiting on library maturity. |
-| [s-ai #118](https://github.com/CambrianTech/sentinel-ai/issues/118) | **Full alloy results in forge** | TODO | Populate benchmarks, hardware profiles, dataset hashes after forging. |
-
-**Current state**: ForgeAlloy repo live with 13 stage types (SourceConfig, Prune, Train, LoRA, Compact, Quant, Package, Eval, Publish, Deploy, ExpertPrune, ContextExtend, Modality). Peer-reviewed attestation (WebAuthn-modeled, PQC ready). alloy_executor.py with OOP stage package on sentinel-ai. Factory widget decomposed into 5 components with visual pipeline composer (6 stage UI elements built). First production alloy forged: qwen3.5-4b-code-forged +16.4%.
-
-### Stage Executors (sentinel-ai)
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [s-ai #119](https://github.com/CambrianTech/sentinel-ai/issues/119) | **Source-config executor** | DONE | Context window, modalities, target devices. |
-| [s-ai #120](https://github.com/CambrianTech/sentinel-ai/issues/120) | **Modality executor** | STUB | Vision/audio/video encoder bolt-on. Auto-recommends encoders + datasets. |
-| [s-ai #121](https://github.com/CambrianTech/sentinel-ai/issues/121) | **Package executor** | STUB | CoreML, TensorRT, ONNX device packaging. |
-| [s-ai #122](https://github.com/CambrianTech/sentinel-ai/issues/122) | **Deploy executor** | STUB | Grid node deployment, health check, warmup. |
-| [s-ai #123](https://github.com/CambrianTech/sentinel-ai/issues/123) | **LoRA executor** | TODO | Distinct from train — QLoRA, rank/alpha, merge after. |
-| [s-ai #124](https://github.com/CambrianTech/sentinel-ai/issues/124) | **Compact executor** | TODO | Plasticity-based mixed-precision. Our moat. |
-| [s-ai #125](https://github.com/CambrianTech/sentinel-ai/issues/125) | **Benchmark harness** | TODO | Actually run HumanEval, MMLU, GSM8K via evalplus/lm-eval. |
-| [s-ai #126](https://github.com/CambrianTech/sentinel-ai/issues/126) | **Context-extend training** | TODO | YaRN/NTK with long-context training data. |
-
-### Stage UI Elements (continuum)
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#665](https://github.com/CambrianTech/continuum/issues/665) | **Remaining stage UIs** | TODO | 7 more: LoRA, Compact, Publish, Package, ContextExtend, Modality, ExpertPrune. |
-| [#666](https://github.com/CambrianTech/continuum/issues/666) | **Pipeline → executor integration** | TODO | Send full pipeline (all stages) to forge node, not just prune+train. |
-| [#667](https://github.com/CambrianTech/continuum/issues/667) | **Grid capacity query** | TODO | Factory widget shows available nodes + capabilities before forging. |
-
-### Benchmarking & Distribution
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [s-ai #108](https://github.com/CambrianTech/sentinel-ai/issues/108) | **Device ladder** | IN PROGRESS | 64/32/16 expert variants for RTX 3090 → MacBook Air → iPhone. |
-| [s-ai #109](https://github.com/CambrianTech/sentinel-ai/issues/109) | **Production pipeline** | COMMITTED | forge → test → GGUF → test → card → publish. Gated, idempotent. |
-| [s-ai #110](https://github.com/CambrianTech/sentinel-ai/issues/110) | **Benchmark validation** | IN PROGRESS | HumanEval+ running. 4B code-forged at 74.4% on first 78/164 problems. |
-| [s-ai #111-114](https://github.com/CambrianTech/sentinel-ai/issues/111) | **Leaderboard submissions** | TODO | Open LLM v2, HumanEval+, Intel Low-Bit, LiveCodeBench. Use HF's existing infrastructure. |
-
-**Published models (11 on HuggingFace, 14,967 total downloads):**
-
-| Model | Downloads | HumanEval | Status |
-|-------|-----------|-----------|--------|
-| qwen3.5-35b-a3b-compacted | 2,426 | TBD | Published, GGUF Q2_K/Q4_K_M available |
-| qwen2.5-coder-14b-compacted | 2,052 | TBD | Published |
-| qwen2.5-coder-32b-compacted | 1,937 | TBD | Published |
-| qwen3.5-27b-code-forged | 1,731 | TBD | Published, MLX 4-bit available |
-| qwen3.5-4b-code-forged | 1,300 | **74.4% (partial)** | Published, GGUF available |
-| qwen3.5-27b-code-forged-defragged | 826 | TBD | Published, structurally pruned |
-| qwen3.5-4b-code-forged-defragged | 726 | TBD | Published |
-| + 4 more Qwen2.5 models | ~2,000 | TBD | Published |
-
-**The full pipeline:**
-```
-Factory (forge) → HF (publish + leaderboard) → Grid (deploy) → Academy (learn) → Re-forge (improve)
-    ↑                                                                                    |
-    └────────────────────────── continuous improvement loop ──────────────────────────────┘
+| PR #1046 | AIRC bridge harness for Continuum testing | Keep reviewed; use it to reduce manual `jtag chat/send` and paste relay |
+| PR #1035 | current canary -> main promotion PR | Do not promote blindly; use this doc's gates to decide when canary is worth main |
+| PR #1047 | stale General tab recovery, merged to canary | Validate live UI state, then include in next canary -> main promotion |
+| #967 | personas as AIRC peers | Treat as the collaboration unlock: Continuum personas should participate without manual CLI glue |
+
+Rules:
+
+- Implementation starts from an issue. If no issue exists, file it before coding.
+- PR body must include: issue link, canary target, validation commands, platform coverage, and what was not tested.
+- Agents coordinate on AIRC, but the durable truth is issue + PR comments.
+- `main` promotion only happens after canary has been exercised by at least one real UI path and one non-UI/Rust path relevant to the changes.
+
+### 1. First-Run And Install Stability
+
+**Goal**: a new user does not hit a silent or half-working install.
+
+| Issue | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #1006 WSL2 cannot reach raw.githubusercontent.com | P0 | install must detect network/bootstrap failure early and print a concrete fix | Windows fresh install log shows failure in <30s with remedy |
+| #1007 Windows rustc ICE compiling continuum-core | P0 | do not make first-run depend on a fragile local Rust build when a published binary/image can be used | Windows install reaches runnable app without compiling core locally |
+| #1008 core socket owned by root container | P0 | fix UID/GID and socket volume ownership; host `jtag` must connect | host `jtag ping` succeeds against container core |
+| #980 Carl validator QA bugs | P0 | break into child issues if still bundled | each child has a canary PR or is closed as stale |
+| #983 Vulkan deferred model download | P0 | download/prewarm with progress during install or show explicit first-chat loading state | first Vulkan chat never sits silent during multi-GB download |
+| #770 fresh install E2E | P0 | make this the release gate, not a one-off QA task | Mac + Windows reinstall logs attached to canary validation |
+
+Implementation posture:
+
+- Prefer published Rust artifacts or minimal service images over compiling everything during first-run.
+- If build is unavoidable, make it explicit and resumable.
+- Install health must distinguish: network unavailable, Docker unavailable, GPU unavailable, model unavailable, Rust core unavailable, UI unavailable.
+
+### 2. GPU Runtime Stability
+
+**Goal**: GPU resource failures degrade or recover; they do not brick the session.
+
+| Issue | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #1048 mmproj/mtmd init mutex | P0 | one mtmd-capable backend may enter Metal pipeline/mmproj init at a time | Rust concurrency test: parallel vision/audio backend init serializes and all callers receive a sane result |
+| #1049 backend recovery state machine | P0 | represent backend as `Healthy`, `Initializing`, `Recovering`, `Dead`, `Unavailable`; recover/drop/recreate on OOM/dead backend | Rust test with injected backend failure recovers or reports `Unavailable`, never hangs |
+| #960 Mac Metal throughput 5-7 tok/s | P0 | measure and fix actual GPU path; do not route through slow CPU-shaped fallback | benchmark shows expected Metal path and records tok/s |
+| #964 ONNX Runtime CPU spike | P0 | enforce Metal/GPU provider selection for fastembed/TTS/STT/vision bridge or fail loud | test/log proves provider is Metal/GPU; CPU fallback is explicit |
+| #948 DMR concurrency failure | P1 | add bounded request scheduling/backpressure around DMR | 4+ persona concurrency test passes without reqwest cascade |
+| #915 Kokoro ONNX deadlock | P1 | isolate session creation and apply GPU provider lifecycle rules | regression test for TTS startup no deadlock |
+| #918 multimodal-native worker | P2 | after lifecycle is safe, collapse voice chain latency | live voice turn benchmark |
+
+Rust targets:
+
+- `src/workers/continuum-core/src/inference/`
+- `src/workers/llama/src/mtmd.rs`
+- `src/workers/continuum-core/src/gpu/`
+- `src/workers/continuum-core/src/live/audio/`
+
+Do not fix these in TypeScript. TS may display state and call commands; it must not own backend lifecycle.
+
+### 3. Rust Persona Runtime And Cognition
+
+**Goal**: personas can run, replay, and be embedded without Node acting as the brain.
+
+| Issue / doc | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #969 migrate tool agent loop to Rust | P0 | move persona/tool loop behavior out of TS | net-negative TS cognition lines and Rust replay test |
+| #909 local persona tool execution | P0 | wire local DMR/Candle tool execution through Rust path | local persona can call a tool without cloud path |
+| #958 DMR repetition penalty / echo | P0 | fix generation config at adapter layer | replay/conversation test proves no verbatim echo loop |
+| #837 raw tool-call XML leak | P1 | output rendering and model post-processing both need tests | fixture with tool markup renders/filters correctly |
+| #970 missing image marker | P1 | ensure media markers are role/content correct in Rust prompt assembly | vision replay fixture includes media marker |
+| docs/architecture/PERSONA-AS-RUST-LIBRARY-PLAN.md | P0 reference | keep as detailed architecture, but alpha doc owns sequencing | cargo tests run without Node |
+| docs/architecture/PERSONA-COGNITION-RUST-MIGRATION.md | P0 reference | enforce "Rust = verbs, TS = nouns/shims" | PRs touching cognition show TS line reduction |
+
+Near-term PR sequence:
+
+1. **PR: Rust persona trace/recorder validation**
+   - issue: file/link if not already present
+   - scope: Rust fixture capture and replay for a chat turn
+   - tests: `cargo test --package continuum-core persona`
+2. **PR: Rust tool loop migration**
+   - issue: #969
+   - scope: shrink TS tool-agent loop to a shim
+   - tests: Rust tool loop unit/integration test; net-negative TS cognition lines
+3. **PR: local persona tool execution**
+   - issue: #909
+   - scope: local model path can execute tools without cloud-only assumptions
+   - tests: local persona tool-call replay; no browser required
+
+### 4. Unified Paging And Pressure Control
+
+**Goal**: support many personas and modalities by paging resources coherently instead of over-allocating and hoping.
+
+| Issue / doc | Priority | Direction | Test gate |
+|---|---:|---|---|
+| docs/architecture/UNIFIED-PAGING.md | P0 reference | `PagedResourcePool` is the primitive; migrate consumers one at a time | pool tests plus consumer-specific tests |
+| docs/architecture/PERSONA-CONTEXT-PAGING.md | P0 reference | KV/persona context paging policy | tests prove bounded memory with multiple personas |
+| #1050 PressureBroker admission gate | P0 | broker must deny unsafe allocations, not just observe them | admission test refuses second unsafe mtmd/backend creation |
+| #1051 MtmdContext pooling | P0 | reuse multimodal context instead of fresh multi-GB allocation per image/frame | replay test avoids repeated context allocation |
+| #945 data/query memory leak | P0 | apply resource attribution and leak tests | load test stays within memory envelope |
+| #944 embedding loop/cache misses | P1 | migrate embedding cache to shared paging primitive | repeated index pass has cache hits and bounded memory |
+| #911 16GB MacBook Air | P1 | define reduced alpha profile with strict budgets | 16GB profile starts and reports disabled features honestly |
+
+Implementation order:
+
+1. PressureBroker admission gate.
+2. Backend/mmproj lifecycle integration.
+3. First consumer migration: embedding cache or mtmd context pool.
+4. KV/persona context policy.
+5. LoRA adapter paging.
+
+### 5. Docker Modularization
+
+**Goal**: Docker should isolate services and make failures obvious; it must not become a bulk mess that hides Rust/Node/UI problems.
+
+| Issue | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #892 CUDA Docker path bypasses our substrate | P0 | GPU profile must run Continuum runtime or explicitly documented external service, not orphaned upstream server | GPU compose path exercises our adapter/router health |
+| #955 floating CUDA image tag | P0 | pin digest or controlled version | CI verifies pinned image |
+| #834 / #776 image size | P1 | split build/runtime layers; remove unused Node/vendor bulk from runtime images | image size trend published in PR |
+| #796 Docker compose E2E live mode/grid | P1 | profile-based compose tests, not one giant default | compose profile tests pass independently |
+| #908 Windows npm start should route through docker compose | P1 | Windows dev path should use the supported Docker/WSL path | Windows smoke reaches GPU-backed inference |
+| #860 config.env as directory | P1 | keep setup file/dir creation idempotent and typed | setup test catches file-vs-dir mismatch |
+| #859 compose pull hangs in Git Bash | P1 | Windows shell path needs bounded timeout and clear next step | install does not hang indefinitely |
+
+Docker shape:
+
+- `continuum-core`: Rust runtime, GPU adapters, IPC/HTTP surface, no UI.
+- `node-server`: thin command/websocket bridge; no persona cognition logic.
+- `widget-server`: static/browser UI only.
+- `model-init`: explicit model prewarm/download with progress.
+- Optional profiles: `ui`, `grid`, `gpu`, `live`, `forge`, `devtools`.
+
+Health checks:
+
+- Process exists is not health.
+- Core health means IPC responds and required GPU/model capability is ready or explicitly unavailable.
+- Node health means it can reach core or reports degraded with cause.
+- Widget health means static UI and WebSocket proxy are reachable.
+- Model health means expected model is present and GPU-serving path is known.
+
+### 6. UI And Realtime Stability
+
+**Goal**: the browser should reflect reality and recover without manual localStorage/database cleanup.
+
+| Issue / PR | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #961 / PR #1047 | P0 | stale General tab canonicalization merged to canary | browser reload with stale persisted state collapses to one General tab |
+| #793 Node does not reconnect when Rust core restarts | P0 | request pipeline must drain/recreate after core restart | kill/restart core test: next command succeeds |
+| #794 AI messages not realtime | P0 | event bridge forwards AI senders immediately | browser sees AI message without refresh |
+| #962 chat history paging | P1 | ORM cursor + IntersectionObserver | scroll-up test loads older messages |
+| #773 browser WS reconnect | P1 | reconnect/rebind without manual refresh | browser survives server restart |
+| #785 URL scheme | P1 | one consistent route rule, zero special cases | stale room URL redirects/recovers deterministically |
+| #783 stale room URLs | P1 | stale URLs show recovery path, not broken tab | route test |
+
+TS is acceptable here because this is UI/session state. Still, data validation and canonicalization should use existing routing/entity APIs, not hardcoded UUID/string hacks.
+
+### 7. AIRC And Continuum Internal AI Collaboration
+
+**Goal**: Continuum personas and external coding agents can collaborate through the same room/bus without humans relaying messages.
+
+| Issue / PR | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #967 | P0 | expose personas as AIRC peers | persona receives AIRC room message and replies through Continuum chat |
+| PR #1046 | P0 | AIRC bridge harness | bridge protocol test and live room smoke |
+| #856 grid event streaming | P1 | persistent event channels between nodes | cross-node event smoke, no polling-only path |
+| #798 route inference through mesh | P2 | use grid routing for GPU-heavy inference | command from non-GPU node routes to GPU node |
+
+Design rule:
+
+- AIRC is collaboration transport.
+- Continuum chat is product state.
+- The bridge should map messages/events without requiring agents to shell out to `jtag chat/send` manually.
+- Protocol tests must run without a browser.
+
+## PR Roadmap To Alpha
+
+| Order | Branch | Base | Issue(s) | Deliverable | Required validation before canary merge |
+|---:|---|---|---|---|---|
+| 1 | `codex/alpha-gap-stability-plan` | `canary` | planning doc | this document; shared execution map | docs lint/readability, AIRC review |
+| 2 | `fix/gpu-backend-lifecycle` | `canary` | #1048, #1049, #960, #964 | mutex + backend state/recovery | Rust tests with injected failure; GPU provider evidence |
+| 3 | `fix/docker-alpha-profiles` | `canary` | #892, #955, #834, #776, #796 | modular Docker profile cleanup | compose profile smoke; image size report |
+| 4 | `feature/persona-rust-replay` | `canary` | #969, #909 | Rust persona replay/tool-loop foundation | `cargo test`; net-negative TS cognition lines |
+| 5 | `feature/pressure-broker-gate` | `canary` | #1050, #1051, #945, #944 | admission gate + first resource consumer | memory/load tests; no Node required |
+| 6 | `fix/realtime-core-reconnect` | `canary` | #793, #794, #773 | core restart + realtime browser recovery | kill core, command recovers, browser receives AI message |
+| 7 | `feature/airc-persona-peer` | `canary` | #967, PR #1046 | Continuum persona as AIRC participant | AIRC -> Continuum -> AIRC round trip |
+| 8 | `test/fresh-install-e2e` | `canary` | #770, #1006-#1008, #983 | install validation matrix | Mac + Windows logs; no silent waits |
+
+This order can change when a blocker is discovered, but changes must be made in this document and on the issue/PR thread, not only in chat.
+
+## Test Strategy
+
+### Rust-first tests
+
+Use these before Docker/browser validation:
+
+```bash
+cargo test --manifest-path src/workers/continuum-core/Cargo.toml
+cargo test --manifest-path src/workers/llama/Cargo.toml
 ```
 
-**Done when**: Factory widget is visually stunning. START FORGE runs from the widget, benchmarks via HF leaderboards, publishes with scores, re-forging offers deeper controls for Continuum-forged models. Sentinels automate the full lifecycle. Community contributes GPU via grid, shares recipes, models appear on public leaderboards alongside GPT/Claude/Gemini.
+Add focused tests for:
 
----
+- backend lifecycle and recovery
+- mmproj init serialization
+- persona replay fixtures
+- paging pool consumers
+- pressure admission decisions
+- local tool execution
 
-## Issue Map — Every Open Issue, One Phase
+### Docker tests
 
-| Phase | Issues | Count |
-|-------|--------|-------|
-| **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, ~~#385~~, ~~#381~~, ~~#373~~ | 6 (ALL DONE) |
-| **1: Arch Integrity** | ~~#333~~, ~~#363~~, #362, ~~#356~~, ~~#355~~, #353, #351, ~~#361~~, ~~#354~~, ~~#352~~, ~~#379~~, ~~#334~~, ~~#360~~, ~~#412~~ | 14 (11 done) |
-| **2: Live Quality** | #331 ⚠️, ~~#338~~, #339, ~~#340~~, ~~#318~~, #322 ⚠️, ~~#332~~, ~~#380~~, ~~#399~~, #409, ~~#436~~, ~~#464~~, ~~#465~~, #473 | 14 (9 done, 2 CRITICAL) |
-| **3: Tool Calling** | ~~#324~~, ~~#368~~, ~~#366~~, ~~#367~~, ~~#321~~, ~~#325~~, ~~#371~~, ~~#343~~, #342, ~~#341~~, ~~#413~~, #417, ~~#430~~, #433, #439, ~~#440~~, ~~#453~~ | 17 (12 done, 2 reopened) |
-| **4: Dev Orchestration** | ~~#326~~, ~~#370~~, ~~#411~~ ✅, ~~#415~~, ~~#416~~, #445 | 6 (5 done) |
-| **5: Academy** | #377, #369, #374, ~~#365~~, #344, ~~#345~~, #384, ~~#359~~ | 8 (3 done, 2 reopened) |
-| **6: Genome** | #382, #378, ~~#330~~, ~~#319~~, ~~#472~~ | 5 (3 done) |
-| **7: Autonomous** | #383, ~~#329~~, ~~#336~~ | 3 (2 done) |
-| **8: Distillation** | ~~#327~~, ~~#357~~ | 2 (2 done) |
-| **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
-| **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469 (Ares), #499, #501, #503, #505, #507, #508, #516, #517 ⚠️ | 14 (3 done, 1 CRITICAL) |
-| **11: Multimodal Compaction** | #492, #417, #480, ~~#493~~, #494, #495, #496, #497, #409, #502 | 10 (1 done — THE UNLOCK) |
-| **12: Factory** | #576-584, #629, #638, #646, #648-667 + s-ai #108-126 + fa #1-6 | 52 (4 in progress, #659 done, first alloy forged) |
-| **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
-| **Total** | | **131 tracked, 57 open, 74 closed** |
+Docker tests are service/profile tests, not proof that core logic is correct:
 
----
-
-## Phase 11: Multimodal Compaction — The Unlock
-
-> Personas that SEE what they build. On a MacBook. With zero API keys.
-
-This phase combines plasticity compaction, MoE paging, vision, and Academy training into the system's defining capability: AI teammates that can design, build, and visually verify their own work on consumer hardware.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#492](https://github.com/CambrianTech/continuum/issues/492) | **Compact Qwen3.5-35B-A3B on 5090** | TODO | Run plasticity pipeline on MoE model. Target: 8-12GB (MacBook Air). |
-| [#417](https://github.com/CambrianTech/continuum/issues/417) | **Evaluate compacted model** | REOPENED | Was closed as "too big" — never tried compaction. 3x proven on 14B. |
-| [#480](https://github.com/CambrianTech/continuum/issues/480) | **Qwen3.5-0.8B vision service** | TODO | Lightweight real-time scene captioning for text-only models. |
-| [#493](https://github.com/CambrianTech/continuum/issues/493) | **DOM interaction command** | TODO | click/type/select — personas interact with UI elements. |
-| [#494](https://github.com/CambrianTech/continuum/issues/494) | **UI design training curriculum** | TODO | Academy teaches personas to see screenshots, find problems, fix code. |
-| [#495](https://github.com/CambrianTech/continuum/issues/495) | **HuggingFace naming + publishing** | TODO | `-cont` suffix, model cards, publishing pipeline. |
-| [#496](https://github.com/CambrianTech/continuum/issues/496) | **Integration test: persona redesigns widget** | TODO | THE proof — zero API keys, local model, full visual loop. |
-| [#497](https://github.com/CambrianTech/continuum/issues/497) | **Compaction + MoE paging combined** | TODO | Any model on any hardware: compact what fits, page the rest from HF. |
-| [#409](https://github.com/CambrianTech/continuum/issues/409) | **Total sensory verification** | REOPENED | Vision + hearing + speech all working locally with Qwen VL. Zero API keys. |
-| [#502](https://github.com/CambrianTech/continuum/issues/502) | **Training signal capture** | TODO | Every live session (especially bugs) becomes Academy training data. |
-| [#503](https://github.com/CambrianTech/continuum/issues/503) | **Grid model marketplace** | TODO | Share compacted models + individual experts across the mesh. |
-| [#501](https://github.com/CambrianTech/continuum/issues/501) | **Grid compute economy** | TODO | Earn credits by hosting MoE experts. Route tokens across mesh. |
-| [#499](https://github.com/CambrianTech/continuum/issues/499) | **Grid discovery + trust** | TODO | Three tiers: on-site, vouched peers, open mesh. Economy comes last. |
-
-**The dependency chain:**
-```
-#492 (compact model) → #417 (evaluate) → #495 (publish to HF)
-    → #374 (local teacher) → #377 (Academy fully local)
-    → #369 (local code quality) → #494 (UI design curriculum)
-    → #496 (THE PROOF: persona redesigns widget with zero API keys)
-
-#493 (DOM interaction) + #480 (vision) + #342 (feedback loop)
-    → #496 (the proof)
-
-#497 (compaction + paging) → #433 + #439 (MoE paging/surgery)
-    → ANY model on ANY hardware
+```bash
+docker compose up -d postgres continuum-core node-server
+docker compose --profile ui up -d widget-server
+docker compose --profile gpu up -d
+docker compose --profile live up -d
 ```
 
-**Done when**: A persona on a MacBook Air with zero API keys receives "make the chat input rounded," takes a screenshot, edits the CSS, rebuilds, takes another screenshot, and confirms the fix. All inference local. Model published to HuggingFace.
+Each profile needs a bounded smoke command and a log artifact.
 
----
+### Browser tests
 
-## The Narrative
+Use browser tests only for browser responsibilities:
 
-**Phase 0** removes the embarrassments — things that break the first-run experience.
+- tab restore and route canonicalization
+- WebSocket reconnect
+- realtime message rendering
+- UI state after data reseed
 
-**Phase 1** makes the codebase worthy of public scrutiny. Contributors will copy these patterns forever.
+The stale General bug belongs here; backend lifecycle does not.
 
-**Phase 2** makes the live video calls — the most visually impressive feature — actually reliable. No leaks, low latency, works offline.
+### AIRC collaboration tests
 
-**Phase 3** solves THE local model blocker. Without reliable tool calling, personas are chat decorations. With it, they're functional teammates.
+Use AIRC for live coordination, but also create protocol tests:
 
-**Phase 4** proves personas can CREATE things, not just discuss them. Code → tests → PR, end-to-end.
+- external agent sends AIRC message into room
+- Continuum bridge records it as chat event
+- persona responds
+- response mirrors back to AIRC
+- duplicate/replay protection is verified
 
-**Phase 5** proves personas get SMARTER over time. The full Academy loop, measured.
+## Merge Gates
 
-**Phase 6** makes trained skills portable and composable. The genome ecosystem.
+Every alpha PR must answer:
 
-**Phase 7** makes personas autonomous — they initiate work, not just respond to it.
+- Which issue does this advance?
+- Why does this belong in Rust, TS, Docker, or docs?
+- What command proves the core behavior without browser/Node?
+- What canary validation was run?
+- What platforms were covered?
+- What remains untested?
+- Did it reduce Node/TS logic or at least avoid adding new TS logic?
+- Did it avoid silent fallback/silent success?
 
-**Phase 8** closes the flywheel — every task improves the next task. The competitive moat.
+Main promotion requires:
 
-**Phase 9** gives personas deep codebase understanding. Know before you change.
+- canary contains the PR
+- canary has been tested by at least one other agent/human where practical
+- failures are linked to issues, not buried in chat
+- the promotion PR lists included canary commits and validation evidence
 
-**Phase 10** distributes everything across a mesh of commodity hardware. **Ares** — the Grid Governor — commands resources, detects when users need their machines, and keeps the mesh alive as nodes come and go. First experiment: 5090 + 3090 + 1080 Ti. The Cell architecture realized.
+## Document Map
 
-**Phase 11** is THE unlock — plasticity compaction + MoE paging + vision + Academy training = personas that SEE and BUILD their own UI, on a MacBook, with zero API keys. Every download of a compacted model. Every upload of a trained adapter to HuggingFace. Every persona that designs a widget, trains a model, improves itself. The flywheel.
+This document owns execution order and alpha gates. Detailed architecture remains in:
 
----
+- [Persona-as-Rust-Library](../architecture/PERSONA-AS-RUST-LIBRARY-PLAN.md)
+- [Persona Cognition Rust Migration](../architecture/PERSONA-COGNITION-RUST-MIGRATION.md)
+- [Unified Paging](../architecture/UNIFIED-PAGING.md)
+- [Persona Context Paging](../architecture/PERSONA-CONTEXT-PAGING.md)
+- [Docker Node Architecture](../grid/DOCKER-NODE-ARCHITECTURE.md)
+- [Grid Architecture](../grid/GRID-ARCHITECTURE.md)
+- [AIRC Continuum Bridge](../grid/AIRC-CONTINUUM-BRIDGE.md)
 
-## The Thesis
+If those docs disagree with this one on sequence, update this one first or explicitly revise the sequence in the PR.
 
-**Infrastructure > Model Capability.**
+## Immediate Next Actions
 
-| Layer | What It Does | Why Models Don't Need To |
-|-------|-------------|------------------------|
-| **Sentinel Pipelines** | Deterministic orchestration: plan → code → build → test → fix → commit | Model doesn't need to "remember" to run tests — pipeline forces it |
-| **Generator System** | Encodes correct patterns as code templates | Model doesn't need project conventions — generator enforces them |
-| **LoRA Fine-Tuning** | Bakes domain expertise into weights | Model doesn't need 200K context of docs — it already knows |
-| **Academy** | Structured training with deterministic evaluation | Model doesn't need to self-assess — benchmarks measure truth |
-| **Parser-Per-Model** | Handles each model's unique tool-call format | Model doesn't need to conform to one format — parser adapts |
-| **Workspace Isolation** | Git worktrees per task, rollback on failure | Model doesn't need to be careful — infrastructure catches mistakes |
-
-A LoRA-tuned 3B running inside a `dev/build-feature` sentinel with shell verification, tree-sitter context, and automatic retry will produce working code more reliably than a prompted GPT-4 in a single-shot terminal. Because the infrastructure does what the model can't: remember, verify, retry, learn.
-
-**The competitors' ceiling**: They need smarter models forever.
-
-**Our ceiling**: Every task makes the next task better. The flywheel compounds. A persona training for 6 months on YOUR codebase, YOUR patterns, YOUR domain — fine-tuned on thousands of successful traces — running inside deterministic pipelines with full codebase intelligence — is not competing with Claude Code. It's competing with a junior developer who memorized your entire codebase. And it works offline, costs nothing per token, and never takes a day off.
-
----
-
-## Superseded Documents
-
-- `ARCHITECTURE-GAPS-PHASE1.md` — Gap 1 (RAG indexing) now proven E2E, covered in Phase 1/9
-- `TECHNICAL-DEBT-AUDIT.md` — Updated numbers in Phase 1 (was 1,108 `any`, now 831)
-- Previous version of this doc (2026-03-15) — replaced with phased issue-driven plan
-
-**See also**: [COMPETITIVE-LANDSCAPE.md](COMPETITIVE-LANDSCAPE.md) | [SENTINEL-GAP-ANALYSIS.md](../sentinel/SENTINEL-GAP-ANALYSIS.md)
+1. Land this doc to `canary`.
+2. Use the newly filed alpha substrate issues as implementation anchors:
+   - #1048 mmproj/mtmd init mutex
+   - #1049 backend recovery state machine
+   - #1050 PressureBroker admission gate
+   - #1051 MtmdContext pooling
+3. Ask Mac/Windows agents to review the issue mapping and mark any issue stale/misclassified.
+4. Start `fix/gpu-backend-lifecycle` from `canary`.
+5. In parallel, have another agent inspect Docker profile boundaries and propose `fix/docker-alpha-profiles`.
+6. Validate #1047 live in UI before any canary -> main promotion.
