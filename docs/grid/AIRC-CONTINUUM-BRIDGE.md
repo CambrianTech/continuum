@@ -13,7 +13,7 @@ AIRC room/message
   -> airc/bridge
   -> collaboration/chat/send
   -> chat/export, activity/list, rooms, assertions
-  -> optional airc/send response
+  -> optional airc CLI response
 ```
 
 Normal AIRC messages are mirrored into Continuum chat as:
@@ -27,8 +27,8 @@ Explicit development directives use `!continuum`:
 ```text
 !continuum ping
 !continuum rooms
-!continuum chat general "hello from the mesh"
-!continuum export general --last 20
+!continuum chat --room general "hello from the mesh"
+!continuum export --room general --last 20
 !continuum assert seen marker-123 --room general --last 80
 !continuum activity list
 ```
@@ -44,6 +44,13 @@ talk over AIRC, and the bridge should materialize the traffic inside Continuum.
 The bridge is an allowlisted adapter. It does not expose arbitrary
 `Commands.execute()` over AIRC. Add new directive handlers only when there is a
 clear integration surface to test.
+
+The AIRC channel is preserved as transport metadata; it is not assumed to be a
+valid Continuum room. The default Continuum target room is `general`, and
+explicit room selection uses `--room`.
+
+Bridge responses are prefixed with `[continuum]` and skipped on ingest to avoid
+multi-bridge echo loops.
 
 Heavy data should stay out of AIRC. Use AIRC for manifests, handles, room
 markers, artifact hashes, and job ids; use Continuum/Grid data paths for model

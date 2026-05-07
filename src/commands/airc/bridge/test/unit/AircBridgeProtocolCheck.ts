@@ -17,17 +17,18 @@ function assert(condition: boolean, message: string): void {
 function testNormalChat(): void {
   const parsed = parseAircBridgeMessage('hello continuum', {
     senderNick: 'mac-codex',
-    channel: '#general',
+    channel: '#cambriantech',
   });
 
   assert(parsed.action === 'chat', 'normal text maps to chat');
-  assert(parsed.room === 'general', 'channel maps to room');
+  assert(parsed.channel === 'cambriantech', 'channel preserved separately');
+  assert(parsed.room === 'general', 'default room is general, not the AIRC channel');
   assert(parsed.senderNick === 'mac-codex', 'sender preserved');
   assert(formatAircBridgeChatText(parsed) === '[airc:mac-codex] hello continuum', 'chat attribution rendered');
 }
 
 function testDirectives(): void {
-  const exp = parseAircBridgeMessage('!continuum export cambriantech --last 25', { channel: '#general' });
+  const exp = parseAircBridgeMessage('!continuum export --room cambriantech --last 25', { channel: '#general' });
   const assertion = parseAircBridgeMessage('!continuum assert seen marker-123 --room general --last 80');
 
   assert(parseAircBridgeMessage('!continuum ping').action === 'ping', 'ping directive parsed');
@@ -41,13 +42,24 @@ function testDirectives(): void {
 }
 
 function testQuotedChat(): void {
-  const parsed = parseAircBridgeMessage('!continuum chat general "quoted body with spaces"', {
+  const parsed = parseAircBridgeMessage('!continuum chat --room general "quoted body with spaces"', {
     senderNick: 'win-claude',
   });
 
   assert(parsed.action === 'chat', 'directive chat parsed');
   assert(parsed.room === 'general', 'directive chat room parsed');
   assert(parsed.message === 'quoted body with spaces', 'quoted message parsed');
+}
+
+function testSafetyBounds(): void {
+  const echo = parseAircBridgeMessage('[continuum] bridge reply', { senderNick: 'mac-codex' });
+  const ambiguousChat = parseAircBridgeMessage('!continuum chat hello world');
+  const hugeExport = parseAircBridgeMessage('!continuum export --last 999999');
+
+  assert(echo.action === 'skip', 'continuum-origin mirror echoes are skipped');
+  assert(ambiguousChat.room === 'general', 'chat directive defaults room without first-token ambiguity');
+  assert(ambiguousChat.message === 'hello world', 'chat directive keeps full message body');
+  assert(hugeExport.limit === 500, 'directive limits are clamped');
 }
 
 function testSafetyHelpers(): void {
@@ -59,5 +71,6 @@ function testSafetyHelpers(): void {
 testNormalChat();
 testDirectives();
 testQuotedChat();
+testSafetyBounds();
 testSafetyHelpers();
 console.log('AircBridge protocol checks passed');
