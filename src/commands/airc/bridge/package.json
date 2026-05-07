@@ -1,0 +1,31 @@
+{
+  "name": "@jtag-commands/airc/bridge",
+  "version": "1.0.0",
+  "description": "Ingest AIRC messages into Continuum chat and bounded development/test commands.",
+  "main": "server/AircBridgeServerCommand.ts",
+  "types": "shared/AircBridgeTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit",
+    "test:unit": "npx tsx test/unit/AircBridgeProtocolCheck.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "airc/bridge",
+    "continuum",
+    "airc"
+  ],
+  "license": "MIT"
+}
