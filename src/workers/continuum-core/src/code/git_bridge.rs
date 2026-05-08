@@ -119,8 +119,9 @@ pub fn git_add(workspace_root: &Path, paths: &[&str]) -> Result<String, String> 
 ///
 /// Returns the full commit hash on success.
 pub fn git_commit(workspace_root: &Path, message: &str) -> Result<String, String> {
-    // Commit (skip hooks — AI-authored commits are verified separately)
-    run_git(workspace_root, &["commit", "--no-verify", "-m", message])?;
+    // Commit through the repository's normal hook path. AI-authored commits
+    // must fail loudly when validation fails; callers surface the git stderr.
+    run_git(workspace_root, &["commit", "-m", message])?;
 
     // Return the commit hash
     run_git(workspace_root, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())

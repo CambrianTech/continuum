@@ -12,10 +12,10 @@ import { createGitCommitResultFromParams } from '../shared/GitCommitTypes';
 import * as path from 'path';
 import * as fs from 'fs';
 import { promisify } from 'util';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { SystemPaths } from '@system/core/config/SystemPaths';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export class GitCommitServerCommand extends CommandBase<GitCommitParams, GitCommitResult> {
 
@@ -55,34 +55,35 @@ export class GitCommitServerCommand extends CommandBase<GitCommitParams, GitComm
 
       // 4. Stage files (specific files or all changes)
       if (params.files && params.files.length > 0) {
-        // Stage specific files
-        const filesArg = params.files.join(' ');
-        await execAsync(`git add ${filesArg}`, { cwd: workspacePath });
+        await execFileAsync('git', ['add', '--', ...params.files], { cwd: workspacePath });
       } else {
-        // Stage all changes
-        await execAsync('git add -A', { cwd: workspacePath });
+        await execFileAsync('git', ['add', '-A'], { cwd: workspacePath });
       }
 
-      // 5. Commit with --no-verify (skip precommit hook for AI commits)
-      const { stdout: commitOutput } = await execAsync(
-        `git commit --no-verify -m "${params.message.replace(/"/g, '\\"')}"`,
+      // 5. Commit through normal git hooks. Validation failures must surface
+      // to the caller; AI commits do not get a bypass lane.
+      await execFileAsync(
+        'git',
+        ['commit', '-m', params.message],
         { cwd: workspacePath }
       );
 
       // 6. Get commit hash
-      const { stdout: commitHash } = await execAsync(
-        'git rev-parse HEAD',
+      const { stdout: commitHash } = await execFileAsync(
+        'git',
+        ['rev-parse', 'HEAD'],
         { cwd: workspacePath }
       );
-      const fullHash = commitHash.trim();
+      const fullHash = String(commitHash).trim();
       const shortHash = fullHash.substring(0, 7);
 
       // 7. Count files committed
-      const { stdout: filesOutput } = await execAsync(
-        'git diff-tree --no-commit-id --name-only -r HEAD',
+      const { stdout: filesOutput } = await execFileAsync(
+        'git',
+        ['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'],
         { cwd: workspacePath }
       );
-      const filesCommitted = filesOutput.trim().split('\n').filter(f => f).length;
+      const filesCommitted = String(filesOutput).trim().split('\n').filter(f => f).length;
 
       console.log(`✅ Committed ${filesCommitted} files: ${shortHash}`);
 
@@ -93,11 +94,12 @@ export class GitCommitServerCommand extends CommandBase<GitCommitParams, GitComm
         filesCommitted
       });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('❌ Git commit failed:', error);
+      const message = error instanceof Error ? error.message : String(error);
       return createGitCommitResultFromParams(params, {
         success: false,
-        error: error.message || 'Failed to commit changes',
+        error: new ValidationError('git commit', message || 'Failed to commit changes', { cause: error }),
         commitHash: '',
         shortHash: '',
         filesCommitted: 0

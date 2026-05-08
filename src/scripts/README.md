@@ -1,30 +1,35 @@
 # Helper Scripts
 
-## git-commit-docs.sh
+## Documentation Commits
 
-Smart commit script for documentation-only changes that skips the precommit hook.
+Documentation-only changes still use normal git hooks.
 
-**Purpose**: When committing only documentation files (markdown, READMEs, etc.), you don't need to run the full precommit hook (which runs TypeScript compilation and tests). This script safely commits documentation-only changes using `--no-verify`.
+**Purpose**: Keep docs fast to validate without creating a bypass culture.
+Run focused docs checks before committing, then commit normally so the repository
+uses the same validation path for humans and agents.
 
-**Safety**: The script validates that ALL changes are documentation/script files before committing. If any code files (`.ts`, `.js`, `.json`) are detected, it rejects the commit and tells you to use regular `git commit` instead.
+`--no-verify` is forbidden. If hooks fail on a docs-only change because a
+worktree is stale, fix that worktree, dependency, submodule, generated-file, or
+hook problem instead of bypassing validation.
 
 ### Usage
 
 ```bash
-./scripts/git-commit-docs.sh "commit message here"
+npx markdownlint-cli2 "docs/**/*.md"
+git diff --check
+git add docs/path/to-file.md
+git commit -m "docs: update architecture note"
 ```
 
 ### Example
 
 ```bash
 # Good: Only documentation changed
-./scripts/git-commit-docs.sh "docs: update PersonaUser architecture"
+npx markdownlint-cli2 docs/architecture/PERSONA-AS-RUST-LIBRARY-PLAN.md
+git diff --check
+git commit -m "docs: update PersonaUser architecture"
 
-# Rejected: Code files detected
-./scripts/git-commit-docs.sh "mixed changes"
-# ❌ Non-documentation files detected: PersonaUser.ts
-# This script is for documentation-only commits.
-# Use regular 'git commit' for code changes.
+# Rejected by review/process: any command that bypasses git hooks
 ```
 
 ### Allowed File Types
@@ -36,15 +41,15 @@ Smart commit script for documentation-only changes that skips the precommit hook
 - ReStructuredText (`.rst`)
 - AsciiDoc (`.adoc`)
 
-### When to Use
+### When to Use Focused Docs Checks
 
-✅ **Use this script when**:
+✅ **Run focused docs checks when**:
 - Adding or updating documentation
 - Writing architecture design docs
 - Adding shell helper scripts
 - Updating READMEs or CHANGELOGs
 
-❌ **Use regular `git commit` when**:
+❌ **Run the full relevant validation when**:
 - Changing any code files (.ts, .js, .tsx)
 - Updating package.json or package-lock.json
 - Mixed documentation + code changes
@@ -52,7 +57,7 @@ Smart commit script for documentation-only changes that skips the precommit hook
 
 ### Benefits
 
-- **Fast**: Skips 90+ second precommit hook for docs-only changes
-- **Safe**: Validates file types before committing
-- **Clear**: Color-coded output shows what's being committed
-- **Convenient**: Stages all documentation changes automatically
+- **Fast local signal**: Markdown lint and whitespace checks catch doc
+  mistakes before hooks.
+- **Same validation path**: Normal git hooks still run.
+- **No hidden escape hatch**: Agents cannot silently skip validation for convenience.

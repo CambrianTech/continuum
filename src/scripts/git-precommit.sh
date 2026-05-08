@@ -208,15 +208,30 @@ if [ -n "$RS_FILES" ]; then
     # this commit added new violations). Update the baseline after
     # a real cleanup pass:
     #   cd src/workers/continuum-core
-    #   cargo clippy --lib 2>&1 | grep -cE "^warning:" > ../../clippy-baseline.txt
-    BASELINE_FILE="$(git rev-parse --show-toplevel)/src/clippy-baseline.txt"
+    #   source ../../scripts/shared/cargo-features.sh
+    #   cargo clippy --lib $CARGO_GPU_FEATURES 2>&1 | grep -cE "^warning:" > ../../clippy-baseline.txt
+    #
+    # Same platform feature selection as pre-push/npm start. macOS without
+    # `--features metal,accelerate` intentionally fails at compile time because
+    # CPU-only local inference is not a supported product path.
+    #
+    # Use the hook's src cwd instead of git rev-parse. In git worktrees,
+    # --show-toplevel is the parent checkout root, while this hook and baseline
+    # live under <root>/src.
+    # shellcheck source=shared/cargo-features.sh
+    source "scripts/shared/cargo-features.sh"
+    BASELINE_FILE="$(pwd)/clippy-baseline.txt"
     CLIPPY_LOG="$(mktemp)"
-    (cd workers/continuum-core && cargo clippy --lib 2>&1 > "$CLIPPY_LOG") || true
-    CURRENT=$(grep -cE "^warning:" "$CLIPPY_LOG" || echo 0)
+    (cd workers/continuum-core && cargo clippy --lib $CARGO_GPU_FEATURES > "$CLIPPY_LOG" 2>&1) || true
+    CURRENT=$(grep -cE "^warning:" "$CLIPPY_LOG" || true)
     if [ ! -f "$BASELINE_FILE" ]; then
-        echo "⚠️  clippy-baseline.txt not found — skipping clippy gate."
-        echo "   Generate once with: cd src/workers/continuum-core && cargo clippy --lib 2>&1 | grep -cE \"^warning:\" > ../../clippy-baseline.txt"
+        echo "❌ clippy-baseline.txt not found at $BASELINE_FILE — cannot run baseline gate."
+        echo "   Generate once with:"
+        echo "     cd src/workers/continuum-core"
+        echo "     source ../../scripts/shared/cargo-features.sh"
+        echo "     cargo clippy --lib \$CARGO_GPU_FEATURES 2>&1 | grep -cE \"^warning:\" > ../../clippy-baseline.txt"
         echo "   Current warning count: $CURRENT"
+        LINT_FAILED=true
     else
         BASELINE=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
         if [ "$CURRENT" -le "$BASELINE" ]; then
@@ -234,7 +249,9 @@ if [ -n "$RS_FILES" ]; then
             echo "╠════════════════════════════════════════════════════════════════╣"
             echo "║  Current: $CURRENT  Baseline: $BASELINE                                       ║"
             echo "║  Run to see what's new:                                        ║"
-            echo "║    cd src/workers/continuum-core && cargo clippy --lib         ║"
+            echo "║    cd src/workers/continuum-core                               ║"
+            echo "║    source ../../scripts/shared/cargo-features.sh                ║"
+            echo "║    cargo clippy --lib \$CARGO_GPU_FEATURES                      ║"
             echo "╚════════════════════════════════════════════════════════════════╝"
             LINT_FAILED=true
         fi

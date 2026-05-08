@@ -64,8 +64,8 @@
 
 use serde::Serialize;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::watch;
 use ts_rs::TS;
@@ -863,8 +863,8 @@ impl MemoryPressureMonitor {
             log_counter += 1;
             // Log every 15 polls (30s) at normal, every poll at high+
             let should_log = match level {
-                PressureLevel::Normal => log_counter % 15 == 0,
-                PressureLevel::Warning => log_counter % 5 == 0,
+                PressureLevel::Normal => log_counter.is_multiple_of(15),
+                PressureLevel::Warning => log_counter.is_multiple_of(5),
                 PressureLevel::High | PressureLevel::Critical => true,
             };
 
