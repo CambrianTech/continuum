@@ -16,7 +16,13 @@ use std::path::PathBuf;
 /// to handle the new variant — precisely the pattern Joel's axiom calls
 /// for ("code should NEVER know the model" — code knows the ARCHETYPES
 /// via this enum, models are data).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS,
+)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/model_registry/Arch.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Arch {
     Qwen2,

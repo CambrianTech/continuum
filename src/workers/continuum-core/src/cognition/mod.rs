@@ -28,6 +28,7 @@
 //!                                  `ResponderDecision`)
 
 pub mod adaptive_throughput;
+pub mod model_resolver;
 pub mod response_orchestrator;
 pub mod response_validator;
 pub mod shared_analysis;
@@ -37,6 +38,7 @@ pub mod turn_batch;
 pub mod types;
 
 pub use adaptive_throughput::*;
+pub use model_resolver::*;
 pub use response_orchestrator::{
     DEFAULT_RELEVANCE_THRESHOLD, PersonaSlot, orchestrate, score_persona,
 };
