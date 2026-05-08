@@ -117,10 +117,12 @@ pub struct RecipeTurnBatchRequest {
 }
 
 fn default_first_response_budget_ms() -> u64 {
+    // Alpha SLO: visible local chat must produce its first response inside 10s.
     10_000
 }
 
 fn default_all_responses_budget_ms() -> u64 {
+    // Alpha SLO: all eligible personas must respond or emit silence inside 30s.
     30_000
 }
 
@@ -216,6 +218,7 @@ pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
     let mut seen_personas = HashSet::new();
     let mut skipped_duplicate_persona_ids = Vec::new();
     let mut persona_plans = Vec::new();
+    let mut local_generation_count = 0usize;
 
     for candidate in req.personas {
         if !seen_personas.insert(candidate.persona_id) {
@@ -224,12 +227,15 @@ pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
         }
 
         let generation_order = persona_plans.len();
-        let generation_wave = if is_local_provider(&candidate.provider, &candidate.model) {
-            generation_order / max_concurrent_local_generations
+        let local_model = is_local_provider(&candidate.provider, &candidate.model);
+        let generation_wave = if local_model {
+            let wave = local_generation_count / max_concurrent_local_generations;
+            local_generation_count += 1;
+            wave
         } else {
             0
         };
-        let estimated_start_ms = if is_local_provider(&candidate.provider, &candidate.model) {
+        let estimated_start_ms = if local_model {
             estimate_wave_start_ms(&persona_plans, generation_wave)
         } else {
             0
@@ -259,7 +265,7 @@ pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
             specialty: candidate.specialty,
             model: candidate.model.clone(),
             provider: candidate.provider.clone(),
-            local_model: is_local_provider(&candidate.provider, &candidate.model),
+            local_model,
             generation_order,
             generation_wave,
             persona_context_key,
@@ -598,5 +604,39 @@ mod tests {
 
         assert!(plan.meets_first_response_budget);
         assert!(plan.meets_all_responses_budget);
+    }
+
+    #[test]
+    fn local_models_are_waved_while_cloud_models_are_not() {
+        let mut req = request();
+        req.local_inference_capacity = 1;
+        req.personas = vec![
+            candidate(
+                "11111111-1111-4111-8111-111111111111",
+                "Local One",
+                "local",
+            ),
+            candidate(
+                "22222222-2222-4222-8222-222222222222",
+                "Cloud One",
+                "anthropic",
+            ),
+            candidate(
+                "33333333-3333-4333-8333-333333333333",
+                "Local Two",
+                "local",
+            ),
+        ];
+        req.personas[1].model = "claude-opus-4.1".to_string();
+
+        let plan = plan_turn_batch(req);
+
+        assert_eq!(plan.max_concurrent_local_generations, 1);
+        assert!(plan.persona_plans[0].local_model);
+        assert!(!plan.persona_plans[1].local_model);
+        assert!(plan.persona_plans[2].local_model);
+        assert_eq!(plan.persona_plans[0].generation_wave, 0);
+        assert_eq!(plan.persona_plans[1].generation_wave, 0);
+        assert_eq!(plan.persona_plans[2].generation_wave, 1);
     }
 }
