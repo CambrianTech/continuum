@@ -11,5 +11,15 @@
  * Lane B's lease layer + adaptive_throughput's budgets care about the
  * pool (TargetSilicon). Lane C's resolver cares about the variant
  * (HwCapabilityTier).
+ *
+ * **Closed enum by design.** New hardware classes (RTX 6090 → `Sm130`,
+ * M4, future Apple silicon) require an enum-edit + ts-rs regen + an
+ * explicit decision on which existing variant — if any — they alias to.
+ * There is intentionally no `Other(String)` or wildcard fallback variant:
+ * "unknown hardware" silently routing to a default tier hides
+ * capacity-mismatch bugs the resolver exists to catch. See Joel's rule
+ * on no fallbacks (`docs/architecture/...`). Adding a tier means the
+ * caller's hardware probe must produce it AND every match-on-tier site
+ * gets a compile error reminding the author to handle it.
  */
 export type HwCapabilityTier = "cpu_only" | "m1_uma8_gb" | "m1_uma16_gb" | "m2_uma_pro_max" | "m3_uma_pro_max" | "sm70" | "sm80" | "sm86" | "sm89" | "sm90" | "sm120" | "vulkan_amd" | "cloud";

@@ -39,6 +39,16 @@ use ts_rs::TS;
 /// Lane B's lease layer + adaptive_throughput's budgets care about the
 /// pool (TargetSilicon). Lane C's resolver cares about the variant
 /// (HwCapabilityTier).
+///
+/// **Closed enum by design.** New hardware classes (RTX 6090 → `Sm130`,
+/// M4, future Apple silicon) require an enum-edit + ts-rs regen + an
+/// explicit decision on which existing variant — if any — they alias to.
+/// There is intentionally no `Other(String)` or wildcard fallback variant:
+/// "unknown hardware" silently routing to a default tier hides
+/// capacity-mismatch bugs the resolver exists to catch. See Joel's rule
+/// on no fallbacks (`docs/architecture/...`). Adding a tier means the
+/// caller's hardware probe must produce it AND every match-on-tier site
+/// gets a compile error reminding the author to handle it.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(
@@ -139,6 +149,16 @@ pub struct ModelRequirement {
     pub context_window_min: u32,
     /// Maximum memory the resolved model may consume on this host, in MB.
     /// `None` = use `host.available_memory_mb` as the implicit cap.
+    ///
+    /// **Currently OBSERVED but NOT ENFORCED.** Memory-budget filtering
+    /// requires the [`Model`] schema to gain an `estimated_memory_mb`
+    /// field — tracked as a separate followup. Until then, callers that
+    /// pass this expecting filtering will silently get over-budget
+    /// models. The `LocalOnly` / `CloudOnly` filter still prevents the
+    /// worst class of mis-routing (running a 7B local model on the cloud
+    /// lane). Loud-fail on memory pressure is a Lane B
+    /// (FootprintRegistry / PressureBroker) concern downstream of
+    /// resolution, not a resolver-side filter.
     #[ts(optional)]
     pub memory_budget_mb: Option<u32>,
     /// Local-vs-cloud preference. See [`LocalOrCloudPolicy`].
