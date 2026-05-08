@@ -33,6 +33,7 @@
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::cognition::{AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis, analyze};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use std::time::SystemTime;
 use ts_rs::TS;
 use uuid::Uuid;
@@ -238,17 +239,19 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
     );
 
     let post_start = now_ms();
-    let (visible_text, think_count) = strip_thinks_emit_events(
+    let (think_stripped_text, think_count) = strip_thinks_emit_events(
         &raw_response.text,
         input.persona.persona_id,
         input.message_id,
     );
+    let visible_text = strip_leaked_tool_markup(&think_stripped_text);
     trace.record(
         SEAM_POST_PROCESS,
         post_start,
         now_ms().saturating_sub(post_start),
         serde_json::json!({
             "think_blocks": think_count,
+            "leaked_markup_chars_stripped": think_stripped_text.len().saturating_sub(visible_text.len()),
             "visible_chars": visible_text.len(),
         }),
     );
@@ -636,6 +639,62 @@ fn strip_thinks_emit_events(raw: &str, persona_id: Uuid, message_id: Uuid) -> (S
     (visible.trim().to_string(), count)
 }
 
+static TOOL_USE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<tool_use\b[^>]*>.*?</tool_use>").expect("tool_use regex")
+});
+static TOOL_RESULT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<tool_result\b[^>]*>.*?</tool_result>").expect("tool_result regex")
+});
+static THINKING_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<thinking\b[^>]*>.*?</thinking>").expect("thinking regex")
+});
+static TOOL_NAME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<tool_name\b[^>]*>.*?</tool_name>").expect("tool_name regex")
+});
+static PARAMETERS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<parameters\b[^>]*>.*?</parameters>").expect("parameters regex")
+});
+static ARGUMENTS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<arguments\b[^>]*>.*?</arguments>").expect("arguments regex")
+});
+static BARE_TOOL_REF_LINE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"^\s*['"`][a-z][a-z0-9_-]*/[a-z0-9_/-]+['"`]\s*$"#)
+        .expect("bare tool ref line regex")
+});
+static EXCESS_BLANK_LINES_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\n{3,}").expect("blank lines regex"));
+
+/// Strip dead tool-invocation markup from text before the host posts it.
+///
+/// Tool execution belongs in Rust cognition, not in the TS chat shim.
+/// Until every generated tool call is consumed by the Rust executor,
+/// local models can leak `<tool_use>` / `<parameters>` fragments as
+/// visible prose. Posting those fragments poisons room history and
+/// drives echo loops. Keep the cleanup Rust-side so every host surface
+/// (TS, CLI, future native apps) receives the same post-processed text.
+fn strip_leaked_tool_markup(text: &str) -> String {
+    let mut cleaned = text.to_string();
+    for re in [
+        &*TOOL_USE_RE,
+        &*TOOL_RESULT_RE,
+        &*THINKING_RE,
+        &*TOOL_NAME_RE,
+        &*PARAMETERS_RE,
+        &*ARGUMENTS_RE,
+    ] {
+        cleaned = re.replace_all(&cleaned, "").into_owned();
+    }
+    cleaned = cleaned
+        .lines()
+        .filter(|line| !BARE_TOOL_REF_LINE_RE.is_match(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    EXCESS_BLANK_LINES_RE
+        .replace_all(&cleaned, "\n\n")
+        .trim()
+        .to_string()
+}
+
 fn find_at(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if from >= haystack.len() {
         return None;
@@ -720,6 +779,55 @@ mod tests {
         let (visible, count) = strip_thinks_emit_events(raw, Uuid::nil(), Uuid::nil());
         assert!(visible.contains("<think>"));
         assert_eq!(count, 0);
+    }
+
+    /// What this catches: the exact runaway shape observed in chat
+    /// where local models emitted XML tool calls as visible prose.
+    /// Rust must remove the dead invocation before TS posts the
+    /// message, or the room history becomes tool-markup training data.
+    #[test]
+    fn strip_leaked_tool_markup_removes_full_tool_blocks() {
+        let raw = "Before <tool_use><tool_name>code/shell/execute</tool_name><parameters>{\"cmd\":\"cargo test\"}</parameters></tool_use> after";
+        let visible = strip_leaked_tool_markup(raw);
+        assert_eq!(visible, "Before  after");
+        assert!(!visible.contains("tool_use"));
+        assert!(!visible.contains("cargo test"));
+    }
+
+    /// What this catches: models sometimes drop the outer
+    /// `<tool_use>` wrapper but still leak the inner tag pair. The
+    /// scrubber must handle that partial shape too.
+    #[test]
+    fn strip_leaked_tool_markup_removes_wrapperless_inner_shapes() {
+        let raw = "Answer.\n<tool_name>code/shell/execute</tool_name>\n<arguments>{\"cmd\":\"npm test\"}</arguments>\nDone.";
+        let visible = strip_leaked_tool_markup(raw);
+        assert_eq!(visible, "Answer.\n\nDone.");
+        assert!(!visible.contains("code/shell/execute"));
+        assert!(!visible.contains("npm test"));
+    }
+
+    /// What this catches: `<thinking>` is a separate leak shape from
+    /// the normal `<think>` blocks handled by `strip_thinks_emit_events`.
+    /// It should not reach chat output.
+    #[test]
+    fn strip_leaked_tool_markup_removes_thinking_blocks() {
+        let raw = "<thinking>private chain</thinking>\nVisible.";
+        let visible = strip_leaked_tool_markup(raw);
+        assert_eq!(visible, "Visible.");
+    }
+
+    /// What this catches: the bare tool-ref cleanup is intentionally
+    /// conservative. Inline prose that mentions a command in quotes
+    /// should remain; only dangling quoted tool refs at line end are
+    /// stripped.
+    #[test]
+    fn strip_leaked_tool_markup_keeps_inline_tool_reference_prose() {
+        let raw = "The command 'code/shell/execute' is not available here.\n'code/shell/execute'";
+        let visible = strip_leaked_tool_markup(raw);
+        assert_eq!(
+            visible,
+            "The command 'code/shell/execute' is not available here."
+        );
     }
 
     // ─── Native multimodal helper tests ─────────────────────────────
