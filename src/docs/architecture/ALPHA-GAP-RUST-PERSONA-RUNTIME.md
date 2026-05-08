@@ -158,6 +158,60 @@ Keep and extend these instead of recreating logic in TypeScript:
 - `workers/continuum-core/src/paging/broker.rs`: cross-pool pressure broker.
 - `workers/continuum-core/src/runtime/*`: module registry, metrics, IPC, event bus, and concurrency limits.
 
+## Adaptive Throughput Substrate
+
+The best complete throughput design in the Cambrian codebase is CBAR:
+bounded `QueueThread` workers, lazy frame artifacts, subscriber analyzers,
+priority/cadence, newest-state backpressure, and thin platform wrappers.
+Continuum has several strong Rust primitives, but they are not yet one unified
+substrate:
+
+- `ServiceModule` and `ModuleConfig`: one runtime extension seam for commands,
+  event subscriptions, priority, concurrency, and ticks.
+- `MessageBus`: typed event fan-out with coalescing and recent-event replay.
+- `llamacpp_scheduler`: continuous local generation, sequence attribution, and
+  future LoRA/KV routing point.
+- `FootprintRegistry`: cross-resource accounting by backend, persona, and
+  resource kind.
+- `PagedResourcePool`: generic residency, pinning, LRU-style eviction, stats,
+  and reload/spill hooks.
+- `PressureBroker`: cross-pool pressure decisions.
+- `ChannelQueue` / `QueueItemBehavior`: generic containers where domain items
+  own priority, consolidation, and staleness.
+
+These should converge into one reusable adaptive-throughput pattern for every
+expensive process:
+
+1. A job declares identity: `turn_key`, `artifact_key`, `persona_id`,
+   `resource_class`, and optional `recipe/model/provider`.
+2. A job declares dependencies by handle, not payload.
+3. A scheduler admits the job when dependencies are ready and resources fit.
+4. The job runs in the narrowest resource lane that can satisfy it: CPU, GPU,
+   embedding, local generation, cloud provider, I/O, memory, or background.
+5. The job emits typed artifacts/events and updates footprint/trace metrics.
+6. Downstream subscribers wake from artifact readiness, not from global FIFO.
+
+This becomes the repeated process model for chat, RAG, memory consolidation,
+embedding, vision, live video, game observers, LoRA paging, MoE expert routing,
+airc bridging, and grid-distributed work.
+
+The substrate must be adaptive before it is clever:
+
+- Start from maximum safe parallelism.
+- Keep CPU workers busy with independent ready work.
+- Admit GPU/model work deliberately from memory and lane evidence.
+- Prefer latest useful state over draining stale queues.
+- Coalesce repeated work by stable identity keys.
+- Degrade cadence, precision, context, or subscriber count under pressure.
+- Surface deferrals and silence reasons as first-class output.
+- Never copy large payloads across process or language boundaries when a handle
+  can identify resident data.
+
+The failure to avoid is every module owning its own queue, throttle, retry,
+cache, and memory heuristic. The extension author should implement a small
+contract and inherit the hard parts: scheduling, pressure, telemetry, artifact
+cache negotiation, and wakeups.
+
 ## Failure Modes To Eliminate
 
 ### Single-Responder Collapse
