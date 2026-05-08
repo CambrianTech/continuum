@@ -29,11 +29,13 @@
 
 pub mod response_orchestrator;
 pub mod response_validator;
+pub mod adaptive_throughput;
 pub mod shared_analysis;
 pub mod tool_executor;
 pub mod turn_batch;
 pub mod types;
 
+pub use adaptive_throughput::*;
 pub use response_orchestrator::{
     orchestrate, score_persona, PersonaSlot, DEFAULT_RELEVANCE_THRESHOLD,
 };

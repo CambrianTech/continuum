@@ -186,14 +186,26 @@ expensive process:
    `resource_class`, and optional `recipe/model/provider`.
 2. A job declares dependencies by handle, not payload.
 3. A scheduler admits the job when dependencies are ready and resources fit.
-4. The job runs in the narrowest resource lane that can satisfy it: CPU, GPU,
-   embedding, local generation, cloud provider, I/O, memory, or background.
+4. The job runs in the narrowest resource lane that can satisfy it: CPU, data,
+   GPU, embedding, local generation, cloud provider, I/O, media, render,
+   memory, or background.
 5. The job emits typed artifacts/events and updates footprint/trace metrics.
 6. Downstream subscribers wake from artifact readiness, not from global FIFO.
 
 This becomes the repeated process model for chat, RAG, memory consolidation,
 embedding, vision, live video, game observers, LoRA paging, MoE expert routing,
 airc bridging, and grid-distributed work.
+
+The same substrate must cover the historically troublesome paths:
+
+- ORM/data: canonical entity resolution and query work move through `Data`
+  lanes and emit handles, not browser-authoritative identity blobs.
+- Inference: local Qwen/llama.cpp generation moves through `LocalGeneration`
+  lanes backed by model residency and KV/LoRA pressure.
+- WebRTC/audio/video: packet/frame work moves through `Media` lanes and passes
+  frame ids, buffer leases, and content hashes.
+- Bevy/live rendering: render work moves through `Render` lanes and passes
+  texture ids or GPU residency handles.
 
 The substrate must be adaptive before it is clever:
 
