@@ -8,32 +8,16 @@
 //!
 //! Pipeline (per persona, per inbound message):
 //!
-//!   1. cognition::analyze(...)   — shared, cached. Provides the
-//!                                  prompt-time hint map (suggested
-//!                                  angles per specialty) but does NOT
-//!                                  gate response. Informational only.
-//!   2. prompt_assembly::build(...) — persona-specific prompt: voice,
-//!                                    LoRA-rendered specialty, RAG
-//!                                    context interleaving, native
-//!                                    multimodal attachment per the
-//!                                    persona's resolved capabilities.
-//!   3. ai_provider::generate_text(...) — inference. The persona's
-//!                                        own model decides what to
-//!                                        say. Personas emulate
-//!                                        humans — they choose for
-//!                                        themselves whether to
-//!                                        engage; no external scorer
-//!                                        vetoes them.
-//!   4. strip_thinks_emit_events(...) — extract <think>...</think>
-//!                                       blocks, emit them as
-//!                                       cognition:think-block events
-//!                                       for the (future) hippocampus
-//!                                       to consume, return clean
-//!                                       speech for posting.
-//!   5. Return Spoke { text, ... } with timing + diagnostic fields.
-//!      Silent is still a valid return when the persona's own model
-//!      produces empty / "I'll pass" output — but it's the persona's
-//!      cognitive output, not a pre-inference veto.
+//! 1. `cognition::analyze(...)`: shared, cached prompt-time hint map.
+//!    Suggested angles per specialty are informational only, not response gates.
+//! 2. `prompt_assembly::build(...)`: persona-specific prompt with voice,
+//!    LoRA-rendered specialty, RAG, and multimodal attachments.
+//! 3. `ai_provider::generate_text(...)`: inference. The persona's own model
+//!    decides what to say; no external scorer vetoes engagement.
+//! 4. `strip_thinks_emit_events(...)`: extract `<think>...</think>` blocks as
+//!    `cognition:think-block` events, then return clean speech for posting.
+//! 5. Return `Spoke { text, ... }` with timing and diagnostic fields. Silence
+//!    is valid only as the persona's cognitive output, not a pre-inference veto.
 //!
 //! Why this is in Rust (not just a port):
 //!   - Cognition is where the mind/machine line gets drawn — concurrency
@@ -47,7 +31,7 @@
 //!     manipulation in Rust is ~100x what TS does on the same input.
 
 use crate::cognition::tool_executor::types::MediaItemLite;
-use crate::cognition::{analyze, AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis};
+use crate::cognition::{AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis, analyze};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use ts_rs::TS;
@@ -192,9 +176,7 @@ pub enum PersonaResponse {
 /// the caller for proper user-facing error reporting; we don't
 /// silently fall back to "Silent" because that would hide real bugs.
 pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
-    use crate::persona::trace::{
-        CognitionTrace, SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS,
-    };
+    use crate::persona::trace::{CognitionTrace, SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS};
 
     let total_start = now_ms();
     let mut trace = CognitionTrace::new();
@@ -319,7 +301,7 @@ async fn run_render(
 ) -> Result<RawRenderOutput, String> {
     use crate::ai::adapter::InferenceDevice;
     use crate::ai::types::TextGenerationRequest;
-    use crate::persona::prompt_assembly::{assemble, HistoryMessage, PromptAssemblyInput};
+    use crate::persona::prompt_assembly::{HistoryMessage, PromptAssemblyInput, assemble};
 
     // 1. The matched angle for this persona's specialty. Empty string
     //    means "no specific angle" — assemble() handles that gracefully
@@ -822,9 +804,9 @@ mod tests {
         // shown bytes it can't process.
         let has_image_bytes = match &out[0].content {
             MessageContent::Text(_) => false,
-            MessageContent::Parts(parts) => parts
-                .iter()
-                .any(|p| matches!(p, ContentPart::Image { .. })),
+            MessageContent::Parts(parts) => {
+                parts.iter().any(|p| matches!(p, ContentPart::Image { .. }))
+            }
         };
         assert!(
             !has_image_bytes,
@@ -937,9 +919,9 @@ mod tests {
         // matters is no ContentPart::Audio carrying real bytes.
         let has_audio_bytes = match &out[0].content {
             MessageContent::Text(_) => false,
-            MessageContent::Parts(parts) => parts
-                .iter()
-                .any(|p| matches!(p, ContentPart::Audio { .. })),
+            MessageContent::Parts(parts) => {
+                parts.iter().any(|p| matches!(p, ContentPart::Audio { .. }))
+            }
         };
         assert!(
             !has_audio_bytes,

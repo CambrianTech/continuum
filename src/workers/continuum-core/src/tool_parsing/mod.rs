@@ -12,7 +12,7 @@
 //! 6. Curly-shorthand: `{tool_name: {"param": "value"}}`
 //! 7. Markdown backtick: `` `tool: name` `param=value` ``
 //! 8. Old-style XML: `<tool name="X"><param>value</param></tool>`
-//! 9-10. Colon shorthand variants
+//! 9. Colon shorthand variants
 //!
 //! Model-family formats (prioritized when model_family hint is provided):
 //! - DeepSeek: Unicode fullwidth delimiters `＜｜tool▁calls▁begin｜＞`

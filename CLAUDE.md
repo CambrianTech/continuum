@@ -1564,5 +1564,5 @@ Generators and OOP are intertwined parallel forces:
   practices, and in some ways like C++ templating with generics. These are your superpowers
 - for getters in typescript we do not prefix methods with get, we use get or set like good properties and often this is backed by _theProperty type private var
 - never commit code until you validate it works. deploy and validate first, make sure it compiles, npm run build:ts before that
-- never use `--no-verify` on commit or push. If hooks fail because of a stale worktree, missing submodule, missing generated file, or a bug in the hook itself, fix the underlying problem — never bypass. The hook is the same validation path agents and humans share; bypassing it for "I manually checked" hides exactly the regressions hooks exist to catch. (See memory: `critical_never_no_verify.md`.)
+- never use `--no-verify` on commit or push. If hooks fail because of a stale worktree, missing submodule, missing generated file, or a bug in the hook itself, fix the underlying problem; never bypass the shared validation path.
 - commit often per logical unit once validated. merging to main is the only step that requires my approval — commits to feature branches do not.

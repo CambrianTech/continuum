@@ -18,9 +18,9 @@ pub mod monitor;
 pub use concurrency::local_inference_capacity;
 
 pub use memory_pressure::{
-    is_memory_gate_closed, MemoryBudgetAllocation, MemoryBudgetSnapshot, MemoryBudgetSpec,
-    MemoryPressureMonitor, MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel,
-    PressureSnapshot,
+    MemoryBudgetAllocation, MemoryBudgetSnapshot, MemoryBudgetSpec, MemoryPressureMonitor,
+    MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel, PressureSnapshot,
+    is_memory_gate_closed,
 };
 pub use monitor::{
     CpuStats, MemoryStats, ProcessStats, SystemResourceMonitor, SystemResourceSnapshot, TopProcess,
@@ -47,7 +47,7 @@ pub fn process_rss_mb() -> u64 {
         };
         if ret == libc::KERN_SUCCESS {
             let info = unsafe { info.assume_init() };
-            return info.resident_size as u64 / (1024 * 1024);
+            return info.resident_size / (1024 * 1024);
         }
         0
     }
