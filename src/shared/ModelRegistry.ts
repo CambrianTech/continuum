@@ -3,8 +3,7 @@
  *
  * ALL model lookups go through here. Consumers:
  *   - src/scripts/seed/personas.ts  (resolves persona.modelRef → current modelId)
- *   - src/daemons/ai-provider-daemon/adapters/candle/CandleAdapter.ts
- *     (accepts symbolic refs, resolves to concrete model)
+ *   - Rust local runtime/admission code (accepts symbolic refs, resolves to concrete model)
  *   - src/scripts/download-models.sh (reads via jq for tier/auto_download set)
  *   - install.sh (reads via jq for PERSONA_MODEL tier resolution)
  *

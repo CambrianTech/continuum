@@ -23,7 +23,7 @@ import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEn
 import { ActivityEntity } from '../system/data/entities/ActivityEntity';
 import { ActivityDataSeed } from '../api/data-seed/ActivityDataSeed';
 import { SystemIdentity } from '../api/data-seed/SystemIdentity';
-import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel, type PersonaConfig } from './seed/personas';
+import { OPTIONAL_CLOUD_PERSONA_CONFIGS, PERSONA_CONFIGS, PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel, type PersonaConfig } from './seed/personas';
 import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
 import {
   createRoom,
@@ -420,12 +420,12 @@ async function seedViaJTAG() {
       }
     }
 
-    // Seed ALL personas — existence ≠ activation.
-    // The allocator decides which are ACTIVE at runtime based on hardware.
-    // But every persona must EXIST in the DB so they're ready when resources allow.
-    const activePersonas: PersonaConfig[] = Object.values(PERSONA_CONFIGS);
+    // Seed the active default fleet. Optional cloud personas are created only
+    // when their real API key exists; historical rows for missing-key providers
+    // are marked offline below so they cannot steal local chat turns.
+    const activePersonas: PersonaConfig[] = getAvailablePersonas().personas;
     const localModel = selectLocalModel(0); // Default model, allocator overrides at runtime
-    console.log(`🎭 Seeding all ${activePersonas.length} personas (allocator activates at runtime)`);
+    console.log(`🎭 Seeding ${activePersonas.length} active persona(s)`);
 
     // BULK LOAD: One subprocess call replaces N individual lookups
     const { usersByUniqueId, missingUniqueIds } = await loadAllUsers(activePersonas);
@@ -549,6 +549,23 @@ async function seedViaJTAG() {
       console.log(`🔄 Updating ${updatePromises.length} existing user configs in parallel...`);
       await Promise.all(updatePromises);
       console.log('✅ Existing user configs updated');
+    }
+
+    const activePersonaIds = new Set(activePersonas.map(p => p.uniqueId));
+    const optionalPersonaIds = new Set(OPTIONAL_CLOUD_PERSONA_CONFIGS.map(p => p.uniqueId));
+    const staleOptionalUsers = [...usersByUniqueId.values()].filter(user =>
+      user.uniqueId &&
+      optionalPersonaIds.has(user.uniqueId) &&
+      !activePersonaIds.has(user.uniqueId) &&
+      user.status !== 'offline'
+    );
+    if (staleOptionalUsers.length > 0) {
+      console.log(`🧊 Marking ${staleOptionalUsers.length} missing-key optional persona(s) offline`);
+      await Promise.all(staleOptionalUsers.map(user => {
+        const dataArg = JSON.stringify({ status: 'offline' }).replace(/'/g, `'"'"'`);
+        return execAsync(`./jtag ${DATA_COMMANDS.UPDATE} --collection=${UserEntity.collection} --id="${user.id}" --data='${dataArg}' --suppressEvents=true`)
+          .catch(() => undefined);
+      }));
     }
 
     // Get key user references

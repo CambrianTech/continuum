@@ -163,11 +163,8 @@ export class SystemOrchestrator extends EventEmitter {
           browserOpened: requiredMilestones.includes(SYSTEM_MILESTONES.BROWSER_READY)
         };
         
-        // TEST MODE: Generate signal and let caller handle exit
-        if (options.testMode) {
-          console.debug('🧪 Test mode - generating final system ready signal');
-          await this.signaler.generateReadySignal();
-        }
+        console.debug('📡 Generating system ready signal');
+        await this.signaler.generateReadySignal();
         
         return finalState;
       }
@@ -192,12 +189,9 @@ export class SystemOrchestrator extends EventEmitter {
       const finalState = await this.verifySystemState(requiredMilestones);
       console.debug('🎉 Orchestration complete');
       
-      // TEST MODE: Generate final signal after successful orchestration
-      if (options.testMode) {
-        console.debug('🧪 Test mode - generating final system ready signal');
-        await this.signaler.generateReadySignal();
-        console.debug('📡 Final system signal generated - ready for testing');
-      }
+      console.debug('📡 Generating final system ready signal');
+      await this.signaler.generateReadySignal();
+      console.debug('📡 Final system signal generated');
       
       return finalState;
       
@@ -955,33 +949,7 @@ export class SystemOrchestrator extends EventEmitter {
     // In Docker, the widget-server container handles HTTP separately,
     // so skip spawning the HTTP server when JTAG_SKIP_HTTP is set.
     if (!process.env.JTAG_SKIP_HTTP) {
-      const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
-      const activeExamplePath = getActiveExamplePath();
-      const serverScript = `${activeExamplePath}/src/minimal-server.ts`;
-
-      console.debug(`🎯 Starting HTTP server directly: ${serverScript}`);
-
-      this.serverProcess = spawn('npx', ['tsx', serverScript], {
-        cwd: activeExamplePath,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: false
-      });
-
-      this.serverProcess.stdout?.on('data', (data) => {
-        console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
-      });
-
-      this.serverProcess.stderr?.on('data', (data) => {
-        console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
-      });
-
-      this.serverProcess.on('error', (error) => {
-        console.error(`❌ Server process failed: ${error.message}`);
-      });
-
-      this.serverProcess.on('exit', (code, signal) => {
-        console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
-      });
+      await this.spawnHttpServer();
     } else {
       console.debug(`⏭️ Skipping HTTP server (JTAG_SKIP_HTTP set — widget-server handles HTTP)`);
     }
@@ -991,6 +959,47 @@ export class SystemOrchestrator extends EventEmitter {
       this.currentEntryPoint
     );
     return true;
+  }
+
+  private async spawnHttpServer(): Promise<void> {
+    const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
+    const activeExamplePath = getActiveExamplePath();
+    const serverScript = `${activeExamplePath}/src/minimal-server.ts`;
+
+    console.debug(`🎯 Starting HTTP server directly: ${serverScript}`);
+
+    this.serverProcess = spawn('npx', ['tsx', serverScript], {
+      cwd: activeExamplePath,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false
+    });
+
+    this.serverProcess.stdout?.on('data', (data) => {
+      console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
+    });
+
+    this.serverProcess.stderr?.on('data', (data) => {
+      console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
+    });
+
+    this.serverProcess.on('error', (error) => {
+      console.error(`❌ Server process failed: ${error.message}`);
+    });
+
+    this.serverProcess.on('exit', (code, signal) => {
+      console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
+      this.serverProcess = null;
+      if (!this.coreShuttingDown && !process.env.JTAG_SKIP_HTTP) {
+        console.warn(`🔁 HTTP server exited unexpectedly; restarting in 1000ms`);
+        setTimeout(() => {
+          if (!this.coreShuttingDown && !this.serverProcess) {
+            this.spawnHttpServer().catch(error => {
+              console.error(`❌ Failed to restart HTTP server: ${error instanceof Error ? error.message : String(error)}`);
+            });
+          }
+        }, 1000);
+      }
+    });
   }
 
   private async executeServerProcess(): Promise<boolean> {

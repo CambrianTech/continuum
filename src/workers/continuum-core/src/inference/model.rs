@@ -1,12 +1,13 @@
 //! Model Loading Utilities
 //!
-//! Handles downloading models from HuggingFace Hub, loading them into
-//! Candle, and LoRA weight merging. Model state lives in
+//! Handles downloading curated training/auxiliary models from HuggingFace Hub,
+//! loading them into Candle when explicitly requested, and LoRA weight merging.
+//! Runtime persona chat uses the local Qwen/llama.cpp path. Model state lives in
 //! `backends::LlamaSafetensorsBackend` — this module provides the loading
 //! and utility functions.
 //!
 //! Supports:
-//! - Llama architecture models (safetensors format)
+//! - Qwen/Llama-family safetensors models for training/auxiliary use
 //! - BF16/FP32 precision
 //! - GPU acceleration (Metal/CUDA)
 //! - LoRA weight merging (single and multi-adapter)
@@ -506,7 +507,7 @@ fn load_safetensors_from_config(
 pub fn load_default_model(
 ) -> Result<Box<dyn ModelBackend>, Box<dyn std::error::Error + Send + Sync>> {
     let model_id = std::env::var("INFERENCE_MODEL_ID")
-        .unwrap_or_else(|_| "unsloth/Llama-3.2-3B-Instruct".to_string());
+        .unwrap_or_else(|_| "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string());
     load_model_by_id(&model_id)
 }
 

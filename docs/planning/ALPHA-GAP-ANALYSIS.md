@@ -34,6 +34,7 @@ The non-negotiable gates:
 | Docker | Too much historical bulk and mixed responsibility; several open Docker issues remain | Docker can mask failures and slow iteration |
 | Rust core | Strong core exists, but GPU lifecycle, paging, and persona runtime boundaries are still incomplete | Core instability can make UI/Node fixes irrelevant |
 | Node/TS | Still owns too much cognition/command behavior | Adds latency, GC/IPC complexity, and harder cross-platform reuse |
+| Config/secrets | `$HOME/.continuum/config.env` is the local source of truth, but empty placeholders and per-process loading have caused false provider availability | Cloud providers can steal local turns and fail; grid nodes cannot yet receive encrypted config consistently |
 | Tests | Many tests exist, but the alpha loop still overuses `npm start`/browser/Docker as proof | Slow tests hide root causes and discourage TDD |
 
 ## Issue-Driven Workstreams
@@ -74,6 +75,30 @@ Implementation posture:
 - Prefer published Rust artifacts or minimal service images over compiling everything during first-run.
 - If build is unavoidable, make it explicit and resumable.
 - Install health must distinguish: network unavailable, Docker unavailable, GPU unavailable, model unavailable, Rust core unavailable, UI unavailable.
+
+### 1A. Config, Secrets, And Grid Propagation
+
+**Goal**: one authoritative config path per node, explicit encrypted propagation across trusted grid nodes, and no false "configured" state from empty placeholders.
+
+| Issue | Priority | Direction | Test gate |
+|---|---:|---|---|
+| file: config single-source issue | P0 | `SecretManager` and Rust `secrets.rs` must treat only non-empty values as configured and must lazy-load `$HOME/.continuum/config.env` before any provider check | provider status shows cloud unavailable for empty placeholders; local chat still works |
+| file: `grid/config/sync` command issue | P0 | create a command pair for encrypted config sharing over trusted grid/Tailscale nodes; no loose file copying and no browser exposure | two-node test shares selected keys, decrypts only on trusted target, and never logs values |
+| #860 config.env as directory | P1 | keep setup file/dir creation idempotent and typed | setup test catches file-vs-dir mismatch |
+
+Command shape:
+
+- `grid/config/status`: list configured key names, source path, empty placeholders, and target-node drift without values.
+- `grid/config/export`: encrypt selected config keys for a specific trusted node identity.
+- `grid/config/import`: decrypt and merge selected keys into the target node's `$HOME/.continuum/config.env`.
+- `grid/config/sync`: orchestrate export/import across trusted grid nodes and report per-node success.
+
+Rules:
+
+- Empty placeholders such as `DEEPSEEK_API_KEY=` are documentation, not availability.
+- Local mode must work with zero API keys.
+- Cloud personas are eligible only when their required key is non-empty and the provider health check is not expired/failed.
+- Config sharing is an owner/trusted-node command. It should use grid identity plus transport encryption, then persist through `SecretManager` so all runtimes see one source.
 
 ### 2. GPU Runtime Stability
 
@@ -140,6 +165,31 @@ Near-term PR sequence:
 | #945 data/query memory leak | P0 | apply resource attribution and leak tests | load test stays within memory envelope |
 | #944 embedding loop/cache misses | P1 | migrate embedding cache to shared paging primitive | repeated index pass has cache hits and bounded memory |
 | #911 16GB MacBook Air | P1 | define reduced alpha profile with strict budgets | 16GB profile starts and reports disabled features honestly |
+
+Model selection contract:
+
+- Callers request capabilities, not model IDs.
+- Discovery and admission are separate: discovery builds the catalog of model
+  artifacts, modalities, context windows, templates, quantizations, and backend
+  requirements; admission chooses the best viable candidate for the current
+  machine state and request.
+- The catalog is a curated whitelist, not arbitrary Hugging Face passthrough.
+  Candidate discovery may crawl/search HF offline or through foundry commands,
+  but runtime selection only admits vetted rows with known templates, license,
+  backend compatibility, memory estimates, modality metadata, and forge status.
+- Foundry output flows back into the same registry: `candidate` -> `vetted` ->
+  `forged` -> `published`, with Sentinel/foundry jobs updating metadata rather
+  than TS code hardcoding new model names.
+- Provider identity must be typed. Runtime local chat is `LocalRuntime`
+  (llama.cpp/Qwen through our adapter stack), cloud providers are explicit
+  external identities, and Candle is not an inference provider for persona chat.
+  Export this with `ts-rs` so TS seed/config/user paths cannot invent free-form
+  provider strings.
+- Request fields should be typed: `taskKind`, `minIntelligence`, `modalities`, `toolSupport`, `minContextTokens`, `latencyClass`, `qualityClass`, `memoryBudget`, `gpuRequired`, `familyAllowlist`, `familyPreference`, and `explicitOverride`.
+- Constraint syntax should feel like semver where it helps: exact pins for repro, `>=` for minimum intelligence/capability, `~qwen3.5` for near-family preference, ranges for context/latency/memory, and hard allow/deny lists for safety.
+- Rust registry/admission returns the selected provider/model/artifact plus explanation: why selected, why alternatives were rejected, projected VRAM/RAM/KV/LoRA footprint, and whether the choice is degraded.
+- Persona seed stores intent (`local-default`, `vision-default`, future typed capability refs), not hardcoded model strings.
+- TS may display selection state; it must not invent fallback models.
 
 Implementation order:
 
@@ -219,12 +269,13 @@ Design rule:
 |---:|---|---|---|---|---|
 | 1 | `codex/alpha-gap-stability-plan` | `canary` | planning doc | this document; shared execution map | docs lint/readability, AIRC review |
 | 2 | `fix/gpu-backend-lifecycle` | `canary` | #1048, #1050, #960, #964 | mutex + backend state/recovery | Rust tests with injected failure; GPU provider evidence |
-| 3 | `fix/docker-alpha-profiles` | `canary` | #892, #955, #834, #776, #796 | modular Docker profile cleanup | compose profile smoke; image size report |
-| 4 | `feature/persona-rust-replay` | `canary` | #969, #909 | Rust persona replay/tool-loop foundation | `cargo test`; net-negative TS cognition lines |
-| 5 | `feature/pressure-broker-gate` | `canary` | #1049, #1051, #945, #944 | admission gate + first resource consumer | memory/load tests; no Node required |
-| 6 | `fix/realtime-core-reconnect` | `canary` | #793, #794, #773 | core restart + realtime browser recovery | kill core, command recovers, browser receives AI message |
-| 7 | `feature/airc-persona-peer` | `canary` | #967, PR #1046 | Continuum persona as AIRC participant | AIRC -> Continuum -> AIRC round trip |
-| 8 | `test/fresh-install-e2e` | `canary` | #770, #1006-#1008, #983 | install validation matrix | Mac + Windows logs; no silent waits |
+| 3 | `feature/grid-config-sync` | `canary` | config single-source, grid config sync | encrypted config status/export/import/sync commands | two-node encrypted config sync; provider status remains truthful |
+| 4 | `fix/docker-alpha-profiles` | `canary` | #892, #955, #834, #776, #796 | modular Docker profile cleanup | compose profile smoke; image size report |
+| 5 | `feature/persona-rust-replay` | `canary` | #969, #909 | Rust persona replay/tool-loop foundation | `cargo test`; net-negative TS cognition lines |
+| 6 | `feature/pressure-broker-gate` | `canary` | #1049, #1051, #945, #944 | admission gate + first resource consumer | memory/load tests; no Node required |
+| 7 | `fix/realtime-core-reconnect` | `canary` | #793, #794, #773 | core restart + realtime browser recovery | kill core, command recovers, browser receives AI message |
+| 8 | `feature/airc-persona-peer` | `canary` | #967, PR #1046 | Continuum persona as AIRC participant | AIRC -> Continuum -> AIRC round trip |
+| 9 | `test/fresh-install-e2e` | `canary` | #770, #1006-#1008, #983 | install validation matrix | Mac + Windows logs; no silent waits |
 
 This order can change when a blocker is discovered, but changes must be made in this document and on the issue/PR thread, not only in chat.
 

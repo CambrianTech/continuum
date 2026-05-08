@@ -42,7 +42,7 @@ impl Secrets {
                                 }
                             }
 
-                            secrets.insert(key.to_string(), value);
+                            secrets.insert(key.to_string(), normalize_env_value(&value));
                         }
                     }
                 }
@@ -59,7 +59,10 @@ impl Secrets {
                 || key.ends_with("_TOKEN")
                 || key.ends_with("_URL")
             {
-                secrets.insert(key, value);
+                let value = normalize_env_value(&value);
+                if !value.is_empty() {
+                    secrets.insert(key, value);
+                }
             }
         }
 
@@ -68,7 +71,10 @@ impl Secrets {
 
     /// Get a secret by key
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.secrets.get(key).map(|s| s.as_str())
+        self.secrets
+            .get(key)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
     }
 
     /// Get a secret, returning error if missing
@@ -83,13 +89,26 @@ impl Secrets {
 
     /// Check if a secret exists
     pub fn has(&self, key: &str) -> bool {
-        self.secrets.contains_key(key)
+        self.get(key).is_some()
     }
 
     /// Get all available keys (for debugging)
     pub fn available_keys(&self) -> Vec<&str> {
         self.secrets.keys().map(|s| s.as_str()).collect()
     }
+}
+
+fn normalize_env_value(raw: &str) -> String {
+    let value = raw.trim();
+    let unquoted = if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    };
+    unquoted.trim().to_string()
 }
 
 /// Get the global secrets instance

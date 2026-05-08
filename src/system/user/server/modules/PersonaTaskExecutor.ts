@@ -586,7 +586,7 @@ export class PersonaTaskExecutor {
       this.log(`🧬 ${this.displayName}: Collected ${trainingData.examples.length} training examples`);
 
       // 3. Build training request
-      const baseModel = this.memory.genome.getState().baseModel || 'llama3.2:3b';
+      const baseModel = this.memory.genome.getState().baseModel || 'continuum-ai/qwen3.5-4b-code-forged-GGUF';
       const trainingRequest: LoRATrainingRequest = {
         personaId: this.personaId,
         personaName: this.displayName,

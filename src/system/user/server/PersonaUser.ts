@@ -111,6 +111,7 @@ import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
 import { PersonaMessageGate } from './modules/PersonaMessageGate';
 import { PersonaTaskTracker } from './modules/PersonaTaskTracker';
 import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
+import { SecretManager } from '../../secrets/SecretManager';
 import { type PersonaMediaConfig, DEFAULT_MEDIA_CONFIG } from './modules/PersonaMediaConfig';
 import type { CreateSessionParams, CreateSessionResult } from '../../../daemons/session-daemon/shared/SessionTypes';
 import { Hippocampus } from './modules/cognitive/memory/Hippocampus';
@@ -123,6 +124,18 @@ import { PrefrontalCortex, type PersonaUserForPrefrontal } from './modules/being
 import { MotorCortex, type PersonaUserForMotorCortex } from './modules/being/MotorCortex';
 import { RustCognitionBridge, type PersonaUserForRustCognition } from './modules/RustCognitionBridge';
 import { SystemPaths } from '../../core/config/SystemPaths';
+
+const PROVIDER_KEY_ENV: Record<string, string> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+  groq: 'GROQ_API_KEY',
+  xai: 'XAI_API_KEY',
+  together: 'TOGETHER_API_KEY',
+  fireworks: 'FIREWORKS_API_KEY',
+  google: 'GOOGLE_API_KEY',
+  alibaba: 'DASHSCOPE_API_KEY',
+};
 import { UnifiedConsciousness } from './modules/consciousness/UnifiedConsciousness';
 import { registerConsciousness, unregisterConsciousness } from '../../rag/sources/GlobalAwarenessSource';
 import { Workspace } from '../../code/server/Workspace';
@@ -645,12 +658,8 @@ export class PersonaUser extends AIUser {
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
-    // Worker uses fast small model for gating decisions (should-respond check).
-    // 'local' routes through the same adapter registry as chat — DMR when
-    // available (Metal-fast on Mac, ~50 tok/s), Candle fallback when not.
-    // Previously hardcoded to 'candle' which forced CPU gating on ALL
-    // personas even when DMR+Metal was available — the gating bottleneck
-    // blocked the fast Metal response path.
+    // Worker is a model-free fallback for should-respond checks. The normal
+    // gate is Rust fullEvaluate; local chat inference is llama.cpp/Qwen.
     this.worker = new PersonaWorkerThread(this.id, {
       providerType: 'local',
       providerConfig: {
@@ -805,7 +814,7 @@ export class PersonaUser extends AIUser {
             const adapters = this.memory!.genome.getAllAdapters().map(a => ({
               name: a.getName(),
               domain: a.getDomain(),
-              ollama_model_name: a.getTrainedModelName() ?? undefined,
+              trained_model_name: a.getTrainedModelName() ?? undefined,
               is_loaded: a.isLoaded(),
               is_current: a === this.memory!.genome.getCurrentAdapter(),
               priority: a.getPriority(),
@@ -1147,12 +1156,13 @@ export class PersonaUser extends AIUser {
 
     // Daemon is ready, wire the genome
     try {
-      // Try to get CandleAdapter (native Rust inference with LoRA support)
+      // Training/LoRA composition still uses the Candle adapter. Runtime chat
+      // inference does not.
       const candleAdapter = AIProviderDaemon.getAdapter('candle');
-      this.logger.enqueueLog('cognition.log', `🧬 wireGenomeToProvider — candleAdapter=${candleAdapter ? 'found' : 'null'}, provider=${this.modelConfig.provider}`);
+      this.logger.enqueueLog('cognition.log', `🧬 wireGenomeToProvider — trainingAdapter=${candleAdapter ? 'found' : 'null'}, provider=${this.modelConfig.provider}`);
       if (candleAdapter) {
         this.memory.genome.setAIProvider(candleAdapter);
-        this.logger.enqueueLog('cognition.log', `🧬 Genome wired to CandleAdapter (LoRA composition enabled)`);
+        this.logger.enqueueLog('cognition.log', `🧬 Genome wired to training adapter (LoRA composition enabled)`);
       } else {
         this.log.warn(`⚠️ ${this.displayName}: No Candle adapter available for genome`);
       }
@@ -1386,6 +1396,11 @@ export class PersonaUser extends AIUser {
     const metadata = this.entity.metadata as Record<string, unknown> | undefined;
     if (metadata?.isAudioNative === true) {
       this.log.debug(`⏭️ ${this.displayName}: Skipping chat (audio-native model, voice-only)`);
+      return;
+    }
+
+    if (!this.isProviderAvailableForChat()) {
+      this.log.debug(`⏭️ ${this.displayName}: Skipping chat (provider ${this.modelConfig.provider} is not configured)`);
       return;
     }
 
@@ -1693,6 +1708,11 @@ export class PersonaUser extends AIUser {
     preBuiltRagContext?: PipelineRAGContext,
     socialSignals?: import('../../../shared/generated').SocialSignals
   ): Promise<void> {
+    if (!this.isProviderAvailableForChat()) {
+      this.log.warn(`⏭️ ${this.displayName}: Refusing response generation because provider ${this.modelConfig.provider} is not configured`);
+      return;
+    }
+
     // Check dormancy state before responding
     const shouldRespond = this.responseGenerator.shouldRespondToMessage(
       originalMessage,
@@ -1710,6 +1730,21 @@ export class PersonaUser extends AIUser {
     if (result.success && result.storedToolResultIds.length > 0) {
       this.taskTracker.markMultipleProcessed(result.storedToolResultIds);
     }
+  }
+
+  private isProviderAvailableForChat(): boolean {
+    const provider = this.modelConfig.provider;
+    if (provider === 'local' || provider === 'sentinel') {
+      return true;
+    }
+
+    const keyEnv = PROVIDER_KEY_ENV[provider];
+    if (!keyEnv) {
+      return true;
+    }
+
+    const secretValue = SecretManager.getInstance().get(keyEnv, 'PersonaUser');
+    return Boolean(secretValue);
   }
 
   /**

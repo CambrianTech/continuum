@@ -43,7 +43,9 @@ pub enum Arch {
 /// the `cognition/respond` IPC payload both carry capability vocab as
 /// a list of these values. TS hosts read/write the same kebab-case
 /// strings serde produces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS,
+)]
 #[ts(
     export,
     export_to = "../../../shared/generated/model_registry/Capability.ts"
@@ -181,9 +183,10 @@ pub struct Model {
     #[serde(default)]
     pub gguf_hint: Option<String>,
     /// Resolved local filesystem path to the GGUF. Populated at registry
-    /// load by the loader (via DMR manifest lookup from `gguf_hint`),
-    /// NOT by the TOML author. TOML may leave this absent; the loader
-    /// fills it if the GGUF is pulled locally.
+    /// load by the artifact resolver from `gguf_hint`, local model roots,
+    /// or an explicit path if one exists. TOML should normally leave this
+    /// absent for portable models; the loader fills it when the artifact is
+    /// already pulled locally.
     #[serde(default)]
     pub gguf_local_path: Option<PathBuf>,
     /// Local filesystem path to the multimodal projector GGUF (mmproj).

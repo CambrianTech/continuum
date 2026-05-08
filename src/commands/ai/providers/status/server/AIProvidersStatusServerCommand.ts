@@ -146,8 +146,8 @@ export class AIProvidersStatusServerCommand extends AIProvidersStatusCommand {
       // positive isConfigured=true for every fresh install, leading users to
       // attempt chat and hit an opaque 401. Check the actual value length
       // instead. (#980 Bug 5.)
-      const rawKey = config.category === 'local' ? undefined : secrets.get(config.key);
-      const isConfigured = config.category === 'local' ? true : (rawKey?.length ?? 0) > 0;
+      const rawKey = config.category === 'local' ? undefined : secrets.get(config.key, 'AIProvidersStatusServerCommand');
+      const isConfigured = config.category === 'local' ? true : (rawKey?.trim().length ?? 0) > 0;
 
       return {
         provider: config.provider,
