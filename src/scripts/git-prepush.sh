@@ -2,8 +2,6 @@
 # Git pre-push hook — compilation + test gate
 # Runs before code reaches the remote. Fast enough to not block workflow,
 # thorough enough to catch real problems.
-#
-# Skip with: git push --no-verify (when you know what you're doing)
 set -e
 
 START_TIME=$(date +%s)
@@ -212,7 +210,7 @@ elif [ ! -x "$REPO_ROOT/scripts/push-current-arch.sh" ]; then
 else
     echo "→ Rust/docker changes detected. Building + pushing native-arch slices."
     echo "  This takes ~20 min per image (native, not QEMU)."
-    echo "  Skip with: git push --no-verify (CI gate still catches missing arches)"
+    echo "  If this fails, fix Docker/auth/worktree state or push images manually with scripts/push-current-arch.sh."
     echo ""
     if "$REPO_ROOT/scripts/push-current-arch.sh"; then
         echo "✅ Native-arch Docker push: done ($(( $(date +%s) - DOCKER_PUSH_START ))s)"
@@ -235,7 +233,7 @@ TOTAL_TIME=$(( $(date +%s) - START_TIME ))
 if [ $FAILED -ne 0 ]; then
     echo "❌ PRE-PUSH FAILED (${TOTAL_TIME}s)"
     echo "   Fix the errors above, then push again."
-    echo "   Skip with: git push --no-verify"
+    echo "   Do not bypass this with --no-verify; fix the worktree, dependencies, submodules, or hook."
     exit 1
 fi
 
