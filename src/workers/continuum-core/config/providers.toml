@@ -82,6 +82,7 @@ model_prefixes = ["gemini"]
 [[provider]]
 id = "docker-model-runner"
 name = "Docker Model Runner (local Metal/CUDA)"
+kind = "local"
 # IPv4 literal on purpose — `localhost` on macOS resolves to both ::1 and
 # 127.0.0.1 and Docker Desktop's model runner listens on IPv4 only. When
 # the hyper client tries ::1 first it waits for the connect path to fall
@@ -98,6 +99,7 @@ auth = "none"
 [[provider]]
 id = "llamacpp-local"
 name = "Llama.cpp (in-process Metal/CUDA)"
+kind = "local"
 base_url = "in-process"
 auth = "none"
 default_model = "continuum-ai/qwen3.5-4b-code-forged-GGUF"
