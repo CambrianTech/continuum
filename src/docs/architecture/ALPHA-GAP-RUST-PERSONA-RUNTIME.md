@@ -212,6 +212,33 @@ cache, and memory heuristic. The extension author should implement a small
 contract and inherit the hard parts: scheduling, pressure, telemetry, artifact
 cache negotiation, and wakeups.
 
+### Pipes Carry Leases, Not Bytes
+
+Continuum already moves audio, video, WebRTC/UDP traffic, Docker-hosted
+services, inference contexts, embeddings, and chat artifacts across module
+boundaries. Generic IPC becomes the bottleneck when each boundary copies the
+bytes and each module rehydrates its own view of the world.
+
+The shared pattern must be:
+
+- Media frames live in a media/frame pool and cross boundaries as frame ids,
+  texture ids, or buffer leases.
+- WebRTC/UDP payloads stay in transport-owned buffers until a subscriber
+  explicitly needs a decoded artifact.
+- Embeddings live in an embedding pool and cross boundaries as vector handles
+  plus version/content hashes.
+- KV cache pages, LoRA pages, mmproj weights, and model weights live in paging
+  pools and cross boundaries as residency leases.
+- Chat/RAG/context artifacts live behind stable turn keys and source hashes,
+  not copied prompt blobs on every persona call.
+- Docker/process boundaries use the same handle protocol when the underlying
+  memory cannot be shared directly: pass ids, ranges, hashes, offsets, and
+  leases; copy only at the final unavoidable edge.
+
+IPC should move control messages and handles. Bulk bytes stay resident in the
+nearest owning pool. This is how the system avoids clogging pipes while still
+letting independent modules subscribe to the same live world.
+
 ## Failure Modes To Eliminate
 
 ### Single-Responder Collapse
