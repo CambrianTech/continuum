@@ -31,6 +31,7 @@ pub mod response_orchestrator;
 pub mod response_validator;
 pub mod shared_analysis;
 pub mod tool_executor;
+pub mod turn_batch;
 pub mod types;
 
 pub use response_orchestrator::{
@@ -42,4 +43,5 @@ pub use tool_executor::{
     MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite,
     ToolExecutionContext, ToolExecutor, ToolInvocation, ToolOutcome,
 };
+pub use turn_batch::*;
 pub use types::*;
