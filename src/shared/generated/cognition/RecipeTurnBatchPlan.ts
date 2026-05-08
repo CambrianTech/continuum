@@ -5,4 +5,4 @@ import type { SharedRagSourcePlan } from "./SharedRagSourcePlan";
 /**
  * Result of `cognition/plan-turn-batch`.
  */
-export type RecipeTurnBatchPlan = { turnKey: string, roomId: string, messageId?: string, queryText: string, sharedSources: Array<SharedRagSourcePlan>, personaPlans: Array<PersonaTurnPlan>, skippedDuplicatePersonaIds: Array<string>, maxConcurrentLocalGenerations: number, };
+export type RecipeTurnBatchPlan = { turnKey: string, roomId: string, messageId?: string, queryText: string, sharedSources: Array<SharedRagSourcePlan>, personaPlans: Array<PersonaTurnPlan>, skippedDuplicatePersonaIds: Array<string>, maxConcurrentLocalGenerations: number, estimatedFirstResponseMs: number, estimatedAllResponsesMs: number, meetsFirstResponseBudget: boolean, meetsAllResponsesBudget: boolean, };

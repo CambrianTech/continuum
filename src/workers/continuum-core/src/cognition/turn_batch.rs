@@ -98,6 +98,30 @@ pub struct RecipeTurnBatchRequest {
     /// generation still uses each candidate's model limits.
     #[serde(default)]
     pub total_input_budget_tokens: usize,
+    /// Local inference lanes available for this turn. Zero means unknown,
+    /// treated as one lane. The host should pass `inference/capacity` here
+    /// so the planner, admission control, and runtime scheduler share the
+    /// same source of truth.
+    #[serde(default)]
+    pub local_inference_capacity: usize,
+    /// Visible-response budget for the first local persona reply. Zero means
+    /// use the alpha gate default.
+    #[serde(default = "default_first_response_budget_ms")]
+    #[ts(type = "number")]
+    pub first_response_budget_ms: u64,
+    /// Visible-response budget for every admitted persona to either respond
+    /// or emit a silence reason. Zero means use the alpha gate default.
+    #[serde(default = "default_all_responses_budget_ms")]
+    #[ts(type = "number")]
+    pub all_responses_budget_ms: u64,
+}
+
+fn default_first_response_budget_ms() -> u64 {
+    10_000
+}
+
+fn default_all_responses_budget_ms() -> u64 {
+    30_000
 }
 
 /// One shared RAG source load in the plan.
@@ -129,10 +153,15 @@ pub struct PersonaTurnPlan {
     pub provider: String,
     pub local_model: bool,
     pub generation_order: usize,
+    pub generation_wave: usize,
     pub persona_context_key: String,
     pub rag_cache_key: String,
     pub input_budget_tokens: usize,
     pub max_output_tokens: usize,
+    #[ts(type = "number")]
+    pub estimated_start_ms: u64,
+    #[ts(type = "number")]
+    pub estimated_finish_ms: u64,
     pub source_names: Vec<String>,
 }
 
@@ -154,9 +183,16 @@ pub struct RecipeTurnBatchPlan {
     pub persona_plans: Vec<PersonaTurnPlan>,
     pub skipped_duplicate_persona_ids: Vec<String>,
     pub max_concurrent_local_generations: usize,
+    #[ts(type = "number")]
+    pub estimated_first_response_ms: u64,
+    #[ts(type = "number")]
+    pub estimated_all_responses_ms: u64,
+    pub meets_first_response_budget: bool,
+    pub meets_all_responses_budget: bool,
 }
 
 pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
+    let max_concurrent_local_generations = local_generation_capacity(&req);
     let turn_key = stable_key(&[
         "turn",
         &req.trigger.room_id.to_string(),
@@ -188,6 +224,17 @@ pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
         }
 
         let generation_order = persona_plans.len();
+        let generation_wave = if is_local_provider(&candidate.provider, &candidate.model) {
+            generation_order / max_concurrent_local_generations
+        } else {
+            0
+        };
+        let estimated_start_ms = if is_local_provider(&candidate.provider, &candidate.model) {
+            estimate_wave_start_ms(&persona_plans, generation_wave)
+        } else {
+            0
+        };
+        let estimated_duration_ms = estimate_generation_ms(&candidate);
         let input_budget_tokens = candidate
             .context_window
             .saturating_sub(candidate.max_output_tokens)
@@ -214,13 +261,34 @@ pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
             provider: candidate.provider.clone(),
             local_model: is_local_provider(&candidate.provider, &candidate.model),
             generation_order,
+            generation_wave,
             persona_context_key,
             rag_cache_key,
             input_budget_tokens,
             max_output_tokens: candidate.max_output_tokens,
+            estimated_start_ms,
+            estimated_finish_ms: estimated_start_ms.saturating_add(estimated_duration_ms),
             source_names: shared_source_names.clone(),
         });
     }
+
+    let estimated_first_response_ms = persona_plans
+        .iter()
+        .filter(|plan| plan.local_model)
+        .map(|plan| plan.estimated_finish_ms)
+        .min()
+        .unwrap_or(0);
+    let estimated_all_responses_ms = persona_plans
+        .iter()
+        .filter(|plan| plan.local_model)
+        .map(|plan| plan.estimated_finish_ms)
+        .max()
+        .unwrap_or(0);
+
+    let first_response_budget_ms =
+        effective_budget_ms(req.first_response_budget_ms, default_first_response_budget_ms());
+    let all_responses_budget_ms =
+        effective_budget_ms(req.all_responses_budget_ms, default_all_responses_budget_ms());
 
     RecipeTurnBatchPlan {
         turn_key,
@@ -230,8 +298,49 @@ pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
         shared_sources,
         persona_plans,
         skipped_duplicate_persona_ids,
-        max_concurrent_local_generations: 1,
+        max_concurrent_local_generations,
+        estimated_first_response_ms,
+        estimated_all_responses_ms,
+        meets_first_response_budget: estimated_first_response_ms <= first_response_budget_ms,
+        meets_all_responses_budget: estimated_all_responses_ms <= all_responses_budget_ms,
     }
+}
+
+fn effective_budget_ms(requested: u64, default_budget: u64) -> u64 {
+    if requested == 0 {
+        default_budget
+    } else {
+        requested
+    }
+}
+
+fn local_generation_capacity(req: &RecipeTurnBatchRequest) -> usize {
+    let requested = req.local_inference_capacity.max(1);
+    let local_persona_count = req
+        .personas
+        .iter()
+        .filter(|candidate| is_local_provider(&candidate.provider, &candidate.model))
+        .count()
+        .max(1);
+    requested.min(local_persona_count)
+}
+
+fn estimate_wave_start_ms(existing_plans: &[PersonaTurnPlan], generation_wave: usize) -> u64 {
+    if generation_wave == 0 {
+        return 0;
+    }
+
+    existing_plans
+        .iter()
+        .filter(|plan| plan.local_model && plan.generation_wave == generation_wave - 1)
+        .map(|plan| plan.estimated_finish_ms)
+        .max()
+        .unwrap_or(0)
+}
+
+fn estimate_generation_ms(candidate: &RecipePersonaCandidate) -> u64 {
+    let tokens_per_second = candidate.tokens_per_second.unwrap_or(1.0).max(1.0);
+    (((candidate.max_output_tokens as f32) / tokens_per_second) * 1000.0).ceil() as u64
 }
 
 fn normalize_sources(sources: Vec<RecipeRagSourcePolicy>) -> Vec<RecipeRagSourcePolicy> {
@@ -364,6 +473,9 @@ mod tests {
                 },
             ],
             total_input_budget_tokens: 12_000,
+            local_inference_capacity: 1,
+            first_response_budget_ms: default_first_response_budget_ms(),
+            all_responses_budget_ms: default_all_responses_budget_ms(),
         }
     }
 
@@ -431,5 +543,60 @@ mod tests {
         assert!(plan.persona_plans.iter().all(|p| p.local_model));
         assert_eq!(plan.persona_plans[0].generation_order, 0);
         assert_eq!(plan.persona_plans[1].generation_order, 1);
+        assert_eq!(plan.persona_plans[0].generation_wave, 0);
+        assert_eq!(plan.persona_plans[1].generation_wave, 1);
+        assert_eq!(
+            plan.persona_plans[1].estimated_start_ms,
+            plan.persona_plans[0].estimated_finish_ms
+        );
+        assert_eq!(
+            plan.estimated_first_response_ms,
+            plan.persona_plans[0].estimated_finish_ms
+        );
+        assert_eq!(
+            plan.estimated_all_responses_ms,
+            plan.persona_plans[1].estimated_finish_ms
+        );
+    }
+
+    #[test]
+    fn local_generation_uses_declared_capacity_for_parallel_waves() {
+        let mut req = request();
+        req.local_inference_capacity = 2;
+
+        let plan = plan_turn_batch(req);
+
+        assert_eq!(plan.max_concurrent_local_generations, 2);
+        assert_eq!(plan.persona_plans[0].generation_wave, 0);
+        assert_eq!(plan.persona_plans[1].generation_wave, 0);
+        assert_eq!(plan.persona_plans[0].estimated_start_ms, 0);
+        assert_eq!(plan.persona_plans[1].estimated_start_ms, 0);
+    }
+
+    #[test]
+    fn exposes_budget_failure_before_execution() {
+        let mut req = request();
+        req.local_inference_capacity = 1;
+        req.first_response_budget_ms = 1;
+        req.all_responses_budget_ms = 1;
+
+        let plan = plan_turn_batch(req);
+
+        assert!(!plan.meets_first_response_budget);
+        assert!(!plan.meets_all_responses_budget);
+    }
+
+    #[test]
+    fn zero_budget_uses_alpha_defaults() {
+        let mut req = request();
+        req.personas[0].max_output_tokens = 16;
+        req.personas[1].max_output_tokens = 16;
+        req.first_response_budget_ms = 0;
+        req.all_responses_budget_ms = 0;
+
+        let plan = plan_turn_batch(req);
+
+        assert!(plan.meets_first_response_budget);
+        assert!(plan.meets_all_responses_budget);
     }
 }
