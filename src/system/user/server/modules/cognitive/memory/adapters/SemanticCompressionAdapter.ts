@@ -64,9 +64,10 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
     const errors: Array<{ domain: string; error: string }> = [];
 
     for (const group of groups) {
-      // BACKPRESSURE: Check system load before expensive LLM synthesis
-      // Memory synthesis is low priority - defer when system is loaded
-      if (!BackpressureService.shouldProceed('low')) {
+      // BACKPRESSURE: Check system load before expensive LLM synthesis.
+      // This uses the strict background lane because it shares the visible chat
+      // inference path until a dedicated memory-synthesis engine exists.
+      if (!BackpressureService.shouldProceed('background')) {
         skippedDueToLoad++;
         // Use fallback (no LLM call) when under load
         const fallback = this.createFallbackMemory(group, context);
