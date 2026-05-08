@@ -11,4 +11,21 @@ export type RecipeTurnBatchRequest = { trigger: RecipeTurnTrigger, personas: Arr
  * Total input-token budget for shared RAG planning. Per-persona
  * generation still uses each candidate's model limits.
  */
-totalInputBudgetTokens: number, };
+totalInputBudgetTokens: number,
+/**
+ * Local inference lanes available for this turn. Zero means unknown,
+ * treated as one lane. The host should pass `inference/capacity` here
+ * so the planner, admission control, and runtime scheduler share the
+ * same source of truth.
+ */
+localInferenceCapacity: number,
+/**
+ * Visible-response budget for the first local persona reply. Zero means
+ * use the alpha gate default.
+ */
+firstResponseBudgetMs: number,
+/**
+ * Visible-response budget for every admitted persona to either respond
+ * or emit a silence reason. Zero means use the alpha gate default.
+ */
+allResponsesBudgetMs: number, };

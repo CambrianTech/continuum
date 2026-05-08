@@ -3,4 +3,4 @@
 /**
  * Persona-specific work item for the turn.
  */
-export type PersonaTurnPlan = { personaId: string, displayName: string, specialty: string, model: string, provider: string, localModel: boolean, generationOrder: number, personaContextKey: string, ragCacheKey: string, inputBudgetTokens: number, maxOutputTokens: number, sourceNames: Array<string>, };
+export type PersonaTurnPlan = { personaId: string, displayName: string, specialty: string, model: string, provider: string, localModel: boolean, generationOrder: number, generationWave: number, personaContextKey: string, ragCacheKey: string, inputBudgetTokens: number, maxOutputTokens: number, estimatedStartMs: number, estimatedFinishMs: number, sourceNames: Array<string>, };
