@@ -18,6 +18,8 @@
 import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { PersonaRespondRequest } from '../../../../workers/continuum-core/bindings/modules/cognition';
 import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
+import type { RecipeTurnBatchPlan } from '../../../../shared/generated/cognition/RecipeTurnBatchPlan';
+import type { RecipeTurnBatchRequest } from '../../../../shared/generated/cognition/RecipeTurnBatchRequest';
 import type {
   InboxMessageRequest,
   CognitionDecision,
@@ -892,6 +894,17 @@ export class RustCognitionBridge {
       this.logger.error(`personaRespond FAILED after ${elapsed.toFixed(2)}ms: ${error}`);
       throw error;
     }
+  }
+
+  async planTurnBatch(request: RecipeTurnBatchRequest): Promise<RecipeTurnBatchPlan> {
+    this.assertReady('planTurnBatch');
+    const start = performance.now();
+    const result = await this.client.cognitionPlanTurnBatch(request);
+    const elapsed = performance.now() - start;
+    this.logger.info(
+      `PlanTurnBatch: personas=${result.personaPlans.length}, sharedSources=${result.sharedSources.length}, localConcurrency=${result.maxConcurrentLocalGenerations} (${elapsed.toFixed(2)}ms)`
+    );
+    return result;
   }
 
   async selectModel(baseModel: string, taskDomain?: string): Promise<ModelSelectionResult> {

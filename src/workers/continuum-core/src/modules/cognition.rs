@@ -836,6 +836,23 @@ impl ServiceModule for CognitionModule {
             }
 
             // =================================================================
+            // Recipe/RAG turn batching boundary
+            // =================================================================
+            // Pure planning command: no ORM, no inference, no file I/O. The host
+            // supplies the trigger, candidate personas, and active RAG sources;
+            // Rust returns deterministic keys + fan-out/admission policy so Node
+            // stays a wrapper instead of inventing per-persona batching behavior.
+            "cognition/plan-turn-batch" => {
+                let _timer = TimingGuard::new("module", "cognition_plan_turn_batch");
+                let request: crate::cognition::RecipeTurnBatchRequest = p.json("request")?;
+                let plan = crate::cognition::plan_turn_batch(request);
+
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&plan).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
+            }
+
+            // =================================================================
             // Domain Classification (adapter-aware keyword scoring)
             // =================================================================
             "cognition/classify-domain" => {
