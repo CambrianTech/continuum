@@ -200,12 +200,49 @@ export const LOCAL_MODELS = {
   } as const,
 
   /**
+   * Removed local runtime aliases.
+   *
+   * These used to route persona/chat inference through ad hoc llama/Candle
+   * paths. Local persona inference is now Qwen + Rust admission only. Fail
+   * loudly so stale DB rows or command params do not silently pick the wrong
+   * model/provider and burn CPU.
+   */
+  REMOVED_LOCAL_ALIASES: {
+    'llama3': 'qwen3.5',
+    'llama3:8b': 'qwen3.5',
+    'llama3.1': 'qwen3.5',
+    'llama3.1:8b': 'qwen3.5',
+    'llama3.2': 'qwen3.5',
+    'llama3.2:1b': 'qwen2',
+    'llama3.2:3b': 'qwen3.5',
+    'phi3': 'qwen2',
+    'phi3:mini': 'qwen2',
+    'tinyllama': 'qwen2',
+    'smollm2': 'qwen2',
+    'codellama': 'qwen3.5-code',
+  } as const,
+
+  /**
    * Map a model name to HuggingFace ID
    * Returns original if not found (might already be a HuggingFace ID)
    */
   mapToHuggingFace(modelName: string): string {
     const normalized = modelName.toLowerCase().trim();
     const mapping = LOCAL_MODELS.LEGACY_TO_HUGGINGFACE as Record<string, string>;
+    const removedAliases = LOCAL_MODELS.REMOVED_LOCAL_ALIASES as Record<string, string>;
+
+    const assertNotRemoved = (candidate: string): void => {
+      const replacement = removedAliases[candidate];
+      if (replacement) {
+        throw new Error(
+          `Local model alias '${modelName}' was removed from the runtime. ` +
+          `Continuum local chat uses Qwen through Rust/llama.cpp admission only. ` +
+          `Use '${replacement}' or LOCAL_MODELS.DEFAULT instead.`
+        );
+      }
+    };
+
+    assertNotRemoved(normalized);
 
     // Direct lookup
     if (mapping[normalized]) {
@@ -214,6 +251,7 @@ export const LOCAL_MODELS = {
 
     // Try without version suffix (e.g., 'qwen3.5:4b-instruct' -> 'qwen3.5:4b')
     const withoutSuffix = normalized.replace(/-instruct.*$|-chat.*$|-q\d+.*$/i, '');
+    assertNotRemoved(withoutSuffix);
     if (mapping[withoutSuffix]) {
       return mapping[withoutSuffix];
     }

@@ -23,7 +23,7 @@ PersonaUser.shouldRespondToMessage()
        ↓
 ChatRAGBuilder (reuse existing RAG assembly)
        ↓
-ai/generate (llama3.2:3b with gating prompt)
+ai/generate (local Qwen with gating prompt)
        ↓
 Parse JSON response:
    {
@@ -136,7 +136,7 @@ You are a conversation coordinator for a multi-party chat room.
 - ✅ Explainable decisions (logs show reasoning)
 
 **vs Expensive Model for Every Decision:**
-- ✅ Use **llama3.2:3b** (2GB, fast, free)
+- ✅ Use the local Qwen gating/default model (fast, free, Rust-admitted)
 - ✅ Simple YES/NO decision (low temperature, 200 tokens)
 - ✅ ~1-2 seconds per decision
 - ✅ **Fail-safe fallback** to simple heuristics if AI unavailable
@@ -144,7 +144,7 @@ You are a conversation coordinator for a multi-party chat room.
 ### Cost Analysis
 
 **Current Problem**: All 3 personas generate full responses (12+ messages)
-- 12 × llama3.2:3b calls = 12 × ~5 seconds = **60 seconds total**
+- 12 × local model calls = 12 × ~5 seconds = **60 seconds total**
 - 12 × 150 tokens = **1,800 tokens wasted**
 
 **With AI Gating**:

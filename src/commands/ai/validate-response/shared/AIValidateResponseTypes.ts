@@ -33,7 +33,7 @@ export interface AIValidateResponseParams extends CommandParams {
   /** Optional: Conversation context for better evaluation */
   readonly conversationContext?: string;
 
-  /** Optional: Override model (defaults to llama3.2:3b) */
+  /** Optional: Override model (defaults to LOCAL_MODELS.GATING) */
   readonly model?: string;
 
   /** Verbose mode - include prompt and AI reasoning */
@@ -109,4 +109,3 @@ export const createAiValidateResponseResultFromParams = (
   params: AIValidateResponseParams,
   differences: Omit<AIValidateResponseResult, 'context' | 'sessionId' | 'userId'>
 ): AIValidateResponseResult => transformPayload(params, differences);
-

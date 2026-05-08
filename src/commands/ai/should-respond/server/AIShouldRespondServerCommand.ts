@@ -48,10 +48,10 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
           ...markedHistory,  // Conversation with trigger message marked
           { role: 'user', content: gatingInstruction }
         ],
-        model: params.model ?? LOCAL_MODELS.DEFAULT,  // Candle uses pre-loaded model
+        model: params.model ?? LOCAL_MODELS.DEFAULT,
         temperature: 0.3,
         maxTokens: 200,
-        provider: 'candle'
+        provider: 'local'
       };
 
       const response = await AIProviderDaemon.generateText(request);
@@ -65,26 +65,26 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
 
       // If parsing failed (confidence = 0.0 means parse error), retry with better model to fix JSON
       if (parsed.confidence === 0.0 && parsed.reason === 'Failed to parse AI response') {
-        console.warn(`⚠️ Gating JSON parse failed with ${request.model}, retrying with Candle to fix malformed JSON`);
+        console.warn(`⚠️ Gating JSON parse failed with ${request.model}, retrying with local Qwen to fix malformed JSON`);
 
         const fixRequest: TextGenerationRequest = {
           messages: [
             { role: 'system', content: 'You are a JSON repair tool. Fix malformed JSON and return valid JSON only.' },
             { role: 'user', content: `This JSON is malformed:\n\n${response.text}\n\nFix it and return ONLY valid JSON with this exact structure:\n{\n  "shouldRespond": true/false,\n  "confidence": 0.0-1.0,\n  "reason": "string",\n  "factors": {\n    "mentioned": true/false,\n    "questionAsked": true/false,\n    "domainRelevant": true/false,\n    "recentlySpoke": true/false,\n    "othersAnswered": true/false\n  }\n}` }
           ],
-          model: LOCAL_MODELS.DEFAULT,  // Candle uses pre-loaded model
+          model: LOCAL_MODELS.DEFAULT,
           temperature: 0.1,  // Low temp for structured output
           maxTokens: 200,
-          provider: 'candle'
+          provider: 'local'
         };
 
         const fixedResponse = await AIProviderDaemon.generateText(fixRequest);
         if (fixedResponse.text) {
           parsed = this.parseGatingResponse(fixedResponse.text);
           if (parsed.confidence !== 0.0) {
-            console.log(`✅ JSON repair succeeded with Candle`);
+            console.log(`✅ JSON repair succeeded with local Qwen`);
           } else {
-            throw new Error(`JSON repair failed even with Candle. Original: ${response.text.slice(0, 200)}`);
+            throw new Error(`JSON repair failed even with local Qwen. Original: ${response.text.slice(0, 200)}`);
           }
         } else {
           throw new Error(`JSON repair request failed: ${fixedResponse.error}`);
