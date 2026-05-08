@@ -46,7 +46,7 @@ export interface AIShouldRespondParams extends CommandParams {
   /** Detection strategy (default: 'fast') */
   readonly strategy?: ResponseStrategy;
 
-  /** Optional: Override model (defaults to llama3.2:3b for LLM strategy) */
+  /** Optional: Override model (defaults to LOCAL_MODELS.DEFAULT for LLM strategy) */
   readonly model?: string;
 
   /** Verbose mode - include full RAG context and prompt in response */
@@ -159,4 +159,3 @@ export const createAiShouldRespondResultFromParams = (
   params: AIShouldRespondParams,
   differences: Omit<AIShouldRespondResult, 'context' | 'sessionId' | 'userId'>
 ): AIShouldRespondResult => transformPayload(params, differences);
-

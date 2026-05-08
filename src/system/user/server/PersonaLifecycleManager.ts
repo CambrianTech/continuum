@@ -12,6 +12,7 @@
 import { Events } from '../../core/shared/Events';
 import { Commands } from '../../core/shared/Commands';
 import type { CommandParams } from '../../core/types/JTAGTypes';
+import { SecretManager } from '../../secrets/SecretManager';
 
 interface KeyChangeEvent {
   provider: string;
@@ -293,6 +294,7 @@ export class PersonaLifecycleManager {
       'SENTINEL_PATH',
     ];
 
-    return knownKeyVars.filter(key => !!process.env[key]);
+    const secrets = SecretManager.getInstance();
+    return knownKeyVars.filter(key => Boolean(secrets.get(key, 'PersonaLifecycleManager.collectAvailableApiKeys')));
   }
 }

@@ -11,6 +11,7 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { AIValidateResponseParams, AIValidateResponseResult, ResponseDecision } from '../shared/AIValidateResponseTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 
 export class AIValidateResponseServerCommand extends CommandBase<AIValidateResponseParams, AIValidateResponseResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -27,10 +28,10 @@ export class AIValidateResponseServerCommand extends CommandBase<AIValidateRespo
         { role: 'system', content: 'You are a response validator. Reply ONLY with one word: SUBMIT, CLARIFY, or SILENT.' },
         { role: 'user', content: validationPrompt }
       ],
-      model: params.model ?? 'llama3.2:3b',
+      model: params.model ?? LOCAL_MODELS.GATING,
       temperature: 0.1,  // Low temp for consistent decisions
       maxTokens: 10,     // Just need one word
-      provider: 'candle'
+      provider: 'local'
     };
 
     const response = await AIProviderDaemon.generateText(request);
