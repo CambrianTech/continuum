@@ -122,6 +122,10 @@ pub struct AdaptiveThroughputRequest {
 pub struct AdaptiveThroughputPlan {
     pub admitted: Vec<ThroughputJob>,
     pub deferred_missing_dependencies: Vec<ThroughputJob>,
+    /// Jobs whose target_silicon has no declared budget. This is a
+    /// configuration error, not normal backpressure: callers should surface it
+    /// loudly instead of retrying forever.
+    pub dropped_no_budget: Vec<ThroughputJob>,
     pub deferred_resource_pressure: Vec<ThroughputJob>,
     pub dropped_stale: Vec<ThroughputJob>,
     pub dropped_superseded: Vec<ThroughputJob>,
@@ -157,22 +161,26 @@ pub fn plan_adaptive_throughput(req: AdaptiveThroughputRequest) -> AdaptiveThrou
 
     let mut used_by_lane: BTreeMap<TargetSilicon, (usize, u32)> = BTreeMap::new();
     let mut admitted = Vec::new();
+    let mut dropped_no_budget = Vec::new();
     let mut deferred_resource_pressure = Vec::new();
 
     for job in dependency_ready {
-        if can_admit(&job, &lane_budgets, &used_by_lane) {
-            let used = used_by_lane.entry(job.target_silicon).or_insert((0, 0));
-            used.0 += 1;
-            used.1 = used.1.saturating_add(job.cost_units);
-            admitted.push(job);
-        } else {
-            deferred_resource_pressure.push(job);
+        match admit_decision(&job, &lane_budgets, &used_by_lane) {
+            AdmissionDecision::Admit => {
+                let used = used_by_lane.entry(job.target_silicon).or_insert((0, 0));
+                used.0 += 1;
+                used.1 = used.1.saturating_add(job.cost_units);
+                admitted.push(job);
+            }
+            AdmissionDecision::NoBudget => dropped_no_budget.push(job),
+            AdmissionDecision::ResourcePressure => deferred_resource_pressure.push(job),
         }
     }
 
     AdaptiveThroughputPlan {
         admitted,
         deferred_missing_dependencies,
+        dropped_no_budget,
         deferred_resource_pressure,
         dropped_stale,
         dropped_superseded,
@@ -219,20 +227,32 @@ fn dependencies_ready(job: &ThroughputJob, ready_artifacts: &BTreeSet<String>) -
         .all(|key| ready_artifacts.contains(key))
 }
 
-fn can_admit(
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum AdmissionDecision {
+    Admit,
+    NoBudget,
+    ResourcePressure,
+}
+
+fn admit_decision(
     job: &ThroughputJob,
     budgets: &BTreeMap<TargetSilicon, ThroughputLaneBudget>,
     used_by_lane: &BTreeMap<TargetSilicon, (usize, u32)>,
-) -> bool {
+) -> AdmissionDecision {
     let Some(budget) = budgets.get(&job.target_silicon) else {
-        return false;
+        return AdmissionDecision::NoBudget;
     };
     let used = used_by_lane
         .get(&job.target_silicon)
         .copied()
         .unwrap_or((0, 0));
-    used.0 < budget.max_concurrency
+    if used.0 < budget.max_concurrency
         && used.1.saturating_add(job.cost_units) <= budget.max_cost_units
+    {
+        AdmissionDecision::Admit
+    } else {
+        AdmissionDecision::ResourcePressure
+    }
 }
 
 fn compare_jobs(left: &ThroughputJob, right: &ThroughputJob) -> std::cmp::Ordering {
@@ -589,5 +609,36 @@ mod tests {
             .collect();
         assert_eq!(admitted, vec!["local-a", "local-b"]);
         assert_eq!(deferred, vec!["media", "render"]);
+    }
+
+    #[test]
+    fn missing_physical_budget_is_loud_not_indefinite_backpressure() {
+        let plan = plan_adaptive_throughput(AdaptiveThroughputRequest {
+            ready_artifact_keys: Vec::new(),
+            lane_budgets: vec![budget(ResourceClass::Cpu, TargetSilicon::Cpu, 4)],
+            jobs: vec![
+                job(
+                    "cpu",
+                    "analysis",
+                    ResourceClass::Cpu,
+                    TargetSilicon::Cpu,
+                    100,
+                ),
+                job(
+                    "local",
+                    "reply",
+                    ResourceClass::LocalGeneration,
+                    TargetSilicon::Gpu,
+                    90,
+                ),
+            ],
+            now_ms: 150,
+        });
+
+        assert_eq!(plan.admitted.len(), 1);
+        assert_eq!(plan.admitted[0].job_id, "cpu");
+        assert_eq!(plan.deferred_resource_pressure.len(), 0);
+        assert_eq!(plan.dropped_no_budget.len(), 1);
+        assert_eq!(plan.dropped_no_budget[0].job_id, "local");
     }
 }
