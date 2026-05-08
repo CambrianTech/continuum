@@ -5,8 +5,9 @@
 //!
 //! Gate order (short-circuits on first SILENT):
 //! 1. Sleep mode — checks SleepMode + topic similarity (persona's own opt-out)
-//! 2. Self-message — infinite loop prevention (inside fast_path)
-//! 3. Fast-path decision — delegates to PersonaCognitionEngine::fast_path_decision
+//! 2. Undirected persona chatter — one persona turn must not recursively summon another
+//! 3. Self-message — infinite loop prevention (inside fast_path)
+//! 4. Fast-path decision — delegates to PersonaCognitionEngine::fast_path_decision
 //!
 //! Note: response_count is collected as a SIGNAL (LLM sees it in social_signals
 //! and can self-quiet if a conversation is getting too noisy) but is NOT a hard
@@ -298,9 +299,10 @@ pub struct GateDetails {
 ///
 /// Hard gates (system protection only):
 /// 1. Sleep mode — persona's OWN voluntary decision (respects autonomy)
-/// 2. Non-human echo storm — undirected AI/agent chatter is suppressed once
+/// 2. Undirected persona chatter — one persona turn completes the room turn
+/// 3. Non-human echo storm — undirected AI/agent chatter is suppressed once
 ///    the room is already AI-heavy
-/// 3. Self-message — infinite loop prevention (inside fast_path)
+/// 4. Self-message — infinite loop prevention (inside fast_path)
 ///
 /// Removed: response cap. Was a cloud-provider "resource exhaustion" concept
 /// that blocked local personas (which have zero cost) after 50 responses per
@@ -414,12 +416,44 @@ pub fn full_evaluate(
     }
 
     // =========================================================================
-    // HARD GATE 2: Non-human echo storm.
+    // HARD GATE 2: Undirected persona chatter.
     //
-    // A bridged agent broadcast or another persona's generic reply must not
-    // summon every persona repeatedly. Human messages and direct mentions still
-    // flow through normally; only undirected AI/agent/system chatter is damped
-    // once the recent room window is already AI-heavy.
+    // A persona response is already a completed room turn. Letting every other
+    // persona evaluate it recreates the observed echo chain:
+    // human → Teacher → Helper copies Teacher → Teacher summarizes Helper...
+    //
+    // Direct mentions still flow through. Agents are not blocked here because
+    // bridged humans/coding agents enter as SenderType::Agent and are allowed
+    // to intentionally feed Continuum over AIRC or other transports.
+    // =========================================================================
+    if request.sender_type == SenderType::Persona && !is_mentioned {
+        return FullEvaluateResult {
+            should_respond: false,
+            confidence: 1.0,
+            reason: "Undirected persona message completes the room turn".into(),
+            gate: "persona_turn_complete".into(),
+            decision_time_ms: start.elapsed().as_secs_f64() * 1000.0,
+            gate_details: Some(GateDetails {
+                response_count: Some(response_count),
+                max_responses: Some(rate_limiter.max_responses_per_session),
+                rate_limit_wait_seconds: rate_limiter
+                    .rate_limit_wait_seconds(request.room_id, now_ms),
+                sleep_mode: None,
+                is_mentioned: Some(is_mentioned),
+                has_directed_mention: Some(has_directed_mention),
+                topic_similarity: None,
+                echo_chamber_ai_count: Some(echo_result.ai_message_count as u32),
+            }),
+            social_signals: Some(social_signals),
+        };
+    }
+
+    // =========================================================================
+    // HARD GATE 3: Non-human echo storm.
+    //
+    // Agent/system broadcasts can intentionally start a Continuum turn, but if
+    // the room is already AI-heavy and the message is not directed, suppress it
+    // before it wakes every persona.
     // =========================================================================
     let sender_is_non_human = matches!(
         request.sender_type,
@@ -895,6 +929,28 @@ mod tests {
 
         assert!(!result.should_respond);
         assert_eq!(result.gate, "non_human_echo_storm");
+    }
+
+    #[test]
+    fn test_undirected_persona_message_completes_turn_without_cache_warmup() {
+        let (engine, persona_id) = test_engine("TestBot");
+        let mut request = test_request(persona_id, "TestBot");
+        request.sender_type = SenderType::Persona;
+        request.sender_is_human = false;
+        request.sender_name = "Teacher AI".into();
+        request.content = "Teacher AI: Yes, I can see this startup smoke test.".into();
+
+        let result = full_evaluate(
+            &request,
+            &RateLimiterState::default(),
+            &SleepState::default(),
+            &engine,
+            &RecentMessageCache::new(),
+            now_ms(),
+        );
+
+        assert!(!result.should_respond);
+        assert_eq!(result.gate, "persona_turn_complete");
     }
 
     #[test]

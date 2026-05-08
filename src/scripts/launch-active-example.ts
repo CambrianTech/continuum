@@ -26,7 +26,8 @@ async function launchActiveExample(): Promise<void> {
     const systemState = await systemOrchestrator.orchestrate('system-start', {
       workingDir,
       verbose: true,
-      browserUrl: undefined // Use default from configuration
+      browserUrl: undefined, // Use default from configuration
+      skipBrowser: process.env.CONTINUUM_DEFER_BROWSER === '1' || process.env.CONTINUUM_DEFER_BROWSER === 'true'
     });
     
     if (!systemState.success) {

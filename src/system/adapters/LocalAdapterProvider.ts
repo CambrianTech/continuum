@@ -1,7 +1,7 @@
 /**
  * Local Adapter Provider
  *
- * Manages LoRA adapters for local inference via Candle.
+ * Manages LoRA adapters for local Qwen-family models.
  * Direct weight merging - no cloud dependencies.
  */
 
@@ -21,13 +21,13 @@ import * as path from 'path';
 import { GlobalPaths } from '../core/config/SystemPaths';
 
 /**
- * Local adapter provider - Candle inference
+ * Local adapter provider.
  */
 export class LocalAdapterProvider implements IAdapterProvider {
   readonly name = 'local';
   readonly type: ProviderType = 'local';
   readonly source: AdapterSource = 'local';
-  readonly description = 'Local inference via Candle with direct LoRA weight merging';
+  readonly description = 'Local Qwen-family adapter management with direct LoRA weight merging';
 
   private readonly registryPath: string;
   private readonly client: InferenceGrpcClient;
@@ -44,23 +44,23 @@ export class LocalAdapterProvider implements IAdapterProvider {
   async getSupportedModels(): Promise<SupportedModel[]> {
     return [
       {
-        id: 'unsloth/Llama-3.2-3B-Instruct',
-        name: 'Llama 3.2 3B',
-        family: 'llama',
+        id: 'continuum-ai/qwen3.5-4b-code-forged-GGUF',
+        name: 'Qwen3.5 4B Code Forged',
+        family: 'qwen3',
         maxContext: 8192,
         supportedRanks: [1, 2, 4, 8, 16, 32, 64],
       },
       {
-        id: 'meta-llama/Llama-3.2-3B-Instruct',
-        name: 'Llama 3.2 3B (Meta)',
-        family: 'llama',
+        id: 'continuum-ai/qwen3.5-2b-general-forged',
+        name: 'Qwen3.5 2B General Forged',
+        family: 'qwen3',
         maxContext: 8192,
         supportedRanks: [1, 2, 4, 8, 16, 32, 64],
       },
       {
-        id: 'meta-llama/Llama-3.2-1B-Instruct',
-        name: 'Llama 3.2 1B',
-        family: 'llama',
+        id: 'Qwen/Qwen2-VL-7B-Instruct-GGUF',
+        name: 'Qwen2-VL 7B Instruct',
+        family: 'qwen2-vl',
         maxContext: 8192,
         supportedRanks: [1, 2, 4, 8, 16, 32],
       },

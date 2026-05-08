@@ -236,12 +236,6 @@ capabilities = ["text-generation", "chat", "tool-use", "streaming"]
 cost_input_per_1k = 0.0
 cost_output_per_1k = 0.0
 gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
-# Where the in-process Metal/CUDA path loads the GGUF from. This is the
-# artifact DMR caches under its content-addressed bundle store — same
-# bytes the `docker model run` path serves. The SHA is stable (it's the
-# published artifact hash), so pinning it here is correct; a newer
-# forge would publish a new id, not mutate this one.
-gguf_local_path = "~/.docker/models/bundles/sha256/0ed44d4643b05eba23a4ec765aeee8c0f818f9063b09e54d30ded513287f18e9/model/model.gguf"
 # Explicit qwen3.5 chatml template. The forged GGUF doesn't embed
 # `tokenizer.chat_template` in its metadata, and llama.cpp's built-in
 # chatml default drifts from qwen3.5's training on boundary tokens

@@ -153,7 +153,7 @@ pub struct LlamaCppAdapter {
 
 impl LlamaCppAdapter {
     /// Construct from the model_registry. Looks up the first model under
-    /// provider `llamacpp-local` that has a non-None `gguf_local_path`
+    /// provider `llamacpp-local` whose GGUF artifact resolved locally
     /// and uses its id + path. If the registry has no such row, panics
     /// — that's a config bug, not a runtime failure mode (per the
     /// no-fallback rule).
@@ -271,8 +271,8 @@ impl LlamaCppAdapter {
         if !self.model_path.exists() {
             return Err(format!(
                 "model GGUF not found at {:?} for model `{}` — \
-                 either pull the artifact to that path (it's the \
-                 `gguf_local_path` declared in config/models.toml) or \
+                 either pull the artifact identified by the registry \
+                 `gguf_hint` or \
                  override via with_model_path()",
                 self.model_path, self.default_model,
             ));
@@ -804,9 +804,6 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     fn supports_model(&self, model_name: &str) -> bool {
-        let want = model_name.to_lowercase();
-        models_for_provider_via_registry(LLAMACPP_PROVIDER_ID)
-            .iter()
-            .any(|m| m.id.to_lowercase() == want)
+        self.default_model.eq_ignore_ascii_case(model_name)
     }
 }

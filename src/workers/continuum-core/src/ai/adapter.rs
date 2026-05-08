@@ -305,7 +305,7 @@ impl AdapterRegistry {
 
     /// Register an adapter with a priority (lower = higher priority)
     pub fn register(&mut self, adapter: Box<dyn AIProviderAdapter>, priority: usize) {
-        let id = adapter.provider_id().to_string();
+        let id = self.registration_key(adapter.provider_id());
 
         // Insert into priority order
         if priority >= self.priority_order.len() {
@@ -315,6 +315,20 @@ impl AdapterRegistry {
         }
 
         self.adapters.insert(id, adapter);
+    }
+
+    fn registration_key(&self, provider_id: &str) -> String {
+        if !self.adapters.contains_key(provider_id) {
+            return provider_id.to_string();
+        }
+        let mut i = 2;
+        loop {
+            let candidate = format!("{provider_id}#{i}");
+            if !self.adapters.contains_key(&candidate) {
+                return candidate;
+            }
+            i += 1;
+        }
     }
 
     /// Drop an adapter from the registry. Mirror of `register`. The
@@ -327,9 +341,23 @@ impl AdapterRegistry {
     /// if there's per-adapter cleanup to do; this method drops the
     /// boxed adapter (Drop impl runs).
     pub fn deregister(&mut self, provider_id: &str) -> bool {
-        let removed = self.adapters.remove(provider_id).is_some();
+        let keys: Vec<String> = self
+            .adapters
+            .iter()
+            .filter_map(|(key, adapter)| {
+                if key == provider_id || adapter.provider_id() == provider_id {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let removed = !keys.is_empty();
         if removed {
-            self.priority_order.retain(|id| id != provider_id);
+            for key in &keys {
+                self.adapters.remove(key);
+            }
+            self.priority_order.retain(|id| !keys.contains(id));
         }
         removed
     }
@@ -338,17 +366,38 @@ impl AdapterRegistry {
     /// HashMap lookup. Used by health-watchdogs to decide whether they
     /// need to register or deregister on a probe state change.
     pub fn is_registered(&self, provider_id: &str) -> bool {
-        self.adapters.contains_key(provider_id)
+        self.adapters
+            .iter()
+            .any(|(key, adapter)| key == provider_id || adapter.provider_id() == provider_id)
     }
 
     /// Get adapter by provider ID
     pub fn get(&self, provider_id: &str) -> Option<&dyn AIProviderAdapter> {
-        self.adapters.get(provider_id).map(|b| b.as_ref())
+        self.adapters
+            .get(provider_id)
+            .map(|b| b.as_ref())
+            .or_else(|| {
+                self.priority_order.iter().find_map(|key| {
+                    self.adapters
+                        .get(key)
+                        .filter(|adapter| adapter.provider_id() == provider_id)
+                        .map(|b| b.as_ref())
+                })
+            })
     }
 
     /// Get mutable adapter by provider ID
     pub fn get_mut(&mut self, provider_id: &str) -> Option<&mut Box<dyn AIProviderAdapter>> {
-        self.adapters.get_mut(provider_id)
+        if self.adapters.contains_key(provider_id) {
+            return self.adapters.get_mut(provider_id);
+        }
+        let key = self.priority_order.iter().find_map(|key| {
+            self.adapters
+                .get(key)
+                .filter(|adapter| adapter.provider_id() == provider_id)
+                .map(|_| key.clone())
+        })?;
+        self.adapters.get_mut(&key)
     }
 
     /// Get available adapters (those that initialized successfully)
@@ -386,9 +435,13 @@ impl AdapterRegistry {
         //    hard-error when neither can serve the model.
         if let Some(pref) = preferred_provider {
             if pref != "local" {
-                for (id, adapter) in self.adapters.iter() {
-                    if id == pref {
-                        return Some((id.as_str(), adapter.as_ref()));
+                for key in &self.priority_order {
+                    if let Some(adapter) = self.adapters.get(key) {
+                        if key == pref || adapter.provider_id() == pref {
+                            if model.map_or(true, |m| adapter.supports_model(m)) {
+                                return Some((adapter.provider_id(), adapter.as_ref()));
+                            }
+                        }
                     }
                 }
                 clog_warn!(
@@ -423,8 +476,8 @@ impl AdapterRegistry {
                 None
             };
             if let Some(provider_id) = cloud_match {
-                if let Some(adapter) = self.adapters.get(provider_id) {
-                    return Some((provider_id, adapter.as_ref()));
+                if let Some(adapter) = self.get(provider_id) {
+                    return Some((provider_id, adapter));
                 }
             }
         }
@@ -449,7 +502,7 @@ impl AdapterRegistry {
                 // If model specified, adapter must honestly support it.
                 // If no model specified, any adapter on the right device works.
                 if model.map_or(true, |m| adapter.supports_model(m)) {
-                    return Some((id.as_str(), adapter.as_ref()));
+                    return Some((adapter.provider_id(), adapter.as_ref()));
                 }
             }
         }
@@ -519,6 +572,7 @@ mod tests {
     /// inference — every operation either no-ops or returns a stub.
     struct StubAdapter {
         id: String,
+        model: Option<String>,
     }
 
     #[async_trait]
@@ -567,12 +621,24 @@ mod tests {
             InferenceDevice::Gpu
         }
         fn supports_model(&self, _model: &str) -> bool {
-            true
+            self.model
+                .as_deref()
+                .map_or(true, |model| model == _model)
         }
     }
 
     fn stub(id: &str) -> Box<dyn AIProviderAdapter> {
-        Box::new(StubAdapter { id: id.to_string() })
+        Box::new(StubAdapter {
+            id: id.to_string(),
+            model: None,
+        })
+    }
+
+    fn stub_model(id: &str, model: &str) -> Box<dyn AIProviderAdapter> {
+        Box::new(StubAdapter {
+            id: id.to_string(),
+            model: Some(model.to_string()),
+        })
     }
 
     #[test]
@@ -617,5 +683,28 @@ mod tests {
         }
         // Final cycle leaves it unregistered.
         assert_eq!(r.available().len(), 0);
+    }
+
+    #[test]
+    fn duplicate_provider_ids_remain_independently_selectable_by_model() {
+        let mut r = AdapterRegistry::new();
+        r.register(stub_model("llamacpp-local", "qwen3.5"), 0);
+        r.register(stub_model("llamacpp-local", "qwen2-vl"), 0);
+
+        assert_eq!(r.available().len(), 2);
+        assert!(r.is_registered("llamacpp-local"));
+
+        let (_, qwen35) = r
+            .select(Some("local"), Some("qwen3.5"), InferenceDevice::Gpu)
+            .expect("qwen3.5 adapter selected");
+        assert_eq!(qwen35.default_model(), "stub");
+        assert!(qwen35.supports_model("qwen3.5"));
+        assert!(!qwen35.supports_model("qwen2-vl"));
+
+        let (_, qwen2) = r
+            .select(Some("local"), Some("qwen2-vl"), InferenceDevice::Gpu)
+            .expect("qwen2-vl adapter selected");
+        assert!(qwen2.supports_model("qwen2-vl"));
+        assert!(!qwen2.supports_model("qwen3.5"));
     }
 }

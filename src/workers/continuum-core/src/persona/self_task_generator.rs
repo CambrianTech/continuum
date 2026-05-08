@@ -115,7 +115,7 @@ impl SelfTaskGenerator {
                     }
                 }
             }
-            Err(e) => log.warn(&format!("Unfinished work detection failed: {e}")),
+            Err(e) => return Err(format!("unfinished work detection failed: {e}")),
         }
 
         // 4. Learning opportunities (failed tasks)
@@ -130,7 +130,7 @@ impl SelfTaskGenerator {
                     }
                 }
             }
-            Err(e) => log.warn(&format!("Learning opportunity detection failed: {e}")),
+            Err(e) => return Err(format!("learning opportunity detection failed: {e}")),
         }
 
         Ok(created_tasks)

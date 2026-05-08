@@ -72,12 +72,12 @@ export class LLMAdapter implements IDecisionAdapter {
 
       // Map gating model mode to actual model name
       // 'deterministic' = skip LLM, use simple heuristics
-      // 'small' = fast model (llama3.2:1b)
-      // 'full' = accurate model (llama3.2:3b)
+      // 'small' = fast local gating model
+      // 'full' = active persona model
       const gatingModelMap: Record<string, string | null> = {
         'deterministic': null,     // Skip LLM gating
-        'small': 'llama3.2:1b',    // Fast (~150-200ms)
-        'full': 'llama3.2:3b'      // Accurate (~400-500ms)
+        'small': 'Qwen/Qwen2-0.5B-Instruct',
+        'full': context.modelId ?? 'continuum-ai/qwen3.5-4b-code-forged-GGUF'
       };
 
       // Default to 'deterministic' to avoid queue contention with main generation

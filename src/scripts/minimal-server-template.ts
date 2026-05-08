@@ -18,6 +18,12 @@ const PORT = connectionConfig.httpPort;
 
 import { getNetworkIdentity, getTlsOptions } from '../system/config/server/NetworkIdentity';
 
+function isBenignConnectionError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPIPE' || code === 'ECONNRESET' || code === 'ERR_STREAM_DESTROYED';
+}
+
 class MinimalServer {
   private server: http.Server | https.Server;
   private requestInProgress = false;
@@ -1259,11 +1265,19 @@ server.start().catch((error) => {
 
 // Global error handlers
 process.on('uncaughtException', (error) => {
+  if (isBenignConnectionError(error)) {
+    console.warn(`⚠️ Ignoring client disconnect: ${(error as Error).message}`);
+    return;
+  }
   console.error('🚨 Uncaught Exception:', error.message);
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
+  if (isBenignConnectionError(reason)) {
+    console.warn(`⚠️ Ignoring client disconnect: ${reason instanceof Error ? reason.message : String(reason)}`);
+    return;
+  }
   console.error('🚨 Unhandled Rejection:', reason);
   process.exit(1);
 });

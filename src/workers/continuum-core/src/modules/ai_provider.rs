@@ -325,7 +325,8 @@ impl AIProviderModule {
             for model_meta in reg_arc.models_for_provider(crate::inference::LLAMACPP_PROVIDER_ID) {
                 let Some(gguf_path) = model_meta.gguf_local_path.clone() else {
                     self.log().info(&format!(
-                        "Skipping in-process adapter for `{}` — no gguf_local_path in TOML",
+                        "Skipping in-process adapter for `{}` — artifact resolver found no local GGUF. \
+                         Pull the model identified by gguf_hint or run the model download flow.",
                         model_meta.id
                     ));
                     continue;

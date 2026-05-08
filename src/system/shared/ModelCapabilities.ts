@@ -14,8 +14,8 @@
  * Usage:
  *   // At adapter discovery time:
  *   registry.register({
- *     modelId: 'meta-llama/Llama-3.1-8B-Instruct',
- *     provider: 'candle',
+ *     modelId: 'qwen3.5-4b-code-forged',
+ *     provider: 'local',
  *     contextWindow: 1400,
  *     capabilities: { ... },
  *     adapterProfile: {
@@ -27,7 +27,7 @@
  *   });
  *
  *   // At selection time:
- *   const candidates = registry.getAll('meta-llama/Llama-3.1-8B-Instruct')
+ *   const candidates = registry.getAll('qwen3.5-4b-code-forged')
  *     .filter(m => m.adapterProfile?.fineTuning.supportedMethods.includes(AdapterMethod.QLORA))
  *     .filter(m => (m.adapterProfile?.hardware.inferenceVramMB ?? Infinity) <= availableVram);
  */
@@ -274,7 +274,7 @@ export interface FineTuningProfile {
  * Each runtime has different capabilities for loading models and adapters.
  */
 export enum InferenceRuntime {
-  /** Candle — Rust-native, GGUF/SafeTensors, Metal acceleration */
+  /** Candle — training/auxiliary Rust backend, not default persona chat */
   CANDLE = 'candle',
 
   /** llama.cpp — C++, GGUF, Metal/CUDA/CPU, mature ecosystem */

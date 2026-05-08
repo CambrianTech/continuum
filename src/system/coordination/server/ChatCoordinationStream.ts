@@ -21,7 +21,7 @@ import {
   type BaseDecision,
   type BaseStream,
   type CoordinationConfig
-} from '../shared/BaseCoordinationStream';
+} from './BaseCoordinationStream';
 
 /**
  * Chat-specific thought (extends base with chat metadata)

@@ -92,6 +92,58 @@ export abstract class BaseEntity {
   }
 
   /**
+   * Deterministic content fingerprint for "do I need to update?" decisions.
+   * Callers compare semantic fields, not ORM churn fields such as updatedAt.
+   * This keeps seed/sync/update flows idempotent without per-script equality
+   * rules.
+   */
+  static contentFingerprint(
+    data: Record<string, unknown>,
+    options: { ignoreFields?: string[] } = {}
+  ): string {
+    const ignore = new Set([
+      'createdAt',
+      'updatedAt',
+      'version',
+      ...(options.ignoreFields ?? [])
+    ]);
+    return BaseEntity.stableContentString(BaseEntity.pickComparableFields(data, ignore));
+  }
+
+  static hasContentDelta(
+    existing: Record<string, unknown>,
+    desired: Record<string, unknown>,
+    options: { ignoreFields?: string[] } = {}
+  ): boolean {
+    const desiredKeys = new Set(Object.keys(desired));
+    const existingProjection: Record<string, unknown> = {};
+    for (const key of desiredKeys) {
+      existingProjection[key] = existing[key] ?? null;
+    }
+    return BaseEntity.contentFingerprint(existingProjection, options) !==
+      BaseEntity.contentFingerprint(desired, options);
+  }
+
+  private static pickComparableFields(data: Record<string, unknown>, ignore: Set<string>): Record<string, unknown> {
+    const picked: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (!ignore.has(key)) picked[key] = value ?? null;
+    }
+    return picked;
+  }
+
+  private static stableContentString(value: unknown): string {
+    if (value === undefined) return 'null';
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    if (value instanceof Date) return JSON.stringify(value.toISOString());
+    if (Array.isArray(value)) {
+      return `[${value.map(item => BaseEntity.stableContentString(item)).join(',')}]`;
+    }
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map(key => `${JSON.stringify(key)}:${BaseEntity.stableContentString(obj[key])}`).join(',')}}`;
+  }
+
+  /**
    * Factory method to create entities with validation
    */
   static create<T extends BaseEntity>(

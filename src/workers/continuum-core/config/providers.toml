@@ -89,7 +89,7 @@ name = "Docker Model Runner (local Metal/CUDA)"
 # silently killing persona chat. Pinning to 127.0.0.1 bypasses the dual-
 # stack resolution entirely.
 base_url = "http://127.0.0.1:12434/engines/llama.cpp"
-default_model = "docker.io/ai/qwen2.5:7B-Q4_K_M"
+default_model = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest"
 auth = "none"
 # Dynamic catalog — provider lists models via /v1/models at init.
 # No model_prefixes — supports_model consults the live catalog, not static prefixes.

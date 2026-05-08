@@ -26,6 +26,7 @@ import type { SelfTaskGenerator } from './SelfTaskGenerator';
 import type { PersonaUser } from '../PersonaUser';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
 import { BackpressureService } from '../../../core/services/BackpressureService';
+import { StartupAutonomousWorkGate } from './StartupAutonomousWorkGate';
 
 /** Gap assessment runs every N service cycles (~25-50s during active operation) */
 const GAP_ASSESSMENT_INTERVAL = PersonaTimingConfig.selfTask.gapAssessmentInterval;
@@ -97,6 +98,8 @@ export class PersonaAutonomousLoop {
   private async runServiceLoop(): Promise<void> {
     const { maxConsecutiveFailures, cooldownMs } = PersonaTimingConfig.circuitBreaker;
 
+    await StartupAutonomousWorkGate.waitUntilOpen(this.log, `${this.personaUser.displayName} startup drain`);
+
     // Drain anything queued in Rust BEFORE the service loop started.
     // Race: chat items routed via PersonaInbox.route → channelEnqueue
     // emit 'work-available' on the TS signal IMMEDIATELY. If no listener
@@ -163,6 +166,8 @@ export class PersonaAutonomousLoop {
    * 2. Drain loop: call Rust serviceCycleFull repeatedly until queue empty
    */
   private async serviceInbox(): Promise<void> {
+    await StartupAutonomousWorkGate.waitUntilOpen(this.log, `${this.personaUser.displayName} inbox service`);
+
     const cadence = this.personaUser.prefrontal!.personaState.getCadence();
     const hasWork = await this.personaUser.inbox.waitForWork(cadence);
 
