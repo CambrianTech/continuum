@@ -24,7 +24,7 @@
   {
     "uniqueId": "codereview",
     "displayName": "CodeReview AI",
-    "provider": "candle",
+    "provider": "local",
     "type": "persona",
     "voiceId": "100",
     "minVramGB": 9,
@@ -32,14 +32,13 @@
     "speciality": "code-analysis",
     "accentColor": "#e91e63",
     "modelPreferences": [
-      { "minVramGb": 31, "model": "coder-32b", "vramBudgetGb": 20 },
-      { "minVramGb": 16, "model": "coder",     "vramBudgetGb": 9 }
+      { "minVramGb": 0, "model": "continuum-ai/qwen3.5-4b-code-forged-GGUF", "vramBudgetGb": 3 }
     ]
   },
   {
     "uniqueId": "teacher",
     "displayName": "Teacher AI",
-    "provider": "candle",
+    "provider": "local",
     "type": "persona",
     "voiceId": "75",
     "minVramGB": 5,
@@ -47,16 +46,13 @@
     "speciality": "education-mentoring",
     "accentColor": "#ff9800",
     "modelPreferences": [
-      { "minVramGb": 31, "model": "unsloth/Llama-3.1-8B-Instruct", "vramBudgetGb": 5 },
-      { "minVramGb": 24, "model": "coder",                         "vramBudgetGb": 9 },
-      { "minVramGb": 16, "model": "unsloth/Llama-3.1-8B-Instruct", "vramBudgetGb": 5 },
-      { "minVramGb": 8,  "model": "unsloth/Llama-3.2-3B-Instruct", "vramBudgetGb": 3 }
+      { "minVramGb": 0, "model": "continuum-ai/qwen3.5-4b-code-forged-GGUF", "vramBudgetGb": 3 }
     ]
   },
   {
     "uniqueId": "helper",
     "displayName": "Helper AI",
-    "provider": "candle",
+    "provider": "local",
     "type": "persona",
     "voiceId": "50",
     "minVramGB": 3,
@@ -64,10 +60,7 @@
     "speciality": "practical-assistance",
     "accentColor": "#00d4ff",
     "modelPreferences": [
-      { "minVramGb": 31, "model": "unsloth/Llama-3.2-3B-Instruct", "vramBudgetGb": 3 },
-      { "minVramGb": 24, "model": "unsloth/Llama-3.1-8B-Instruct", "vramBudgetGb": 5 },
-      { "minVramGb": 8,  "model": "unsloth/Llama-3.2-3B-Instruct", "vramBudgetGb": 3 },
-      { "minVramGb": 0,  "model": "unsloth/Llama-3.2-3B-Instruct", "vramBudgetGb": 3 }
+      { "minVramGb": 0, "model": "continuum-ai/qwen3.5-4b-code-forged-GGUF", "vramBudgetGb": 3 }
     ]
   },
   {
@@ -150,15 +143,29 @@
   {
     "uniqueId": "local",
     "displayName": "Local Assistant",
-    "provider": "candle",
+    "provider": "local",
     "type": "persona",
     "voiceId": "90",
     "minVramGB": 3,
-    "bio": "Local Candle inference — runs entirely on your hardware, no cloud dependency",
+    "bio": "Local Qwen inference — runs entirely on your hardware, no cloud dependency",
     "speciality": "general",
     "accentColor": "#8bc34a",
     "modelPreferences": [
-      { "minVramGb": 0, "model": "unsloth/Llama-3.2-3B-Instruct", "vramBudgetGb": 3 }
+      { "minVramGb": 0, "model": "continuum-ai/qwen3.5-4b-code-forged-GGUF", "vramBudgetGb": 3 }
+    ]
+  },
+  {
+    "uniqueId": "vision",
+    "displayName": "Vision AI",
+    "provider": "local",
+    "type": "persona",
+    "voiceId": "105",
+    "minVramGB": 5,
+    "bio": "Native local vision persona powered by Qwen2-VL for image understanding",
+    "speciality": "vision",
+    "accentColor": "#009688",
+    "modelPreferences": [
+      { "minVramGb": 0, "model": "qwen2-vl-7b-instruct", "vramBudgetGb": 5 }
     ]
   },
   {

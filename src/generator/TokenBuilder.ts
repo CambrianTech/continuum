@@ -4,7 +4,7 @@
  * Provides case conversion and formatting utilities independent of domain (commands/daemons/widgets).
  */
 
-import type { CommandSpec, ParamSpec, ResultSpec, ExampleSpec } from './CommandNaming';
+import type { CommandSpec, ParamSpec, ResultSpec, ExampleSpec, ImportSpec } from './CommandNaming';
 import { CommandNaming } from './CommandNaming';
 
 export class TokenBuilder {
@@ -138,8 +138,9 @@ export class TokenBuilder {
 
     return results
       .map(result => {
+        const optional = result.optional ? '?' : '';
         const comment = result.description ? `  // ${result.description}\n` : '';
-        return `${comment}  ${result.name}: ${result.type};`;
+        return `${comment}  ${result.name}${optional}: ${result.type};`;
       })
       .join('\n');
   }
@@ -288,10 +289,10 @@ export class TokenBuilder {
     // success is always required in result factories
     const fields = ['    success: boolean;'];
 
-    // All other result fields are typically optional (for error cases)
     results.forEach(result => {
+      const optional = result.optional ? '?' : '';
       const comment = result.description ? `    // ${result.description}\n` : '';
-      fields.push(`${comment}    ${result.name}?: ${result.type};`);
+      fields.push(`${comment}    ${result.name}${optional}: ${result.type};`);
     });
 
     // error is always optional
@@ -304,11 +305,12 @@ export class TokenBuilder {
    * Build default value assignments for result fields in factory functions
    */
   static buildResultFactoryDefaults(results: ResultSpec[]): string {
-    if (results.length === 0) {
+    const optionalResults = results.filter(result => result.optional);
+    if (optionalResults.length === 0) {
       return '';
     }
 
-    return results
+    return optionalResults
       .map(result => {
         // Generate sensible defaults based on type
         const defaultValue = this.defaultValueForType(result.type);
@@ -317,9 +319,20 @@ export class TokenBuilder {
       .join('\n');
   }
 
+  static buildImportStatements(imports: ImportSpec[] | undefined): string {
+    if (!imports || imports.length === 0) return '';
+    return imports
+      .map(importSpec => {
+        const typeOnly = importSpec.typeOnly ?? true;
+        const prefix = typeOnly ? 'import type' : 'import';
+        return `${prefix} { ${importSpec.names.join(', ')} } from '${importSpec.from}';`;
+      })
+      .join('\n');
+  }
+
   /**
    * Get a sensible default value for a TypeScript type.
-   * Used by factory function generators to avoid `undefined` for required fields.
+   * Used only for optional factory fields; required result fields are caller-owned.
    */
   static defaultValueForType(type: string): string {
     if (type === 'boolean') return 'false';
@@ -328,9 +341,7 @@ export class TokenBuilder {
     if (type === 'object') return '{}';
     if (type.endsWith('[]') || type.startsWith('Array<')) return '[]';
     if (type.startsWith('Record<')) return '{}';
-    if (type.startsWith("'") || type.includes(" | '")) return "'' as " + type;
-    // For complex types, use empty object cast — better than undefined
-    return '{} as ' + type;
+    return 'undefined';
   }
 
   /**
@@ -398,6 +409,7 @@ export class TokenBuilder {
       PARAMS_FACTORY_DECL: this.buildParamsFactoryDecl(spec),
       RESULT_FACTORY_DATA_TYPE: this.buildResultFactoryDataType(spec.results),
       RESULT_FACTORY_DEFAULTS: this.buildResultFactoryDefaults(spec.results),
+      EXTRA_IMPORTS: this.buildImportStatements(spec.imports),
       RESULT_FIELD_EXAMPLES: this.buildResultFieldExamples(spec.results)
     };
   }

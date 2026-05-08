@@ -141,9 +141,11 @@ export class SecretManager {
    * @param requestedBy - Who is requesting (for audit trail)
    */
   get(key: string, requestedBy = 'unknown'): string | undefined {
+    this.ensureInitialized();
     this.logAccess(key, requestedBy);
 
-    return this.secrets.get(key);
+    const value = this.secrets.get(key);
+    return value && value.trim().length > 0 ? value : undefined;
   }
 
   /**
@@ -169,7 +171,7 @@ export class SecretManager {
    * Check if secret exists
    */
   has(key: string): boolean {
-    return this.secrets.has(key);
+    return this.get(key, 'SecretManager.has') !== undefined;
   }
 
   /**
@@ -179,7 +181,7 @@ export class SecretManager {
    * Returns defaultValue if key not found
    */
   getBoolean(key: string, defaultValue = false): boolean {
-    const value = this.secrets.get(key);
+    const value = this.get(key, 'SecretManager.getBoolean');
     if (value === undefined) {
       return defaultValue;
     }
@@ -192,7 +194,7 @@ export class SecretManager {
    * Returns defaultValue if key not found or not a valid number
    */
   getNumber(key: string, defaultValue = 0): number {
-    const value = this.secrets.get(key);
+    const value = this.get(key, 'SecretManager.getNumber');
     if (value === undefined) {
       return defaultValue;
     }
@@ -205,7 +207,10 @@ export class SecretManager {
    * Safe to expose to browser for UI rendering
    */
   getAvailableKeys(): string[] {
-    return Array.from(this.secrets.keys());
+    this.ensureInitialized();
+    return Array.from(this.secrets.entries())
+      .filter(([, value]) => value.trim().length > 0)
+      .map(([key]) => key);
   }
 
   /**
@@ -213,10 +218,11 @@ export class SecretManager {
    * IMPORTANT: Only call this from secure server-side code!
    */
   async set(key: string, value: string): Promise<void> {
-    this.secrets.set(key, value);
+    const normalizedValue = this.normalizeEnvValue(value);
+    this.secrets.set(key, normalizedValue);
 
     // Persist to ~/.continuum/config.env
-    await this.persistToHomeConfig(key, value);
+    await this.persistToHomeConfig(key, normalizedValue);
 
     console.log(`🔐 SecretManager: Set ${key} (redacted)`);
   }
@@ -238,6 +244,7 @@ export class SecretManager {
    * Replaces actual keys with [REDACTED-xxx]
    */
   redact(text: string): string {
+    this.ensureInitialized();
     let redacted = text;
 
     for (const [key, value] of this.secrets) {
@@ -261,6 +268,12 @@ export class SecretManager {
   // ========================
   // Private Methods
   // ========================
+
+  private ensureInitialized(): void {
+    if (!this.isInitialized) {
+      this.initializeSync();
+    }
+  }
 
   /**
    * Load from ~/.continuum/config.env
@@ -319,8 +332,9 @@ export class SecretManager {
     const secretPattern = /^[A-Z_]+_(API_KEY|KEY|API_SECRET|SECRET|TOKEN|URL)$/;
 
     for (const [key, value] of Object.entries(process.env)) {
-      if (secretPattern.test(key) && value) {
-        this.secrets.set(key, value);
+      const normalizedValue = this.normalizeEnvValue(value ?? '');
+      if (secretPattern.test(key) && normalizedValue.length > 0) {
+        this.secrets.set(key, normalizedValue);
       }
     }
   }
@@ -387,23 +401,35 @@ export class SecretManager {
         const [, key, rawValue] = match;
 
         // Expand tilde (~) to home directory
-        let value = rawValue.trim();
+        let value = this.normalizeEnvValue(rawValue);
         if (value.startsWith('~/')) {
           value = path.join(os.homedir(), value.slice(2));
         }
 
-        // Store in secrets Map
-        this.secrets.set(key, value);
+        // Empty placeholders document available config keys but must not erase
+        // a real value already supplied by the shell, Docker, or a higher
+        // priority config source.
+        if (value.length > 0 || !this.secrets.has(key)) {
+          this.secrets.set(key, value);
+        }
 
         // Mirror all config.env values to process.env so they're visible to
         // subprocesses (jtag CLI, seed scripts) and commands that check process.env
         // (persona/allocate checks API keys). Don't overwrite env vars already set
         // by Docker compose or the shell — orchestrator env takes precedence.
-        if (!process.env[key]) {
+        if (value.length > 0 && !process.env[key]) {
           process.env[key] = value;
         }
       }
     }
+  }
+
+  private normalizeEnvValue(rawValue: string): string {
+    let value = rawValue.trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    return value.trim();
   }
 
   /**

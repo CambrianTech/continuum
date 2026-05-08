@@ -99,10 +99,22 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       };
 
       // Push column projection down to Rust when fields are specified —
-      // avoids SELECT * → IPC → TS discard pattern (DMA principle: don't move data you don't need)
-      const selectColumns = params.fields?.length ? params.fields
-        : params.select?.length ? params.select
-        : undefined;
+      // avoids SELECT * → IPC → TS discard pattern (DMA principle: don't move data you don't need).
+      // CLI callers commonly pass `--select=id`, which arrives as a string at
+      // this wire boundary despite the TypeScript type. Normalize here so
+      // readiness probes and scripts can use the cheap path without depending
+      // on fragile CLI array syntax.
+      const normalizeProjection = (value: unknown): readonly string[] | undefined => {
+        if (Array.isArray(value)) {
+          const fields = value.filter((field): field is string => typeof field === 'string' && field.length > 0);
+          return fields.length > 0 ? fields : undefined;
+        }
+        if (typeof value === 'string' && value.length > 0) {
+          return value.split(',').map(field => field.trim()).filter(Boolean);
+        }
+        return undefined;
+      };
+      const selectColumns = normalizeProjection(params.fields) ?? normalizeProjection(params.select);
 
       const storageQuery = {
         collection,

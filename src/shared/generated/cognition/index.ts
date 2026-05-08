@@ -2,19 +2,41 @@
 // Source: generator/generate-rust-bindings.ts
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
+export type { AdaptiveThroughputPlan } from './AdaptiveThroughputPlan';
+export type { AdaptiveThroughputRequest } from './AdaptiveThroughputRequest';
+export type { HostCapability } from './HostCapability';
+export type { HwCapabilityTier } from './HwCapabilityTier';
 export type { LeverCall } from './LeverCall';
 export type { LeverName } from './LeverName';
+export type { LocalOrCloudPolicy } from './LocalOrCloudPolicy';
 export type { MediaItemLite } from './MediaItemLite';
+export type { ModelRequirement } from './ModelRequirement';
 export type { NativeBatchOutcome } from './NativeBatchOutcome';
 export type { ParsedToolBatch } from './ParsedToolBatch';
 export type { PersonaMediaConfigLite } from './PersonaMediaConfigLite';
 export type { PersonaRenderRequest } from './PersonaRenderRequest';
 export type { PersonaResponse } from './PersonaResponse';
+export type { PersonaTurnPlan } from './PersonaTurnPlan';
 export type { PriorContribution } from './PriorContribution';
 export type { RecentMessage } from './RecentMessage';
+export type { RecipePersonaCandidate } from './RecipePersonaCandidate';
+export type { RecipeRagSourcePolicy } from './RecipeRagSourcePolicy';
+export type { RecipeTurnBatchPlan } from './RecipeTurnBatchPlan';
+export type { RecipeTurnBatchRequest } from './RecipeTurnBatchRequest';
+export type { RecipeTurnTrigger } from './RecipeTurnTrigger';
+export type { ResolutionError } from './ResolutionError';
+export type { ResolvedModel } from './ResolvedModel';
+export type { ResourceClass } from './ResourceClass';
 export type { ResponderDecision } from './ResponderDecision';
 export type { SharedAnalysis } from './SharedAnalysis';
 export type { SharedAnalysisIntent } from './SharedAnalysisIntent';
+export type { SharedRagSourcePlan } from './SharedRagSourcePlan';
+export type { TargetSilicon } from './TargetSilicon';
+export type { ThroughputJob } from './ThroughputJob';
+export type { ThroughputLaneBudget } from './ThroughputLaneBudget';
+export type { ThroughputLease } from './ThroughputLease';
+export type { ThroughputLeaseRevocationPolicy } from './ThroughputLeaseRevocationPolicy';
+export type { ThroughputLeaseSnapshot } from './ThroughputLeaseSnapshot';
 export type { ToolExecutionContext } from './ToolExecutionContext';
 export type { ToolInvocation } from './ToolInvocation';
 export type { ToolOutcome } from './ToolOutcome';

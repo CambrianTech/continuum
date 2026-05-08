@@ -35,22 +35,35 @@ pub use types::{
     EvictionPlan, FootprintEntry, FootprintKey, RegistryHealth, RegistrySnapshot, ResourceType,
 };
 
-use dashmap::DashMap;
+use crate::cognition::{
+    ThroughputLease, ThroughputLeaseError, ThroughputLeaseRevocationPolicy, ThroughputLeaseSnapshot,
+};
+use dashmap::{DashMap, mapref::entry::Entry};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::SystemTime;
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+struct FootprintLeaseMirror {
+    lease: ThroughputLease,
+    key: FootprintKey,
+    bytes: u64,
+}
+
 /// The registry. DashMap-backed so multiple personas / threads can
 /// add+remove concurrently without contention (sharded internally).
 pub struct FootprintRegistry {
     entries: DashMap<FootprintKey, FootprintEntry>,
+    lease_mirrors: DashMap<String, FootprintLeaseMirror>,
 }
 
 impl FootprintRegistry {
     pub fn new() -> Self {
         Self {
             entries: DashMap::new(),
+            lease_mirrors: DashMap::new(),
         }
     }
 
@@ -173,6 +186,9 @@ impl FootprintRegistry {
                         return false;
                     }
                 }
+                if self.is_key_pinned_by_active_lease(key) {
+                    return false;
+                }
                 // Bytes > 0 (zero-byte entries are useless to evict).
                 e.value().bytes > 0
             })
@@ -211,6 +227,97 @@ impl FootprintRegistry {
         } else {
             None
         }
+    }
+
+    pub fn acquire_lease(
+        &self,
+        lease: ThroughputLease,
+        key: FootprintKey,
+        bytes: u64,
+        now_ms: u64,
+    ) -> Result<(), ThroughputLeaseError> {
+        if lease.is_expired(now_ms) {
+            return Err(ThroughputLeaseError::ExpiredLease {
+                lease_id: lease.lease_id,
+            });
+        }
+        let lease_id = lease.lease_id.clone();
+        match self.lease_mirrors.entry(lease_id.clone()) {
+            Entry::Occupied(_) => Err(ThroughputLeaseError::DuplicateLease { lease_id }),
+            Entry::Vacant(slot) => {
+                slot.insert(FootprintLeaseMirror {
+                    lease,
+                    key: key.clone(),
+                    bytes,
+                });
+                self.add(key, bytes);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn release_lease(&self, lease_id: &str) -> Result<ThroughputLease, ThroughputLeaseError> {
+        let Some((_, mirror)) = self.lease_mirrors.remove(lease_id) else {
+            return Err(ThroughputLeaseError::MissingLease {
+                lease_id: lease_id.to_string(),
+            });
+        };
+        self.remove(&mirror.key, mirror.bytes);
+        Ok(mirror.lease)
+    }
+
+    pub fn expire_leases(&self, now_ms: u64) -> Vec<ThroughputLease> {
+        let expired_ids: Vec<String> = self
+            .lease_mirrors
+            .iter()
+            .filter(|entry| entry.value().lease.is_expired(now_ms))
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        expired_ids
+            .into_iter()
+            .filter_map(|lease_id| self.release_lease(&lease_id).ok())
+            .collect()
+    }
+
+    pub fn lease_snapshot(&self, now_ms: u64) -> ThroughputLeaseSnapshot {
+        let mut active = Vec::new();
+        let mut expired = Vec::new();
+        let mut cost_by_target_silicon = BTreeMap::new();
+
+        for mirror in self.lease_mirrors.iter() {
+            let lease = mirror.value().lease.clone();
+            if lease.is_expired(now_ms) {
+                expired.push(lease);
+            } else {
+                *cost_by_target_silicon
+                    .entry(lease.target_silicon)
+                    .or_insert(0u32) += lease.cost_units;
+                active.push(lease);
+            }
+        }
+
+        ThroughputLeaseSnapshot {
+            active,
+            expired,
+            cost_by_target_silicon,
+        }
+    }
+
+    pub fn reclaimable_leases(&self, now_ms: u64) -> Vec<ThroughputLease> {
+        self.lease_mirrors
+            .iter()
+            .filter(|entry| entry.value().lease.is_reclaimable(now_ms))
+            .map(|entry| entry.value().lease.clone())
+            .collect()
+    }
+
+    fn is_key_pinned_by_active_lease(&self, key: &FootprintKey) -> bool {
+        self.lease_mirrors.iter().any(|entry| {
+            let mirror = entry.value();
+            mirror.key == *key
+                && mirror.lease.revocation_policy == ThroughputLeaseRevocationPolicy::Pinned
+        })
     }
 
     /// Cross-check: registry sum vs OS-reported process_bytes from
@@ -325,11 +432,34 @@ pub fn try_global() -> Option<&'static FootprintRegistry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cognition::{
+        ResourceClass, TargetSilicon, ThroughputLease, ThroughputLeaseRevocationPolicy,
+    };
     use crate::gpu::MockMonitor;
     use crate::inference::kv_quant::Residency;
 
     fn persona_kv_key(persona_id: Uuid) -> FootprintKey {
         FootprintKey::for_persona(persona_id, ResourceType::KvCache, Residency::Active)
+    }
+
+    fn lease(
+        lease_id: &str,
+        target_silicon: TargetSilicon,
+        cost_units: u32,
+        expires_at_ms: u64,
+        revocation_policy: ThroughputLeaseRevocationPolicy,
+    ) -> ThroughputLease {
+        ThroughputLease {
+            lease_id: lease_id.to_string(),
+            artifact_key: format!("artifact:{lease_id}"),
+            resource_class: ResourceClass::LocalGeneration,
+            target_silicon,
+            holder_id: "persona:helper".to_string(),
+            cost_units,
+            acquired_at_ms: 100,
+            expires_at_ms,
+            revocation_policy,
+        }
     }
 
     /// What this catches: add() not creating new entries OR not
@@ -753,5 +883,171 @@ mod tests {
         }
         assert_eq!(reg.total_bytes(), 100_000);
         assert_eq!(reg.entry_count(), 100);
+    }
+
+    #[test]
+    fn acquire_and_release_lease_mirrors_footprint_bytes() {
+        let reg = FootprintRegistry::new();
+        let key = persona_kv_key(Uuid::new_v4());
+        reg.acquire_lease(
+            lease(
+                "turn-1",
+                TargetSilicon::Gpu,
+                8,
+                1_000,
+                ThroughputLeaseRevocationPolicy::Graceful,
+            ),
+            key.clone(),
+            4096,
+            100,
+        )
+        .unwrap();
+
+        assert_eq!(reg.total_bytes(), 4096);
+        assert_eq!(reg.entry_count(), 1);
+        let lease_snapshot = reg.lease_snapshot(200);
+        assert_eq!(lease_snapshot.active.len(), 1);
+        assert_eq!(
+            lease_snapshot
+                .cost_by_target_silicon
+                .get(&TargetSilicon::Gpu),
+            Some(&8)
+        );
+
+        let released = reg.release_lease("turn-1").unwrap();
+        assert_eq!(released.lease_id, "turn-1");
+        assert_eq!(reg.total_bytes(), 0);
+        assert_eq!(reg.entry_count(), 0);
+    }
+
+    #[test]
+    fn duplicate_lease_does_not_double_count_bytes() {
+        let reg = FootprintRegistry::new();
+        let key = persona_kv_key(Uuid::new_v4());
+        let lease = lease(
+            "turn-1",
+            TargetSilicon::Gpu,
+            8,
+            1_000,
+            ThroughputLeaseRevocationPolicy::Graceful,
+        );
+
+        reg.acquire_lease(lease.clone(), key.clone(), 4096, 100)
+            .unwrap();
+        assert_eq!(
+            reg.acquire_lease(lease, key, 4096, 100),
+            Err(ThroughputLeaseError::DuplicateLease {
+                lease_id: "turn-1".to_string()
+            })
+        );
+        assert_eq!(reg.total_bytes(), 4096);
+    }
+
+    #[test]
+    fn expiring_leases_removes_their_mirrored_footprints() {
+        let reg = FootprintRegistry::new();
+        let old_key = persona_kv_key(Uuid::new_v4());
+        let fresh_key = persona_kv_key(Uuid::new_v4());
+        reg.acquire_lease(
+            lease(
+                "old",
+                TargetSilicon::Gpu,
+                4,
+                150,
+                ThroughputLeaseRevocationPolicy::Hard,
+            ),
+            old_key,
+            1000,
+            100,
+        )
+        .unwrap();
+        reg.acquire_lease(
+            lease(
+                "fresh",
+                TargetSilicon::Gpu,
+                8,
+                1_000,
+                ThroughputLeaseRevocationPolicy::Hard,
+            ),
+            fresh_key,
+            2000,
+            100,
+        )
+        .unwrap();
+
+        let snapshot = reg.lease_snapshot(200);
+        assert_eq!(snapshot.active.len(), 1);
+        assert_eq!(snapshot.expired.len(), 1);
+        assert_eq!(reg.total_bytes(), 3000);
+
+        let expired = reg.expire_leases(200);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].lease_id, "old");
+        assert_eq!(reg.total_bytes(), 2000);
+        assert_eq!(reg.lease_snapshot(200).expired.len(), 0);
+    }
+
+    #[test]
+    fn active_pinned_lease_blocks_eviction_candidate() {
+        let reg = FootprintRegistry::new();
+        let pinned_key = persona_kv_key(Uuid::new_v4());
+        let revocable_key = persona_kv_key(Uuid::new_v4());
+        reg.acquire_lease(
+            lease(
+                "pinned",
+                TargetSilicon::Gpu,
+                8,
+                1_000,
+                ThroughputLeaseRevocationPolicy::Pinned,
+            ),
+            pinned_key.clone(),
+            1_000_000,
+            100,
+        )
+        .unwrap();
+        reg.acquire_lease(
+            lease(
+                "revocable",
+                TargetSilicon::Gpu,
+                1,
+                1_000,
+                ThroughputLeaseRevocationPolicy::Graceful,
+            ),
+            revocable_key,
+            1_000_000,
+            100,
+        )
+        .unwrap();
+
+        let plan = reg
+            .cheapest_eviction_for(500_000, &[])
+            .expect("revocable lease should be evictable");
+        for (key, _) in plan.entries {
+            assert_ne!(key, pinned_key, "pinned lease must not be evicted");
+        }
+    }
+
+    #[test]
+    fn active_pinned_lease_can_make_eviction_unachievable() {
+        let reg = FootprintRegistry::new();
+        let pinned_key = persona_kv_key(Uuid::new_v4());
+        reg.acquire_lease(
+            lease(
+                "pinned",
+                TargetSilicon::Gpu,
+                8,
+                1_000,
+                ThroughputLeaseRevocationPolicy::Pinned,
+            ),
+            pinned_key,
+            1_000_000,
+            100,
+        )
+        .unwrap();
+
+        assert!(
+            reg.cheapest_eviction_for(500_000, &[]).is_none(),
+            "only pinned bytes exist, so eviction should fail loud"
+        );
     }
 }

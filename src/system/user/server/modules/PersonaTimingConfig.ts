@@ -47,6 +47,7 @@ export const PersonaTimingConfig = {
     maxSize: 1000,                 // Default max inbox size
     popTimeoutMs: 5000,            // Default pop timeout
     waitForWorkTimeoutMs: 30_000,  // Default waitForWork timeout
+    chatActivityDebounceMs: 500,   // Same-room chat quiet window before inference wakeup
   },
 
   /** AI generation */

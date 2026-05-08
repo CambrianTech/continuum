@@ -9,6 +9,7 @@ import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+{{EXTRA_IMPORTS}}
 
 /**
  * {{COMMAND_NAME}} Command Parameters

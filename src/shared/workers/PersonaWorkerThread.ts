@@ -9,7 +9,8 @@
  *
  * Phase 1: Skeleton implementation (ping-pong only)
  * Phase 2: Add message evaluation
- * Phase 3: Add real Candle inference
+ * Phase 3: Runtime gate comes from Rust fullEvaluate; this worker remains a
+ * lightweight fallback and must not initialize local inference backends.
  */
 
 import { Worker } from 'worker_threads';
@@ -41,7 +42,7 @@ interface ProviderConfig {
 }
 
 interface WorkerConfig {
-  providerType?: 'candle' | 'local' | 'openai' | 'anthropic' | 'mock';
+  providerType?: 'local' | 'openai' | 'anthropic' | 'mock';
   providerConfig?: ProviderConfig;
 }
 
@@ -54,10 +55,9 @@ interface WorkerConfig {
  *   const latency = await worker.ping();  // Test communication
  *   await worker.shutdown();  // Clean termination
  *
- * Phase 3 Usage (with provider config):
+ * Runtime usage:
  *   const worker = new PersonaWorkerThread('persona-id-123', {
- *     providerType: 'candle',
- *     providerConfig: { model: 'llama3.2:1b' }
+ *     providerType: 'local'
  *   });
  */
 export class PersonaWorkerThread extends EventEmitter {

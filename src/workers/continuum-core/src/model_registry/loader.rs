@@ -1,6 +1,6 @@
 //! Registry loader — parses `models.toml` + `providers.toml` into typed
 //! `Model` / `Provider` records, validates cross-references, and
-//! resolves local GGUF paths from DMR's on-disk manifest when possible.
+//! resolves local GGUF paths from each model's canonical `gguf_hint`.
 //!
 //! Entry points:
 //! - [`load_registry`] — single call, returns a validated `Registry`.
@@ -10,6 +10,7 @@
 //! `provider` doesn't resolve to a registered `Provider` — each gets its
 //! own variant so the caller's logs pinpoint the issue.
 
+use super::artifacts::{expand_user_path, resolve_model_artifacts};
 use super::types::{Model, Provider};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -127,9 +128,10 @@ pub fn load_providers(path: impl AsRef<Path>) -> Result<Vec<Provider>, RegistryE
 /// - no duplicate provider ids
 /// - every `Model.provider` resolves to a registered provider
 ///
-/// Does NOT attempt to resolve `gguf_local_path` — that's a DMR-manifest
-/// concern handled after load. See [`resolve_local_gguf_paths`] for the
-/// optional post-load pass that does it.
+/// Resolves local GGUF paths from either an explicit `gguf_local_path` or the
+/// Hugging Face cache implied by `gguf_hint`. A hand-pinned local path is only
+/// authoritative when it exists; stale machine-specific Docker bundle paths
+/// must not make an already-downloaded model invisible.
 pub fn load_registry(
     models_path: impl AsRef<Path>,
     providers_path: impl AsRef<Path>,
@@ -156,68 +158,11 @@ pub fn load_registry(
                 provider_id: m.provider,
             });
         }
-        // Expand `~` / `$HOME` in gguf_local_path so TOML authors can
-        // write portable paths. Done here (at load) rather than at every
-        // read site so the stored PathBuf is already absolute.
-        if let Some(p) = m.gguf_local_path.take() {
-            m.gguf_local_path = Some(expand_path(&p));
-        }
-        // Same expansion for the multimodal projector path — added with
-        // the Qwen2-VL-7B vision row 2026-04-21. Without this the local
-        // mtmd path would fail to find `~/models/...` paths the same way
-        // gguf_local_path used to before its expansion was added.
-        if let Some(p) = m.mmproj_local_path.take() {
-            m.mmproj_local_path = Some(expand_path(&p));
-        }
+        resolve_model_artifacts(&mut m);
         models.insert(m.id.clone(), m);
     }
 
     Ok(Registry { models, providers })
-}
-
-/// Expand `~` / `$HOME` (Unix) or `%USERPROFILE%` (Windows) prefixes in
-/// a path so the stored value is absolute. Anything that doesn't start
-/// with one of those prefixes is returned unchanged. No recursive
-/// env-var interpolation — deliberately narrow so a typo in TOML
-/// produces a literal-looking bad path rather than something shell-
-/// interpreted.
-///
-/// Cross-platform note: `~` works on Windows shells too because
-/// PowerShell + cmd accept it via TildeExpansion in many contexts, but
-/// our TOML is read as raw text — we have to do the expansion ourselves
-/// against `USERPROFILE` (Windows convention) when `HOME` isn't set.
-/// Without this, Windows installs that follow the Carl/Dev install path
-/// will fail to find any TOML row that uses `~/models/...` (which is
-/// the convention we use throughout config/models.toml).
-fn expand_path(p: &Path) -> PathBuf {
-    let s = p.to_string_lossy();
-    // Resolve home from HOME (Unix) or USERPROFILE (Windows). HOME is
-    // checked first because some Windows dev environments (Git Bash,
-    // WSL) set it; otherwise fall through to USERPROFILE.
-    let home = std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok());
-    if let Some(home) = home {
-        if let Some(rest) = s.strip_prefix("~/") {
-            return PathBuf::from(format!("{home}/{rest}"));
-        }
-        if s == "~" {
-            return PathBuf::from(home);
-        }
-        if let Some(rest) = s.strip_prefix("$HOME/") {
-            return PathBuf::from(format!("{home}/{rest}"));
-        }
-        // Windows-style: %USERPROFILE%/... — uncommon in TOML written
-        // by Unix-leaning devs but supported so a Windows operator
-        // editing config/models.toml in their native style works too.
-        if let Some(rest) = s.strip_prefix("%USERPROFILE%/") {
-            return PathBuf::from(format!("{home}/{rest}"));
-        }
-        if let Some(rest) = s.strip_prefix("%USERPROFILE%\\") {
-            return PathBuf::from(format!("{home}\\{rest}"));
-        }
-    }
-    p.to_path_buf()
 }
 
 #[cfg(test)]
@@ -379,6 +324,53 @@ auth = "none"
     }
 
     #[test]
+    fn resolves_gguf_hint_from_huggingface_cache_when_local_path_absent_or_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        crate::model_registry::artifacts::with_test_home(home.path(), || {
+            let cached = home
+                .path()
+                .join(".cache/huggingface/hub/models--continuum-ai--qwen3.5-4b-code-forged-GGUF/snapshots/abc");
+            fs::create_dir_all(&cached).unwrap();
+            let gguf = cached.join("qwen3.5-4b-code-forged-Q4_K_M.gguf");
+            fs::write(&gguf, b"gguf").unwrap();
+
+            let mp = write(
+                dir.path(),
+                "models.toml",
+                r#"
+[[model]]
+id = "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+provider = "llamacpp-local"
+arch = "qwen35"
+context_window = 262144
+max_output_tokens = 32768
+tokens_per_second = 33.0
+capabilities = ["text-generation", "chat", "tool-use"]
+gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
+gguf_local_path = "~/missing/docker/bundle/model.gguf"
+"#,
+            );
+            let pp = write(
+                dir.path(),
+                "providers.toml",
+                r#"
+[[provider]]
+id = "llamacpp-local"
+base_url = "local://llamacpp"
+auth = "none"
+"#,
+            );
+
+            let reg = load_registry(mp, pp).expect("registry should load");
+            let model = reg
+                .model("continuum-ai/qwen3.5-4b-code-forged-GGUF")
+                .expect("model registered");
+            assert_eq!(model.gguf_local_path.as_deref(), Some(gguf.as_path()));
+        });
+    }
+
+    #[test]
     fn real_config_files_parse_and_validate() {
         // The actual seeded files in the repo must always parse and
         // cross-reference cleanly. This is the "config/ files are valid"
@@ -424,35 +416,30 @@ auth = "none"
 
     #[test]
     fn expand_path_handles_home_prefixes() {
-        // Save current HOME to restore at the end — other tests share the env.
-        let prior = std::env::var("HOME").ok();
-        std::env::set_var("HOME", "/tmp/fake-home");
-
-        assert_eq!(
-            expand_path(Path::new("~/models/foo.gguf")),
-            PathBuf::from("/tmp/fake-home/models/foo.gguf"),
-        );
-        assert_eq!(expand_path(Path::new("~")), PathBuf::from("/tmp/fake-home"));
-        assert_eq!(
-            expand_path(Path::new("$HOME/bar.gguf")),
-            PathBuf::from("/tmp/fake-home/bar.gguf"),
-        );
-        // Literal absolute path untouched.
-        assert_eq!(
-            expand_path(Path::new("/opt/models/x.gguf")),
-            PathBuf::from("/opt/models/x.gguf"),
-        );
-        // Literal relative path untouched — we only expand `~` / `$HOME`.
-        assert_eq!(
-            expand_path(Path::new("models/x.gguf")),
-            PathBuf::from("models/x.gguf"),
-        );
-
-        if let Some(h) = prior {
-            std::env::set_var("HOME", h);
-        } else {
-            std::env::remove_var("HOME");
-        }
+        crate::model_registry::artifacts::with_test_home(Path::new("/tmp/fake-home"), || {
+            assert_eq!(
+                expand_user_path(Path::new("~/models/foo.gguf")),
+                PathBuf::from("/tmp/fake-home/models/foo.gguf"),
+            );
+            assert_eq!(
+                expand_user_path(Path::new("~")),
+                PathBuf::from("/tmp/fake-home")
+            );
+            assert_eq!(
+                expand_user_path(Path::new("$HOME/bar.gguf")),
+                PathBuf::from("/tmp/fake-home/bar.gguf"),
+            );
+            // Literal absolute path untouched.
+            assert_eq!(
+                expand_user_path(Path::new("/opt/models/x.gguf")),
+                PathBuf::from("/opt/models/x.gguf"),
+            );
+            // Literal relative path untouched — we only expand `~` / `$HOME`.
+            assert_eq!(
+                expand_user_path(Path::new("models/x.gguf")),
+                PathBuf::from("models/x.gguf"),
+            );
+        });
     }
 
     #[test]

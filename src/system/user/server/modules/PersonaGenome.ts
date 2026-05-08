@@ -536,7 +536,8 @@ export class PersonaGenome {
    * Get active adapters in format suitable for TextGenerationRequest
    *
    * This is the bridge between PersonaGenome and the AI provider system.
-   * Returns adapter info that CandleAdapter can use to load/apply LoRA weights.
+   * Returns adapter info that the active training/runtime adapter can use to
+   * load or apply LoRA weights.
    */
   getActiveAdaptersForRequest(): Array<{ name: string; path: string; domain: string; scale: number }> {
     const result: Array<{ name: string; path: string; domain: string; scale: number }> = [];

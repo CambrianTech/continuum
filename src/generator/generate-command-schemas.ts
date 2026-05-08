@@ -227,7 +227,7 @@ class CommandSchemaGenerator {
     const paramsInterfaceStartRegex = /export\s+interface\s+(\w+Params)\s+extends\s+(\w+)\s*\{/g;
     const schemas: CommandSchema[] = [];
 
-    // First pass: collect all interface names to detect multi-interface files
+    // First pass: collect all params names to detect multi-interface files
     const allInterfaceNames: string[] = [];
     const interfaceMatches: Array<{ interfaceName: string; parentInterface: string; index: number }> = [];
     let match;
@@ -238,6 +238,29 @@ class CommandSchemaGenerator {
         interfaceName: match[1],
         parentInterface: match[2],
         index: match.index
+      });
+    }
+
+    const paramsAliasRegex = /export\s+type\s+(\w+Params)\s*=\s*CommandParams\s*;/g;
+    const aliasMatches: Array<{ interfaceName: string; index: number }> = [];
+    while ((match = paramsAliasRegex.exec(content)) !== null) {
+      allInterfaceNames.push(match[1]);
+      aliasMatches.push({
+        interfaceName: match[1],
+        index: match.index
+      });
+    }
+
+    for (const { interfaceName, index } of aliasMatches) {
+      const commandName = this.deriveCommandName(interfaceName, basePath, allInterfaceNames);
+      const readmeDesc = this.readReadmeDescription(basePath);
+      const jsdocDesc = this.extractDescription(content, index);
+      const description = readmeDesc || jsdocDesc;
+
+      schemas.push({
+        name: commandName,
+        description: description || `${commandName} command`,
+        params: {}
       });
     }
 

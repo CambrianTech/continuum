@@ -18,6 +18,7 @@ import type { TextGenerationRequest, TextGenerationResponse } from '../../../dae
 import type { RAGContext } from '../../rag/shared/RAGTypes';
 import { AIDecisionLogger } from './AIDecisionLogger';
 import { InferenceCoordinator } from '../../coordination/server/InferenceCoordinator';
+import { LOCAL_MODELS } from '../../shared/Constants';
 
 /**
  * AI Gating Decision - Result of "should I respond?" evaluation
@@ -382,9 +383,9 @@ ${generatedText}
     } = {}
   ): Promise<AIGenerationResult> {
     const startTime = Date.now();
-    const model = options.model ?? 'llama3.2:3b';
-    const timeoutMs = options.timeoutMs ?? 180000;  // 3 min for Candle inference (can be slow)
-    const provider = 'candle';  // Response generation uses local Candle inference
+    const model = options.model ?? LOCAL_MODELS.DEFAULT;
+    const timeoutMs = options.timeoutMs ?? 180000;  // local Qwen inference can be slow under load
+    const provider = 'local';
 
     // Request inference slot to prevent thundering herd
     const messageId = options.messageId ?? context.triggerMessage?.id ?? 'generate-' + Date.now();
@@ -409,10 +410,9 @@ ${generatedText}
         model,
         temperature: options.temperature ?? 0.7,
         maxTokens: options.maxTokens ?? 150,
-        // 'local' is the routing sentinel for "best available local GPU
-        // adapter" — the Rust AdapterRegistry picks llamacpp-local on
-        // Mac, DMR elsewhere. Previous 'candle' was the dead adapter's
-        // name; routing returned None and this whole path silently errored.
+        // 'local' is the routing sentinel for the best available local
+        // Qwen/llama.cpp runtime. Engine selection stays behind the Rust
+        // registry/admission layer.
         provider: 'local'
       };
 

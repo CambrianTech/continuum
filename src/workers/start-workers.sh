@@ -9,6 +9,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 CONFIG_FILE="$(dirname "$0")/workers-config.json"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # All data lives at $HOME/.continuum — matches SystemPaths.root in TypeScript.
 CONTINUUM_ROOT="${CONTINUUM_ROOT:-$HOME/.continuum}"
@@ -37,6 +38,29 @@ parse_memory_limit() {
     K) echo "$num";;
     *) echo $((4 * 1024 * 1024));; # Default 4GB
   esac
+}
+
+default_core_memory_limit() {
+  local phys_mib=""
+  if [ "$(uname -s)" = "Darwin" ] && command -v sysctl >/dev/null 2>&1; then
+    phys_mib=$(sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1024/1024)}')
+  elif [ -f /proc/meminfo ]; then
+    phys_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
+  fi
+
+  if [ -z "$phys_mib" ] || [ "$phys_mib" -le 0 ]; then
+    echo "16G"
+    return
+  fi
+
+  local phys_gb=$((phys_mib / 1024))
+  if [ "$phys_gb" -ge 32 ]; then
+    echo "$((phys_gb - 10))G"
+  elif [ "$phys_gb" -ge 20 ]; then
+    echo "$((phys_gb - 8))G"
+  else
+    echo "10G"
+  fi
 }
 
 # Source config.env to get API keys (HF_TOKEN, etc.) for workers
@@ -142,9 +166,16 @@ YAML
     fi
   fi
 
-  LIVEKIT_LOG_LEVEL=info "$LIVEKIT_BIN" $LIVEKIT_EXTRA_ARGS >> "$LIVEKIT_LOG" 2>&1 &
-  LIVEKIT_PID=$!
-  disown $LIVEKIT_PID
+  livekit_args=()
+  if [ -n "$LIVEKIT_EXTRA_ARGS" ]; then
+    # shellcheck disable=SC2206
+    livekit_args=($LIVEKIT_EXTRA_ARGS)
+  fi
+  LIVEKIT_PID=$(node "$PROJECT_DIR/scripts/spawn-detached.mjs" \
+    --cwd "$PROJECT_DIR" \
+    --log "$LIVEKIT_LOG" \
+    --env LIVEKIT_LOG_LEVEL=info \
+    -- "$LIVEKIT_BIN" "${livekit_args[@]}")
 
   # Wait for LiveKit to be ready (port 7880)
   for i in {1..20}; do
@@ -231,6 +262,9 @@ while read -r worker; do
   worker_type=$(echo "$worker" | jq -r '.type // "socket"')
   description=$(echo "$worker" | jq -r '.description')
   mem_limit=$(echo "$worker" | jq -r '.memoryLimit // empty')
+  if [ "$name" = "continuum-core" ] && [ -z "$mem_limit" ]; then
+    mem_limit="${CONTINUUM_CORE_MEM:-$(default_core_memory_limit)}"
+  fi
 
   # Get args array (may be empty) — resolve .continuum paths to absolute
   args=$(echo "$worker" | jq -r '.args[]?' | while read -r arg; do resolve_path "$arg"; done || echo "")
@@ -244,16 +278,18 @@ while read -r worker; do
 
   # ulimit -v: only enforce on macOS. Linux enforces strictly and CUDA/WebRTC
   # need far more virtual memory than the configured limit allows.
-  ULIMIT_CMD=""
+  spawn_memory_args=()
   if [ "$(uname -s)" = "Darwin" ]; then
-    ULIMIT_CMD="ulimit -v $MEM_LIMIT_KB 2>/dev/null || true;"
+    spawn_memory_args=(--ulimit-v-kb "$MEM_LIMIT_KB")
   fi
 
   if [ "$worker_type" = "tcp" ]; then
     # TCP worker (e.g., gRPC server) - no socket argument
-    (eval "$ULIMIT_CMD" exec "$binary") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
-    WORKER_PID=$!
-    disown $WORKER_PID
+    WORKER_PID=$(node "$PROJECT_DIR/scripts/spawn-detached.mjs" \
+      --cwd "$PROJECT_DIR" \
+      --log "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" \
+      "${spawn_memory_args[@]}" \
+      -- "$binary")
 
     # Wait for TCP port to be listening
     for i in {1..40}; do
@@ -270,19 +306,18 @@ while read -r worker; do
     done
   else
     # Unix socket worker - each gets its own log file for better segregation
-    if [ -z "$args" ]; then
-      (eval "$ULIMIT_CMD" exec "$binary" "$socket") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
-    else
-      # Convert newline-separated args to array
-      arg_array=()
+    arg_array=()
+    if [ -n "$args" ]; then
       while IFS= read -r arg; do
         arg_array+=("$arg")
       done <<< "$args"
-      (eval "$ULIMIT_CMD" exec "$binary" "$socket" "${arg_array[@]}") >> "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" 2>&1 &
     fi
 
-    WORKER_PID=$!
-    disown $WORKER_PID  # Fully detach from shell
+    WORKER_PID=$(node "$PROJECT_DIR/scripts/spawn-detached.mjs" \
+      --cwd "$PROJECT_DIR" \
+      --log "$CONTINUUM_ROOT/jtag/logs/system/${name}.log" \
+      "${spawn_memory_args[@]}" \
+      -- "$binary" "$socket" "${arg_array[@]}")
 
     # Wait for socket to be created (30s timeout)
     for i in {1..60}; do

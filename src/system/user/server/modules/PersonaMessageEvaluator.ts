@@ -30,7 +30,7 @@ import type { RAGContext } from '../../../data/entities/CoordinationDecisionEnti
 import type { RAGContext as PipelineRAGContext, RAGArtifact } from '../../../rag/shared/RAGTypes';
 import { truncate } from '../../../../shared/utils/StringUtils';
 import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
-import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
+import { getChatCoordinator, type ChatThought } from '../../../coordination/server/ChatCoordinationStream';
 import { calculateMessagePriority } from './PersonaInbox';
 import { toInboxMessageRequest } from './RustCognitionBridge';
 import type { SenderType, FullEvaluateResult, SocialSignals } from '../../../../shared/generated';
@@ -168,6 +168,18 @@ export class PersonaMessageEvaluator {
 
     if (!earlyResult.should_respond) {
       this.personaUser.logAIDecision('SILENT', `${earlyResult.gate}: ${earlyResult.reason}`, {
+        message: safeMessageText.slice(0, 100),
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId,
+      });
+      return;
+    }
+
+    const coordinationStart = Date.now();
+    const claimGranted = await this.coordinateResponseClaim(messageEntity, earlyResult);
+    evalTiming['coordination_claim'] = Date.now() - coordinationStart;
+    if (!claimGranted) {
+      this.personaUser.logAIDecision('SILENT', 'coordination: another persona owns this turn', {
         message: safeMessageText.slice(0, 100),
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId,
@@ -716,6 +728,42 @@ export class PersonaMessageEvaluator {
     await this.personaUser.personaState.recordActivity(estimatedDurationMs, messageComplexity);
 
     this.log(`🧠 ${this.personaUser.displayName}: State updated (energy=${this.personaUser.personaState.getState().energy.toFixed(2)}, mood=${this.personaUser.personaState.getState().mood})`);
+  }
+
+  /**
+   * One room message should become one coordinated response turn unless the
+   * room explicitly allows more responders. The cheap Rust gate may say several
+   * personas are eligible; this claim step selects the responder before RAG,
+   * memory recall, embeddings, or generation begin.
+   */
+  private async coordinateResponseClaim(
+    messageEntity: ProcessableMessage,
+    earlyResult: FullEvaluateResult,
+  ): Promise<boolean> {
+    const coordinator = getChatCoordinator();
+    const thought: ChatThought = {
+      personaId: this.personaUser.id,
+      personaName: this.personaUser.displayName,
+      type: 'claiming',
+      confidence: earlyResult.confidence,
+      reasoning: `${earlyResult.gate}: ${earlyResult.reason}`,
+      timestamp: Date.now(),
+      messageId: messageEntity.id,
+      roomId: messageEntity.roomId,
+    };
+
+    await coordinator.broadcastChatThought(messageEntity.id, messageEntity.roomId, thought);
+    const decision = await coordinator.waitForChatDecision(messageEntity.id);
+    if (!decision) {
+      this.log(`⏰ ${this.personaUser.displayName}: Coordination timeout for ${messageEntity.id.slice(0, 8)} — deferring`);
+      return false;
+    }
+
+    const granted = decision.granted.includes(this.personaUser.id);
+    if (!granted) {
+      this.log(`🧵 ${this.personaUser.displayName}: Deferring ${messageEntity.id.slice(0, 8)} to coordinated responder`);
+    }
+    return granted;
   }
 
   /**
