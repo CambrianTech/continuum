@@ -24,9 +24,9 @@
 //! `models.toml` or `models.json` — the registry already loaded both.
 
 use crate::cognition::adaptive_throughput::TargetSilicon;
-use crate::model_registry::types::{Arch, Capability, Model};
+use crate::model_registry::types::{Arch, Capability, Model, Provider, ProviderKind};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use ts_rs::TS;
 
 /// Finer-grained hardware tier than [`TargetSilicon`]. Selects which model
@@ -68,6 +68,9 @@ pub enum HwCapabilityTier {
     M3UmaProMax,
     /// nVidia compute capability 7.0 (V100).
     Sm70,
+    /// nVidia compute capability 7.5 (T4 datacenter, RTX 20xx, GTX 16xx).
+    /// Common on cloud GPU inference instances.
+    Sm75,
     /// nVidia compute capability 8.0 (A100).
     Sm80,
     /// nVidia compute capability 8.6 (RTX 30xx, A40).
@@ -76,7 +79,11 @@ pub enum HwCapabilityTier {
     Sm89,
     /// nVidia compute capability 9.0 (H100).
     Sm90,
-    /// nVidia compute capability 12.0 (RTX 50xx).
+    /// nVidia compute capability 10.0 (Blackwell datacenter B100/B200,
+    /// HBM3e). Distinct from `Sm120` — Blackwell-consumer (RTX 50xx) and
+    /// Blackwell-datacenter take different driver paths.
+    Sm100,
+    /// nVidia compute capability 12.0 (RTX 50xx Blackwell-consumer).
     Sm120,
     /// AMD GPU via Vulkan backend.
     VulkanAmd,
@@ -147,20 +154,6 @@ pub struct ModelRequirement {
     /// Minimum context window in tokens. `0` = any.
     #[serde(default)]
     pub context_window_min: u32,
-    /// Maximum memory the resolved model may consume on this host, in MB.
-    /// `None` = use `host.available_memory_mb` as the implicit cap.
-    ///
-    /// **Currently OBSERVED but NOT ENFORCED.** Memory-budget filtering
-    /// requires the [`Model`] schema to gain an `estimated_memory_mb`
-    /// field — tracked as a separate followup. Until then, callers that
-    /// pass this expecting filtering will silently get over-budget
-    /// models. The `LocalOnly` / `CloudOnly` filter still prevents the
-    /// worst class of mis-routing (running a 7B local model on the cloud
-    /// lane). Loud-fail on memory pressure is a Lane B
-    /// (FootprintRegistry / PressureBroker) concern downstream of
-    /// resolution, not a resolver-side filter.
-    #[ts(optional)]
-    pub memory_budget_mb: Option<u32>,
     /// Local-vs-cloud preference. See [`LocalOrCloudPolicy`].
     pub provider_policy: LocalOrCloudPolicy,
     /// Host capability snapshot. See [`HostCapability`].
@@ -221,43 +214,54 @@ pub enum ResolutionError {
     },
 }
 
-/// Provider ids treated as local. Hardcoded for v1; a follow-up moves this
-/// to a `kind: local|cloud` field on `Provider` in `providers.toml`.
-const LOCAL_PROVIDER_IDS: &[&str] = &["llamacpp-local", "docker-model-runner"];
-
-fn is_local_provider(provider_id: &str) -> bool {
-    LOCAL_PROVIDER_IDS.contains(&provider_id)
-}
-
-fn derive_target_silicon(model: &Model, host: &HostCapability) -> TargetSilicon {
-    if is_local_provider(&model.provider) {
-        host.primary_target_silicon
-    } else {
-        TargetSilicon::Cloud
+fn derive_target_silicon(
+    model: &Model,
+    provider_kinds: &HashMap<&str, ProviderKind>,
+    host: &HostCapability,
+) -> TargetSilicon {
+    let kind = provider_kinds
+        .get(model.provider.as_str())
+        .copied()
+        .unwrap_or_default(); // ProviderKind::Cloud — unknown provider treated as cloud
+    match kind {
+        ProviderKind::Local => host.primary_target_silicon,
+        ProviderKind::Cloud => TargetSilicon::Cloud,
     }
 }
 
-/// Resolve a [`ModelRequirement`] against a model catalog. Pure: caller
-/// supplies the iterator of [`Model`] (typically `registry.models()`).
+/// Resolve a [`ModelRequirement`] against a model catalog + provider table.
+/// Pure: caller supplies iterators of [`Model`] and [`Provider`] (typically
+/// `registry.models()` and `registry.providers()`).
 ///
 /// Filter order (each step records the unmet predicate when it eliminates
 /// the last candidate, so the error names the specific cause):
 /// 1. `required_capabilities` — every cap must be advertised
 /// 2. `arch_preference` — when non-empty, must match
 /// 3. `context_window_min` — model's window ≥ requirement
-/// 4. `provider_policy` — Local/Cloud filter
-/// 5. memory budget — local models with declared estimates only
+/// 4. `provider_policy` — Local/Cloud filter, keyed on the provider's
+///    [`ProviderKind`] (no hardcoded provider-id list — providers declare
+///    their own residency in `providers.toml`)
 ///
 /// Returns the first survivor under the policy's ranking. `PreferLocal`
 /// puts local providers first; `PreferCloud` puts cloud providers first;
 /// other policies preserve registry order.
-pub fn resolve_model<'a, I>(
+pub fn resolve_model<'a, M, P>(
     requirement: &ModelRequirement,
-    models: I,
+    models: M,
+    providers: P,
 ) -> Result<ResolvedModel, ResolutionError>
 where
-    I: IntoIterator<Item = &'a Model>,
+    M: IntoIterator<Item = &'a Model>,
+    P: IntoIterator<Item = &'a Provider>,
 {
+    let provider_kinds: HashMap<&str, ProviderKind> = providers
+        .into_iter()
+        .map(|p| (p.id.as_str(), p.kind))
+        .collect();
+    let is_local = |provider_id: &str| {
+        provider_kinds.get(provider_id).copied().unwrap_or_default() == ProviderKind::Local
+    };
+
     let registry: Vec<&Model> = models.into_iter().collect();
     let registry_count = registry.len();
     let mut unmet: Vec<String> = Vec::new();
@@ -266,12 +270,7 @@ where
     let mut candidates: Vec<&Model> = registry
         .iter()
         .copied()
-        .filter(|m| {
-            requirement
-                .required_capabilities
-                .iter()
-                .all(|c| m.has(*c))
-        })
+        .filter(|m| requirement.required_capabilities.iter().all(|c| m.has(*c)))
         .collect();
     if candidates.is_empty() && !requirement.required_capabilities.is_empty() {
         unmet.push(format!(
@@ -326,8 +325,8 @@ where
     // Filter 4: provider policy.
     let before_provider = candidates.len();
     candidates.retain(|m| match requirement.provider_policy {
-        LocalOrCloudPolicy::LocalOnly => is_local_provider(&m.provider),
-        LocalOrCloudPolicy::CloudOnly => !is_local_provider(&m.provider),
+        LocalOrCloudPolicy::LocalOnly => is_local(&m.provider),
+        LocalOrCloudPolicy::CloudOnly => !is_local(&m.provider),
         LocalOrCloudPolicy::PreferLocal
         | LocalOrCloudPolicy::PreferCloud
         | LocalOrCloudPolicy::Any => true,
@@ -347,16 +346,16 @@ where
     // Rank: PreferLocal/PreferCloud reorder; other policies preserve order.
     match requirement.provider_policy {
         LocalOrCloudPolicy::PreferLocal => {
-            candidates.sort_by_key(|m| u8::from(!is_local_provider(&m.provider)));
+            candidates.sort_by_key(|m| u8::from(!is_local(&m.provider)));
         }
         LocalOrCloudPolicy::PreferCloud => {
-            candidates.sort_by_key(|m| u8::from(is_local_provider(&m.provider)));
+            candidates.sort_by_key(|m| u8::from(is_local(&m.provider)));
         }
         _ => {}
     }
 
     let best = candidates.first().expect("non-empty after filters");
-    let target_silicon = derive_target_silicon(best, &requirement.host);
+    let target_silicon = derive_target_silicon(best, &provider_kinds, &requirement.host);
     let reason = format!(
         "matched {} required capability(ies) on arch={:?}, context={}, provider={}, policy={:?}",
         requirement.required_capabilities.len(),
@@ -383,7 +382,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_registry::types::MultiPartyChatStrategy;
+    use crate::model_registry::types::{AuthKind, MultiPartyChatStrategy};
 
     fn make_model(
         id: &str,
@@ -410,6 +409,27 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             stop_sequences: vec![],
         }
+    }
+
+    fn make_provider(id: &str, kind: ProviderKind) -> Provider {
+        Provider {
+            id: id.into(),
+            name: None,
+            base_url: "http://test".into(),
+            api_key_env: None,
+            default_model: None,
+            auth: AuthKind::None,
+            model_prefixes: vec![],
+            kind,
+        }
+    }
+
+    fn providers() -> Vec<Provider> {
+        vec![
+            make_provider("anthropic", ProviderKind::Cloud),
+            make_provider("openai", ProviderKind::Cloud),
+            make_provider("llamacpp-local", ProviderKind::Local),
+        ]
     }
 
     fn host_m1_8gb() -> HostCapability {
@@ -501,7 +521,6 @@ mod tests {
             required_capabilities: [Capability::Chat].iter().copied().collect(),
             arch_preference: vec![],
             context_window_min: 0,
-            memory_budget_mb: None,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host,
         }
@@ -515,7 +534,6 @@ mod tests {
                 .collect(),
             arch_preference: vec![],
             context_window_min: 0,
-            memory_budget_mb: None,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host,
         }
@@ -524,12 +542,12 @@ mod tests {
     #[test]
     fn local_chat_resolves_to_qwen35_on_m1() {
         let r = registry();
-        let resolved = resolve_model(&req_chat_local(host_m1_8gb()), r.iter()).unwrap();
+        let resolved =
+            resolve_model(&req_chat_local(host_m1_8gb()), r.iter(), providers().iter()).unwrap();
         assert_eq!(resolved.provider_id, "llamacpp-local");
-        assert!(
-            resolved.model_id.starts_with("continuum-ai/qwen3.5") || resolved.model_id.starts_with("qwen2"),
-            "expected a local qwen model, got {}",
+        assert_eq!(
             resolved.model_id,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF"
         );
         assert_eq!(resolved.target_silicon, TargetSilicon::UnifiedMemory);
         assert_eq!(resolved.hw_capability_tier, HwCapabilityTier::M1Uma8Gb);
@@ -538,7 +556,12 @@ mod tests {
     #[test]
     fn vision_request_resolves_to_qwen2_vl() {
         let r = registry();
-        let resolved = resolve_model(&req_vision_local(host_rtx5090()), r.iter()).unwrap();
+        let resolved = resolve_model(
+            &req_vision_local(host_rtx5090()),
+            r.iter(),
+            providers().iter(),
+        )
+        .unwrap();
         assert_eq!(resolved.model_id, "qwen2-vl-7b-instruct");
         assert_eq!(resolved.provider_id, "llamacpp-local");
         assert_eq!(resolved.target_silicon, TargetSilicon::Gpu);
@@ -550,7 +573,7 @@ mod tests {
         let r = registry();
         let mut req = req_chat_local(host_rtx5090());
         req.provider_policy = LocalOrCloudPolicy::CloudOnly;
-        let resolved = resolve_model(&req, r.iter()).unwrap();
+        let resolved = resolve_model(&req, r.iter(), providers().iter()).unwrap();
         assert!(
             ["anthropic", "openai"].contains(&resolved.provider_id.as_str()),
             "expected cloud provider, got {}",
@@ -566,11 +589,10 @@ mod tests {
             required_capabilities: [Capability::ImageGeneration].iter().copied().collect(),
             arch_preference: vec![],
             context_window_min: 0,
-            memory_budget_mb: None,
             provider_policy: LocalOrCloudPolicy::Any,
             host: host_rtx5090(),
         };
-        let err = resolve_model(&req, r.iter()).unwrap_err();
+        let err = resolve_model(&req, r.iter(), providers().iter()).unwrap_err();
         let ResolutionError::NoModelMatchesRequirement {
             registry_count,
             candidates_after_filter,
@@ -592,7 +614,12 @@ mod tests {
         // run it). The resolver answers "what fits the requirement,"
         // not "what will succeed at inference time."
         let r = registry();
-        let resolved = resolve_model(&req_vision_local(host_cpu_only()), r.iter()).unwrap();
+        let resolved = resolve_model(
+            &req_vision_local(host_cpu_only()),
+            r.iter(),
+            providers().iter(),
+        )
+        .unwrap();
         assert_eq!(resolved.model_id, "qwen2-vl-7b-instruct");
         assert_eq!(resolved.target_silicon, TargetSilicon::Cpu);
         assert_eq!(resolved.hw_capability_tier, HwCapabilityTier::CpuOnly);
@@ -605,13 +632,15 @@ mod tests {
             required_capabilities: [Capability::Chat].iter().copied().collect(),
             arch_preference: vec![],
             context_window_min: 100_000,
-            memory_budget_mb: None,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host: host_rtx5090(),
         };
-        let resolved = resolve_model(&req, r.iter()).unwrap();
+        let resolved = resolve_model(&req, r.iter(), providers().iter()).unwrap();
         // Only qwen3.5-4b (262144 ctx) survives among local with ≥100k window.
-        assert_eq!(resolved.model_id, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(
+            resolved.model_id,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+        );
     }
 
     #[test]
@@ -621,12 +650,14 @@ mod tests {
             required_capabilities: [Capability::Chat].iter().copied().collect(),
             arch_preference: vec![Arch::Qwen35],
             context_window_min: 0,
-            memory_budget_mb: None,
             provider_policy: LocalOrCloudPolicy::Any,
             host: host_rtx5090(),
         };
-        let resolved = resolve_model(&req, r.iter()).unwrap();
-        assert_eq!(resolved.model_id, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        let resolved = resolve_model(&req, r.iter(), providers().iter()).unwrap();
+        assert_eq!(
+            resolved.model_id,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+        );
     }
 
     #[test]
@@ -639,11 +670,10 @@ mod tests {
                 .collect(),
             arch_preference: vec![],
             context_window_min: 0,
-            memory_budget_mb: None,
             provider_policy: LocalOrCloudPolicy::PreferLocal,
             host: host_rtx5090(),
         };
-        let resolved = resolve_model(&req, r.iter()).unwrap();
+        let resolved = resolve_model(&req, r.iter(), providers().iter()).unwrap();
         assert_eq!(resolved.provider_id, "llamacpp-local");
         assert_eq!(resolved.model_id, "qwen2-vl-7b-instruct");
     }
@@ -658,15 +688,55 @@ mod tests {
                 .collect(),
             arch_preference: vec![],
             context_window_min: 0,
-            memory_budget_mb: None,
             provider_policy: LocalOrCloudPolicy::PreferCloud,
             host: host_rtx5090(),
         };
-        let resolved = resolve_model(&req, r.iter()).unwrap();
+        let resolved = resolve_model(&req, r.iter(), providers().iter()).unwrap();
         assert!(
             ["anthropic", "openai"].contains(&resolved.provider_id.as_str()),
             "expected cloud first, got {}",
             resolved.provider_id,
+        );
+    }
+
+    #[test]
+    fn provider_kind_drives_local_classification_not_id() {
+        // Confirms the LOCAL_PROVIDER_IDS hardcoding is gone — Provider's
+        // kind field is what decides Local vs Cloud. Construct a custom
+        // provider whose id has nothing to do with the old hardcoded set.
+        let models = vec![make_model(
+            "custom-local-model",
+            "custom-local-provider",
+            Arch::Llama,
+            8192,
+            &[Capability::Chat],
+        )];
+        let providers = vec![make_provider("custom-local-provider", ProviderKind::Local)];
+        let req = req_chat_local(host_m1_8gb());
+        let resolved = resolve_model(&req, models.iter(), providers.iter()).unwrap();
+        assert_eq!(resolved.model_id, "custom-local-model");
+        assert_eq!(resolved.target_silicon, TargetSilicon::UnifiedMemory);
+    }
+
+    #[test]
+    fn unknown_provider_defaults_to_cloud_for_safety() {
+        // If a model references a provider id that isn't in the providers
+        // table at all, the resolver treats it as Cloud (default kind).
+        // This is loud: a LocalOnly query will reject the model rather
+        // than silently routing unknown-residency work to local hardware.
+        let models = vec![make_model(
+            "orphan-model",
+            "orphan-provider",
+            Arch::Llama,
+            8192,
+            &[Capability::Chat],
+        )];
+        let providers: Vec<Provider> = vec![];
+        let req = req_chat_local(host_m1_8gb());
+        let err = resolve_model(&req, models.iter(), providers.iter()).unwrap_err();
+        assert!(
+            matches!(err, ResolutionError::NoModelMatchesRequirement { .. }),
+            "LocalOnly with unknown provider must error, not silently treat as local"
         );
     }
 
@@ -677,17 +747,23 @@ mod tests {
         let r = registry();
 
         // Persona 1: Helper AI — local chat.
-        let helper = resolve_model(&req_chat_local(host_m1_8gb()), r.iter()).unwrap();
+        let helper =
+            resolve_model(&req_chat_local(host_m1_8gb()), r.iter(), providers().iter()).unwrap();
         assert_eq!(helper.provider_id, "llamacpp-local");
 
         // Persona 2: Vision AI — local vision.
-        let vision = resolve_model(&req_vision_local(host_m1_8gb()), r.iter()).unwrap();
+        let vision = resolve_model(
+            &req_vision_local(host_m1_8gb()),
+            r.iter(),
+            providers().iter(),
+        )
+        .unwrap();
         assert_eq!(vision.model_id, "qwen2-vl-7b-instruct");
 
         // Persona 3: Cloud-only persona — wants vision via cloud.
         let mut cloud_vision_req = req_vision_local(host_m1_8gb());
         cloud_vision_req.provider_policy = LocalOrCloudPolicy::CloudOnly;
-        let cloud_vision = resolve_model(&cloud_vision_req, r.iter()).unwrap();
+        let cloud_vision = resolve_model(&cloud_vision_req, r.iter(), providers().iter()).unwrap();
         assert!(
             ["anthropic", "openai"].contains(&cloud_vision.provider_id.as_str()),
             "expected cloud, got {}",
@@ -702,7 +778,7 @@ mod tests {
             .copied()
             .collect();
         audio_req.provider_policy = LocalOrCloudPolicy::Any;
-        let audio = resolve_model(&audio_req, r.iter()).unwrap();
+        let audio = resolve_model(&audio_req, r.iter(), providers().iter()).unwrap();
         assert_eq!(audio.model_id, "gpt-4o");
 
         // Persona 5: Code persona requiring tool-use — qwen3.5 OR claude.
@@ -712,7 +788,7 @@ mod tests {
             .copied()
             .collect();
         code_req.provider_policy = LocalOrCloudPolicy::PreferLocal;
-        let code = resolve_model(&code_req, r.iter()).unwrap();
+        let code = resolve_model(&code_req, r.iter(), providers().iter()).unwrap();
         assert_eq!(code.provider_id, "llamacpp-local");
         assert_eq!(code.model_id, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
 
@@ -723,13 +799,12 @@ mod tests {
             required_capabilities: [Capability::ImageGeneration].iter().copied().collect(),
             arch_preference: vec![],
             context_window_min: 0,
-            memory_budget_mb: None,
             provider_policy: LocalOrCloudPolicy::Any,
             host: host_rtx5090(),
         };
         assert!(
             matches!(
-                resolve_model(&img_req, r.iter()),
+                resolve_model(&img_req, r.iter(), providers().iter()),
                 Err(ResolutionError::NoModelMatchesRequirement { .. })
             ),
             "missing capability must error, not fall back"

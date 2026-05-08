@@ -4,3 +4,4 @@
 
 export type { Arch } from './Arch';
 export type { Capability } from './Capability';
+export type { ProviderKind } from './ProviderKind';

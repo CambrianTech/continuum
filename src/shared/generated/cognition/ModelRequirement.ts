@@ -26,21 +26,6 @@ archPreference: Array<Arch>,
  */
 contextWindowMin: number, 
 /**
- * Maximum memory the resolved model may consume on this host, in MB.
- * `None` = use `host.available_memory_mb` as the implicit cap.
- *
- * **Currently OBSERVED but NOT ENFORCED.** Memory-budget filtering
- * requires the [`Model`] schema to gain an `estimated_memory_mb`
- * field — tracked as a separate followup. Until then, callers that
- * pass this expecting filtering will silently get over-budget
- * models. The `LocalOnly` / `CloudOnly` filter still prevents the
- * worst class of mis-routing (running a 7B local model on the cloud
- * lane). Loud-fail on memory pressure is a Lane B
- * (FootprintRegistry / PressureBroker) concern downstream of
- * resolution, not a resolver-side filter.
- */
-memoryBudgetMb?: number, 
-/**
  * Local-vs-cloud preference. See [`LocalOrCloudPolicy`].
  */
 providerPolicy: LocalOrCloudPolicy, 

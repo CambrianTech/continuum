@@ -22,4 +22,4 @@
  * caller's hardware probe must produce it AND every match-on-tier site
  * gets a compile error reminding the author to handle it.
  */
-export type HwCapabilityTier = "cpu_only" | "m1_uma8_gb" | "m1_uma16_gb" | "m2_uma_pro_max" | "m3_uma_pro_max" | "sm70" | "sm80" | "sm86" | "sm89" | "sm90" | "sm120" | "vulkan_amd" | "cloud";
+export type HwCapabilityTier = "cpu_only" | "m1_uma8_gb" | "m1_uma16_gb" | "m2_uma_pro_max" | "m3_uma_pro_max" | "sm70" | "sm75" | "sm80" | "sm86" | "sm89" | "sm90" | "sm100" | "sm120" | "vulkan_amd" | "cloud";

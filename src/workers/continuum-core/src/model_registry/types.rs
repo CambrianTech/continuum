@@ -19,10 +19,7 @@ use std::path::PathBuf;
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS,
 )]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/model_registry/Arch.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/model_registry/Arch.ts")]
 #[serde(rename_all = "snake_case")]
 pub enum Arch {
     Qwen2,
@@ -83,6 +80,41 @@ pub enum Capability {
     ImageGeneration,
     Embedding,
     Reranking,
+}
+
+/// Where a provider runs its inference. Resolver consumes this to honor
+/// `LocalOrCloudPolicy` without needing a hardcoded provider-id list.
+/// Providers default to [`ProviderKind::Cloud`] so adding a new cloud
+/// provider TOML row doesn't require an explicit `kind` line; local
+/// providers MUST declare `kind = "local"` explicitly.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Default,
+    Serialize,
+    Deserialize,
+    ts_rs::TS,
+)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/model_registry/ProviderKind.ts"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    /// In-process or localhost backend. Inference runs on this host's
+    /// hardware (CPU / GPU / unified memory). Examples: `llamacpp-local`,
+    /// `docker-model-runner`.
+    Local,
+    /// Remote HTTP API. Inference runs off-host; this provider counts
+    /// toward `TargetSilicon::Cloud` admission. Default for new providers.
+    #[default]
+    Cloud,
 }
 
 /// HTTP authentication mode for a provider's API.
@@ -286,6 +318,12 @@ pub struct Provider {
     /// dispatch via live /v1/models probes instead.
     #[serde(default)]
     pub model_prefixes: Vec<String>,
+    /// Where this provider runs inference. See [`ProviderKind`]. Defaults
+    /// to `Cloud` when omitted in TOML — local providers must declare
+    /// `kind = "local"` explicitly so adding a new cloud provider doesn't
+    /// require touching this field.
+    #[serde(default)]
+    pub kind: ProviderKind,
 }
 
 impl Provider {
