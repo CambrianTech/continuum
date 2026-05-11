@@ -412,6 +412,22 @@ auth = "none"
             .expect("forged Qwen3.5-4B must be in the registry");
         assert_eq!(forged.arch, crate::model_registry::Arch::Qwen35);
         assert_eq!(forged.context_window, 262144);
+
+        let omni = reg
+            .model("qwen2.5-omni-7b-instruct")
+            .expect("Qwen2.5-Omni-7B sensory-input model must be in the registry");
+        assert_eq!(omni.provider, "llamacpp-local");
+        assert_eq!(omni.arch, crate::model_registry::Arch::Qwen2);
+        assert!(omni.has(crate::model_registry::Capability::Vision));
+        assert!(omni.has(crate::model_registry::Capability::AudioInput));
+        assert!(
+            !omni.has(crate::model_registry::Capability::AudioOutput),
+            "GGUF admission must not claim native audio output until it is validated"
+        );
+        assert!(
+            omni.mmproj_local_path.is_some(),
+            "local sensory-input admission requires an mmproj path"
+        );
     }
 
     #[test]
