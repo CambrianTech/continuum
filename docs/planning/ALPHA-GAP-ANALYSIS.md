@@ -45,6 +45,66 @@ The non-negotiable gates:
 11. **Replay before live claims**: persona, RAG, tool, inference, and memory changes must include a Rust fixture/replay/unit test before "works live" is accepted.
 12. **One source of truth per runtime fact**: model definitions, provider availability, context budgets, hardware capability, config values, room identity, and command semantics must each have one canonical owner.
 
+### CBAR-Like Runtime Substrate Contract
+
+Continuum's Rust runtime must adopt the CBAR performance philosophy from
+`/Users/joelteply/Development/cambrian/cb-mobile-sdk/cpp/cbar`: small concern
+modules inherit the hard machinery from a shared substrate. The goal is not a
+literal class-for-class port; the goal is the same RTOS-style behavior:
+concurrent lanes, bounded queues, lazy shared artifacts, realtime-first
+cadence, resource admission, and handles instead of copied memory.
+
+The reusable substrate must provide:
+
+- `RuntimeFrame` / `CognitionTurnFrame`: one turn/frame object with stable keys
+  and lazy artifacts for room snapshot, RAG, model selection, prompt fragments,
+  media handles, embeddings, KV leases, LoRA leases, response envelopes, and
+  trace metrics.
+- `RuntimeModule`: a narrow Rust trait for concerns. Modules declare
+  subscriptions, lane, cadence, dependencies, and budget; they do not invent
+  their own scheduler.
+- `ResourceClass` plus `TargetSilicon`: the shipped two-axis scheduler shape.
+  `ResourceClass` describes what kind of work is being scheduled, while
+  `TargetSilicon` describes where it wants to run. Docs may say "lane"
+  informally, but implementation should reuse these shipped enums rather than
+  invent `ResourceLane`.
+- `ArtifactHandle` / leases: module boundaries pass ids, hashes, offsets,
+  texture ids, buffer leases, model residency leases, KV page ids, and LoRA
+  page ids. Bulk payloads stay resident in the owning pool.
+- dependency wakeups: work runs when required artifacts become ready, not
+  because a global FIFO happened to drain.
+- cadence and pressure gates: realtime work runs first; delayed work runs by
+  cadence, state delta, or explicit trigger; pressure reduces cadence,
+  precision, context, subscriber count, or modality with visible reasons.
+- built-in logs, metrics, flush, abort, shutdown, queue depth, queue time,
+  execution time, coalesced count, deferred count, and resource residency.
+- one standard VDD record emitted by the Rust substrate for every platform, so
+  Mac, Windows/RTX, Docker, and future grid nodes report comparable timing,
+  throughput, CPU/GPU, residency, silence, and bottleneck fields.
+- one-line instrumentation helpers for runtime code: scopes, marks, counters,
+  residency, deferrals, and failures should feed the standard VDD record
+  automatically. A module author should not write a custom timing harness to
+  answer whether CPU fell, GPU utilization rose, memory/power stayed bounded,
+  or throughput improved.
+
+This substrate is the base-class/OOP-equivalent discipline for Rust. Extension
+code should be short: implement the small trait, declare dependencies, and let
+the runtime provide concurrency, telemetry, pressure, wakeups, and lifecycle.
+New modules should normally be measured in a few hundred lines, not thousands.
+If a new runtime concern needs its own bespoke communications, queue,
+backpressure, retry, metrics, lifecycle, or failure-reporting system, the PR is
+exposing missing substrate work and should fix the shared substrate instead of
+growing a monolith.
+
+The first implementation PRs should not add more bespoke queues, fallback
+paths, or TS orchestration. They should converge existing Rust pieces into this
+substrate: `ServiceModule`, `MessageBus`, `SharedCompute`, `ChannelQueue`,
+`PressureBroker`, `PagedResourcePool`, model registry, and
+`llamacpp_scheduler`.
+The missing work is specifically `RuntimeFrame` / `CognitionTurnFrame` and
+formal artifact subscription/cadence/dependency declarations on top of the
+shipped substrate primitives, not a restart from zero.
+
 ### Sensory Persona Product Contract
 
 Continuum's differentiator is not "chat with several text bots." The alpha product is a local sensory persona grid: users can call personas into a WebRTC room, speak to them, see them, and receive useful multimodal responses from agents that can perceive images/video/audio and drive avatar or other control outputs.
@@ -54,6 +114,15 @@ Implementation consequences:
 - **Every standard persona declares sensory requirements.** The default requirement set includes text, vision, audio input, voice/audio output, avatar/control output, and WebRTC presence. A persona that cannot satisfy those requirements is marked `Degraded` with the missing capability, not silently treated as alpha-complete.
 - **STT/TTS are adapters, not the center.** They exist to support compatibility models and weaker hosts. The standard local model path targets multimodal models directly where possible.
 - **Qwen 3.5/3.6 are optimization targets.** The registry and runtime resolve model requirements by capability, context, memory budget, and GPU support. They do not scatter hardcoded model names or accept random provider/model drift.
+- **Qwen GPU support is an alpha contract.** Qwen 3.5 text/code and Qwen2-VL
+  vision must run through Continuum's llama.cpp/local runtime with all viable
+  layers on the required platform backend: Mac -> Metal, NVIDIA -> CUDA, and
+  AMD/Intel -> Vulkan. Unsupported Qwen layers, mmproj/audio/vision gaps, CPU
+  graph splits, or missing upstream kernels are implementation blockers to fix
+  or vendor/upstream, not reasons to route around the local runtime. The model
+  resolver must expose selected model, backend, GPU layer count, expected
+  residency, unsupported layers, and any degraded reason before a persona turn
+  starts.
 - **Open-source runtime gaps are ours to fix.** If llama.cpp, Candle training code, GGUF conversion, kernels, multimodal projectors, audio layers, or paging support are missing what Qwen needs, the work item is to fork/vendor/upstream the fix with benchmarks. "Upstream cannot" is not a final answer for open-source dependencies.
 - **No CPU crutches in the happy path.** CPU fallback is explicit degraded mode for unsupported hardware, tests, or emergency operation. It is not a performance plan for a 3090/5090/M-series target.
 - **Live media is a gate.** Video chat, avatar output, and WebRTC bridge health are alpha gates. A PR that breaks sensory persona presence must fail validation before canary promotion.
