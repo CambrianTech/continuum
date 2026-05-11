@@ -82,17 +82,35 @@ bash scripts/ratchets/check-ts-persona-cognition.sh --verbose
 
 Prints the per-file LOC table so you see which file changed and by how much.
 
+## Companion gate: forbidden-strings ratchet
+
+`scripts/ratchets/check-ts-persona-forbidden-strings.sh` (PR #1091
+followup) runs the same monotonic-decrease shape on per-pattern grep
+counts under the same surface. Tracked patterns:
+
+- **`fallback_mention`** (case-insensitive): per Joel's no-fallbacks
+  rule (2026-04-22, "fallbacks have ruined this project ... they are
+  ILLEGAL"). The WORD count is a proxy for conceptual presence — even
+  comments saying "no fallback here" count.
+- **`direct_adapter_instantiation`**: matches `new <Name>Adapter(`.
+  TS surface should request providers from the registry / admission
+  layer (Rust resolver, #1066/#1074), not instantiate adapters directly.
+- **`direct_api_key_env_read`**: matches `process.env.*API_KEY`. Cloud
+  API key lookup belongs in the Rust provider registry (Codex's #1077
+  boundary), NOT the TS surface. Currently 0 — the ratchet locks that in.
+
+Same workflow shape (`.github/workflows/ts-persona-forbidden-strings-ratchet.yml`),
+same `--update-baseline` / `--verbose` modes. Per-pattern baselines live
+in `scripts/ratchets/ts-persona-forbidden-strings-baseline.json` with
+inline rationale per pattern.
+
 ## Out of scope (followups)
 
-- **Forbidden-strings check**: detect `"fallback"`, direct adapter
-  instantiation, or other anti-patterns Joel has flagged. Per #1084
-  Lane F success criteria. Will land as a separate gate next to this
-  one.
 - **Verb-shape detection**: identify cognition VERBS (e.g.,
   `shouldRespond`, `scoreRelevance`) being added in TS even when total
   LOC drops. Heuristic, harder to define rigorously — lower priority
-  than the LOC ratchet which catches the gross case.
-- **Pre-commit hook integration**: today's gate is CI-only. Adding to
+  than the LOC + forbidden-strings ratchets which catch the gross cases.
+- **Pre-commit hook integration**: today's gates are CI-only. Adding to
   pre-commit would catch growth before push, faster signal. Reserve
-  for after the LOC ratchet has been live for ~1 week so we know the
+  for after the ratchets have been live for ~1 week so we know the
   shape isn't going to oscillate.
