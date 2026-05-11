@@ -78,13 +78,31 @@ cross-attention path is not bottlenecking gen on Blackwell.
 
 ## The actual forge gap
 
+Update 2026-05-11: the first Omni bench closed the "no single local model"
+question for the Blackwell full tier. `ggml-org/Qwen2.5-Omni-7B-GGUF`
+Q4_K_M plus mmproj-f16 ran successfully through upstream llama.cpp `1ec7ba0`
+on RTX 5090 sm_120 with CUDA 12.8. Text bench reached pp512 13,659 t/s and
+tg128 220 t/s; the vision smoke described the cat image correctly at 212 t/s
+generation; the audio smoke transcribed the JFK WAV correctly at 216 t/s
+generation. This makes Qwen2.5-Omni-7B the recommended full-tier sensory-input
+candidate for RTX/Blackwell while Qwen3-Omni-30B-A3B remains the next MoE
+candidate to bench.
+
+That result also surfaced the next real kernel gap: upstream llama.cpp reports
+CUDA `POOL_1D` unsupported in the CLIP/mmproj graph, so that operator falls
+back from CUDA to CPU. Decode remains CUDA/full-offload, and performance is
+still usable, but Continuum should treat this as a VDD failure to eliminate,
+not an accepted architecture. Position 3 follow-up should either patch the
+CUDA `POOL_1D` kernel upstream or keep the candidate marked with an explicit
+`mmproj_pool_1d_cpu_fallback` warning in the Rust registry.
+
 The headline `#1072` alpha-bar miss is **not** Qwen 3.5/3.6-VL upstream
 availability — though that is real (only three files in vendored
 `llama.cpp` mention `qwen3_vl`: `test-backend-ops.cpp`,
 `convert_hf_to_gguf.py`, `clip-model.h`; and `bartowski/Qwen2.5-VL-7B-Instruct-GGUF`
 returns "Invalid username or password" against an anonymous fetch).
 
-The headline gap is that **no single local model in `models.toml` has
+The original headline gap was that **no single local model in `models.toml` has
 all four `standard_persona` capabilities** `{Chat, Vision, AudioInput, AudioOutput}`:
 
 | Model entry                          | Chat | Vision | AudioIn | AudioOut |
@@ -106,12 +124,20 @@ ships as a passing test that *asserts* the failure: the resolver fires
 `NoMultimodalBase` on every host because no entry in the registry has
 the full sensory bundle.
 
+The 2026-05-11 Omni bench changes the next action: the hardware/runtime path is
+viable, but `models.toml` and the Rust registry still need a vetted
+Qwen2.5-Omni row before the resolver can select it. The candidate should be
+admitted for `{Chat, Vision, AudioInput}` first, with a separate typed
+voice-output adapter or forge task for `AudioOutput`.
+
 ## Three paths forward
 
-1. **Wait on a Qwen-Omni-style single-model GGUF.** Qwen2.5-Omni and
-   Qwen3-Omni exist upstream but neither has a vendor-blessed GGUF
-   conversion path today. This is the simplest model-side answer if
-   upstream catches up.
+1. **Admit Qwen2.5-Omni-7B as the first full-tier sensory-input GGUF.**
+   The ggml-org Qwen2.5-Omni-7B GGUF path is verified on RTX 5090 for
+   text/image/audio input. This is now the immediate Rust registry work:
+   add a candidate row with hardware tier, artifact paths, measured VDD,
+   and an explicit `mmproj_pool_1d_cpu_fallback` warning until the CUDA
+   kernel gap is fixed.
 
 2. **Tier-aware load policy that re-enables `qwen2-audio-7b-instruct`
    when memory budget allows.** Adapter-side substrate work: skip on

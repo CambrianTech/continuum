@@ -43,18 +43,30 @@ truth belongs in the Rust registry once artifacts are validated.
 
 - **Source**: [Qwen/Qwen2.5-Omni-7B](https://huggingface.co/Qwen/Qwen2.5-Omni-7B)
 - **GGUF**: [ggml-org/Qwen2.5-Omni-7B-GGUF](https://huggingface.co/ggml-org/Qwen2.5-Omni-7B-GGUF)
-- **Current read**: official end-to-end omni model that perceives
-  text/images/audio/video and can generate text plus natural speech in the HF
-  model path. The ggml-org GGUF card advertises text, audio, and image input,
-  but marks video input and audio generation absent in that GGUF path.
-- **Alpha role**: headline consumer sensory-input candidate. It can close
-  perception if local text/audio/image input works, but it does not close
+- **Current read**: official end-to-end omni model with a working ggml-org
+  GGUF path for local text, image, and audio input through upstream llama.cpp.
+  RTX 5090 VDD on 2026-05-11 validated Q4_K_M plus mmproj-f16 on CUDA sm_120:
+  text bench, image description, and audio transcription all passed.
+- **Measured RTX 5090 result**: upstream llama.cpp `1ec7ba0`,
+  `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120-real`,
+  `Qwen2.5-Omni-7B-Q4_K_M.gguf` 4.36 GiB plus `mmproj` 2.5 GiB. Text bench
+  `-ngl 99 -p 512 -n 128 -r 3`: pp512 13,659 t/s, tg128 220 t/s. Vision
+  smoke: 1,288 px cat image described correctly, text generation 212 t/s.
+  Audio smoke: JFK WAV transcribed correctly, text generation 216 t/s.
+- **Known kernel gap**: upstream llama.cpp reported CUDA `POOL_1D` unsupported
+  inside the CLIP/mmproj graph, so that operator falls back from CUDA to CPU.
+  Decode stayed on CUDA; the fallback is still a VDD failure to track and fix,
+  not an acceptable steady-state architecture. Upstream tracking referenced by
+  RTX VDD: ggml-org/llama.cpp PR 16837, comment 3461676118.
+- **Alpha role**: recommended full-tier local sensory-input candidate for
+  Blackwell/RTX-class hosts now. It closes text/image/audio input locally and
+  is fast enough to restore real persona perception. It still does not close
   speech output unless llama.cpp support grows, we pair a typed voice-output
   adapter, or we forge the missing output path.
-- **Registry action**: bench first on RTX 5090 and Mac Metal. Verify files,
-  audio/video path, llama.cpp `-hf` path, license metadata, CPU/GPU split,
-  VRAM, replay quality, and whether audio output is absent or just not exposed
-  by the GGUF card.
+- **Registry action**: add as the first vetted full-tier candidate with a
+  `requiresAccelerator=true` profile and a `mmproj_pool_1d_cpu_fallback`
+  warning until the upstream kernel is fixed. Mac Metal still requires its own
+  VDD because this result is CUDA/Blackwell-specific.
 
 ### Qwen2.5-Omni-3B
 
@@ -138,12 +150,13 @@ truth belongs in the Rust registry once artifacts are validated.
 - **Registry action**: keep as baseline until Qwen3.5/3.6/Omni artifacts beat
   it in VDD.
 
-Current ranking from AIRC/RTX scout:
+Current ranking from AIRC/RTX scout and 2026-05-11 RTX VDD:
 
-1. `Qwen2.5-Omni-7B` official source plus `ggml-org` GGUF is the first alpha
-   sensory-input candidate because it is small, open at the source model, and
-   already on the llama.cpp/GGUF path for text, audio, and image input. It still
-   needs speech-output validation or forge/voice-adapter work.
+1. `Qwen2.5-Omni-7B` official source plus `ggml-org` GGUF is the first full-tier
+   local sensory-input candidate. RTX 5090 VDD proved text, image, and audio
+   input with high throughput. It still needs speech-output validation or
+   forge/voice-adapter work, and the CUDA `POOL_1D` mmproj fallback must be
+   tracked as an upstream kernel gap.
 2. `Qwen3-Omni-30B-A3B-Instruct` plus `ggml-org` GGUF is the high-end
    Blackwell/grid candidate, the likely complete sensory contract candidate,
    and the best MoE pruning/paging target.
