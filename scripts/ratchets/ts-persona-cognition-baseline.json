@@ -1,0 +1,14 @@
+{
+  "_doc": "Lane F (PR #1084) — TS Persona Cognition Deletion Ratchet. Tracks the total line count of TypeScript persona-cognition source files. Per the Rust-first alpha contract (PR #1070, ALPHA-GAP-ANALYSIS.md, memory: project_continuum_alpha_product_bar_sensory_personas.md), TS persona cognition must SHRINK as Rust runtime takes ownership. This baseline is the high-water mark: any PR that grows the total fails CI. Lower it monotonically as Rust migrations land.",
+  "_to_lower_baseline": "After a PR that legitimately shrinks the surface, run: bash scripts/ratchets/check-ts-persona-cognition.sh --update-baseline && git add scripts/ratchets/ts-persona-cognition-baseline.json && commit",
+  "_paths_glob_relative_to_repo_root": [
+    "src/system/user/server/**/*.ts"
+  ],
+  "_excludes": [
+    "*.test.ts",
+    "*.spec.ts"
+  ],
+  "_baseline_anchored_at_canary": "d2dc3a8e8",
+  "_anchored_at_iso": "2026-05-11T21:09Z",
+  "total_lines": 27160
+}
