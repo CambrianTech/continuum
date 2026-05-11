@@ -94,15 +94,13 @@ jobs:
         env:
           # PR HEAD sha so smoke fetches install.sh from THIS PR.
           CARL_INSTALL_REF: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
-          # Pin docker images to :pr-N (PR-scoped, mutable per push). Refreshed
-          # by push-image.sh on every dev push, so always reflects this PR's
-          # latest source — but never collides with another PR or canary.
-          # Slices the dev didn't push directly are aliased from :canary by the
-          # dev script (manifest copy, no rebuild). :latest was the prior
-          # default and went 9-14 days stale in April 2026 — never use it for
-          # smoke.
+          # Main PRs use :pr-N because docker-images.yml verifies / aliases
+          # PR image manifests only for main promotion. Canary PRs use the
+          # already-published :canary image set because canary deliberately
+          # excludes per-PR image verification; requiring :pr-N there creates
+          # manifest-unknown failures and used to fall into local source builds.
           #
-          # Resolution priority: PR# > input.image_tag > 'canary'.
+          # Resolution priority: main PR# > input.image_tag > 'canary'.
           # On workflow_dispatch (no PR context) the bare `pr-${{ ... }}`
           # interpolated to 'pr-' (empty after dash), causing install.sh to
           # miss the registry and fall back to 'will build locally' — which
@@ -111,7 +109,7 @@ jobs:
           # 25400718464). The conditional below makes manual triggers
           # default to the canary tag (the cadence we publish on) and lets
           # operators override via the image_tag input from the UI.
-          CONTINUUM_IMAGE_TAG: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
+          CONTINUUM_IMAGE_TAG: ${{ github.event.pull_request.base.ref == 'main' && github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
           # 25-min cap on the docker-only install. Hybrid (Mac source-build)
           # path would exceed this — by design, that's the gate firing on
           # the README/install mismatch.
