@@ -65,6 +65,17 @@ services:
       # base: small (74MB), fast, works with all whisper.cpp versions.
       # large-v3-turbo requires whisper.cpp v1.7+ (different tensor count).
       - WHISPER_MODEL=${WHISPER_MODEL:-base}
+      # Tier passed from install.sh's CONTINUUM_TIER (mba | mid | full),
+      # defaulting to `full` so headed installs without install.sh's
+      # hardware-tier block still pull the multimodal Qwen set. Without
+      # this explicit pass-through, download-models.sh inside the container
+      # reads /proc/meminfo which (cgroups-aware) reflects the model-init
+      # mem_limit (2GB), NOT the host's RAM, and silently downgrades every
+      # install to the `mba` tier — leaving Qwen unseeded and personas
+      # silent at runtime (root cause of the RTX 5090 'no local Qwen
+      # models' install finding 2026-05-11). Canonical tier names live
+      # in src/shared/models.json `auto_download.by_tier` keys.
+      - TIER=${CONTINUUM_TIER:-full}
 
   # ── Continuum Core (Rust) ─────────────────────────────────
   # Default uses the vulkan variant: software rendering via mesa's llvmpipe ICD

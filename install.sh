@@ -206,8 +206,16 @@ case "$OS" in
     #             those code paths still load lazily). Native budget 5GB.
     #   24-31GB → mid tier: still chat-focused but slightly larger model;
     #             Bevy/vision/audio available. Native budget 8GB.
-    #   32GB+   → primary tier: full Qwen 4B code-forged + multimodal +
+    #   32GB+   → full tier: full Qwen 4B code-forged + multimodal +
     #             everything pre-pulled. Native budget 12GB (original).
+    #
+    # Tier-name canon: `mba | mid | full`. Source of truth is
+    # src/shared/models.json (`auto_download.by_tier` keys + `tiers`
+    # keys). Both src/scripts/download-models.sh and ModelRegistry.ts
+    # consume that canon. Keep CONTINUUM_TIER in sync — `primary` was
+    # the legacy name and silently breaks the model-init download
+    # because by_tier[primary] doesn't exist (jq returns []), leaving
+    # the install with voice models only and personas with no Qwen.
     #
     # PERSONA_MODEL also tiers (set later when ic_decide_gpu_path runs;
     # this just sets the byte budget for Docker VM sizing). The tiered
@@ -230,10 +238,10 @@ For 16GB MBA: chat-only OOTB works (smaller model). For 32GB+: full multimodal e
       CONTINUUM_TIER="mid"
       info "Hardware tier: mid (${PHYS_GB}GB) — multimodal available with mid-size persona model"
     else
-      # Primary tier (original behavior)
+      # Full tier (original behavior — formerly named `primary`)
       NATIVE_RESERVE_MIB=$((12 * 1024))
-      CONTINUUM_TIER="primary"
-      info "Hardware tier: primary (${PHYS_GB}GB) — full multimodal + Qwen 4B code-forged"
+      CONTINUUM_TIER="full"
+      info "Hardware tier: full (${PHYS_GB}GB) — full multimodal + Qwen 4B code-forged"
     fi
     export CONTINUUM_TIER
     MACOS_RESERVE_MIB=$((6 * 1024))
@@ -404,9 +412,14 @@ EOF
   #
   # Tiered by CONTINUUM_TIER (set in the Mac RAM-tier block above; Linux
   # paths skip this block since CONTINUUM_TIER isn't set there → defaults
-  # to the primary model). Lets a 16GB MBA install with a model that fits
+  # to the full model). Lets a 16GB MBA install with a model that fits
   # rather than failing the install or OOMing on first chat.
-  case "${CONTINUUM_TIER:-primary}" in
+  #
+  # Tier-name canon: `mba | mid | full`. Matches src/shared/models.json
+  # `auto_download.by_tier` keys + src/scripts/download-models.sh. The
+  # legacy `primary` name silently broke the model-init download because
+  # `by_tier[primary]` doesn't exist — keep this in sync going forward.
+  case "${CONTINUUM_TIER:-full}" in
     mba)
       # 16-23GB: 0.8B general (~500MB GGUF). Chat-functional + leaves
       # headroom for macOS + Docker + native continuum-core working set.

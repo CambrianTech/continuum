@@ -62,6 +62,22 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+# Validate TIER against the canonical set BEFORE the jq lookup. Without
+# this, an unknown tier (e.g. legacy `primary` from older install.sh)
+# would silently produce an empty `by_tier` set — install ships only
+# voice models and personas have no local Qwen at runtime. That was the
+# 2026-05-11 RTX 5090 silent-no-replies root cause. Fail loud per Joel's
+# 'no silent fallback to placeholder models' rule.
+case "$TIER" in
+  mba|mid|full) ;;
+  *)
+    echo -e "${RED}ERROR: TIER='${TIER}' is not a canonical tier name.${NC}" >&2
+    echo "  Valid: mba | mid | full (canon: src/shared/models.json auto_download.by_tier keys)." >&2
+    echo "  Likely cause: install.sh CONTINUUM_TIER (e.g. legacy 'primary') diverged from registry. Align both ends." >&2
+    exit 1
+    ;;
+esac
+
 # Compute the download set: always[] + by_tier[$TIER][]
 mapfile -t MODEL_KEYS < <(jq -r --arg tier "$TIER" '
   [
