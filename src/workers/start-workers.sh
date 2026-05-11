@@ -19,6 +19,31 @@ resolve_path() {
   echo "$1" | sed "s|^\.continuum|$CONTINUUM_ROOT|"
 }
 
+env_truthy() {
+  local name="$1"
+  local value="${!name:-}"
+  case "$value" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+worker_enabled_for_runtime() {
+  local worker="$1"
+  local enabled_env
+
+  if [ "$(echo "$worker" | jq -r '.enabled // true')" = "false" ]; then
+    return 1
+  fi
+
+  enabled_env=$(echo "$worker" | jq -r '.enabledEnv // empty')
+  if [ -n "$enabled_env" ] && ! env_truthy "$enabled_env"; then
+    return 1
+  fi
+
+  return 0
+}
+
 # Memory limit helper - converts "8G" to bytes for ulimit
 parse_memory_limit() {
   local limit="$1"
@@ -95,11 +120,13 @@ mkdir -p "$CONTINUUM_ROOT/jtag/logs/system/modules"
 mkdir -p "$CONTINUUM_ROOT/jtag/logs/system/daemons"
 mkdir -p "$CONTINUUM_ROOT/sockets"
 
-# Start LiveKit SFU server (WebRTC media transport)
-# Check brew first, then manual install location
-LIVEKIT_BIN=$(command -v livekit-server 2>/dev/null || echo "$HOME/.continuum/bin/livekit-server")
-LIVEKIT_LOG="$CONTINUUM_ROOT/jtag/logs/system/livekit-server.log"
-if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
+# Start native LiveKit only when the native live profile is explicitly enabled.
+# Default npm start stays text/chat-light; Docker live mode uses compose instead.
+if env_truthy CONTINUUM_LIVEKIT_NATIVE; then
+  # Check brew first, then manual install location
+  LIVEKIT_BIN=$(command -v livekit-server 2>/dev/null || echo "$HOME/.continuum/bin/livekit-server")
+  LIVEKIT_LOG="$CONTINUUM_ROOT/jtag/logs/system/livekit-server.log"
+  if [ -x "$LIVEKIT_BIN" ] || command -v livekit-server &>/dev/null; then
   # Kill existing LiveKit server (SIGKILL for clean port release)
   pkill -9 -f "livekit-server" 2>/dev/null || true
   # Wait for UDP ports to be fully released (7880 TCP, 7881-7882 UDP)
@@ -189,9 +216,12 @@ YAML
     fi
     sleep 0.5
   done
+  else
+    echo -e "${RED}⚠️  LiveKit server not installed — voice/video calls will NOT work${NC}"
+    echo -e "   Install with: ./scripts/install-livekit.sh"
+  fi
 else
-  echo -e "${RED}⚠️  LiveKit server not installed — voice/video calls will NOT work${NC}"
-  echo -e "   Install with: ./scripts/install-livekit.sh"
+  echo -e "${YELLOW}⏭️  Native LiveKit disabled (set CONTINUUM_LIVEKIT_NATIVE=1 for live media)${NC}"
 fi
 
 # Build Rust workers — let cargo handle incremental compilation (it's smart enough)
@@ -255,6 +285,15 @@ elif [ -f "/usr/local/lib/libonnxruntime.so" ]; then
 fi
 
 while read -r worker; do
+  if ! worker_enabled_for_runtime "$worker"; then
+    name=$(echo "$worker" | jq -r '.name')
+    enabled_env=$(echo "$worker" | jq -r '.enabledEnv // empty')
+    if [ -n "$enabled_env" ]; then
+      echo -e "${YELLOW}⏭️  Skipping ${name} (${enabled_env} not enabled)${NC}"
+    fi
+    continue
+  fi
+
   name=$(echo "$worker" | jq -r '.name')
   binary=$(echo "$worker" | jq -r '.binary')
   socket=$(resolve_path "$(echo "$worker" | jq -r '.socket // empty')")
@@ -354,13 +393,17 @@ while read -r worker; do
       done <<< "$preload_models"
     fi
   fi
-done < <(jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE")
+done < <(jq -c '.workers[]' "$CONFIG_FILE")
 
 # Verify all enabled workers are running
 sleep 0.5
 ALL_RUNNING=true
 
 while read -r worker; do
+  if ! worker_enabled_for_runtime "$worker"; then
+    continue
+  fi
+
   name=$(echo "$worker" | jq -r '.name')
   binary_name=$(basename "$(echo "$worker" | jq -r '.binary')")
   worker_type=$(echo "$worker" | jq -r '.type // "socket"')
@@ -377,13 +420,17 @@ while read -r worker; do
       ALL_RUNNING=false
     fi
   fi
-done < <(jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE")
+done < <(jq -c '.workers[]' "$CONFIG_FILE")
 
 if [ "$ALL_RUNNING" = true ]; then
   echo -e "${GREEN}✅ All workers running successfully${NC}"
 
   # Show status
   while read -r worker; do
+    if ! worker_enabled_for_runtime "$worker"; then
+      continue
+    fi
+
     name=$(echo "$worker" | jq -r '.name')
     binary_name=$(basename "$(echo "$worker" | jq -r '.binary')")
     socket=$(echo "$worker" | jq -r '.socket // empty')
@@ -397,7 +444,7 @@ if [ "$ALL_RUNNING" = true ]; then
       pid=$(pgrep -f "$binary_name" | head -1)
       echo -e "   ${name}: PID $pid ($socket)"
     fi
-  done < <(jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE")
+  done < <(jq -c '.workers[]' "$CONFIG_FILE")
   exit 0
 else
   echo -e "${RED}❌ One or more workers failed to start${NC}"

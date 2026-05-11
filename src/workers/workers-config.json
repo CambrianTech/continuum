@@ -33,6 +33,16 @@
       "args": [],
       "description": "Unified Rust runtime: Voice, Data, Embedding, Search, Logger modules",
       "enabled": true
+    },
+    {
+      "name": "livekit-bridge",
+      "binary": "workers/target/release/livekit-bridge",
+      "socket": ".continuum/sockets/livekit-bridge.sock",
+      "args": [],
+      "description": "LiveKit WebRTC bridge for native continuum-core",
+      "enabled": true,
+      "enabledEnv": "CONTINUUM_LIVEKIT_NATIVE",
+      "memoryLimit": "2G"
     }
   ],
   "sharedSockets": [

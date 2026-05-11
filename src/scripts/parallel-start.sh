@@ -234,6 +234,11 @@ build_pkg() {
 for pkg in archive-worker jtag-mcp; do
   build_pkg "$pkg"
 done
+case "${CONTINUUM_LIVEKIT_NATIVE:-}" in
+  1|true|TRUE|yes|YES|on|ON)
+  build_pkg livekit-bridge
+    ;;
+esac
 # continuum-core: all GPU features (metal+accelerate on macOS, cuda on Linux)
 if [ -n "$GPU_FEAT" ]; then
   build_pkg continuum-core --features "$GPU_FEAT"
