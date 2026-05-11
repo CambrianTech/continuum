@@ -48,11 +48,12 @@ fn load_tokenizer_only() -> Model {
     // n_gpu_layers = 0 keeps weights on CPU only and avoids Metal pipeline
     // compilation. Tokenizer lives on the model object regardless of
     // device, so we get full tokenization without paying GPU init cost.
-    let path = PathBuf::from(model_path());
+    let path = model_path();
     assert!(
         path.exists(),
-        "Model GGUF not present at {model_path()}. \
-         Pull continuum-ai/qwen3.5-4b-code-forged-gguf via DMR before running this test."
+        "Model GGUF not present at {}. \
+         Pull continuum-ai/qwen3.5-4b-code-forged-gguf via DMR before running this test.",
+        path.display()
     );
     Model::load(
         &path,
