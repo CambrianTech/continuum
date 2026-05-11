@@ -570,16 +570,14 @@ impl ServiceModule for CognitionModule {
                     .get("task_domain")
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                let base_model = p.str("base_model")?.to_string();
-
                 let request = ModelSelectionRequest {
                     persona_id: persona_uuid,
                     task_domain,
-                    base_model,
                 };
 
                 let persona = get_or_create_persona!(self, persona_uuid);
-                let result = model_selection::select_model(&request, &persona.adapter_registry);
+                let result = model_selection::select_model(&request, &persona.adapter_registry)
+                    .map_err(|e| e.to_string())?;
 
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,

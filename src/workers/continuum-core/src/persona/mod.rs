@@ -58,7 +58,7 @@ pub use message_cache::{
     SenderCategory,
 };
 pub use model_selection::{
-    AdapterInfo, AdapterRegistry, ModelSelectionRequest, ModelSelectionResult,
+    AdapterInfo, AdapterRegistry, ModelSelectionError, ModelSelectionRequest, ModelSelectionResult,
 };
 pub use types::*;
 pub use unified::PersonaCognition;

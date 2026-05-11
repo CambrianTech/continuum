@@ -5,11 +5,11 @@
  */
 export type ModelSelectionResult = { 
 /**
- * The selected model name (trained adapter model or base model).
+ * The selected trained adapter model.
  */
 model: string, 
 /**
- * Which tier selected it: "trait_adapter", "current_adapter", "any_adapter", "base_model"
+ * Which tier selected it: "trait_adapter", "current_adapter", "any_adapter"
  */
 source: string, 
 /**
