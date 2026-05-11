@@ -70,6 +70,334 @@ Implementation consequences:
 | Config/secrets | `$HOME/.continuum/config.env` is the local source of truth, but empty placeholders and per-process loading have caused false provider availability | Cloud providers can steal local turns and fail; grid nodes cannot yet receive encrypted config consistently |
 | Tests | Many tests exist, but the alpha loop still overuses `npm start`/browser/Docker as proof | Slow tests hide root causes and discourage TDD |
 
+## Immediate Canary Work Packages
+
+These are the active alpha blockers exposed by the 2026-05-11 VDD runs and PR
+#1082 review. They are split so agents can work in parallel without stepping on
+each other. Each lane starts from `canary`, opens a focused PR back to
+`canary`, and posts validation evidence before merge. Assignment is explicit:
+if an agent cannot work a lane, it says so on AIRC and the lane is reassigned.
+
+| Lane | Current owner | Branch | First PR | Merge gate |
+|---|---|---|---|---|
+| A. Rust model registry and admission | Claimed: Codex/AIRC lane | `feature/rust-model-registry-admission` | Typed Rust catalog, capability request, resolver/admission explanation | Rust resolver tests plus missing-Qwen fail-hard test |
+| B. Installer model seeding and GPU profiles | Claimed: RTX/Windows Docker lane; Lane A owns registry artifact contract | `feature/docker-gpu-profile-modular` | `model-init`/installer seeds required Qwen artifacts into the runtime model volume | Windows/RTX fresh install reaches model-ready state or fails loud |
+| C. VDD telemetry substrate | Claimed: RTX/Windows substrate; Mac/Metal adapter sub-task claimed | `feature/rust-vdd-telemetry-substrate` | Structured timing/resource metrics flow into trace/event bus | VDD report shows first-token, tok/s, CPU, GPU, VRAM/RSS from structured data |
+| D. CBAR persona runtime frame | Suggested for Mac/Rust runtime lane; explicit owner still needed | `feature/cbar-persona-runtime-frame` | Rust `PersonaTurnFrame` with lazy RAG/media/priority outputs and inbox coalescing | Multi-message smoke produces one consolidated turn, not per-event inference flood |
+| E. Pressure broker and paging gate | Needs owner claim after C/D boundaries settle | `feature/pressurebroker-admission-gate` | Unified admission gate blocks unsafe backend/model/context loads | Concurrency test refuses unsafe second load and reports `Backpressured`/`Unavailable` |
+| F. TS cognition deletion ratchet | Needs owner claim; can run in parallel | `feature/persona-ts-deletion-ratchet` | CI/check script enforces no new persona cognition TS and net-negative touched cognition | PR fails if verb-shaped TS cognition grows or introduces forbidden provider/fallback strings |
+| G. Canary PR hygiene | Codex PM lane | `docs/alpha-rust-workstreams` | This document plus issue/PR checklist cleanup | Every active PR has owner, blocker, validation command, and canary target |
+
+Claim updates from AIRC on 2026-05-11:
+
+- Lane A was claimed by the Codex/AIRC lane because it extends the existing
+  resolver/sensory-profile/host-probe work and directly answers the missing
+  Qwen artifact finding from Windows/RTX.
+- Lane B Docker profile/volume mechanics were claimed by the RTX/Windows lane.
+  Lane A still owns the Rust registry artifact contract that Lane B consumes.
+- Lane C was claimed by the RTX/Windows lane for substrate schema, adapter
+  wiring, and CUDA/process metrics. A Mac/Metal adapter sub-task was claimed to
+  feed the same schema from the existing Metal monitor path.
+- RAG source tracing and `SEAM_RAG_COMPOSE` must coordinate with Lane D even if
+  implemented as a smaller Lane C-compatible PR. The boundary is: Lane C owns
+  metric/event substrate; Lane D owns persona turn-frame, RAG-as-lazy-output,
+  and inbox coalescing.
+- Lane A's first audit found two concrete install defects to fix early:
+  `install.sh` used a `primary` tier name while model download metadata expects
+  `mba|mid|full`, and `model-init` guessed RAM from inside a 2GB-limited
+  container. The first canary fix should unify tier naming, pass an explicit
+  tier into `model-init`, and fail loud when a tier has no required artifacts.
+- Lanes D, E, and F remain open unless claimed in AIRC/issue comments.
+
+### Lane A: Rust Model Registry And Admission
+
+**Problem**: model/provider facts are scattered, cloud/local availability can be
+misreported, and the Windows/RTX VDD run proved the CUDA stack can be healthy
+while no local Qwen model exists and personas silently produce zero replies.
+
+**Design**:
+
+- Rust owns `ModelRegistry`, `ModelRequirement`, `ModelCandidate`,
+  `ModelArtifact`, `ProviderKind`, `LocalRuntimeKind`, and `AdmissionDecision`.
+- Runtime callers request capabilities: modalities, minimum intelligence tier,
+  context window, tool support, latency class, memory budget, GPU requirement,
+  family preference, and explicit override.
+- The registry is a curated whitelist of vetted artifacts. Hugging Face/foundry
+  discovery can populate candidates, but runtime admission only selects vetted
+  rows with known template, license, backend, quantization, memory estimate,
+  modality metadata, and forge status.
+- Local chat inference is `LocalRuntime` through the llama.cpp/Qwen adapter
+  stack. Candle is for training/LoRA/forge paths, not persona chat inference.
+- Cloud providers remain adapter kinds. They do not steal turns unless their key
+  is non-empty, health checked, and explicitly admitted for that request.
+
+**Owned files/modules**:
+
+- `src/workers/continuum-core/src/model_registry/`
+- `src/workers/continuum-core/src/inference/`
+- `src/workers/continuum-core/src/ai/`
+- `src/workers/continuum-core/src/persona/cognition_io.rs`
+- generated `ts-rs` types under `src/shared/generated/`
+
+**PR sequence**:
+
+1. `model-registry-types`: Rust enums/structs plus `ts-rs` exports.
+2. `model-registry-catalog`: curated Qwen 3.5/2-VL rows and artifact metadata.
+3. `model-admission`: resolver returns selected candidate plus rejected
+   alternatives and resource explanation.
+4. `missing-model-fail-hard`: no local Qwen yields typed unavailable state and
+   user/actionable remedy, never silence.
+
+**TDD**:
+
+- `cargo test --package continuum-core model_registry`
+- exact model pin, family preference, `>=` intelligence/context requirement, GPU
+  required, no artifact present, and cloud key empty cases.
+
+**VDD**:
+
+- Fresh machine with no model file reports `Unavailable(MissingArtifact)` in
+  structured status and chat smoke sees a visible failure.
+- Machine with Qwen artifact selects local runtime, records memory projection,
+  and starts inference without CPU fallback.
+
+**Deletion targets**:
+
+- duplicate TS model maps/context windows
+- free-form provider/model strings in persona seed/runtime paths
+- stale local-model fallback branches and any forbidden provider tombstones
+
+### Lane B: Installer Model Seeding And GPU Profiles
+
+**Problem**: Windows/RTX had CUDA containers ready, low CPU, and available VRAM,
+but no Qwen model was mounted. The runtime stayed silent instead of becoming
+model-ready or failing loud.
+
+**Design**:
+
+- Add an explicit `model-init` responsibility for required alpha artifacts.
+- Seed required local Qwen artifacts into the same volume/bind mount the Rust
+  runtime reads.
+- Separate Docker profiles: `gpu`, `ui`, `live`, `grid`, `forge`, `devtools`.
+- Pin GPU images and make backend capability visible at health check time.
+
+**Owned files/modules**:
+
+- `setup.sh`, install scripts, and docs install paths
+- `docker-compose*.yml`
+- Docker image build/push scripts
+- `src/workers/continuum-core/src/model_registry/artifacts.rs`
+
+**PR sequence**:
+
+1. `model-init-profile`: separate model prewarm/download service.
+2. `qwen-seed-contract`: required local model list comes from Rust registry
+   artifact metadata, not shell hardcoding.
+3. `windows-rtx-install-vdd`: Windows GPU install smoke with model-ready proof.
+
+**TDD**:
+
+- shell/unit checks for model volume path resolution
+- Rust artifact resolver tests for missing, partial, corrupt, and ready states
+
+**VDD**:
+
+- Windows/RTX: cold start, first token, tok/s, CPU%, GPU%, VRAM, RSS.
+- Mac/Metal: same metrics, plus Metal layer offload evidence.
+- No model present: install exits or health reports explicit missing artifact in
+  less than 30 seconds.
+
+**Deletion targets**:
+
+- one-off model download code in TS/server startup
+- Docker paths that bypass Continuum's adapter/router substrate
+- opaque bulk startup scripts that hide which service failed
+
+### Lane C: VDD Telemetry Substrate
+
+**Problem**: timing, CPU/GPU utilization, tok/s, memory growth, and RAG evidence
+are still partly ad hoc logs. That makes validation slow and makes realtime
+behavior hard to reproduce.
+
+**Design**:
+
+- Rust emits structured `ValidationTrace`/`RuntimeMetric` events.
+- `CognitionTrace` gets seams for RAG composition, model admission, inference
+  init, first token, steady decode, post-process, and recorder persistence.
+- Metrics are emitted through the event bus and recorder fixtures. Stdout/stderr
+  text is local debugging output only, not the validation API.
+- One-liner timing guards are available to Rust modules so every new subsystem
+  gets timing and metadata with almost no code.
+
+**Owned files/modules**:
+
+- `src/workers/continuum-core/src/persona/trace.rs`
+- `src/workers/continuum-core/src/persona/recorder.rs`
+- `src/workers/continuum-core/src/rag/`
+- `src/workers/continuum-core/src/inference/`
+- event bus/logging modules under `continuum-core`
+
+**PR sequence**:
+
+1. `trace-rag-compose`: add `SEAM_RAG_COMPOSE` and RAG source hashes.
+2. `trace-inference-metrics`: first-token, tok/s, backend, layer offload,
+   CPU-degraded and GPU-required status flags.
+3. `vdd-report-command`: command emits a compact machine-readable VDD report.
+
+**TDD**:
+
+- recorder fixture tests for success and failure traces
+- RAG replay test proves source hashes and context can be inspected
+- inference adapter unit test with injected timings
+
+**VDD**:
+
+- Mac/Windows report generated from structured metrics, not copied terminal log.
+- CPU peg, CPU layer fallback, missing tok/s, and memory growth become failed
+  validation checks.
+
+**Deletion targets**:
+
+- println-style validation paths
+- duplicate TS logging/capture sinks
+- hand-assembled performance report scripts that scrape random console text
+
+### Lane D: CBAR Persona Runtime Frame
+
+**Problem**: persona inbox/RAG/scheduling behavior can flood inference by
+treating events too literally. The runtime needs a CBAR-like turn frame:
+immutable input, lazy derived outputs, coalesced work, and independent nodes.
+
+**Design**:
+
+- `PersonaTurnFrame` wraps room/user/persona signal state for a bounded turn.
+- Lazy outputs include consolidated inbox chunk, RAG context, media summary,
+  priority score, tool relevance, model requirement, and response prompt.
+- Nodes pull what they need and pay only for what they request.
+- Inbox consolidation is FIFO-preserving but chunked: many room events can
+  produce one planned turn instead of one inference per event.
+
+**Owned files/modules**:
+
+- `src/workers/continuum-core/src/persona/`
+- `src/workers/continuum-core/src/cognition/`
+- `src/workers/continuum-core/src/rag/`
+- TS shrink targets under `src/system/user/server/modules/PersonaInbox.ts`,
+  `ChatRAGBuilder.ts`, `PersonaResponseGenerator.ts`, and related deciders
+
+**PR sequence**:
+
+1. `persona-turn-frame`: frame/trait/pipeline skeleton with lazy outputs.
+2. `inbox-coalescing`: chunk/buffer room events and prove one turn per window.
+3. `rag-frame-output`: RAG composition becomes a lazy frame output with trace.
+4. `prg-shim-shrink`: TS PRG becomes a thin command shim or deletes.
+
+**TDD**:
+
+- Rust tests for lazy output computes once across multiple consumers.
+- Inbox test: N events within window -> one consolidated turn plan.
+- Replay test: fixture reproduces prompt/RAG/media from frame outputs.
+
+**VDD**:
+
+- Chat smoke records fewer inference calls than incoming events.
+- First response improves or stays flat while CPU/RSS do not climb.
+
+**Deletion targets**:
+
+- TS inbox consolidation logic
+- TS ChatRAGBuilder behavior
+- TS response-generator orchestration beyond thin command glue
+
+### Lane E: Pressure Broker And Paging Gate
+
+**Problem**: model, context, LoRA, media, and backend resources are still too
+independent. The correct controller must admit, page, evict, or defer across
+all resource types under one policy.
+
+**Design**:
+
+- `PressureBroker` owns admission for model weights, mmproj/mtmd contexts, KV
+  cache, LoRA adapters, embedding cache, WebRTC/media buffers, and render
+  textures.
+- Resource pools expose typed cost, residency, last-use, priority, and eviction
+  hooks.
+- Unsafe requests return `Backpressured`, `Unavailable`, or `Deferred` with an
+  explanation. They do not allocate and hope.
+
+**Owned files/modules**:
+
+- `src/workers/continuum-core/src/gpu/`
+- `src/workers/continuum-core/src/inference/`
+- `src/workers/continuum-core/src/memory/`
+- `src/workers/continuum-core/src/live/`
+- `src/workers/llama/src/mtmd.rs`
+
+**PR sequence**:
+
+1. `pressurebroker-types`: typed resource classes, budgets, decisions.
+2. `backend-admission-gate`: model/mmproj init checks broker before allocate.
+3. `pooled-mtmd-context`: reuse multimodal context under broker ownership.
+4. `kv-lora-paging`: extend to KV and LoRA residency.
+
+**TDD**:
+
+- concurrent allocation test refuses unsafe second backend/context.
+- injected OOM/dead backend enters recover/unavailable state, no hang.
+- LRU/priority eviction tests.
+
+**VDD**:
+
+- 4+ personas on constrained profile report bounded memory and explicit
+  deferrals.
+- 5090 profile uses GPU lanes aggressively without CPU fallback.
+
+**Deletion targets**:
+
+- per-adapter private memory heuristics
+- hidden CPU fallback branches
+- duplicate context/model pool code
+
+### Lane F: TS Cognition Deletion Ratchet
+
+**Problem**: migration intent is not enough. The repo needs a mechanical gate
+that prevents new verb-shaped TS cognition and forces deletion as Rust lands.
+
+**Design**:
+
+- CI/check script computes TS cognition line count for touched cognition PRs.
+- New `.ts` files under persona cognition directories fail unless allowlisted as
+  ORM noun, generated schema, UI, or thin shim.
+- Forbidden strings such as deprecated provider names or fallback comments are
+  blocked in runtime code and docs that are not migration notes.
+
+**Owned files/modules**:
+
+- test/ratchet scripts
+- CI/pre-push hooks
+- `src/tests/unit/shared-node-boundary.test.ts`
+- docs describing exceptions
+
+**PR sequence**:
+
+1. `persona-ts-ratchet-script`: local script with clear failure output.
+2. `persona-ts-ratchet-ci`: CI/pre-push enforcement for touched cognition PRs.
+3. `forbidden-provider-scan`: remove and block obsolete provider/runtime names.
+
+**TDD**:
+
+- fixtures for allowed generated/UI/noun TS and forbidden verb TS.
+- scan test proves obsolete provider names cannot re-enter runtime code.
+
+**VDD**:
+
+- each cognition PR reports TS lines before/after and Rust test coverage.
+
+**Deletion targets**:
+
+- stale comments, tombstones, fallback branches, and obsolete provider mentions
+- any TS cognition file replaced by a Rust module
+
 ## Issue-Driven Workstreams
 
 ### 0. Canary Discipline And Collaboration
