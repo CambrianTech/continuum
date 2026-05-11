@@ -33,15 +33,30 @@ Alpha is ready when a fresh user can install, boot, talk to personas, recover fr
 The non-negotiable gates:
 
 1. **GPU-first inference**: alpha-critical inference must use Metal/CUDA/Vulkan/DMR GPU paths. No silent CPU fallback.
-2. **Rust core owns behavior**: persona cognition, scheduling, resource pressure, paging, inference orchestration, replay, and recovery live in Rust.
-3. **Node/TS is thin**: browser UI, command adapters, schemas, generated types, and minimal transport glue only.
-4. **Docker is modular**: one opaque "build/seed/start everything" container is not alpha-ready. Services need independent health, logs, and restart boundaries.
-5. **Fast tests first**: core work must be covered by `cargo test` or Rust integration tests before Docker/browser tests.
-6. **Canary is the sync point**: every fix is merged to `canary` first and tested there by available Mac/Windows/Linux agents.
-7. **No silent success**: health checks, install steps, inference readiness, bridge delivery, and UI restore paths must fail loud with actionable evidence.
-8. **Persona cognition TS line count trends downward**: any PR touching persona cognition must delete or shrink TS runtime logic under `src/system/user/server/` unless it is strictly UI/schema/adapter work.
-9. **Replay before live claims**: persona, RAG, tool, inference, and memory changes must include a Rust fixture/replay/unit test before "works live" is accepted.
-10. **One source of truth per runtime fact**: model definitions, provider availability, context budgets, hardware capability, config values, room identity, and command semantics must each have one canonical owner.
+2. **Sensory personas are the product**: every standard persona has multimodal perception, voice/audio, avatar/control output, and WebRTC room presence. Text-only is a compatibility/degraded mode, not the alpha target.
+3. **Qwen multimodal is the local target family**: Qwen 3.5 now and Qwen 3.6 next are treated as first-class local persona targets. Vision/audio layer gaps, unsupported kernels, CPU layers, or upstream runtime limitations are owned engineering work.
+4. **Rust core owns behavior**: persona cognition, scheduling, resource pressure, paging, inference orchestration, replay, and recovery live in Rust.
+5. **Node/TS is thin**: browser UI, command adapters, schemas, generated types, and minimal transport glue only.
+6. **Docker is modular and GPU-capable**: one opaque "build/seed/start everything" container is not alpha-ready. Services need independent health, logs, restart boundaries, and GPU-visible runtime paths on machines that support them.
+7. **Fast tests first**: core work must be covered by `cargo test` or Rust integration tests before Docker/browser tests.
+8. **Canary is the sync point**: every fix is merged to `canary` first and tested there by available Mac/Windows/Linux agents.
+9. **No silent success**: health checks, install steps, inference readiness, bridge delivery, and UI restore paths must fail loud with actionable evidence.
+10. **Persona cognition TS line count trends downward**: any PR touching persona cognition must delete or shrink TS runtime logic under `src/system/user/server/` unless it is strictly UI/schema/adapter work.
+11. **Replay before live claims**: persona, RAG, tool, inference, and memory changes must include a Rust fixture/replay/unit test before "works live" is accepted.
+12. **One source of truth per runtime fact**: model definitions, provider availability, context budgets, hardware capability, config values, room identity, and command semantics must each have one canonical owner.
+
+### Sensory Persona Product Contract
+
+Continuum's differentiator is not "chat with several text bots." The alpha product is a local sensory persona grid: users can call personas into a WebRTC room, speak to them, see them, and receive useful multimodal responses from agents that can perceive images/video/audio and drive avatar or other control outputs.
+
+Implementation consequences:
+
+- **Every standard persona declares sensory requirements.** The default requirement set includes text, vision, audio input, voice/audio output, avatar/control output, and WebRTC presence. A persona that cannot satisfy those requirements is marked `Degraded` with the missing capability, not silently treated as alpha-complete.
+- **STT/TTS are adapters, not the center.** They exist to support compatibility models and weaker hosts. The standard local model path targets multimodal models directly where possible.
+- **Qwen 3.5/3.6 are optimization targets.** The registry and runtime resolve model requirements by capability, context, memory budget, and GPU support. They do not scatter hardcoded model names or accept random provider/model drift.
+- **Open-source runtime gaps are ours to fix.** If llama.cpp, Candle training code, GGUF conversion, kernels, multimodal projectors, audio layers, or paging support are missing what Qwen needs, the work item is to fork/vendor/upstream the fix with benchmarks. "Upstream cannot" is not a final answer for open-source dependencies.
+- **No CPU crutches in the happy path.** CPU fallback is explicit degraded mode for unsupported hardware, tests, or emergency operation. It is not a performance plan for a 3090/5090/M-series target.
+- **Live media is a gate.** Video chat, avatar output, and WebRTC bridge health are alpha gates. A PR that breaks sensory persona presence must fail validation before canary promotion.
 
 ## Current Snapshot
 
