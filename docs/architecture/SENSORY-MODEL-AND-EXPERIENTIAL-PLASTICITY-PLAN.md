@@ -171,6 +171,11 @@ Working first and forging better second is different from accepting a fallback.
 The first working model is a measured baseline and service-restoration step.
 The forged model is the planned optimization path.
 
+Every forge, pruning, defrag, quantization, or kernel optimization pass must
+re-prove the full declared modality set. It is easy to optimize away video,
+image, audio-in, audio-out, or projector paths by accident. That is a failed
+candidate, even if text quality, size, or tokens/sec improved.
+
 The forge loop is:
 
 ```text
@@ -222,8 +227,9 @@ This applies to:
 - dense model pruning: remove low-utility heads/blocks for the target domain;
 - MoE pruning: remove or page cold experts, preserve hot experts, and measure
   active-parameter quality rather than total-parameter marketing size;
-- modality pruning: keep vision/audio projectors and encoders that the persona
-  contract actually uses, remove unused conversion paths;
+- modality pruning: keep every vision, video, audio-in, audio-out, projector,
+  tokenizer, and bridge path required by the persona contract; remove only
+  conversion paths that VDD proves are unused by that admitted profile;
 - LoRA/genome pruning: compact adapters after repeated experiential training;
 - KV/context policy: shorten or summarize context based on replay-proven value,
   not arbitrary token limits.
@@ -352,7 +358,10 @@ VDD:
 
 - `qwen2-vl-7b` baseline image fixture still works.
 - Qwen3.5/3.6 VLM candidate passes image/OCR/document fixtures.
-- Omni candidate passes audio-in, speech-out, image, and short-video fixtures.
+- Omni candidate passes text, image/OCR/document, short-video if declared,
+  audio-in, and speech-out fixtures.
+- Refined, forged, pruned, quantized, or kernel-optimized candidates rerun the
+  same modality fixtures before replacing the previous baseline.
 - Report first-token latency, tok/s, CPU%, GPU%, VRAM, RSS, context, and queue
   wait for every candidate.
 - Run at least one replay-derived persona smoke: multiple messages consolidate
