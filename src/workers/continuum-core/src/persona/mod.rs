@@ -52,7 +52,7 @@ pub use genome_paging::{
     ActivateSkillResult, CoverageReport, DomainActivity, GenomeAdapterInfo, GenomePagingEngine,
     GenomePagingState,
 };
-pub use inbox::PersonaInbox;
+pub use inbox::{PersonaInbox, PersonaInboxFrame, PersonaInboxFrameMetrics};
 pub use message_cache::{
     CachedMessage, ContentDedupResult, ContentDeduplicator, EchoChamberResult, RecentMessageCache,
     SenderCategory,
