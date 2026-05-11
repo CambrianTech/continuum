@@ -2,14 +2,29 @@
 
 <!-- markdownlint-disable MD013 MD060 -->
 
-**Updated**: 2026-05-07
+**Updated**: 2026-05-11
 **Branch policy**: every change lands as `PR -> canary -> validation -> PR -> main`
 **Status**: active planning document, shared by humans and agents
 **Operating rule**: Rust owns runtime logic. TypeScript is UI, schema, generated types, and thin command/transport glue.
+**Architectural mandate**: Rust-first, GPU-first, replay-tested. No patchwork substitutes for the target architecture.
 
 This document is the alpha source of truth. Work should not proceed as disconnected chat threads or private agent branches. Each implementation PR must name the issue it advances, land in `canary`, publish validation evidence, and only then be considered for promotion to `main`.
 
 The previous 2026-05-01 alpha snapshot was useful but had become a historical log. This revision turns it into an execution plan for the current goal: **stable, GPU-first, Rust-centric Continuum with modular Docker and fast tests that do not depend on the Node/UI stack for core correctness.**
+
+## 2026-05-11 Management Reset: Rust First, No Patchwork
+
+Continuum is past the point where local fixes to Node/TS symptoms can be treated as product progress. The product is a native, highly concurrent, resource-aware AI runtime that happens to have a browser UI. The implementation posture is therefore:
+
+1. **Architecture beats remedies.** If the bug is caused by cognition, inference, resource pressure, model routing, memory, tool execution, or persona scheduling living in the wrong layer, the fix is to move the responsibility to the right Rust abstraction. Do not add another TS guardrail around a Rust/runtime concern.
+2. **Rust is the design language for runtime behavior.** New behavior under persona cognition, model selection, local inference, paging, LoRA/model residency, memory consolidation, tool parsing/execution, command execution semantics, and recovery state machines starts in Rust.
+3. **TypeScript is not the prototype layer for cognition.** TS iteration speed is not a justification. A fast prototype that stays in Node becomes permanent debt. The correct loop is Rust unit test -> Rust replay/VDD test -> canary integration -> live smoke.
+4. **No silent fallbacks.** CPU fallback, cloud fallback, empty API-key availability, generic model fallback, placeholder UUIDs, and swallowed command errors are alpha blockers unless explicitly surfaced as degraded state with a user-visible remedy.
+5. **No feature-disabling fixes.** A fix that makes tests pass by disabling local models, personas, chat, inference, telemetry, or replay is a regression unless the PR is explicitly a kill-switch PR and documents the lost capability.
+6. **No PR sediment.** PRs are not storage. A PR either merges to canary after evidence, gets rebased and completed, or is closed with the durable work moved into an issue/design doc. Long-lived PRs are technical debt.
+7. **Perfect means structurally correct, not endlessly delayed.** The expected cadence is small architectural PRs that move ownership to Rust and delete the wrong layer. "Perfect" does not mean one huge rewrite branch; it means every merged increment points at the final architecture and reduces future work.
+
+This reset supersedes "move fast and break things" thinking. Agents have enough implementation bandwidth to spend the extra hours on the correct abstraction up front. That is cheaper than debugging another patchwork system for weeks.
 
 ## Alpha Definition
 
@@ -24,6 +39,9 @@ The non-negotiable gates:
 5. **Fast tests first**: core work must be covered by `cargo test` or Rust integration tests before Docker/browser tests.
 6. **Canary is the sync point**: every fix is merged to `canary` first and tested there by available Mac/Windows/Linux agents.
 7. **No silent success**: health checks, install steps, inference readiness, bridge delivery, and UI restore paths must fail loud with actionable evidence.
+8. **Persona cognition TS line count trends downward**: any PR touching persona cognition must delete or shrink TS runtime logic under `src/system/user/server/` unless it is strictly UI/schema/adapter work.
+9. **Replay before live claims**: persona, RAG, tool, inference, and memory changes must include a Rust fixture/replay/unit test before "works live" is accepted.
+10. **One source of truth per runtime fact**: model definitions, provider availability, context budgets, hardware capability, config values, room identity, and command semantics must each have one canonical owner.
 
 ## Current Snapshot
 
@@ -45,9 +63,11 @@ The non-negotiable gates:
 
 | Issue / PR | Role | Required action |
 |---|---|---|
-| PR #1046 | AIRC bridge harness for Continuum testing | Keep reviewed; use it to reduce manual `jtag chat/send` and paste relay |
-| PR #1035 | current canary -> main promotion PR | Do not promote blindly; use this doc's gates to decide when canary is worth main |
-| PR #1047 | stale General tab recovery, merged to canary | Validate live UI state, then include in next canary -> main promotion |
+| PR #1035 | current canary -> main promotion PR | Keep rebased; promote only after canary has real chat/local-model validation plus relevant platform smoke |
+| PR #1046 | AIRC bridge harness for Continuum testing | Merge/rebase/close deliberately; use it to reduce manual `jtag chat/send` and paste relay |
+| PR #1068 | Rust persona recorder as single fixture source | Merged to canary; sets the SSoT pattern for replay/capture |
+| PR #1069 | Rust response cleanup, TS sanitizer removed | Merged to canary; sets the "move behavior Rust-side, delete TS duplicate" pattern |
+| stale canary PRs (#941, #972, #973, #1026, #912) | PR debt | Rebase and validate within one work session or close with issue notes |
 | #967 | personas as AIRC peers | Treat as the collaboration unlock: Continuum personas should participate without manual CLI glue |
 
 Rules:
@@ -56,6 +76,9 @@ Rules:
 - PR body must include: issue link, canary target, validation commands, platform coverage, and what was not tested.
 - Agents coordinate on AIRC, but the durable truth is issue + PR comments.
 - `main` promotion only happens after canary has been exercised by at least one real UI path and one non-UI/Rust path relevant to the changes.
+- Open PRs are triaged every session before new feature work. Each gets one of four states: `merge-after-green`, `needs-rebase`, `convert-to-issue`, or `close-stale`.
+- A PR older than 48 hours without a concrete blocker is presumed stale until proven otherwise.
+- If a PR is correct but incomplete, finish and merge it to canary; do not recreate the same work on a new branch.
 
 ### 1. First-Run And Install Stability
 
