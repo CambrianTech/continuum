@@ -31,7 +31,7 @@
 //!     manipulation in Rust is ~100x what TS does on the same input.
 
 use crate::cognition::tool_executor::types::MediaItemLite;
-use crate::cognition::{AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis, analyze};
+use crate::cognition::{analyze, AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use std::time::SystemTime;
@@ -177,10 +177,46 @@ pub enum PersonaResponse {
 /// the caller for proper user-facing error reporting; we don't
 /// silently fall back to "Silent" because that would hide real bugs.
 pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
-    use crate::persona::trace::{CognitionTrace, SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS};
+    use crate::persona::trace::CognitionTrace;
 
     let total_start = now_ms();
     let mut trace = CognitionTrace::new();
+
+    // Run the cognition pipeline. The inner fn carries every `?`
+    // exit point so the outer fn can ALWAYS record the turn. Success
+    // writes the real PersonaResponse. Failure writes a recorder-only
+    // error outcome and still returns Err to the caller. The chat API
+    // stays honest while replay gets evidence for failed turns.
+    let result = respond_inner(&input, &mut trace, total_start).await;
+
+    // Best-effort turn capture for observability + replay. Failures
+    // log inside the recorder but never propagate — the persona's
+    // response is the product, the recording is observability. Any
+    // host (TS server, Unreal plugin, Swift app) gets this for free
+    // because it lives Rust-side, next to `respond()`.
+    match &result {
+        Ok(response) => crate::persona::recorder::record_turn(&input, response, &trace),
+        Err(error_msg) => crate::persona::recorder::record_failed_turn(
+            &input,
+            error_msg,
+            now_ms().saturating_sub(total_start),
+            &trace,
+        ),
+    }
+
+    result
+}
+
+/// Internal pipeline body. All `?` exit points live here so the outer
+/// `respond()` can wrap with always-record. Mutating `&mut trace` so
+/// every completed seam appears in the captured fixture even when a
+/// later seam fails — partial traces are the diagnostic value.
+async fn respond_inner(
+    input: &RespondInput,
+    trace: &mut crate::persona::trace::CognitionTrace,
+    total_start: u64,
+) -> Result<PersonaResponse, String> {
+    use crate::persona::trace::{SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS};
 
     // 1. Shared analysis (cached per message+room+history fingerprint).
     //    Provides matched-angle hints for the prompt — informational,
@@ -225,7 +261,7 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
     //    assembler injects it; if not, the persona just sees the
     //    plain message + history + media, same as a human.
     let inference_start = now_ms();
-    let raw_response = run_render(&input, &analysis).await?;
+    let raw_response = run_render(input, &analysis).await?;
     let inference_ms = now_ms().saturating_sub(inference_start);
     trace.record(
         SEAM_INFERENCE,
@@ -256,23 +292,14 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
         }),
     );
 
-    let response = PersonaResponse::Spoke {
+    Ok(PersonaResponse::Spoke {
         persona_id: input.persona.persona_id,
         text: visible_text,
         model_used: raw_response.model_used,
         inference_ms,
         total_ms: now_ms().saturating_sub(total_start),
         think_blocks_emitted: think_count,
-    };
-
-    // Best-effort turn capture for observability + replay. Failures
-    // log inside the recorder but never propagate — the persona's
-    // response is the product, the recording is observability. Any
-    // host (TS server, Unreal plugin, Swift app) gets this for free
-    // because it lives Rust-side, next to `respond()`.
-    crate::persona::recorder::record_turn(&input, &response, &trace);
-
-    Ok(response)
+    })
 }
 
 /// What the render step returns internally (private — public type is
@@ -304,7 +331,7 @@ async fn run_render(
 ) -> Result<RawRenderOutput, String> {
     use crate::ai::adapter::InferenceDevice;
     use crate::ai::types::TextGenerationRequest;
-    use crate::persona::prompt_assembly::{HistoryMessage, PromptAssemblyInput, assemble};
+    use crate::persona::prompt_assembly::{assemble, HistoryMessage, PromptAssemblyInput};
 
     // 1. The matched angle for this persona's specialty. Empty string
     //    means "no specific angle" — assemble() handles that gracefully

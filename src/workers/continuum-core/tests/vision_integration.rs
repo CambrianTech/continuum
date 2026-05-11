@@ -88,6 +88,7 @@ fn build_vision_request(model_id: &str) -> RespondInput {
         message_text: "What do you see in this image?".to_string(),
         recent_history: Vec::new(),
         known_specialties: vec!["vision".to_string()],
+        other_persona_names: Vec::new(),
         system_prompt: "You are a vision-capable assistant. Describe what you see in any image attached to the user's message. Keep the response under 40 words.".to_string(),
         model: model_id.to_string(),
         is_voice: false,
