@@ -154,9 +154,65 @@ fn media_echo(m: &MediaItemLite) -> MediaEcho<'_> {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TurnError {
+    error_msg: String,
+    last_completed_seam: Option<String>,
+    partial_trace_seams: usize,
+    total_ms: u64,
+}
+
 /// Persist a completed turn. Best-effort: failures log + return
 /// `Ok(())` so a recording problem never breaks cognition.
 pub fn record_turn(input: &RespondInput, response: &PersonaResponse, trace: &CognitionTrace) {
+    let payload = json!({
+        "schemaVersion": 1,
+        "capturedAtMs": crate::persona::trace::now_ms(),
+        "personaId": input.persona.persona_id,
+        "personaName": input.persona.display_name,
+        "messageId": input.message_id,
+        "roomId": input.room_id,
+        "model": input.model,
+        "rustRequest": RequestEcho::from(input),
+        "rustResponse": response,
+        "rustError": null,
+        "cognitionTrace": trace,
+    });
+    persist_turn_payload(input, payload);
+}
+
+/// Persist a failed turn. `respond()` still returns `Err` to its caller; this
+/// recorder-only artifact preserves the input and partial trace for replay.
+pub fn record_failed_turn(
+    input: &RespondInput,
+    error_msg: &str,
+    total_ms: u64,
+    trace: &CognitionTrace,
+) {
+    let error = TurnError {
+        error_msg: error_msg.to_string(),
+        last_completed_seam: trace.last_seam_name().map(str::to_string),
+        partial_trace_seams: trace.seam_count(),
+        total_ms,
+    };
+    let payload = json!({
+        "schemaVersion": 1,
+        "capturedAtMs": crate::persona::trace::now_ms(),
+        "personaId": input.persona.persona_id,
+        "personaName": input.persona.display_name,
+        "messageId": input.message_id,
+        "roomId": input.room_id,
+        "model": input.model,
+        "rustRequest": RequestEcho::from(input),
+        "rustResponse": null,
+        "rustError": error,
+        "cognitionTrace": trace,
+    });
+    persist_turn_payload(input, payload);
+}
+
+fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     if disabled() {
         return;
     }
@@ -173,18 +229,6 @@ pub fn record_turn(input: &RespondInput, response: &PersonaResponse, trace: &Cog
     }
     let fname = filename_for(&input.persona.display_name, input.message_id);
     let path = dir.join(&fname);
-    let payload = json!({
-        "schemaVersion": 1,
-        "capturedAtMs": crate::persona::trace::now_ms(),
-        "personaId": input.persona.persona_id,
-        "personaName": input.persona.display_name,
-        "messageId": input.message_id,
-        "roomId": input.room_id,
-        "model": input.model,
-        "rustRequest": RequestEcho::from(input),
-        "rustResponse": response,
-        "cognitionTrace": trace,
-    });
     let serialized = match serde_json::to_vec_pretty(&payload) {
         Ok(b) => b,
         Err(e) => {
@@ -488,5 +532,51 @@ mod tests {
 
         let dir = tmp.path().join(".continuum/fixtures/persona-respond");
         assert!(!dir.exists());
+    }
+
+    /// What this catches: failure-path captures land on disk without
+    /// widening the chat-facing `PersonaResponse` enum. Before this,
+    /// `record_turn` only ran on the Ok-path of `respond()`, so failure
+    /// turns left no fixture and the most diagnostic captures were lost.
+    #[test]
+    fn record_failed_turn_writes_error_with_partial_trace() {
+        use crate::persona::trace::SEAM_ANALYZE;
+        let _lock = env_lock();
+        let tmp = tempdir().expect("temp home");
+        let _restore = EnvRestore::install(tmp.path(), None);
+        let input = fake_input();
+        let mut trace = CognitionTrace::new();
+        trace.record(SEAM_ANALYZE, 1000, 50, json!({"from_cache": false}));
+
+        record_failed_turn(&input, "render adapter timed out at 30s", 30_125, &trace);
+
+        let dir = tmp.path().join(".continuum/fixtures/persona-respond");
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .expect("failure fixture dir exists")
+            .map(|e| e.expect("entry").path())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        let body = std::fs::read_to_string(&entries[0]).expect("failure fixture readable");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("failure fixture parses");
+        assert_eq!(parsed["rustResponse"], serde_json::Value::Null);
+        assert_eq!(
+            parsed["rustError"]["lastCompletedSeam"],
+            json!(SEAM_ANALYZE)
+        );
+        assert_eq!(
+            parsed["rustError"]["errorMsg"],
+            json!("render adapter timed out at 30s")
+        );
+        assert_eq!(parsed["rustError"]["partialTraceSeams"], json!(1));
+        assert_eq!(parsed["rustError"]["totalMs"], json!(30_125));
+        // The partial trace must survive too — replay tooling needs to
+        // see WHERE in the pipeline the failure landed, not just that
+        // it failed. `cognitionTrace.seams` should include the analyze
+        // seam that DID complete before the error.
+        assert_eq!(
+            parsed["cognitionTrace"]["seams"][0]["name"],
+            json!(SEAM_ANALYZE)
+        );
     }
 }
