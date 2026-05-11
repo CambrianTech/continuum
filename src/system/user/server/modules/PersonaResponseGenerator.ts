@@ -345,14 +345,17 @@ export class PersonaResponseGenerator {
       // refs only. Resolve back to bytes here, on the request path —
       // chat-send already wrote the file to disk via
       // MediaBlobService.externalize (synchronously, before data/create).
-      // Description (from VisionDescriptionService cache) gets pulled
-      // alongside so text-only personas downstream get the bridge text
-      // instead of hallucinating from prompt context.
+      // Resolve THIS persona's model capabilities before media projection.
+      // Native sensory models must receive source bytes directly; text
+      // description lookup is only for non-native models and must not sit
+      // on the native path.
+      const capabilities = await this.resolveModelCapabilities();
+      const hasNativeVision = capabilities.includes('vision');
+
       const { MediaBlobService } = await import('../../../storage/MediaBlobService');
-      const { VisionDescriptionService } = await import('../../../vision/VisionDescriptionService');
       const fs = await import('fs');
 
-      const messageMediaResolved = await Promise.all(
+      const messageMedia = await Promise.all(
         (originalMessage.content.media ?? []).map(async (m) => {
           // Prefer inline base64 if it's still around (browser pre-encode
           // path or an item smaller than the externalize threshold), else
@@ -360,38 +363,30 @@ export class PersonaResponseGenerator {
           let base64: string | undefined = m.base64;
           if (!base64 && m.blobHash) {
             const path = MediaBlobService.getPath(m.blobHash);
-            if (path) {
-              try {
-                const buf = await fs.promises.readFile(path);
-                base64 = buf.toString('base64');
-              } catch {
-                // File missing despite hash — drop this item, log later.
-                return null;
-              }
+            if (!path) {
+              throw new Error(`Media blob ${m.blobHash} has no resolved path`);
+            }
+            try {
+              const buf = await fs.promises.readFile(path);
+              base64 = buf.toString('base64');
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new Error(`Failed to read media blob ${m.blobHash} at ${path}: ${message}`);
             }
           }
           if (!base64) {
-            return null; // Nothing to send to the model
+            throw new Error(`Media item ${m.type} has neither inline base64 nor blobHash`);
           }
-          // Pull description from VDS — populated by prewarmVisionDescriptions
-          // at chat-send time. Two states are valid waits:
-          //   'cached'   → ~0ms instant lookup (pre-warm finished).
-          //   'inflight' → bounded wait. Pre-warm started but hasn't
-          //                resolved yet; we'd rather wait up to 8s than
-          //                hand the persona an empty description and
-          //                let it hallucinate "I don't see any image."
-          //                VDS already deduplicates inflight requests, so
-          //                this await piggybacks on the existing call —
-          //                no extra inference cost.
-          // Status `none` / `error` → don't trigger a blocking describe
-          // here; the chat-send path is responsible for prewarming. Stage
-          // 2 (Rust-side) is responsible for emitting an [Attached image:
-          // unavailable] marker when description ends up undefined, so a
-          // text-only persona at least KNOWS an image was attached
-          // instead of fabricating absence. Tracked in #970.
+
+          // Description lookup is NOT on the native vision path. Vision-
+          // capable personas get bytes; only text-only image recipients
+          // may use a prewarmed description bridge. Errors are surfaced
+          // because swallowing them makes sensory failures look like
+          // normal text-only cognition.
           let description: string | undefined;
-          if (m.type === 'image') {
+          if (m.type === 'image' && !hasNativeVision) {
             try {
+              const { VisionDescriptionService } = await import('../../../vision/VisionDescriptionService');
               const visionSvc = VisionDescriptionService.getInstance();
               const status = visionSvc.descriptionStatus(base64);
               if (status === 'cached' || status === 'inflight') {
@@ -402,8 +397,9 @@ export class PersonaResponseGenerator {
                 ]);
                 description = desc?.description;
               }
-            } catch {
-              // Best-effort; drop to undefined on any cache error
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new Error(`Vision description lookup failed for text-only image bridge: ${message}`);
             }
           }
           return {
@@ -414,14 +410,6 @@ export class PersonaResponseGenerator {
           };
         })
       );
-      const messageMedia = messageMediaResolved.filter((x): x is NonNullable<typeof x> => x !== null);
-
-      // Resolve THIS persona's model capabilities (cached). Required by
-      // the IPC contract — Rust no longer does a registry lookup on its
-      // side, so the answer to "is this model vision-capable?" must
-      // travel WITH the request. Hard error if the model isn't in the
-      // registry (broken persona configuration, fail loudly here).
-      const capabilities = await this.resolveModelCapabilities();
 
       // IPC shape: { signal, personaContext }. Rust projects (signal,
       // ctx) → RespondInput via cognition_io::build_respond_input,
