@@ -955,7 +955,13 @@ EFFECTIVE_IMAGE_TAG="${CONTINUUM_IMAGE_TAG:-latest}"
 } > "$INSTALL_DIR/.env"
 
 info "Pulling container images (tag: $EFFECTIVE_IMAGE_TAG)..."
-$CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
+if ! PULL_OUTPUT=$($CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>&1); then
+  if [[ "${CONTINUUM_STRICT_IMAGE_PULL:-0}" == "1" ]]; then
+    echo "$PULL_OUTPUT" | tail -80 >&2
+    fail "Container image pull failed for tag '$EFFECTIVE_IMAGE_TAG'. Strict image-pull mode is enabled, so install.sh will not build locally. Publish the image tag or choose an existing CONTINUUM_IMAGE_TAG."
+  fi
+  warn "Some images not published yet — will build locally"
+fi
 
 # ── 8. Start support services ──────────────────────────────
 PHASE="start support services"

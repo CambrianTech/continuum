@@ -124,6 +124,10 @@ jobs:
           CARL_CHAT_TIMEOUT_SEC: '300'
           # CI shouldn't leave docker compose stacks running.
           SKIP_TEARDOWN: '0'
+          # CI validates the Docker-first install path. Missing PR images must
+          # fail loudly instead of silently falling into a 25-minute source
+          # build that times out after proving the wrong thing.
+          CONTINUUM_STRICT_IMAGE_PULL: '1'
         run: bash scripts/ci/carl-install-smoke.sh
 
       - name: Capture docker logs from all containers on failure (continuum-core,
