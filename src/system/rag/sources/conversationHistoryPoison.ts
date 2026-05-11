@@ -14,7 +14,20 @@ const FABRICATED_SINGLE_SPEAKER_RE = /^(?:Gemini|Groq|Together|Fireworks|Claude|
 // Persona meta-summary pattern observed during startup smoke tests.
 const META_SUMMARY_ECHO_RE = /\bI received a message from\s+[A-Z][\w -]{1,80}:\s*["“][\s\S]{10,}["”][\s\S]{0,800}\b(?:This indicates|The key pattern here|successfully acknowledged|responded to the startup smoke test)\b/i;
 
-export type ConversationHistoryPoisonReason = 'fabricated-conversation' | 'meta-summary-echo';
+const TOOL_INSTRUCTION_LEAK_MARKERS = [
+  '=== TOOL DEFINITIONS ===',
+  '=== HOW TO CALL TOOLS ===',
+  'CRITICAL RULES:',
+  '<tool_use>',
+  'RESPOND WITH TOOL CALLS, NOT DESCRIPTIONS.',
+  'Do NOT just discuss or describe what should be done',
+  'Use this EXACT XML format to call tools'
+] as const;
+
+export type ConversationHistoryPoisonReason =
+  | 'fabricated-conversation'
+  | 'meta-summary-echo'
+  | 'tool-instruction-leak';
 
 /**
  * Check if a message body is a fabricated multi-party conversation.
@@ -51,8 +64,21 @@ export function isMetaSummaryEcho(text: string): boolean {
   return META_SUMMARY_ECHO_RE.test(text);
 }
 
+export function isToolInstructionLeak(text: string): boolean {
+  if (!text || text.length < 120) return false;
+
+  const markerHits = TOOL_INSTRUCTION_LEAK_MARKERS.reduce(
+    (count, marker) => count + (text.includes(marker) ? 1 : 0),
+    0
+  );
+  if (markerHits >= 2) return true;
+
+  return text.includes('<think>') && markerHits >= 1;
+}
+
 export function detectConversationHistoryPoison(text: string): ConversationHistoryPoisonReason | null {
   if (isFabricatedConversation(text)) return 'fabricated-conversation';
   if (isMetaSummaryEcho(text)) return 'meta-summary-echo';
+  if (isToolInstructionLeak(text)) return 'tool-instruction-leak';
   return null;
 }
