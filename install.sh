@@ -790,7 +790,12 @@ mod_jtag_bin_link "$INSTALL_DIR/src/jtag"
 
 # ── 4. Configuration ───────────────────────────────────────
 PHASE="configuration"
-mkdir -p "$CONTINUUM_DATA"
+mkdir -p \
+  "$CONTINUUM_DATA" \
+  "$CONTINUUM_DATA/sockets" \
+  "$CONTINUUM_DATA/logs" \
+  "$CONTINUUM_DATA/sessions" \
+  "$CONTINUUM_DATA/hf_cache"
 
 CONFIG_FILE="$CONTINUUM_DATA/config.env"
 if [ ! -f "$CONFIG_FILE" ]; then

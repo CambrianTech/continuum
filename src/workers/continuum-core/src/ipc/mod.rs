@@ -45,6 +45,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
@@ -59,6 +60,33 @@ use uuid::Uuid;
 trait IpcStream: Read + Write + Send + Sized + 'static {
     fn try_clone_stream(&self) -> std::io::Result<Self>;
     fn peer_addr_str(&self) -> String;
+}
+
+fn prepare_socket_path(socket_path: impl AsRef<Path>) -> std::io::Result<()> {
+    let socket_path = socket_path.as_ref();
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    match std::fs::symlink_metadata(socket_path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_socket() {
+                std::fs::remove_file(socket_path)?;
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "IPC socket path exists but is not a socket: {}",
+                        socket_path.display()
+                    ),
+                ))
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 impl IpcStream for UnixStream {
@@ -537,6 +565,59 @@ mod tests {
     // ========================================================================
 
     #[test]
+    fn prepare_socket_path_creates_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join(".continuum/sockets/continuum-core.sock");
+
+        prepare_socket_path(&socket).unwrap();
+
+        assert!(
+            socket.parent().unwrap().is_dir(),
+            "socket parent should be created under .continuum"
+        );
+        assert!(
+            !socket.exists(),
+            "prepare should not create the socket before UnixListener::bind"
+        );
+    }
+
+    #[test]
+    fn prepare_socket_path_removes_stale_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join(".continuum/sockets/continuum-core.sock");
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        drop(listener);
+        assert!(std::fs::symlink_metadata(&socket)
+            .unwrap()
+            .file_type()
+            .is_socket());
+
+        prepare_socket_path(&socket).unwrap();
+
+        assert!(
+            !socket.exists(),
+            "stale socket should be removed before rebinding"
+        );
+    }
+
+    #[test]
+    fn prepare_socket_path_rejects_non_socket_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join(".continuum/sockets/continuum-core.sock");
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        std::fs::write(&socket, b"not a socket").unwrap();
+
+        let err = prepare_socket_path(&socket).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(
+            err.to_string().contains("not a socket"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_json_frame_roundtrip() {
         // Create a response, write to buffer, verify framing
         let response = Response::success(serde_json::json!({"healthy": true}));
@@ -790,10 +871,7 @@ pub fn start_server(
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
     pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,
 ) -> std::io::Result<()> {
-    // Remove socket file if it exists
-    if Path::new(socket_path).exists() {
-        std::fs::remove_file(socket_path)?;
-    }
+    prepare_socket_path(socket_path)?;
 
     log_info!("ipc", "server", "Starting IPC server on {}", socket_path);
 
