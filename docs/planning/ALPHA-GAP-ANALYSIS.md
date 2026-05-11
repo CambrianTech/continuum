@@ -7,6 +7,7 @@
 **Status**: active planning document, shared by humans and agents
 **Operating rule**: Rust owns runtime logic. TypeScript is UI, schema, generated types, and thin command/transport glue.
 **Architectural mandate**: Rust-first, GPU-first, replay-tested. No patchwork substitutes for the target architecture.
+**Sensory model plan**: [Sensory Model And Experiential Plasticity Plan](../architecture/SENSORY-MODEL-AND-EXPERIENTIAL-PLASTICITY-PLAN.md)
 
 This document is the alpha source of truth. Work should not proceed as disconnected chat threads or private agent branches. Each implementation PR must name the issue it advances, land in `canary`, publish validation evidence, and only then be considered for promotion to `main`.
 
@@ -57,6 +58,7 @@ Implementation consequences:
 - **Open-source runtime gaps are ours to fix.** If llama.cpp, Candle training code, GGUF conversion, kernels, multimodal projectors, audio layers, or paging support are missing what Qwen needs, the work item is to fork/vendor/upstream the fix with benchmarks. "Upstream cannot" is not a final answer for open-source dependencies.
 - **No CPU crutches in the happy path.** CPU fallback is explicit degraded mode for unsupported hardware, tests, or emergency operation. It is not a performance plan for a 3090/5090/M-series target.
 - **Live media is a gate.** Video chat, avatar output, and WebRTC bridge health are alpha gates. A PR that breaks sensory persona presence must fail validation before canary promotion.
+- **Sensory model scouting is a tracked workstream.** Current Qwen3.5, Qwen3.6, Qwen2.5-Omni, Qwen3-Omni, forge/alloy, experiential plasticity, pruning, and MoE pruning work lives in the sensory model plan linked above. Runtime adoption still goes through the Rust registry and VDD gates.
 
 ## Current Snapshot
 
@@ -72,9 +74,9 @@ Implementation consequences:
 
 ## Immediate Canary Work Packages
 
-These are the active alpha blockers exposed by the 2026-05-11 VDD runs and PR
-#1082 review. They are split so agents can work in parallel without stepping on
-each other. Each lane starts from `canary`, opens a focused PR back to
+These are the active alpha blockers exposed by the 2026-05-11 VDD runs and
+PR #1082 review. They are split so agents can work in parallel without stepping
+on each other. Each lane starts from `canary`, opens a focused PR back to
 `canary`, and posts validation evidence before merge. Assignment is explicit:
 if an agent cannot work a lane, it says so on AIRC and the lane is reassigned.
 
