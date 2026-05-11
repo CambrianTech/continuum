@@ -5,6 +5,7 @@
 export type { AdaptiveThroughputPlan } from './AdaptiveThroughputPlan';
 export type { AdaptiveThroughputRequest } from './AdaptiveThroughputRequest';
 export type { HostCapability } from './HostCapability';
+export type { ProbeError } from './HostProbeError';
 export type { HwCapabilityTier } from './HwCapabilityTier';
 export type { LeverCall } from './LeverCall';
 export type { LeverName } from './LeverName';
