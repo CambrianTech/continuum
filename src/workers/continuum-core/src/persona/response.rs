@@ -478,21 +478,22 @@ async fn run_render(
 /// the FINAL user-role message — but only when the persona's resolved
 /// model declares the matching capability (`Vision` for image,
 /// `AudioInput` for audio). Native-multimodal models receive the source
-/// bytes directly; text-only models fall back to the simple text path
-/// (the sensory bridge would inject a description upstream — its job,
-/// not ours).
+/// bytes directly; text-only models use the simple text path plus
+/// explicit description markers from the sensory bridge.
 ///
 /// Behavior contract:
 ///   - empty `media` → identical to the legacy text-only path.
 ///   - non-empty `media` + model has Vision/AudioInput → last user
 ///     message becomes `MessageContent::Parts(text + media)`.
 ///   - non-empty `media` + model lacks the capability → text-only
-///     path; the bridge layer (VisionDescriptionService etc.) is
-///     expected to have already converted media → text upstream.
+///     path with description markers; the bridge layer
+///     (VisionDescriptionService etc.) is expected to have already
+///     converted media → text upstream.
 ///   - `media` items whose `item_type` doesn't match a capability the
-///     model has are dropped (e.g. audio sent to a vision-only model).
-///   - no user-role messages found → media silently dropped (rare —
-///     would mean the assembler produced an unusual shape).
+///     model has are emitted as description markers only.
+///   - no user-role messages found or target user message already uses
+///     `MessageContent::Parts` → hard error. These shapes mean the
+///     assembler contract changed and media cannot be attached safely.
 pub fn build_messages_with_media(
     prompt_messages: Vec<crate::persona::prompt_assembly::PromptMessage>,
     media: &[MediaItemLite],
@@ -503,7 +504,7 @@ pub fn build_messages_with_media(
 
     // Default text-only path. Always start here; we may rewrite the
     // last user message below if the policy chose an attachable item.
-    let mut messages: Vec<ChatMessage> = prompt_messages
+    let messages: Vec<ChatMessage> = prompt_messages
         .into_iter()
         .map(|m| ChatMessage {
             role: m.role,
@@ -585,6 +586,15 @@ pub fn build_messages_with_media(
         };
         emitted_parts.push(ContentPart::Text { text });
     }
+
+    attach_media_parts_to_last_user(messages, emitted_parts)
+}
+
+fn attach_media_parts_to_last_user(
+    mut messages: Vec<crate::ai::types::ChatMessage>,
+    emitted_parts: Vec<crate::ai::types::ContentPart>,
+) -> Result<Vec<crate::ai::types::ChatMessage>, String> {
+    use crate::ai::types::{ContentPart, MessageContent};
 
     if emitted_parts.is_empty() {
         return Ok(messages);
@@ -973,7 +983,7 @@ mod tests {
     // attached to the LAST user message; media without capability →
     // text path (the bridge is upstream's job, not ours).
 
-    use crate::ai::types::{ContentPart, MessageContent};
+    use crate::ai::types::{ChatMessage, ContentPart, MessageContent};
     use crate::cognition::tool_executor::types::MediaItemLite;
     use crate::model_registry::Capability;
     use crate::persona::prompt_assembly::PromptMessage;
@@ -1197,6 +1207,31 @@ mod tests {
         assert!(
             err.contains("no user message"),
             "unexpected error for impossible media attachment shape: {err}"
+        );
+    }
+
+    #[test]
+    fn media_with_existing_parts_fails_loud() {
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Parts(vec![ContentPart::Text {
+                text: "already structured".to_string(),
+            }]),
+            name: None,
+        }];
+        let media_parts = vec![ContentPart::Image {
+            image: crate::ai::types::ImageInput {
+                url: None,
+                base64: Some("PNG_BASE64_DATA".to_string()),
+                mime_type: Some("image/png".to_string()),
+            },
+        }];
+
+        let err = attach_media_parts_to_last_user(messages, media_parts).unwrap_err();
+
+        assert!(
+            err.contains("already has parts"),
+            "unexpected error for pre-structured user media target: {err}"
         );
     }
 }
