@@ -415,7 +415,7 @@ async fn run_render(
         assembled.messages,
         &input.message_media,
         &input.capabilities,
-    );
+    )?;
 
     let request = TextGenerationRequest {
         messages,
@@ -497,7 +497,7 @@ pub fn build_messages_with_media(
     prompt_messages: Vec<crate::persona::prompt_assembly::PromptMessage>,
     media: &[MediaItemLite],
     model_caps: &std::collections::HashSet<crate::model_registry::Capability>,
-) -> Vec<crate::ai::types::ChatMessage> {
+) -> Result<Vec<crate::ai::types::ChatMessage>, String> {
     use crate::ai::types::{AudioInput, ChatMessage, ContentPart, ImageInput, MessageContent};
     use crate::persona::media_policy::MediaPolicy;
 
@@ -513,7 +513,7 @@ pub fn build_messages_with_media(
         .collect();
 
     if media.is_empty() {
-        return messages;
+        return Ok(messages);
     }
 
     // Apply the AT-MOST-ONE-LATEST policy. The byte-attachment slot
@@ -587,7 +587,7 @@ pub fn build_messages_with_media(
     }
 
     if emitted_parts.is_empty() {
-        return messages;
+        return Ok(messages);
     }
 
     // Find the LAST user-role message and convert it to Parts (text +
@@ -595,17 +595,20 @@ pub fn build_messages_with_media(
     // turn after assemble().
     let last_user_idx = messages.iter().rposition(|m| m.role == "user");
     let Some(idx) = last_user_idx else {
-        // No user message to attach to. Drop media silently — caller
-        // shape was unusual; assembling new user messages here would
-        // hide the actual bug.
-        return messages;
+        return Err(
+            "build_messages_with_media: media was provided but prompt has no user message to attach it to"
+                .to_string(),
+        );
     };
 
     let existing_text = match &messages[idx].content {
         MessageContent::Text(t) => t.clone(),
-        // Defensive: if the assembler somehow already produced Parts,
-        // we don't try to merge — leave it alone.
-        MessageContent::Parts(_) => return messages,
+        MessageContent::Parts(_) => {
+            return Err(
+                "build_messages_with_media: media was provided but target user message already has parts"
+                    .to_string(),
+            );
+        }
     };
 
     let mut parts: Vec<ContentPart> = Vec::with_capacity(emitted_parts.len() + 1);
@@ -616,7 +619,7 @@ pub fn build_messages_with_media(
     }
     parts.extend(emitted_parts);
     messages[idx].content = MessageContent::Parts(parts);
-    messages
+    Ok(messages)
 }
 
 /// each as a `cognition:think-block` event for the (future) hippocampus
@@ -1010,7 +1013,7 @@ mod tests {
     fn no_media_returns_text_only_messages() {
         let prompt = vec![pm("system", "you are helpful"), pm("user", "hello")];
         let caps = HashSet::new();
-        let out = build_messages_with_media(prompt, &[], &caps);
+        let out = build_messages_with_media(prompt, &[], &caps).unwrap();
         assert_eq!(out.len(), 2);
         assert!(matches!(out[0].content, MessageContent::Text(_)));
         assert!(matches!(out[1].content, MessageContent::Text(_)));
@@ -1033,7 +1036,7 @@ mod tests {
         let prompt = vec![pm("user", "describe this")];
         let media = vec![img_b64("AAAA")];
         let caps = HashSet::new(); // model has NO Vision capability
-        let out = build_messages_with_media(prompt, &media, &caps);
+        let out = build_messages_with_media(prompt, &media, &caps).unwrap();
         assert_eq!(out.len(), 1);
         // New contract (2026-04-22): when model lacks the matching
         // capability, ContentPart::Image bytes MUST NOT attach. The
@@ -1075,7 +1078,7 @@ mod tests {
         let media = vec![img_b64("PNG_BASE64_DATA")];
         let mut caps = HashSet::new();
         caps.insert(Capability::Vision);
-        let out = build_messages_with_media(prompt, &media, &caps);
+        let out = build_messages_with_media(prompt, &media, &caps).unwrap();
         assert_eq!(out.len(), 2);
         // System message untouched.
         assert!(matches!(out[0].content, MessageContent::Text(_)));
@@ -1117,7 +1120,7 @@ mod tests {
         let media = vec![img_b64("X")];
         let mut caps = HashSet::new();
         caps.insert(Capability::Vision);
-        let out = build_messages_with_media(prompt, &media, &caps);
+        let out = build_messages_with_media(prompt, &media, &caps).unwrap();
         // First user message stays text.
         match &out[0].content {
             MessageContent::Text(t) => assert_eq!(t, "earlier turn"),
@@ -1153,7 +1156,8 @@ mod tests {
         };
         let mut vision_only = HashSet::new();
         vision_only.insert(Capability::Vision);
-        let out = build_messages_with_media(prompt.clone(), &[audio.clone()], &vision_only);
+        let out =
+            build_messages_with_media(prompt.clone(), &[audio.clone()], &vision_only).unwrap();
         // Vision-only model: audio bytes MUST NOT attach. Wrapper MAY
         // be Parts(Text-marker) per the new policy contract — what
         // matters is no ContentPart::Audio carrying real bytes.
@@ -1171,7 +1175,7 @@ mod tests {
 
         let mut audio_capable = HashSet::new();
         audio_capable.insert(Capability::AudioInput);
-        let out = build_messages_with_media(prompt, &[audio], &audio_capable);
+        let out = build_messages_with_media(prompt, &[audio], &audio_capable).unwrap();
         // Audio-capable model: audio attaches.
         match &out[0].content {
             MessageContent::Parts(p) => {
@@ -1179,5 +1183,20 @@ mod tests {
             }
             _ => panic!("audio-capable model should receive Parts"),
         }
+    }
+
+    #[test]
+    fn media_with_no_user_message_fails_loud() {
+        let prompt = vec![pm("system", "you describe images")];
+        let media = vec![img_b64("PNG_BASE64_DATA")];
+        let mut caps = HashSet::new();
+        caps.insert(Capability::Vision);
+
+        let err = build_messages_with_media(prompt, &media, &caps).unwrap_err();
+
+        assert!(
+            err.contains("no user message"),
+            "unexpected error for impossible media attachment shape: {err}"
+        );
     }
 }
