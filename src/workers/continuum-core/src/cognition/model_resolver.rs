@@ -335,18 +335,18 @@ pub enum ResolutionError {
         rejected_model_id: String,
         actual_silicon: TargetSilicon,
     },
+    #[error(
+        "model '{model_id}' references unknown provider '{provider_id}'. \
+         Add the provider to the registry or remove the model row."
+    )]
+    UnknownProviderReferenced {
+        model_id: String,
+        provider_id: String,
+    },
 }
 
-fn derive_target_silicon(
-    model: &Model,
-    provider_kinds: &HashMap<&str, ProviderKind>,
-    host: &HostCapability,
-) -> TargetSilicon {
-    let kind = provider_kinds
-        .get(model.provider.as_str())
-        .copied()
-        .unwrap_or_default(); // ProviderKind::Cloud — unknown provider treated as cloud
-    match kind {
+fn derive_target_silicon(provider_kind: ProviderKind, host: &HostCapability) -> TargetSilicon {
+    match provider_kind {
         ProviderKind::Local => host.primary_target_silicon,
         ProviderKind::Cloud => TargetSilicon::Cloud,
     }
@@ -388,9 +388,6 @@ where
         .into_iter()
         .map(|p| (p.id.as_str(), p.kind))
         .collect();
-    let is_local = |provider_id: &str| {
-        provider_kinds.get(provider_id).copied().unwrap_or_default() == ProviderKind::Local
-    };
 
     let registry: Vec<&Model> = models.into_iter().collect();
     let registry_count = registry.len();
@@ -480,6 +477,22 @@ where
         }
     }
 
+    for model in &candidates {
+        if !provider_kinds.contains_key(model.provider.as_str()) {
+            return Err(ResolutionError::UnknownProviderReferenced {
+                model_id: model.id.clone(),
+                provider_id: model.provider.clone(),
+            });
+        }
+    }
+
+    let provider_kind = |provider_id: &str| {
+        *provider_kinds
+            .get(provider_id)
+            .expect("provider existence validated before provider policy")
+    };
+    let is_local = |provider_id: &str| provider_kind(provider_id) == ProviderKind::Local;
+
     // Filter 4: provider policy.
     let before_provider = candidates.len();
     candidates.retain(|m| match requirement.provider_policy {
@@ -516,7 +529,7 @@ where
     }
 
     let best = candidates.first().expect("non-empty after filters");
-    let target_silicon = derive_target_silicon(best, &provider_kinds, &requirement.host);
+    let target_silicon = derive_target_silicon(provider_kind(&best.provider), &requirement.host);
 
     // Silicon-residency gate. No silent CPU fallback. No silent Cloud
     // fallback under GpuOrUnifiedMemoryOnly. The check happens AFTER all
@@ -981,11 +994,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_provider_defaults_to_cloud_for_safety() {
+    fn unknown_provider_errors_before_policy_ranking() {
         // If a model references a provider id that isn't in the providers
-        // table at all, the resolver treats it as Cloud (default kind).
-        // This is loud: a LocalOnly query will reject the model rather
-        // than silently routing unknown-residency work to local hardware.
+        // table at all, the resolver must not classify it as either Cloud
+        // or Local. Registry integrity is a hard precondition.
         let models = vec![make_model(
             "orphan-model",
             "orphan-provider",
@@ -996,9 +1008,36 @@ mod tests {
         let providers: Vec<Provider> = vec![];
         let req = req_chat_local(host_m1_8gb());
         let err = resolve_model(&req, models.iter(), providers.iter()).unwrap_err();
+        match err {
+            ResolutionError::UnknownProviderReferenced {
+                model_id,
+                provider_id,
+            } => {
+                assert_eq!(model_id, "orphan-model");
+                assert_eq!(provider_id, "orphan-provider");
+            }
+            other => panic!("expected unknown provider error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_provider_does_not_pass_cloud_only() {
+        let models = vec![make_model(
+            "orphan-model",
+            "orphan-provider",
+            Arch::Llama,
+            8192,
+            &[Capability::Chat],
+        )];
+        let providers: Vec<Provider> = vec![];
+        let mut req = req_chat_local(host_m1_8gb());
+        req.provider_policy = LocalOrCloudPolicy::CloudOnly;
+
+        let err = resolve_model(&req, models.iter(), providers.iter()).unwrap_err();
+
         assert!(
-            matches!(err, ResolutionError::NoModelMatchesRequirement { .. }),
-            "LocalOnly with unknown provider must error, not silently treat as local"
+            matches!(err, ResolutionError::UnknownProviderReferenced { .. }),
+            "CloudOnly must not accept models with unknown provider residency: {err:?}"
         );
     }
 

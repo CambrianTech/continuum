@@ -10,4 +10,4 @@ import type { TargetSilicon } from "./TargetSilicon";
  * a soft retry on a default. Callers that want graceful degradation must
  * EXPLICITLY relax their requirement and re-invoke.
  */
-export type ResolutionError = { "kind": "noModelMatchesRequirement", registry_count: number, candidates_after_filter: number, unmet_filters: Array<string>, } | { "kind": "noMultimodalBase", registry_count: number, required_sensory_capabilities: Array<string>, } | { "kind": "siliconResidencyViolated", rejected_model_id: string, actual_silicon: TargetSilicon, };
+export type ResolutionError = { "kind": "noModelMatchesRequirement", registry_count: number, candidates_after_filter: number, unmet_filters: Array<string>, } | { "kind": "noMultimodalBase", registry_count: number, required_sensory_capabilities: Array<string>, } | { "kind": "siliconResidencyViolated", rejected_model_id: string, actual_silicon: TargetSilicon, } | { "kind": "unknownProviderReferenced", model_id: string, provider_id: string, };
