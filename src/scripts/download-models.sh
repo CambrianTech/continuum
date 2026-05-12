@@ -91,8 +91,9 @@ echo ""
 
 # Download via huggingface direct-URL pattern: each model has files[].
 # We resolve to https://huggingface.co/<repo>/resolve/main/<file> and curl.
-# The huggingface-cli would be cleaner but adds Python+pip to model-init
-# (currently a tiny node:slim image, ~120MB). Direct curl keeps it lean.
+# The standard install path must work without a HuggingFace account. Do not
+# pass HF_TOKEN here: a token can mask private/gated default models during dev
+# or CI. If any auto_download artifact requires auth, this script must fail.
 FAILED=0
 FAILED_ITEMS=()
 
@@ -138,9 +139,6 @@ for KEY in "${MODEL_KEYS[@]}"; do
     URL="https://huggingface.co/${REPO}/resolve/${REVISION}/${FILE}"
     echo "  ↓ $URL"
     CURL_ARGS=(-fsSL --retry 3 --retry-delay 2 --retry-all-errors)
-    if [[ -n "${HF_TOKEN:-}" ]]; then
-      CURL_ARGS+=(-H "Authorization: Bearer ${HF_TOKEN}")
-    fi
     if curl "${CURL_ARGS[@]}" -o "$DEST.partial" "$URL"; then
       mv "$DEST.partial" "$DEST"
       echo -e "${GREEN}  ✓ $FILE ($(du -h "$DEST" | cut -f1))${NC}"

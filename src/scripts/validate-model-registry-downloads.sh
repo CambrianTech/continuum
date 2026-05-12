@@ -2,6 +2,7 @@
 # Validate that registry auto_download artifacts resolve on HuggingFace.
 # This is a fast preflight for model-init: it catches stale repos/filenames
 # before the install smoke spends minutes booting a system with no persona LLM.
+# Validation is intentionally anonymous: default install models must be public.
 
 set -euo pipefail
 
@@ -77,9 +78,6 @@ for KEY in "${MODEL_KEYS[@]}"; do
   for FILE in "${FILES[@]}"; do
     URL="https://huggingface.co/${REPO}/resolve/${REVISION}/${FILE}"
     CURL_ARGS=(-fsSIL --retry 2 --retry-delay 1 --retry-all-errors)
-    if [[ -n "${HF_TOKEN:-}" ]]; then
-      CURL_ARGS+=(-H "Authorization: Bearer ${HF_TOKEN}")
-    fi
     if curl "${CURL_ARGS[@]}" "$URL" >/dev/null; then
       echo "OK $KEY $FILE"
     else

@@ -61,7 +61,6 @@ services:
       - ${HOME}/.continuum/genome/models:/models
     environment:
       - MODELS_DIR=/models
-      - HF_TOKEN=${HF_TOKEN:-}
       # base: small (74MB), fast, works with all whisper.cpp versions.
       # large-v3-turbo requires whisper.cpp v1.7+ (different tensor count).
       - WHISPER_MODEL=${WHISPER_MODEL:-base}
