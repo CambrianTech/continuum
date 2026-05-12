@@ -1,26 +1,5 @@
 /* eslint-disable max-lines -- pre-existing 720-line file; scheduled for split into PRG.ts (orchestration) + PRG-postResponse.ts + PRG-pipeline.ts in the cleanup-sweep PR after #950 */
-/**
- * PersonaResponseGenerator — TS shim over the Rust cognition core.
- *
- * The cognitive verb ("this persona, given this message, produces this
- * response") now lives in Rust (continuum-core::persona::response::respond).
- * This shim is the TS-side contract that:
- *
- *   1. Applies dormancy / engagement gate (pre-flight, TS-only concern).
- *   2. Routes sentinel dispatch (complex multi-step tasks become sentinels
- *      instead of tool loops — orthogonal to cognition, stays TS).
- *   3. Builds the minimal RAG slice Rust needs (system prompt + recent
- *      history + known specialties) and calls cognitionPersonaRespond.
- *   4. Handles Silent|Spoke: Silent is logged + returned; Spoke runs the
- *      tool agent loop on the returned text and posts to chat.
- *   5. Emits UI events (POSTED / ERROR / typing / voice / stage) and
- *      captures training-data + fitness telemetry off the critical path.
- *
- * Out of scope for this PR (anvil's next rungs):
- *   - Tool agent loop migration to Rust.
- *   - Sentinel dispatch relocation.
- *   - Cloud-provider routing through Rust ai_provider.
- */
+/** PersonaResponseGenerator — TS shim over Rust persona cognition. */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
@@ -54,14 +33,6 @@ import { FitnessTracker } from '../../../genome/server/FitnessTracker';
 import { getAIAudioBridge } from '../../../voice/server/AIAudioBridge';
 import { PRESENCE_EVENTS } from '../../../core/shared/EventConstants';
 import { PersonaEngagementDecider, type DormancyState } from './PersonaEngagementDecider';
-// PersonaAgentLoop / PersonaResponseValidator / PersonaPromptAssembler
-// were the TS-side second-pass inference + retry loop on Rust
-// personaRespond's output — duplicated work the Rust cognition crate
-// already owns and bypassed the model's full context window via a TS
-// maxTokens cap. Removed from this file's call path 2026-04-20; deleted
-// entirely in the 0.5.1/0.5.2/0.5.4 cleanup sweep once the subgraph
-// was confirmed closed (no live importers, no test refs). Tool calling
-// continues through Rust cognition::tool_executor (0.5.3).
 import { SentinelDispatchDecider } from '../../../sentinel/SentinelDispatchDecider';
 import { SentinelDispatchCoordinator } from '../../../sentinel/SentinelDispatchCoordinator';
 import { Commands } from '../../../core/shared/Commands';
@@ -216,6 +187,10 @@ export class PersonaResponseGenerator {
     this.logger.enqueueLog('cognition.log', `[${timestamp}] ${message}${formattedArgs}\n`);
   }
 
+  private phase(message: string): void {
+    console.error(`[persona-phase] ${this.personaName}: ${message}`);
+  }
+
   shouldRespondToMessage(
     message: ProcessableMessage,
     dormancyState?: DormancyState,
@@ -308,6 +283,7 @@ export class PersonaResponseGenerator {
     const pipelineTiming: Record<string, number> = {};
 
     try {
+      this.phase(`generate start message=${originalMessage.id} room=${originalMessage.roomId}`);
       // Sentinel short-circuit.
       const dispatchResult = await this.checkSentinelDispatch(originalMessage);
       if (dispatchResult) return dispatchResult;
@@ -322,6 +298,7 @@ export class PersonaResponseGenerator {
       const phase31Start = Date.now();
       const ragContext = preBuiltRagContext ?? await this.buildRagContext(originalMessage);
       pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
+      this.phase(`rag ready ${pipelineTiming['3.1_rag']}ms history=${ragContext.conversationHistory.length} memories=${ragContext.privateMemories.length} artifacts=${ragContext.artifacts.length}`);
 
       const knownSpecialties = this.buildKnownSpecialties(ragContext);
       const recentHistory = this.buildRecentHistory(ragContext);
@@ -351,6 +328,7 @@ export class PersonaResponseGenerator {
       // on the native path.
       const capabilities = await this.resolveModelCapabilities();
       const hasNativeVision = capabilities.includes('vision');
+      this.phase(`capabilities ready model=${this.modelConfig.model} caps=${capabilities.join(',') || 'none'}`);
 
       const { MediaBlobService } = await import('../../../storage/MediaBlobService');
       const fs = await import('fs');
@@ -497,10 +475,12 @@ export class PersonaResponseGenerator {
       };
 
       const ipcStart = Date.now();
+      this.phase(`cognition/respond start media=${messageMedia.length} history=${recentHistory.length}`);
       const response = await this._rustBridge.personaRespond(rustRequest);
       const ipcDurationMs = Date.now() - ipcStart;
       pipelineTiming['3.2_cognition'] = Date.now() - phase32Start;
       pipelineTiming['3.2_ipc'] = ipcDurationMs;
+      this.phase(`cognition/respond done kind=${response.kind} ipc=${ipcDurationMs}ms total=${response.kind === 'spoke' ? response.total_ms : 'n/a'}ms`);
 
       if (response.kind === 'silent') {
         return this.handleSilent(originalMessage, response, pipelineTiming, generateStartTime);
@@ -521,6 +501,7 @@ export class PersonaResponseGenerator {
       }
 
       const phase35Start = Date.now();
+      this.phase(`post start chars=${finalText.length}`);
       const postedMessageId = await this.postResponse(
         originalMessage,
         finalText,
@@ -529,6 +510,7 @@ export class PersonaResponseGenerator {
         generateStartTime,
       );
       pipelineTiming['3.5_post'] = Date.now() - phase35Start;
+      this.phase(`post done id=${postedMessageId ?? 'missing'} post=${pipelineTiming['3.5_post']}ms`);
 
       if (decisionContext) {
         CoordinationDecisionLogger.logDecision({

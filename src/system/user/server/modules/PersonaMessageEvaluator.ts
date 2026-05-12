@@ -126,6 +126,10 @@ export class PersonaMessageEvaluator {
     this.personaUser.logger.enqueueLog('cognition.log', `[${timestamp}] ${message}${formattedArgs}\n`);
   }
 
+  private phase(message: string): void {
+    console.error(`[persona-phase] ${this.personaUser.displayName}: ${message}`);
+  }
+
   /**
    * Evaluate message with full cognition system (planning, focus, working memory)
    *
@@ -165,6 +169,7 @@ export class PersonaMessageEvaluator {
     evalTiming['early_gate'] = Date.now() - earlyGateStart;
 
     this.log(`[GATE:EARLY] ${this.personaUser.displayName}: sender=${messageEntity.senderName} senderType=${messageEntity.senderType} human=${senderIsHuman} result=${earlyResult.should_respond ? 'PASS' : 'BLOCK'} gate=${earlyResult.gate} reason="${earlyResult.reason}" (${earlyResult.decision_time_ms.toFixed(2)}ms)`);
+    this.phase(`early gate ${earlyResult.should_respond ? 'PASS' : 'BLOCK'} gate=${earlyResult.gate} ${evalTiming['early_gate']}ms message=${messageEntity.id}`);
 
     if (!earlyResult.should_respond) {
       this.personaUser.logAIDecision('SILENT', `${earlyResult.gate}: ${earlyResult.reason}`, {
@@ -178,6 +183,7 @@ export class PersonaMessageEvaluator {
     const coordinationStart = Date.now();
     const claimGranted = await this.coordinateResponseClaim(messageEntity, earlyResult);
     evalTiming['coordination_claim'] = Date.now() - coordinationStart;
+    this.phase(`coordination ${claimGranted ? 'granted' : 'deferred'} ${evalTiming['coordination_claim']}ms message=${messageEntity.id}`);
     if (!claimGranted) {
       this.personaUser.logAIDecision('SILENT', 'coordination: another persona owns this turn', {
         message: safeMessageText.slice(0, 100),
@@ -447,6 +453,7 @@ export class PersonaMessageEvaluator {
     const gatingStart = Date.now();
     const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned, preComputedDecision, socialSignals);
     this.log(`⏱️ ${this.personaUser.displayName}: [INNER] evaluateShouldRespond=${Date.now() - gatingStart}ms`);
+    this.phase(`respond gate ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'} ${Date.now() - gatingStart}ms message=${messageEntity.id}`);
 
     // FULL TRANSPARENCY LOGGING
     this.log(`\n${'='.repeat(80)}`);
@@ -608,6 +615,7 @@ export class PersonaMessageEvaluator {
       messageEntity,
       this.personaUser.rustCognition,
     );
+    this.phase(`post-inference adequacy ${postInferenceResult.shouldSkip ? 'BLOCK' : 'PASS'} ${Date.now() - postInferenceStart}ms message=${messageEntity.id}`);
 
     if (postInferenceResult.shouldSkip) {
       this.log(`[GATE:POST_INFERENCE] ${this.personaUser.displayName}: BLOCK — ${postInferenceResult.reason}`);
@@ -698,7 +706,9 @@ export class PersonaMessageEvaluator {
     // 🔧 PHASE: Generate and post response
     this.log(`🔧 TRACE-POINT-B: Before respondToMessage call (timestamp=${Date.now()})`);
     this.log(`🔧 ${this.personaUser.displayName}: [PHASE 3/3] Calling respondToMessage...`);
+    this.phase(`respondToMessage start message=${messageEntity.id}`);
     await this.personaUser.respondToMessage(messageEntity, decisionContext, gatingResult.filteredRagContext, gatingResult.socialSignals);
+    this.phase(`respondToMessage done message=${messageEntity.id}`);
     this.log(`🔧 TRACE-POINT-C: After respondToMessage returned (timestamp=${Date.now()})`);
     this.log(`✅ ${this.personaUser.displayName}: [PHASE 3/3] Response posted successfully`);
 
