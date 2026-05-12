@@ -134,6 +134,11 @@ services:
     # requires `--profile live`.
     volumes:
       - ${HOME}/.continuum/genome/models:/app/models:ro
+      # Keep the runtime model/provider registry authoritative from the
+      # checked-out repo. Canary PR smoke pulls prebuilt continuum-core images;
+      # without this mount, the binary can run with stale baked TOML and never
+      # see newly declared local adapters/models.
+      - ./src/workers/continuum-core/config:/app/continuum-core/config:ro
       # Mount the ENTIRE ~/.continuum directory R/W. The Rust core reads config,
       # writes model cache, logs, grid state, sockets, sessions — all under
       # ~/.continuum. Cherry-picking subdirs with :ro caused silent failures
