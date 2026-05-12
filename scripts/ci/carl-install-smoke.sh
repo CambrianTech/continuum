@@ -227,7 +227,8 @@ fi
 echo ""
 echo "━━ end-to-end chat: send message, expect AI reply ━━"
 CARL_CHAT_TIMEOUT_SEC="${CARL_CHAT_TIMEOUT_SEC:-90}"
-CHAT_PROBE_MSG="carl-smoke-probe-$(date +%s)"
+CHAT_PROBE_ID="carl-smoke-probe-$(date +%s)"
+CHAT_PROBE_MSG="@Helper AI please reply with one short sentence including ${CHAT_PROBE_ID}."
 CHAT_LOG="${CARL_INSTALL_DIR}.chat.log"
 
 # Locate jtag — install.sh symlinks it into BIN_DIR for the user
@@ -277,20 +278,22 @@ fi
 
 echo "  ✓ chat/send accepted (some persona is listening)"
 
-# Poll chat/export for an AI reply. The probe message is unique;
-# we look for any message in the room AFTER our probe whose senderType
-# is 'persona' or 'bot' (i.e. the AI replying to us).
+# Poll chat/export for an AI reply. The probe id is unique;
+# we look for any message in the room AFTER our probe whose exported
+# sender heading is not the human sender.
 echo "  → polling for AI reply (timeout ${CARL_CHAT_TIMEOUT_SEC}s)…"
 REPLY_OK=0
 REPLY_LATENCY=0
 for i in $(seq 1 "$CARL_CHAT_TIMEOUT_SEC"); do
   EXPORT_OUT=$("$JTAG_BIN" collaboration/chat/export --room=general --limit=20 2>/dev/null || true)
-  # Find the first message AFTER our probe that's NOT from the human sender
-  # (rough heuristic — chat/export markdown output is line-oriented per msg).
-  # Look for any line after the probe-msg line that starts with a non-Joel sender.
-  if echo "$EXPORT_OUT" | awk -v probe="$CHAT_PROBE_MSG" '
+  # Find the first message AFTER our probe that's NOT from the human sender.
+  # Current chat/export headings are "## #shortId - Sender"; older exports
+  # used "**Sender**", so support both while still requiring a post-probe
+  # sender heading.
+  if echo "$EXPORT_OUT" | awk -v probe="$CHAT_PROBE_ID" '
       $0 ~ probe { found_probe=1; next }
-      found_probe && /^\*\*[a-zA-Z0-9_-]+\*\*/ && !/Joel|joel|human/ { print; exit }
+      found_probe && /^## #[[:alnum:]]+ - / && !/ - (Developer|Joel|joel|human)$/ { print; exit }
+      found_probe && /^\*\*[a-zA-Z0-9_ -]+\*\*/ && !/Joel|joel|human|Developer/ { print; exit }
     ' | grep -q .; then
     REPLY_OK=1
     REPLY_LATENCY=$i

@@ -222,6 +222,41 @@ class DatabaseSeeder {
     }
   }
 
+  async ensureUsersInRooms(users: readonly UserEntity[], rooms: readonly RoomEntity[]): Promise<number> {
+    let updates = 0;
+    for (const room of rooms) {
+      const existingMembers = room.members ?? [];
+      const existingIds = new Set(existingMembers.map(member => member.userId));
+      const missingUsers = users.filter(user => !existingIds.has(user.id));
+      if (missingUsers.length === 0) {
+        continue;
+      }
+
+      const members = [
+        ...existingMembers,
+        ...missingUsers.map(user => ({
+          userId: user.id,
+          role: 'member' as const,
+          joinedAt: new Date(),
+        })),
+      ];
+
+      const result = await DataUpdate.execute<RoomEntity>({
+        collection: RoomEntity.collection,
+        dbHandle: 'default',
+        id: room.id,
+        data: { members },
+        suppressEvents: false,
+      });
+      if (!result.success || !result.data) {
+        throw new Error(`Seed FATAL: failed to add seeded personas to room "${room.uniqueId}": ${result.error ?? 'unknown error'}`);
+      }
+      room.members = members;
+      updates += missingUsers.length;
+    }
+    return updates;
+  }
+
   /** Generate avatar PNGs for all personas */
   async generateAvatars(personas: { uniqueId: string; displayName: string; accentColor: string }[]): Promise<number> {
     try {
@@ -309,10 +344,8 @@ async function syncPersonaProviders(_seeder: DatabaseSeeder): Promise<void> {
         : undefined;
       let desiredModelId = config.modelId;
       if (!desiredModelId && config.modelRef) {
-        const { resolveModel, tierFromRamGB } = await import('../shared/ModelRegistry');
-        const ramGB = Math.round((require('os').totalmem() / 1024 / 1024 / 1024));
-        const tier = tierFromRamGB(ramGB);
-        const spec = resolveModel(config.modelRef, tier);
+        const { resolveModel } = await import('../shared/ModelRegistry');
+        const spec = resolveModel(config.modelRef, resolveInstallTier());
         desiredModelId = spec.hf_repo;
       }
       const providerChanged = currentProvider !== config.provider;
@@ -335,6 +368,20 @@ async function syncPersonaProviders(_seeder: DatabaseSeeder): Promise<void> {
       // Non-fatal — persona might not exist yet
     }
   }
+}
+
+export function resolveInstallTier(): import('../shared/ModelRegistry').Tier {
+  const envTier = process.env.CONTINUUM_TIER ?? process.env.TIER;
+  if (envTier) {
+    if (envTier === 'mba' || envTier === 'mid' || envTier === 'full') {
+      return envTier;
+    }
+    throw new Error(`Seed FATAL: invalid CONTINUUM_TIER/TIER '${envTier}'. Valid tiers: mba, mid, full`);
+  }
+
+  const { tierFromRamGB } = require('../shared/ModelRegistry') as typeof import('../shared/ModelRegistry');
+  const ramGB = Math.round(require('os').totalmem() / 1024 / 1024 / 1024);
+  return tierFromRamGB(ramGB);
 }
 
 /**
@@ -402,9 +449,8 @@ export async function seedDatabase(): Promise<boolean> {
   // changing the registry value updates seeded personas on next startup
   // (Joel 2026-05-04: "personas PICK UP THE MODEL change and arent stuck
   // in the past").
-  const { resolveModel, tierFromRamGB } = await import('../shared/ModelRegistry');
-  const seedRamGB = Math.round(require('os').totalmem() / 1024 / 1024 / 1024);
-  const seedTier = tierFromRamGB(seedRamGB);
+  const { resolveModel } = await import('../shared/ModelRegistry');
+  const seedTier = resolveInstallTier();
 
   for (const config of personas) {
     try {
@@ -429,6 +475,9 @@ export async function seedDatabase(): Promise<boolean> {
     }
   }
   console.log(`  ✅ ${created.size} personas`);
+
+  const membershipAdds = await seeder.ensureUsersInRooms([...created.values()], roomEntities);
+  console.log(`  ✅ Persona room memberships (${membershipAdds} added)`);
 
   // Profiles
   for (const [uniqueId, profile] of Object.entries(PROFILES)) {

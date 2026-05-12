@@ -1,18 +1,9 @@
-/**
- * PersonaLifecycleManager — runtime persona creation/removal based on API key changes.
- *
- * Subscribes to:
- * - system:config:key-added  → calls persona/allocate IPC, creates new personas
- * - system:config:key-removed → gracefully shuts down that provider's personas
- *
- * This enables the adaptive self-installing system: add an API key in Settings,
- * and the persona appears in chat within seconds — no restart needed.
- */
-
 import { Events } from '../../core/shared/Events';
 import { Commands } from '../../core/shared/Commands';
 import type { CommandParams } from '../../core/types/JTAGTypes';
 import { SecretManager } from '../../secrets/SecretManager';
+import { COLLECTIONS } from '../../data/config/DatabaseConfig';
+import type { UserEntity } from '../../data/entities/UserEntity';
 
 interface KeyChangeEvent {
   provider: string;
@@ -46,9 +37,13 @@ interface AllocationResult {
   localModel: string;
 }
 
+interface UserListResult { success: boolean; items?: readonly UserEntity[]; error?: string; }
+interface UserCreateResult { success: boolean; user?: UserEntity; error?: string; }
+
 export class PersonaLifecycleManager {
   private static _instance: PersonaLifecycleManager | null = null;
   private _subscribed = false;
+  private runtimeActivator?: (user: UserEntity, reason: string) => Promise<void>;
 
   static get instance(): PersonaLifecycleManager {
     if (!this._instance) {
@@ -57,10 +52,6 @@ export class PersonaLifecycleManager {
     return this._instance;
   }
 
-  /**
-   * Start listening for key change events.
-   * Call once during server startup (after commands are registered).
-   */
   subscribe(): void {
     if (this._subscribed) return;
     this._subscribed = true;
@@ -79,17 +70,15 @@ export class PersonaLifecycleManager {
 
     console.log('🔄 PersonaLifecycleManager: Subscribed to config change events');
 
-    // Run initial allocation on startup — config.env keys are already loaded
-    // by SecretManager but no key-added event fires for pre-existing keys.
     setTimeout(() => this.runInitialAllocation().catch(err => {
       console.error('❌ PersonaLifecycleManager: Initial allocation failed:', err);
     }), 2000);
   }
 
-  /**
-   * Run allocation on startup with all currently available API keys.
-   * Creates any personas that should exist based on the current hardware + keys.
-   */
+  setRuntimeActivator(activate: (user: UserEntity, reason: string) => Promise<void>): void {
+    this.runtimeActivator = activate;
+  }
+
   private async runInitialAllocation(): Promise<void> {
     const availableApiKeys = this.collectAvailableApiKeys();
     console.log(`🎭 PersonaLifecycleManager: Initial allocation with ${availableApiKeys.length} API keys: [${availableApiKeys.join(', ')}]`);
@@ -100,8 +89,15 @@ export class PersonaLifecycleManager {
     ) as unknown as AllocationResult;
 
     if (!allocation?.allocations?.length) {
-      console.warn('⚠️ PersonaLifecycleManager: No allocations from initial run');
-      return;
+      const activated = await this.activatePersistedLocalPersonas(allocation);
+      if (activated > 0) {
+        console.log(`✅ PersonaLifecycleManager: ${activated} persisted persona(s) activated on startup`);
+        return;
+      }
+
+      const summary = allocation?.summary?.length ? allocation.summary.join('; ') : 'no allocator summary';
+      const skipped = allocation?.skipped?.length ? ` skipped=${allocation.skipped.length}` : '';
+      throw new Error(`persona/allocate returned zero startup allocations and no persisted local personas were available;${skipped} summary=${summary}`);
     }
 
     console.log(`🎭 PersonaLifecycleManager: Allocator returned ${allocation.allocations.length} persona(s)`);
@@ -114,11 +110,6 @@ export class PersonaLifecycleManager {
 
     console.log(`✅ PersonaLifecycleManager: ${created} persona(s) activated on startup`);
 
-    // Local model prewarm allocates the full model/KV context. Doing that at
-    // boot competes with seed, browser reconnect, and first room hydration, and
-    // on unified-memory Macs can push continuum-core into OS pressure before
-    // the system is actually ready. Keep it as an explicit performance knob,
-    // not default startup behavior.
     if (process.env.CONTINUUM_PREWARM_PERSONAS === '1' || process.env.CONTINUUM_PREWARM_PERSONAS === 'true') {
       void this.prewarmAllPersonas(allocation.allocations);
     } else {
@@ -126,16 +117,10 @@ export class PersonaLifecycleManager {
     }
   }
 
-  /**
-   * Fire prewarm requests in parallel for local personas. Each is bounded
-   * by short timeouts so a stuck DMR can never hang boot.
-   */
   private async prewarmAllPersonas(allocations: PersonaAllocation[]): Promise<void> {
     const local = allocations.filter(a => this.isLocalProvider(a.provider));
     if (local.length === 0) return;
 
-    // Probe DMR availability ONCE before firing all prewarms — saves N
-    // failed connection attempts when DMR isn't up yet (Docker still booting).
     const dmrUp = await this.checkDmrAvailable();
     if (!dmrUp) {
       console.log(`⏭️ PersonaLifecycleManager: DMR not reachable yet — skipping prewarm for ${local.length} local persona(s)`);
@@ -148,13 +133,6 @@ export class PersonaLifecycleManager {
     console.log(`🔥 PersonaLifecycleManager: Prewarm batch finished in ${Date.now() - startedAt}ms`);
   }
 
-  /**
-   * Quick DMR availability probe with a hard 2s timeout. Returns false on
-   * any failure (network, timeout, non-200) — never throws. Docker concern:
-   * DMR runs in Docker Desktop's container; on cold Docker start it may
-   * take a few seconds beyond our system boot to be reachable. We'd rather
-   * skip prewarm than hang.
-   */
   private async checkDmrAvailable(): Promise<boolean> {
     try {
       const ctrl = new AbortController();
@@ -167,11 +145,6 @@ export class PersonaLifecycleManager {
     }
   }
 
-  /**
-   * Fire a single tiny generation to warm the model + DMR slot for one persona.
-   * max_tokens=1 keeps it nearly free; the cost we want is the model load,
-   * not the generation. Errors are swallowed — prewarm failure is non-fatal.
-   */
   private async prewarmPersona(allocation: PersonaAllocation): Promise<void> {
     const model = allocation.resolvedModel || allocation.modelId;
     if (!model) return;
@@ -190,25 +163,15 @@ export class PersonaLifecycleManager {
     }
   }
 
-  /**
-   * Provider classes that route to the local DMR/llama-server pool — these
-   * benefit from prewarm because they pay model-load cold start. Cloud
-   * providers maintain their own warm state via API connection pooling.
-   */
   private isLocalProvider(provider: string): boolean {
     return provider === 'local' || provider === 'sentinel';
   }
 
-  /**
-   * When an API key is added, re-run allocation and create any new personas.
-   */
   private async handleKeyAdded(event: KeyChangeEvent): Promise<void> {
     console.log(`🔑 PersonaLifecycleManager: Key added — ${event.provider}`);
 
-    // Collect all currently set API keys from process.env
     const availableApiKeys = this.collectAvailableApiKeys();
 
-    // Call Rust allocator for optimal persona assignments
     const allocation = await Commands.execute(
       'persona/allocate',
       { availableApiKeys } as Partial<CommandParams>
@@ -219,7 +182,6 @@ export class PersonaLifecycleManager {
       return;
     }
 
-    // Find personas that need this specific API key
     const newPersonas = allocation.allocations.filter(
       a => a.apiKeyEnv === event.provider
     );
@@ -229,7 +191,6 @@ export class PersonaLifecycleManager {
       return;
     }
 
-    // Create each new persona
     for (const persona of newPersonas) {
       await this.createPersona(persona);
     }
@@ -237,13 +198,9 @@ export class PersonaLifecycleManager {
     console.log(`✅ PersonaLifecycleManager: Created ${newPersonas.length} persona(s) for ${event.provider}`);
   }
 
-  /**
-   * When an API key is removed, deactivate that provider's personas.
-   */
   private async handleKeyRemoved(event: KeyChangeEvent): Promise<void> {
     console.log(`🔑 PersonaLifecycleManager: Key removed — ${event.provider}`);
 
-    // Emit a deactivation event that PersonaUser instances can listen for
     await Events.emit('persona:provider-deactivated', {
       provider: event.provider,
       timestamp: Date.now(),
@@ -252,33 +209,64 @@ export class PersonaLifecycleManager {
     console.log(`⚠️ PersonaLifecycleManager: Deactivation event emitted for ${event.provider} personas`);
   }
 
-  /**
-   * Create a persona user via the user/create command.
-   * The command already handles duplicate checking (idempotent).
-   */
   private async createPersona(allocation: PersonaAllocation): Promise<void> {
-    try {
-      const result = await Commands.execute('user/create', {
-        type: allocation.personaType,
-        displayName: allocation.displayName,
-        uniqueId: allocation.uniqueId,
-        provider: allocation.provider,
-      } as Partial<CommandParams>) as unknown as { success: boolean; error?: string };
+    const result = await Commands.execute('user/create', {
+      type: allocation.personaType,
+      displayName: allocation.displayName,
+      uniqueId: allocation.uniqueId,
+      provider: allocation.provider,
+    } as Partial<CommandParams>) as unknown as UserCreateResult;
 
-      if (result?.success) {
-        console.log(`  ✅ Created persona: ${allocation.displayName} (${allocation.uniqueId})`);
-      } else {
-        console.warn(`  ⚠️ Persona creation returned: ${JSON.stringify(result)}`);
-      }
-    } catch (error) {
-      console.error(`  ❌ Failed to create persona ${allocation.displayName}:`, error);
+    if (!result?.success || !result.user) {
+      throw new Error(`user/create failed for persona ${allocation.displayName} (${allocation.uniqueId}): ${result?.error ?? 'missing user in result'}`);
     }
+
+    await this.ensurePersonaRuntimeClient(result.user, 'allocator');
+    console.log(`  ✅ Activated persona: ${allocation.displayName} (${allocation.uniqueId})`);
   }
 
-  /**
-   * Collect all API key env vars that are currently set in process.env.
-   * These are the keys the Rust allocator needs to make decisions.
-   */
+  private async activatePersistedLocalPersonas(allocation?: AllocationResult): Promise<number> {
+    const result = await Commands.execute('data/list', {
+      dbHandle: 'default',
+      collection: COLLECTIONS.USERS,
+      filter: { type: 'persona' },
+      limit: 100,
+      skipCount: true,
+    } as Partial<CommandParams>) as unknown as UserListResult;
+
+    if (!result?.success) {
+      throw new Error(`data/list failed while checking persisted personas: ${result?.error ?? 'unknown error'}`);
+    }
+
+    const personas = result.items ?? [];
+    if (personas.length === 0) {
+      return 0;
+    }
+
+    console.error(
+      `❌ PersonaLifecycleManager: persona/allocate returned zero allocations with ${personas.length} persisted persona(s); activating persisted local personas and preserving the allocator defect for CI.`
+    );
+    if (allocation?.summary?.length) {
+      console.error(`❌ PersonaLifecycleManager: allocator summary: ${allocation.summary.join('; ')}`);
+    }
+
+    for (const persona of personas) {
+      await this.ensurePersonaRuntimeClient(persona, 'persisted-local');
+    }
+    return personas.length;
+  }
+
+  private async ensurePersonaRuntimeClient(user: UserEntity, reason: string): Promise<void> {
+    if (user.type !== 'persona') {
+      throw new Error(`Refusing to activate non-persona user ${user.displayName} (${user.id}) from ${reason}`);
+    }
+
+    if (!this.runtimeActivator) {
+      throw new Error(`Persona runtime activator is not registered; cannot activate persona ${user.displayName} (${user.id}) from ${reason}`);
+    }
+    await this.runtimeActivator(user, reason);
+  }
+
   private collectAvailableApiKeys(): string[] {
     const knownKeyVars = [
       'ANTHROPIC_API_KEY',

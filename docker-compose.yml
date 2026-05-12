@@ -209,6 +209,9 @@ services:
       - "${NODE_WS_PORT:-9001}:9001"   # WebSocket
     volumes:
       - ~/.continuum:/root/.continuum
+      - ./src/server/seed-in-process.ts:/app/server/seed-in-process.ts:ro
+      - ./src/system/user/server/PersonaLifecycleManager.ts:/app/system/user/server/PersonaLifecycleManager.ts:ro
+      - ./src/daemons/user-daemon/server/UserDaemonServer.ts:/app/daemons/user-daemon/server/UserDaemonServer.ts:ro
     environment:
       # node-server never directly connects to a database — all data ops
       # go through continuum-core via IPC, using opaque handles ('main' for
@@ -220,6 +223,11 @@ services:
       - NODE_ENV=production
       - JTAG_SKIP_HTTP=1
       - JTAG_NO_TLS=1
+      # Keep persona seed/reconcile on the same tier as model-init.
+      # Without this, node-server reads cgroup-limited container RAM and
+      # resolves local-default to the MBA model while model-init downloads
+      # the full-tier GGUF. That mismatch creates silent no-reply installs.
+      - CONTINUUM_TIER=${CONTINUUM_TIER:-full}
       # Browser connects to LiveKit via host-mapped port, not Docker DNS.
       # 'ws://livekit:7880' only resolves inside the Docker network;
       # the browser runs on the host where 'livekit' doesn't resolve.

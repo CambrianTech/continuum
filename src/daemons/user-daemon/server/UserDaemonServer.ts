@@ -92,6 +92,7 @@ export class UserDaemonServer extends UserDaemon {
     });
 
     // Start PersonaLifecycleManager — listens for API key add/remove events
+    PersonaLifecycleManager.instance.setRuntimeActivator((user, reason) => this.ensurePersonaRuntimeClient(user, reason));
     PersonaLifecycleManager.instance.subscribe();
 
     const deferredMs = Date.now() - deferredStart;
@@ -165,6 +166,17 @@ export class UserDaemonServer extends UserDaemon {
     });
     this.registerSubscription(unsubVoice);
 
+  }
+
+  public async ensurePersonaRuntimeClient(userEntity: UserEntity, reason: string): Promise<void> {
+    if (userEntity.type !== 'persona') {
+      throw new Error(`UserDaemon refused runtime activation for non-persona user ${userEntity.id}`);
+    }
+    await this.ensurePersonaCorrectState(userEntity);
+    if (!this.personaClients.has(userEntity.id)) {
+      throw new Error(`Persona client did not activate for ${userEntity.displayName} (${userEntity.id}) from ${reason}`);
+    }
+    this.log.info(`✅ UserDaemon: Runtime persona client ensured for ${userEntity.displayName} (${reason})`);
   }
 
   /**
