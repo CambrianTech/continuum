@@ -120,10 +120,18 @@ services:
     # cuda / continuum-core-vulkan overlays) it's the actual ceiling.
     mem_limit: ${CONTINUUM_CORE_MEM:-16g}
     working_dir: /app
+    # Model-init is a one-shot prerequisite for first-run local persona
+    # inference. continuum-core registers in-process llama.cpp adapters during
+    # startup by scanning ~/.continuum/genome/models; if it starts while the
+    # downloader is still writing qwen3.5, the adapter is skipped and local
+    # chat routes to the wrong local surface for the rest of the process.
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
     # No depends_on for services behind profiles (postgres, livekit-bridge).
-    # Core starts independently; connections to optional services (postgres
-    # pool, livekit bridge socket) retry on demand. Text chat works without
-    # any profile active — voice/video requires `--profile live`.
+    # Connections to optional services (postgres pool, livekit bridge socket)
+    # retry on demand. Text chat works without any profile active — voice/video
+    # requires `--profile live`.
     volumes:
       - ${HOME}/.continuum/genome/models:/app/models:ro
       # Mount the ENTIRE ~/.continuum directory R/W. The Rust core reads config,
