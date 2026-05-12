@@ -26,6 +26,8 @@
 #   2 — install.sh succeeded but widget-server never returned 200 on /health
 #   3 — widget-server returned 200 but page body looks broken
 #       (empty / contains chrome-error / contains "container exited")
+#   7 — chat/send accepted, but node-server logged a fatal persona response
+#       failure before a reply could be posted
 
 set -uo pipefail
 
@@ -257,6 +259,7 @@ echo "  jtag binary: $JTAG_BIN"
 # Send. The jtag/chat/send command returns a JSON envelope; we extract
 # the messageId from the response to track the thread.
 echo "  → sending probe: '$CHAT_PROBE_MSG'"
+CHAT_SENT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SEND_OUT=$("$JTAG_BIN" collaboration/chat/send --room=general --message="$CHAT_PROBE_MSG" 2>&1)
 SEND_RC=$?
 echo "$SEND_OUT" | sed 's/^/    /' > "$CHAT_LOG"
@@ -302,6 +305,21 @@ for i in $(seq 1 "$CARL_CHAT_TIMEOUT_SEC"); do
     REPLY_LATENCY=$i
     echo "  ✓ AI reply detected after ${i}s"
     break
+  fi
+
+  # Fail fast on fatal persona response errors. Without this, CI burns the
+  # whole chat timeout polling a room that cannot receive a reply.
+  if [ "$i" -le 5 ] || [ $((i % 5)) -eq 0 ]; then
+    NODE_FATAL=$(
+      ( cd "$CARL_INSTALL_DIR" && docker compose logs --no-color --since "$CHAT_SENT_AT" node-server 2>/dev/null ) \
+        | grep -E "PersonaResponseGenerator.*response failed|Local AI is unavailable|cognition/respond.*(FAILED|failed|error)" \
+        | tail -5 || true
+    )
+    if [ -n "$NODE_FATAL" ]; then
+      echo "❌ chat probe: persona response failed before any AI reply"
+      echo "$NODE_FATAL" | sed 's/^/    /'
+      exit 7
+    fi
   fi
   sleep 1
 done
