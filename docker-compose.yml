@@ -59,6 +59,14 @@ services:
     mem_limit: ${MODEL_INIT_MEM:-2g}
     volumes:
       - ${HOME}/.continuum/genome/models:/models
+      # Keep install-time model metadata/scripts authoritative from the cloned
+      # repo, not whatever an already-published model-init image happened to
+      # bake in. This lets PR/canary install smoke exercise the exact registry
+      # and fail-hard downloader under test.
+      - ./src/shared/models.json:/app/shared/models.json:ro
+      - ./src/scripts/download-models.sh:/app/scripts/download-models.sh:ro
+      - ./src/scripts/download-avatar-models.sh:/app/scripts/download-avatar-models.sh:ro
+      - ./src/scripts/shared:/app/scripts/shared:ro
     environment:
       - MODELS_DIR=/models
       # base: small (74MB), fast, works with all whisper.cpp versions.

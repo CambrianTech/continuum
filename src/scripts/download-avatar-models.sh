@@ -121,8 +121,18 @@ download_vroid_zip() {
     return
   fi
 
-  # Extract zip — use python3 (always available) so we don't need unzip installed
-  if ! python3 -c "
+  # Extract zip. model-init images include unzip; local dev machines often
+  # have python3. Require one explicit extractor and report which path failed.
+  if command -v unzip >/dev/null 2>&1; then
+    if ! unzip -q "$tmpzip" -d "$tmpdir"; then
+      echo -e "  ${RED}⚠ Failed to extract ${name}: unzip rejected archive${NC}" >&2
+      rm -rf "$tmpzip" "$tmpdir"
+      FAILED=$((FAILED + 1))
+      FAILED_NAMES+=("$name")
+      return
+    fi
+  elif command -v python3 >/dev/null 2>&1; then
+    if ! python3 -c "
 import zipfile, sys
 try:
     with zipfile.ZipFile('$tmpzip', 'r') as z:
@@ -131,7 +141,14 @@ except (zipfile.BadZipFile, Exception) as e:
     print(f'Extract failed: {e}', file=sys.stderr)
     sys.exit(1)
 "; then
-    echo -e "  ${RED}⚠ Failed to extract ${name}: file may be corrupt or not a zip${NC}" >&2
+      echo -e "  ${RED}⚠ Failed to extract ${name}: python3 rejected archive${NC}" >&2
+      rm -rf "$tmpzip" "$tmpdir"
+      FAILED=$((FAILED + 1))
+      FAILED_NAMES+=("$name")
+      return
+    fi
+  else
+    echo -e "  ${RED}⚠ Failed to extract ${name}: no unzip or python3 available${NC}" >&2
     rm -rf "$tmpzip" "$tmpdir"
     FAILED=$((FAILED + 1))
     FAILED_NAMES+=("$name")

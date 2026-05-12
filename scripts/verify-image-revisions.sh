@@ -96,7 +96,7 @@ image_relevant_paths() {
       echo "src/widgets src/browser src/shared docker/widget-server.Dockerfile"
       ;;
     *continuum-model-init*)
-      echo "src/scripts/install-livekit.sh src/scripts/download-voice-models.sh docker/model-init.Dockerfile"
+      echo "src/shared/models.json src/scripts/download-models.sh src/scripts/download-avatar-models.sh src/scripts/shared docker/model-init.Dockerfile"
       ;;
     *)
       # Unknown image — be safe, treat any change as relevant.
