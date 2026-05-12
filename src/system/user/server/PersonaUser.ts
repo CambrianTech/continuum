@@ -1725,9 +1725,13 @@ export class PersonaUser extends AIUser {
     }
 
     const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext, preBuiltRagContext, socialSignals);
+    if (!result.success) {
+      const error = result.error ?? 'unknown response generation failure';
+      throw new Error(`${this.displayName}: response generation failed for message ${originalMessage.id}: ${error}`);
+    }
 
     // Mark tool results as processed to prevent infinite loops
-    if (result.success && result.storedToolResultIds.length > 0) {
+    if (result.storedToolResultIds.length > 0) {
       this.taskTracker.markMultipleProcessed(result.storedToolResultIds);
     }
   }

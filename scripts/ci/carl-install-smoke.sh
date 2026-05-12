@@ -60,6 +60,9 @@ teardown() {
         > "${CARL_INSTALL_DIR}.${svc}.log" 2>&1 ) || true
     done
     ( cd "$CARL_INSTALL_DIR" && docker compose ps -a > "${CARL_INSTALL_DIR}.compose-ps.log" 2>&1 ) || true
+    if [ -d "$HOME/.continuum" ]; then
+      tar -C "$HOME/.continuum" -czf "${CARL_INSTALL_DIR}.continuum-logs.tgz" logs personas 2>/dev/null || true
+    fi
   fi
   if [ "$SKIP_TEARDOWN" != "1" ] && [ -d "$CARL_INSTALL_DIR" ]; then
     echo ""

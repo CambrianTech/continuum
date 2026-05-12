@@ -152,6 +152,9 @@ jobs:
                 > "${dir}.${svc}.ps" 2>&1
             done
             docker compose -f "$dir/docker-compose.yml" ps -a > "${dir}.compose-ps.log" 2>&1
+            if [ -d "$HOME/.continuum" ]; then
+              tar -C "$HOME/.continuum" -czf "${dir}.continuum-logs.tgz" logs personas 2>/dev/null || true
+            fi
           done
       - name: Upload install + page + chat + docker logs + screenshot artifacts on failure
         if: failure()
@@ -169,6 +172,7 @@ jobs:
             /tmp/carl-smoke-*.widget-server.log
             /tmp/carl-smoke-*.livekit-bridge.log
             /tmp/carl-smoke-*.compose-ps.log
+            /tmp/carl-smoke-*.continuum-logs.tgz
             /tmp/carl-smoke-*.*.ps
           retention-days: 7
           if-no-files-found: ignore

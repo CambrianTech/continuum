@@ -291,6 +291,14 @@ async fn respond_inner(
             "visible_chars": visible_text.len(),
         }),
     );
+    if visible_text.trim().is_empty() {
+        return Err(format!(
+            "persona '{}' produced empty visible text after post-processing (raw_chars={}, think_blocks={})",
+            input.persona.display_name,
+            raw_response.text.len(),
+            think_count
+        ));
+    }
 
     Ok(PersonaResponse::Spoke {
         persona_id: input.persona.persona_id,
@@ -844,6 +852,18 @@ mod tests {
         let (visible, count) = strip_thinks_emit_events(raw, Uuid::nil(), Uuid::nil());
         assert_eq!(visible, "First sentence. Second.");
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn all_think_output_leaves_no_postable_text() {
+        let raw = "<think>plan only</think>";
+        let (think_stripped, count) = strip_thinks_emit_events(raw, Uuid::nil(), Uuid::nil());
+        let visible = strip_leaked_tool_markup(&think_stripped);
+        assert_eq!(count, 1);
+        assert!(
+            visible.trim().is_empty(),
+            "all-think model output must trip the hard empty-visible-text guard"
+        );
     }
 
     #[test]

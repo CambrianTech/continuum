@@ -517,8 +517,7 @@ export class PersonaResponseGenerator {
       // is exactly what Rust returned.
       const finalText = response.text.trim();
       if (!finalText) {
-        this.log(`⚠️ ${this.personaName}: Rust returned empty text — skipping post`);
-        return { success: false, error: 'Empty response from Rust', storedToolResultIds: allStoredResultIds };
+        throw new Error(`${this.personaName}: Rust cognition returned empty visible text for message ${originalMessage.id}`);
       }
 
       const phase35Start = Date.now();
@@ -853,6 +852,7 @@ export class PersonaResponseGenerator {
       this.log(`⏭️ ${this.personaName}: Provider not configured, staying quiet`);
     } else {
       this.log(`❌ ${this.personaName}: ${errorMsg}`);
+      console.error(`[PersonaResponseGenerator] ${this.personaName} response failed for message ${originalMessage.id}: ${errorMsg}`);
       AIDecisionLogger.logError(this.personaName, 'Response generation/posting', errorMsg);
     }
 
