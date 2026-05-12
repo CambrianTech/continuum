@@ -66,8 +66,10 @@ jobs:
           # githubusercontent.com wouldn't be the one in this PR. Same
           # rationale as docker-images.yml's ref pattern.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          # Smoke uses the local script directly; no need for full history.
-          fetch-depth: 1
+          # verify-image-revisions.sh can compare image-label SHAs against
+          # HEAD and skip byte-identical non-image changes. Full history keeps
+          # that smart stale check honest.
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -93,17 +95,26 @@ jobs:
       - name: Validate model registry artifacts
         run: VALIDATE_ALL_TIERS=1 src/scripts/validate-model-registry-downloads.sh
 
+      - name: Verify Carl smoke images are published for this PR
+        if: github.event_name == 'pull_request'
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          TAG: pr-${{ github.event.pull_request.number }}
+          IMAGES: ghcr.io/cambriantech/continuum-core-vulkan:ghcr.io/cambriantech/continuum-livekit-bridge:ghcr.io/cambriantech/continuum-node:ghcr.io/cambriantech/continuum-model-init:ghcr.io/cambriantech/continuum-widgets
+          STALE_AMD64_OUT: ${{ runner.temp }}/carl-stale-amd64.txt
+          STALE_ARM64_OUT: ${{ runner.temp }}/carl-stale-arm64.txt
+        run: bash scripts/verify-image-revisions.sh
+
       - name: Run carl-install smoke
         env:
           # PR HEAD sha so smoke fetches install.sh from THIS PR.
           CARL_INSTALL_REF: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
-          # Main PRs use :pr-N because docker-images.yml verifies / aliases
-          # PR image manifests only for main promotion. Canary PRs use the
-          # already-published :canary image set because canary deliberately
-          # excludes per-PR image verification; requiring :pr-N there creates
-          # manifest-unknown failures and used to fall into local source builds.
+          # Every PR smoke uses :pr-N. Canary PRs cannot safely use :canary:
+          # install.sh can fetch the PR's scripts and compose files, but Rust
+          # binaries still come from images. Pulling :canary here can test a
+          # stale continuum-core-vulkan binary and hide missing runtime code.
           #
-          # Resolution priority: main PR# > input.image_tag > 'canary'.
+          # Resolution priority: PR# > input.image_tag > 'canary'.
           # On workflow_dispatch (no PR context) the bare `pr-${{ ... }}`
           # interpolated to 'pr-' (empty after dash), causing install.sh to
           # miss the registry and fall back to 'will build locally' — which
@@ -112,7 +123,7 @@ jobs:
           # 25400718464). The conditional below makes manual triggers
           # default to the canary tag (the cadence we publish on) and lets
           # operators override via the image_tag input from the UI.
-          CONTINUUM_IMAGE_TAG: ${{ github.event.pull_request.base.ref == 'main' && github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
+          CONTINUUM_IMAGE_TAG: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
           # 25-min cap on the docker-only install. Hybrid (Mac source-build)
           # path would exceed this — by design, that's the gate firing on
           # the README/install mismatch.

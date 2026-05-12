@@ -150,7 +150,13 @@ for IMAGE in "${IMAGE_ARRAY[@]}"; do
   REF="$IMAGE:$TAG"
   echo "━━━ $REF ━━━"
 
-  RAW=$(docker buildx imagetools inspect --raw "$REF" 2>/dev/null || echo '{}')
+  if ! RAW=$(docker buildx imagetools inspect --raw "$REF" 2>&1); then
+    echo "  ❌ MISSING in registry"
+    echo "     $RAW"
+    echo "$REF" >> "$STALE_AMD64_OUT"
+    FAILED=1
+    continue
+  fi
 
   # For multi-arch indexes: enumerate per-platform manifests. Skip the
   # `unknown/unknown` attestation manifests buildx adds alongside real
@@ -170,7 +176,9 @@ for IMAGE in "${IMAGE_ARRAY[@]}"; do
   ' 2>/dev/null)
 
   if [[ -z "$ARCH_LIST" ]]; then
-    echo "  ⚠️  No manifest entries — image may not exist yet at this tag"
+    echo "  ❌ No linux manifest entries — image tag is unusable for install smoke"
+    echo "$REF" >> "$STALE_AMD64_OUT"
+    FAILED=1
     continue
   fi
 
@@ -267,7 +275,7 @@ fi
 
 if [ "$FAILED" -ne 0 ]; then
   echo ""
-  echo "❌ STALE-IMAGE GATE FAILED — amd64 image(s) at :$TAG built from a different commit."
+  echo "❌ IMAGE GATE FAILED — amd64 image(s) at :$TAG are missing or stale."
   echo "   The user-facing target must always be current."
   echo ""
   echo "   Fix:"
