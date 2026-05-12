@@ -223,8 +223,16 @@ pub fn build_respond_input(
         }
     }
 
-    let message_id = signal.message_id.unwrap_or(Uuid::nil());
-    let room_id = ctx.room_id.unwrap_or(Uuid::nil());
+    let message_id = signal.message_id.ok_or_else(|| {
+        "build_respond_input: chat-shaped cognition requires signal.messageId; \
+         missing ids would collapse shared-analysis cache keys"
+            .to_string()
+    })?;
+    let room_id = ctx.room_id.ok_or_else(|| {
+        "build_respond_input: chat-shaped cognition requires personaContext.roomId; \
+         route roomless hosts through a non-chat projection"
+            .to_string()
+    })?;
 
     Ok(RespondInput {
         persona: ctx.slot(),
@@ -258,7 +266,7 @@ mod tests {
 
     fn empty_ctx() -> PersonaContext {
         PersonaContext {
-            persona_id: Uuid::nil(),
+            persona_id: uuid("00000000-0000-4000-8000-000000000001"),
             display_name: String::new(),
             specialty: String::new(),
             model: String::new(),
@@ -267,9 +275,13 @@ mod tests {
             recent_history: vec![],
             known_specialties: vec![],
             other_persona_names: vec![],
-            room_id: None,
+            room_id: Some(uuid("00000000-0000-4000-8000-000000000002")),
             is_voice: false,
         }
+    }
+
+    fn uuid(value: &str) -> Uuid {
+        Uuid::parse_str(value).unwrap()
     }
 
     fn chat_signal(text: &str) -> Signal {
@@ -277,9 +289,11 @@ mod tests {
             kind: SignalKind::ChatMessage,
             text: text.to_string(),
             media: vec![],
-            originator: SignalOriginator::User { user_id: Uuid::nil() },
+            originator: SignalOriginator::User {
+                user_id: uuid("00000000-0000-4000-8000-000000000003"),
+            },
             timestamp_ms: 0,
-            message_id: Some(Uuid::nil()),
+            message_id: Some(uuid("00000000-0000-4000-8000-000000000004")),
         }
     }
 
@@ -293,9 +307,11 @@ mod tests {
             kind: SignalKind::ChatMessage,
             text: "hello".to_string(),
             media: vec![],
-            originator: SignalOriginator::User { user_id: Uuid::nil() },
+            originator: SignalOriginator::User {
+                user_id: uuid("00000000-0000-4000-8000-000000000003"),
+            },
             timestamp_ms: 1234,
-            message_id: Some(Uuid::nil()),
+            message_id: Some(uuid("00000000-0000-4000-8000-000000000004")),
         };
         let json = serde_json::to_string(&signal).expect("serializes");
         let back: Signal = serde_json::from_str(&json).expect("round-trips");
@@ -311,7 +327,7 @@ mod tests {
     #[test]
     fn persona_context_slot_mirrors_fields() {
         let mut ctx = empty_ctx();
-        ctx.persona_id = Uuid::nil();
+        ctx.persona_id = uuid("00000000-0000-4000-8000-000000000001");
         ctx.specialty = "vision".to_string();
         ctx.display_name = "Vision AI".to_string();
         let slot = ctx.slot();
@@ -363,6 +379,31 @@ mod tests {
         let input = build_respond_input(&signal, &empty_ctx())
             .expect("autonomous tick accepted");
         assert!(input.message_text.is_empty());
+    }
+
+    /// What this catches: missing message ids used to become
+    /// `Uuid::nil()`, collapsing unrelated turns into the same shared
+    /// analysis cache key. That is a host contract bug and must be
+    /// loud at the projection boundary.
+    #[test]
+    fn projection_rejects_missing_message_id() {
+        let mut signal = chat_signal("hello");
+        signal.message_id = None;
+        let err = build_respond_input(&signal, &empty_ctx())
+            .expect_err("missing message id should be rejected");
+        assert!(err.contains("signal.messageId"));
+    }
+
+    /// What this catches: roomless chat-shaped cognition used to run
+    /// under `Uuid::nil()`, mixing cache/recorder state across hosts.
+    /// Non-chat hosts need a different projection instead of a fake room.
+    #[test]
+    fn projection_rejects_missing_room_id() {
+        let mut ctx = empty_ctx();
+        ctx.room_id = None;
+        let err = build_respond_input(&chat_signal("hello"), &ctx)
+            .expect_err("missing room id should be rejected");
+        assert!(err.contains("personaContext.roomId"));
     }
 
     /// What this catches: media on the signal passes through to
