@@ -211,6 +211,9 @@ services:
       - ~/.continuum:/root/.continuum
       - ./src/server/seed-in-process.ts:/app/server/seed-in-process.ts:ro
       - ./src/system/user/server/PersonaLifecycleManager.ts:/app/system/user/server/PersonaLifecycleManager.ts:ro
+      - ./src/system/user/server/PersonaUser.ts:/app/system/user/server/PersonaUser.ts:ro
+      - ./src/system/user/server/modules/PersonaMessageEvaluator.ts:/app/system/user/server/modules/PersonaMessageEvaluator.ts:ro
+      - ./src/system/user/server/modules/PersonaResponseGenerator.ts:/app/system/user/server/modules/PersonaResponseGenerator.ts:ro
       - ./src/daemons/user-daemon/server/UserDaemonServer.ts:/app/daemons/user-daemon/server/UserDaemonServer.ts:ro
     environment:
       # node-server never directly connects to a database — all data ops
