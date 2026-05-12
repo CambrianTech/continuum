@@ -93,9 +93,13 @@ echo ""
 # We resolve to https://huggingface.co/<repo>/resolve/main/<file> and curl.
 # The huggingface-cli would be cleaner but adds Python+pip to model-init
 # (currently a tiny node:slim image, ~120MB). Direct curl keeps it lean.
+FAILED=0
+FAILED_ITEMS=()
+
 for KEY in "${MODEL_KEYS[@]}"; do
   KIND=$(jq -r --arg k "$KEY" '.models[$k].kind // "unknown"' "$REGISTRY")
   REPO=$(jq -r --arg k "$KEY" '.models[$k].hf_repo // ""' "$REGISTRY")
+  REVISION=$(jq -r --arg k "$KEY" '.models[$k].hf_revision // "main"' "$REGISTRY")
   FORMAT=$(jq -r --arg k "$KEY" '.models[$k].format // ""' "$REGISTRY")
   SIZE=$(jq -r --arg k "$KEY" '.models[$k].size_gb // "?"' "$REGISTRY")
 
@@ -112,34 +116,49 @@ for KEY in "${MODEL_KEYS[@]}"; do
   TARGET_DIR="$MODELS_DIR/$KEY"
   mkdir -p "$TARGET_DIR"
 
-  # Get files list. Some entries omit files (huggingface-cli style); skip those.
+  # Get files list. Downloadable auto_download entries must name every required
+  # artifact. An empty files[] for a non-builtin model is a broken registry row,
+  # not a runtime fallback opportunity.
   mapfile -t FILES < <(jq -r --arg k "$KEY" '.models[$k].files // [] | .[]' "$REGISTRY")
   if [[ ${#FILES[@]} -eq 0 ]]; then
-    echo -e "${YELLOW}  SKIP $KEY — no files[] specified (huggingface-cli pull required)${NC}"
+    echo -e "${RED}  ✗ $KEY — no files[] specified for downloadable model${NC}" >&2
+    FAILED=$((FAILED + 1))
+    FAILED_ITEMS+=("$KEY:<missing files[]>")
     continue
   fi
 
   echo -e "${YELLOW}━━ $KEY (kind=$KIND, ~${SIZE}GB) ━━${NC}"
   for FILE in "${FILES[@]}"; do
-    DEST="$TARGET_DIR/$(basename "$FILE")"
+    DEST="$TARGET_DIR/$FILE"
+    mkdir -p "$(dirname "$DEST")"
     if [[ -f "$DEST" ]]; then
-      echo -e "${GREEN}  ✓ already cached: $(basename "$FILE")${NC}"
+      echo -e "${GREEN}  ✓ already cached: $FILE${NC}"
       continue
     fi
-    URL="https://huggingface.co/${REPO}/resolve/main/${FILE}"
+    URL="https://huggingface.co/${REPO}/resolve/${REVISION}/${FILE}"
     echo "  ↓ $URL"
-    if curl -fsSL --retry 3 --retry-delay 2 -o "$DEST.partial" "$URL"; then
+    CURL_ARGS=(-fsSL --retry 3 --retry-delay 2 --retry-all-errors)
+    if [[ -n "${HF_TOKEN:-}" ]]; then
+      CURL_ARGS+=(-H "Authorization: Bearer ${HF_TOKEN}")
+    fi
+    if curl "${CURL_ARGS[@]}" -o "$DEST.partial" "$URL"; then
       mv "$DEST.partial" "$DEST"
-      echo -e "${GREEN}  ✓ $(basename "$FILE") ($(du -h "$DEST" | cut -f1))${NC}"
+      echo -e "${GREEN}  ✓ $FILE ($(du -h "$DEST" | cut -f1))${NC}"
     else
       rm -f "$DEST.partial"
       echo -e "${RED}  ✗ FAILED to download $FILE${NC}" >&2
-      # Continue rather than fail-the-container — partial models is better
-      # than no models. continuum-core will report missing-file at load time.
+      FAILED=$((FAILED + 1))
+      FAILED_ITEMS+=("$KEY:$FILE")
     fi
   done
 done
 
 echo ""
+if [[ "$FAILED" -gt 0 ]]; then
+  echo -e "${RED}━━ download-models.sh FAILED — ${FAILED} required artifact(s) missing ━━${NC}" >&2
+  printf '  %s\n' "${FAILED_ITEMS[@]}" >&2
+  exit 1
+fi
+
 echo -e "${GREEN}━━ download-models.sh complete (TIER=$TIER) ━━${NC}"
 echo "  Total in $MODELS_DIR: $(du -sh "$MODELS_DIR" 2>/dev/null | cut -f1)"

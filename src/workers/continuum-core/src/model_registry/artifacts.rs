@@ -33,7 +33,7 @@ pub fn resolve_gguf_for_model_id(model_id: &str) -> Option<PathBuf> {
 }
 
 pub fn resolve_local_model_dir_for_model_id(model_id: &str) -> Option<PathBuf> {
-    resolve_from_local_model_roots(model_id).and_then(|gguf| gguf.parent().map(Path::to_path_buf))
+    resolve_dir_from_local_model_roots(model_id)
 }
 
 pub fn find_first_local_gguf() -> Option<PathBuf> {
@@ -102,6 +102,15 @@ fn resolve_from_local_model_roots(model_id: &str) -> Option<PathBuf> {
     None
 }
 
+fn resolve_dir_from_local_model_roots(model_id: &str) -> Option<PathBuf> {
+    for root in local_model_roots() {
+        if let Some(dir) = find_model_dir_in_root(model_id, &root) {
+            return Some(dir);
+        }
+    }
+    None
+}
+
 fn local_model_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(home) = home_dir_string() {
@@ -147,13 +156,22 @@ fn find_model_dir_in_root(model_id: &str, root: &Path) -> Option<PathBuf> {
         return None;
     }
 
+    let model_lower = model_id.to_lowercase();
+    let model_normalized = normalize_model_dir_token(model_id);
     for entry in fs::read_dir(root).ok()?.flatten() {
         let path = entry.path();
-        if !path.is_dir() || first_gguf_in_dir(&path).is_none() {
+        if !path.is_dir() || !is_model_artifact_dir(&path) {
             continue;
         }
-        let dir_name = path.file_name()?.to_str()?.to_lowercase();
-        let model_lower = model_id.to_lowercase();
+        let dir_raw = path.file_name()?.to_str()?;
+        let dir_name = dir_raw.to_lowercase();
+        let dir_normalized = normalize_model_dir_token(dir_raw);
+        if !dir_normalized.is_empty()
+            && (model_normalized.contains(&dir_normalized)
+                || dir_normalized.contains(&model_normalized))
+        {
+            return Some(path);
+        }
         if model_lower.contains("qwen")
             && model_lower.contains("compacted")
             && dir_name.contains("qwen")
@@ -178,6 +196,29 @@ fn find_model_dir_in_root(model_id: &str, root: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn is_model_artifact_dir(dir: &Path) -> bool {
+    first_gguf_in_dir(dir).is_some()
+        || dir.join("model.safetensors").exists()
+        || fs::read_dir(dir).ok().is_some_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("model-") && name.ends_with(".safetensors"))
+            })
+        })
+}
+
+fn normalize_model_dir_token(value: &str) -> String {
+    value
+        .trim_end_matches("-GGUF")
+        .trim_end_matches("-gguf")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 fn resolve_from_huggingface_hint(hint: &str) -> Option<PathBuf> {
@@ -407,6 +448,62 @@ mod tests {
                 Some(PathBuf::from("~/models/model.gguf")),
             ));
             assert_eq!(resolved.as_deref(), Some(explicit.as_path()));
+        });
+    }
+
+    #[test]
+    fn resolves_model_init_registry_key_dir_for_qwen35_gguf() {
+        let home = tempfile::tempdir().unwrap();
+        with_test_home(home.path(), || {
+            let model_dir = home
+                .path()
+                .join(".continuum/genome/models/qwen3.5-4b-code-forged");
+            fs::create_dir_all(&model_dir).unwrap();
+            let gguf = model_dir.join("qwen3.5-4b-code-forged-Q4_K_M.gguf");
+            fs::write(&gguf, b"gguf").unwrap();
+
+            let resolved = resolve_gguf(
+                "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+                None,
+                None,
+            );
+
+            assert_eq!(resolved.as_deref(), Some(gguf.as_path()));
+        });
+    }
+
+    #[test]
+    fn resolves_short_qwen2_vl_model_init_dir_for_instruct_model() {
+        let home = tempfile::tempdir().unwrap();
+        with_test_home(home.path(), || {
+            let model_dir = home.path().join(".continuum/genome/models/qwen2-vl-7b");
+            fs::create_dir_all(&model_dir).unwrap();
+            let gguf = model_dir.join("Qwen2-VL-7B-Instruct-Q4_K_M.gguf");
+            fs::write(&gguf, b"gguf").unwrap();
+
+            let resolved = resolve_gguf("qwen2-vl-7b-instruct", None, None);
+
+            assert_eq!(resolved.as_deref(), Some(gguf.as_path()));
+        });
+    }
+
+    #[test]
+    fn resolves_safetensors_model_init_dir_for_mid_tier_model() {
+        let home = tempfile::tempdir().unwrap();
+        with_test_home(home.path(), || {
+            let model_dir = home
+                .path()
+                .join(".continuum/genome/models/qwen3.5-2b-general");
+            fs::create_dir_all(&model_dir).unwrap();
+            fs::write(model_dir.join("model.safetensors"), b"weights").unwrap();
+            fs::write(model_dir.join("config.json"), b"{}").unwrap();
+            fs::write(model_dir.join("tokenizer.json"), b"{}").unwrap();
+
+            let resolved = resolve_local_model_dir_for_model_id(
+                "continuum-ai/qwen3.5-2b-general-forged",
+            );
+
+            assert_eq!(resolved.as_deref(), Some(model_dir.as_path()));
         });
     }
 }

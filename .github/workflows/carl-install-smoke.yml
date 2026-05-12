@@ -90,6 +90,9 @@ jobs:
       - name: Login to ghcr.io (so install.sh can pull pre-built images)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      - name: Validate model registry artifacts
+        run: VALIDATE_ALL_TIERS=1 src/scripts/validate-model-registry-downloads.sh
+
       - name: Run carl-install smoke
         env:
           # PR HEAD sha so smoke fetches install.sh from THIS PR.

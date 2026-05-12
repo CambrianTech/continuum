@@ -58,7 +58,7 @@ services:
     # One-time downloader. Fixed budget — doesn't scale with host RAM.
     mem_limit: ${MODEL_INIT_MEM:-2g}
     volumes:
-      - voice-models:/models
+      - ${HOME}/.continuum/genome/models:/models
     environment:
       - MODELS_DIR=/models
       - HF_TOKEN=${HF_TOKEN:-}
@@ -118,7 +118,7 @@ services:
     # pool, livekit bridge socket) retry on demand. Text chat works without
     # any profile active — voice/video requires `--profile live`.
     volumes:
-      - voice-models:/app/models:ro
+      - ${HOME}/.continuum/genome/models:/app/models:ro
       # Mount the ENTIRE ~/.continuum directory R/W. The Rust core reads config,
       # writes model cache, logs, grid state, sockets, sessions — all under
       # ~/.continuum. Cherry-picking subdirs with :ro caused silent failures
@@ -367,5 +367,4 @@ volumes:
   hf-cache:
   forge-output:
   models:
-  voice-models:
   tailscale-state:

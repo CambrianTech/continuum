@@ -1466,7 +1466,7 @@ mod tests {
         );
 
         let vision = resolve_model_id("vision-default");
-        assert_eq!(vision, "Qwen/Qwen2-VL-7B-Instruct-GGUF");
+        assert_eq!(vision, "bartowski/Qwen2-VL-7B-Instruct-GGUF");
 
         let gating = resolve_model_id("gating");
         assert_eq!(gating, "Qwen/Qwen2-0.5B-Instruct");
