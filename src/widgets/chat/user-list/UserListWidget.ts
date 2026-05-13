@@ -181,7 +181,12 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     return html`
       <div class="entity-list-container">
         ${this.renderHeader()}
-        <div class="${this.containerClass}" ?hidden=${this.isEmpty}></div>
+        <div
+          class="${this.containerClass}"
+          ?hidden=${this.isEmpty}
+          role="listbox"
+          aria-label="Users and personas"
+        ></div>
         ${this.isEmpty ? this.renderEmptyState() : nothing}
         ${this.renderFooter()}
       </div>
@@ -200,6 +205,14 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
           : 'Humans, personas, and agents will appear here once they join the workspace.'}
       ></empty-state>
     `;
+  }
+
+  // === A11Y === (#1099 phase 2)
+  protected override getItemLabel(user: UserEntity): string {
+    const name = user.displayName ?? 'Unknown user';
+    const typeLabel = user.type === 'persona' ? 'persona' : user.type === 'agent' ? 'agent' : 'user';
+    const status = user.status ?? 'offline';
+    return `${name}, ${typeLabel}, ${status}`;
   }
 
   // === ITEM RENDERING ===
@@ -308,10 +321,21 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
       const div = globalThis.document.createElement('div');
       div.className = 'list-item';
       div.dataset.id = user.id;
+      div.setAttribute('role', 'option');
+      div.tabIndex = 0;
+      div.setAttribute('aria-label', this.getItemLabel(user));
+      div.setAttribute('aria-selected', String(this._selectedUserId === user.id));
       render(this.renderItem(user), div);
       div.addEventListener('click', (e) => {
         e.stopPropagation();
         this.onItemClick(user);
+      });
+      div.addEventListener('keydown', (e: KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.onItemClick(user);
+        }
       });
       return div;
     };
@@ -320,6 +344,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   // === EVENT HANDLERS ===
   private handleUserClick(e: Event, user: UserEntity): void {
     if ((e.target as HTMLElement).tagName === 'BUTTON') return;
+    e.stopPropagation();
     this._selectedUserId = user.id;
     this.openUserProfile(user);
   }
@@ -406,7 +431,8 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   }
 
   // === SELECTION HOOK (override base) ===
-  protected override onItemClick(_item: UserEntity): void {
-    // Handled by @click in renderItem template
+  protected override onItemClick(item: UserEntity): void {
+    this._selectedUserId = item.id;
+    this.openUserProfile(item);
   }
 }
