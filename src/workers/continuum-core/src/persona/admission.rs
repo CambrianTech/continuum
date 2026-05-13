@@ -339,8 +339,11 @@ impl AdmissionGate {
 pub struct HeuristicIsMemorable {
     /// Minimum content length to consider memorable. Chars, not bytes.
     pub min_content_length: usize,
-    /// Phrases that, alone, are noise (e.g., "ack", "ok", "👍").
-    /// Compared lower-case, trimmed; whole-content match.
+    /// Phrases that, alone, are noise (e.g., "ack", "ok", "👍"). Stored
+    /// pre-normalized (lowercased, trimmed) so the per-call hot path
+    /// doesn't repeat the normalization for every candidate. Use
+    /// [`HeuristicIsMemorable::with_noise_phrases`] to construct with a
+    /// custom set rather than mutating directly.
     pub noise_phrases: Vec<String>,
 }
 
@@ -348,18 +351,31 @@ impl HeuristicIsMemorable {
     /// v1 defaults — minimal length 16 chars, common ack phrases as noise.
     /// Tuned for AIRC-style chatter where one-word acks dominate volume.
     pub fn default_v1() -> Self {
-        Self {
-            min_content_length: 16,
-            noise_phrases: vec![
-                "ack".to_string(),
-                "ok".to_string(),
-                "okay".to_string(),
-                "thanks".to_string(),
-                "thx".to_string(),
-                "got it".to_string(),
-                "+1".to_string(),
-                "👍".to_string(),
+        Self::with_noise_phrases(
+            16,
+            [
+                "ack", "ok", "okay", "thanks", "thx", "got it", "+1", "👍",
             ],
+        )
+    }
+
+    /// Construct with a custom minimum length + noise-phrase set. Phrases
+    /// are normalized once here (lowercased, trimmed) so the per-call
+    /// noise check is a plain string comparison — heuristic recipes are
+    /// the per-message hot path and re-lowercasing on every candidate
+    /// would be wasted work.
+    pub fn with_noise_phrases<I, S>(min_content_length: usize, phrases: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let noise_phrases = phrases
+            .into_iter()
+            .map(|p| p.as_ref().trim().to_lowercase())
+            .collect();
+        Self {
+            min_content_length,
+            noise_phrases,
         }
     }
 }
@@ -396,10 +412,12 @@ impl IsMemorable for HeuristicIsMemorable {
             });
         }
 
-        // Noise phrase check
+        // Noise phrase check. `noise_phrases` is pre-normalized
+        // (lowercased + trimmed) at construction time, so the per-call
+        // hot path is a plain string comparison.
         let normalized = candidate.content.trim().to_lowercase();
         for phrase in &self.noise_phrases {
-            if normalized == phrase.to_lowercase() {
+            if normalized == *phrase {
                 return Ok(AdmissionDecision::Drop {
                     reason: AdmissionDropReason::NotMemorable {
                         explanation: format!("matches noise phrase: {phrase:?}"),
@@ -640,6 +658,63 @@ mod tests {
         // Seam recorded even on error — forensics need it.
         assert_eq!(trace.seam_count(), 1);
         assert_eq!(trace.last_seam_name(), Some(SEAM_ADMISSION));
+    }
+
+    /// What this catches: empty content_hash on an Airc envelope is a
+    /// structural failure (the gate needs the hash for tamper detection
+    /// + dedup). Symmetric with the empty-signature test; same failure
+    /// class returned via `EnvelopeVerificationFailed`. Asymmetric
+    /// coverage between empty-signature/empty-content-hash/empty-schema
+    /// would let one of the three regress silently.
+    #[test]
+    fn empty_content_hash_returns_envelope_verification_failed() {
+        let cfg = AdmissionConfig::permissive_v1();
+        let content = InMemoryContent::default();
+        let events = InMemoryEvents::default();
+        let ctx = permissive_ctx(&cfg, &content, &events);
+        let mut trace = CognitionTrace::new();
+
+        let cand = candidate(
+            "perfectly novel content of sufficient length",
+            TrustState::ApprovedPeer,
+            EngramOrigin::Airc(airc_ref("msg-x", "sig", "", "v1")),
+        );
+
+        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace) {
+            Err(AdmissionError::EnvelopeVerificationFailed { detail }) => {
+                assert!(detail.contains("content_hash"), "detail: {detail}");
+            }
+            other => panic!("expected EnvelopeVerificationFailed, got {other:?}"),
+        }
+        assert_eq!(trace.seam_count(), 1);
+    }
+
+    /// What this catches: empty schema_version is structurally invalid
+    /// (admission can't reason about a schema with no name). Distinct
+    /// from `UnsupportedSchemaVersion` which fires for unknown values
+    /// — empty is its own class returned via `EnvelopeVerificationFailed`.
+    /// Symmetric coverage with empty-signature/empty-content-hash.
+    #[test]
+    fn empty_schema_version_returns_envelope_verification_failed() {
+        let cfg = AdmissionConfig::permissive_v1();
+        let content = InMemoryContent::default();
+        let events = InMemoryEvents::default();
+        let ctx = permissive_ctx(&cfg, &content, &events);
+        let mut trace = CognitionTrace::new();
+
+        let cand = candidate(
+            "perfectly novel content of sufficient length",
+            TrustState::ApprovedPeer,
+            EngramOrigin::Airc(airc_ref("msg-x", "sig", "hash", "")),
+        );
+
+        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace) {
+            Err(AdmissionError::EnvelopeVerificationFailed { detail }) => {
+                assert!(detail.contains("schema_version"), "detail: {detail}");
+            }
+            other => panic!("expected EnvelopeVerificationFailed, got {other:?}"),
+        }
+        assert_eq!(trace.seam_count(), 1);
     }
 
     /// What this catches: unsupported schema_version returns
