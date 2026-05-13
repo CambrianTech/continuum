@@ -177,10 +177,22 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     return html`
       <div class="entity-list-container">
         ${this.renderHeader()}
-        <div class="${this.containerClass}"></div>
+        <div
+          class="${this.containerClass}"
+          role="listbox"
+          aria-label="Users and personas"
+        ></div>
         ${this.renderFooter()}
       </div>
     `;
+  }
+
+  // === A11Y === (#1099 phase 2)
+  protected override getItemLabel(user: UserEntity): string {
+    const name = user.displayName ?? 'Unknown user';
+    const typeLabel = user.type === 'persona' ? 'persona' : user.type === 'agent' ? 'agent' : 'user';
+    const status = user.status ?? 'offline';
+    return `${name}, ${typeLabel}, ${status}`;
   }
 
   // === ITEM RENDERING ===

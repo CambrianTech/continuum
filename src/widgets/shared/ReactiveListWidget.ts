@@ -114,7 +114,11 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
     return html`
       <div class="list-widget">
         ${this.renderHeader()}
-        <div class="${this.containerClass}">
+        <div
+          class="${this.containerClass}"
+          role="listbox"
+          aria-label=${this.listTitle}
+        >
           <!-- EntityScroller populates items here -->
         </div>
         ${this.renderFooter()}
@@ -130,13 +134,89 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
       const div = document.createElement('div');
       div.className = 'list-item';
       div.dataset.id = item.id;
+      // ARIA listbox semantics (#1099 phase 2). The container has
+      // role="listbox" (set in subclass render overrides); each item
+      // is role="option". tabindex=0 makes items keyboard-focusable —
+      // proper roving tabindex (only the active item gets tabindex=0)
+      // is a phase-3 follow-up.
+      div.setAttribute('role', 'option');
+      div.tabIndex = 0;
+      const label = this.getItemLabel(item);
+      if (label) div.setAttribute('aria-label', label);
+      div.setAttribute('aria-selected', String(this.isSelected(item)));
       render(this.renderItem(item), div);
       div.addEventListener('click', (e) => {
         e.stopPropagation();
         this.onItemClick(item);
       });
+      // Enter or Space activates the item — same effect as a mouse click.
+      // The click handler above already handles selection updates.
+      div.addEventListener('keydown', (e: KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.onItemClick(item);
+        }
+      });
       return div;
     };
+  }
+
+  /**
+   * Accessible name for a list item. Default uses `displayName` or `name`
+   * fields if present on the entity, otherwise empty (which omits the
+   * aria-label and lets the screen reader fall back to the rendered
+   * text content). Subclasses override to provide a richer label —
+   * for example "<room name>, <member count> members".
+   */
+  protected getItemLabel(item: T): string {
+    const e = item as unknown as { displayName?: string; name?: string };
+    return e.displayName ?? e.name ?? '';
+  }
+
+  /**
+   * Keyboard navigation handler attached to the listbox container in
+   * `firstUpdated()`. ArrowDown/Up move focus to the next/previous
+   * `.list-item`, Home/End jump to first/last, Enter/Space activate.
+   * Handler is scoped to the container so it doesn't interfere with
+   * keyboard handling on sibling widgets (e.g., the chat composer).
+   */
+  private onListKeydown = (e: KeyboardEvent): void => {
+    const items = Array.from(
+      this.shadowRoot?.querySelectorAll<HTMLElement>(`.${this.containerClass} > .list-item`) ?? []
+    );
+    if (items.length === 0) return;
+
+    const active = this.shadowRoot?.activeElement as HTMLElement | null;
+    const currentIdx = active ? items.indexOf(active) : -1;
+
+    let nextIdx: number | null = null;
+    switch (e.key) {
+      case 'ArrowDown':
+        nextIdx = currentIdx < 0 ? 0 : Math.min(currentIdx + 1, items.length - 1);
+        break;
+      case 'ArrowUp':
+        nextIdx = currentIdx < 0 ? items.length - 1 : Math.max(currentIdx - 1, 0);
+        break;
+      case 'Home':
+        nextIdx = 0;
+        break;
+      case 'End':
+        nextIdx = items.length - 1;
+        break;
+      default:
+        return;
+    }
+    if (nextIdx !== null) {
+      e.preventDefault();
+      items[nextIdx].focus();
+    }
+  };
+
+  protected override firstUpdated(): void {
+    super.firstUpdated();
+    const container = this.shadowRoot?.querySelector(`.${this.containerClass}`);
+    container?.addEventListener('keydown', this.onListKeydown as EventListener);
   }
 
   protected getLoadFunction(): LoadFn<T> {

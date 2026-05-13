@@ -182,13 +182,32 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     return html`
       <div class="entity-list-container">
         ${this.renderHeader()}
-        <div class="${this.containerClass}"></div>
+        <div
+          class="${this.containerClass}"
+          role="listbox"
+          aria-label="Rooms and direct messages"
+        ></div>
         ${showNewDM && hasDMs ? html`
           <div class="new-dm-btn" @click=${this.startNewDM}>+ Start a conversation</div>
         ` : ''}
         ${this.renderFooter()}
       </div>
     `;
+  }
+
+  // === A11Y === (#1099 phase 2)
+  protected override getItemLabel(room: RoomEntity): string {
+    if (this.isDM(room)) {
+      const info = this.getDMDisplayInfo(room);
+      const memberCount = room.members?.length ?? 0;
+      const isGroup = memberCount > 2;
+      return isGroup
+        ? `Group DM: ${info.name}, ${memberCount} members`
+        : `Direct message with ${info.name}`;
+    }
+    const name = room.displayName ?? room.name ?? 'Room';
+    const topic = room.topic ?? '';
+    return topic ? `Room ${name} — ${topic}` : `Room ${name}`;
   }
 
   // === FILTERING ===
