@@ -16,6 +16,7 @@ import {
   type TemplateResult,
   type CSSResultGroup
 } from '../../shared/ReactiveListWidget';
+import '../../shared/EmptyStateWidget';
 import { render } from 'lit';
 import type { RenderFn, RenderContext } from '../../shared/EntityScroller';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
@@ -177,9 +178,24 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     return html`
       <div class="entity-list-container">
         ${this.renderHeader()}
-        <div class="${this.containerClass}"></div>
+        <div class="${this.containerClass}" ?hidden=${this.isEmpty}></div>
+        ${this.isEmpty ? this.renderEmptyState() : nothing}
         ${this.renderFooter()}
       </div>
+    `;
+  }
+
+  // === EMPTY STATE === (#1101)
+  protected override renderEmptyState(): TemplateResult {
+    const filterActive = this.activeFilters.size > 0 && !this.activeFilters.has('all');
+    return html`
+      <empty-state
+        icon=${filterActive ? '🔎' : '👥'}
+        empty-title=${filterActive ? 'No users match this filter' : 'No users yet'}
+        subtitle=${filterActive
+          ? 'Try clearing or changing the filter chips above.'
+          : 'Humans, personas, and agents will appear here once they join the workspace.'}
+      ></empty-state>
     `;
   }
 

@@ -1,7 +1,7 @@
 {
   "$schemaVersion": 1,
-  "$generatedAt": "2026-04-16T16:01:24.629Z",
-  "$sha256": "8cf44380640f9ba2f2e56548259b69d71c31b22c4a9553a74e92d23a82033f20",
+  "$generatedAt": "2026-05-13T17:01:40.910Z",
+  "$sha256": "27d02233ae3839f7fad6affbd9b4e308a7a08c3bb72329aafa2cb39fcbcd3217",
   "entities": {
     "users": {
       "collection": "users",
@@ -146,6 +146,13 @@
             "index": true,
             "nullable": true,
             "references": "genomes.id"
+          }
+        },
+        {
+          "fieldName": "hasOnboarded",
+          "fieldType": "boolean",
+          "options": {
+            "nullable": true
           }
         }
       ],

@@ -96,6 +96,7 @@ import {
   EnumField,
   JsonField,
   ForeignKeyField,
+  BooleanField,
   TEXT_LENGTH
 } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
@@ -173,6 +174,12 @@ export class UserEntity extends BaseEntity {
   // Links persona to their LoRA-adapted genome for specialized behavior
   @ForeignKeyField({ references: 'genomes.id', nullable: true })
   genomeId?: UUID;
+
+  // First-run onboarding state. Per-user, cross-device — the welcome
+  // modal is shown when this is falsy and set to true when the user
+  // completes (or dismisses) the introduction. Tracked under #1101.
+  @BooleanField({ nullable: true })
+  hasOnboarded?: boolean;
 
   // ✨ DECORATOR-DRIVEN AUTO-JOIN: Profile always included (future: @JoinField decorator)
   // For now, manually joined - decorator system will automate this
