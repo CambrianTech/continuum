@@ -32,6 +32,7 @@ The grid → grid comms substrate is **[airc](https://github.com/CambrianTech/ai
 | [RESOURCE-GOVERNANCE-ARCHITECTURE.md](../infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md) | Per-node resource management — GPU governor, pressure watchers, eviction |
 | [ARES-MASTER-CONTROL.md](../ARES-MASTER-CONTROL.md) | Ares security PersonaUser — consumes kernel events, analyzes threats in chat |
 | [FORGE-ALLOY-PROOF-CONTRACTS.md](FORGE-ALLOY-PROOF-CONTRACTS.md) | Grid trust layer — falsifiable forge contracts with TDD/VDD basis. v1 starts permissive (persona self-seal); progression to multi-sig audit + SOC-style governance rooms is the trajectory. |
+| [COGNITIVE-IMMUNE-MODEL.md](COGNITIVE-IMMUNE-MODEL.md) | Defense posture for persona cognitive integrity — zero-trust as cooperative safety, Merkle-linked accounting, threat model (poisoning > death), layered defenses, WebAuthn-shape attestation. Modest v1 claim: substrate enables detection/forensics/quarantine/recovery, not prevention. |
 
 ---
 
