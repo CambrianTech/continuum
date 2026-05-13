@@ -492,6 +492,8 @@ that prevents new verb-shaped TS cognition and forces deletion as Rust lands.
 | CambrianTech/airc#559 | public knock, approved room handoff, shared sprint queue | AIRC canary has knock and encrypted approve handoff; Continuum must consume the workflow through `.airc/` and persona/agent integration |
 | CambrianTech/airc#562 | peer-to-peer work queue/nudges | Use as the always-on flywheel: any approved peer can nudge idle agents, discover stale/unowned work, and keep the queue moving |
 | PR #1110 | repo-local `.airc/` pilot | Land to canary once docs match current AIRC commands and validation passes; this is the first Continuum-side collaboration contract |
+| #1113 | move live chat off ORM/IPC hot path | AIRC/event-log owns transcript, files, pointers, signaling metadata, and queue chatter; Continuum stores bounded projections |
+| CambrianTech/airc#563 | AIRC message/file substrate | Needed before Carl/browser chat smoke can stop using JTAG chat commands |
 
 Rules:
 
@@ -533,6 +535,10 @@ The operating model:
 - Continuum commands used by these workers must be generated/template-first.
   Manual command scaffolds break the self-development loop because agents need
   one predictable command contract.
+- JTAG chat commands are compatibility plumbing. The target is AIRC transcript
+  plus file/attachment APIs for live chat, scrollback, cursors, receipts, and
+  replay. Continuum should consume compact events/pointers and project only
+  bounded durable state.
 
 Near-term Continuum tasks:
 
@@ -747,7 +753,7 @@ Health checks:
 | #961 / PR #1047 | P0 | stale General tab canonicalization merged to canary | browser reload with stale persisted state collapses to one General tab |
 | #793 Node does not reconnect when Rust core restarts | P0 | request pipeline must drain/recreate after core restart | kill/restart core test: next command succeeds |
 | #794 AI messages not realtime | P0 | event bridge forwards AI senders immediately | browser sees AI message without refresh |
-| #962 chat history paging | P1 | ORM cursor + IntersectionObserver | scroll-up test loads older messages |
+| #962 / #1113 | P1 | AIRC transcript cursor + bounded Continuum projection + IntersectionObserver | scroll-up test loads older messages without ORM live-bus fanout |
 | #773 browser WS reconnect | P1 | reconnect/rebind without manual refresh | browser survives server restart |
 | #785 URL scheme | P1 | one consistent route rule, zero special cases | stale room URL redirects/recovers deterministically |
 | #783 stale room URLs | P1 | stale URLs show recovery path, not broken tab | route test |
@@ -767,9 +773,13 @@ TS is acceptable here because this is UI/session state. Still, data validation a
 
 Design rule:
 
-- AIRC is collaboration transport.
-- Continuum chat is product state.
-- The bridge should map messages/events without requiring agents to shell out to `jtag chat/send` manually.
+- AIRC is the collaboration transcript and message/file substrate.
+- Continuum owns runtime inputs, generated command execution, persona behavior,
+  UI state, and bounded durable projections. It should not use ORM writes and
+  broad IPC fanout as the live chat bus.
+- The bridge should map messages/events without requiring agents to shell out to
+  `jtag chat/send` manually. Long term, Carl/browser chat smoke should validate
+  through AIRC transcript APIs rather than JTAG chat commands.
 - Protocol tests must run without a browser.
 
 ## PR Roadmap To Alpha
@@ -902,6 +912,10 @@ Use AIRC for live coordination, but also create protocol tests:
   card or reports why it cannot
 - local-model persona and cloud agent both operate on the same GitHub-backed
   queue without assuming separate GitHub users
+- scrollback/history fetch reads from AIRC transcript cursors, while Continuum
+  storage only receives bounded projections
+- file attachments flow through AIRC file/manifest events and enter Continuum
+  only as pointers, cache handles, memory candidates, or UI projections
 
 ## Merge Gates
 
