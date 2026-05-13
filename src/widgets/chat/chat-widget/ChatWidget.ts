@@ -424,9 +424,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // Select adapter based on message content (text, image, video, etc.)
       const adapter = this.adapterRegistry.selectAdapter(message);
-      const contentHtml = adapter
-        ? adapter.renderMessage(message, this._myUserId)
-        : `<p>${message.content?.text || '(no content)'}</p>`;
 
       const messageElement = globalThis.document.createElement('div');
       // Show pending messages with lower opacity (optimistic update)
@@ -455,9 +452,23 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       const contentDiv = globalThis.document.createElement('div');
       contentDiv.className = 'message-content';
-      // Adapter content uses innerHTML - adapters return HTML strings
-      // TODO: Refactor adapters to return DOM elements for full innerHTML elimination
-      contentDiv.innerHTML = contentHtml;
+
+      // Adapter content: prefer the DOM-returning path (#1100). Adapters
+      // that have migrated return a fully-built HTMLElement we append
+      // directly. Adapters not yet migrated still return an HTML string
+      // we innerHTML — that path stays until every adapter is migrated.
+      const adapterElement = adapter?.renderMessageElement?.(message, this._myUserId) ?? null;
+      if (adapterElement) {
+        contentDiv.appendChild(adapterElement);
+      } else if (adapter) {
+        contentDiv.innerHTML = adapter.renderMessage(message, this._myUserId);
+      } else {
+        // No adapter — render fallback via textContent to avoid any
+        // HTML interpretation of arbitrary message text.
+        const fallback = globalThis.document.createElement('p');
+        fallback.textContent = message.content?.text || '(no content)';
+        contentDiv.appendChild(fallback);
+      }
 
       bubble.appendChild(header);
       bubble.appendChild(contentDiv);

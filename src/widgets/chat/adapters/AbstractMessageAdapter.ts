@@ -106,6 +106,12 @@ export abstract class AbstractMessageAdapter<TContentData = unknown> {
   /**
    * Main render method - just returns HTML, no per-row CSS injection
    * Efficient for dynamic paging/infinite scroll
+   *
+   * LEGACY PATH: returns an HTML string that the caller assigns via
+   * innerHTML on a live element. Prefer overriding `renderMessageElement`
+   * — it returns a constructed DOM node, doesn't blow away reactive
+   * children, and keeps user-controlled text inside `.textContent`
+   * rather than re-parsed HTML. Tracked in issue #1100.
    */
   renderMessage(message: ChatMessageEntity, currentUserId: string): string {
     try {
@@ -129,6 +135,43 @@ export abstract class AbstractMessageAdapter<TContentData = unknown> {
       console.error(`Adapter ${this.contentType} render error:`, error);
       return this.renderError('Content rendering failed');
     }
+  }
+
+  /**
+   * DOM-returning render path (preferred). Returns the adapter's
+   * `message-content-adapter` wrapper as an HTMLElement, ready to be
+   * appended to the message bubble's content slot.
+   *
+   * Default returns null — callers fall back to `renderMessage()` +
+   * innerHTML for adapters that haven't migrated yet. Migration is
+   * tracked in issue #1100.
+   *
+   * Why this exists: assigning `innerHTML` on a live element destroys
+   * any Lit-managed reactive children and re-parses HTML even when the
+   * content is fully under our control. Adapters that return a DOM node
+   * avoid both problems and shrink the XSS surface (user text lives in
+   * `.textContent`, not in a concatenated HTML string).
+   */
+  renderMessageElement(_message: ChatMessageEntity, _currentUserId: string): HTMLElement | null {
+    return null;
+  }
+
+  /**
+   * Helper for subclasses: build the standard `message-content-adapter`
+   * wrapper HTMLElement with the correct classes + data attribute.
+   * Subclasses append their own content into this wrapper.
+   */
+  protected createAdapterWrapper(): HTMLElement {
+    const wrapper = document.createElement('div');
+    const classes = [
+      'message-content-adapter',
+      `content-type-${this.contentType}`,
+      ...this.getContentClasses(),
+      ...(this.options.customClassNames || [])
+    ];
+    wrapper.className = classes.join(' ');
+    wrapper.dataset.contentType = this.contentType;
+    return wrapper;
   }
 
   /**
