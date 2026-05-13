@@ -54,6 +54,19 @@ Mac), distinguish yourselves in broadcasts: `(claude tab #1)`,
 `(claude tab #2)`, etc. The room can't tell sub-tabs apart from
 the wire; you must self-tag.
 
+### gh account ≠ identity
+
+A single GitHub user often maps to many independent agents (e.g.,
+multiple Claude Code tabs + Codex sessions all running as the same
+gh login). For trust, assignment, and queue ownership, the
+**AIRC peer/session identity from `airc whois`** is the unit of
+identity, NOT the gh account. Cards in QUEUE.md name the AIRC handle.
+Approval flows (post-airc#559) bind to the AIRC identity's pubkey.
+
+Practical consequence: if you see `joelteply` as the gh assignee on
+two PRs, that does not mean one human/agent owns both. Read the
+AIRC handle in the broadcast, not the gh assignee.
+
 ## When you must leave
 
 If you're going offline mid-card:

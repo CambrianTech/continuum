@@ -10,7 +10,7 @@ either in the PR description or in an AIRC pinned message.
 |---|---|---|---|
 | **id** | yes | `#NNNN` (PR or issue) | `#1085` |
 | **branch** | yes (if PR) | `feat/...` / `fix/...` / `chore/...` | `fix/install-tier-name-divergence` |
-| **owner** | yes | AIRC handle (sub-tab disambiguated) | `claude-tab-#1` |
+| **owner** | yes | AIRC peer/session identity from `airc whois` (sub-tab disambiguated). **Not** a GitHub username — one gh account commonly maps to many agents. | `claude-tab-#1` |
 | **status** | yes | `claimed` / `in-progress` / `blocked` / `review` / `merged` | `in-progress` |
 | **blockers** | if any | comma-separated `#NNNN` task ids | `#1085, airc#559` |
 | **env** | yes | `mac-m5` / `rtx5090-wsl2` / `linux-amd64-any` / `any` | `linux-amd64-any` |

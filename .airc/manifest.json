@@ -16,7 +16,9 @@
     "public_knock_room": "TBD — set by airc#559",
     "pr_target_branch": "canary",
     "promotion_branch": "main",
-    "branch_protection": "no direct pushes, no --no-verify, validation evidence required"
+    "branch_protection": "no direct pushes, no --no-verify, validation evidence required",
+    "identity_source": "airc_whois",
+    "identity_note": "One github user commonly maps to many AIRC agents (e.g., multiple Claude tabs + Codex sessions under one gh login). For trust, assignment, and queue ownership, the AIRC peer/session identity from `airc whois` is the unit of identity, NOT the gh account."
   },
   "queue": {
     "single_source_of_truth": "github_pr_and_issues",
