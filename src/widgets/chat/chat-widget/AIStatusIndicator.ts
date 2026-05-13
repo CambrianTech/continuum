@@ -316,7 +316,7 @@ export class AIStatusIndicator {
     const icon = config.emoji;
     const text = config.labelTemplate
       .replace('{name}', personaName)
-      .replace('{error}', errorMessage || 'Unknown error');
+      .replace('{error}', errorMessage ?? 'Unknown error');
     const className = `ai-status-indicator ${config.cssClass}`;
 
     element.className = className;
@@ -325,12 +325,13 @@ export class AIStatusIndicator {
     element.innerHTML = `
       <span class="ai-status-icon" aria-hidden="true">${icon}</span>
       <span class="ai-status-text">${text}</span>
-      <button class="ai-status-close" data-persona-id="${personaId}" title="Dismiss" aria-label="Dismiss ${personaName} status">×</button>
+      <button class="ai-status-close" data-persona-id="${personaId}" title="Dismiss">×</button>
     `;
 
     // Add click handler for close button
     const closeButton = element.querySelector('.ai-status-close');
     if (closeButton) {
+      closeButton.setAttribute('aria-label', `Dismiss ${personaName} status`);
       closeButton.addEventListener('click', () => {
         this.removeStatus(personaId);
       });
