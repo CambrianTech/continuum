@@ -22,6 +22,10 @@ import { jtagGlobal } from '../../system/core/types/GlobalAugmentations';
 import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { ContentItem } from '../../system/data/entities/UserStateEntity';
+import { COLLECTIONS } from '../../system/shared/Constants';
+import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
+import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
+import '../onboarding/WelcomeModalWidget';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
@@ -44,6 +48,11 @@ export class MainWidget extends ReactiveWidget {
   // Joel 2026-05-03: was defaulted to `/chat/general` — same phantom-tab
   // antipattern. setupUrlRouting() sets currentPath from the actual URL.
   @reactive() private currentPath = '';
+
+  // First-run welcome (#1101). True when the current user's
+  // `UserEntity.hasOnboarded` is falsy. Set in onFirstRender after
+  // user context loads; cleared when the modal completes.
+  @reactive() private _showWelcome = false;
 
   // Non-reactive state (internal tracking)
   private contentManager!: ContentInfoManager;
@@ -133,7 +142,42 @@ export class MainWidget extends ReactiveWidget {
     // Track tab visibility for temperature
     this.setupVisibilityTracking();
 
+    // First-run welcome (#1101). currentUser is populated by
+    // ReactiveWidget.connectedCallback() before onFirstRender runs.
+    // Falsy `hasOnboarded` (including undefined on existing rows
+    // pre-migration) opens the modal.
+    if (this.currentUser && !this.currentUser.hasOnboarded) {
+      this._showWelcome = true;
+    }
+
     this.log('Main panel initialized');
+  }
+
+  /**
+   * Fired when the user advances past the final welcome panel — or
+   * dismisses the modal. Either way, mark the user onboarded so the
+   * modal doesn't re-appear on the next session. Failure to persist
+   * just means the modal shows again next time; not worth surfacing.
+   */
+  private async onWelcomeComplete(): Promise<void> {
+    this._showWelcome = false;
+    const user = this.currentUser;
+    if (!user?.id) return;
+    try {
+      await this.executeCommand<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+        collection: COLLECTIONS.USERS,
+        id: user.id,
+        data: { hasOnboarded: true },
+        backend: 'server',
+        dbHandle: 'default',
+      });
+      // Reflect immediately on the in-memory entity so a hot re-render
+      // (e.g. theme switch) doesn't re-open the modal before the next
+      // page load reloads currentUser from the server.
+      user.hasOnboarded = true;
+    } catch (err) {
+      console.warn('MainWidget: failed to persist hasOnboarded — modal will re-show next session', err);
+    }
   }
 
   // === RENDER ===
@@ -162,6 +206,14 @@ export class MainWidget extends ReactiveWidget {
             <a href="#about">About</a>
           </div>
         </div>
+
+        <!-- First-run welcome (#1101). Self-positions via fixed/z-index
+             so its placement in the DOM doesn't matter; lives at the
+             container's bottom for theme variable inheritance. -->
+        <welcome-modal
+          ?open=${this._showWelcome}
+          @welcome-complete=${() => this.onWelcomeComplete()}
+        ></welcome-modal>
       </div>
     `;
   }

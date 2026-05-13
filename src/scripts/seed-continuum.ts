@@ -394,7 +394,13 @@ const ALL_EXPECTED_ROOMS = [
   { uniqueId: 'code', name: 'code', displayName: 'Code', description: 'Collaborative coding — reading, writing, reviewing, and shipping code as a team', topic: 'Software development with real tools and real agent loops', tags: ['coding', 'development', 'engineering'], recipeId: 'coding' },
 ] as const;
 
-const SYSTEM_ROOM_UNIQUE_IDS = ['settings', 'help', 'theme', 'canvas'] as const;
+// Helper AI is auto-added to these rooms during seed (both fresh and
+// existing-rooms paths). 'general' is included so the first-run welcome
+// modal (#1101) can honestly point new users at Helper AI as their
+// first conversation partner — without this, a fresh install puts Helper
+// in support rooms only, leaving General empty of any AI for users with
+// no API keys configured.
+const SYSTEM_ROOM_UNIQUE_IDS = ['general', 'settings', 'help', 'theme', 'canvas'] as const;
 
 // ===== MAIN SEEDING =====
 
