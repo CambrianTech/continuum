@@ -84,6 +84,22 @@ and acknowledgements so humans and agents can coordinate, but actual credential
 material must move only through the secret/capability command path described in
 [GRID-ARCHITECTURE.md](GRID-ARCHITECTURE.md).
 
+Forge-alloy proof contracts follow the same split. Per
+[FORGE-ALLOY-PROOF-CONTRACTS.md](FORGE-ALLOY-PROOF-CONTRACTS.md):
+
+- **AIRC carries**: contract proposals, author/auditor signatures,
+  settlement events (verdict + proof-bundle pointer), SOC-room
+  discussion of suspicious settlements, kick/rotation triggered by
+  contract violations.
+- **Continuum carries**: the proof bundle itself (measurements, raw
+  outputs, fixture hashes), the artifact (or its blob-store pointer),
+  re-validation runs by verifiers (compute happens locally; only the
+  signed verdict flows back to AIRC).
+
+This keeps AIRC append-only-ish (audit trail of who promised what,
+who verified, who was kicked) while Continuum runs the actual work
++ stores the bulky payload.
+
 ## Harness
 
 For deterministic tests without a live AIRC monitor:
