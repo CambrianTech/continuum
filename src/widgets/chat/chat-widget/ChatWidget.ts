@@ -424,9 +424,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // Select adapter based on message content (text, image, video, etc.)
       const adapter = this.adapterRegistry.selectAdapter(message);
-      const contentHtml = adapter
-        ? adapter.renderMessage(message, this._myUserId)
-        : `<p>${message.content?.text || '(no content)'}</p>`;
 
       const messageElement = globalThis.document.createElement('div');
       // Show pending messages with lower opacity (optimistic update)
@@ -455,9 +452,23 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       const contentDiv = globalThis.document.createElement('div');
       contentDiv.className = 'message-content';
-      // Adapter content uses innerHTML - adapters return HTML strings
-      // TODO: Refactor adapters to return DOM elements for full innerHTML elimination
-      contentDiv.innerHTML = contentHtml;
+
+      // Adapter content: prefer the DOM-returning path (#1100). Adapters
+      // that have migrated return a fully-built HTMLElement we append
+      // directly. Adapters not yet migrated still return an HTML string
+      // we innerHTML — that path stays until every adapter is migrated.
+      const adapterElement = adapter?.renderMessageElement?.(message, this._myUserId) ?? null;
+      if (adapterElement) {
+        contentDiv.appendChild(adapterElement);
+      } else if (adapter) {
+        contentDiv.innerHTML = adapter.renderMessage(message, this._myUserId);
+      } else {
+        // No adapter — render fallback via textContent to avoid any
+        // HTML interpretation of arbitrary message text.
+        const fallback = globalThis.document.createElement('p');
+        fallback.textContent = message.content?.text || '(no content)';
+        contentDiv.appendChild(fallback);
+      }
 
       bubble.appendChild(header);
       bubble.appendChild(contentDiv);
@@ -959,19 +970,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   // Override template to include AI status container and message input footer
   protected renderTemplate(): string {
     return `
-      <div class="entity-list-container">
+      <div class="entity-list-container" role="region" aria-label="Chat">
         ${this.renderHeader()}
 
         <!-- AI Status Indicators Container (sticky above messages) -->
-        <div class="ai-status-container" id="aiStatusContainer">
+        <div class="ai-status-container" id="aiStatusContainer" role="status" aria-live="polite" aria-label="AI activity">
           <div class="ai-status-summary" id="aiStatusSummary"></div>
         </div>
 
-        <div class="entity-list-body messages-container">
+        <div class="entity-list-body messages-container" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat transcript">
           <!-- EntityScroller will populate this container -->
         </div>
 
-        <div class="typing-indicator-container" id="typingIndicator"></div>
+        <div class="typing-indicator-container" id="typingIndicator" role="status" aria-live="polite" aria-label="Typing indicators"></div>
 
         ${this.renderFooter()}
       </div>
@@ -981,10 +992,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   // Custom footer with message input
   protected renderFooter(): string {
     return `
-      <div class="attachment-preview" id="attachmentPreview"></div>
-      <div class="input-container">
-        <textarea class="message-input" id="messageInput" placeholder="Type a message... (or drag & drop files)" rows="1"></textarea>
-        <button class="send-button" id="sendButton">Send</button>
+      <div class="attachment-preview" id="attachmentPreview" aria-label="Pending attachments"></div>
+      <div class="input-container" role="group" aria-label="Message composer">
+        <textarea class="message-input" id="messageInput" placeholder="Type a message... (or drag & drop files)" rows="1" aria-label="Type a message" aria-multiline="true"></textarea>
+        <button class="send-button" id="sendButton" aria-label="Send message">Send</button>
       </div>
     `;
   }
