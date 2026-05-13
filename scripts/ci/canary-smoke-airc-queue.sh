@@ -300,8 +300,11 @@ step "queue set-status rejects unknown state with canonical list" \
 # in-flight PR; smoke runs against whatever airc is on canary. Once #581
 # merges, this step starts running automatically.
 if "$AIRC_BIN" queue close-merged --help >/dev/null 2>&1; then
-  STEP_REQUIRES='scanned 1 body refs
-[dry-run]
+  # Note: airc#587 (post-#576) extended the parser to scan PR title AND
+  # body. Older airc says "scanned N body refs"; current airc says
+  # "scanned N title/body refs". Match the per-card lines + summary
+  # which are stable across both formats.
+  STEP_REQUIRES='[dry-run]
 CambrianTech/airc#100
 1 closed'
   step "queue close-merged --dry-run parses PR refs + would-close summary" \
