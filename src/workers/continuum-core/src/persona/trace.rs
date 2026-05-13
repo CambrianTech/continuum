@@ -49,6 +49,10 @@ pub const SEAM_ANALYZE: &str = "analyze";
 pub const SEAM_PROMPT_ASSEMBLY: &str = "prompt_assembly";
 pub const SEAM_INFERENCE: &str = "inference";
 pub const SEAM_POST_PROCESS: &str = "post_process";
+/// Admission gate seam — emitted by the IsMemorable Recipe pipeline
+/// (see `persona::admission`). Metadata records the recipe id, structural
+/// outcome (`accepted` / `rejected_<reason>`), and final decision label.
+pub const SEAM_ADMISSION: &str = "admission";
 
 /// One entry in the per-turn trace. Captures the seam's identity, when
 /// it ran, how long it took, and an open-vocabulary `metadata` blob

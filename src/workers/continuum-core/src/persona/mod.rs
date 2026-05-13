@@ -11,6 +11,7 @@
 //!   - channel_queue: Generic per-domain queue container
 //!   - channel_registry: Domain-to-queue routing + service_cycle()
 
+pub mod admission;
 pub mod allocator;
 pub mod channel_items;
 pub mod channel_queue;
@@ -36,6 +37,10 @@ pub mod text_analysis;
 pub mod types;
 pub mod unified;
 
+pub use admission::{
+    build_engram_from_candidate, AdmissionCandidate, AdmissionConfig, AdmissionContext,
+    AdmissionGate, HeuristicIsMemorable, IsMemorable, SeenContentLookup, SeenEventLookup,
+};
 pub use allocator::{
     allocate as allocate_personas, load_catalog, select_local_model, AllocationResult,
     PersonaAllocation, PersonaCatalogEntry,
