@@ -2,14 +2,20 @@
 
 <!-- markdownlint-disable MD013 MD060 -->
 
-**Updated**: 2026-05-11
+**Updated**: 2026-05-13
 **Branch policy**: every change lands as `PR -> canary -> validation -> PR -> main`
 **Status**: active planning document, shared by humans and agents
 **Operating rule**: Rust owns runtime logic. TypeScript is UI, schema, generated types, and thin command/transport glue.
+**Template-first rule**: new commands must start from `src/generator/specs/*.json` and Continuum's command generator. Manual command scaffolds are not acceptable; hand edits are for post-generation behavior only.
 **Architectural mandate**: Rust-first, GPU-first, replay-tested. No patchwork substitutes for the target architecture.
 **Sensory model plan**: [Sensory Model And Experiential Plasticity Plan](../architecture/SENSORY-MODEL-AND-EXPERIENTIAL-PLASTICITY-PLAN.md)
 
-This document is the alpha source of truth. Work should not proceed as disconnected chat threads or private agent branches. Each implementation PR must name the issue it advances, land in `canary`, publish validation evidence, and only then be considered for promotion to `main`.
+This document is the alpha/gap source of truth. Work should not proceed as disconnected chat threads, private agent branches, or parallel "gap" documents. Each implementation PR must name the issue it advances, land in `canary`, publish validation evidence, and only then be considered for promotion to `main`.
+
+As of 2026-05-13 there is exactly one alpha/gap planning file:
+`docs/planning/ALPHA-GAP-ANALYSIS.md`. New alpha/gap notes are merged here or
+deleted. Architecture references may point here, but they must not become
+parallel status ledgers.
 
 The previous 2026-05-01 alpha snapshot was useful but had become a historical log. This revision turns it into an execution plan for the current goal: **stable, GPU-first, Rust-centric Continuum with modular Docker and fast tests that do not depend on the Node/UI stack for core correctness.**
 
@@ -520,15 +526,32 @@ Implementation posture:
 | Issue | Priority | Direction | Test gate |
 |---|---:|---|---|
 | file: config single-source issue | P0 | `SecretManager` and Rust `secrets.rs` must treat only non-empty values as configured and must lazy-load `$HOME/.continuum/config.env` before any provider check | provider status shows cloud unavailable for empty placeholders; local chat still works |
-| file: `grid/config/sync` command issue | P0 | create a command pair for encrypted config sharing over trusted grid/Tailscale nodes; no loose file copying and no browser exposure | two-node test shares selected keys, decrypts only on trusted target, and never logs values |
+| [#1097](https://github.com/CambrianTech/continuum/issues/1097) API-key merge commands | P0 | extend the existing `ai/key/*` command surface for encrypted config sharing over trusted grid/Tailscale nodes; no loose file copying and no browser exposure | two-node test shares selected keys, decrypts only on trusted target, and never logs values |
+| [#1098](https://github.com/CambrianTech/continuum/issues/1098) routed command program substrate | P0 | consolidate bounded multi-command execution on top of `grid/send`, `GridInterceptor`, and `grid/route` so secrets and forge use the same path | one local-grid test runs a redacted `ai/key/*` program; one forge preflight routes through the same envelope |
 | #860 config.env as directory | P1 | keep setup file/dir creation idempotent and typed | setup test catches file-vs-dir mismatch |
+
+Implementation status:
+
+- Shared `ai/key` base types now exist for provider identity, sync intent,
+  target nodes, dry-run, synced state, and merge-plan id.
+- Existing `ai/key/save`, `ai/key/remove`, and `ai/key/test` shared types
+  inherit the base. Runtime sync behavior is intentionally not claimed until the
+  routed reconciliation path exists.
+- `ai/key/status` is generated from `src/generator/specs/ai-key-status.json`
+  and returns only redacted provider/key/source/configured/fingerprint metadata.
+- `grid/send` is the explicit routed command envelope; `GridInterceptor` is the
+  transparent `Commands.execute()` remote path; `grid/route` is the dry-run
+  routing/debug primitive.
 
 Command shape:
 
-- `grid/config/status`: list configured key names, source path, empty placeholders, and target-node drift without values.
-- `grid/config/export`: encrypt selected config keys for a specific trusted node identity.
-- `grid/config/import`: decrypt and merge selected keys into the target node's `$HOME/.continuum/config.env`.
-- `grid/config/sync`: orchestrate export/import across trusted grid nodes and report per-node success.
+- Existing `ai/key/save`: write one key through `SecretManager` to `$HOME/.continuum/config.env` or the platform vault; command echo and logs must redact values.
+- Existing `ai/key/remove`: remove one key through `SecretManager`.
+- Existing `ai/key/test`: validate a candidate or stored provider key.
+- Existing `ai/providers/status`: provider-facing availability view.
+- `ai/key/status`: list configured key names, source path, empty placeholders, fingerprints, and provider health without values.
+- `ai/key/diff`: compare redacted key revisions across selected target nodes and produce a merge plan without values.
+- `ai/key/apply-merge`: apply an approved merge plan through `SecretManager`; conflicts require owner/persona approval and never auto-overwrite a newer local key.
 
 Rules:
 
@@ -536,6 +559,8 @@ Rules:
 - Local mode must work with zero API keys.
 - Cloud personas are eligible only when their required key is non-empty and the provider health check is not expired/failed.
 - Config sharing is an owner/trusted-node command. It should use grid identity plus transport encryption, then persist through `SecretManager` so all runtimes see one source.
+- Remote/grid execution is command routing context, not a namespace. The capability name stays stable while target environment changes.
+- Fresh install and Carl smoke must pass with public model downloads and no `HF_TOKEN`; token-dependent private/gated/factory upload paths are optional later setup.
 
 ### 2. GPU Runtime Stability
 

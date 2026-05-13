@@ -56,6 +56,13 @@ Heavy data should stay out of AIRC. Use AIRC for manifests, handles, room
 markers, artifact hashes, and job ids; use Continuum/Grid data paths for model
 weights, LoRA artifacts, voice/video, and high-volume streams.
 
+Secrets stay out of AIRC completely. API keys, HF tokens, SSH keys, cookies,
+provider credentials, and encrypted secret payloads are not bridge messages.
+AIRC can carry `secretRef` names, fingerprints, lease ids, request ids, PR SHAs,
+and acknowledgements so humans and agents can coordinate, but actual credential
+material must move only through the secret/capability command path described in
+[GRID-ARCHITECTURE.md](GRID-ARCHITECTURE.md).
+
 ## Harness
 
 For deterministic tests without a live AIRC monitor:
