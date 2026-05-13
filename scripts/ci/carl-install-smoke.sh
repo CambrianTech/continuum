@@ -101,7 +101,7 @@ INSTALL_URL="https://raw.githubusercontent.com/CambrianTech/continuum/${CARL_INS
 # way to validate PR fixes. CONTINUUM_REF closes the loop.
 INSTALL_START=$(date +%s)
 if ! timeout "$CARL_INSTALL_TIMEOUT_SEC" bash -c \
-     "CONTINUUM_DIR='$CARL_INSTALL_DIR' CONTINUUM_REF='$CARL_INSTALL_REF' bash <(curl -fsSL '$INSTALL_URL')" \
+     "CONTINUUM_DIR='$CARL_INSTALL_DIR' CONTINUUM_REF='$CARL_INSTALL_REF' CONTINUUM_CI_COMPOSE='${CONTINUUM_CI_COMPOSE:-0}' bash <(curl -fsSL '$INSTALL_URL')" \
      >"$INSTALL_LOG" 2>&1; then
   INSTALL_DUR=$(( $(date +%s) - INSTALL_START ))
   echo "❌ install.sh failed or timed out after ${INSTALL_DUR}s"

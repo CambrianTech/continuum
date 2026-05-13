@@ -1,0 +1,15 @@
+# CI-only docker compose overlay.
+#
+# The no-GPU GitHub runner has no physical Vulkan device. The base image
+# installs Mesa, but the Vulkan loader inside the container still needs an
+# explicit ICD choice so continuum-core exercises the Vulkan backend instead
+# of enumerating zero devices and tripping the fail-hard CPU fallback guard.
+#
+# install.sh loads this file only when CONTINUUM_CI_COMPOSE=1, so normal Linux
+# installs keep the default loader behavior and pick hardware ICDs naturally.
+
+services:
+  continuum-core:
+    environment:
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      LIBGL_ALWAYS_SOFTWARE: "1"

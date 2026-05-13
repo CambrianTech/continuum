@@ -75,14 +75,9 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Install mesa-vulkan-drivers (llvmpipe ICD for no-GPU CI runner)
-        # The default continuum-core-vulkan binary calls Vulkan via the loader.
-        # On ubuntu-latest there's no GPU hardware → no real ICD → loader returns
-        # zero devices → binary panics per Joel's "lack of GPU integration is
-        # forbidden" rule. mesa-vulkan-drivers installs the llvmpipe software
-        # ICD so the loader returns a (software) device, the binary sees a real
-        # Vulkan API surface, and the GPU code path is exercised exactly like
-        # it would be on a hardware-GPU host. vulkan-tools provides vulkaninfo
-        # for the slice probes (test-slices.sh).
+        # Host-side vulkaninfo is a diagnostic for the runner. The actual
+        # continuum-core process runs inside Docker, so the smoke also enables
+        # docker-compose.ci.yml below to select the container's lavapipe ICD.
         run: |
           sudo apt-get update -y
           sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
@@ -140,6 +135,9 @@ jobs:
           # fail loudly instead of silently falling into a 25-minute source
           # build that times out after proving the wrong thing.
           CONTINUUM_STRICT_IMAGE_PULL: '1'
+          # Load docker-compose.ci.yml so the no-GPU CI container selects its
+          # own lavapipe ICD. Normal installs do not load this overlay.
+          CONTINUUM_CI_COMPOSE: '1'
         run: bash scripts/ci/carl-install-smoke.sh
 
       - name: Capture docker logs from all containers on failure (continuum-core,

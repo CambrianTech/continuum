@@ -910,6 +910,13 @@ elif [[ "$HAS_GPU" == "true" ]]; then
   fi
   COMPOSE_ARGS="--profile gpu"
 fi
+if [[ "${CONTINUUM_CI_COMPOSE:-0}" == "1" ]]; then
+  if [ -f "docker-compose.ci.yml" ]; then
+    COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.ci.yml"
+  else
+    fail "CONTINUUM_CI_COMPOSE=1 but docker-compose.ci.yml is missing"
+  fi
+fi
 # Linux without a CUDA GPU: base docker-compose.yml uses continuum-core-vulkan.
 # On real-driver hosts (Intel/AMD with vulkan) this picks up the hardware ICD;
 # on hosts without a driver, mesa-vulkan-drivers (apt) provides llvmpipe as a
