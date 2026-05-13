@@ -14,11 +14,6 @@ import { Events } from '../../../system/core/shared/Events';
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 
-// Detached parser element — reusing one <template> across calls is cheap
-// and never appears in the live DOM, so its innerHTML can't blow away
-// any reactive children in the chat transcript.
-const HTML_PARSE_TEMPLATE = document.createElement('template');
-
 export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> {
   constructor() {
     super('text', {
@@ -196,8 +191,9 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
       // Parse the rich content on a detached <template>. Its content
       // is a DocumentFragment, which we adopt into the wrapper via
       // appendChild — never via innerHTML on the wrapper itself.
-      HTML_PARSE_TEMPLATE.innerHTML = contentHtml;
-      wrapper.appendChild(HTML_PARSE_TEMPLATE.content.cloneNode(true));
+      const template = globalThis.document.createElement('template');
+      template.innerHTML = contentHtml;
+      wrapper.appendChild(template.content.cloneNode(true));
       return wrapper;
     } catch (error) {
       console.error('TextMessageAdapter.renderMessageElement failed:', error);
