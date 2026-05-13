@@ -162,6 +162,24 @@ if [[ -z "$PR_NUMBER" ]] && command -v gh >/dev/null 2>&1; then
   PR_NUMBER="$(gh pr list --head "$BRANCH" --json number --jq '.[0].number // empty' 2>/dev/null || true)"
 fi
 
+# Rust ts-rs exports can dirty generated TypeScript during local cargo checks
+# before this script runs. If the target commit does not itself change those
+# files, restore that generated drift so the frozen-worktree guard below only
+# blocks real uncommitted source edits.
+restore_uncommitted_generated_drift() {
+  local dirty_generated path
+  dirty_generated="$(git diff --name-only HEAD -- src/shared/generated 2>/dev/null | sort -u)"
+  [ -n "$dirty_generated" ] || return 0
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if git diff --quiet "$STARTUP_SHA_FULL" -- "$path" 2>/dev/null; then
+      git restore -- "$path" 2>/dev/null || true
+    fi
+  done <<< "$dirty_generated"
+}
+restore_uncommitted_generated_drift
+
 # ── Working-tree cleanliness guard ───────────────────────────────────
 # git worktree add checks out the committed tree at $STARTUP_SHA_FULL, so
 # ANY uncommitted modifications to tracked files would silently NOT make
