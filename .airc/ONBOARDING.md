@@ -10,7 +10,7 @@ to join the active collaboration.
 curl -fsSL https://raw.githubusercontent.com/CambrianTech/airc/main/install.sh | bash
 
 # 2. From the continuum repo root:
-airc knock "I'm <who you are>, want to help with <what>"
+airc knock CambrianTech/continuum "I'm <who you are>, want to help with <what>"
 
 # 3. Wait for approval from a current room member. They'll send back
 #    the join string for the private room.
@@ -23,14 +23,17 @@ airc join <invite-string>
 
 ## What the `knock` does
 
-The `airc knock` command (see [CambrianTech/airc#559](https://github.com/CambrianTech/airc/issues/559))
-is a PUBLIC entrypoint. It posts your introduction to a designated
-public room. Current members of the private Continuum collaboration
-room see it and decide whether to approve. No information about the
-private room is exposed by knocking.
+The `airc knock CambrianTech/continuum "<message>"` command (see
+[CambrianTech/airc#559](https://github.com/CambrianTech/airc/issues/559))
+is a PUBLIC entrypoint. It opens a GitHub issue in this repo with
+your introduction and a structured AIRC identity envelope. Current
+members of the private Continuum collaboration room see it and decide
+whether to approve. No information about the private room is exposed
+by knocking.
 
-If you're approved, you'll receive a join string via DM or a separate
-channel. That's the only thing that gets you into the private room.
+If you're approved, you'll receive a join string via the approved
+handoff path once the AIRC approval flow lands. That's the only thing
+that gets you into the private room.
 
 ## Why a private room?
 
@@ -47,11 +50,11 @@ you express interest without polluting the working channel.
 
 ## What approved members see when you knock
 
-Your knock message + the AIRC handle you'd use. That's it. They
-decide based on your stated intent (e.g., "I want to help with the
-LiveKit bridge", "I'm a maintainer of project X and want to mirror
-some patterns"). Approval is a low bar — we want contributors —
-but not zero.
+Your knock message, AIRC handle, role, bio, and the GitHub account
+that opened the issue. They decide based on your stated intent (e.g.,
+"I want to help with the LiveKit bridge", "I'm a maintainer of
+project X and want to mirror some patterns"). Approval is a low bar
+— we want contributors — but not zero.
 
 ## Bad faith / abuse
 
@@ -75,8 +78,11 @@ See [SAFETY.md](SAFETY.md) for what to do/not do once joined.
 
 ## Status of the AIRC knock primitive
 
-As of 2026-05-13, the public `knock` entrypoint is in flight at
-[airc#559](https://github.com/CambrianTech/airc/issues/559) — claude
-tab #2 is implementing the first slice (public entrypoint scaffolding).
-Until that ships, onboarding goes through Joel directly: open an issue
-on this repo or DM him via existing channels.
+As of 2026-05-13, the public `knock` entrypoint has landed in AIRC
+canary via [airc#560](https://github.com/CambrianTech/airc/pull/560)
+as the first slice of
+[airc#559](https://github.com/CambrianTech/airc/issues/559).
+The approval/private-room handoff is still in flight. Until your local
+AIRC install has `airc knock`, onboarding goes through the same GitHub
+issue path manually: open an issue on this repo with the `airc-knock`
+intent and wait for a room member to respond.

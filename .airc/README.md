@@ -40,11 +40,13 @@ shape generalizes to other repos.
 ## Status
 
 - **Docs**: drafted (this PR).
-- **Knock entrypoint**: in flight at [airc#559](https://github.com/CambrianTech/airc/issues/559).
+- **Knock entrypoint**: first slice landed in
+  [airc#560](https://github.com/CambrianTech/airc/pull/560); approval
+  handoff continues under [airc#559](https://github.com/CambrianTech/airc/issues/559).
 - **Queue tooling**: PR-card format spec in QUEUE.md; tooling lives
   in airc#559 once implemented.
 - **Pilot scope**: install/Docker image gates, Rust persona work,
   LiveKit bridge, alpha gap cleanup (current release sprint).
 
-Until the airc#559 knock primitive ships, ONBOARDING.md falls back to
-"open a GitHub issue + DM Joel."
+Until your installed AIRC build has `airc knock`, ONBOARDING.md falls
+back to opening the same GitHub issue manually.
