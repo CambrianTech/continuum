@@ -681,6 +681,18 @@ mod tests {
                 ],
             ),
             make_model(
+                "qwen2.5-omni-7b-instruct",
+                "llamacpp-local",
+                Arch::Qwen2,
+                32_768,
+                &[
+                    Capability::TextGeneration,
+                    Capability::Chat,
+                    Capability::Vision,
+                    Capability::AudioInput,
+                ],
+            ),
+            make_model(
                 "qwen2-0.5b-gating",
                 "llamacpp-local",
                 Arch::Qwen2,
@@ -715,6 +727,19 @@ mod tests {
         }
     }
 
+    fn req_sensory_input_local(host: HostCapability) -> ModelRequirement {
+        ModelRequirement {
+            required_capabilities: [Capability::Chat, Capability::Vision, Capability::AudioInput]
+                .iter()
+                .copied()
+                .collect(),
+            arch_preference: vec![],
+            context_window_min: 0,
+            provider_policy: LocalOrCloudPolicy::LocalOnly,
+            host,
+        }
+    }
+
     #[test]
     fn local_chat_resolves_to_qwen35_on_m1() {
         let r = registry();
@@ -742,6 +767,49 @@ mod tests {
         assert_eq!(resolved.provider_id, "llamacpp-local");
         assert_eq!(resolved.target_silicon, TargetSilicon::Gpu);
         assert_eq!(resolved.hw_capability_tier, HwCapabilityTier::Sm120);
+    }
+
+    #[test]
+    fn sensory_input_request_resolves_to_qwen25_omni_on_rtx() {
+        let r = registry();
+        let resolved = resolve_model(
+            &req_sensory_input_local(host_rtx5090()),
+            r.iter(),
+            providers().iter(),
+        )
+        .unwrap();
+        assert_eq!(resolved.model_id, "qwen2.5-omni-7b-instruct");
+        assert_eq!(resolved.provider_id, "llamacpp-local");
+        assert_eq!(resolved.target_silicon, TargetSilicon::Gpu);
+        assert_eq!(resolved.hw_capability_tier, HwCapabilityTier::Sm120);
+    }
+
+    #[test]
+    fn local_full_sensory_rejects_cloud_audio_output_no_fallback() {
+        let r = registry();
+        let req = ModelRequirement {
+            required_capabilities: [
+                Capability::Chat,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::AudioOutput,
+            ]
+            .iter()
+            .copied()
+            .collect(),
+            arch_preference: vec![],
+            context_window_min: 0,
+            provider_policy: LocalOrCloudPolicy::LocalOnly,
+            host: host_rtx5090(),
+        };
+        let err = resolve_model(&req, r.iter(), providers().iter()).unwrap_err();
+        let ResolutionError::NoModelMatchesRequirement { unmet_filters, .. } = err;
+        assert!(
+            unmet_filters
+                .iter()
+                .any(|filter| filter.contains("provider_policy=LocalOnly")),
+            "local full-sensory must not fall back to cloud audio-output, got {unmet_filters:?}"
+        );
     }
 
     #[test]

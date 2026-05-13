@@ -160,6 +160,47 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
     return out;
   }
 
+  /**
+   * DOM-returning render path (see issue #1100). Builds the wrapper
+   * element via DOM APIs and inserts the rich markdown HTML via a
+   * detached `<template>` element so the live message-content slot
+   * never sees an `innerHTML` assignment.
+   *
+   * Sanitization model is unchanged from the string path:
+   *   - User text → `escapeHtmlInPlainText()` before `marked.parse()`
+   *   - Tool-use blocks → extracted, parameters HTML-escaped, restored
+   *   - Code blocks → `hljs.highlight()` (decodes already-escaped chars
+   *     into the highlighted output; same path as before)
+   *
+   * What changes:
+   *   - The wrapper element is built with DOM APIs, not by concatenating
+   *     class names into an HTML template string
+   *   - The final adoption happens via `appendChild(fragment)` on a
+   *     detached node — the live transcript is never asked to re-parse
+   *     HTML, so any Lit-bound siblings keep their state across renders
+   */
+  override renderMessageElement(message: ChatMessageEntity, currentUserId: string): HTMLElement | null {
+    try {
+      const data = this.parseContent(message);
+      if (!data) return null;
+      this.contentData = data;
+
+      const wrapper = this.createAdapterWrapper();
+      const contentHtml = this.renderContent(data, currentUserId);
+
+      // Parse the rich content on a detached <template>. Its content
+      // is a DocumentFragment, which we adopt into the wrapper via
+      // appendChild — never via innerHTML on the wrapper itself.
+      const template = globalThis.document.createElement('template');
+      template.innerHTML = contentHtml;
+      wrapper.appendChild(template.content.cloneNode(true));
+      return wrapper;
+    } catch (error) {
+      console.error('TextMessageAdapter.renderMessageElement failed:', error);
+      return null;
+    }
+  }
+
   async handleContentLoading(_element: HTMLElement): Promise<void> {
     // Text content loads instantly, no async work needed
     return Promise.resolve();

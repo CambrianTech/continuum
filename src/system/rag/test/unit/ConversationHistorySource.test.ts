@@ -14,6 +14,21 @@ describe('ConversationHistorySource context poison detection', () => {
     expect(detectConversationHistoryPoison('I received your startup smoke test and can respond as Helper AI.')).toBeNull();
   });
 
+  it('filters leaked model thinking and tool instruction blocks', () => {
+    const poisoned = [
+      '<think>',
+      'Thinking Process:',
+      '=== TOOL DEFINITIONS ===',
+      'Tool: code/read',
+      '=== HOW TO CALL TOOLS ===',
+      'Use this EXACT XML format to call tools:',
+      'CRITICAL RULES:',
+      'RESPOND WITH TOOL CALLS, NOT DESCRIPTIONS.'
+    ].join('\n');
+
+    expect(detectConversationHistoryPoison(poisoned)).toBe('tool-instruction-leak');
+  });
+
   it('still filters fabricated multi-speaker transcripts', () => {
     const fabricated = [
       'Teacher AI: I think we should test the room.',

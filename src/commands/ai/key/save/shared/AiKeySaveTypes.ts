@@ -4,21 +4,29 @@
  * Save an API key for a cloud AI provider. Persists to ~/.continuum/config.env, sets process.env, and emits system:config:key-added event to trigger persona creation.
  */
 
-import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
-import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
-import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { CommandInput, CommandParams, JTAGContext } from '@system/core/types/JTAGTypes';
+import { transformPayload } from '@system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import {
+  type AiKeyParams,
+  type AiKeyResult,
+  type AiKeySyncMode,
+  createAiKeyParams,
+  createAiKeyResult
+} from '../../common/AiKeyBase';
 
 /**
  * Ai Key Save Command Parameters
  */
-export interface AiKeySaveParams extends CommandParams {
+export interface AiKeySaveParams extends CommandParams, AiKeyParams {
   // The config key name (e.g., 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY')
   provider: string;
   // The API key value to save
   value: string;
+  // Request immediate sync after local save
+  sync?: AiKeySyncMode;
 }
 
 /**
@@ -32,22 +40,25 @@ export const createAiKeySaveParams = (
     provider: string;
     // The API key value to save
     value: string;
+    sync?: AiKeySyncMode;
+    targetNodes?: string[];
+    dryRun?: boolean;
   }
-): AiKeySaveParams => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
-
+): AiKeySaveParams => createAiKeyParams(context, sessionId, {
   ...data
 });
 
 /**
  * Ai Key Save Command Result
  */
-export interface AiKeySaveResult extends CommandResult {
-  success: boolean;
+export interface AiKeySaveResult extends AiKeyResult {
   // Whether the key was saved successfully
   saved: boolean;
   // The config key name that was saved
   provider: string;
+  synced?: boolean;
+  syncMode?: AiKeySyncMode;
+  targetNodes?: string[];
   error?: JTAGError;
 }
 
@@ -63,9 +74,13 @@ export const createAiKeySaveResult = (
     saved?: boolean;
     // The config key name that was saved
     provider?: string;
+    synced?: boolean;
+    syncMode?: AiKeySyncMode;
+    targetNodes?: string[];
+    mergePlanId?: string;
     error?: JTAGError;
   }
-): AiKeySaveResult => createPayload(context, sessionId, {
+): AiKeySaveResult => createAiKeyResult(context, sessionId, {
   saved: data.saved ?? false,
   provider: data.provider ?? '',
   ...data

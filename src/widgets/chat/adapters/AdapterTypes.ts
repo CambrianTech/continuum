@@ -318,6 +318,10 @@ export interface MessageAdapter<TContentData extends ContentData = ContentData> 
 
   // Main interface methods
   renderMessage(message: ChatMessageEntity, currentUserId: string): Result<string>;
+  // DOM-returning render (preferred, see #1100). Optional during the
+  // string→DOM migration; adapters not yet migrated return null and the
+  // caller falls back to renderMessage()+innerHTML.
+  renderMessageElement?(message: ChatMessageEntity, currentUserId: string): HTMLElement | null;
   initializeInDOM(element: HTMLElement): AsyncResult<void>;
 }
 

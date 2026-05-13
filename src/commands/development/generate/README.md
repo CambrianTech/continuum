@@ -4,6 +4,12 @@ Generate new commands, daemons, or widgets using templates and CommandSpec defin
 
 ## Quick Start (Most Common Use Case)
 
+**Rule:** new commands must be created from `src/generator/specs/*.json`
+through Continuum's command generator. Do not manually scaffold command
+folders, types, browser wrappers, server wrappers, package metadata, tests, or
+README files. Manual edits happen after generation, only for command-specific
+behavior the template cannot infer.
+
 ```bash
 # 1. Get a template to understand the spec format
 ./jtag generate --template=true > /tmp/my-command-spec.json

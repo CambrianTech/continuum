@@ -1,0 +1,35 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "cli.ts",
+    "index.ts",
+    "browser-index.ts",
+    "server-index.ts",
+    "api/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "shared/**/*.ts",
+    "daemons/**/*.ts",
+    "commands/**/*.ts",
+    "generator/generate-command-constants.ts",
+    "generator/generate-command-schemas.ts",
+    "widgets/**/*.ts",
+    "tests/workers/**/*.ts",
+    "test-path-aliases.ts",
+    "test-path-aliases-runtime.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "workers/vendor/**/*",
+    "examples/**/*",
+    "mcp/**/*",
+    "**/*.test.ts",
+    "**/*.bak",
+    "**/*.bak/**/*",
+    "**/templates/**/*"
+  ]
+}

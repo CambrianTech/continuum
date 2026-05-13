@@ -9,8 +9,4 @@ export type ModelSelectionRequest = { persona_id: string,
  * Values: "code", "debug", "analysis", "creative", "art", "writing",
  *         "support", "help", "social", "facts", "knowledge", "expertise"
  */
-task_domain?: string, 
-/**
- * Configured base model (fallback tier 4).
- */
-base_model: string, };
+task_domain?: string, };

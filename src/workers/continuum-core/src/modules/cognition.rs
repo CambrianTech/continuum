@@ -13,6 +13,7 @@
 //! - `cognition/fast-path-decision`: Fast-path respond/skip decision
 //! - `cognition/enqueue-message`: Enqueue message to persona inbox
 //! - `cognition/get-state`: Get persona cognitive state
+//! - `inbox/drain-frame`: Drain a bounded same-room persona work frame
 //! - `cognition/full-evaluate`: Unified 6-gate evaluation (replaces 5 TS gates)
 //! - `cognition/track-response`: Track response for rate limiting
 //! - `cognition/set-sleep-mode`: Set voluntary sleep mode
@@ -268,6 +269,27 @@ impl ServiceModule for CognitionModule {
                 get_or_create_persona!(self, persona_uuid);
                 log_info!("module", "cognition", "Ensured inbox for {}", persona_uuid);
                 Ok(CommandResult::Json(serde_json::json!({ "created": true })))
+            }
+
+            "inbox/drain-frame" => {
+                let _timer = TimingGuard::new("module", "inbox_drain_frame");
+                let persona_uuid = p.uuid("persona_id")?;
+                let window_ms = p.u64_or("window_ms", 80);
+                let max_items_u64 = p.u64_or("max_items", 16);
+                let max_items = usize::try_from(max_items_u64)
+                    .map_err(|_| format!("max_items too large: {max_items_u64}"))?;
+
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
+
+                let frame = persona.inbox.drain_frame(window_ms, max_items);
+
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&frame).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             // ================================================================
@@ -570,16 +592,14 @@ impl ServiceModule for CognitionModule {
                     .get("task_domain")
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                let base_model = p.str("base_model")?.to_string();
-
                 let request = ModelSelectionRequest {
                     persona_id: persona_uuid,
                     task_domain,
-                    base_model,
                 };
 
                 let persona = get_or_create_persona!(self, persona_uuid);
-                let result = model_selection::select_model(&request, &persona.adapter_registry);
+                let result = model_selection::select_model(&request, &persona.adapter_registry)
+                    .map_err(|e| e.to_string())?;
 
                 Ok(CommandResult::Json(
                     serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,

@@ -87,7 +87,7 @@ class CommandConstantsGenerator {
     const basePath = commandPathMatch[1];
 
     // Find ALL *Params interfaces that extend CommandParams
-    const paramsInterfaceRegex = /export\s+interface\s+(\w+Params)\s+extends\s+(\w+)\s*\{/g;
+    const paramsInterfaceRegex = /export\s+interface\s+(\w+Params)\s+extends\s+([^{]+?)\s*\{/g;
     const commandNames: string[] = [];
     let match;
 
