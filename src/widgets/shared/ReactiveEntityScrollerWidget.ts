@@ -187,6 +187,16 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
   // === Convenience methods ===
 
   /** Get current entity count (reactive — triggers re-render when changed) */
+  /**
+   * True when the scroller has finished its first load AND has zero
+   * entities. Subclasses use this to decide whether to render an
+   * empty-state UI. Distinct from `entityCount === 0` alone, which
+   * is also true during the brief pre-load window.
+   */
+  protected get isEmpty(): boolean {
+    return this._scrollerInitialized && this._entityCount === 0;
+  }
+
   protected get entityCount(): number {
     return this._entityCount;
   }

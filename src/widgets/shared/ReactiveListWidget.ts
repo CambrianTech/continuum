@@ -108,15 +108,27 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
     return nothing;
   }
 
+  /**
+   * Render the empty-state shown when the scroller has loaded zero
+   * items. Empty by default — `nothing` means "do not render an empty
+   * state, leave the container blank." Subclasses override to surface
+   * a guided empty state (icon + title + subtitle + optional action).
+   * Introduced under #1101 — see `widgets/shared/EmptyStateWidget.ts`.
+   */
+  protected renderEmptyState(): TemplateResult | typeof nothing {
+    return nothing;
+  }
+
   // === MAIN RENDER - Composes header/body/footer ===
 
   override render(): TemplateResult {
     return html`
       <div class="list-widget">
         ${this.renderHeader()}
-        <div class="${this.containerClass}">
+        <div class="${this.containerClass}" ?hidden=${this.isEmpty}>
           <!-- EntityScroller populates items here -->
         </div>
+        ${this.isEmpty ? this.renderEmptyState() : nothing}
         ${this.renderFooter()}
       </div>
     `;
