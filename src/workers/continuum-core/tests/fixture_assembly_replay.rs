@@ -299,6 +299,7 @@ fn signal_and_ctx_from_legacy_fixture(
         system_prompt,
         recent_history,
         known_specialties,
+        other_persona_names: Vec::new(),
         room_id: Some(room_id),
         is_voice,
     };

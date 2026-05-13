@@ -26,7 +26,7 @@
  * - Type-safe by design (can't get out of sync)
  */
 
-import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { writeIfChanged } from './core/writeIfChanged';
 import { join, relative } from 'path';
 import * as glob from 'glob';
@@ -150,7 +150,7 @@ class CommandSchemaGenerator {
     const byName = new Map<string, CommandSchema[]>();
 
     for (const schema of schemas) {
-      const group = byName.get(schema.name) || [];
+      const group = byName.get(schema.name) ?? [];
       group.push(schema);
       byName.set(schema.name, group);
     }
@@ -224,25 +224,48 @@ class CommandSchemaGenerator {
     // Find ALL *Params interfaces that extend CommandParams (or base interfaces that do)
     // FIXED: Use brace counting instead of naive ([^}]+) which stops at first }
     // This regex finds the interface START, then we use extractInterfaceBody for the body
-    const paramsInterfaceStartRegex = /export\s+interface\s+(\w+Params)\s+extends\s+(\w+)\s*\{/g;
+    const paramsInterfaceStartRegex = /export\s+interface\s+(\w+Params)\s+extends\s+([^{]+?)\s*\{/g;
     const schemas: CommandSchema[] = [];
 
-    // First pass: collect all interface names to detect multi-interface files
+    // First pass: collect all params names to detect multi-interface files
     const allInterfaceNames: string[] = [];
-    const interfaceMatches: Array<{ interfaceName: string; parentInterface: string; index: number }> = [];
+    const interfaceMatches: Array<{ interfaceName: string; parentInterfaces: string[]; index: number }> = [];
     let match;
 
     while ((match = paramsInterfaceStartRegex.exec(content)) !== null) {
       allInterfaceNames.push(match[1]);
       interfaceMatches.push({
         interfaceName: match[1],
-        parentInterface: match[2],
+        parentInterfaces: this.parseParentInterfaces(match[2]),
         index: match.index
       });
     }
 
+    const paramsAliasRegex = /export\s+type\s+(\w+Params)\s*=\s*CommandParams\s*;/g;
+    const aliasMatches: Array<{ interfaceName: string; index: number }> = [];
+    while ((match = paramsAliasRegex.exec(content)) !== null) {
+      allInterfaceNames.push(match[1]);
+      aliasMatches.push({
+        interfaceName: match[1],
+        index: match.index
+      });
+    }
+
+    for (const { interfaceName, index } of aliasMatches) {
+      const commandName = this.deriveCommandName(interfaceName, basePath, allInterfaceNames);
+      const readmeDesc = this.readReadmeDescription(basePath);
+      const jsdocDesc = this.extractDescription(content, index);
+      const description = readmeDesc || jsdocDesc;
+
+      schemas.push({
+        name: commandName,
+        description: description || `${commandName} command`,
+        params: {}
+      });
+    }
+
     // Second pass: process each interface
-    for (const { interfaceName, parentInterface, index } of interfaceMatches) {
+    for (const { interfaceName, parentInterfaces, index } of interfaceMatches) {
       // Use brace counting to extract full body including nested objects
       const interfaceBody = this.extractInterfaceBody(content, index);
 
@@ -254,15 +277,15 @@ class CommandSchemaGenerator {
       // Check if this extends CommandParams directly or through an intermediate interface
       let allParams: Record<string, CommandParamDef> = {};
 
-      if (parentInterface !== 'CommandParams') {
+      if (!parentInterfaces.includes('CommandParams')) {
         // Double inheritance - need to find parent interface in same file
-        const parentParams = this.extractParentParams(content, parentInterface);
-        if (parentParams === null) {
-          console.warn(`  ⚠️ Parent interface ${parentInterface} not found or doesn't extend CommandParams: ${interfaceName}`);
+        const parentParamSets = parentInterfaces.map(parentInterface => this.extractParentParams(content, parentInterface));
+        if (parentParamSets.some(parentParams => parentParams === null)) {
+          console.warn(`  ⚠️ Parent interface ${parentInterfaces.join(', ')} not found or doesn't extend CommandParams: ${interfaceName}`);
           continue;
         }
         // Merge parent params
-        allParams = { ...parentParams };
+        allParams = Object.assign({}, ...parentParamSets);
       }
 
       // Extract description: prefer README first paragraph, fall back to cleaned JSDoc
@@ -271,7 +294,7 @@ class CommandSchemaGenerator {
       const description = readmeDesc || jsdocDesc;
 
       // Extract parameters from this interface body and merge with parent
-      const params = this.extractParams(interfaceBody, content, index);
+      const params = this.extractParams(interfaceBody);
       allParams = { ...allParams, ...params };
 
       schemas.push({
@@ -286,6 +309,13 @@ class CommandSchemaGenerator {
     }
 
     return schemas;
+  }
+
+  private parseParentInterfaces(parentInterfaces: string): string[] {
+    return parentInterfaces
+      .split(',')
+      .map(parentInterface => parentInterface.trim().replace(/^type\s+/, ''))
+      .filter(Boolean);
   }
 
   /**
@@ -359,19 +389,19 @@ class CommandSchemaGenerator {
     // Pattern 1: export interface Foo extends Bar { ... }
     // Pattern 2: export interface Foo { ... }
     const parentWithExtendsStartRegex = new RegExp(
-      `export\\s+interface\\s+${parentInterfaceName}\\s+extends\\s+(\\w+)\\s*\\{`
+      `export\\s+interface\\s+${parentInterfaceName}\\s+extends\\s+([^\\{]+?)\\s*\\{`
     );
     const parentStandaloneStartRegex = new RegExp(
       `export\\s+interface\\s+${parentInterfaceName}\\s*\\{`
     );
 
-    let grandparentInterface: string | null = null;
+    let grandparentInterfaces: string[] = [];
     let parentBody: string;
 
     const withExtendsMatch = content.match(parentWithExtendsStartRegex);
     if (withExtendsMatch && withExtendsMatch.index !== undefined) {
       // Has extends clause - extract grandparent and use brace counting for body
-      grandparentInterface = withExtendsMatch[1];
+      grandparentInterfaces = this.parseParentInterfaces(withExtendsMatch[1]);
       parentBody = this.extractInterfaceBody(content, withExtendsMatch.index);
     } else {
       // Try standalone interface
@@ -380,11 +410,11 @@ class CommandSchemaGenerator {
         return null;
       }
       parentBody = this.extractInterfaceBody(content, standaloneMatch.index);
-      grandparentInterface = null; // No grandparent
+      grandparentInterfaces = []; // No grandparent
     }
 
     // Extract params from this parent's body
-    const parentParams = this.extractParams(parentBody, content, 0);
+    const parentParams = this.extractParams(parentBody);
 
     // Check if this interface has required fields (context and sessionId)
     const hasContext = parentBody.includes('context:');
@@ -396,13 +426,13 @@ class CommandSchemaGenerator {
     }
 
     // If no required fields, check if it extends something else
-    if (grandparentInterface) {
-      const grandparentParams = this.extractParentParams(content, grandparentInterface, visited);
-      if (grandparentParams === null) {
+    if (grandparentInterfaces.length > 0) {
+      const grandparentParamSets = grandparentInterfaces.map(grandparentInterface => this.extractParentParams(content, grandparentInterface, visited));
+      if (grandparentParamSets.some(grandparentParams => grandparentParams === null)) {
         return null;
       }
       // Merge grandparent params with parent params
-      return { ...grandparentParams, ...parentParams };
+      return { ...Object.assign({}, ...grandparentParamSets), ...parentParams };
     }
 
     // No extends, no required fields = invalid
@@ -505,7 +535,7 @@ class CommandSchemaGenerator {
   /**
    * Extract parameters from interface body
    */
-  private extractParams(interfaceBody: string, fullContent: string, interfaceStart: number): Record<string, CommandParamDef> {
+  private extractParams(interfaceBody: string): Record<string, CommandParamDef> {
     const params: Record<string, CommandParamDef> = {};
 
     // Match property definitions: propertyName?: type;

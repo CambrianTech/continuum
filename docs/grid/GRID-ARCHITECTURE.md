@@ -184,6 +184,180 @@ Entities already serialize/deserialize cleanly, carry UUIDs, have CRUD events, a
 
 No new serialization format. No new ID scheme. No new event system. The Grid protocol IS the existing protocol, routed over a mesh.
 
+### 3.5 Secrets, API Keys, And Capability Leases
+
+The AIRC workflow is the right mental model: agents coordinate by sending
+stable identifiers, immutable SHAs, handles, and acknowledgements. They do not
+send the thing itself when the thing is large, private, or operationally
+sensitive. Grid secrets follow the same rule.
+
+**Default rule:** no raw API key, HF token, SSH key, cookie, model license token,
+or provider credential is ever sent through AIRC, Grid events, chat transcripts,
+logs, replay captures, RAG, or persona memory.
+
+Every node owns its local secret store under `$HOME/.continuum`. The grid moves
+capability facts and encrypted grants:
+
+```typescript
+interface GridSecretCapability {
+  secretRef: string;              // e.g. provider/openai/default
+  provider: string;               // openai, anthropic, huggingface, etc.
+  scopes: string[];               // chat, embeddings, upload, factory
+  ownerNodeId: UUID;
+  version: number;
+  fingerprint: string;            // hash/HMAC of normalized metadata, never value
+  available: boolean;             // non-empty + health check passed
+  expiresAt?: string;             // for leases, not local owner secrets
+}
+
+interface GridSecretLease {
+  leaseId: UUID;
+  secretRef: string;
+  granteeNodeId: UUID;
+  scopes: string[];
+  expiresAt: string;
+  auditHandle: UUID;
+}
+
+interface GridSecretRevision {
+  nodeId: UUID;
+  secretRef: string;
+  version: number;
+  fingerprint: string;
+  scopes: string[];
+  source: 'env-file' | 'settings-ui' | 'persona-command' | 'factory-import';
+  updatedAt: string;
+}
+```
+
+The Settings page, setup flow, persona helper, and JTAG commands all write to
+the same local authority. Personas may help the user enter a key or run a
+command, but they receive a `secretRef`/lease handle, not the raw value. The
+same handle can then be used by Rust workers, TypeScript adapters, factory
+jobs, and grid commands without each layer inventing its own credential path.
+
+Most real setup starts on the lowest-power machine in front of the user:
+
+- edit `$HOME/.continuum/config.env` directly;
+- use the Settings/API Providers widget;
+- ask a persona to call existing `ai/key/save`, `ai/key/remove`, or future
+  `ai/key/*` merge commands;
+- import a factory/upload credential for a specific workflow.
+
+All four entry points produce the same redacted `GridSecretRevision`. Grid sync
+then behaves like a small, secret-aware git merge: advertise revisions, compute
+a redacted diff, ask for approval if the same `secretRef` changed on more than
+one node, then apply only approved encrypted writes through `SecretManager`.
+The merge object contains names, versions, fingerprints, scopes, source, and
+timestamps. It never contains the secret value.
+
+```typescript
+interface GridSecretMergePlan {
+  baseRevision?: GridSecretRevision;
+  localRevision?: GridSecretRevision;
+  remoteRevision?: GridSecretRevision;
+  action: 'keep-local' | 'import-remote' | 'export-local' | 'rotate' | 'manual';
+  conflict: boolean;
+  reason: string;
+}
+```
+
+Git can be the implementation substrate for revision history if it is useful,
+but it must be a redacted secret ledger, not a repository of `.env` values. A
+commit may contain `secretRef`, fingerprint, version, and merge decision; it
+must never contain an API key or encrypted credential blob intended for another
+node.
+
+The process that keeps this in line should be a normal Continuum daemon/process,
+not a one-off sync script. It watches local secret/config revisions and
+occasionally runs the same `ai/key/*` command composition a user action would
+run. For explicit user mutations, `sync` is a parameter on the existing command
+shape, not a new top-level transport noun: `ai/key/save --sync` and
+`ai/key/remove --sync`.
+
+```text
+local edit/widget/persona command
+  -> SecretManager writes local state
+  -> GridReconcilerDaemon notices or receives the change event
+  -> GridReconcilerDaemon runs a bounded ai/key command program for selected peers:
+       - ai/key/status
+       - ai/key/diff
+       - optional owner/persona approval on conflicts
+       - ai/key/apply-merge
+  -> audit/replay records command handles, fingerprints, timings, outcomes
+```
+
+This is the same pattern as an intra-environment call like screenshot capture,
+but the target environment is another Continuum node. One node asks another node
+to execute a typed command, or a small bounded program of typed commands, against
+the target's own `$HOME/.continuum`. The caller receives typed redacted results;
+both sides can replay the decision without exposing the secret.
+
+The substrate already exists in the command system:
+
+- `grid/send` is the explicit routed command envelope: target node, command
+  name, params, typed result.
+- `GridInterceptor` is the transparent path: normal `Commands.execute()` can be
+  routed remotely when the router chooses a peer.
+- `grid/route` is the dry-run/debug primitive for "where would this command
+  execute?"
+- `model/forge` already delegates to `grid/job-submit`; forge jobs are therefore
+  another consumer of the same substrate, not a separate agent-managed lane.
+
+The missing abstraction is a bounded command program shape: a small ordered set
+of existing typed commands with limits, redaction policy, timeout, approval
+rules, and audit handles. It should be boring TypeScript data, not arbitrary
+shell. Secrets need it for status/diff/apply; forge needs it for preflight,
+credential availability, artifact/cache checks, job submit, and status followup.
+Grid should run those programs itself. It must not require a coding agent on
+each machine to manually align environment variables or forge setup.
+
+The first deployment target is the user's local grid: a trusted subnet/intranet
+over Tailscale. The same command envelope later extends to trusted WAN peers and
+eventually other users on the P2P mesh, with tighter limits, explicit approval,
+and stronger validation as trust decreases. The same shape later applies to
+model registry sync, LoRA availability, settings templates, and other low-volume
+grid state.
+
+**API-key slice for the first PR:**
+
+- Existing `ai/key/save`: write one key into `$HOME/.continuum/config.env` or
+  the platform vault through `SecretManager`; redact value from logs and command
+  echo. Add `sync?: boolean | 'trusted-grid'` to request immediate propagation
+  after the local write.
+- Existing `ai/key/remove`: remove one key through `SecretManager`. Add
+  `sync?: boolean | 'trusted-grid'` to propagate deletion/revocation metadata
+  after the local remove.
+- Existing `ai/key/test`: validate a candidate or stored provider key.
+- Existing `ai/providers/status`: provider-facing availability view.
+- `ai/key/status`: report configured key names, source path, empty
+  placeholders, fingerprints, and health without values.
+- `ai/key/diff`: compare local redacted revisions with one or more peers and
+  produce a merge plan without values.
+- `ai/key/apply-merge`: apply an approved merge plan through `SecretManager`.
+- `ai/key/request-lease`: request a scoped, expiring grant from an owner node;
+  default response is deny unless the owner or policy approves.
+- `ai/key/revoke-lease`: revoke a lease and emit an audit event.
+
+**Encrypted sharing is explicit.** If the owner chooses to copy a key to another
+trusted node, the export is an envelope encrypted to the target node identity
+and imported through `SecretManager`; loose file copy is not a grid protocol.
+The audit trail records requester, approver, `secretRef`, fingerprint, version,
+scope, and outcome. It never records the secret value.
+
+**No-token onboarding is a gate.** Fresh installs must work with public models
+and local inference without `HF_TOKEN` or any cloud key. `HF_TOKEN` is only for
+private/gated downloads, uploads, factory publishing, or user-selected provider
+workflows. A missing key produces a typed unavailable/degraded result; it must
+not silently route to a cloud fallback, stale credential, or CPU-shaped
+workaround.
+
+**Replay and introspection stay useful because they are redacted.** Record the
+command, `secretRef`, fingerprint/version, lease id, timing, target node, and
+result. That gives VDD/JTAG replay enough information to reproduce routing and
+authorization behavior without poisoning logs, RAG, or persona memory with
+credentials.
+
 ---
 
 ## 4. Transport Layer

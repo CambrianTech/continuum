@@ -115,6 +115,21 @@ impl CognitionTrace {
     pub fn total_duration_ms(&self) -> u64 {
         now_ms().saturating_sub(self.turn_started_at_ms)
     }
+
+    /// Last seam recorded, by name. None if no seams ran. Used by the
+    /// failure-path recorder synthesis: when `respond()` fails, the
+    /// seam after `last_seam_name()` is the one that errored, which
+    /// is the diagnostic we want in the captured fixture.
+    pub fn last_seam_name(&self) -> Option<&str> {
+        self.seams.last().map(|s| s.name.as_str())
+    }
+
+    /// Number of seams recorded so far. Used by the failure-path
+    /// recorder synthesis so replay tooling can group failures by
+    /// pipeline depth without parsing the full trace.
+    pub fn seam_count(&self) -> usize {
+        self.seams.len()
+    }
 }
 
 impl Default for CognitionTrace {
@@ -156,8 +171,18 @@ mod tests {
     #[test]
     fn seams_preserve_emission_order() {
         let mut trace = CognitionTrace::new();
-        trace.record(SEAM_ANALYZE, 1000, 50, serde_json::json!({"from_cache": false}));
-        trace.record(SEAM_INFERENCE, 1100, 1500, serde_json::json!({"model": "qwen"}));
+        trace.record(
+            SEAM_ANALYZE,
+            1000,
+            50,
+            serde_json::json!({"from_cache": false}),
+        );
+        trace.record(
+            SEAM_INFERENCE,
+            1100,
+            1500,
+            serde_json::json!({"model": "qwen"}),
+        );
         trace.record(SEAM_POST_PROCESS, 2700, 2, serde_json::json!({}));
         assert_eq!(trace.seams.len(), 3);
         assert_eq!(trace.seams[0].name, SEAM_ANALYZE);
@@ -183,8 +208,14 @@ mod tests {
         );
         let json = serde_json::to_string(&trace).expect("serializes");
         let back: CognitionTrace = serde_json::from_str(&json).expect("round-trips");
-        assert_eq!(back.seams[0].metadata["from_cache"], serde_json::json!(true));
-        assert_eq!(back.seams[0].metadata["intent"]["category"], serde_json::json!("question"));
+        assert_eq!(
+            back.seams[0].metadata["from_cache"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            back.seams[0].metadata["intent"]["category"],
+            serde_json::json!("question")
+        );
     }
 
     /// What this catches: `total_duration_ms()` returns elapsed since
@@ -198,5 +229,36 @@ mod tests {
             trace.total_duration_ms() >= 15,
             "total should be >=15ms after a 20ms sleep"
         );
+    }
+
+    /// What this catches: `last_seam_name()` returns None for an empty
+    /// trace and the most-recent seam name otherwise. The failure-path
+    /// recorder depends on this to populate `rustError.lastCompletedSeam`;
+    /// a regression here would silently mis-attribute which seam the
+    /// failure happened after.
+    #[test]
+    fn last_seam_name_tracks_most_recent_record() {
+        let mut trace = CognitionTrace::new();
+        assert_eq!(trace.last_seam_name(), None, "fresh trace has no last seam");
+        trace.record(SEAM_ANALYZE, 1000, 50, serde_json::json!({}));
+        assert_eq!(trace.last_seam_name(), Some(SEAM_ANALYZE));
+        trace.record(SEAM_INFERENCE, 1100, 1500, serde_json::json!({}));
+        assert_eq!(trace.last_seam_name(), Some(SEAM_INFERENCE));
+    }
+
+    /// What this catches: `seam_count()` reports the same number as
+    /// the underlying vec length. Used by the failure-path recorder
+    /// synthesis to populate `partial_trace_seams` so replay tooling
+    /// groups failures by pipeline depth without parsing the full
+    /// trace; a regression breaks failure-bucket dashboards.
+    #[test]
+    fn seam_count_matches_recorded_seams() {
+        let mut trace = CognitionTrace::new();
+        assert_eq!(trace.seam_count(), 0);
+        trace.record(SEAM_ANALYZE, 1000, 50, serde_json::json!({}));
+        assert_eq!(trace.seam_count(), 1);
+        trace.record(SEAM_INFERENCE, 1100, 1500, serde_json::json!({}));
+        trace.record(SEAM_POST_PROCESS, 2700, 2, serde_json::json!({}));
+        assert_eq!(trace.seam_count(), 3);
     }
 }

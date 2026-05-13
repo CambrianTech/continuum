@@ -126,7 +126,19 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
           model: params.model || LOCAL_MODELS.DEFAULT,
           temperature: params.temperature ?? 0.7,
           maxTokens: params.maxTokens ?? 150,
-          provider: params.provider || 'candle',
+          // Default to 'local' (DMR via Rust IPC), NEVER a cloud provider.
+          // Continuum's architectural point is local models; cloud providers
+          // are opt-in via explicit --provider, not silent fallback. Pre-fix
+          // the default was 'candle' which is misleading (Candle is a
+          // training framework, not inference) and Rust's routing for an
+          // unknown provider could pick a registered cloud adapter (Carl's
+          // #980 Bug 7: silent DeepSeek 401 with no key configured). 'local'
+          // explicitly routes to Rust→DMR; if DMR isn't running, Rust
+          // hard-fails with an actionable error instead of silently falling
+          // through to a cloud provider that requires a key the user never
+          // set. Joel: "deepseek can't be a fallback" / "whole point is
+          // local models, make them work."
+          provider: params.provider || 'local',
           personaContext: {
             uniqueId: targetPersonaId,
             displayName: ragContext.identity?.name || personaDisplayName,

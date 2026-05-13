@@ -4,7 +4,7 @@
  * Provides case conversion and formatting utilities independent of domain (commands/daemons/widgets).
  */
 
-import type { CommandSpec, ParamSpec, ResultSpec, ExampleSpec } from './CommandNaming';
+import type { CommandSpec, ParamSpec, ResultSpec, ExampleSpec, ImportSpec } from './CommandNaming';
 import { CommandNaming } from './CommandNaming';
 
 export class TokenBuilder {
@@ -49,8 +49,14 @@ export class TokenBuilder {
    */
   static buildParamFields(params: ParamSpec[]): string {
     if (params.length === 0) {
-      // Use a marker property to avoid empty interface lint error
-      return '  _noParams?: never; // Marker to avoid empty interface';
+      // Empty params: callers should use `buildParamsTypeDecl` to emit a
+      // type alias instead of an empty interface. Returning '' here lets
+      // legacy templates still compile, but new templates use the
+      // dedicated decl builder so we never ship `_noParams?: never`
+      // marker fields again (the lint workaround that became a typing
+      // bug — TS sees the marker and refuses structural-equivalence
+      // casts).
+      return '';
     }
 
     return params
@@ -63,6 +69,66 @@ export class TokenBuilder {
   }
 
   /**
+   * Build the params TYPE DECLARATION block.
+   *
+   * For empty-params commands: emits a type alias to CommandParams
+   * (genuinely empty + structurally identical). For non-empty: emits an
+   * interface extending CommandParams with the typed fields.
+   *
+   * Replaces the old `interface FooParams extends CommandParams { _noParams?: never }`
+   * pattern that:
+   *   (a) lied about emptiness via the never marker
+   *   (b) made the type structurally-incompatible with CommandParams
+   *       so the factory's createPayload return required `as unknown as`
+   *       casts to compile — which violated Joel's typing rule (no
+   *       `unknown`, no `any`, types must be true to the wire shape)
+   */
+  static buildParamsTypeDecl(spec: CommandSpec): string {
+    const naming = new CommandNaming(spec);
+    if (spec.params.length === 0) {
+      return `export type ${naming.paramsType} = CommandParams;`;
+    }
+    return `export interface ${naming.paramsType} extends CommandParams {\n${this.buildParamFields(spec.params)}\n}`;
+  }
+
+  /**
+   * Build the params FACTORY function block.
+   *
+   * For empty-params commands: factory takes (context, sessionId, userId)
+   * — userId is REQUIRED on CommandParams; createPayload wraps it cleanly
+   * so the result is structurally CommandParams with NO casts needed.
+   *
+   * For non-empty: factory takes (context, sessionId, userId, data) where
+   * data is the typed param fields. Same no-cast guarantee.
+   */
+  static buildParamsFactoryDecl(spec: CommandSpec): string {
+    const naming = new CommandNaming(spec);
+    if (spec.params.length === 0) {
+      return [
+        `export const create${naming.baseName}Params = (`,
+        `  context: JTAGContext,`,
+        `  sessionId: UUID,`,
+        `  userId: UUID,`,
+        `): ${naming.paramsType} => createPayload(context, sessionId, { userId });`,
+      ].join('\n');
+    }
+    const dataType = this.buildFactoryDataType(spec.params);
+    const defaults = this.buildFactoryDefaults(spec.params);
+    const defaultsBlock = defaults ? `${defaults}\n` : '';
+    return [
+      `export const create${naming.baseName}Params = (`,
+      `  context: JTAGContext,`,
+      `  sessionId: UUID,`,
+      `  userId: UUID,`,
+      `  data: ${dataType},`,
+      `): ${naming.paramsType} => createPayload(context, sessionId, {`,
+      `  userId,`,
+      `${defaultsBlock}  ...data,`,
+      `});`,
+    ].join('\n');
+  }
+
+  /**
    * Build result fields for interface definition
    */
   static buildResultFields(results: ResultSpec[]): string {
@@ -72,8 +138,9 @@ export class TokenBuilder {
 
     return results
       .map(result => {
+        const optional = result.optional ? '?' : '';
         const comment = result.description ? `  // ${result.description}\n` : '';
-        return `${comment}  ${result.name}: ${result.type};`;
+        return `${comment}  ${result.name}${optional}: ${result.type};`;
       })
       .join('\n');
   }
@@ -222,10 +289,10 @@ export class TokenBuilder {
     // success is always required in result factories
     const fields = ['    success: boolean;'];
 
-    // All other result fields are typically optional (for error cases)
     results.forEach(result => {
+      const optional = result.optional ? '?' : '';
       const comment = result.description ? `    // ${result.description}\n` : '';
-      fields.push(`${comment}    ${result.name}?: ${result.type};`);
+      fields.push(`${comment}    ${result.name}${optional}: ${result.type};`);
     });
 
     // error is always optional
@@ -238,11 +305,12 @@ export class TokenBuilder {
    * Build default value assignments for result fields in factory functions
    */
   static buildResultFactoryDefaults(results: ResultSpec[]): string {
-    if (results.length === 0) {
+    const optionalResults = results.filter(result => result.optional);
+    if (optionalResults.length === 0) {
       return '';
     }
 
-    return results
+    return optionalResults
       .map(result => {
         // Generate sensible defaults based on type
         const defaultValue = this.defaultValueForType(result.type);
@@ -251,9 +319,20 @@ export class TokenBuilder {
       .join('\n');
   }
 
+  static buildImportStatements(imports: ImportSpec[] | undefined): string {
+    if (!imports || imports.length === 0) return '';
+    return imports
+      .map(importSpec => {
+        const typeOnly = importSpec.typeOnly ?? true;
+        const prefix = typeOnly ? 'import type' : 'import';
+        return `${prefix} { ${importSpec.names.join(', ')} } from '${importSpec.from}';`;
+      })
+      .join('\n');
+  }
+
   /**
    * Get a sensible default value for a TypeScript type.
-   * Used by factory function generators to avoid `undefined` for required fields.
+   * Used only for optional factory fields; required result fields are caller-owned.
    */
   static defaultValueForType(type: string): string {
     if (type === 'boolean') return 'false';
@@ -262,9 +341,7 @@ export class TokenBuilder {
     if (type === 'object') return '{}';
     if (type.endsWith('[]') || type.startsWith('Array<')) return '[]';
     if (type.startsWith('Record<')) return '{}';
-    if (type.startsWith("'") || type.includes(" | '")) return "'' as " + type;
-    // For complex types, use empty object cast — better than undefined
-    return '{} as ' + type;
+    return 'undefined';
   }
 
   /**
@@ -324,8 +401,15 @@ export class TokenBuilder {
       IMPLEMENTATION: naming.implementation,
       FACTORY_DATA_TYPE: this.buildFactoryDataType(spec.params),
       FACTORY_DEFAULTS: this.buildFactoryDefaults(spec.params),
+      // Type-safe replacements for the legacy
+      // `interface Foo extends CommandParams { _noParams: never }`
+      // + cast-laden factory pattern. See buildParamsTypeDecl /
+      // buildParamsFactoryDecl for the rationale.
+      PARAMS_TYPE_DECL: this.buildParamsTypeDecl(spec),
+      PARAMS_FACTORY_DECL: this.buildParamsFactoryDecl(spec),
       RESULT_FACTORY_DATA_TYPE: this.buildResultFactoryDataType(spec.results),
       RESULT_FACTORY_DEFAULTS: this.buildResultFactoryDefaults(spec.results),
+      EXTRA_IMPORTS: this.buildImportStatements(spec.imports),
       RESULT_FIELD_EXAMPLES: this.buildResultFieldExamples(spec.results)
     };
   }

@@ -1,22 +1,26 @@
 /**
  * Persona Configuration - Single Source of Truth
  *
- * All persona definitions in one place for easy maintenance.
+ * Active persona definitions in one place for easy maintenance.
  * Used by seed-continuum.ts to create persona users.
  *
- * Hardware-aware: getAvailablePersonas() filters based on:
- *   - API keys present in environment (cloud providers)
- *   - GPU VRAM available (local candle inference)
+ * Alpha default: local-first. API keys unlock optional cloud capacity, but
+ * the default persona fleet must not depend on cloud providers or seed random
+ * model families into chat. Model choice is capability-driven: personas request
+ * symbolic refs and the Rust registry/admission layer selects the best artifact
+ * that fits hardware, VRAM/unified-memory pressure, LoRA paging, and task recipe.
  *
  * uniqueId format: Simple slug WITHOUT @ prefix
- * Examples: claude, helper, grok, sentinel
+ * Examples: helper, teacher, codereview
  *
  * The @ symbol is ONLY for UI mentions, NOT part of uniqueId
  */
 
 import { generateUniqueId } from '../../system/data/utils/UniqueIdUtils';
 import { LOCAL_MODELS } from '../../system/shared/Constants';
+import { SYMBOLIC_REFS } from '../../shared/ModelRegistry';
 import { execSync } from 'child_process';
+import { SecretManager } from '../../system/secrets/SecretManager';
 
 export interface PersonaConfig {
   uniqueId: string;
@@ -24,10 +28,18 @@ export interface PersonaConfig {
   provider?: string;
   type: 'agent' | 'persona';
   voiceId?: string;  // TTS speaker ID (0-246 for LibriTTS multi-speaker model)
-  modelId?: string;  // AI model ID (e.g., 'qwen3-omni-flash-realtime' for audio-native)
+  modelId?: string;  // Concrete AI model ID — LEGACY/cached. Prefer modelRef.
+  modelRef?: string;  // Symbolic ref into src/shared/models.json
+                     // ('local-default', 'vision-default', 'gating'). Resolved
+                     // at request time by ModelRegistry → current registry
+                     // value picks up automatically when models.json changes.
+                     // Per Joel 2026-05-04: "update the existing seeded values
+                     // so the personas PICK UP THE MODEL change and arent
+                     // stuck in the past." Symbolic refs eliminate stale-DB
+                     // drift entirely.
   isAudioNative?: boolean;  // True if model supports direct audio I/O (no STT/TTS needed)
   apiKeyEnv?: string;  // Environment variable name for the API key (e.g., 'ANTHROPIC_API_KEY')
-  minVramGB?: number;  // Minimum VRAM in GB for local inference (candle provider)
+  minVramGB?: number;  // Minimum memory budget in GB for local inference admission
 }
 
 /**
@@ -42,35 +54,16 @@ export interface PersonaConfig {
  * Selected speakers for variety: some male, some female, different pitches/cadences
  */
 export const PERSONA_CONFIGS: PersonaConfig[] = [
-  // Core agents (cloud — need API key)
-  { uniqueId: generateUniqueId('Claude'), displayName: 'Claude Code', provider: 'anthropic', type: 'agent', voiceId: '10', apiKeyEnv: 'ANTHROPIC_API_KEY' },
-  { uniqueId: generateUniqueId('General'), displayName: 'General AI', provider: 'anthropic', type: 'agent', voiceId: '25', apiKeyEnv: 'ANTHROPIC_API_KEY' },
-
-  // Local personas (Candle native Rust inference — need GPU VRAM)
-  // Model sizes: 14B coder ~9GB, 8B instruct ~5GB, 3B instruct ~3GB
-  // On big GPUs (5090 32GB), we run specialized models per persona
-  // On small GPUs (8GB), everyone shares the 3B model
-  // Local personas: NO provider hardcode. The Rust AdapterRegistry routes
-  // by honest model availability: DMR (Metal on Mac, CUDA on Linux/Nvidia)
-  // when the model is pulled, llama-vulkan for other GPU hardware, hard
-  // error if neither is available. Never silent Candle-CPU fallback.
-  // 4B GGUF is the universal default — fits every supported machine, fast
-  // on Metal/Vulkan/CUDA. Power users upgrade to 27B manually (HF-gated).
-  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'local', type: 'persona', voiceId: '50', minVramGB: 3, modelId: LOCAL_MODELS.DEFAULT },
-  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'local', type: 'persona', voiceId: '75', minVramGB: 5, modelId: LOCAL_MODELS.DEFAULT },
-  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'local', type: 'persona', voiceId: '100', minVramGB: 5, modelId: LOCAL_MODELS.DEFAULT },
-
-  // Cloud provider personas (each needs its own API key)
-  { uniqueId: generateUniqueId('DeepSeek'), displayName: 'DeepSeek Assistant', provider: 'deepseek', type: 'persona', voiceId: '125', apiKeyEnv: 'DEEPSEEK_API_KEY' },
-  { uniqueId: generateUniqueId('Groq'), displayName: 'Groq Lightning', provider: 'groq', type: 'persona', voiceId: '150', apiKeyEnv: 'GROQ_API_KEY' },
-  { uniqueId: generateUniqueId('Claude Assistant'), displayName: 'Claude Assistant', provider: 'anthropic', type: 'persona', voiceId: '175', apiKeyEnv: 'ANTHROPIC_API_KEY' },
-  { uniqueId: generateUniqueId('GPT'), displayName: 'GPT Assistant', provider: 'openai', type: 'persona', voiceId: '200', apiKeyEnv: 'OPENAI_API_KEY' },
-  { uniqueId: generateUniqueId('Grok'), displayName: 'Grok', provider: 'xai', type: 'persona', voiceId: '220', apiKeyEnv: 'XAI_API_KEY' },
-  { uniqueId: generateUniqueId('Together'), displayName: 'Together Assistant', provider: 'together', type: 'persona', voiceId: '30', apiKeyEnv: 'TOGETHER_API_KEY' },
-  { uniqueId: generateUniqueId('Fireworks'), displayName: 'Fireworks AI', provider: 'fireworks', type: 'persona', voiceId: '60', apiKeyEnv: 'FIREWORKS_API_KEY' },
-  { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', provider: 'local', type: 'persona', voiceId: '90', minVramGB: 4, modelId: LOCAL_MODELS.DEFAULT },
+  // Local personas. No cloud by default.
+  // Local personas request capability, not an engine. Rust admission resolves
+  // provider:local into the best available Qwen/llama.cpp runtime for this
+  // host, with a hard error when no supported local runtime exists. Never
+  // silently fall back to a CPU-only chat path.
+  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'local', type: 'persona', voiceId: '50', minVramGB: 3, modelRef: SYMBOLIC_REFS.LOCAL_DEFAULT },
+  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'local', type: 'persona', voiceId: '75', minVramGB: 5, modelRef: SYMBOLIC_REFS.LOCAL_DEFAULT },
+  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'local', type: 'persona', voiceId: '100', minVramGB: 5, modelRef: SYMBOLIC_REFS.LOCAL_DEFAULT },
+  { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', provider: 'local', type: 'persona', voiceId: '90', minVramGB: 4, modelRef: SYMBOLIC_REFS.LOCAL_DEFAULT },
   { uniqueId: generateUniqueId('Sentinel'), displayName: 'Sentinel', provider: 'sentinel', type: 'persona', voiceId: '240' },
-  { uniqueId: generateUniqueId('Gemini'), displayName: 'Gemini', provider: 'google', type: 'persona', voiceId: '115', apiKeyEnv: 'GOOGLE_API_KEY' },
 
   // Native vision persona — local, free, no API key. Bound to
   // qwen2-vl-7b-instruct via the in-process llamacpp adapter (registered
@@ -91,7 +84,7 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
     type: 'persona',
     voiceId: '105',
     minVramGB: 5,
-    modelId: LOCAL_MODELS.VISION,
+    modelRef: SYMBOLIC_REFS.VISION_DEFAULT,
   },
 
   // Audio AI persona is intentionally NOT seeded yet. The Qwen2-Audio-7B
@@ -110,25 +103,21 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   // when the architecture supports concurrent mtmd backends safely.
   // See LIVE-VIDEO-CHAT-ARCHITECTURE.md for the design that lands this.
 
-  // Audio-native personas (need specific API keys)
-  {
-    uniqueId: generateUniqueId('Qwen3-Omni'),
-    displayName: 'Qwen3-Omni',
-    provider: 'alibaba',
-    type: 'persona',
-    modelId: 'qwen3-omni-flash-realtime',
-    isAudioNative: true,
-    apiKeyEnv: 'DASHSCOPE_API_KEY',
-  },
-  {
-    uniqueId: generateUniqueId('Gemini-Live'),
-    displayName: 'Gemini Live',
-    provider: 'google',
-    type: 'persona',
-    modelId: 'gemini-2.5-flash-native-audio-preview',
-    isAudioNative: true,
-    apiKeyEnv: 'GOOGLE_API_KEY',
-  },
+];
+
+export const OPTIONAL_CLOUD_PERSONA_CONFIGS: PersonaConfig[] = [
+  { uniqueId: generateUniqueId('Claude'), displayName: 'Claude Code', provider: 'anthropic', type: 'agent', voiceId: '10', apiKeyEnv: 'ANTHROPIC_API_KEY' },
+  { uniqueId: generateUniqueId('General'), displayName: 'General AI', provider: 'anthropic', type: 'agent', voiceId: '25', apiKeyEnv: 'ANTHROPIC_API_KEY' },
+  { uniqueId: generateUniqueId('DeepSeek'), displayName: 'DeepSeek Assistant', provider: 'deepseek', type: 'persona', voiceId: '125', apiKeyEnv: 'DEEPSEEK_API_KEY' },
+  { uniqueId: generateUniqueId('Groq'), displayName: 'Groq Lightning', provider: 'groq', type: 'persona', voiceId: '150', apiKeyEnv: 'GROQ_API_KEY' },
+  { uniqueId: generateUniqueId('Claude Assistant'), displayName: 'Claude Assistant', provider: 'anthropic', type: 'persona', voiceId: '175', apiKeyEnv: 'ANTHROPIC_API_KEY' },
+  { uniqueId: generateUniqueId('GPT'), displayName: 'GPT Assistant', provider: 'openai', type: 'persona', voiceId: '200', apiKeyEnv: 'OPENAI_API_KEY' },
+  { uniqueId: generateUniqueId('Grok'), displayName: 'Grok', provider: 'xai', type: 'persona', voiceId: '220', apiKeyEnv: 'XAI_API_KEY' },
+  { uniqueId: generateUniqueId('Together'), displayName: 'Together Assistant', provider: 'together', type: 'persona', voiceId: '30', apiKeyEnv: 'TOGETHER_API_KEY' },
+  { uniqueId: generateUniqueId('Fireworks'), displayName: 'Fireworks AI', provider: 'fireworks', type: 'persona', voiceId: '60', apiKeyEnv: 'FIREWORKS_API_KEY' },
+  { uniqueId: generateUniqueId('Gemini'), displayName: 'Gemini', provider: 'google', type: 'persona', voiceId: '115', apiKeyEnv: 'GOOGLE_API_KEY' },
+  { uniqueId: generateUniqueId('Qwen3-Omni'), displayName: 'Qwen3-Omni', provider: 'alibaba', type: 'persona', modelId: 'qwen3-omni-flash-realtime', isAudioNative: true, apiKeyEnv: 'DASHSCOPE_API_KEY' },
+  { uniqueId: generateUniqueId('Gemini-Live'), displayName: 'Gemini Live', provider: 'google', type: 'persona', modelId: 'gemini-2.5-flash-native-audio-preview', isAudioNative: true, apiKeyEnv: 'GOOGLE_API_KEY' },
 ];
 
 /**
@@ -196,7 +185,7 @@ function detectGpu(): GpuInfo {
   return { vramGB: 0, device: 'CPU', type: 'cpu' };
 }
 
-/** Get total system RAM in GB — used for CPU inference budget when no GPU */
+/** Get total system RAM in GB — used for local-runtime admission hints when no GPU is visible */
 function getSystemRamGB(): number {
   const run = (cmd: string): string | null => {
     try { return execSync(cmd, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim(); }
@@ -215,25 +204,26 @@ function getSystemRamGB(): number {
 }
 
 /**
- * Filter PERSONA_CONFIGS to only personas that can actually run on this hardware.
+ * Filter persona configs to only personas that can actually run on this node.
  *
  * Rules:
- * - Cloud personas: created only if their API key is set in environment
- * - Local (candle) personas: created only if GPU has enough VRAM
+ * - Cloud personas: created only if their API key is present and non-empty
+ * - Local personas: created only if this node has enough VRAM/unified/RAM budget
  * - Sentinel: created only if SENTINEL_PATH is set
- * - No API key + no GPU = at minimum create Helper AI with candle fallback (CPU mode)
+ * - No API key + no GPU = at minimum seed Helper AI so the UI is explainable
  *
  * Returns the filtered list and a summary of what was included/excluded.
  */
 /**
- * Select the best local model for this hardware's VRAM budget.
- * Returns HuggingFace model ID suitable for Candle inference.
+ * Select the symbolic local model family for this hardware's memory budget.
+ *
+ * This is a seed-time hint only. Concrete artifact selection belongs in the
+ * Rust model registry/admission layer because that code owns GPU pressure,
+ * context/KV cost, LoRA paging, and backend availability.
  *
  * Budget logic (per persona, after system reserve):
- *   32GB+ CUDA → 14B coder (BF16 if available, else GGUF Q5)
- *   16-31GB    → 8B instruct
- *   8-15GB     → 3B instruct (default)
- *   <8GB       → 3B instruct (will be slow but works)
+ *   16GB+      → Qwen3.5 forged family, larger quant/variant if available
+ *   <16GB      → Qwen3.5 forged family, compact quant
  */
 export function selectLocalModel(vramGB: number): string {
   // Use our forged Qwen models — the whole point of the forge pipeline
@@ -245,6 +235,7 @@ export function selectLocalModel(vramGB: number): string {
 
 export function getAvailablePersonas(): { personas: PersonaConfig[]; summary: string[]; gpu: GpuInfo } {
   const gpu = detectGpu();
+  const secrets = SecretManager.getInstance();
   const vramGB = gpu.vramGB;
   const summary: string[] = [];
   const available: PersonaConfig[] = [];
@@ -258,10 +249,12 @@ export function getAvailablePersonas(): { personas: PersonaConfig[]; summary: st
 
   summary.push(`${gpu.device}: ${vramGB > 0 ? `${vramGB}GB ${gpu.type.toUpperCase()} (${usableVram}GB usable after ${vramReserve}GB system reserve)` : 'no GPU detected (CPU-only)'}`);
 
-  for (const persona of PERSONA_CONFIGS) {
+  const candidates = [...PERSONA_CONFIGS, ...OPTIONAL_CLOUD_PERSONA_CONFIGS];
+
+  for (const persona of candidates) {
     // Sentinel: special case
     if (persona.provider === 'sentinel') {
-      if (process.env.SENTINEL_PATH) {
+      if (secrets.has('SENTINEL_PATH')) {
         available.push(persona);
       } else {
         skipped.push(`${persona.displayName} (SENTINEL_PATH not set)`);
@@ -269,10 +262,12 @@ export function getAvailablePersonas(): { personas: PersonaConfig[]; summary: st
       continue;
     }
 
-    // Local candle inference: check available memory (VRAM or system RAM)
-    // In Docker / CPU mode, Metal/CUDA aren't available — Candle uses system RAM.
-    // A 4B Q4_K_M model needs ~3GB regardless of whether it's in VRAM or RAM.
-    if (persona.provider === 'candle') {
+    // Local inference: check available memory (VRAM/unified memory or system RAM).
+    // This is an admission hint only. Concrete model/artifact choice stays
+    // behind modelRef + Rust registry selection.
+    // In Docker / non-GPU mode, this is only an admission hint. The Rust
+    // registry decides whether a supported local runtime can actually serve it.
+    if (persona.provider === 'local') {
       const needed = persona.minVramGB ?? 4;
       // Use VRAM if available, otherwise fall back to system RAM
       const effectiveMemory = usableVram > 0 ? usableVram : getSystemRamGB() - 4; // 4GB reserve for OS + Docker
@@ -280,7 +275,7 @@ export function getAvailablePersonas(): { personas: PersonaConfig[]; summary: st
         available.push(persona);
         vramAllocated += needed;
         if (usableVram === 0) {
-          summary.push(`${persona.displayName}: CPU inference (${needed}GB RAM)`);
+          summary.push(`${persona.displayName}: local runtime pending (${needed}GB RAM budget)`);
         }
       } else {
         skipped.push(`${persona.displayName} (needs ${needed}GB, ${effectiveMemory - vramAllocated}GB left)`);
@@ -290,10 +285,10 @@ export function getAvailablePersonas(): { personas: PersonaConfig[]; summary: st
 
     // Cloud providers: check API key
     if (persona.apiKeyEnv) {
-      if (process.env[persona.apiKeyEnv]) {
+      if (secrets.has(persona.apiKeyEnv)) {
         available.push(persona);
       } else {
-        skipped.push(`${persona.displayName} (${persona.apiKeyEnv} not set)`);
+        skipped.push(`${persona.displayName} (${persona.apiKeyEnv} not configured)`);
       }
       continue;
     }
@@ -303,12 +298,12 @@ export function getAvailablePersonas(): { personas: PersonaConfig[]; summary: st
   }
 
   // Zero personas = broken UX. Always seed at least Helper AI so the user
-  // sees a living system. CPU inference is slow but functional.
+  // sees which local runtime/config is missing.
   if (available.length === 0) {
     const helper = PERSONA_CONFIGS.find(p => p.displayName === 'Helper AI');
     if (helper) {
       available.push(helper);
-      summary.push('No GPU/API keys — seeding Helper AI for CPU inference (slow but functional)');
+      summary.push('No GPU/API keys — seeding Helper AI for local-runtime diagnostics');
     }
   }
 

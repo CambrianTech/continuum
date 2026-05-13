@@ -252,6 +252,18 @@ fn evolve_table_schema(conn: &Connection, table: &str, data: &Value) -> bool {
     added > 0
 }
 
+fn projection_dummy(select: &Option<Vec<String>>) -> Option<Value> {
+    let cols = select.as_ref()?;
+    if cols.is_empty() {
+        return None;
+    }
+    let mut dummy = serde_json::Map::new();
+    for col in cols {
+        dummy.insert(col.clone(), Value::Null);
+    }
+    Some(Value::Object(dummy))
+}
+
 fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord> {
     let table = naming::to_table_name(&record.collection);
     let now = chrono::Utc::now().to_rfc3339();
@@ -956,6 +968,25 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
+        if let Some(dummy) = projection_dummy(&query.select) {
+            let writer = match self.get_writer() {
+                Ok(c) => c,
+                Err(e) => return StorageResult::err(e),
+            };
+            let table = naming::to_table_name(&query.collection);
+            let ensure_result = tokio::task::spawn_blocking(move || {
+                let conn = writer.lock().unwrap();
+                ensure_table_exists(&conn, &table, &dummy)?;
+                evolve_table_schema(&conn, &table, &dummy);
+                Ok::<(), String>(())
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("spawn_blocking failed: {}", e)));
+            if let Err(e) = ensure_result {
+                return StorageResult::err(e);
+            }
+        }
+
         let conn = match self.get_reader() {
             Ok(c) => c,
             Err(e) => return StorageResult::err(e),
@@ -1330,5 +1361,44 @@ mod tests {
             .await;
         assert!(query_result.success);
         assert_eq!(query_result.data.unwrap().len(), 10);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_query_projection_evolves_missing_columns_before_select() {
+        let (adapter, _dir) = setup_adapter().await;
+
+        adapter
+            .ensure_schema(CollectionSchema {
+                collection: "recipes".to_string(),
+                fields: vec![super::super::types::SchemaField {
+                    name: "displayName".to_string(),
+                    field_type: super::super::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: false,
+                    max_length: None,
+                }],
+                indexes: vec![],
+            })
+            .await;
+
+        let result = adapter
+            .query(StorageQuery {
+                collection: "recipes".to_string(),
+                select: Some(vec![
+                    "displayName".to_string(),
+                    "team".to_string(),
+                    "modes".to_string(),
+                ]),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .await;
+
+        assert!(
+            result.success,
+            "projection query should evolve missing selected columns: {:?}",
+            result.error
+        );
     }
 }

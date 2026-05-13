@@ -98,8 +98,18 @@ if [ -d "$INSTALL_DIR/src/scripts/install.sh" ] || [ -f "$INSTALL_DIR/src/script
     echo -e "  ${YELLOW}Pull failed (local changes?) — continuing with current version${NC}"
   }
 else
-  echo -e "  Cloning Continuum..."
-  git clone https://github.com/CambrianTech/continuum.git "$INSTALL_DIR"
+  # CONTINUUM_REF env override: clone a specific ref instead of HEAD.
+  # Matches root install.sh's behavior — used by CI to validate PR src/.
+  # Without it, Windows-via-WSL installs always cloned main (same
+  # chicken-and-egg loop the Linux smoke had).
+  if [ -n "${CONTINUUM_REF:-}" ]; then
+    echo -e "  Cloning Continuum at ref ${CONTINUUM_REF}..."
+    git clone --branch "$CONTINUUM_REF" --depth 1 https://github.com/CambrianTech/continuum.git "$INSTALL_DIR" 2>/dev/null \
+      || (git clone https://github.com/CambrianTech/continuum.git "$INSTALL_DIR" && cd "$INSTALL_DIR" && git checkout "$CONTINUUM_REF")
+  else
+    echo -e "  Cloning Continuum..."
+    git clone https://github.com/CambrianTech/continuum.git "$INSTALL_DIR"
+  fi
   cd "$INSTALL_DIR"
 fi
 
@@ -127,13 +137,13 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo ""
 case "$MODE" in
   browser)
-    echo -e "  UI:        ${GREEN}http://localhost:9000${NC}"
+    echo -e "  UI:        ${GREEN}http://localhost:9003${NC}"
     ;;
   cli)
     echo -e "  CLI:       ${GREEN}./jtag${NC}"
     ;;
   headless)
-    echo -e "  Server:    ${GREEN}http://localhost:9000${NC} (API only)"
+    echo -e "  Server:    ${GREEN}http://localhost:9003${NC} (API only)"
     ;;
 esac
 echo -e "  Stop:      ${GREEN}cd $INSTALL_DIR/src && npm stop${NC}"

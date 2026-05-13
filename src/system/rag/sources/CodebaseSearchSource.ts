@@ -28,6 +28,24 @@ const MIN_QUERY_LENGTH = 15;
 /** Similarity threshold — only inject results that are genuinely relevant */
 const RELEVANCE_THRESHOLD = 0.35;
 
+/** Source-local latency budget. Code context is useful, but chat must not wait
+ * on a cold or oversized index. The source degrades to empty context instead
+ * of letting the whole persona response pipeline stall behind RAGComposer's
+ * broader watchdog. */
+const QUERY_TIMEOUT_MS = Number(process.env.CONTINUUM_CODEBASE_RAG_TIMEOUT_MS ?? 4_000);
+
+const TECHNICAL_QUERY_PATTERN = new RegExp([
+  '\\b(code|codebase|repo|repository|file|files|function|class|interface|type|module|import|export)\\b',
+  '\\b(bug|error|exception|stack|trace|crash|failing|failure|fix|debug|compile|build)\\b',
+  '\\b(unit|integration|e2e|regression)\\s+tests?\\b',
+  '\\btests?\\s+(failed|failing|fail|red|broken|pass|passing|green)\\b',
+  '\\b(cargo|npm|pnpm|yarn|pytest|vitest|jest|playwright)\\s+test\\b',
+  '\\b(refactor|architecture|architect|implement|implementation|api|endpoint|schema|database|docker)\\b',
+  '\\b(rust|typescript|javascript|tsx|jsx|node|python|cargo|npm|sql|sqlite|postgres)\\b',
+  '`[^`]+`',
+  '[\\w./-]+\\.(ts|tsx|js|jsx|rs|py|toml|json|md|sql|sh|ps1)\\b',
+].join('|'), 'i');
+
 export class CodebaseSearchSource implements RAGSource {
   readonly name = 'codebase-search';
   readonly tier = PromptTier.VOLATILE;
@@ -36,13 +54,21 @@ export class CodebaseSearchSource implements RAGSource {
   readonly isShared = true;
 
   isApplicable(context: RAGSourceContext): boolean {
-    // Always applicable if there's a substantive message.
-    // The persona's mind decides what context matters — we just provide the capability.
-    // If results aren't relevant (low cosine similarity), the query returns empty
-    // and costs nothing in the token budget.
     const currentMessage = context.options?.currentMessage?.content;
     if (!currentMessage || typeof currentMessage !== 'string') return false;
-    return currentMessage.length >= MIN_QUERY_LENGTH;
+
+    // Recipe-owned RAG activation is authoritative. If a queue item or room
+    // recipe explicitly asks for codebase-search, provide it even when the
+    // surface text is terse ("fix this", "same bug").
+    if (context.activeSources?.includes(this.name)) return true;
+
+    if (currentMessage.trim().length < MIN_QUERY_LENGTH) return false;
+
+    // Default chat should stay conversational. Pulling semantic code search
+    // for every ordinary room message turns one human prompt into N expensive
+    // index queries across personas and was observed to wedge chat behind a
+    // 30s RAG timeout. Codebase context is activated by technical intent.
+    return TECHNICAL_QUERY_PATTERN.test(currentMessage);
   }
 
   async load(context: RAGSourceContext, allocatedBudget: number): Promise<Omit<RAGSection, 'tier'>> {
@@ -51,7 +77,7 @@ export class CodebaseSearchSource implements RAGSource {
 
     try {
       const indexer = getCodebaseIndexer();
-      const results = await indexer.query(query, MAX_RESULTS);
+      const results = await this.withQueryTimeout(indexer.query(query, MAX_RESULTS), query);
 
       // Filter by relevance — only inject results the persona would actually find useful
       const relevant = results.filter(r => (r.relevanceScore ?? 0) >= RELEVANCE_THRESHOLD);
@@ -97,6 +123,21 @@ export class CodebaseSearchSource implements RAGSource {
         tokenCount: 0,
         loadTimeMs: Date.now() - startTime,
       };
+    }
+  }
+
+  private async withQueryTimeout<T>(queryPromise: Promise<T>, query: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`codebase search exceeded ${QUERY_TIMEOUT_MS}ms for "${query.slice(0, 40)}..."`));
+        }, QUERY_TIMEOUT_MS);
+        timer.unref?.();
+      });
+      return await Promise.race([queryPromise, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }

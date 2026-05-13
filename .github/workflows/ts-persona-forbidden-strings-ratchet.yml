@@ -1,0 +1,43 @@
+# Lane F PR-2 (PR #1091 followup) — TS Persona Forbidden-Strings Ratchet.
+#
+# Per-pattern monotonic-decrease ratchet for anti-patterns under
+# src/system/user/server/. Fails on any growth of:
+#   - case-insensitive `fallback` mentions (Joel 2026-04-22 "fallbacks
+#     are ILLEGAL")
+#   - direct `new <Name>Adapter(` instantiation (bypasses #1066/#1074
+#     ModelRequirement → ResolvedModel resolver)
+#   - `process.env.*API_KEY` reads (cloud-key lookup belongs in Rust
+#     provider registry, per Codex's #1077 boundary)
+#
+# Fast: shell + python only. Independent gate from compile + Rust build.
+
+name: ts-persona-forbidden-strings-ratchet
+
+on:
+  pull_request:
+    branches: [canary, main]
+    paths:
+      - 'src/system/user/server/**/*.ts'
+      - 'scripts/ratchets/ts-persona-forbidden-strings-baseline.json'
+      - 'scripts/ratchets/check-ts-persona-forbidden-strings.sh'
+      - '.github/workflows/ts-persona-forbidden-strings-ratchet.yml'
+  push:
+    branches: [canary, main]
+
+jobs:
+  ratchet:
+    name: ts-persona-forbidden-strings-ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Run ratchet check
+        run: bash scripts/ratchets/check-ts-persona-forbidden-strings.sh
+
+      - name: Print per-pattern occurrences on failure
+        if: failure()
+        run: bash scripts/ratchets/check-ts-persona-forbidden-strings.sh --verbose || true

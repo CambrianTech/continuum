@@ -463,7 +463,16 @@ impl TextToSpeech for KokoroTTS {
             inter_threads
         );
 
+        // GPU execution providers via the centralized helper (#985 / #964).
+        // Per architecture, CPU fallback is forbidden — TTS matmul must
+        // run on GPU. Pre-this-PR Kokoro never configured an EP at all,
+        // so ORT's implicit CPU EP took every op silently. The helper
+        // adds the right EP for the current build (CoreML on Mac,
+        // CUDA on Linux+Nvidia) and hard-fails when neither is available.
+        let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
+            .map_err(|e| TTSError::ModelNotLoaded(format!("ORT GPU EP setup failed (Kokoro TTS): {e}")))?;
         let session = Session::builder()?
+            .with_execution_providers(providers)?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(intra_threads)?
             .with_inter_threads(inter_threads)?

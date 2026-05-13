@@ -7,11 +7,9 @@
 //! Rust owns the decision; TypeScript calls `persona/allocate` IPC and uses the result.
 //!
 //! Allocation strategy — per-persona tiered model selection:
-//!   32GB+ CUDA (5090):       CodeReview(32B/20GB) + Teacher(14B/9GB) + Helper(8B/5GB) + Local(3B/3GB)
-//!   24-31GB Metal (M-Max):   Teacher(14B/9GB) + Helper(8B/5GB) + Local(3B/3GB)
-//!   16-23GB Metal (M-Pro):   Teacher(8B/5GB) + Helper(3B/3GB) + Local(3B/3GB)
-//!   8-15GB (MacBook Air):    Helper(3B/3GB)
-//!   <8GB / CPU:              Helper(3B/3GB, CPU mode)
+//!   32GB+ unified/VRAM:      shared Qwen3.5 text personas + Qwen2-VL vision
+//!   16GB+ unified/VRAM:      shared Qwen3.5 text personas, vision when budget allows
+//!   <16GB / CPU:             reduced local fleet selected from the same Qwen catalog
 //!   + per cloud API key:     One persona per key (0GB VRAM)
 
 use serde::{Deserialize, Serialize};
@@ -139,16 +137,8 @@ const SYSTEM_RESERVE_GB: f64 = 2.0;
 /// Select the best local model given total VRAM (system-wide default).
 /// Thresholds use 0.5GB margin — GPUs report slightly less than nominal
 /// (e.g. RTX 5090 "32GB" reports 31.84GB).
-pub fn select_local_model(vram_gb: f64) -> &'static str {
-    if vram_gb >= 31.0 {
-        "coder-32b" // 32B compacted — SOTA for 5090/A100
-    } else if vram_gb >= 15.0 {
-        "coder" // 14B compacted — fits MacBook Pro 16GB+
-    } else if vram_gb >= 8.0 {
-        "unsloth/Llama-3.1-8B-Instruct"
-    } else {
-        "unsloth/Llama-3.2-3B-Instruct"
-    }
+pub fn select_local_model(_vram_gb: f64) -> &'static str {
+    "continuum-ai/qwen3.5-4b-code-forged-GGUF"
 }
 
 /// Detect GPU type from the manager's device name.
@@ -162,10 +152,17 @@ fn detect_gpu_type(gpu_name: &str) -> &'static str {
         "cuda"
     } else if lower.contains("apple") || lower.contains("metal") {
         "metal"
-    } else if lower == "cpu" || lower.contains("cpu fallback") {
-        "cpu"
     } else {
-        // Unknown GPU — assume metal on macOS, cuda elsewhere
+        // Unknown GPU name — fall back to OS-default GPU type. The pre-fix
+        // "cpu" branch (`lower == "cpu" || lower.contains("cpu fallback")`)
+        // was removed: per architecture (#964 series, #980 GPU-fallback
+        // audit) the gpu_name "CPU" should be unreachable post-#998 since
+        // memory_manager::detect_gpu() panics rather than synthesizing a
+        // CPU-shaped fake GPU. If somehow a "cpu" gpu_name still arrives
+        // here, returning the OS-default type ("metal" on Mac, "cuda" on
+        // Linux) is a best-guess that lets the caller proceed with
+        // a real GPU subsystem rather than configuring a non-existent
+        // "cpu" subsystem that no inference path actually serves.
         #[cfg(target_os = "macos")]
         {
             "metal"
@@ -190,10 +187,9 @@ pub fn allocate(
     let gpu_name = gpu_manager.gpu_name().to_string();
     let gpu_type = detect_gpu_type(&gpu_name).to_string();
 
-    // In CPU mode (no GPU / Docker without GPU passthrough), use system RAM as
-    // the memory budget. Candle inference runs on CPU using system RAM — the VRAM
-    // field is zero but we still have memory to work with. Reserve 4GB for OS +
-    // Docker overhead, use the rest for models.
+    // In CPU/container mode (no GPU / Docker without GPU passthrough), use
+    // system RAM as the memory budget. Runtime local chat is llama.cpp/Qwen,
+    // not Candle; Candle remains a training/auxiliary concern.
     let system_ram_gb = {
         #[cfg(target_os = "linux")]
         {
@@ -265,8 +261,6 @@ pub fn allocate(
 
     let has_api_key = |env_var: &str| -> bool { available_api_keys.iter().any(|k| k == env_var) };
 
-    let mut any_candle_allocated = false;
-
     for entry in catalog {
         let mut allocation = PersonaAllocation {
             unique_id: entry.unique_id.clone(),
@@ -297,11 +291,11 @@ pub fn allocate(
             continue;
         }
 
-        // Local candle inference: check memory budget (VRAM or system RAM).
+        // Local llama.cpp/Qwen inference: check memory budget (VRAM/unified/RAM).
         // Model sharing: if two personas use the same model, the model loads ONCE.
         // The second persona's cost is ~0 (just config overhead). This means a
-        // 24GB Docker container can run 4+ candle personas off one 3GB model.
-        if entry.provider == "candle" {
+        // 24GB Docker container can run multiple local personas off one model.
+        if entry.provider == "local" {
             let resolved = resolve_model_for_persona(entry, effective_memory_gb, &local_model);
             let model_name = resolved.model.clone();
             let needed_gb = resolved.vram_budget_gb;
@@ -333,7 +327,6 @@ pub fn allocate(
                     models_loaded.insert(model_name, needed_gb);
                 }
                 vram_allocated_gb += additional_cost;
-                any_candle_allocated = true;
                 allocations.push(allocation);
             } else {
                 allocation.reason = format!(
@@ -455,21 +448,26 @@ mod tests {
 
     #[test]
     fn test_select_local_model() {
-        assert_eq!(select_local_model(32.0), "coder-32b");
-        assert_eq!(select_local_model(48.0), "coder-32b");
-        assert_eq!(select_local_model(31.84), "coder-32b"); // RTX 5090 reports 31.84
-        assert_eq!(select_local_model(24.0), "coder");
-        assert_eq!(select_local_model(16.0), "coder");
-        assert_eq!(select_local_model(15.5), "coder");
-        assert_eq!(select_local_model(8.0), "unsloth/Llama-3.1-8B-Instruct");
-        assert_eq!(select_local_model(4.0), "unsloth/Llama-3.2-3B-Instruct");
+        assert_eq!(select_local_model(32.0), "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(select_local_model(48.0), "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(select_local_model(16.0), "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(select_local_model(4.0), "continuum-ai/qwen3.5-4b-code-forged-GGUF");
     }
 
     #[test]
     fn test_detect_gpu_type() {
         assert_eq!(detect_gpu_type("NVIDIA GeForce RTX 5090"), "cuda");
         assert_eq!(detect_gpu_type("Apple M3 Max"), "metal");
-        assert_eq!(detect_gpu_type("CPU"), "cpu");
+        // Removed: assert_eq!(detect_gpu_type("CPU"), "cpu");
+        // Per #998 + #964-series GPU-fallback audit, "cpu" gpu_name is
+        // unreachable in production (memory_manager panics first). The
+        // "cpu" branch was removed; an unknown gpu_name now falls back
+        // to the OS-default GPU type rather than configuring a "cpu"
+        // subsystem no inference path serves.
+        #[cfg(target_os = "macos")]
+        assert_eq!(detect_gpu_type("CPU"), "metal");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(detect_gpu_type("CPU"), "cuda");
     }
 
     #[test]
@@ -489,14 +487,14 @@ mod tests {
         let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog);
 
-        // Should always create at least one candle persona (CPU fallback)
-        let candle_count = result
+        // Should always create at least one local persona.
+        let local_count = result
             .allocations
             .iter()
-            .filter(|a| a.provider == "candle")
+            .filter(|a| a.provider == "local")
             .count();
         assert!(
-            candle_count >= 1,
+            local_count >= 1,
             "Should create at least one local persona"
         );
 
@@ -504,7 +502,7 @@ mod tests {
         let cloud_count = result
             .allocations
             .iter()
-            .filter(|a| a.api_key_env.is_some() && a.provider != "candle")
+            .filter(|a| a.api_key_env.is_some() && a.provider != "local")
             .count();
         assert_eq!(
             cloud_count, 0,
@@ -535,7 +533,7 @@ mod tests {
         let entry = PersonaCatalogEntry {
             unique_id: "codereview".to_string(),
             display_name: "CodeReview AI".to_string(),
-            provider: "candle".to_string(),
+            provider: "local".to_string(),
             persona_type: "persona".to_string(),
             voice_id: None,
             model_id: Some("coder".to_string()),
@@ -548,31 +546,31 @@ mod tests {
             model_preferences: vec![
                 ModelPreference {
                     min_vram_gb: 32.0,
-                    model: "coder-32b".to_string(),
+                    model: "continuum-ai/qwen3.5-27b-code-forged".to_string(),
                     vram_budget_gb: 20.0,
                 },
                 ModelPreference {
                     min_vram_gb: 16.0,
-                    model: "coder".to_string(),
-                    vram_budget_gb: 9.0,
+                    model: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
+                    vram_budget_gb: 3.0,
                 },
             ],
         };
 
-        // 32GB → gets 32B model
-        let r = resolve_model_for_persona(&entry, 32.0, "coder-32b");
-        assert_eq!(r.model, "coder-32b");
+        // 32GB → gets larger Qwen3.5 model when catalog permits
+        let r = resolve_model_for_persona(&entry, 32.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(r.model, "continuum-ai/qwen3.5-27b-code-forged");
         assert_eq!(r.vram_budget_gb, 20.0);
 
-        // 24GB → gets 14B model (32B doesn't fit tier)
-        let r = resolve_model_for_persona(&entry, 24.0, "coder");
-        assert_eq!(r.model, "coder");
-        assert_eq!(r.vram_budget_gb, 9.0);
+        // 24GB → gets forged Qwen3.5 default
+        let r = resolve_model_for_persona(&entry, 24.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(r.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(r.vram_budget_gb, 3.0);
 
         // 8GB → falls to lowest preference
-        let r = resolve_model_for_persona(&entry, 8.0, "unsloth/Llama-3.1-8B-Instruct");
-        assert_eq!(r.model, "coder");
-        assert_eq!(r.vram_budget_gb, 9.0);
+        let r = resolve_model_for_persona(&entry, 8.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(r.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(r.vram_budget_gb, 3.0);
     }
 
     #[test]
@@ -580,10 +578,10 @@ mod tests {
         let entry = PersonaCatalogEntry {
             unique_id: "helper".to_string(),
             display_name: "Helper AI".to_string(),
-            provider: "candle".to_string(),
+            provider: "local".to_string(),
             persona_type: "persona".to_string(),
             voice_id: None,
-            model_id: Some("unsloth/Llama-3.2-3B-Instruct".to_string()),
+            model_id: Some("continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string()),
             is_audio_native: false,
             api_key_env: None,
             min_vram_gb: Some(3.0),
@@ -593,8 +591,8 @@ mod tests {
             model_preferences: vec![], // No preferences → legacy path
         };
 
-        let r = resolve_model_for_persona(&entry, 32.0, "coder-32b");
-        assert_eq!(r.model, "unsloth/Llama-3.2-3B-Instruct");
+        let r = resolve_model_for_persona(&entry, 32.0, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(r.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
         assert_eq!(r.vram_budget_gb, 3.0);
     }
 
@@ -612,12 +610,27 @@ mod tests {
             "CodeReview should have model_preferences in catalog.json"
         );
 
-        // Verify highest tier is first
+        // Verify local runtime uses the Qwen registry, not legacy training backends.
         let first = &codereview.model_preferences[0];
-        assert!(
-            first.min_vram_gb >= 31.0,
-            "First preference should be for 31GB+ (was {}GB)",
-            first.min_vram_gb
+        assert_eq!(
+            codereview.provider, "local",
+            "Runtime persona provider must be local, not training backend"
+        );
+        assert_eq!(
+            first.model,
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            "CodeReview should use the Qwen3.5 local registry default"
+        );
+
+        let vision = catalog
+            .iter()
+            .find(|e| e.unique_id == "vision")
+            .expect("Vision AI should be in the Rust persona catalog");
+        assert_eq!(vision.provider, "local");
+        assert_eq!(
+            vision.model_preferences[0].model,
+            "qwen2-vl-7b-instruct",
+            "Vision AI should use the Qwen2-VL local registry default"
         );
     }
 
@@ -630,31 +643,30 @@ mod tests {
         let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog);
 
-        // Find candle personas
-        let candle: Vec<_> = result
+        // Find local personas
+        let local: Vec<_> = result
             .allocations
             .iter()
-            .filter(|a| a.provider == "candle")
+            .filter(|a| a.provider == "local")
             .collect();
 
-        assert!(!candle.is_empty(), "Should have candle personas");
+        assert!(!local.is_empty(), "Should have local personas");
 
-        // CodeReview should get coder-32b on 5090
-        if let Some(cr) = candle.iter().find(|a| a.unique_id == "codereview") {
+        // CodeReview should get the shared Qwen3.5 local default.
+        if let Some(cr) = local.iter().find(|a| a.unique_id == "codereview") {
             assert_eq!(
                 cr.resolved_model.as_deref(),
-                Some("coder-32b"),
-                "CodeReview on 5090 should get coder-32b, got {:?}",
+                Some("continuum-ai/qwen3.5-4b-code-forged-GGUF"),
+                "CodeReview should get Qwen3.5 local default, got {:?}",
                 cr.resolved_model
             );
         }
 
-        // Teacher should get 8B (14B budget goes to CodeReview's 32B model)
-        if let Some(t) = candle.iter().find(|a| a.unique_id == "teacher") {
+        if let Some(t) = local.iter().find(|a| a.unique_id == "teacher") {
             assert_eq!(
                 t.resolved_model.as_deref(),
-                Some("unsloth/Llama-3.1-8B-Instruct"),
-                "Teacher on 5090 should get Llama-3.1-8B, got {:?}",
+                Some("continuum-ai/qwen3.5-4b-code-forged-GGUF"),
+                "Teacher should get Qwen3.5 local default, got {:?}",
                 t.resolved_model
             );
         }
@@ -669,21 +681,13 @@ mod tests {
         let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog);
 
-        let candle: Vec<_> = result
+        let local: Vec<_> = result
             .allocations
             .iter()
-            .filter(|a| a.provider == "candle")
+            .filter(|a| a.provider == "local")
             .collect();
 
-        // CodeReview needs too much VRAM for 16GB — should be skipped
-        let cr = candle.iter().find(|a| a.unique_id == "codereview");
-        if let Some(cr) = cr {
-            // If it was allocated, it should NOT have the 32B model
-            assert_ne!(
-                cr.resolved_model.as_deref(),
-                Some("coder-32b"),
-                "CodeReview on 16GB should NOT get coder-32b"
-            );
-        }
+        assert!(local.iter().any(|a| a.unique_id == "codereview"));
+        assert!(local.iter().any(|a| a.unique_id == "helper"));
     }
 }

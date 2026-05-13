@@ -204,20 +204,47 @@ if [ ! -f "target/release/continuum-core-server" ]; then
   echo -e "  [Rust] ${YELLOW}First build detected — this takes 5-15 minutes. Showing progress...${NC}"
   CARGO_QUIET=""
 fi
+
+# Wrapper around `cargo build -p <pkg>`. On incremental builds (CARGO_QUIET
+# non-empty) we capture-then-display, which keeps the log clean. On first
+# builds (CARGO_QUIET empty) we tee so cargo's "Compiling crate vX.Y.Z"
+# lines stream live to the terminal — without this, the user saw the
+# "First build detected — Showing progress..." banner then total silence
+# for 5-15 minutes because $(cargo ...) blocks until cargo exits. We still
+# capture into $OUT for preflight_check_cargo_xcode + the failure path.
+build_pkg() {
+  local pkg="$1"; shift
+  if [ -n "$CARGO_QUIET" ]; then
+    OUT=$(cargo build --release -p "$pkg" "$@" --quiet 2>&1) \
+      || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  else
+    local tmp
+    tmp=$(mktemp)
+    cargo build --release -p "$pkg" "$@" 2>&1 | tee "$tmp"
+    local rc=${PIPESTATUS[0]}
+    OUT=$(cat "$tmp")
+    rm -f "$tmp"
+    if [ "$rc" -ne 0 ]; then
+      BUILD_OUTPUT+="$OUT"
+      RESULT=1
+    fi
+  fi
+}
+
 for pkg in archive-worker jtag-mcp; do
-  OUT=$(cargo build --release -p $pkg $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg "$pkg"
 done
 # continuum-core: all GPU features (metal+accelerate on macOS, cuda on Linux)
 if [ -n "$GPU_FEAT" ]; then
-  OUT=$(cargo build --release -p continuum-core --features "$GPU_FEAT" $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg continuum-core --features "$GPU_FEAT"
 else
-  OUT=$(cargo build --release -p continuum-core $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg continuum-core
 fi
 # inference-grpc: GPU backend only (metal or cuda, no accelerate)
 if [ -n "$GPU_BACKEND" ]; then
-  OUT=$(cargo build --release -p inference-grpc --features "$GPU_BACKEND" $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg inference-grpc --features "$GPU_BACKEND"
 else
-  OUT=$(cargo build --release -p inference-grpc $CARGO_QUIET 2>&1) || { BUILD_OUTPUT+="$OUT"; RESULT=1; }
+  build_pkg inference-grpc
 fi
 # Filter ts-rs noise and display
 echo "$BUILD_OUTPUT" | grep -v -E "ts-rs failed to parse|failed to parse serde|= note:|skip_serializing_if|^\s*\|?\s*$|^$" | sed 's/^/  [Rust] /'
@@ -359,13 +386,27 @@ echo -e "\n${YELLOW}Phase 4: Launch system${NC}"
 
 # Ensure log directory exists
 mkdir -p "$CONTINUUM_ROOT/jtag/logs/system"
+STARTUP_AUTONOMOUS_PAUSE="$CONTINUUM_ROOT/jtag/startup-autonomous-work.paused"
+echo "$$" > "$STARTUP_AUTONOMOUS_PAUSE"
+cleanup_startup_pause() {
+  rm -f "$STARTUP_AUTONOMOUS_PAUSE"
+}
+trap cleanup_startup_pause EXIT
 
 # Start the orchestrator as a daemon — it runs forever (WebSocket server is in-process).
-# Redirect output to log file. system-stop.sh finds it by pattern "launch-active-example".
-nohup npx tsx scripts/launch-active-example.ts \
-  >> $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log 2>&1 &
-LAUNCH_PID=$!
-disown $LAUNCH_PID
+# Use the project-local tsx binary directly; `npx` is a short-lived wrapper and
+# has caused false "daemon" starts where the launcher dies after npm start exits.
+# Redirect stdin as well as output so parent shell/PTY teardown cannot touch it.
+# system-stop.sh finds it by pattern "launch-active-example".
+# Browser attachment happens after seed below. Starting the orchestrator with
+# browser management enabled lets stale tabs reconnect during seed and trigger
+# persona/RAG/model work while the database is still being synchronized.
+TSX_BIN="$PROJECT_DIR/node_modules/.bin/tsx"
+LAUNCH_PID=$(node "$PROJECT_DIR/scripts/spawn-detached.mjs" \
+  --cwd "$PROJECT_DIR" \
+  --log "$CONTINUUM_ROOT/jtag/logs/system/orchestrator.log" \
+  --env CONTINUUM_DEFER_BROWSER=1 \
+  -- "$TSX_BIN" scripts/launch-active-example.ts)
 echo "$LAUNCH_PID" > $CONTINUUM_ROOT/jtag/logs/system/npm-start.pid
 echo -e "  Orchestrator started (PID $LAUNCH_PID, log: $CONTINUUM_ROOT/jtag/logs/system/orchestrator.log)"
 
@@ -420,13 +461,52 @@ fi
 # Critical: Browser must connect AFTER seeding so findSeededHumanOwner() finds Joel.
 # Without this, browser connects → anonymous user created → wrong userId in session.
 echo -e "\n${YELLOW}Phase 5.5: Ensuring database is seeded...${NC}"
+# Capture data:seed's exit code via PIPESTATUS — without this the pipe
+# to sed always succeeds and we'd print "✅ Seed complete" even after
+# seed failed (#980 Bug 3, observed live on M1 Carl pass: seed timed
+# out at 480s, then this script printed "✅ Seed complete" + "🎉 System
+# is UP!" anyway, then chat went silent because no personas existed).
+# Same PIPESTATUS pattern as the TS build subshell at ~line 278.
 npm run data:seed 2>&1 | sed 's/^/  [Seed] /'
-echo -e "  ${GREEN}✅ Seed complete${NC}"
+SEED_RC=${PIPESTATUS[0]}
+SEED_OK=true
+if [ "$SEED_RC" -ne 0 ]; then
+  SEED_OK=false
+  echo -e "  ${RED}❌ Seeding failed (exit $SEED_RC) — first chat will likely have no AI responder.${NC}"
+  echo -e "  ${YELLOW}   Common cause: continuum-core didn't register commands within the seed${NC}"
+  echo -e "  ${YELLOW}   wait window (480s). Check orchestrator + core logs for SIGABRT / crash:${NC}"
+  echo -e "  ${YELLOW}     tail -100 \$HOME/.continuum/jtag/logs/system/orchestrator.log${NC}"
+  echo -e "  ${YELLOW}     tail -100 \$HOME/.continuum/jtag/logs/system/continuum-core.log${NC}"
+  echo -e "  ${YELLOW}   System will still start, but chat won't have personas. Re-seed after fixing:${NC}"
+  echo -e "  ${YELLOW}     npm run data:seed${NC}"
+  # Don't exit here — system may still be partially usable + user can
+  # re-seed once they've fixed the underlying core failure. But the
+  # final "System is UP" banner below tells the truth (degraded vs ok).
+else
+  echo -e "  ${GREEN}✅ Seed complete${NC}"
+fi
+cleanup_startup_pause
 
-# Phase 6: Browser launch is handled by SystemOrchestrator.detectAndManageBrowser()
-# The orchestrator runs as a daemon and manages browser lifecycle — open, detect, reconnect.
-# Shell script does NOT open the browser to avoid duplicate tabs (#335).
+# Phase 6: Browser attach happens only after seed. This script owns the final
+# post-seed refresh/open so the orchestrator cannot race UI hydration against
+# database synchronization.
 BROWSER_CONNECTED=false
+if [ "$SEED_OK" = true ]; then
+  echo -e "  ${YELLOW}Attaching browser after seed...${NC}"
+  PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
+  if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
+    if ./jtag interface/navigate >/dev/null 2>&1; then
+      BROWSER_CONNECTED=true
+      echo -e "  ${GREEN}Browser refreshed after seed${NC}"
+    else
+      ./jtag development/exec --code="location.reload()" >/dev/null 2>&1 || true
+    fi
+  elif command -v open >/dev/null 2>&1; then
+    open "http://localhost:9000/chat/general" >/dev/null 2>&1 || true
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "http://localhost:9000/chat/general" >/dev/null 2>&1 || true
+  fi
+fi
 if [ "$HOT_RESTART" = true ]; then
   # Hot restart: give existing tab time to reconnect via WebSocket
   echo -e "  ⏳ Waiting for browser to reconnect..."
@@ -443,7 +523,13 @@ fi
 
 END_TIME=$(date +%s)
 TOTAL_ELAPSED=$((END_TIME - START_TIME))
-if [ "$HOT_RESTART" = true ] && [ "$BROWSER_CONNECTED" = true ]; then
+# Banner reflects the truth: if seed failed, system is DEGRADED (no
+# personas, chat silent). Per Joel's silent-success-is-failure rule
+# we don't print 🎉 over a known-broken state. #980 Bug 3.
+if [ "$SEED_OK" != true ]; then
+  echo -e "\n${RED}⚠️  System started in DEGRADED mode (${TOTAL_ELAPSED}s) — seed failed, chat will not have personas.${NC}"
+  echo -e "${YELLOW}   See seeding error above + log paths for diagnosis.${NC}"
+elif [ "$HOT_RESTART" = true ] && [ "$BROWSER_CONNECTED" = true ]; then
   echo -e "\n${GREEN}🎉 Hot restart complete! (${TOTAL_ELAPSED}s) — browser refreshed${NC}"
 elif [ "$HOT_RESTART" = true ]; then
   echo -e "\n${GREEN}🎉 Hot restart complete! (${TOTAL_ELAPSED}s)${NC}"

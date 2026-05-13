@@ -32,6 +32,7 @@ export type { MediaItemRequest } from './MediaItemRequest';
 export type { MentionCheckResult } from './MentionCheckResult';
 export type { Modality } from './Modality';
 export type { ModelFamily } from './ModelFamily';
+export type { ModelSelectionError } from './ModelSelectionError';
 export type { ModelSelectionRequest } from './ModelSelectionRequest';
 export type { ModelSelectionResult } from './ModelSelectionResult';
 export type { Mood } from './Mood';

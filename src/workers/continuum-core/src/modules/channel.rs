@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -78,6 +78,15 @@ pub struct ChannelState {
     pub self_task_generators: DashMap<Uuid, tokio::sync::Mutex<SelfTaskGenerator>>,
     /// Tick configuration — adjustable at runtime via channel/tick-config command.
     pub tick_config: std::sync::RwLock<ChannelTickConfig>,
+    /// Circuit breaker for DB-backed tick work. One failing Postgres path should
+    /// not fan out into N personas × M queries every tick.
+    pub db_tick_backoff: std::sync::Mutex<DbTickBackoff>,
+}
+
+#[derive(Debug, Default)]
+pub struct DbTickBackoff {
+    pub consecutive_failures: u32,
+    pub backoff_until: Option<Instant>,
 }
 
 impl ChannelState {
@@ -87,6 +96,7 @@ impl ChannelState {
             personas,
             self_task_generators: DashMap::new(),
             tick_config: std::sync::RwLock::new(ChannelTickConfig::default()),
+            db_tick_backoff: std::sync::Mutex::new(DbTickBackoff::default()),
         }
     }
 
@@ -100,6 +110,7 @@ impl ChannelState {
             personas,
             self_task_generators: DashMap::new(),
             tick_config: std::sync::RwLock::new(ChannelTickConfig::default()),
+            db_tick_backoff: std::sync::Mutex::new(DbTickBackoff::default()),
         }
     }
 }
@@ -443,6 +454,12 @@ impl ServiceModule for ChannelModule {
             return Ok(());
         }
 
+        if (config.task_poll_enabled || config.self_task_enabled || config.training_check_enabled)
+            && self.should_skip_db_tick()
+        {
+            return Ok(());
+        }
+
         let executor = crate::runtime::command_executor::executor();
         let mut total_enqueued = 0u32;
         let mut total_self_tasks = 0u32;
@@ -465,19 +482,28 @@ impl ServiceModule for ChannelModule {
                     )
                     .await;
 
-                if let Ok(result_json) = query_result {
-                    if let Some(records) = result_json.get("data").and_then(|d| d.as_array()) {
-                        for record in records {
-                            if let Some(item) = Self::record_to_task_queue_item(record, persona_id)
-                            {
-                                if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
-                                    let (registry, _state) = entry.value_mut();
-                                    if registry.route(Box::new(item)).is_ok() {
-                                        total_enqueued += 1;
+                match query_result {
+                    Ok(result_json) => {
+                        if let Some(records) = result_json.get("data").and_then(|d| d.as_array()) {
+                            for record in records {
+                                if let Some(item) =
+                                    Self::record_to_task_queue_item(record, persona_id)
+                                {
+                                    if let Some(mut entry) =
+                                        self.state.registries.get_mut(persona_id)
+                                    {
+                                        let (registry, _state) = entry.value_mut();
+                                        if registry.route(Box::new(item)).is_ok() {
+                                            total_enqueued += 1;
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+                    Err(e) => {
+                        self.record_db_tick_failure(&format!("task poll failed: {e}"));
+                        return Ok(());
                     }
                 }
             }
@@ -514,7 +540,10 @@ impl ServiceModule for ChannelModule {
                             }
                         }
                         Err(e) => {
-                            log.warn(&format!("Self-task gen failed for {}: {}", persona_id, e))
+                            self.record_db_tick_failure(&format!(
+                                "self-task gen failed for {persona_id}: {e}"
+                            ));
+                            return Ok(());
                         }
                     }
                 }
@@ -569,23 +598,31 @@ impl ServiceModule for ChannelModule {
                     )
                     .await;
 
-                if let Ok(count_json) = training_result {
-                    let count = count_json.get("data").and_then(|v| v.as_u64()).unwrap_or(0);
+                match training_result {
+                    Ok(count_json) => {
+                        let count = count_json.get("data").and_then(|v| v.as_u64()).unwrap_or(0);
 
-                    if count >= config.training_threshold {
-                        log.info(&format!("Training threshold met for {} ({} examples), triggering genome/job-create", persona_id, count));
-                        let _ = crate::runtime::command_executor::execute_ts_json(
-                            "genome/job-create",
-                            serde_json::json!({
-                                "personaId": persona_id.to_string(),
-                                "trainingExamples": count,
-                            }),
-                        )
-                        .await;
+                        if count >= config.training_threshold {
+                            log.info(&format!("Training threshold met for {} ({} examples), triggering genome/job-create", persona_id, count));
+                            let _ = crate::runtime::command_executor::execute_ts_json(
+                                "genome/job-create",
+                                serde_json::json!({
+                                    "personaId": persona_id.to_string(),
+                                    "trainingExamples": count,
+                                }),
+                            )
+                            .await;
+                        }
+                    }
+                    Err(e) => {
+                        self.record_db_tick_failure(&format!("training check failed: {e}"));
+                        return Ok(());
                     }
                 }
             }
         }
+
+        self.record_db_tick_success();
 
         if total_enqueued > 0 || total_self_tasks > 0 {
             log.info(&format!(
@@ -605,6 +642,44 @@ impl ServiceModule for ChannelModule {
 }
 
 impl ChannelModule {
+    fn should_skip_db_tick(&self) -> bool {
+        let Ok(backoff) = self.state.db_tick_backoff.lock() else {
+            return false;
+        };
+
+        backoff
+            .backoff_until
+            .map(|until| Instant::now() < until)
+            .unwrap_or(false)
+    }
+
+    fn record_db_tick_success(&self) {
+        if let Ok(mut backoff) = self.state.db_tick_backoff.lock() {
+            backoff.consecutive_failures = 0;
+            backoff.backoff_until = None;
+        }
+    }
+
+    fn record_db_tick_failure(&self, reason: &str) {
+        let log = crate::runtime::logger("channel-tick");
+        if let Ok(mut backoff) = self.state.db_tick_backoff.lock() {
+            backoff.consecutive_failures = backoff.consecutive_failures.saturating_add(1);
+            let delay_secs = match backoff.consecutive_failures {
+                1 => 60,
+                2 => 120,
+                3 => 300,
+                _ => 600,
+            };
+            backoff.backoff_until = Some(Instant::now() + Duration::from_secs(delay_secs));
+            log.warn(&format!(
+                "DB-backed tick disabled for {delay_secs}s after {} consecutive failure(s): {reason}",
+                backoff.consecutive_failures
+            ));
+        } else {
+            log.warn(&format!("DB-backed tick failed: {reason}"));
+        }
+    }
+
     /// Convert a DB record (from data/query result) to a TaskQueueItem.
     fn record_to_task_queue_item(record: &Value, persona_id: &Uuid) -> Option<TaskQueueItem> {
         let record_id = record

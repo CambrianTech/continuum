@@ -27,6 +27,6 @@ VOLUME ["/root/.continuum"]
 EXPOSE 9000 9001
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
-    CMD node -e "const s=require('net').connect(9001,'localhost',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))"
+    CMD test -f /root/.continuum/run/node-server.ready && node -e "const s=require('net').connect(9001,'localhost',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1))"
 
 CMD ["npx", "tsx", "server/docker-entrypoint.ts"]

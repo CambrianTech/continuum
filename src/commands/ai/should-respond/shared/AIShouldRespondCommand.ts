@@ -3,7 +3,7 @@
  *
  * Sentinel/Coordinator pattern: Use AI to intelligently gate persona responses
  *
- * Uses llama3.2:3b (validated, fast, cheap) to analyze full conversation context
+ * Uses the local Qwen gating model to analyze full conversation context
  * and decide if a persona should respond to a message.
  */
 

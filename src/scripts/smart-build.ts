@@ -115,6 +115,33 @@ function checkGeneratedFiles(): BuildCheck {
   return { name: 'Generated files', needed: false, reason: 'Generated files up to date' };
 }
 
+function checkCliBundle(): BuildCheck {
+  // dist/cli-bundle.js is REQUIRED by src/jtag's fast path. Without it,
+  // jtag falls back to `tsx cli.ts` which can't resolve tsconfig path
+  // aliases at runtime → ERR_MODULE_NOT_FOUND on every fresh invocation.
+  // Pre-fix smart-build only ran build:cli when the TypeScript check
+  // also fired (postbuild was bundled into the TS case at line 236),
+  // so on `npm start` after a clean dist/ wipe but no TS source change,
+  // build:cli silently never ran. airc-8a5e 2026-05-03 Carl-UX QA #2:
+  // "dist/cli-bundle.js NEVER BUILT — npm start runs smart-build but
+  // skips postbuild when TS up-to-date." This is the dedicated check.
+  const bundlePath = 'dist/cli-bundle.js';
+  const bundleTime = getFileModTime(bundlePath);
+  const cliInput = getFileModTime('cli.ts');
+  const compiledJs = getNewestFileTime('dist/**/*.js');
+
+  if (bundleTime === 0) {
+    return { name: 'CLI bundle', needed: true, reason: 'dist/cli-bundle.js does not exist (jtag fast path requires it)' };
+  }
+  if (cliInput > bundleTime) {
+    return { name: 'CLI bundle', needed: true, reason: 'cli.ts newer than dist/cli-bundle.js' };
+  }
+  if (compiledJs > bundleTime) {
+    return { name: 'CLI bundle', needed: true, reason: 'compiled JS newer than dist/cli-bundle.js (TS rebuild requires bundle rebuild)' };
+  }
+  return { name: 'CLI bundle', needed: false, reason: 'dist/cli-bundle.js up to date' };
+}
+
 function checkBrowserBundle(): BuildCheck {
   const bundlePath = 'examples/widget-ui/dist/index.js';
   const bundleTime = getFileModTime(bundlePath);
@@ -187,6 +214,7 @@ async function smartBuild(): Promise<void> {
   const checks: BuildCheck[] = [
     checkGeneratedFiles(),
     checkTypeScriptBuild(),
+    checkCliBundle(),
     checkBrowserBundle()
     // Tarball check disabled for development - only pack for releases with: npm run pack
     // checkTarball()
@@ -219,11 +247,20 @@ async function smartBuild(): Promise<void> {
         break;
       case 'TypeScript':
         runBuildStep('TypeScript compilation', 'npm run build:ts');
-        // Only run postbuild if clean generator output exists (optional optimization)
-        const cleanConfigPath = path.join(__dirname, '../.continuum/generator/path-mappings.json');
-        if (fs.existsSync(cleanConfigPath)) {
-          runBuildStep('Post-build processing', 'npm run postbuild');
-        }
+        // postbuild here covers the TS-rebuild case. The CLI bundle
+        // case below is the explicit fallback when TS is up-to-date
+        // but cli-bundle.js is stale or missing (e.g. clean dist/
+        // without TS source changes, fresh install with cached TS
+        // outputs from a prior pack, etc).
+        runBuildStep('Post-build processing', 'npm run postbuild');
+        break;
+      case 'CLI bundle':
+        // Standalone bundle rebuild — TS already up-to-date, just
+        // dist/cli-bundle.js missing or stale. Without this case
+        // smart-build would say "everything up to date" while jtag
+        // is silently broken (no bundle → tsx fallback → path-alias
+        // ERR_MODULE_NOT_FOUND).
+        runBuildStep('CLI bundle (esbuild)', 'npm run build:cli');
         break;
       case 'Browser bundle':
         runBuildStep('Browser esbuild bundle', 'cd examples/widget-ui && node ../../scripts/build-browser-example.js');

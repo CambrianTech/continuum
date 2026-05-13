@@ -84,7 +84,15 @@ for proc_pattern in "node.*$PROJECT_PATH" "tsx.*$PROJECT_PATH" "node.*continuum"
 done
 
 # 7. Force kill anything still on our ports
-for port in 9000 9001 7880; do
+# Port set must match parallel-start.sh's bind set: 9001 (node WS),
+# 9100 (Rust IPC TCP, when CONTINUUM_CORE_TCP set), 7880-7882 (LiveKit
+# WebRTC: TCP 7880 control + 7881 RTC, UDP 7882 media), 9003 (widget),
+# 9000 (legacy/dev) — anything `npm start` binds, `npm stop` must clear.
+# Pre-fix only 9000/9001/7880 → leftover livekit-server on 7882 survived
+# every npm stop, blocking the next install.sh from re-binding the port
+# (Mac airc-8a5e 2026-05-03: "got blocked on leftover livekit-server PID
+# 66868 holding port 7882 even after npm stop").
+for port in 9000 9001 9003 9100 7880 7881 7882; do
   pids=$(lsof -ti ":$port" 2>/dev/null || true)
   if [ -n "$pids" ]; then
     echo -e "   Force killing processes on port $port: $pids"

@@ -1,13 +1,13 @@
 //! Model Selection Engine
 //!
-//! Moves the 4-tier model priority chain from TypeScript to Rust.
-//! Decisions in Rust, execution in TypeScript.
+//! Selects the concrete adapter-backed model for a persona turn. This module is
+//! intentionally fail-hard: if no trained adapter is available for the persona,
+//! the caller receives a typed error instead of silently using a base model.
 //!
 //! Priority chain:
-//! 1. Trait-specific adapter (domain → trait mapping, e.g. "code" → reasoning_style)
+//! 1. Trait-specific adapter (domain -> trait mapping, e.g. "code" -> reasoning_style)
 //! 2. Current active adapter (most recently used)
 //! 3. Any available trained adapter
-//! 4. Configured base model fallback
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -32,8 +32,6 @@ pub struct ModelSelectionRequest {
     ///         "support", "help", "social", "facts", "knowledge", "expertise"
     #[ts(optional)]
     pub task_domain: Option<String>,
-    /// Configured base model (fallback tier 4).
-    pub base_model: String,
 }
 
 /// Result of model selection — which model to use and why.
@@ -43,9 +41,9 @@ pub struct ModelSelectionRequest {
     export_to = "../../../shared/generated/persona/ModelSelectionResult.ts"
 )]
 pub struct ModelSelectionResult {
-    /// The selected model name (trained adapter model or base model).
+    /// The selected trained adapter model.
     pub model: String,
-    /// Which tier selected it: "trait_adapter", "current_adapter", "any_adapter", "base_model"
+    /// Which tier selected it: "trait_adapter", "current_adapter", "any_adapter"
     pub source: String,
     /// Name of the adapter used (if any).
     #[ts(optional)]
@@ -55,6 +53,27 @@ pub struct ModelSelectionResult {
     pub trait_used: Option<String>,
     /// How long the selection took (microseconds).
     pub decision_time_us: f64,
+}
+
+/// Hard failure when no adapter-backed model satisfies a persona turn.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, thiserror::Error)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ModelSelectionError.ts"
+)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ModelSelectionError {
+    #[error(
+        "no trained model candidate for persona {persona_id}; task_domain={task_domain:?}; adapters={adapter_count}"
+    )]
+    NoCandidate {
+        #[ts(type = "string")]
+        persona_id: uuid::Uuid,
+        #[ts(optional)]
+        task_domain: Option<String>,
+        adapter_count: usize,
+        adapters_with_trained_model: usize,
+    },
 }
 
 /// Adapter info synced from TypeScript to Rust.
@@ -105,16 +124,15 @@ pub fn domain_to_trait(domain: &str) -> &'static str {
 // MODEL SELECTION
 // =============================================================================
 
-/// Select the best model using the 4-tier priority chain.
+/// Select the best model using the adapter priority chain.
 ///
 /// Tier 1: Trait-specific adapter (domain → trait → adapter with trained_model_name)
 /// Tier 2: Current active adapter (is_current=true with trained_model_name)
 /// Tier 3: Any adapter with an trained_model_name
-/// Tier 4: base_model fallback
 pub fn select_model(
     request: &ModelSelectionRequest,
     registry: &AdapterRegistry,
-) -> ModelSelectionResult {
+) -> Result<ModelSelectionResult, ModelSelectionError> {
     let start = Instant::now();
 
     // TIER 1: Trait-specific adapter
@@ -132,13 +150,13 @@ pub fn select_model(
             });
 
         if let Some(adapter) = trait_match {
-            return ModelSelectionResult {
+            return Ok(ModelSelectionResult {
                 model: adapter.trained_model_name.clone().unwrap(),
                 source: "trait_adapter".into(),
                 adapter_name: Some(adapter.name.clone()),
                 trait_used: Some(target_trait.to_string()),
                 decision_time_us: start.elapsed().as_secs_f64() * 1_000_000.0,
-            };
+            });
         }
     }
 
@@ -149,13 +167,13 @@ pub fn select_model(
         .find(|a| a.is_current && a.trained_model_name.is_some());
 
     if let Some(adapter) = current {
-        return ModelSelectionResult {
+        return Ok(ModelSelectionResult {
             model: adapter.trained_model_name.clone().unwrap(),
             source: "current_adapter".into(),
             adapter_name: Some(adapter.name.clone()),
             trait_used: None,
             decision_time_us: start.elapsed().as_secs_f64() * 1_000_000.0,
-        };
+        });
     }
 
     // TIER 3: Any available adapter with a trained model name
@@ -169,23 +187,25 @@ pub fn select_model(
         });
 
     if let Some(adapter) = any_adapter {
-        return ModelSelectionResult {
+        return Ok(ModelSelectionResult {
             model: adapter.trained_model_name.clone().unwrap(),
             source: "any_adapter".into(),
             adapter_name: Some(adapter.name.clone()),
             trait_used: None,
             decision_time_us: start.elapsed().as_secs_f64() * 1_000_000.0,
-        };
+        });
     }
 
-    // TIER 4: Base model fallback
-    ModelSelectionResult {
-        model: request.base_model.clone(),
-        source: "base_model".into(),
-        adapter_name: None,
-        trait_used: None,
-        decision_time_us: start.elapsed().as_secs_f64() * 1_000_000.0,
-    }
+    Err(ModelSelectionError::NoCandidate {
+        persona_id: request.persona_id,
+        task_domain: request.task_domain.clone(),
+        adapter_count: registry.adapters.len(),
+        adapters_with_trained_model: registry
+            .adapters
+            .values()
+            .filter(|a| a.trained_model_name.is_some())
+            .count(),
+    })
 }
 
 // =============================================================================
@@ -197,11 +217,10 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    fn make_request(domain: Option<&str>, base: &str) -> ModelSelectionRequest {
+    fn make_request(domain: Option<&str>) -> ModelSelectionRequest {
         ModelSelectionRequest {
             persona_id: Uuid::new_v4(),
             task_domain: domain.map(String::from),
-            base_model: base.to_string(),
         }
     }
 
@@ -257,8 +276,8 @@ mod tests {
             ),
         );
 
-        let req = make_request(Some("code"), "llama3:8b");
-        let result = select_model(&req, &registry);
+        let req = make_request(Some("code"));
+        let result = select_model(&req, &registry).unwrap();
 
         assert_eq!(result.model, "codellama:7b");
         assert_eq!(result.source, "trait_adapter");
@@ -290,8 +309,8 @@ mod tests {
             ),
         );
 
-        let req = make_request(Some("code"), "llama3:8b");
-        let result = select_model(&req, &registry);
+        let req = make_request(Some("code"));
+        let result = select_model(&req, &registry).unwrap();
 
         assert_eq!(result.model, "codellama:7b-loaded");
         assert_eq!(result.source, "trait_adapter");
@@ -312,8 +331,8 @@ mod tests {
             ),
         );
 
-        let req = make_request(Some("code"), "llama3:8b");
-        let result = select_model(&req, &registry);
+        let req = make_request(Some("code"));
+        let result = select_model(&req, &registry).unwrap();
 
         // code → reasoning_style, no match → falls to tier 2
         assert_eq!(result.model, "llama3:8b-tuned");
@@ -335,8 +354,8 @@ mod tests {
             ),
         );
 
-        let req = make_request(Some("code"), "llama3:8b");
-        let result = select_model(&req, &registry);
+        let req = make_request(Some("code"));
+        let result = select_model(&req, &registry).unwrap();
 
         // No trait match, no current → tier 3
         assert_eq!(result.model, "mistral:7b-creative");
@@ -344,15 +363,25 @@ mod tests {
     }
 
     #[test]
-    fn test_tier4_base_model_fallback() {
+    fn test_empty_registry_fails_hard() {
         let registry = AdapterRegistry::default(); // empty
 
-        let req = make_request(Some("code"), "llama3:8b");
-        let result = select_model(&req, &registry);
+        let req = make_request(Some("code"));
+        let err = select_model(&req, &registry).unwrap_err();
 
-        assert_eq!(result.model, "llama3:8b");
-        assert_eq!(result.source, "base_model");
-        assert!(result.adapter_name.is_none());
+        match err {
+            ModelSelectionError::NoCandidate {
+                persona_id,
+                task_domain,
+                adapter_count,
+                adapters_with_trained_model,
+            } => {
+                assert_eq!(persona_id, req.persona_id);
+                assert_eq!(task_domain.as_deref(), Some("code"));
+                assert_eq!(adapter_count, 0);
+                assert_eq!(adapters_with_trained_model, 0);
+            }
+        }
     }
 
     #[test]
@@ -370,8 +399,8 @@ mod tests {
         );
 
         // No task_domain → skip tier 1, no current → tier 3
-        let req = make_request(None, "llama3:8b");
-        let result = select_model(&req, &registry);
+        let req = make_request(None);
+        let result = select_model(&req, &registry).unwrap();
 
         assert_eq!(result.model, "codellama:7b");
         assert_eq!(result.source, "any_adapter");
@@ -386,25 +415,33 @@ mod tests {
             make_adapter("training-only", "reasoning_style", None, true, true),
         );
 
-        let req = make_request(Some("code"), "llama3:8b");
-        let result = select_model(&req, &registry);
+        let req = make_request(Some("code"));
+        let err = select_model(&req, &registry).unwrap_err();
 
-        // All tiers skip because no trained_model_name → fallback
-        assert_eq!(result.model, "llama3:8b");
-        assert_eq!(result.source, "base_model");
+        match err {
+            ModelSelectionError::NoCandidate {
+                adapter_count,
+                adapters_with_trained_model,
+                ..
+            } => {
+                assert_eq!(adapter_count, 1);
+                assert_eq!(adapters_with_trained_model, 0);
+            }
+        }
     }
 
     #[test]
     fn test_decision_time_is_fast() {
         let registry = AdapterRegistry::default();
-        let req = make_request(Some("code"), "llama3:8b");
+        let req = make_request(Some("code"));
+        let start = Instant::now();
         let result = select_model(&req, &registry);
+        let decision_time_us = start.elapsed().as_secs_f64() * 1_000_000.0;
 
-        // Should be sub-millisecond for empty registry (allow variance from system load)
+        assert!(result.is_err());
         assert!(
-            result.decision_time_us < 500.0,
-            "Decision should be <500μs, was {}μs",
-            result.decision_time_us
+            decision_time_us < 500.0,
+            "Decision should be <500us, was {decision_time_us}us"
         );
     }
 }

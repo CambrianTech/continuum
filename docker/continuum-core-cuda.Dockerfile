@@ -86,6 +86,10 @@ COPY . .
 # from WORKDIR /app. CI must pass `build-contexts: shared-generated=./src/shared/generated`.
 COPY --from=shared-generated entity_schemas.json /shared/generated/entity_schemas.json
 
+# Model registry SSOT used by candle_adapter.rs include_str!:
+# ../../../../shared/models.json resolves to /shared/models.json here.
+COPY --from=shared models.json /shared/models.json
+
 # Fail fast if the host forgot to init submodules. Without this, cmake's
 # CMakeLists-not-found error surfaces deep inside the CUDA build —
 # terrible signal-to-noise. See issue #893.

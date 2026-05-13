@@ -21,7 +21,7 @@ import { Events } from '../../system/core/shared/Events';
 import { jtagGlobal } from '../../system/core/types/GlobalAugmentations';
 import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
-import { ROOM_UNIQUE_IDS } from '../../system/data/constants/RoomConstants';
+import type { ContentItem } from '../../system/data/entities/UserStateEntity';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
@@ -41,7 +41,9 @@ export class MainWidget extends ReactiveWidget {
   ] as CSSResultGroup;
 
   // Reactive state
-  @reactive() private currentPath = `/chat/${ROOM_UNIQUE_IDS.GENERAL}`;
+  // Joel 2026-05-03: was defaulted to `/chat/general` — same phantom-tab
+  // antipattern. setupUrlRouting() sets currentPath from the actual URL.
+  @reactive() private currentPath = '';
 
   // Non-reactive state (internal tracking)
   private contentManager!: ContentInfoManager;
@@ -82,7 +84,10 @@ export class MainWidget extends ReactiveWidget {
       () => this.userState,
       {
         name: 'MainWidget',
-        onStateChange: () => offMainThread(() => this.syncUserStateToContentState(), 1000),
+        onStateChange: () => offMainThread(() => {
+          void this.syncUserStateToContentState()
+            .catch(error => console.error('❌ MainWidget: syncUserStateToContentState failed:', error));
+        }, 1000),
         onViewSwitch: (contentType, entityId) => offMainThread(() => this.switchContentView(contentType, entityId)),
         onUrlUpdate: (contentType, identifier) => {
           queueMicrotask(() => {
@@ -175,18 +180,28 @@ export class MainWidget extends ReactiveWidget {
     });
 
     // Initialize from current URL
-    let initialPath = window.location.pathname;
+    const initialPath = window.location.pathname;
+    this.currentPath = initialPath;
 
-    // Default route: / or /chat without room → /chat/general
-    const defaultPath = `/chat/${ROOM_UNIQUE_IDS.GENERAL}`;
-    if (!initialPath || initialPath === '/' || initialPath === '/chat' || initialPath === '/chat/') {
-      initialPath = defaultPath;
-      window.history.replaceState({ path: initialPath }, '', initialPath);
-      this.log(`Redirected to default route: ${initialPath}`);
+    // Joel 2026-05-03: NO default tab on root. The previous redirect from
+    // `/` → `/chat/general` was the source of the phantom "General" tab
+    // that appeared with a stale UUID + "Loading members..." forever
+    // (same antipattern family as the long-fixed stringToUUID('General')
+    // ghost — see system/data/domains/DefaultEntities.ts header). Empty
+    // root means empty content area; persisted tabs (if any) restore
+    // via initializeContentTabs() above and the user picks from the
+    // sidebar / opens what they want.
+    const isRootPath = !initialPath || initialPath === '/' || initialPath === '/chat' || initialPath === '/chat/';
+    if (isRootPath) {
+      this.log('Root path — no default tab; persisted tabs (if any) restore from contentState');
+      return;
     }
 
-    this.currentPath = initialPath;
     const { type, entityId } = parseContentPath(initialPath);
+    if (!type) {
+      this.log(`Unrecognized initial route '${initialPath}' — no tab opened`);
+      return;
+    }
     this.log(`Initial route: ${type}/${entityId || 'default'}`);
 
     // Wait for JTAG client to be connected before resolving routes.
@@ -394,6 +409,24 @@ export class MainWidget extends ReactiveWidget {
     this.log(`Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}`);
   }
 
+  private clearContentView(): void {
+    this.widgetCache.forEach((widget, tag) => {
+      if (widget.style.display !== 'none') {
+        widget.style.display = 'none';
+        if (isContentViewWidget(widget) && widget.onDeactivate) {
+          widget.onDeactivate();
+        }
+        this.log(`Deactivated ${tag}`);
+      }
+    });
+    this.currentViewType = null;
+    this.currentViewEntityId = undefined;
+    Events.emit(UI_EVENTS.RIGHT_PANEL_CONFIGURE, {
+      widget: null,
+      contentType: null
+    });
+  }
+
   private updateUrl(path: string): void {
     if (this.currentPath !== path) {
       this.currentPath = path;
@@ -405,6 +438,10 @@ export class MainWidget extends ReactiveWidget {
 
   async navigateToPath(newPath: string): Promise<void> {
     const { type, entityId } = parseContentPath(newPath);
+    if (!type) {
+      this.log(`Unrecognized navigation path '${newPath}' — ignoring`);
+      return;
+    }
 
     if (type === 'chat' && entityId) {
       await this.ensureRoomExists(entityId);
@@ -484,9 +521,10 @@ export class MainWidget extends ReactiveWidget {
     }
 
     if (userStateLoaded) {
-      const openItems = this.userState!.contentState.openItems || [];
-      const currentItemId = this.userState!.contentState.currentItemId;
-      console.log(`✅ initializeContentTabs: Found ${openItems.length} items, currentItemId=${currentItemId}`);
+      const rawOpenItems = this.userState!.contentState.openItems || [];
+      const rawCurrentItemId = this.userState!.contentState.currentItemId;
+      const { openItems, currentItemId } = await this.sanitizePersistedContentItems(rawOpenItems, rawCurrentItemId);
+      console.log(`✅ initializeContentTabs: Found ${rawOpenItems.length} items, using ${openItems.length}, currentItemId=${currentItemId}`);
       contentState.initialize(openItems, currentItemId);
       this.log(`Initialized global contentState with ${openItems.length} items`);
     } else {
@@ -496,13 +534,86 @@ export class MainWidget extends ReactiveWidget {
     }
   }
 
-  private syncUserStateToContentState(): void {
+  private async syncUserStateToContentState(): Promise<void> {
     if (!this.userState?.contentState) return;
 
-    const openItems = this.userState.contentState.openItems || [];
-    const currentItemId = this.userState.contentState.currentItemId;
+    const { openItems, currentItemId } = await this.sanitizePersistedContentItems(
+      this.userState.contentState.openItems || [],
+      this.userState.contentState.currentItemId
+    );
     contentState.update(openItems, currentItemId);
     this.log(`Synced ${openItems.length} items from server to global contentState`);
+  }
+
+  private async sanitizePersistedContentItems(openItems: ContentItem[], currentItemId?: UUID): Promise<{
+    openItems: ContentItem[];
+    currentItemId?: UUID;
+  }> {
+    type ValidationResult =
+      | { status: 'keep'; item: ContentItem }
+      | { status: 'drop'; item: ContentItem };
+
+    const validatedItems = await Promise.all(openItems.map(async (item): Promise<ValidationResult> => {
+      const identifier = item.uniqueId || item.entityId;
+      if (!identifier || !ContentService.getCollectionForContentType(item.type)) {
+        return { status: 'keep', item };
+      }
+
+      let resolved: Awaited<ReturnType<typeof RoutingService.resolve>> | null = null;
+      try {
+        resolved = await RoutingService.resolve(item.type, identifier);
+        if (!resolved && item.entityId && item.entityId !== identifier) {
+          resolved = await RoutingService.resolve(item.type, item.entityId);
+        }
+      } catch (error) {
+        console.warn(`⚠️ MainWidget: could not validate persisted ${item.type}/${identifier}:`, error);
+        return { status: 'keep', item };
+      }
+
+      if (!resolved) {
+        console.warn(`⚠️ MainWidget: dropping stale persisted tab ${item.type}/${identifier} (${item.title})`);
+        return { status: 'drop', item };
+      }
+
+      return {
+        status: 'keep',
+        item: {
+          ...item,
+          entityId: resolved.id,
+          uniqueId: resolved.uniqueId,
+          title: resolved.displayName || item.title,
+        }
+      };
+    }));
+
+    const sanitized = validatedItems
+      .filter((result): result is Extract<ValidationResult, { status: 'keep' }> => result.status === 'keep')
+      .map(result => result.item);
+
+    const deduped: ContentItem[] = [];
+    const duplicateCurrentTargets = new Map<UUID, UUID>();
+    for (const item of sanitized) {
+      const existing = deduped.find(candidate => {
+        const candidatePath = buildContentPath(candidate.type, candidate.uniqueId || candidate.entityId);
+        const itemPath = buildContentPath(item.type, item.uniqueId || item.entityId);
+        return candidatePath === itemPath;
+      });
+      if (existing) {
+        duplicateCurrentTargets.set(item.id, existing.id);
+        continue;
+      }
+      deduped.push(item);
+    }
+
+    let resolvedCurrentItemId = currentItemId;
+    if (resolvedCurrentItemId && duplicateCurrentTargets.has(resolvedCurrentItemId)) {
+      resolvedCurrentItemId = duplicateCurrentTargets.get(resolvedCurrentItemId);
+    }
+    if (!resolvedCurrentItemId || !deduped.some(item => item.id === resolvedCurrentItemId)) {
+      resolvedCurrentItemId = deduped[0]?.id;
+    }
+
+    return { openItems: deduped, currentItemId: resolvedCurrentItemId };
   }
 
   // === HEADER CONTROLS ===
@@ -572,7 +683,11 @@ export class MainWidget extends ReactiveWidget {
 
     this.createMountEffect(() => {
       const unsubscribe = pageState.subscribe((state) => {
-        if (state?.contentType) {
+        if (!state) {
+          this.clearContentView();
+          return;
+        }
+        if (state.contentType) {
           if (state.contentType !== this.currentViewType ||
               state.entityId !== this.currentViewEntityId) {
             this.switchContentView(state.contentType, state.entityId);

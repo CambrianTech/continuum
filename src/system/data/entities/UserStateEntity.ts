@@ -10,7 +10,7 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 // Content types generated from recipe JSON files — DO NOT hardcode here
 // Regenerate: npx tsx generator/generate-content-types.ts
-import { type ContentType as GeneratedContentType, isContentType, CONTENT_TYPES } from '../../../shared/generated/ContentTypes';
+import { type ContentType as GeneratedContentType, isContentType, CONTENT_TYPES, CONTENT_TYPE_CONFIGS } from '../../../shared/generated/ContentTypes';
 export type ContentType = GeneratedContentType;
 export type ContentPriority = 'low' | 'normal' | 'high' | 'urgent';
 
@@ -24,6 +24,18 @@ export interface ContentItem {
   lastAccessedAt: Date;
   priority: ContentPriority;
   metadata?: Record<string, unknown>; // Type-specific metadata (scroll position, filters, etc.)
+}
+
+function isSameContentSurface(a: ContentItem['type'], b: ContentItem['type']): boolean {
+  if (a === b) return true;
+
+  const aConfig = CONTENT_TYPE_CONFIGS[a];
+  const bConfig = CONTENT_TYPE_CONFIGS[b];
+  return Boolean(
+    aConfig?.entityType &&
+    aConfig.entityType === bConfig?.entityType &&
+    (aConfig.view || a) === (bConfig.view || b)
+  );
 }
 
 /**
@@ -41,14 +53,13 @@ export function contentItemsMatch(
   a: Pick<ContentItem, 'type'> & Partial<Pick<ContentItem, 'entityId' | 'uniqueId'>>,
   b: Pick<ContentItem, 'type'> & Partial<Pick<ContentItem, 'entityId' | 'uniqueId'>>
 ): boolean {
-  // Different types = different content
-  if (a.type !== b.type) return false;
-
   // Singleton content (no entityId or uniqueId) - match by type only
   // e.g., settings, help, theme tabs that have no associated entity
   const aIssingleton = !a.entityId && !a.uniqueId;
   const bIsSingleton = !b.entityId && !b.uniqueId;
-  if (aIssingleton && bIsSingleton) return true;
+  if (aIssingleton && bIsSingleton) return a.type === b.type;
+
+  if (!isSameContentSurface(a.type, b.type)) return false;
 
   // Same entityId = same content
   if (a.entityId && b.entityId && a.entityId === b.entityId) return true;

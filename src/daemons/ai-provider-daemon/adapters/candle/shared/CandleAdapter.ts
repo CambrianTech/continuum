@@ -25,8 +25,14 @@ import type {
 } from '../../../shared/AIProviderTypesV2';
 import { InferenceGrpcClient } from '../../../../../system/core/services/InferenceGrpcClient';
 import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
+import {
+  resolveModel as registryResolveModel,
+  tierFromRamGB,
+  type Tier,
+} from '../../../../../shared/ModelRegistry';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
+import { totalmem } from 'os';
 
 // ============================================================================
 // Types
@@ -83,12 +89,18 @@ export class CandleAdapter extends BaseAIProviderAdapter {
   private loadedModels: Set<string> = new Set();
   private loadedAdapters: Map<string, LoadedAdapterInfo[]> = new Map(); // modelId -> adapters
   private maxInputTokens: number;
+  private hostTier: Tier;
 
   constructor(config: CandleAdapterConfig = {}) {
     super();
 
     // Use gRPC client (replaces Unix socket)
     this.client = InferenceGrpcClient.sharedInstance();
+
+    // Tier is fixed at process start — RAM doesn't change, and resolving
+    // the same symbolic ref to different models mid-process would defeat
+    // the gRPC server's preload contract.
+    this.hostTier = tierFromRamGB(Math.round(totalmem() / 1024 / 1024 / 1024));
 
     this.defaultModel = config.defaultModel || LOCAL_MODELS.DEFAULT;
     this.baseTimeout = config.timeout || 180000; // 180s to handle model download + generation
@@ -98,6 +110,32 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     this.maxInputTokens = config.maxInputTokens || 1500;
 
     // Note: Model is pre-loaded by gRPC server at startup
+  }
+
+  /**
+   * Resolve a model identifier to a concrete HuggingFace ID.
+   *
+   * Handles three input shapes (in order):
+   *   1. Symbolic ref ('local-default', 'vision-default', 'gating') →
+   *      ModelRegistry resolves via src/shared/models.json (current registry).
+   *   2. Registry key ('qwen3.5-4b-code-forged', 'qwen2-vl-7b') →
+   *      ModelRegistry returns concrete hf_repo.
+   *   3. Legacy short name ('llama3.2:3b') OR raw HF ID →
+   *      LOCAL_MODELS.mapToHuggingFace fallback.
+   *
+   * This is the boundary that lets persona DB rows store stable symbolic
+   * refs while every request still resolves to whatever the registry
+   * declares "current" — no DB migration when we swap underlying models.
+   */
+  private resolveModelId(requestedModel: string): string {
+    try {
+      const spec = registryResolveModel(requestedModel, this.hostTier);
+      return spec.hf_repo;
+    } catch {
+      // Not in registry — fall through to legacy mapping (which assumes
+      // raw HF ID if no match).
+      return LOCAL_MODELS.mapToHuggingFace(requestedModel);
+    }
   }
 
   // Note: Model is pre-loaded by gRPC server at startup, not by TypeScript
@@ -114,13 +152,18 @@ export class CandleAdapter extends BaseAIProviderAdapter {
 
     this.log(request, 'info', `🔧 TRACE-1: generateTextImpl START (requestId=${requestId.slice(0,8)})`);
 
-    // Determine model to use - map legacy names to HuggingFace via central config
+    // Determine model to use. Accepts symbolic refs ('local-default',
+    // 'vision-default', 'gating'), registry keys ('qwen3.5-4b-code-forged'),
+    // legacy short names ('llama3.2:3b'), or raw HF IDs. ModelRegistry is
+    // the source of truth — DB rows storing symbolic refs auto-pick-up
+    // registry edits without migration. Joel rule 2026-05-04:
+    // "we MUST have this work from ONE source of truth".
     const requestedModel = request.model || this.defaultModel;
-    const modelId = LOCAL_MODELS.mapToHuggingFace(requestedModel);
+    const modelId = this.resolveModelId(requestedModel);
 
     // Log mapping if different
     if (modelId !== requestedModel) {
-      this.log(request, 'info', `Model mapped: ${requestedModel} → ${modelId}`);
+      this.log(request, 'info', `Model resolved: ${requestedModel} → ${modelId} (tier=${this.hostTier})`);
     }
 
     // Model is pre-loaded by gRPC server at startup
@@ -344,7 +387,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     adapterName: string;
     applyImmediately?: boolean;
   }): Promise<void> {
-    const modelId = LOCAL_MODELS.mapToHuggingFace(skillImplementation.modelId);
+    const modelId = this.resolveModelId(skillImplementation.modelId);
     const { adapterName, adapterPath } = skillImplementation;
 
     this.log(null, 'info', `🧬 applySkill: Loading adapter "${adapterName}" from ${adapterPath}`);
@@ -592,7 +635,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
    * STUBBED: gRPC server preloads model at startup
    */
   async preloadModel(requestedModelId: string): Promise<void> {
-    const modelId = LOCAL_MODELS.mapToHuggingFace(requestedModelId);
+    const modelId = this.resolveModelId(requestedModelId);
     this.log(null, 'info', `preloadModel: Model ${modelId} is preloaded by gRPC server`);
     this.loadedModels.add(modelId);
   }

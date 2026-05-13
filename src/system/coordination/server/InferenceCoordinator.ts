@@ -43,8 +43,9 @@ export interface InferenceSlot {
  * Provider groups that share the same backend.
  * All providers in a group share the same slot pool.
  *
- * CRITICAL: 'sentinel', 'candle', 'local' all route to the same
- * gRPC/Candle server which processes requests serially. They MUST share slots.
+ * CRITICAL: legacy 'candle', 'sentinel', and 'local' all consume the same
+ * local-inference capacity. Runtime persona chat should request 'local';
+ * 'candle' remains a compatibility key for training/legacy callers.
  */
 const PROVIDER_GROUPS: Record<string, string> = {
   'sentinel': 'local-inference',

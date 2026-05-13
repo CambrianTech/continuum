@@ -85,7 +85,7 @@ export function getContentTypeConfig(contentType: string): ContentTypeConfig | u
  * /live/general → { type: 'live', entityId: 'general' }
  * /factory      → { type: 'factory' }
  */
-export function parseContentPath(path: string): { type: string; entityId?: string } {
+export function parseContentPath(path: string): { type?: string; entityId?: string } {
     const normalized = path.startsWith('/') ? path : `/${path}`;
 
     // Match by view — sort longest first to prevent /grid matching before /grid-overview
@@ -111,7 +111,10 @@ export function parseContentPath(path: string): { type: string; entityId?: strin
         }
     }
 
-    return { type: 'chat', entityId: undefined };
+    // Joel 2026-05-03: was `return { type: 'chat', ... }` — silent default
+    // that opened a phantom General tab on every unknown path. No match =
+    // no tab. Callers must handle undefined type explicitly.
+    return { type: undefined, entityId: undefined };
 }
 
 /**

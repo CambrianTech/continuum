@@ -6,6 +6,8 @@
  */
 
 import { execSync } from 'child_process';
+import { copyFileSync, mkdirSync, existsSync } from 'fs';
+import { dirname } from 'path';
 
 console.log('🔨 Building TypeScript with strict error checking...\n');
 
@@ -15,6 +17,19 @@ try {
     stdio: 'inherit',
     encoding: 'utf-8'
   });
+
+  // Copy non-TS runtime assets that ModelRegistry / scripts read by path.
+  // tsc doesn't copy JSON — anything that ships next to .ts and is read
+  // at runtime via __dirname must be replicated into dist/.
+  const assets: Array<[string, string]> = [
+    ['shared/models.json', 'dist/shared/models.json'],
+  ];
+  for (const [src, dest] of assets) {
+    if (!existsSync(src)) continue;  // Optional asset — skip if absent.
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+    console.log(`📦 Copied asset: ${src} → ${dest}`);
+  }
 
   console.log('\n✅ TypeScript compilation succeeded');
   process.exit(0);

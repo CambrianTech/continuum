@@ -16,6 +16,7 @@
 
 import { EventEmitter } from 'events';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import type { TimerHandle } from '../../../core/types/CrossPlatformTypes';
 import type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
 import { isInboxMessage, isInboxTask, toChannelEnqueueRequest } from './QueueItemTypes';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
@@ -51,6 +52,7 @@ export const DEFAULT_INBOX_CONFIG: InboxConfig = {
  */
 const AGING_RATE_MS = PersonaTimingConfig.inbox.agingRateMs;
 const MAX_AGING_BOOST = PersonaTimingConfig.inbox.maxAgingBoost;
+const CHAT_ACTIVITY_DEBOUNCE_MS = PersonaTimingConfig.inbox.chatActivityDebounceMs;
 
 /**
  * Compute effective priority with RTOS-style aging
@@ -112,6 +114,7 @@ export class PersonaInbox {
   private readonly personaId: UUID;
   private readonly personaName: string;
   private readonly signal: EventEmitter;
+  private readonly pendingRoomSignals = new Map<UUID, TimerHandle>();
 
   // Rust-backed channel routing: enqueue routes through Rust IPC
   private rustBridge: RustCognitionBridge | null = null;
@@ -192,8 +195,11 @@ export class PersonaInbox {
           this.log(`❌ channelEnqueue FAILED: ${error}`);
         });
 
-      // Signal TS service loop IMMEDIATELY — don't wait for IPC response
-      this.signal.emit('work-available');
+      // Wake the TS service loop after a short room-activity quiet window.
+      // The Rust queue already consolidates same-room chat items; this delay
+      // gives a burst time to become one conversation chunk instead of one
+      // inference wakeup per message. Directed/voice/task work stays immediate.
+      this.signalForItem(item);
 
       return true; // Item sent to Rust channel (fire-and-forget)
     }
@@ -225,10 +231,37 @@ export class PersonaInbox {
       this.log(`📬 Enqueued task: ${item.taskType} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
     }
 
-    // CRITICAL: Signal waiting serviceInbox (instant wakeup, no polling)
-    this.signal.emit('work-available');
+    this.signalForItem(item);
 
     return true;
+  }
+
+  private signalForItem(item: QueueItem): void {
+    if (!isInboxMessage(item)) {
+      this.signalWorkAvailable();
+      return;
+    }
+
+    if (item.sourceModality === 'voice' || item.mentions === true) {
+      this.signalWorkAvailable();
+      return;
+    }
+
+    const existing = this.pendingRoomSignals.get(item.roomId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    const timer = setTimeout(() => {
+      this.pendingRoomSignals.delete(item.roomId);
+      this.signalWorkAvailable();
+    }, CHAT_ACTIVITY_DEBOUNCE_MS);
+
+    this.pendingRoomSignals.set(item.roomId, timer);
+  }
+
+  private signalWorkAvailable(): void {
+    this.signal.emit('work-available');
   }
 
   /**
@@ -400,6 +433,10 @@ export class PersonaInbox {
   clear(): void {
     const cleared = this.queue.length;
     this.queue = [];
+    for (const timer of this.pendingRoomSignals.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingRoomSignals.clear();
     this.log(`🗑️  Cleared ${cleared} items`);
   }
 

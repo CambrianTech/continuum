@@ -4,17 +4,21 @@
  * Test an API key before saving it. Makes a minimal API call to verify the key is valid and has sufficient permissions.
  */
 
-import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
-import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
-import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
-import type { JTAGError } from '@system/core/types/ErrorTypes';
+import type { JTAGContext, CommandInput, CommandParams } from '@system/core/types/JTAGTypes';
+import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
+import {
+  type AiKeyParams,
+  type AiKeyResult,
+  createAiKeyParams,
+  createAiKeyResult
+} from '../../common/AiKeyBase';
 
 /**
  * Ai Key Test Command Parameters
  */
-export interface AiKeyTestParams extends CommandParams {
+export interface AiKeyTestParams extends CommandParams, AiKeyParams {
   // Provider to test (anthropic, openai, groq, deepseek, xai, together, fireworks)
   provider: string;
   // API key to test (will NOT be stored)
@@ -34,18 +38,16 @@ export const createAiKeyTestParams = (
     provider: string;
     // API key to test (will NOT be stored)
     key: string;
+    useStored?: boolean;
   }
-): AiKeyTestParams => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
-
+): AiKeyTestParams => createAiKeyParams(context, sessionId, {
   ...data
 });
 
 /**
  * Ai Key Test Command Result
  */
-export interface AiKeyTestResult extends CommandResult {
-  success: boolean;
+export interface AiKeyTestResult extends AiKeyResult {
   // Whether the key is valid
   valid: boolean;
   // Provider that was tested
@@ -72,8 +74,7 @@ export const createAiKeyTestResult = (
     errorMessage?: string;
     models?: string[];
   }
-): AiKeyTestResult => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
+): AiKeyTestResult => createAiKeyResult(context, sessionId, {
   valid: data.valid ?? false,
   provider: data.provider ?? '',
   responseTimeMs: data.responseTimeMs ?? 0,

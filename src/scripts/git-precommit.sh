@@ -4,6 +4,23 @@ set -e  # Exit immediately on any error
 # Navigate to the correct working directory
 cd "$(dirname "$0")/.."
 
+require_node_deps() {
+    if [ -x "node_modules/.bin/tsx" ] \
+        && [ -x "node_modules/.bin/eslint" ] \
+        && [ -d "node_modules/typescript" ]; then
+        return 0
+    fi
+
+    echo "❌ Node dependencies are not installed in this worktree."
+    echo "   Expected: $(pwd)/node_modules with tsx, eslint, and typescript."
+    echo "   Run:"
+    echo "     cd $(pwd) && npm install"
+    echo "   Then retry the commit."
+    echo ""
+    echo "   This is a worktree setup failure, not a TypeScript/Rust failure."
+    exit 1
+}
+
 # ==============================================================================
 # LOAD CONFIGURATION
 # ==============================================================================
@@ -26,6 +43,16 @@ echo "📋 Active phases:"
 [ "$ENABLE_TYPESCRIPT_CHECK" = true ] && echo "  ✅ TypeScript compilation"
 [ "$ENABLE_SYSTEM_RESTART" = true ] && echo "  ✅ System restart (strategy: $RESTART_STRATEGY)"
 [ "$ENABLE_BROWSER_TEST" = true ] && echo "  ✅ Browser tests ($PRECOMMIT_TESTS)"
+echo ""
+
+# Phase 0: Command generator ownership guard
+# New src/commands/** modules must have a matching generator spec. This keeps
+# generated command shape centralized instead of letting agents hand-create
+# partial command folders that later fail registration/runtime discovery.
+echo "📋 Phase 0: Command generator ownership"
+echo "-------------------------------------"
+require_node_deps
+npx tsx generator/validate-command-spec-coverage.ts
 echo ""
 
 # Phase 0: Block changes to generated files
@@ -58,6 +85,7 @@ if [ "$ENABLE_TYPESCRIPT_CHECK" = true ]; then
     echo "-------------------------------------"
 
     echo "🔨 Running TypeScript compilation..."
+    require_node_deps
     npm run build:ts
     # Restore version.ts to avoid timestamp-only changes in commit
     cd ..
@@ -87,6 +115,7 @@ RS_FILES=$(cd .. && git diff --cached --name-only --diff-filter=ACMR | grep -E '
 LINT_FAILED=false
 
 if [ -n "$TS_FILES" ]; then
+    require_node_deps
     echo "TypeScript files staged:"
     echo "$TS_FILES" | sed 's/^/  • /' | head -10
     TS_COUNT=$(echo "$TS_FILES" | wc -l | tr -d ' ')
@@ -109,7 +138,15 @@ if [ -n "$TS_FILES" ]; then
     # Update baseline after a real cleanup pass:
     #   cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 \
     #     | grep -cE "error\s+" > eslint-baseline.txt
-    BASELINE_FILE="$(git rev-parse --show-toplevel)/src/eslint-baseline.txt"
+    # Use a script-relative path instead of `git rev-parse --show-toplevel`.
+    # When invoked from a git worktree's `src/` cwd (which the hook does at
+    # line 5 + 52), `--show-toplevel` returned the cwd `/repo/src` rather
+    # than the worktree root `/repo`, producing an incorrect double-`src`
+    # path `/repo/src/src/eslint-baseline.txt`. The hook ALWAYS lives at
+    # `<src>/scripts/git-precommit.sh`, so the baseline is one dir up from
+    # the script's parent dir — deterministic, no git resolution needed.
+    HOOK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    BASELINE_FILE="$(dirname "$HOOK_SCRIPT_DIR")/eslint-baseline.txt"
 
     # Tier 1: staged-files-only fast lint.
     STAGED_LINT_LOG="$(mktemp)"
@@ -171,15 +208,30 @@ if [ -n "$RS_FILES" ]; then
     # this commit added new violations). Update the baseline after
     # a real cleanup pass:
     #   cd src/workers/continuum-core
-    #   cargo clippy --lib 2>&1 | grep -cE "^warning:" > ../../clippy-baseline.txt
-    BASELINE_FILE="$(git rev-parse --show-toplevel)/src/clippy-baseline.txt"
+    #   source ../../scripts/shared/cargo-features.sh
+    #   cargo clippy --lib $CARGO_GPU_FEATURES 2>&1 | grep -cE "^warning:" > ../../clippy-baseline.txt
+    #
+    # Same platform feature selection as pre-push/npm start. macOS without
+    # `--features metal,accelerate` intentionally fails at compile time because
+    # CPU-only local inference is not a supported product path.
+    #
+    # Use the hook's src cwd instead of git rev-parse. In git worktrees,
+    # --show-toplevel is the parent checkout root, while this hook and baseline
+    # live under <root>/src.
+    # shellcheck source=shared/cargo-features.sh
+    source "scripts/shared/cargo-features.sh"
+    BASELINE_FILE="$(pwd)/clippy-baseline.txt"
     CLIPPY_LOG="$(mktemp)"
-    (cd workers/continuum-core && cargo clippy --lib 2>&1 > "$CLIPPY_LOG") || true
-    CURRENT=$(grep -cE "^warning:" "$CLIPPY_LOG" || echo 0)
+    (cd workers/continuum-core && cargo clippy --lib $CARGO_GPU_FEATURES > "$CLIPPY_LOG" 2>&1) || true
+    CURRENT=$(grep -cE "^warning:" "$CLIPPY_LOG" || true)
     if [ ! -f "$BASELINE_FILE" ]; then
-        echo "⚠️  clippy-baseline.txt not found — skipping clippy gate."
-        echo "   Generate once with: cd src/workers/continuum-core && cargo clippy --lib 2>&1 | grep -cE \"^warning:\" > ../../clippy-baseline.txt"
+        echo "❌ clippy-baseline.txt not found at $BASELINE_FILE — cannot run baseline gate."
+        echo "   Generate once with:"
+        echo "     cd src/workers/continuum-core"
+        echo "     source ../../scripts/shared/cargo-features.sh"
+        echo "     cargo clippy --lib \$CARGO_GPU_FEATURES 2>&1 | grep -cE \"^warning:\" > ../../clippy-baseline.txt"
         echo "   Current warning count: $CURRENT"
+        LINT_FAILED=true
     else
         BASELINE=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
         if [ "$CURRENT" -le "$BASELINE" ]; then
@@ -197,7 +249,9 @@ if [ -n "$RS_FILES" ]; then
             echo "╠════════════════════════════════════════════════════════════════╣"
             echo "║  Current: $CURRENT  Baseline: $BASELINE                                       ║"
             echo "║  Run to see what's new:                                        ║"
-            echo "║    cd src/workers/continuum-core && cargo clippy --lib         ║"
+            echo "║    cd src/workers/continuum-core                               ║"
+            echo "║    source ../../scripts/shared/cargo-features.sh                ║"
+            echo "║    cargo clippy --lib \$CARGO_GPU_FEATURES                      ║"
             echo "╚════════════════════════════════════════════════════════════════╝"
             LINT_FAILED=true
         fi

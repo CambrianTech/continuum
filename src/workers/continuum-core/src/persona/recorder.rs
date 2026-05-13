@@ -25,12 +25,10 @@
 //!
 //!   `~/.continuum/fixtures/persona-respond/<persona>-<msgid>-<ts>-rust.json`
 //!
-//! The `-rust` suffix distinguishes Rust-emitted captures from the
-//! TS-emitted captures (which carry additional outer context — the
-//! original chat message, the full RAG conversationHistory, etc.).
-//! Both can coexist in the same dir, joined by `messageId`. As Phase
-//! B/C land, RAG construction migrates Rust-side and the TS capture
-//! disappears; the Rust capture becomes the single artifact.
+//! The `-rust` suffix marks the Rust-emitted capture. This is now the
+//! single persona-turn fixture source: the TypeScript chat shim builds
+//! the IPC request, but recording belongs beside `respond()` so non-Node
+//! hosts get the same telemetry and replay corpus.
 //!
 //! Schema (`schemaVersion: 1`):
 //! - `capturedAtMs` — wall-clock when the turn finished
@@ -142,11 +140,7 @@ impl<'a> From<&'a RespondInput> for RequestEcho<'a> {
                     text: &m.text,
                 })
                 .collect(),
-            message_media: input
-                .message_media
-                .iter()
-                .map(media_echo)
-                .collect(),
+            message_media: input.message_media.iter().map(media_echo).collect(),
         }
     }
 }
@@ -160,13 +154,65 @@ fn media_echo(m: &MediaItemLite) -> MediaEcho<'_> {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TurnError {
+    error_msg: String,
+    last_completed_seam: Option<String>,
+    partial_trace_seams: usize,
+    total_ms: u64,
+}
+
 /// Persist a completed turn. Best-effort: failures log + return
 /// `Ok(())` so a recording problem never breaks cognition.
-pub fn record_turn(
+pub fn record_turn(input: &RespondInput, response: &PersonaResponse, trace: &CognitionTrace) {
+    let payload = json!({
+        "schemaVersion": 1,
+        "capturedAtMs": crate::persona::trace::now_ms(),
+        "personaId": input.persona.persona_id,
+        "personaName": input.persona.display_name,
+        "messageId": input.message_id,
+        "roomId": input.room_id,
+        "model": input.model,
+        "rustRequest": RequestEcho::from(input),
+        "rustResponse": response,
+        "rustError": null,
+        "cognitionTrace": trace,
+    });
+    persist_turn_payload(input, payload);
+}
+
+/// Persist a failed turn. `respond()` still returns `Err` to its caller; this
+/// recorder-only artifact preserves the input and partial trace for replay.
+pub fn record_failed_turn(
     input: &RespondInput,
-    response: &PersonaResponse,
+    error_msg: &str,
+    total_ms: u64,
     trace: &CognitionTrace,
 ) {
+    let error = TurnError {
+        error_msg: error_msg.to_string(),
+        last_completed_seam: trace.last_seam_name().map(str::to_string),
+        partial_trace_seams: trace.seam_count(),
+        total_ms,
+    };
+    let payload = json!({
+        "schemaVersion": 1,
+        "capturedAtMs": crate::persona::trace::now_ms(),
+        "personaId": input.persona.persona_id,
+        "personaName": input.persona.display_name,
+        "messageId": input.message_id,
+        "roomId": input.room_id,
+        "model": input.model,
+        "rustRequest": RequestEcho::from(input),
+        "rustResponse": null,
+        "rustError": error,
+        "cognitionTrace": trace,
+    });
+    persist_turn_payload(input, payload);
+}
+
+fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     if disabled() {
         return;
     }
@@ -183,23 +229,10 @@ pub fn record_turn(
     }
     let fname = filename_for(&input.persona.display_name, input.message_id);
     let path = dir.join(&fname);
-    let payload = json!({
-        "schemaVersion": 1,
-        "capturedAtMs": crate::persona::trace::now_ms(),
-        "personaId": input.persona.persona_id,
-        "personaName": input.persona.display_name,
-        "messageId": input.message_id,
-        "roomId": input.room_id,
-        "model": input.model,
-        "rustRequest": RequestEcho::from(input),
-        "rustResponse": response,
-        "cognitionTrace": trace,
-    });
     let serialized = match serde_json::to_vec_pretty(&payload) {
         Ok(b) => b,
         Err(e) => {
-            runtime::logger("recorder")
-                .warn(&format!("turn capture serialize failed: {e}"));
+            runtime::logger("recorder").warn(&format!("turn capture serialize failed: {e}"));
             return;
         }
     };
@@ -237,16 +270,11 @@ fn fixture_dir() -> Option<PathBuf> {
 }
 
 /// Filename: `<persona>-<msgid_prefix>-<ts>-rust.json`. The `-rust`
-/// suffix distinguishes Rust-emitted captures from any TS-emitted
-/// twin in the same dir. Persona name spaces collapsed to underscores
-/// for filesystem safety.
+/// suffix marks the Rust-owned capture. Persona name spaces collapsed
+/// to underscores for filesystem safety.
 fn filename_for(persona_name: &str, message_id: Uuid) -> String {
     let safe_name = persona_name.replace(char::is_whitespace, "_");
-    let id_prefix: String = message_id
-        .to_string()
-        .chars()
-        .take(8)
-        .collect();
+    let id_prefix: String = message_id.to_string().chars().take(8).collect();
     let ts = chrono_like_ts(crate::persona::trace::now_ms());
     format!("{safe_name}-{id_prefix}-{ts}-rust.json")
 }
@@ -270,9 +298,7 @@ fn chrono_like_ts(ms: u64) -> String {
     let day_of_year = days % 365;
     let month = (day_of_year / 30) + 1;
     let day = (day_of_year % 30) + 1;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{h:02}-{m:02}-{s:02}-{sub_ms:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{h:02}-{m:02}-{s:02}-{sub_ms:03}Z")
 }
 
 /// FIFO trim: drop the oldest captures (by mtime) until count <= cap.
@@ -310,6 +336,8 @@ mod tests {
     use crate::cognition::PersonaSlot;
     use crate::persona::response::PersonaResponse;
     use std::collections::HashSet;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use tempfile::tempdir;
 
     fn fake_input() -> RespondInput {
         RespondInput {
@@ -329,6 +357,64 @@ mod tests {
             is_voice: false,
             message_media: vec![],
             capabilities: HashSet::new(),
+        }
+    }
+
+    fn fake_response() -> PersonaResponse {
+        PersonaResponse::Spoke {
+            persona_id: Uuid::nil(),
+            text: "hi".to_string(),
+            model_used: "test".to_string(),
+            inference_ms: 1,
+            total_ms: 2,
+            think_blocks_emitted: 0,
+        }
+    }
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("recorder env test lock poisoned")
+    }
+
+    struct EnvRestore {
+        home: Option<String>,
+        disabled: Option<String>,
+    }
+
+    impl EnvRestore {
+        fn install(home: &std::path::Path, disabled: Option<&str>) -> Self {
+            let restore = Self {
+                home: std::env::var("HOME").ok(),
+                disabled: std::env::var(DISABLE_ENV).ok(),
+            };
+            // Environment mutation is process-global. Tests using this helper
+            // hold `env_lock()`, so no other recorder env test runs concurrently.
+            unsafe {
+                std::env::set_var("HOME", home);
+                match disabled {
+                    Some(v) => std::env::set_var(DISABLE_ENV, v),
+                    None => std::env::remove_var(DISABLE_ENV),
+                }
+            }
+            restore
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            // See EnvRestore::install for the synchronization guarantee.
+            unsafe {
+                match &self.home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+                match &self.disabled {
+                    Some(v) => std::env::set_var(DISABLE_ENV, v),
+                    None => std::env::remove_var(DISABLE_ENV),
+                }
+            }
         }
     }
 
@@ -382,14 +468,7 @@ mod tests {
     #[test]
     fn turn_payload_serializes() {
         let input = fake_input();
-        let response = PersonaResponse::Spoke {
-            persona_id: Uuid::nil(),
-            text: "hi".to_string(),
-            model_used: "test".to_string(),
-            inference_ms: 1,
-            total_ms: 2,
-            think_blocks_emitted: 0,
-        };
+        let response = fake_response();
         let trace = CognitionTrace::new();
         let payload = json!({
             "schemaVersion": 1,
@@ -408,5 +487,96 @@ mod tests {
         assert!(s.contains("\"rustRequest\""));
         assert!(s.contains("\"rustResponse\""));
         assert!(s.contains("\"cognitionTrace\""));
+    }
+
+    /// What this catches: `record_turn` performs the actual Rust-owned
+    /// side effect TS used to perform — fixture dir creation, one JSON
+    /// write, request echo, response, and trace in one artifact.
+    #[test]
+    fn record_turn_writes_fixture_json_under_home() {
+        let _lock = env_lock();
+        let tmp = tempdir().expect("temp home");
+        let _restore = EnvRestore::install(tmp.path(), None);
+        let input = fake_input();
+        let response = fake_response();
+        let trace = CognitionTrace::new();
+
+        record_turn(&input, &response, &trace);
+
+        let dir = tmp.path().join(".continuum/fixtures/persona-respond");
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .expect("fixture dir exists")
+            .map(|e| e.expect("fixture entry").path())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].to_string_lossy().ends_with("-rust.json"));
+
+        let body = std::fs::read_to_string(&entries[0]).expect("fixture json readable");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("fixture json parses");
+        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["personaName"], "Test Persona");
+        assert_eq!(json["rustRequest"]["messageText"], "hello");
+        assert_eq!(json["rustResponse"]["text"], "hi");
+        assert!(json.get("cognitionTrace").is_some());
+    }
+
+    /// What this catches: perf/ephemeral hosts can opt out of fixture disk
+    /// writes, and the Rust recorder honors that without asking TS to help.
+    #[test]
+    fn record_turn_respects_disable_env() {
+        let _lock = env_lock();
+        let tmp = tempdir().expect("temp home");
+        let _restore = EnvRestore::install(tmp.path(), Some("true"));
+
+        record_turn(&fake_input(), &fake_response(), &CognitionTrace::new());
+
+        let dir = tmp.path().join(".continuum/fixtures/persona-respond");
+        assert!(!dir.exists());
+    }
+
+    /// What this catches: failure-path captures land on disk without
+    /// widening the chat-facing `PersonaResponse` enum. Before this,
+    /// `record_turn` only ran on the Ok-path of `respond()`, so failure
+    /// turns left no fixture and the most diagnostic captures were lost.
+    #[test]
+    fn record_failed_turn_writes_error_with_partial_trace() {
+        use crate::persona::trace::SEAM_ANALYZE;
+        let _lock = env_lock();
+        let tmp = tempdir().expect("temp home");
+        let _restore = EnvRestore::install(tmp.path(), None);
+        let input = fake_input();
+        let mut trace = CognitionTrace::new();
+        trace.record(SEAM_ANALYZE, 1000, 50, json!({"from_cache": false}));
+
+        record_failed_turn(&input, "render adapter timed out at 30s", 30_125, &trace);
+
+        let dir = tmp.path().join(".continuum/fixtures/persona-respond");
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .expect("failure fixture dir exists")
+            .map(|e| e.expect("entry").path())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        let body = std::fs::read_to_string(&entries[0]).expect("failure fixture readable");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("failure fixture parses");
+        assert_eq!(parsed["rustResponse"], serde_json::Value::Null);
+        assert_eq!(
+            parsed["rustError"]["lastCompletedSeam"],
+            json!(SEAM_ANALYZE)
+        );
+        assert_eq!(
+            parsed["rustError"]["errorMsg"],
+            json!("render adapter timed out at 30s")
+        );
+        assert_eq!(parsed["rustError"]["partialTraceSeams"], json!(1));
+        assert_eq!(parsed["rustError"]["totalMs"], json!(30_125));
+        // The partial trace must survive too — replay tooling needs to
+        // see WHERE in the pipeline the failure landed, not just that
+        // it failed. `cognitionTrace.seams` should include the analyze
+        // seam that DID complete before the error.
+        assert_eq!(
+            parsed["cognitionTrace"]["seams"][0]["name"],
+            json!(SEAM_ANALYZE)
+        );
     }
 }

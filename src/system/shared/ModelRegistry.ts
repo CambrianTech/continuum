@@ -16,13 +16,13 @@
  *
  * Provider-scoped keys:
  *   Internal map key is `${provider}:${modelId}` to prevent last-writer-wins
- *   collisions when the same model exists on multiple providers (e.g.,
- *   meta-llama/Llama-3.1-8B-Instruct on Candle at 1400 tokens AND Together at 131072).
+ *   collisions when the same model family exists on multiple providers with
+ *   different context windows.
  *
  * Usage:
  *   const registry = ModelRegistry.sharedInstance();
  *   const ctx = registry.contextWindow('claude-sonnet-4-5-20250929');           // any provider
- *   const ctx = registry.contextWindow('meta-llama/Llama-3.1-8B-Instruct', 'candle');  // specific provider
+ *   const ctx = registry.contextWindow('qwen3.5-4b-code-forged', 'local');  // specific provider
  *
  * Future direction — Hardware-Matched Model Selection:
  *   ModelRegistry is designed to evolve into a queryable adapter catalog where
@@ -37,7 +37,7 @@
  *
  *   3. Selection query: "give me the best model for this recipe on this hardware"
  *      - Filters by capability, ranks by speed/quality/cost tradeoff
- *      - Works across local (Candle) and cloud (REST APIs) uniformly
+ *      - Works across local runtime and cloud providers uniformly
  *
  *   4. Users with varied hardware (M1 vs RTX 4090 vs cloud-only) get automatically
  *      matched to the best available model without manual configuration.

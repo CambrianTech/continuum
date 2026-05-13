@@ -64,18 +64,16 @@ export interface PageState {
 const currentContentType = signal<string>('chat');
 
 /** Current entity ID (room UUID/uniqueId, settings page name, etc.) */
-const currentEntityId = signal<string | null>('general');
+const currentEntityId = signal<string | null>(null);
 
 /** Resolved entity info (after database lookup) */
 const resolvedEntity = signal<ResolvedEntity | null>(null);
 
 /** Open tabs in the tab bar */
-const openTabs = signal<ContentItem[]>([
-  { id: 'general', type: 'chat', entityId: 'general', displayName: 'General', closeable: false }
-]);
+const openTabs = signal<ContentItem[]>([]);
 
 /** Currently active tab ID */
-const activeTabId = signal<string | null>('general');
+const activeTabId = signal<string | null>(null);
 
 /** Is a navigation in progress? */
 const isNavigating = signal<boolean>(false);
