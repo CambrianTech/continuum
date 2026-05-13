@@ -91,6 +91,46 @@ pub enum HwCapabilityTier {
     Cloud,
 }
 
+/// Where the resolved model is allowed to physically run. Enforces the
+/// alpha sensory bar's "no silent CPU fallback" rule (PR #1072,
+/// `docs/architecture/SENSORY-PERSONA-ALPHA-CONTRACT.md`, memory:
+/// `project_continuum_alpha_product_bar_sensory_personas.md`).
+///
+/// Standard personas use [`Self::GpuOrUnifiedMemoryOnly`]; the resolver
+/// REJECTS any candidate whose [`TargetSilicon`] would land on CPU, Cloud
+/// (when local was preferred), Network, Disk, or Background. Tests and
+/// non-alpha-path callers use [`Self::AnySilicon`] — and must justify it
+/// in code review.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/SiliconResidencyRequirement.ts"
+)]
+pub enum SiliconResidencyRequirement {
+    /// Standard alpha bar: model MUST run on GPU or UnifiedMemory. Any
+    /// other silicon (Cpu, Cloud, Network, Disk, Background) triggers
+    /// [`ResolutionError::SiliconResidencyViolated`] with the rejected
+    /// model id and the silicon the resolver would have produced.
+    GpuOrUnifiedMemoryOnly,
+    /// Caller accepts any silicon. Used by tests and adapter/compat paths
+    /// that explicitly opt out of the bar. Standard personas MUST NOT use
+    /// this — they go through [`ModelRequirement::standard_persona`].
+    AnySilicon,
+}
+
+impl SiliconResidencyRequirement {
+    /// True when `silicon` is in the allowed set for this requirement.
+    pub fn allows(self, silicon: TargetSilicon) -> bool {
+        match self {
+            Self::GpuOrUnifiedMemoryOnly => {
+                matches!(silicon, TargetSilicon::Gpu | TargetSilicon::UnifiedMemory)
+            }
+            Self::AnySilicon => true,
+        }
+    }
+}
+
 /// How aggressively to prefer local vs cloud providers.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -144,7 +184,9 @@ pub struct HostCapability {
 )]
 pub struct ModelRequirement {
     /// Capabilities every candidate must advertise. Empty set matches any
-    /// model (rare — usually callers want at least `Chat`).
+    /// model (rare — usually callers want at least `Chat`). Standard-persona
+    /// callers should use [`Self::standard_persona`] which bundles the
+    /// sensory capability set required by the alpha bar.
     pub required_capabilities: BTreeSet<Capability>,
     /// Architectural family preference. Empty = any architecture qualifies.
     /// When non-empty, candidates outside the preference are filtered out
@@ -158,6 +200,54 @@ pub struct ModelRequirement {
     pub provider_policy: LocalOrCloudPolicy,
     /// Host capability snapshot. See [`HostCapability`].
     pub host: HostCapability,
+    /// Where the resolved model must physically run. Standard personas
+    /// require [`SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly`]; the
+    /// resolver REJECTS any model whose silicon would violate this. No
+    /// silent CPU fallback. No silent Cloud fallback under preference for
+    /// local. See [`SiliconResidencyRequirement`].
+    pub silicon_residency: SiliconResidencyRequirement,
+}
+
+impl ModelRequirement {
+    /// The alpha sensory bar — NO COMPROMISE. Bundles the multimodal
+    /// capability set (Chat + Vision + AudioInput + AudioOutput) and the
+    /// GPU/UnifiedMemory residency requirement. Local providers are
+    /// preferred; cloud is acceptable only if no local model satisfies the
+    /// bar (operator can opt for [`LocalOrCloudPolicy::LocalOnly`]
+    /// explicitly via [`Self::standard_persona_local_only`]).
+    ///
+    /// PR #1072 (sensory persona alpha contract):
+    /// `docs/architecture/SENSORY-PERSONA-ALPHA-CONTRACT.md`. Memory:
+    /// `project_continuum_alpha_product_bar_sensory_personas.md`.
+    /// Joel 2026-05-11: "every standard persona has sensory I/O and
+    /// WebRTC presence; text-only is a compatibility mode, not the
+    /// product. — never forget this. NO COMPROMISE."
+    pub fn standard_persona(host: HostCapability) -> Self {
+        Self {
+            required_capabilities: [
+                Capability::Chat,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::AudioOutput,
+            ]
+            .into_iter()
+            .collect(),
+            arch_preference: vec![],
+            context_window_min: 0,
+            provider_policy: LocalOrCloudPolicy::PreferLocal,
+            host,
+            silicon_residency: SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly,
+        }
+    }
+
+    /// Strict variant of [`Self::standard_persona`]: local providers ONLY.
+    /// Use when the persona must not fall through to cloud. Useful for
+    /// air-gapped deployments and the M-series default install path.
+    pub fn standard_persona_local_only(host: HostCapability) -> Self {
+        let mut req = Self::standard_persona(host);
+        req.provider_policy = LocalOrCloudPolicy::LocalOnly;
+        req
+    }
 }
 
 /// Resolver output. Includes the silicon target so the caller can plumb it
@@ -212,6 +302,39 @@ pub enum ResolutionError {
         candidates_after_filter: usize,
         unmet_filters: Vec<String>,
     },
+    /// Standard-persona resolution failed because no model in the registry
+    /// satisfies the bundled multimodal capability bar (Chat + Vision +
+    /// AudioInput + AudioOutput together). This names the FORGE GAP
+    /// directly: ship a multimodal base model for this hardware tier. It
+    /// is NOT a config bug — relaxing the bar is forbidden per the alpha
+    /// product contract (PR #1072,
+    /// `project_continuum_alpha_product_bar_sensory_personas.md`).
+    #[error(
+        "no multimodal base in registry: {registry_count} models, but none satisfy \
+         the sensory bar {required_sensory_capabilities:?}. forge a multimodal base \
+         for this tier — text-only models are not the product"
+    )]
+    NoMultimodalBase {
+        registry_count: usize,
+        required_sensory_capabilities: Vec<String>,
+    },
+    /// Standard-persona resolution found a model but its physical silicon
+    /// (CPU, Cloud, Network, Disk, etc.) violates the caller's silicon
+    /// residency requirement. Loud-fail surfaces the model that WOULD have
+    /// been picked + the silicon it would have run on, so operators can
+    /// decide between (a) fixing the host (e.g., enable GPU), (b) shipping
+    /// a smaller model that fits the host's GPU/UnifiedMemory, or (c)
+    /// explicitly opting out of the bar via `AnySilicon` (which standard
+    /// personas may not do).
+    #[error(
+        "silicon residency violated: model `{rejected_model_id}` would run on \
+         {actual_silicon:?} but requirement allows only GPU / unified-memory. \
+         no silent CPU or cloud fallback under the alpha bar."
+    )]
+    SiliconResidencyViolated {
+        rejected_model_id: String,
+        actual_silicon: TargetSilicon,
+    },
 }
 
 fn derive_target_silicon(
@@ -235,12 +358,19 @@ fn derive_target_silicon(
 ///
 /// Filter order (each step records the unmet predicate when it eliminates
 /// the last candidate, so the error names the specific cause):
-/// 1. `required_capabilities` — every cap must be advertised
+/// 1. `required_capabilities` — every cap must be advertised. When the
+///    requirement included the multimodal sensory bundle (Vision +
+///    AudioInput) and no model satisfies, errors with
+///    [`ResolutionError::NoMultimodalBase`] (forge gap, not config bug).
 /// 2. `arch_preference` — when non-empty, must match
 /// 3. `context_window_min` — model's window ≥ requirement
 /// 4. `provider_policy` — Local/Cloud filter, keyed on the provider's
 ///    [`ProviderKind`] (no hardcoded provider-id list — providers declare
 ///    their own residency in `providers.toml`)
+/// 5. `silicon_residency` — after the best candidate is ranked and its
+///    target silicon derived, reject if the silicon violates the caller's
+///    residency requirement. Enforces the alpha bar's no-silent-CPU
+///    rule. Errors with [`ResolutionError::SiliconResidencyViolated`].
 ///
 /// Returns the first survivor under the policy's ranking. `PreferLocal`
 /// puts local providers first; `PreferCloud` puts cloud providers first;
@@ -266,6 +396,25 @@ where
     let registry_count = registry.len();
     let mut unmet: Vec<String> = Vec::new();
 
+    // Sensory-bundle queries get routed to NoMultimodalBase when ANY filter
+    // empties candidates — capability filter, provider-policy filter,
+    // anything. The operator-actionable failure is "no LOCAL multimodal
+    // base for this tier," NOT a generic "tighten your filter" message.
+    let is_sensory_query = requirement
+        .required_capabilities
+        .contains(&Capability::Vision)
+        && requirement
+            .required_capabilities
+            .contains(&Capability::AudioInput);
+    let no_multimodal_base_err = || ResolutionError::NoMultimodalBase {
+        registry_count,
+        required_sensory_capabilities: requirement
+            .required_capabilities
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect(),
+    };
+
     // Filter 1: required capabilities.
     let mut candidates: Vec<&Model> = registry
         .iter()
@@ -273,6 +422,9 @@ where
         .filter(|m| requirement.required_capabilities.iter().all(|c| m.has(*c)))
         .collect();
     if candidates.is_empty() && !requirement.required_capabilities.is_empty() {
+        if is_sensory_query {
+            return Err(no_multimodal_base_err());
+        }
         unmet.push(format!(
             "required_capabilities={:?}",
             requirement.required_capabilities
@@ -292,6 +444,9 @@ where
             .filter(|m| requirement.arch_preference.contains(&m.arch))
             .collect();
         if after_arch.is_empty() {
+            if is_sensory_query {
+                return Err(no_multimodal_base_err());
+            }
             unmet.push(format!(
                 "arch_preference={:?} (no survivor matched)",
                 requirement.arch_preference
@@ -310,6 +465,9 @@ where
         let before = candidates.len();
         candidates.retain(|m| m.context_window >= requirement.context_window_min);
         if candidates.is_empty() {
+            if is_sensory_query {
+                return Err(no_multimodal_base_err());
+            }
             unmet.push(format!(
                 "context_window_min={} (eliminated {} candidates)",
                 requirement.context_window_min, before
@@ -332,6 +490,9 @@ where
         | LocalOrCloudPolicy::Any => true,
     });
     if candidates.is_empty() {
+        if is_sensory_query {
+            return Err(no_multimodal_base_err());
+        }
         unmet.push(format!(
             "provider_policy={:?} (eliminated {} candidates)",
             requirement.provider_policy, before_provider
@@ -356,6 +517,19 @@ where
 
     let best = candidates.first().expect("non-empty after filters");
     let target_silicon = derive_target_silicon(best, &provider_kinds, &requirement.host);
+
+    // Silicon-residency gate. No silent CPU fallback. No silent Cloud
+    // fallback under GpuOrUnifiedMemoryOnly. The check happens AFTER all
+    // other filters because we need the resolved model to name in the
+    // error — operator wants to know "qwen2-vl-7b would have run on Cpu
+    // here" not just "no model matched."
+    if !requirement.silicon_residency.allows(target_silicon) {
+        return Err(ResolutionError::SiliconResidencyViolated {
+            rejected_model_id: best.id.clone(),
+            actual_silicon: target_silicon,
+        });
+    }
+
     let reason = format!(
         "matched {} required capability(ies) on arch={:?}, context={}, provider={}, policy={:?}",
         requirement.required_capabilities.len(),
@@ -535,6 +709,7 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host,
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         }
     }
 
@@ -548,6 +723,7 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host,
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         }
     }
 
@@ -561,6 +737,7 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host,
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         }
     }
 
@@ -625,15 +802,23 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host: host_rtx5090(),
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         };
         let err = resolve_model(&req, r.iter(), providers().iter()).unwrap_err();
-        let ResolutionError::NoModelMatchesRequirement { unmet_filters, .. } = err;
-        assert!(
-            unmet_filters
-                .iter()
-                .any(|filter| filter.contains("provider_policy=LocalOnly")),
-            "local full-sensory must not fall back to cloud audio-output, got {unmet_filters:?}"
-        );
+        match err {
+            ResolutionError::NoMultimodalBase {
+                required_sensory_capabilities,
+                ..
+            } => {
+                assert!(
+                    required_sensory_capabilities
+                        .iter()
+                        .any(|capability| capability == "AudioOutput"),
+                    "local full-sensory must name the missing sensory bundle instead of falling back to cloud audio-output, got {required_sensory_capabilities:?}"
+                );
+            }
+            other => panic!("expected NoMultimodalBase; got {other:?}"),
+        }
     }
 
     #[test]
@@ -659,19 +844,24 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::Any,
             host: host_rtx5090(),
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         };
         let err = resolve_model(&req, r.iter(), providers().iter()).unwrap_err();
-        let ResolutionError::NoModelMatchesRequirement {
-            registry_count,
-            candidates_after_filter,
-            unmet_filters,
-        } = err;
-        assert_eq!(registry_count, r.len());
-        assert_eq!(candidates_after_filter, 0);
-        assert!(
-            unmet_filters.iter().any(|f| f.contains("ImageGeneration")),
-            "unmet filters should name ImageGeneration: {unmet_filters:?}"
-        );
+        match err {
+            ResolutionError::NoModelMatchesRequirement {
+                registry_count,
+                candidates_after_filter,
+                unmet_filters,
+            } => {
+                assert_eq!(registry_count, r.len());
+                assert_eq!(candidates_after_filter, 0);
+                assert!(
+                    unmet_filters.iter().any(|f| f.contains("ImageGeneration")),
+                    "unmet filters should name ImageGeneration: {unmet_filters:?}"
+                );
+            }
+            other => panic!("expected NoModelMatchesRequirement; got {other:?}"),
+        }
     }
 
     #[test]
@@ -702,6 +892,7 @@ mod tests {
             context_window_min: 100_000,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host: host_rtx5090(),
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         };
         let resolved = resolve_model(&req, r.iter(), providers().iter()).unwrap();
         // Only qwen3.5-4b (262144 ctx) survives among local with ≥100k window.
@@ -720,6 +911,7 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::Any,
             host: host_rtx5090(),
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         };
         let resolved = resolve_model(&req, r.iter(), providers().iter()).unwrap();
         assert_eq!(
@@ -740,6 +932,7 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::PreferLocal,
             host: host_rtx5090(),
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         };
         let resolved = resolve_model(&req, r.iter(), providers().iter()).unwrap();
         assert_eq!(resolved.provider_id, "llamacpp-local");
@@ -758,6 +951,7 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::PreferCloud,
             host: host_rtx5090(),
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         };
         let resolved = resolve_model(&req, r.iter(), providers().iter()).unwrap();
         assert!(
@@ -869,6 +1063,7 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::Any,
             host: host_rtx5090(),
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         };
         assert!(
             matches!(
@@ -877,5 +1072,161 @@ mod tests {
             ),
             "missing capability must error, not fall back"
         );
+    }
+
+    // ─── Standard-persona sensory bar (PR #1072) ────────────────────────
+    //
+    // These tests pin the alpha contract: every standard persona resolution
+    // must satisfy the multimodal capability bundle AND land on GPU /
+    // UnifiedMemory silicon. NO COMPROMISE.
+
+    #[test]
+    fn standard_persona_constructor_bundles_the_alpha_bar() {
+        let req = ModelRequirement::standard_persona(host_m1_8gb());
+        assert!(req.required_capabilities.contains(&Capability::Chat));
+        assert!(req.required_capabilities.contains(&Capability::Vision));
+        assert!(req.required_capabilities.contains(&Capability::AudioInput));
+        assert!(req.required_capabilities.contains(&Capability::AudioOutput));
+        assert_eq!(req.silicon_residency, SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly);
+        assert_eq!(req.provider_policy, LocalOrCloudPolicy::PreferLocal);
+    }
+
+    #[test]
+    fn standard_persona_local_only_constructor_locks_provider_policy() {
+        let req = ModelRequirement::standard_persona_local_only(host_m1_8gb());
+        assert_eq!(req.provider_policy, LocalOrCloudPolicy::LocalOnly);
+        // Bar fields still bundled.
+        assert!(req.required_capabilities.contains(&Capability::Vision));
+        assert_eq!(req.silicon_residency, SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly);
+    }
+
+    #[test]
+    fn current_registry_state_fails_alpha_bar_naming_the_forge_gap() {
+        // The current test registry mirrors today's models.toml: qwen3.5-4b
+        // has Chat+ToolUse but no Vision/Audio. qwen2-vl-7b has Chat+Vision
+        // but no Audio. gpt-4o has the full sensory bundle but is CLOUD.
+        // No LOCAL multimodal base = the forge gap PR #1072 names. This
+        // test will start passing differently when the registry adds a true
+        // multimodal local base — at that point update it to assert success.
+        let r = registry();
+        let p = providers();
+        let req = ModelRequirement::standard_persona_local_only(host_m1_8gb());
+        let err = resolve_model(&req, r.iter(), p.iter()).unwrap_err();
+        match err {
+            ResolutionError::NoMultimodalBase {
+                registry_count,
+                required_sensory_capabilities,
+            } => {
+                assert_eq!(registry_count, r.len());
+                assert!(
+                    required_sensory_capabilities.iter().any(|c| c == "Vision"),
+                    "error must name Vision capability: {required_sensory_capabilities:?}"
+                );
+                assert!(
+                    required_sensory_capabilities.iter().any(|c| c == "AudioInput"),
+                    "error must name AudioInput capability: {required_sensory_capabilities:?}"
+                );
+            }
+            other => panic!(
+                "expected NoMultimodalBase (forge gap); got {other:?}. \
+                 If this fired NoModelMatchesRequirement instead, the filter-1 \
+                 distinguish-the-sensory-bundle logic regressed."
+            ),
+        }
+    }
+
+    #[test]
+    fn standard_persona_resolves_when_multimodal_local_base_exists() {
+        // Synthetic registry: add a true multimodal local base to prove
+        // the resolver SELECTS it under StandardPersona. This is what the
+        // forge pipeline (Position 3) eventually delivers.
+        let mut r = registry();
+        r.push(make_model(
+            "synthetic-qwen3.5-multimodal-7b",
+            "llamacpp-local",
+            Arch::Qwen35,
+            32_768,
+            &[
+                Capability::Chat,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::AudioOutput,
+            ],
+        ));
+        let p = providers();
+        let req = ModelRequirement::standard_persona_local_only(host_m1_8gb());
+        let resolved = resolve_model(&req, r.iter(), p.iter()).unwrap();
+        assert_eq!(resolved.model_id, "synthetic-qwen3.5-multimodal-7b");
+        assert_eq!(resolved.target_silicon, TargetSilicon::UnifiedMemory);
+        assert_eq!(resolved.hw_capability_tier, HwCapabilityTier::M1Uma8Gb);
+    }
+
+    #[test]
+    fn standard_persona_rejects_cpu_silicon_no_silent_fallback() {
+        // CPU-only host with a multimodal local model present: capabilities
+        // match, provider matches (local), but silicon would be Cpu —
+        // SiliconResidencyViolated must fire. No silent CPU fallback.
+        let mut r = registry();
+        r.push(make_model(
+            "synthetic-multimodal-cpu-rejected",
+            "llamacpp-local",
+            Arch::Qwen35,
+            32_768,
+            &[
+                Capability::Chat,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::AudioOutput,
+            ],
+        ));
+        let p = providers();
+        let req = ModelRequirement::standard_persona_local_only(host_cpu_only());
+        let err = resolve_model(&req, r.iter(), p.iter()).unwrap_err();
+        match err {
+            ResolutionError::SiliconResidencyViolated {
+                rejected_model_id,
+                actual_silicon,
+            } => {
+                assert_eq!(rejected_model_id, "synthetic-multimodal-cpu-rejected");
+                assert_eq!(actual_silicon, TargetSilicon::Cpu);
+            }
+            other => panic!(
+                "expected SiliconResidencyViolated on CPU host; got {other:?}. \
+                 the silicon-residency gate is supposed to refuse CPU even when \
+                 capabilities match."
+            ),
+        }
+    }
+
+    #[test]
+    fn standard_persona_rejects_cloud_silicon_under_gpu_residency_with_prefer_local_fallback() {
+        // PreferLocal + no local multimodal base: today the resolver would
+        // rank cloud second and pick gpt-4o (which has the sensory bundle).
+        // Under StandardPersona's GpuOrUnifiedMemoryOnly bar, that cloud
+        // model resolves to TargetSilicon::Cloud which violates the
+        // residency requirement. Loud-fail: SiliconResidencyViolated names
+        // the cloud model that WOULD have been picked. Operator's choices:
+        // (a) ship a local multimodal base, (b) explicitly opt for
+        // CloudOnly + AnySilicon (not via StandardPersona).
+        //
+        // NOTE: today the registry has gpt-4o as the only model with all 4
+        // sensory caps. With PreferLocal, no local match, gpt-4o wins
+        // ranking — and then silicon-residency rejects it.
+        let r = registry();
+        let p = providers();
+        let req = ModelRequirement::standard_persona(host_m1_8gb());
+        let err = resolve_model(&req, r.iter(), p.iter()).unwrap_err();
+        match err {
+            ResolutionError::SiliconResidencyViolated {
+                rejected_model_id,
+                actual_silicon,
+            } => {
+                assert_eq!(rejected_model_id, "gpt-4o");
+                assert_eq!(actual_silicon, TargetSilicon::Cloud);
+            }
+            other => panic!(
+                "expected SiliconResidencyViolated naming gpt-4o on Cloud silicon; got {other:?}"
+            ),
+        }
     }
 }

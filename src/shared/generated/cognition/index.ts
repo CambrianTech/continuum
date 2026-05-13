@@ -32,6 +32,7 @@ export type { ResponderDecision } from './ResponderDecision';
 export type { SharedAnalysis } from './SharedAnalysis';
 export type { SharedAnalysisIntent } from './SharedAnalysisIntent';
 export type { SharedRagSourcePlan } from './SharedRagSourcePlan';
+export type { SiliconResidencyRequirement } from './SiliconResidencyRequirement';
 export type { TargetSilicon } from './TargetSilicon';
 export type { ThroughputJob } from './ThroughputJob';
 export type { ThroughputLaneBudget } from './ThroughputLaneBudget';
