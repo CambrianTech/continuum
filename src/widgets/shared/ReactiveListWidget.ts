@@ -147,16 +147,18 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
       const div = document.createElement('div');
       div.className = 'list-item';
       div.dataset.id = item.id;
-      // ARIA listbox semantics (#1099 phase 2). The container has
-      // role="listbox" (set in subclass render overrides); each item
-      // is role="option". tabindex=0 makes items keyboard-focusable —
-      // proper roving tabindex (only the active item gets tabindex=0)
-      // is a phase-3 follow-up.
+      // ARIA listbox semantics (#1099 phase 2 + 3a). The container has
+      // role="listbox"; each item is role="option". Roving tabindex
+      // (only the active item gets tabindex=0, others -1) is managed
+      // here for initial render and updated dynamically by
+      // syncSelection() after every Lit update + onListKeydown after
+      // arrow-key navigation.
       div.setAttribute('role', 'option');
-      div.tabIndex = 0;
+      const isSel = this.isItemIdSelected(item.id);
+      div.tabIndex = isSel ? 0 : -1;
       const label = this.getItemLabel(item);
       if (label) div.setAttribute('aria-label', label);
-      div.setAttribute('aria-selected', String(this.isSelected(item)));
+      div.setAttribute('aria-selected', String(isSel));
       render(this.renderItem(item), div);
       div.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -191,8 +193,9 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
    * Keyboard navigation handler attached to the listbox container in
    * `firstUpdated()`. ArrowDown/Up move focus to the next/previous
    * `.list-item`, Home/End jump to first/last, Enter/Space activate.
-   * Handler is scoped to the container so it doesn't interfere with
-   * keyboard handling on sibling widgets (e.g., the chat composer).
+   * Updates roving tabindex so only the focused item is in the Tab
+   * order (others get tabindex=-1) — keeps the list a single tab stop
+   * instead of one per item.
    */
   private onListKeydown = (e: KeyboardEvent): void => {
     const items = Array.from(
@@ -222,6 +225,10 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
     }
     if (nextIdx !== null) {
       e.preventDefault();
+      // Roving tabindex: only the about-to-be-focused item is in the
+      // Tab order. Others step out so Tab from outside the list lands
+      // on this one item.
+      items.forEach((el, i) => { el.tabIndex = i === nextIdx ? 0 : -1; });
       items[nextIdx].focus();
     }
   };
@@ -230,6 +237,53 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
     super.firstUpdated();
     const container = this.shadowRoot?.querySelector(`.${this.containerClass}`);
     container?.addEventListener('keydown', this.onListKeydown as EventListener);
+  }
+
+  /**
+   * After every Lit re-render, walk the rendered `.list-item` wrappers
+   * and update `aria-selected` + the roving `tabindex` to reflect the
+   * subclass's selection state. The visual `.active` class is already
+   * reactive via Lit (subclasses re-render their inner template); this
+   * hook keeps the ARIA attributes on the static EntityScroller-managed
+   * outer wrapper in sync without re-rendering the wrapper.
+   *
+   * If no item is currently selected (e.g., first load before any
+   * click), the first item gets tabindex=0 so the list remains a
+   * tab stop. Otherwise the selected item gets tabindex=0, others -1.
+   */
+  protected override updated(changed: Map<string, unknown>): void {
+    super.updated(changed);
+    this.syncListSelection();
+  }
+
+  private syncListSelection(): void {
+    const items = this.shadowRoot?.querySelectorAll<HTMLElement>(
+      `.${this.containerClass} > .list-item`
+    );
+    if (!items || items.length === 0) return;
+    let selectedFound = false;
+    items.forEach(item => {
+      const id = item.dataset.id;
+      if (!id) return;
+      const sel = this.isItemIdSelected(id);
+      item.setAttribute('aria-selected', String(sel));
+      item.tabIndex = sel ? 0 : -1;
+      if (sel) selectedFound = true;
+    });
+    if (!selectedFound && items[0]) {
+      items[0].tabIndex = 0;
+    }
+  }
+
+  /**
+   * Whether an item with the given id is the currently-selected one.
+   * Base implementation uses `this.selectedId`. Subclasses with their
+   * own selection state override this — RoomList uses `currentRoomId`,
+   * UserList uses `_selectedUserId`. Drives both `aria-selected` and
+   * the roving tabindex.
+   */
+  protected isItemIdSelected(id: string): boolean {
+    return id === this.selectedId;
   }
 
   protected getLoadFunction(): LoadFn<T> {

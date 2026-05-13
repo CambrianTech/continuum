@@ -207,7 +207,11 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     `;
   }
 
-  // === A11Y === (#1099 phase 2)
+  // === A11Y === (#1099 phase 2 + 3a)
+  protected override isItemIdSelected(id: string): boolean {
+    return id === this._selectedUserId;
+  }
+
   protected override getItemLabel(user: UserEntity): string {
     const name = user.displayName ?? 'Unknown user';
     const typeLabel = user.type === 'persona' ? 'persona' : user.type === 'agent' ? 'agent' : 'user';
@@ -322,9 +326,10 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
       div.className = 'list-item';
       div.dataset.id = user.id;
       div.setAttribute('role', 'option');
-      div.tabIndex = 0;
+      const isSelected = this.isItemIdSelected(user.id);
+      div.tabIndex = isSelected ? 0 : -1;
       div.setAttribute('aria-label', this.getItemLabel(user));
-      div.setAttribute('aria-selected', String(this._selectedUserId === user.id));
+      div.setAttribute('aria-selected', String(isSelected));
       render(this.renderItem(user), div);
       div.addEventListener('click', (e) => {
         e.stopPropagation();
