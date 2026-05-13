@@ -193,4 +193,10 @@ src/.continuum/sessions/validation/
 
 # Downloaded model binaries (Whisper, Piper, Silero VAD, etc.)
 src/workers/models/
-.airc/
+# AIRC pilot — runtime state is ignored, repo-pilot docs are committed.
+# `.airc/*` ignores the contents (not the directory itself) so the
+# negation patterns below can re-include specific tracked files. See
+# `.airc/POLICY.md` and the rest of the pilot manifest (#1109).
+.airc/*
+!.airc/*.md
+!.airc/manifest.json
