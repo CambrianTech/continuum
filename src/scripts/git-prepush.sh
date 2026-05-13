@@ -65,6 +65,11 @@ if echo "$CHANGED_FILES" | grep -qE "^(src/workers/|docker/|src/shared/generated
     RUST_RELEVANT=1
 fi
 
+DOCKER_RELEVANT=0
+if echo "$CHANGED_FILES" | grep -qE "^(src/|docker/|docker-compose.*\.yml$|Dockerfile|src/scripts/download-(voice-)?models\.sh$|src/scripts/install.*\.sh$)"; then
+    DOCKER_RELEVANT=1
+fi
+
 # Phase 1: TypeScript compilation (<15s)
 echo ""
 echo "📋 Phase 1: TypeScript compilation"
@@ -199,8 +204,6 @@ echo "📋 Phase 4: Native-arch Docker images (if Rust/docker changed)"
 echo "---------------------------------------------------------------"
 
 DOCKER_PUSH_START=$(date +%s)
-DOCKER_RELEVANT="$RUST_RELEVANT"
-
 if [ "$DOCKER_RELEVANT" -eq 0 ]; then
     echo "⏭️  No Rust/docker changes in this push — skipping native-arch build."
 elif [ ! -x "$REPO_ROOT/scripts/push-current-arch.sh" ]; then
