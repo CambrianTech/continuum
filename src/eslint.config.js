@@ -9,7 +9,7 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        project: './tsconfig.json',
+        project: './tsconfig.eslint.json',
       },
     },
     rules: {
@@ -45,6 +45,7 @@ export default tseslint.config(
       '**/*.d.ts',
       '**/*.js',
       '**/*.mjs',
+      '**/test/**/*.ts',
       'examples/**',
       'scripts/**',
       'generated-command-schemas.json',
