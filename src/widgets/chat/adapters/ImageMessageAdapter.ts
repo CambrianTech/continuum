@@ -103,6 +103,146 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
   }
 
   /**
+   * DOM-returning render path (see issue #1100). Builds the entire
+   * image-content structure via DOM APIs instead of HTML strings.
+   *
+   * Why this is a meaningful security improvement (not just refactor):
+   * the string path interpolated user-controllable values directly into
+   * HTML attribute positions — `src="${url}"`, `alt="${altText}"`,
+   * `data-filename="${filename}"`, and especially `${caption}` in
+   * element-content position. Any one of those is an XSS opportunity
+   * if the source data isn't perfectly escaped. Here every dynamic
+   * value is set via property assignment (`img.src = url`, `img.alt =`)
+   * or `.textContent` (caption), where the browser cannot reinterpret
+   * the value as markup. Class names, structure, and CSS hooks are
+   * preserved verbatim so `handleContentLoading()` and the event
+   * delegator still find their selectors.
+   */
+  override renderMessageElement(message: ChatMessageEntity, _currentUserId: string): HTMLElement | null {
+    try {
+      const data = this.parseContent(message);
+      if (!data) return null;
+      this.contentData = data;
+
+      const wrapper = this.createAdapterWrapper();
+
+      const content = document.createElement('div');
+      content.className = 'image-message-content';
+      wrapper.appendChild(content);
+
+      const grid = document.createElement('div');
+      grid.className = `images-grid ${data.images.length > 1 ? 'multiple-images' : 'single-image'}`;
+      content.appendChild(grid);
+
+      data.images.forEach((mediaItem, index) => {
+        grid.appendChild(this.buildImageContainer(mediaItem, index));
+      });
+
+      if (data.caption) {
+        const captionEl = document.createElement('div');
+        captionEl.className = 'image-caption';
+        // textContent — caption originates from message.content.text and
+        // must not be interpreted as markup.
+        captionEl.textContent = data.caption;
+        content.appendChild(captionEl);
+      }
+
+      return wrapper;
+    } catch (error) {
+      console.error('ImageMessageAdapter.renderMessageElement failed:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Build a single .image-container element with its loading placeholder,
+   * <img>, error overlay, and action buttons. Structure mirrors the
+   * string-based renderContent exactly so handleContentLoading() and
+   * the event-delegated action buttons keep working.
+   */
+  private buildImageContainer(mediaItem: MediaItem, index: number): HTMLElement {
+    const imageId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    const url = mediaItem.url ?? (mediaItem.base64 ? `data:${mediaItem.mimeType ?? 'image/png'};base64,${mediaItem.base64}` : '');
+    const altText = mediaItem.alt ?? mediaItem.description ?? `Image ${index + 1}`;
+    const filename = mediaItem.filename ?? `image-${index + 1}`;
+
+    const container = document.createElement('div');
+    container.className = 'image-container';
+    container.dataset.imageId = imageId;
+    container.dataset.mediaId = mediaItem.id ?? '';
+
+    // Loading placeholder
+    const placeholder = document.createElement('div');
+    placeholder.className = 'image-loading-placeholder';
+    const spinner = document.createElement('div');
+    spinner.className = 'loading-spinner';
+    const loadingText = document.createElement('span');
+    loadingText.className = 'loading-text';
+    loadingText.textContent = 'Loading image...';
+    placeholder.appendChild(spinner);
+    placeholder.appendChild(loadingText);
+    container.appendChild(placeholder);
+
+    // Image — property assignment for url/alt, never attribute interpolation.
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = altText;
+    img.className = 'message-image';
+    img.loading = 'lazy';
+    img.dataset.loaded = 'false';
+    if (mediaItem.width !== undefined) img.dataset.width = String(mediaItem.width);
+    if (mediaItem.height !== undefined) img.dataset.height = String(mediaItem.height);
+    img.style.display = 'block';
+    img.style.maxWidth = '100%';
+    img.style.height = 'auto';
+    container.appendChild(img);
+
+    // Error overlay
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'image-error';
+    errorDiv.style.display = 'none';
+    const errorIcon = document.createElement('span');
+    errorIcon.className = 'error-icon';
+    errorIcon.textContent = '🖼️';
+    const errorText = document.createElement('span');
+    errorText.className = 'error-text';
+    errorText.textContent = 'Image failed to load';
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'retry-button';
+    retryBtn.dataset.action = 'image-retry';
+    retryBtn.dataset.url = url;
+    retryBtn.textContent = 'Retry';
+    errorDiv.appendChild(errorIcon);
+    errorDiv.appendChild(errorText);
+    errorDiv.appendChild(retryBtn);
+    container.appendChild(errorDiv);
+
+    // Action buttons
+    const actions = document.createElement('div');
+    actions.className = 'image-actions';
+    actions.appendChild(this.buildActionButton('image-fullscreen', '🔍', 'View fullscreen'));
+    const downloadBtn = this.buildActionButton('image-download', '⬇️', 'Download');
+    downloadBtn.dataset.url = url;
+    downloadBtn.dataset.filename = filename;
+    actions.appendChild(downloadBtn);
+    actions.appendChild(this.buildActionButton('image-ai-describe', '🤖', 'AI describe image'));
+    container.appendChild(actions);
+
+    return container;
+  }
+
+  private buildActionButton(action: string, label: string, title: string): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.className = 'action-button';
+    btn.dataset.action = action;
+    btn.title = title;
+    // aria-label complements the title — title is unreliable for SR.
+    btn.setAttribute('aria-label', title);
+    btn.textContent = label;
+    return btn;
+  }
+
+  /**
    * Handle image loading with proper error states and lazy loading
    */
   async handleContentLoading(element: HTMLElement): Promise<void> {
