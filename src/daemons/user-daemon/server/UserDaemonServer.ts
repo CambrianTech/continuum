@@ -29,6 +29,7 @@ import { PersonaLifecycleManager } from '../../../system/user/server/PersonaLife
 export class UserDaemonServer extends UserDaemon {
   private static instance: UserDaemonServer | null = null;
   protected log: ComponentLogger;
+  private readonly personaClientInitializations = new Map<UUID, Promise<void>>();
 
   /**
    * Get singleton instance (for genome commands to access PersonaUsers)
@@ -177,7 +178,7 @@ export class UserDaemonServer extends UserDaemon {
 
       // For PersonaUsers, create client instance
       if (userEntity.type === 'persona') {
-        await this.createPersonaClient(userEntity);
+        await this.ensurePersonaClient(userEntity);
       }
 
       // HumanUser and AgentUser managed by SessionDaemon
@@ -296,7 +297,7 @@ export class UserDaemonServer extends UserDaemon {
       }
 
       // STEP 3: Create PersonaUser client instance
-      await this.createPersonaClient(userEntity);
+      await this.ensurePersonaClient(userEntity);
 
     } catch (error) {
       this.log.error(`❌ UserDaemon: Failed to ensure state for ${userEntity.displayName}:`, error);
@@ -346,6 +347,35 @@ export class UserDaemonServer extends UserDaemon {
         this.log.error(`   Stack: ${errorStack.split('\n').slice(1, 4).join('\n   ')}`);
       }
     }
+  }
+
+  /**
+   * Ensure only one runtime PersonaUser is constructed per persisted user.
+   *
+   * Startup has multiple legitimate entry points: DataDaemon system:ready,
+   * UserDaemon deferred init, and real user-created events. They can overlap
+   * during cold boot. The database identity is singleton, so the runtime client
+   * must be singleton too; duplicate instances mean duplicate event handlers,
+   * duplicate inbox drains, and duplicate model calls for one persona.
+   */
+  private async ensurePersonaClient(userEntity: UserEntity): Promise<void> {
+    if (this.personaClients.has(userEntity.id)) {
+      return;
+    }
+
+    const inflight = this.personaClientInitializations.get(userEntity.id);
+    if (inflight) {
+      await inflight;
+      return;
+    }
+
+    const initialization = this.createPersonaClient(userEntity)
+      .finally(() => {
+        this.personaClientInitializations.delete(userEntity.id);
+      });
+
+    this.personaClientInitializations.set(userEntity.id, initialization);
+    await initialization;
   }
 
   /**

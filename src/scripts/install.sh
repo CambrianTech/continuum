@@ -371,6 +371,16 @@ if [ "$SKIP_BUILD" = "0" ]; then
   echo -e "  Building TypeScript..."
   npm run build:ts 2>&1 | tail -1
 
+  # Build the CLI bundle too. Without it, src/jtag falls back to
+  # `tsx` resolution which can't resolve tsconfig path aliases (e.g.,
+  # @system/core/types/SystemScopes) at runtime — fast post-clone
+  # invocations of jtag fail with ERR_MODULE_NOT_FOUND. Bundle path
+  # is what every production invocation should use. Caught 2026-05-02
+  # via PR #1012 chat.log artifact: carl-install-smoke chat-probe
+  # was failing this exact way on every CI run.
+  echo -e "  Building CLI bundle..."
+  npm run build:cli 2>&1 | tail -1
+
   echo -e "  Building Rust workers..."
   bash scripts/setup-rust.sh 2>&1 | tail -5
 fi

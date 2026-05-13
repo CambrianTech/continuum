@@ -13,23 +13,33 @@ import { Logger } from '../../logging/Logger';
 
 const log = Logger.create('ServiceInitializer');
 
+export function shouldInitializeCodebaseIndexing(
+  env: NodeJS.ProcessEnv = process.env,
+  nodeEnv: string | undefined = process.env.NODE_ENV,
+): boolean {
+  if (env.SKIP_CODEBASE_INDEX === '1' || env.SKIP_CODEBASE_INDEX === 'true') {
+    return false;
+  }
+  if (nodeEnv === 'production') {
+    return false;
+  }
+  return env.CONTINUUM_ENABLE_CODEBASE_INDEX === '1' || env.CONTINUUM_ENABLE_CODEBASE_INDEX === 'true';
+}
+
 /**
- * Background codebase indexing — runs incremental index after startup.
- * Fire-and-forget: doesn't block server startup, logs results.
- *
- * Skippable via SKIP_CODEBASE_INDEX=1 for validation / debugging when the
- * indexer's data/query saturation masks unrelated chat-path issues. The
- * indexer is an optimization; disabling it doesn't break chat or personas.
+ * Background codebase indexing — runs incremental index only when explicitly
+ * enabled. Code RAG is useful enrichment, but it is not a boot dependency. On
+ * a fresh checkout it can generate thousands of code_index writes and sustained
+ * ONNX embedding batches; doing that during seed/readiness starves chat,
+ * persona inbox service, and first-run UX.
  */
 function initializeCodebaseIndexing(): void {
-  if (process.env.SKIP_CODEBASE_INDEX === '1' || process.env.SKIP_CODEBASE_INDEX === 'true') {
-    log.info('Background codebase indexing SKIPPED (SKIP_CODEBASE_INDEX set)');
+  if (!shouldInitializeCodebaseIndexing()) {
+    log.info('Background codebase indexing skipped (set CONTINUUM_ENABLE_CODEBASE_INDEX=1 to enable)');
     return;
   }
-  // Delay 120s — personas must boot and respond to first chats before
-  // indexing starts. At 10s the embedding storm saturates the event loop
-  // and blocks ALL persona responses for 2+ minutes. Chat is the product;
-  // codebase search is optimization that can wait.
+  // Delay 120s even when explicitly enabled. This gives seed + first chat a
+  // clean lane before the embedding-heavy indexer starts.
   setTimeout(async () => {
     try {
       const { getCodebaseIndexer } = await import('../../../rag/services/CodebaseIndexer');
@@ -89,14 +99,8 @@ export async function initializeServices(): Promise<void> {
   initializeTrainingRecovery();
   log.debug('Training recovery service initialized');
 
-  // Codebase indexing: background incremental index so personas can answer code questions.
-  // Skip in production/Docker — no source tree to index, and the ORM.store() events
-  // (data:code_index:created × thousands) peg the CPU at 100% and starve voice/chat.
-  if (process.env.NODE_ENV !== 'production') {
-    initializeCodebaseIndexing();
-  } else {
-    log.info('Skipping codebase indexing (production mode)');
-  }
+  // Codebase indexing is opt-in. It is RAG enrichment, not readiness.
+  initializeCodebaseIndexing();
 
   const ms = Date.now() - start;
   log.info(`Cross-cutting services initialized (${ms}ms)`);

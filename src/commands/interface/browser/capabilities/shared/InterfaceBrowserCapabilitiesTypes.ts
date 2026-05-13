@@ -12,24 +12,23 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
- * Interface Browser Capabilities Command Parameters
+ * Interface Browser Capabilities Command Parameters — no command-
+ * specific params; CommandParams (context + sessionId + userId) is the
+ * full payload. Type alias (not `extends CommandParams {}` with
+ * `_noParams: never`) so the type is genuinely empty + structurally
+ * identical to CommandParams.
  */
-export interface InterfaceBrowserCapabilitiesParams extends CommandParams {
-  _noParams?: never; // Marker to avoid empty interface
-}
+export type InterfaceBrowserCapabilitiesParams = CommandParams;
 
 /**
- * Factory function for creating InterfaceBrowserCapabilitiesParams
+ * Factory function for creating InterfaceBrowserCapabilitiesParams.
+ * System-scoped: issued by the browser-detection system, not a user —
+ * userId is always SYSTEM_SCOPES.SYSTEM.
  */
 export const createInterfaceBrowserCapabilitiesParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Record<string, never>
-): InterfaceBrowserCapabilitiesParams => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
-
-  ...data
-});
+): InterfaceBrowserCapabilitiesParams => createPayload(context, sessionId, { userId: SYSTEM_SCOPES.SYSTEM });
 
 /**
  * Interface Browser Capabilities Command Result

@@ -2,7 +2,20 @@
 # JTAG Terminal Portal - Pure CLI client (no server startup)
 # Uses pre-bundled CLI for fast startup (~0.6s vs ~2.6s with tsx)
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks BEFORE deriving SCRIPT_DIR. install.sh's
+# mod_jtag_bin_link symlinks $HOME/.local/bin/jtag → src/jtag, so when
+# Carl runs `jtag …`, BASH_SOURCE[0] is the symlink path
+# (~/.local/bin/jtag) and dirname is ~/.local/bin — neither
+# `dist/cli-bundle.js` nor `cli.ts` lives there, so the bundle check
+# silently misses and the tsx fallback fires `npx tsx
+# ~/.local/bin/cli.ts` which dies with ERR_MODULE_NOT_FOUND.
+# `readlink -f` walks the symlink chain to the actual src/jtag, so
+# SCRIPT_DIR resolves to the real src/ directory regardless of how
+# the user invoked the script.
+# Caught 2026-05-03 by carl-install-smoke on Windows/bigmama-1
+# (continuum-b69f) after #93's earlier fix at 36e85d212 only handled
+# direct `./jtag` invocations, not the symlinked-from-PATH case.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 BUNDLE="$SCRIPT_DIR/dist/cli-bundle.js"
 
 # Check for --verbose flag to show connection message
@@ -10,10 +23,18 @@ if [[ "$*" == *"--verbose"* ]]; then
   echo "🔗 JTAG CLI - Connecting to existing server..."
 fi
 
-# Use bundled CLI if available (faster), otherwise fall back to tsx
+# Use bundled CLI if available (faster), otherwise fall back to tsx.
+# Pre-fix `npx tsx cli.ts` resolved cli.ts relative to cwd — broken
+# when invoked from anywhere other than src/ (e.g. CI's chat-probe
+# runs from /home/runner/work/continuum/continuum). Use SCRIPT_DIR
+# so the path resolves to src/cli.ts regardless of cwd. Caught
+# 2026-05-02 via PR #1012's chat.log artifact upload making the
+# `ERR_MODULE_NOT_FOUND: Cannot find module ... /cli.ts` failure
+# visible — exactly the silent-failure-revealing-via-evidence
+# pattern.
 if [[ -f "$BUNDLE" ]]; then
   node "$BUNDLE" "$@"
 else
   echo "⚠️ Bundle not found. Using slower tsx (run: npm run build:cli)" >&2
-  npx tsx cli.ts "$@"
+  npx tsx "$SCRIPT_DIR/cli.ts" "$@"
 fi

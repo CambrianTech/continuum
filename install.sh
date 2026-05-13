@@ -21,13 +21,62 @@ REPO="https://github.com/CambrianTech/continuum.git"
 INSTALL_DIR="${CONTINUUM_DIR:-$HOME/continuum}"
 CONTINUUM_DATA="$HOME/.continuum"
 
+# ── Friendly-failure infrastructure ─────────────────────────
+# When install.sh fails partway, Carl needs to know WHICH phase died,
+# not just what bash printed. PHASE gets updated as we enter each
+# section; the ERR trap reads it + maps to phase-specific guidance.
+# Empirically (2026-04-25): existing failures dump bash's last line
+# of stderr with no context. Carl can't tell if it's a Docker thing,
+# a Tailscale thing, a model-download thing, or a Rust build thing
+# without reading install.sh source.
+PHASE="(starting up)"
+INSTALL_LOG="${INSTALL_LOG:-/tmp/continuum-install-$$.log}"
+exec > >(tee -a "$INSTALL_LOG") 2>&1
+
+phase_guidance() {
+  case "$PHASE" in
+    *"detect environment"*) echo "Verify uname -s + uname -m return expected values; check disk space (df -h /).";;
+    *"pre-clone bootstrap"*) echo "Install git + docker first; on Mac, ensure Docker Desktop is running.";;
+    *"clone"*|*"update repo"*) echo "Check network: ping github.com; verify INSTALL_DIR ($INSTALL_DIR) is writable.";;
+    *"shared modules"*) echo "Re-clone may be incomplete; rm -rf $INSTALL_DIR && re-run installer.";;
+    *"configuration"*) echo "Check $CONTINUUM_DATA exists + is writable; mkdir -p $CONTINUUM_DATA && chmod 700 $CONTINUUM_DATA.";;
+    *"TLS certs"*) echo "Tailscale + cert step is optional; export CONTINUUM_NO_TLS=1 and re-run.";;
+    *"compose files"*) echo "Verify docker-compose.yml exists in $INSTALL_DIR; the install repo may be incomplete.";;
+    *"pull"*|*"images"*) echo "Network or GHCR auth issue; docker login ghcr.io and retry.";;
+    *"start support services"*|*"bring up"*) echo "Check Docker Desktop has enough RAM (≥30GB). docker compose -f $INSTALL_DIR/docker-compose.yml logs --tail=100";;
+    *"widget-server health"*) echo "Compose came up but widget-server isn't serving. docker compose -f $INSTALL_DIR/docker-compose.yml logs widget-server --tail=100";;
+    *) echo "Capture full log + open an issue: cat $INSTALL_LOG | gh issue create -t 'install fail @ $PHASE' -b -";;
+  esac
+}
+
+on_install_fail() {
+  local rc=$?
+  # Trap fires on any non-zero exit (set -e). Avoid recursing if the
+  # ERR trap itself trips a sub-shell.
+  trap - ERR EXIT
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  ❌ Install failed during phase: $PHASE  (exit $rc)"
+  echo ""
+  echo "  Suggestion: $(phase_guidance)"
+  echo ""
+  echo "  Full log: $INSTALL_LOG"
+  echo "  Last 30 lines:"
+  tail -30 "$INSTALL_LOG" | sed 's/^/    /'
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  exit "$rc"
+}
+trap on_install_fail ERR
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Continuum Installer"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Log: $INSTALL_LOG"
 echo ""
 
 # ── 1. Detect environment ───────────────────────────────────
+PHASE="detect environment"
 info "Detecting environment..."
 
 OS="$(uname -s)"
@@ -49,6 +98,7 @@ case "$OS" in
 esac
 
 # ── 2. Pre-clone bootstrap: git + minimal Docker presence check ────
+PHASE="pre-clone bootstrap"
 # We can't source the canonical module library yet (lives in the repo).
 # Just verify prerequisites so the clone can happen. Deeper checks live
 # in the canonical modules that run after the clone.
@@ -143,15 +193,52 @@ case "$OS" in
     PHYS_MIB=$((PHYS_BYTES / 1048576))
     PHYS_GB=$((PHYS_MIB / 1024))
 
-    # Reserve headroom for native continuum-core (12GB) + macOS (6GB).
-    NATIVE_RESERVE_MIB=$((12 * 1024))
+    # Hardware tier — sets NATIVE_RESERVE + PERSONA_MODEL to fit available RAM.
+    # Per Joel's "MacBook Air on up, accessible, high-school-computer" target:
+    # 16GB MBA must be a working OOTB chat experience, not a 28GB-floor reject.
+    # Tier breakdown (continuum-ai's published smaller models all public):
+    #   8-15GB  → reject; even minimal config doesn't fit (macOS 6GB +
+    #             Docker 4GB minimum + minimal continuum-core 3GB + small
+    #             model + working set ≈ 14-15GB working set, no headroom)
+    #   16-23GB → MBA tier: smaller persona model, no Bevy/vision/audio
+    #             pre-pull at install time (chat-only OOTB; multimodal
+    #             enables when user attaches an image / opens video chat —
+    #             those code paths still load lazily). Native budget 5GB.
+    #   24-31GB → mid tier: still chat-focused but slightly larger model;
+    #             Bevy/vision/audio available. Native budget 8GB.
+    #   32GB+   → primary tier: full Qwen 4B code-forged + multimodal +
+    #             everything pre-pulled. Native budget 12GB (original).
+    #
+    # PERSONA_MODEL also tiers (set later when ic_decide_gpu_path runs;
+    # this just sets the byte budget for Docker VM sizing). The tiered
+    # PERSONA_MODEL is referenced by the docker model pull section below.
+    if [[ "$PHYS_MIB" -lt $((16 * 1024)) ]]; then
+      fail "This Mac has ${PHYS_GB}GB physical RAM. Continuum's minimum is 16GB:
+  - macOS itself reserves ~6GB
+  - Docker Desktop VM needs at least ~4GB
+  - Native continuum-core needs at least ~3GB (smallest persona model + working set)
+  - Total minimum: 13-15GB, leaves no headroom under 16GB
+For 16GB MBA: chat-only OOTB works (smaller model). For 32GB+: full multimodal experience."
+    elif [[ "$PHYS_MIB" -lt $((24 * 1024)) ]]; then
+      # MBA tier
+      NATIVE_RESERVE_MIB=$((5 * 1024))
+      CONTINUUM_TIER="mba"
+      info "Hardware tier: MBA (${PHYS_GB}GB) — chat-only OOTB with smaller persona model"
+    elif [[ "$PHYS_MIB" -lt $((32 * 1024)) ]]; then
+      # Mid tier
+      NATIVE_RESERVE_MIB=$((8 * 1024))
+      CONTINUUM_TIER="mid"
+      info "Hardware tier: mid (${PHYS_GB}GB) — multimodal available with mid-size persona model"
+    else
+      # Primary tier (original behavior)
+      NATIVE_RESERVE_MIB=$((12 * 1024))
+      CONTINUUM_TIER="primary"
+      info "Hardware tier: primary (${PHYS_GB}GB) — full multimodal + Qwen 4B code-forged"
+    fi
+    export CONTINUUM_TIER
     MACOS_RESERVE_MIB=$((6 * 1024))
     HEADROOM_MIB=$((NATIVE_RESERVE_MIB + MACOS_RESERVE_MIB))
-    DOCKER_FLOOR_MIB=$((10 * 1024))
-
-    if [[ "$PHYS_MIB" -lt $((HEADROOM_MIB + DOCKER_FLOOR_MIB)) ]]; then
-      fail "This Mac has ${PHYS_GB}GB physical RAM. Mac Option B (continuum-core native + Docker Desktop for support services) needs at least $(( (HEADROOM_MIB + DOCKER_FLOOR_MIB) / 1024 ))GB: ~12GB for native continuum-core (Qwen 4B + Bevy + vision + audio), ~6GB for macOS itself, and a ${DOCKER_FLOOR_MIB}MiB floor for the Docker VM. Below that, Docker Desktop crashes under combined memory pressure (verified on a 32GB box with the old 80%-target formula). Get a 32GB+ M-series for the primary audience experience."
-    fi
+    DOCKER_FLOOR_MIB=$((4 * 1024))
 
     TARGET_MIB=$((PHYS_MIB - HEADROOM_MIB))
     if [[ "$TARGET_MIB" -lt "$DOCKER_FLOOR_MIB" ]]; then
@@ -237,6 +324,23 @@ PYEOF
       docker desktop enable model-runner --tcp=12434 --cors=all 2>&1 | tail -3 || \
         warn "Could not enable Model Runner TCP — continuum-core will fall back to Candle (slower). Enable manually: docker desktop enable model-runner --tcp=12434 --cors=all"
     fi
+    # cmake — required by the vendored llama.cpp build (Phase 2a of `npm
+    # start`). Carl's M1 install pass (#980 Bug 1) hit
+    #   thread 'main' panicked at cmake-0.1.57/src/lib.rs:1132:5:
+    #   failed to execute command: No such file or directory (os error 2)
+    #   is `cmake` not installed?
+    # because install.sh said "✅ Continuum Tower installed!" without
+    # checking cmake, then npm start died inside the cargo build of the
+    # llama crate. Auto-install via brew matches the node pattern below
+    # so fresh-Mac users have a working build path out of the box.
+    if ! command -v cmake &>/dev/null; then
+      if command -v brew &>/dev/null; then
+        info "cmake not found — installing via Homebrew (needed by vendored llama.cpp build)…"
+        brew install cmake
+      else
+        fail "cmake required for vendored llama.cpp build. Install Homebrew + run 'brew install cmake', or use 'xcode-select --install' to get the macOS CLI tools that include cmake."
+      fi
+    fi
     # Rust toolchain — continuum-core-server is built natively on Mac (not
     # containerized) so it can link Metal for Candle embeddings, Bevy, vision,
     # and audio MPS paths. Build happens during `npm start` at end of install.
@@ -297,15 +401,38 @@ EOF
 
   # Pull default persona model into DMR so Carl's first chat is instant.
   # Only for DMR paths — Vulkan path loads models differently (local GGUF).
-  PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF"
+  #
+  # Tiered by CONTINUUM_TIER (set in the Mac RAM-tier block above; Linux
+  # paths skip this block since CONTINUUM_TIER isn't set there → defaults
+  # to the primary model). Lets a 16GB MBA install with a model that fits
+  # rather than failing the install or OOMing on first chat.
+  case "${CONTINUUM_TIER:-primary}" in
+    mba)
+      # 16-23GB: 0.8B general (~500MB GGUF). Chat-functional + leaves
+      # headroom for macOS + Docker + native continuum-core working set.
+      PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-0.8b-general-forged"
+      info "Persona model tier: MBA → qwen3.5-0.8b-general-forged (~500MB)"
+      ;;
+    mid)
+      # 24-31GB: 2B general (~1.4GB GGUF). Bigger context window viable.
+      PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-2b-general-forged"
+      info "Persona model tier: mid → qwen3.5-2b-general-forged (~1.4GB)"
+      ;;
+    *)
+      # 32GB+: original code-forged 4B (~2.7GB GGUF). Multimodal headroom.
+      PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-4b-code-forged-GGUF"
+      ;;
+  esac
   case "$IC_GPU_PATH" in
     dmr-*)
-      if ! docker model ls 2>/dev/null | grep -q "qwen3.5-4b-code-forged"; then
-        info "Pulling default persona model into Docker Model Runner (~2.7GB, first install only)..."
-        docker model pull "$PERSONA_MODEL" || warn "Model pull failed — chat will error until model is available. Retry: docker model pull $PERSONA_MODEL"
-      else
-        ok "Persona model already in DMR: $PERSONA_MODEL"
-      fi
+      # Per Joel 2026-05-04: "all the models must download and run on GPU"
+      # + "we MUST have this work from ONE source of truth". DMR's
+      # `docker model pull` was the Mac-only path that didn't work on
+      # Linux. Models now download via the model-init container reading
+      # src/shared/models.json — same path on Mac/Linux/Windows. The DMR
+      # branch here remains for KV-cache-config + vLLM-MLX install (which
+      # are still useful tuning), but no longer pulls the model.
+      ok "Persona model download deferred to model-init container (reads src/shared/models.json)"
       # Cap llama-server's per-slot KV cache reservation, sized to actual
       # physical RAM. Without this cap each slot reserves the full model
       # context (262144 tokens for Qwen3.5), ballooning
@@ -358,11 +485,10 @@ EOF
             # Pull MLX-format Qwen3.5-4B for vllm-metal routing.
             # DMR auto-routes MLX models to vllm-metal when installed.
             MLX_MODEL="hf.co/mlx-community/Qwen3.5-4B-MLX-4bit"
-            if ! docker model ls 2>/dev/null | grep -q "Qwen3.5-4B-MLX"; then
-              info "Pulling MLX-format Qwen3.5-4B (~2.5GB, for 3x faster inference)..."
-              docker model pull "$MLX_MODEL" \
-                || warn "MLX model pull failed. GGUF via llama.cpp will be used instead."
-            fi
+            # MLX-format model also moves to registry-driven download.
+            # Add MLX entry to src/shared/models.json + auto_download.always
+            # if/when we want vllm-metal to find it on disk.
+            ok "MLX model download deferred to model-init (add to src/shared/models.json to enable)"
           else
             warn "vLLM install failed (requires Docker Desktop 4.62+). llama.cpp Metal will be used."
           fi
@@ -532,17 +658,38 @@ case "$OS" in
 esac
 
 # ── 3. Clone / update repo ─────────────────────────────────
+PHASE="clone / update repo"
+# CONTINUUM_REF env override: clone a specific branch/sha instead of
+# default (origin/HEAD). Used by carl-install-smoke CI to validate PR
+# src/ changes — without it, install.sh always cloned origin/main and
+# PR src/ edits never got tested by CI. 2026-05-03: this gap meant
+# every fix to src/jtag, src/scripts/install.sh, etc landed via PR
+# but couldn't be validated by carl-install-smoke until merged. Joel:
+# "months of trying to get continuum working out-of-box for Carl."
+# Default ref is canary, NOT origin/HEAD (= main). main is intentionally
+# behind canary until release cadence promotes the branch on schedule;
+# 2026-05-03 main is 79 commits BEHIND canary, including critical install
+# fixes (mod_jtag_bin_link, WSL2 config.env mirror, .env image-tag writer,
+# resolveRoomIdentifier, stripLeakedToolMarkup, phantom-tab sanitize,
+# socket chmod 666, etc). Default Carl install used to clone main and
+# fail at line 769 with "mod_jtag_bin_link: command not found".
+# Per Joel 2026-05-03: "Everyone uses current code period."
+DEFAULT_CONTINUUM_REF="canary"
+RESOLVED_CONTINUUM_REF="${CONTINUUM_REF:-$DEFAULT_CONTINUUM_REF}"
+
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "Updating existing installation..."
   cd "$INSTALL_DIR"
   git pull --ff-only 2>/dev/null || warn "Could not update — using existing version"
 else
-  info "Cloning Continuum..."
-  git clone --depth 1 "$REPO" "$INSTALL_DIR"
+  info "Cloning Continuum at ref $RESOLVED_CONTINUUM_REF..."
+  git clone --depth 1 --branch "$RESOLVED_CONTINUUM_REF" "$REPO" "$INSTALL_DIR" 2>/dev/null \
+    || (git clone "$REPO" "$INSTALL_DIR" && cd "$INSTALL_DIR" && git checkout "$RESOLVED_CONTINUUM_REF")
   cd "$INSTALL_DIR"
 fi
 
 # ── 4. Shared modules (same code that Dev runs via npm start) ────
+PHASE="shared modules"
 # docs/infrastructure/INSTALL-ARCHITECTURE.md §Module-shape: the canonical
 # module library at src/scripts/lib/install-common.sh defines
 # mod_submodules_init + mod_docker_wsl_integration + log/sudo primitives.
@@ -569,6 +716,50 @@ fi
 ok "$CONTAINER_CMD $($CONTAINER_CMD version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
 ok "Source: $INSTALL_DIR"
 
+# ── 3a. Build host-side CLI bundle (REQUIRED for jtag fast path) ──
+# Without dist/cli-bundle.js, src/jtag falls back to `tsx cli.ts`
+# which can't resolve tsconfig path aliases at runtime → every jtag
+# invocation fails with ERR_MODULE_NOT_FOUND. The bundle is what
+# every host-side jtag user actually needs. Pre-2026-05-03 install.sh
+# never built it on Linux (Docker-only flow); fresh users' first
+# jtag invocation has been broken for months. Joel: "months of
+# trying to get continuum working out-of-box for Carl."
+#
+# 2026-05-03 reliability fix: be LOUD about success/failure. Pre-fix
+# wrapped npm in `| tail -2` which silently ate exit codes. Now uses
+# explicit set -o pipefail equivalent via PIPESTATUS check, AND
+# verifies dist/cli-bundle.js exists post-build. Loud success = user
+# sees "✅ jtag bundle ready"; loud failure = user sees the actual
+# npm error + a die() so installation can't claim success while
+# leaving jtag broken.
+PHASE="host-side jtag CLI bundle"
+if [ ! -f "$INSTALL_DIR/src/package.json" ]; then
+  fail "src/package.json missing in $INSTALL_DIR — clone incomplete? Re-run with: rm -rf $INSTALL_DIR && curl ... | bash"
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  fail "npm not found on PATH but required for host-side jtag CLI bundle. Install Node.js (https://nodejs.org) and re-run."
+fi
+info "Building host-side jtag CLI bundle (~30-60s — first install)..."
+# build:cli takes dist/cli.js as INPUT (esbuild input file). dist/cli.js
+# is OUTPUT of build:ts. So the right invocation is `npm run build`
+# (which is build:ts → postbuild → build:cli per package.json scripts).
+# Pre-fix only ran build:cli → esbuild's missing-input failed silently
+# (the script suppresses stderr with `2>/dev/null`), no bundle written,
+# install completed "successfully" with broken jtag.
+(
+  set -e
+  cd "$INSTALL_DIR/src"
+  echo "  → npm install (~10s)..."
+  npm install 2>&1 | tail -5 || { echo "  ✗ npm install failed"; exit 1; }
+  echo "  → npm run build (TypeScript compile + esbuild bundle, ~30-50s)..."
+  npm run build 2>&1 | tail -10 || { echo "  ✗ npm run build failed"; exit 1; }
+) || fail "Host-side bundle build failed (see lines above). jtag CLI cannot work without dist/cli-bundle.js. Manually retry: cd $INSTALL_DIR/src && npm install && npm run build"
+# Verify the bundle actually exists — npm exit 0 + missing file = silent failure.
+if [ ! -f "$INSTALL_DIR/src/dist/cli-bundle.js" ]; then
+  fail "dist/cli-bundle.js was NOT created by build:cli (esbuild silently failed?). Manually retry: cd $INSTALL_DIR/src && npm install && npm run build:cli — and inspect output."
+fi
+ok "jtag CLI bundle ready ($INSTALL_DIR/src/dist/cli-bundle.js)"
+
 # ── 3b. Install continuum command (modular, headless-safe) ─
 # Was an inline `sudo cp` that crashed on "no TTY for password" when the
 # install ran headless (curl|bash without -t, BigMama SSH dry-run, CI).
@@ -576,7 +767,16 @@ ok "Source: $INSTALL_DIR"
 # fallback (~/.local/bin) when sudo would prompt without a TTY.
 mod_continuum_bin_link "$INSTALL_DIR/bin/continuum"
 
+# Also place `jtag` on PATH — symlinked, not copied, so the launcher's
+# BASH_SOURCE-based dist lookup keeps working. Without this, post-install
+# `jtag <command>` (per CLAUDE.md / skill docs) returns command-not-found
+# because src/jtag never gets a PATH entry. airc-8a5e 2026-05-03 Carl-UX
+# QA caught this — chat-probe simulates `./jtag` from inside the install
+# tree but real users follow the documented `jtag` form.
+mod_jtag_bin_link "$INSTALL_DIR/src/jtag"
+
 # ── 4. Configuration ───────────────────────────────────────
+PHASE="configuration"
 mkdir -p "$CONTINUUM_DATA"
 
 CONFIG_FILE="$CONTINUUM_DATA/config.env"
@@ -599,7 +799,46 @@ else
   ok "Config exists: $CONFIG_FILE"
 fi
 
+# WSL2 + Docker Desktop quirk: the bind mount `~/.continuum/config.env` in
+# docker-compose.yml expands `~` on the Docker daemon side. On Windows the
+# daemon runs as the Windows user so `~` resolves to C:\Users\<WinUser>,
+# NOT the WSL user's /home/<linuxUser>. Without the file existing on the
+# Windows-side path, Docker auto-vivifies an EMPTY DIRECTORY there — and
+# then `compose up` fails with "mounting a directory onto a file" when it
+# tries to mount that dir over /root/.continuum/config.env (a file path
+# inside the container). Caught live by Carl-Windows install on
+# bigmama-1 (continuum-b69f, 2026-05-03).
+#
+# Fix: on WSL2, mirror config.env to the Windows user's home so the file
+# mount has a valid source. The OTHER bind mounts (`~/.continuum` dir)
+# survive Docker's auto-vivify because dir-on-dir mount is fine, but the
+# file mount needs the source to exist first.
+#
+# This is a no-op on Linux (no /mnt/c) and Mac (no /proc/version match).
+if grep -qi microsoft /proc/version 2>/dev/null && [ -d /mnt/c ]; then
+  WIN_USER="$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r' | tr -d '\n')"
+  if [ -n "$WIN_USER" ] && [ -d "/mnt/c/Users/$WIN_USER" ]; then
+    WIN_CONTINUUM="/mnt/c/Users/$WIN_USER/.continuum"
+    mkdir -p "$WIN_CONTINUUM"
+    # If Docker auto-vivified an empty DIRECTORY where the file should
+    # be, blow it away so we can write the file. rmdir refuses
+    # non-empty dirs (so we don't clobber real user data); rm -rf only
+    # if rmdir failed AND the dir is empty.
+    if [ -d "$WIN_CONTINUUM/config.env" ]; then
+      rmdir "$WIN_CONTINUUM/config.env" 2>/dev/null \
+        || warn "Windows-side $WIN_CONTINUUM/config.env is a non-empty directory (likely user data); leaving it. May still hit the mount error — manually rm -rf and re-run if needed."
+    fi
+    if [ ! -e "$WIN_CONTINUUM/config.env" ]; then
+      cp "$CONFIG_FILE" "$WIN_CONTINUUM/config.env"
+      ok "Mirrored config.env to Windows path: $WIN_CONTINUUM/config.env"
+    fi
+  else
+    warn "WSL2 detected but Windows username/home not found; config.env may not mount on Docker Desktop."
+  fi
+fi
+
 # ── 5. TLS certs (Tailscale) ──────────────────────────────
+PHASE="TLS certs (optional)"
 TS_HOSTNAME=""
 if command -v tailscale &>/dev/null; then
   TS_HOSTNAME=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
@@ -624,6 +863,7 @@ else
 fi
 
 # ── 6. Pick compose files + profile ───────────────────────
+PHASE="compose files"
 # Base file is always loaded. On GPU hosts, layer docker-compose.gpu.yml
 # so continuum-core picks up the cuda image override (otherwise compose
 # silently uses the CPU image and inference falls back to CPU). The same
@@ -648,12 +888,28 @@ elif [[ "$HAS_GPU" == "true" ]]; then
   if [ -f "docker-compose.gpu.yml" ]; then
     COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.gpu.yml"
   else
-    warn "docker-compose.gpu.yml missing — GPU detected but cuda override won't apply. Continuing on CPU images."
+    warn "docker-compose.gpu.yml missing — GPU detected but cuda override won't apply. Continuing on Vulkan base image (still GPU-API; will use llvmpipe ICD if no vulkan driver)."
   fi
   COMPOSE_ARGS="--profile gpu"
 fi
+# Linux without a CUDA GPU: base docker-compose.yml uses continuum-core-vulkan.
+# On real-driver hosts (Intel/AMD with vulkan) this picks up the hardware ICD;
+# on hosts without a driver, mesa-vulkan-drivers (apt) provides llvmpipe as a
+# software ICD so the Vulkan code path runs without panicking. Joel's
+# 2026-04-23 rule: GPU integration is forbidden to fall back. Vulkan-via-
+# llvmpipe is GPU integration (loader + ICD), not a CPU fallback.
+if [[ "$OS" == "Linux" ]] && [[ "$HAS_GPU" != "true" ]]; then
+  if ! command -v vulkaninfo >/dev/null 2>&1; then
+    warn "vulkaninfo not found — install mesa-vulkan-drivers vulkan-tools so the Vulkan loader has the llvmpipe software ICD: sudo apt-get install -y mesa-vulkan-drivers vulkan-tools"
+  elif ! vulkaninfo --summary 2>/dev/null | grep -qE "deviceName"; then
+    warn "Vulkan loader present but enumerated zero devices. continuum-core-vulkan will panic on startup. Install: sudo apt-get install -y mesa-vulkan-drivers"
+  else
+    info "Vulkan loader OK — will use $(vulkaninfo --summary 2>/dev/null | grep -E 'deviceName' | head -1 | sed 's/.*= *//')"
+  fi
+fi
 
 # ── 7. Pull support-service images ─────────────────────────
+PHASE="pull images"
 # Image tag resolution: compose files honor ${CONTINUUM_IMAGE_TAG:-latest}.
 # Main-branch installs (Carl's default) use :latest. Reviewers validating
 # a PR before merge can pin the PR's staged image set:
@@ -665,10 +921,31 @@ fi
 # On Mac: `continuum-core` is not pulled (replicas=0 in docker-compose.mac.yml);
 # only support services (postgres, node-server, widget-server, livekit-bridge,
 # model-init) are pulled. continuum-core runs natively from `npm start` below.
-info "Pulling container images (tag: ${CONTINUUM_IMAGE_TAG:-latest})..."
+# docker compose v2 substitution for ${CONTINUUM_IMAGE_TAG:-latest} reads
+# from .env in the compose dir AND from shell env. In practice (observed
+# 2026-05-03 on bigmama-1 + Carl-Windows install) it picks up .env
+# reliably but NOT the shell env passed by install.sh — every compose
+# invocation resolved to :latest even though install.sh exported the
+# variable. Writing .env to $INSTALL_DIR (the compose-dir) before
+# pulling images is the canonical fix per docs and works regardless of
+# how the user invokes install.sh (curl|bash, direct, dispatched).
+#
+# Always write the .env (overwrite stale values from prior installs).
+# CONTINUUM_IMAGE_TAG defaults to "latest" preserving the historical
+# Carl path; explicit env override (e.g. CONTINUUM_IMAGE_TAG=canary
+# curl|bash for testing canary) flows through unchanged.
+EFFECTIVE_IMAGE_TAG="${CONTINUUM_IMAGE_TAG:-latest}"
+{
+  echo "# Auto-generated by install.sh — do not edit manually."
+  echo "# Re-run install.sh to regenerate. Read by docker compose substitution."
+  echo "CONTINUUM_IMAGE_TAG=$EFFECTIVE_IMAGE_TAG"
+} > "$INSTALL_DIR/.env"
+
+info "Pulling container images (tag: $EFFECTIVE_IMAGE_TAG)..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
 
 # ── 8. Start support services ──────────────────────────────
+PHASE="start support services"
 # Inverse of parallel-start.sh's cross-mode detection: if native Dev-mode
 # processes (continuum-core-server, tsx orchestrator) are running, docker
 # compose up will collide on ports 9001/9100/7880-82/9003/5432. Warn so
@@ -681,6 +958,39 @@ if pgrep -x 'continuum-core-server' >/dev/null 2>&1 \
 fi
 info "Starting support services..."
 $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS up -d
+
+
+# Some published continuum-core images may predate the in-binary socket chmod
+# fix (#1011). On Linux installs the host-side jtag CLI connects to the
+# bind-mounted core socket — when the running image is older than #1011, the
+# socket comes up root-owned without world-perms and host jtag gets EACCES.
+# Workaround at install time until every architecture's heavy core image
+# is refreshed past #1011.
+fix_core_socket_permissions() {
+  local socket_dir="$CONTINUUM_DATA/sockets"
+  local core_socket="$socket_dir/continuum-core.sock"
+
+  [ -d "$socket_dir" ] || return 1
+
+  chmod 755 "$socket_dir" 2>/dev/null \
+    || sudo -n chmod 755 "$socket_dir" 2>/dev/null \
+    || warn "Could not chmod $socket_dir; host jtag may get EACCES"
+
+  [ -S "$core_socket" ] || return 1
+
+  chmod 666 "$core_socket" 2>/dev/null \
+    || sudo -n chmod 666 "$core_socket" 2>/dev/null \
+    || warn "Could not chmod $core_socket; host jtag may get EACCES"
+}
+
+if [[ "$OS" != "Darwin" ]]; then
+  for _ in $(seq 1 60); do
+    if fix_core_socket_permissions; then
+      break
+    fi
+    sleep 1
+  done
+fi
 
 # ── 8b. Start continuum-core natively on Mac ───────────────
 # Mac runs continuum-core as a native host process so it can link Metal
@@ -717,33 +1027,103 @@ if [[ "$OS" == "Darwin" ]]; then
     warn "npm start failed — check logs at ~/.continuum/jtag/logs/system/continuum-core.log"
 fi
 
-# ── 8. Wait for health ─────────────────────────────────────
-info "Waiting for services..."
-for i in {1..30}; do
-  if curl -sf http://localhost:9003 &>/dev/null || curl -sf https://localhost:9003 -k &>/dev/null; then
+# ── 8. Wait for widget-server health ───────────────────────
+PHASE="widget-server health"
+# Carl's experience hinges on this gate: if we open the browser before
+# widget-server is actually serving, Chrome lands on the failed URL,
+# replaces the location bar with chrome-error://chromewebdata/, and any
+# subsequent reload tries to navigate from chrome-error back to http: —
+# which the browser blocks as a cross-scheme navigation. Carl is then
+# stuck on an error page with no clean recovery. Empirically: 2026-04-25
+# joel hit "Unsafe attempt to load URL http://localhost:9003/ from frame
+# with URL chrome-error://chromewebdata/" exactly because of this race.
+#
+# Two changes vs the prior 'curl -sf' wait:
+#   1. Hit /health specifically (widget-server's health endpoint at
+#      JTAGEndpoints.HEALTH = '/health'). A 200 here means widget-server
+#      is actually serving HTTP, not just that the port is open.
+#   2. If we never get a 200 in HEALTH_TIMEOUT_SEC, DO NOT open the
+#      browser. Print actionable diagnostic + a manual-open command for
+#      Carl to use after he checks the logs. Opening to a not-yet-ready
+#      server is the bug; refusing to open is the correct behavior.
+info "Waiting for widget-server health (timeout ${HEALTH_TIMEOUT_SEC:=120}s)..."
+HEALTH_OK=0
+for i in $(seq 1 "$HEALTH_TIMEOUT_SEC"); do
+  # --fail returns non-zero on 4xx/5xx; --max-time keeps each probe snappy
+  # so the loop stays close to a 1s cadence even when the server hangs.
+  if curl -sf --max-time 2 http://localhost:9003/health >/dev/null 2>&1 \
+     || curl -sfk --max-time 2 https://localhost:9003/health >/dev/null 2>&1; then
+    HEALTH_OK=1
+    ok "widget-server healthy after ${i}s"
     break
   fi
-  [ $i -eq 30 ] && warn "Services still starting — check: $CONTAINER_CMD compose logs"
-  sleep 2
+  sleep 1
 done
 
-# ── 9. Determine URL + open browser ────────────────────────
+# ── 8c. Wait for node-server seed to populate the default room ──────
+# widget-server /health on port 9003 only proves that container is up.
+# node-server (port 9001) runs auto-seed in docker-entrypoint.ts which
+# creates the "general" room + personas. If the user opens the page or
+# chat probe runs BEFORE seed completes, chat/send returns "Room not
+# found: general" or "User not found" silently. Probe directly for the
+# general room via jtag — fast, no new endpoint needed, deterministic.
+# Caught by carl-install-smoke 2026-05-04 (PR #1038).
+SEED_TIMEOUT_SEC="${SEED_TIMEOUT_SEC:-60}"
+JTAG_BIN="$(command -v jtag 2>/dev/null || true)"
+[ -z "$JTAG_BIN" ] && JTAG_BIN="$INSTALL_DIR/src/jtag"
+if [ -x "$JTAG_BIN" ] && [ "$HEALTH_OK" -eq 1 ]; then
+  info "Waiting for seed to populate default room (timeout ${SEED_TIMEOUT_SEC}s)..."
+  SEED_OK=0
+  for i in $(seq 1 "$SEED_TIMEOUT_SEC"); do
+    # data/list returns success+items when the room exists. Empty items
+    # means seed hasn't created it yet.
+    if "$JTAG_BIN" data/list --collection=rooms --filter='{"uniqueId":"general"}' --limit=1 2>/dev/null \
+       | grep -q '"success":true.*"items":\[{'; then
+      SEED_OK=1
+      ok "default room seeded after ${i}s"
+      break
+    fi
+    sleep 1
+  done
+  if [ "$SEED_OK" -ne 1 ]; then
+    warn "general room not present after ${SEED_TIMEOUT_SEC}s — seed may have failed."
+    warn "  Chat will return 'Room not found' until seed completes."
+    warn "  Diagnose: $CONTAINER_CMD compose -f $INSTALL_DIR/docker-compose.yml logs node-server | tail -50"
+  fi
+fi
+
+# ── 9. Determine URL + open browser (only if healthy) ──────
+PHASE="open browser"
 if [ -n "$TS_HOSTNAME" ] && [ -f "$CONTINUUM_DATA/$TS_HOSTNAME.crt" ]; then
   URL="https://$TS_HOSTNAME:9003"
 else
   URL="http://localhost:9003"
 fi
 
-case "$OS" in
-  Darwin) open "$URL" 2>/dev/null || true ;;
-  Linux)
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-      cmd.exe /c start "" "$URL" 2>/dev/null || true
-    else
-      xdg-open "$URL" 2>/dev/null || true
-    fi
-    ;;
-esac
+if [ "$HEALTH_OK" -eq 1 ]; then
+  case "$OS" in
+    Darwin) open "$URL" 2>/dev/null || true ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        cmd.exe /c start "" "$URL" 2>/dev/null || true
+      else
+        xdg-open "$URL" 2>/dev/null || true
+      fi
+      ;;
+  esac
+else
+  warn "widget-server not healthy after ${HEALTH_TIMEOUT_SEC}s — NOT opening browser."
+  warn "  Opening Chrome to a not-yet-ready URL traps you on a chrome-error page"
+  warn "  that cannot cleanly recover. Diagnose + retry instead:"
+  echo ""
+  echo "    Logs:   $CONTAINER_CMD compose -f $INSTALL_DIR/docker-compose.yml logs --tail=200"
+  echo "    Status: $CONTAINER_CMD compose -f $INSTALL_DIR/docker-compose.yml ps"
+  echo "    Retry:  curl -v http://localhost:9003/health"
+  echo ""
+  echo "    Once the health endpoint returns 200, open the URL manually:"
+  echo "      $URL"
+  echo ""
+fi
 
 # ── Done ────────────────────────────────────────────────────
 echo ""

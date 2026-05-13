@@ -2,7 +2,7 @@
 
 > **Every cognition PR ships net-negative TypeScript lines under `src/system/user/server/`. No exceptions.** This is the enforceable gate that prevents the persona-cognition footprint from continuing to sprawl in Node while we wait for "the right time" to migrate. The right time is every PR.
 
-Status: design — 2026-04-19. Authored after Joel observed that even the shared-cognition work I'd planned (modify `PersonaResponseGenerator.ts` to call into Rust) would preserve the TS cognition layer with a Rust dependency grafted on — defeating the principles we'd just spent the morning establishing (Rust = logic, TS = schema-only thin shim, CBAR-style native truth + thin SDKs). The right answer: build it in Rust, shrink or delete the TS counterpart, gate every PR on TS line-count drop.
+Status: active migration policy — updated 2026-05-11. Authored after Joel observed that even the shared-cognition work I'd planned (modify `PersonaResponseGenerator.ts` to call into Rust) would preserve the TS cognition layer with a Rust dependency grafted on — defeating the principles we'd just spent the morning establishing (Rust = logic, TS = schema-only thin shim, CBAR-style native truth + thin SDKs). The right answer: build it in Rust, shrink or delete the TS counterpart, gate every PR on TS line-count drop.
 
 ---
 
@@ -33,6 +33,30 @@ Every one of these is a verb-shaped module — algorithm, scoring, orchestration
 Historically: every new cognitive capability got its first draft in TS because TS iteration is fast (no cargo build). The drafts never migrated. Each Claude session, each pair-programming sprint, each "let's try X" experiment left another `.ts` file behind. Nobody removed them. The footprint grew monotonically.
 
 The pattern that has to break: **TS is no longer the iteration language for cognition.** Even fast-iteration cognitive prototypes go in Rust. cargo's incremental build is fast enough; the type system catches more bugs than TS does; the resulting code is faster, more concurrent, and ready for the wrappable-from-anywhere architecture (Unity, AR/VR, native iOS/Android — all CBAR's lineage).
+
+## The two-pronged fix
+
+## 2026-05-11 Hardening: No Compromise Rust-First Rule
+
+This migration is now the default engineering standard, not a preference.
+
+Agents should not ask whether cognition belongs in Rust. It does. The only design question is which Rust boundary owns it and which tests prove it.
+
+Rules:
+
+1. **No new TS cognition behavior.** New behavior under persona cognition, prompt/RAG decisions, tool parsing/execution, model selection, memory consolidation, turn batching, or inference scheduling must be Rust-first.
+2. **No duplicate owners.** If Rust takes over a behavior, remove or shrink the TS implementation in the same PR. #1068 and #1069 are the current pattern.
+3. **No "temporary" fallbacks that hide failure.** Rust can return typed `Unavailable`, `Degraded`, or `Backpressured` states. TS may display them. TS must not silently pick another model/provider/path.
+4. **No swallowed command failures.** Commands are dynamically generated and executed by callers that own error handling. Inner execution loops should return errors, not catch-and-convert them into false success.
+5. **Tests are architectural evidence.** A Rust unit/replay test should prove the boundary. A live chat smoke test proves integration only after the Rust test exists.
+6. **Major rework is acceptable.** When the boundary is wrong, preserve the user contract and rewrite the internal contract. Small compatibility patches that keep the wrong owner are technical debt.
+
+Current canary examples:
+
+- **#1068** moved persona turn fixture recording into Rust and removed the duplicate TS writer.
+- **#1069** moved leaked tool/thinking markup cleanup into Rust and removed the duplicate TS sanitizer.
+
+Those are small examples of the rule. The same pattern must now be applied to the large remaining owners: inbox consolidation, ChatRAGBuilder, tool execution, prompt turn assembly, memory consolidation, and model/provider selection.
 
 ## The two-pronged fix
 

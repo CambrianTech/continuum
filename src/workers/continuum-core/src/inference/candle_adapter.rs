@@ -1,6 +1,8 @@
 //! Candle Adapter - Local LLM Inference via AIProviderAdapter
 //!
-//! Implements the AIProviderAdapter trait for local Candle inference.
+//! Implements the AIProviderAdapter trait for explicit Candle training and
+//! auxiliary inference paths. Runtime persona chat uses provider `local`, which
+//! resolves through the Qwen/llama.cpp runtime instead of this adapter.
 //! Uses `ModelBackend` trait — no format-specific code paths.
 //! One backend, one generate function, works for GGUF and safetensors.
 //!
@@ -20,6 +22,9 @@ use crate::ai::{
 };
 use crate::gpu::make_entry;
 use crate::gpu::memory_manager::{GpuAllocationGuard, GpuMemoryManager, GpuPriority, GpuSubsystem};
+use crate::model_registry::{
+    find_first_local_gguf, resolve_gguf_for_model_id, resolve_local_model_dir_for_model_id,
+};
 use crate::runtime;
 use crate::system_resources::local_inference_capacity;
 
@@ -38,7 +43,7 @@ struct BackendWrapper(Box<dyn ModelBackend>);
 unsafe impl Send for BackendWrapper {}
 unsafe impl Sync for BackendWrapper {}
 
-/// Candle adapter for local LLM inference.
+/// Candle adapter for training/auxiliary LLM work.
 ///
 /// Holds a single `ModelBackend` — no ModelVariant enum, no format switches.
 /// The backend reports its own capabilities (context_length, architecture, etc.)
@@ -84,7 +89,7 @@ impl CandleAdapter {
                 name: "Candle Local".to_string(),
                 base_url: String::new(),
                 api_key_env: String::new(),
-                default_model: "unsloth/Llama-3.2-3B-Instruct".to_string(),
+                default_model: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
                 timeout_ms: 300_000,
                 max_retries: 1,
                 retry_delay_ms: 0,
@@ -425,7 +430,7 @@ fn inference_inner(
         log.info(&format!("Loading model: {}", resolved_model));
         let model: Box<dyn ModelBackend> = if use_quantized {
             load_default_quantized().map_err(|e| format!("Failed to load quantized model: {e}"))?
-        } else if let Some(local_dir) = find_local_model(resolved_model) {
+        } else if let Some(local_dir) = resolve_local_model_dir_for_model_id(resolved_model) {
             // Local GGUF model found — load from disk (no download needed)
             log.info(&format!("Found local model: {:?}", local_dir));
             super::model::load_model_from_dir(&local_dir, resolved_model)
@@ -951,34 +956,84 @@ impl AIProviderAdapter for CandleAdapter {
 
 /// Single source of truth for local model metadata.
 ///
-/// Model registry entry loaded from model_registry.json (embedded at compile time).
-/// TypeScript gets these types via ts-rs — NO hand-written duplicates.
+/// Model registry entry deserialized from src/shared/models.json (embedded at
+/// compile time). TypeScript gets these types via ts-rs — NO hand-written
+/// duplicates.
+///
+/// **Schema mirrors `src/shared/ModelRegistry.ts`'s `ModelSpec`** so both
+/// runtimes read the same JSON. Field names use the new SSOT shape
+/// (`hf_repo`, `min_ram_gb`); legacy aliases (`repo`, `min_memory_gb`)
+/// kept via `serde(alias = ...)` so any third-party consumer of the old
+/// embedded JSON keeps working until it migrates.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(
     export,
     export_to = "../../../shared/generated/inference/ModelRegistryEntry.ts"
 )]
 pub struct ModelRegistryEntry {
-    /// HuggingFace repo ID (canonical source)
-    pub repo: String,
+    /// HuggingFace repo ID (canonical source).
+    /// New SSOT field name; `repo` accepted as legacy alias.
+    #[serde(alias = "repo")]
+    pub hf_repo: String,
+    /// Model kind: "chat-llm", "vision-llm", "embedding", "stt", "tts", "vad".
+    /// Optional for back-compat with the legacy schema.
+    #[ts(optional)]
+    #[serde(default)]
+    pub kind: Option<String>,
     /// Serialization format: "gguf" or "safetensors"
     #[ts(optional)]
+    #[serde(default)]
     pub format: Option<String>,
     /// Model architecture: "qwen2", "llama", "phi", etc.
     #[ts(optional)]
+    #[serde(default)]
     pub architecture: Option<String>,
+    /// Files belonging to this model (relative to repo root).
+    #[ts(optional, type = "Array<string>")]
+    #[serde(default)]
+    pub files: Option<Vec<String>>,
+    /// Approximate disk footprint in GB.
+    #[ts(optional, type = "number")]
+    #[serde(default)]
+    pub size_gb: Option<f64>,
+    /// Minimum host RAM in GB to run this model.
+    /// New SSOT field name; `min_memory_gb` accepted as legacy alias.
+    #[ts(optional, type = "number")]
+    #[serde(default, alias = "min_memory_gb")]
+    pub min_ram_gb: Option<f64>,
     /// Human-readable description
     #[ts(optional)]
+    #[serde(default)]
     pub description: Option<String>,
-    /// Minimum GPU memory in GB to run this model
-    #[ts(optional, type = "number")]
-    pub min_memory_gb: Option<f64>,
     /// Chat template name: "qwen2", "llama3", "chatml"
     #[ts(optional)]
+    #[serde(default)]
     pub chat_template: Option<String>,
+    /// Whether this model is auto-loaded at startup (informational).
+    #[ts(optional)]
+    #[serde(default)]
+    pub auto_load: Option<bool>,
 }
 
-/// Full model registry — maps aliases to model entries.
+/// Tier specification used by symbolic-ref resolution.
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+#[serde(default)]
+struct TierSpec {
+    pub default_chat: String,
+}
+
+/// Symbolic ref: either tier-bound (resolves via `tiers[host_tier].default_chat`)
+/// or model-bound (resolves to the named registry key directly).
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+#[serde(default)]
+struct SymbolicRefSpec {
+    pub by_tier: bool,
+    pub model: Option<String>,
+}
+
+/// Full model registry — mirrors `src/shared/models.json` SSOT shape.
+/// Extra fields (`personas`, `auto_download`, `chat_templates`) are
+/// silently ignored by serde for the in-Rust subset we consume here.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(
     export,
@@ -988,107 +1043,135 @@ pub struct ModelRegistry {
     pub models: HashMap<String, ModelRegistryEntry>,
 }
 
-/// Load the model registry from the embedded JSON.
-pub fn load_registry() -> ModelRegistry {
-    let json = include_str!("model_registry.json");
-    serde_json::from_str(json).unwrap_or_else(|e| {
-        runtime::logger("candle").error(&format!("Failed to parse model registry: {e}"));
-        ModelRegistry {
+/// Internal full-shape view used for symbolic-ref + tier resolution.
+/// Not exported to TS (TS has its own ModelRegistry.ts reader for this).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct FullRegistry {
+    pub models: HashMap<String, ModelRegistryEntry>,
+    #[serde(default)]
+    pub tiers: HashMap<String, TierSpec>,
+    #[serde(default)]
+    pub symbolic_refs: HashMap<String, SymbolicRefSpec>,
+}
+
+/// Embedded SSOT registry. Path is relative to *this file*:
+///   workers/continuum-core/src/inference/candle_adapter.rs
+///   → ../../../../shared/models.json (= src/shared/models.json)
+/// Joel rule 2026-05-04: "we MUST have this work from ONE source of truth".
+const REGISTRY_JSON: &str = include_str!("../../../../shared/models.json");
+
+fn load_full_registry() -> FullRegistry {
+    serde_json::from_str(REGISTRY_JSON).unwrap_or_else(|e| {
+        runtime::logger("candle").error(&format!("Failed to parse src/shared/models.json: {e}"));
+        FullRegistry {
             models: HashMap::new(),
+            tiers: HashMap::new(),
+            symbolic_refs: HashMap::new(),
         }
     })
 }
 
-pub fn resolve_model_id(requested: &str) -> String {
-    // Already a HuggingFace repo ID
-    if requested.contains('/') {
-        return requested.to_string();
+/// Load the model registry from the embedded JSON (legacy public API —
+/// returns the lower-fidelity `ModelRegistry` view for back-compat).
+pub fn load_registry() -> ModelRegistry {
+    ModelRegistry {
+        models: load_full_registry().models,
     }
-
-    let normalized = requested.trim().to_lowercase();
-    let registry = load_registry();
-
-    // Look up in registry (supports "coder", "smollm2:1.7b", "llama3.2:3b", etc.)
-    if let Some(entry) = registry.models.get(&normalized) {
-        return entry.repo.clone();
-    }
-
-    // Try with common alias patterns: "smollm2-1.7b" → "smollm2:1.7b"
-    let dash_to_colon = normalized.replacen('-', ":", 1);
-    if let Some(entry) = registry.models.get(&dash_to_colon) {
-        return entry.repo.clone();
-    }
-
-    // Fallback: treat as HF repo ID
-    runtime::logger("candle").warn(&format!(
-        "Model '{}' not in registry — treating as HuggingFace repo ID",
-        requested
-    ));
-    requested.to_string()
 }
 
-/// Resolve the storage root for large files (models, adapters, datasets).
-/// Checks CONTINUUM_STORAGE_PATH from: env var → ~/.continuum/config.env → fallback ~/.continuum/.
-fn storage_root() -> std::path::PathBuf {
-    // 1. Check env var first
-    if let Ok(storage) = std::env::var("CONTINUUM_STORAGE_PATH") {
-        if !storage.is_empty() {
-            return std::path::PathBuf::from(storage);
-        }
+/// Pick host tier from total RAM. Mirrors the TS `tierFromRamGB` logic
+/// in `src/shared/ModelRegistry.ts` so install-time and runtime resolve
+/// to the same default model.
+fn tier_from_host_ram() -> &'static str {
+    let bytes = sysinfo_total_memory_bytes();
+    let gb = (bytes / 1024 / 1024 / 1024) as u32;
+    if gb >= 32 {
+        "full"
+    } else if gb >= 24 {
+        "mid"
+    } else {
+        "mba"
     }
-    // 2. Check config.env (Secrets module skips non-secret keys like this)
-    if let Some(home) = dirs::home_dir() {
-        let config_path = home.join(".continuum").join("config.env");
-        if let Ok(content) = std::fs::read_to_string(&config_path) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if let Some(value) = trimmed.strip_prefix("CONTINUUM_STORAGE_PATH=") {
-                    let value = value.trim();
-                    if !value.is_empty() {
-                        return std::path::PathBuf::from(value);
+}
+
+/// Total host memory in bytes. Cheap to call repeatedly; caller decides cache.
+fn sysinfo_total_memory_bytes() -> u64 {
+    // Minimal probe — avoids pulling in a sysinfo dep just for this.
+    // Linux: /proc/meminfo. macOS: sysctl hw.memsize. Fallback: 16GB so
+    // we land on the "mba" tier (smallest model) rather than crashing.
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(s) = std::fs::read_to_string("/proc/meminfo") {
+            for line in s.lines() {
+                if let Some(rest) = line.strip_prefix("MemTotal:") {
+                    if let Some(kb_str) = rest.trim().split_whitespace().next() {
+                        if let Ok(kb) = kb_str.parse::<u64>() {
+                            return kb * 1024;
+                        }
                     }
                 }
             }
         }
     }
-    // 3. Default
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    std::path::PathBuf::from(home).join(".continuum")
-}
-
-/// Find the first available GGUF on disk for eager-load warmup. Scans the
-/// HF cache (`~/.cache/huggingface/hub/models--*-GGUF/snapshots/*/*.gguf`)
-/// and returns the first match. Used by `initialize()` to pick a sensible
-/// default model when no specific request has come in yet.
-fn find_first_local_gguf() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let hf_cache = std::path::PathBuf::from(&home).join(".cache/huggingface/hub");
-    if !hf_cache.exists() {
-        return None;
-    }
-    for entry in std::fs::read_dir(&hf_cache).ok()?.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if !name_str.starts_with("models--") {
-            continue;
-        }
-        let snapshots = entry.path().join("snapshots");
-        let Ok(snaps) = std::fs::read_dir(&snapshots) else {
-            continue;
-        };
-        for snap in snaps.flatten() {
-            let Ok(files) = std::fs::read_dir(snap.path()) else {
-                continue;
-            };
-            for f in files.flatten() {
-                let p = f.path();
-                if p.extension().and_then(|s| s.to_str()) == Some("gguf") {
-                    return Some(p);
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        if let Ok(out) = Command::new("sysctl").args(["-n", "hw.memsize"]).output() {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                if let Ok(b) = s.trim().parse::<u64>() {
+                    return b;
                 }
             }
         }
     }
-    None
+    16 * 1024 * 1024 * 1024
+}
+
+pub fn resolve_model_id(requested: &str) -> String {
+    // Already a HuggingFace repo ID — pass through.
+    if requested.contains('/') {
+        return requested.to_string();
+    }
+
+    let normalized = requested.trim().to_lowercase();
+    let reg = load_full_registry();
+
+    // 1. Symbolic ref ('local-default', 'vision-default', 'gating') — resolve
+    //    via tiers + symbolic_refs. Reads current registry on every call so
+    //    DB rows storing symbolic refs auto-pick-up registry edits.
+    if let Some(sym) = reg.symbolic_refs.get(&normalized) {
+        if sym.by_tier {
+            let tier = tier_from_host_ram();
+            if let Some(t) = reg.tiers.get(tier) {
+                if let Some(entry) = reg.models.get(&t.default_chat) {
+                    return entry.hf_repo.clone();
+                }
+            }
+        } else if let Some(model_key) = sym.model.as_deref() {
+            if let Some(entry) = reg.models.get(model_key) {
+                return entry.hf_repo.clone();
+            }
+        }
+    }
+
+    // 2. Direct registry key lookup ('coder', 'qwen2-vl-7b', 'qwen3.5-4b-code-forged').
+    if let Some(entry) = reg.models.get(&normalized) {
+        return entry.hf_repo.clone();
+    }
+
+    // 3. Common alias pattern: 'qwen2-0.5b' → 'qwen2:0.5b'.
+    let dash_to_colon = normalized.replacen('-', ":", 1);
+    if let Some(entry) = reg.models.get(&dash_to_colon) {
+        return entry.hf_repo.clone();
+    }
+
+    // 4. Fallback: treat as HF repo ID. Loud so unknown models stay diagnosable.
+    runtime::logger("candle").warn(&format!(
+        "Model '{}' not in registry (no symbolic ref, no key match) — \
+         treating as HuggingFace repo ID",
+        requested
+    ));
+    requested.to_string()
 }
 
 /// Ensure the llama.cpp backend is loaded for `model_id`. Idempotent and
@@ -1114,7 +1197,7 @@ async fn ensure_llamacpp_loaded_async(
         return Ok(());
     }
     let log = runtime::logger("candle");
-    let gguf_path = find_local_gguf(model_id)
+    let gguf_path = resolve_gguf_for_model_id(model_id)
         .ok_or_else(|| format!(
             "No GGUF for model '{}'. Ensure the model is downloaded to ~/.continuum/genome/models or HF cache.",
             model_id
@@ -1138,153 +1221,6 @@ async fn ensure_llamacpp_loaded_async(
     ));
     *backend_slot.write() = Some(Arc::new(backend));
     Ok(())
-}
-
-/// Check if a model is available locally as a GGUF.
-/// Searches ~/.continuum/ (internal NVMe, fast) FIRST, then CONTINUUM_STORAGE_PATH (external, slow).
-/// Returns the local directory path if found, None if not cached.
-/// Find the .gguf file for a model, searching local dirs + HF cache.
-/// Used by the llama.cpp backend which needs a GGUF file path directly.
-fn find_local_gguf(model_id: &str) -> Option<std::path::PathBuf> {
-    // Try local model dir first (via find_local_model)
-    if let Some(dir) = find_local_model(model_id) {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.extension().and_then(|s| s.to_str()) == Some("gguf") {
-                    return Some(p);
-                }
-            }
-        }
-    }
-    // Fall back to HF cache
-    let home = std::env::var("HOME").ok()?;
-    let hf_cache = std::path::PathBuf::from(&home).join(".cache/huggingface/hub");
-    if !hf_cache.exists() {
-        return None;
-    }
-    for entry in std::fs::read_dir(&hf_cache).ok()?.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        // Match "models--*<model_id>*" or a fuzzy match on slug
-        if name_str.starts_with("models--")
-            && name_str
-                .to_lowercase()
-                .contains(&model_id.to_lowercase().replace('/', "--"))
-        {
-            // Look inside snapshots/<hash>/ for a .gguf file
-            let snapshots = entry.path().join("snapshots");
-            if let Ok(snaps) = std::fs::read_dir(&snapshots) {
-                for snap in snaps.flatten() {
-                    if let Ok(files) = std::fs::read_dir(snap.path()) {
-                        for f in files.flatten() {
-                            let p = f.path();
-                            if p.extension().and_then(|s| s.to_str()) == Some("gguf") {
-                                return Some(p);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn find_local_model(model_id: &str) -> Option<std::path::PathBuf> {
-    let search_dirs = {
-        let mut dirs = Vec::new();
-        // Internal drive first (NVMe = ~2s load vs external USB = ~105s)
-        let home = std::env::var("HOME").ok()?;
-        let home_models = std::path::PathBuf::from(&home).join(".continuum/genome/models");
-        dirs.push(home_models.clone());
-        // External/overflow storage second
-        let storage_models = storage_root().join("genome/models");
-        if storage_models != home_models {
-            dirs.push(storage_models);
-        }
-        dirs
-    };
-
-    for models_dir in &search_dirs {
-        if !models_dir.exists() {
-            continue;
-        }
-        if let Some(found) = find_model_in_dir(model_id, models_dir) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn find_model_in_dir(model_id: &str, models_dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    if !models_dir.exists() {
-        return None;
-    }
-
-    // Check for exact directory match (e.g., model dirs we created)
-    for entry in std::fs::read_dir(&models_dir).ok()? {
-        let entry = entry.ok()?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        // Check if this directory has a GGUF file + tokenizer
-        let has_gguf = std::fs::read_dir(&path)
-            .ok()
-            .map(|entries| {
-                entries.filter_map(|e| e.ok()).any(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext| ext == "gguf")
-                        .unwrap_or(false)
-                })
-            })
-            .unwrap_or(false);
-
-        let has_tokenizer = path.join("tokenizer.json").exists();
-
-        if has_gguf && has_tokenizer {
-            // Match by directory name containing model ID parts
-            let dir_name = path.file_name()?.to_str()?.to_lowercase();
-            let model_lower = model_id.to_lowercase();
-
-            // Match "continuum-ai/qwen2.5-coder-32b-compacted" against "qwen32b-compacted-v3"
-            // Must also match size indicator (14b, 32b) to avoid confusing 14B and 32B models
-            if model_lower.contains("qwen")
-                && model_lower.contains("compacted")
-                && dir_name.contains("qwen")
-                && dir_name.contains("compacted")
-            {
-                // Extract size indicator from model_id (e.g., "14b", "32b")
-                let size_match = ["14b", "32b", "7b", "3b", "1b"]
-                    .iter()
-                    .find(|s| model_lower.contains(*s));
-                if let Some(size) = size_match {
-                    // If model specifies a size, directory must also contain it
-                    if dir_name.contains(size) {
-                        return Some(path);
-                    }
-                    // Size mismatch — skip this directory
-                } else {
-                    // No size in model_id — accept any match
-                    return Some(path);
-                }
-            }
-
-            // Generic: check if model_id's repo name appears in dir name
-            if let Some(repo_name) = model_id.split('/').last() {
-                let repo_lower = repo_name.to_lowercase().replace('.', "");
-                if dir_name.contains(&repo_lower) {
-                    return Some(path);
-                }
-            }
-        }
-    }
-
-    None
 }
 
 /// Estimate VRAM usage for a LoRA adapter from its file path.
@@ -1316,11 +1252,11 @@ pub fn resolve_chat_template(requested_model: &str) -> String {
     if normalized.contains("qwen") {
         return "qwen2".to_string();
     }
-    if normalized.contains("chatml") || normalized.contains("smollm") {
+    if normalized.contains("chatml") {
         return "chatml".to_string();
     }
 
-    "llama3".to_string()
+    "qwen2".to_string()
 }
 
 /// Extract text content from a chat message.
@@ -1502,11 +1438,49 @@ mod tests {
 
     #[test]
     fn test_resolve_chat_template() {
+        // Live registry keys (post-SSOT migration to src/shared/models.json).
         assert_eq!(resolve_chat_template("coder"), "qwen2");
-        assert_eq!(resolve_chat_template("coder-14b"), "qwen2");
-        assert_eq!(resolve_chat_template("coder-32b"), "qwen2");
-        assert_eq!(resolve_chat_template("llama3.2:3b"), "llama3");
-        assert_eq!(resolve_chat_template("smollm2"), "chatml");
-        assert_eq!(resolve_chat_template("unknown-model"), "llama3"); // default fallback
+        assert_eq!(resolve_chat_template("coder-bf16"), "qwen2");
+        assert_eq!(resolve_chat_template("qwen3.5-4b-code-forged"), "qwen2");
+        assert_eq!(resolve_chat_template("qwen2-vl-7b"), "qwen2");
+        // Heuristic fallback: name-based inference for unknown models.
+        assert_eq!(resolve_chat_template("some-qwen-thing"), "qwen2");
+        assert_eq!(resolve_chat_template("chatml-future"), "chatml");
+        assert_eq!(resolve_chat_template("unknown-model"), "qwen2"); // local default fallback
+    }
+
+    #[test]
+    fn test_resolve_model_id_symbolic_refs() {
+        // Symbolic refs resolve via src/shared/models.json. Tier resolves
+        // from host RAM at runtime — we only assert that resolution
+        // succeeds (non-passthrough) for tier-bound refs and that
+        // model-bound refs always resolve to the same concrete model.
+        let local = resolve_model_id("local-default");
+        assert_ne!(
+            local, "local-default",
+            "local-default must resolve to a concrete repo"
+        );
+        assert!(
+            local.contains('/'),
+            "resolved model must look like an HF repo: got {local}"
+        );
+
+        let vision = resolve_model_id("vision-default");
+        assert_eq!(vision, "Qwen/Qwen2-VL-7B-Instruct-GGUF");
+
+        let gating = resolve_model_id("gating");
+        assert_eq!(gating, "Qwen/Qwen2-0.5B-Instruct");
+
+        // Direct registry-key lookup.
+        assert_eq!(
+            resolve_model_id("coder"),
+            "continuum-ai/qwen2.5-coder-14b-compacted"
+        );
+
+        // Pass-through for raw HF IDs.
+        assert_eq!(
+            resolve_model_id("Qwen/Qwen2-7B-Instruct"),
+            "Qwen/Qwen2-7B-Instruct"
+        );
     }
 }

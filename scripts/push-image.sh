@@ -275,6 +275,7 @@ docker buildx build \
   --file "$DOCKERFILE" \
   --build-arg "GPU_FEATURES=$GPU_FEATURES" \
   --build-arg "GIT_SHA=$BUILD_SHA" \
+  --build-context "shared=src/shared" \
   --build-context "shared-generated=src/shared/generated" \
   --tag "$TAG_SHA" \
   --label "org.opencontainers.image.revision=$BUILD_SHA" \
@@ -298,6 +299,7 @@ docker buildx build \
   --file "$DOCKERFILE" \
   --build-arg "GPU_FEATURES=$GPU_FEATURES" \
   --build-arg "GIT_SHA=$BUILD_SHA" \
+  --build-context "shared=src/shared" \
   --build-context "shared-generated=src/shared/generated" \
   "${TAGS[@]}" \
   --label "org.opencontainers.image.revision=$BUILD_SHA" \

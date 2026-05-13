@@ -236,12 +236,6 @@ capabilities = ["text-generation", "chat", "tool-use", "streaming"]
 cost_input_per_1k = 0.0
 cost_output_per_1k = 0.0
 gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
-# Where the in-process Metal/CUDA path loads the GGUF from. This is the
-# artifact DMR caches under its content-addressed bundle store — same
-# bytes the `docker model run` path serves. The SHA is stable (it's the
-# published artifact hash), so pinning it here is correct; a newer
-# forge would publish a new id, not mutate this one.
-gguf_local_path = "~/.docker/models/bundles/sha256/0ed44d4643b05eba23a4ec765aeee8c0f818f9063b09e54d30ded513287f18e9/model/model.gguf"
 # Explicit qwen3.5 chatml template. The forged GGUF doesn't embed
 # `tokenizer.chat_template` in its metadata, and llama.cpp's built-in
 # chatml default drifts from qwen3.5's training on boundary tokens
@@ -311,6 +305,37 @@ gguf_hint = "huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF"
 # follow-up so this path doesn't need to be hand-edited per machine.
 gguf_local_path = "~/models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
 mmproj_local_path = "~/models/qwen2-vl-7b/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
+
+# ─── Sensory-input Qwen2.5-Omni-7B (in-process llama.cpp + mtmd) ─────────
+# Full-tier local sensory-input candidate validated on RTX 5090 sm_120
+# (2026-05-11, upstream llama.cpp 1ec7ba0):
+#   - text bench: pp512 ~13,659 t/s, tg128 ~220 t/s
+#   - vision smoke: image description passed, text generation ~212 t/s
+#   - audio smoke: JFK WAV transcription passed, text generation ~216 t/s
+#
+# Capability boundary is explicit: this row declares AudioInput, not
+# AudioOutput. The GGUF path does not yet prove native speech output, so voice
+# output remains a typed downstream adapter / forge task.
+#
+# Known VDD gap: upstream llama.cpp reports CUDA POOL_1D unsupported in the
+# CLIP/mmproj graph on Blackwell sm_120, so that operator falls back to CPU.
+# Decode remains CUDA/full-offload. Keep this row marked as a full-tier
+# candidate with a tracked upstream kernel gap until POOL_1D is implemented.
+[[model]]
+id = "qwen2.5-omni-7b-instruct"
+name = "Qwen2.5-Omni-7B-Instruct (in-process)"
+provider = "llamacpp-local"
+arch = "qwen2"
+context_window = 32768
+max_output_tokens = 4096
+tokens_per_second = 220.0
+capabilities = ["text-generation", "chat", "vision", "audio-input", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+multi_party_strategy = "proper_chat_ml_single_party"
+gguf_hint = "huggingface.co/ggml-org/Qwen2.5-Omni-7B-GGUF"
+gguf_local_path = "~/models/qwen2.5-omni-7b/Qwen2.5-Omni-7B-Q4_K_M.gguf"
+mmproj_local_path = "~/models/qwen2.5-omni-7b/mmproj-Qwen2.5-Omni-7B-f16.gguf"
 
 # ─── Local in-process: Qwen2-Audio-7B-Instruct (audio-input native) ───
 #

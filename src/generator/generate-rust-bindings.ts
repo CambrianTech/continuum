@@ -74,13 +74,22 @@ function generateBindings(pkg: string, description: string): boolean {
   // GPU features: must match the build features (metal on macOS, cuda on Linux)
   const gpuFeatures = detectGpuFeatures();
   const args = ['test', '--package', pkg, '--lib', 'export_bindings', '--release', ...gpuFeatures];
+  // Timeout default 900s (was 300s, raised in #980 Bug 2). On a cold M1 the
+  // partially-cached --no-run compile measured 192s; cold-cold scenarios on
+  // slower hardware (CI runners, older Macs) routinely blow past 300s,
+  // causing Phase 2b to fail with a cryptic "Timed out after 300s" → "npm
+  // run prebuild failed" cascade. Env-overridable via
+  // CONTINUUM_TS_RS_TIMEOUT_MS for users on faster hardware who want a
+  // tighter feedback loop, OR for CI lanes that genuinely need to bail
+  // sooner on a wedged build.
+  const timeoutMs = parseInt(process.env.CONTINUUM_TS_RS_TIMEOUT_MS ?? '', 10) || 900_000;
   const result = spawnSync(
     'cargo',
     args,
     {
       cwd: WORKERS_DIR,
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 300_000,
+      timeout: timeoutMs,
     }
   );
 

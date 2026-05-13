@@ -64,12 +64,9 @@ function generateConfig() {
   // Determine HTML file based on example
   const htmlFile = activeExample === 'widget-ui' ? 'index.html' : 'public/demo.html';
 
-  // Socket configuration - single source of truth
-  // Absolute path at $HOME/.continuum/sockets — works for git clone, npm install, or curl
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  const socketDir = `${home}/.continuum/sockets`;
-
   // Generate TypeScript content
+  // Note: socket paths resolve $HOME at RUNTIME (not build time) so the
+  // generated file is portable across users. Browser-safe via typeof process guard.
   const content = `/**
  * Configuration Constants - Auto-generated at Build Time
  *
@@ -89,15 +86,20 @@ export const HTTP_PORT = ${httpPort};
 export const WS_PORT = ${wsPort};
 
 // Socket Configuration - Single Source of Truth
+// $HOME resolved at runtime so the file is portable across users (any clone, any OS user).
+// typeof guard keeps this safe when the module loads in a browser bundle.
+const _HOME: string =
+  (typeof process !== 'undefined' && process.env && (process.env.HOME || process.env.USERPROFILE)) || '';
+
 // All Rust workers and TypeScript clients use these paths
-export const SOCKET_DIR = '${socketDir}';
+export const SOCKET_DIR = \`\${_HOME}/.continuum/sockets\`;
 export const SOCKETS = {
   /** Main continuum-core runtime socket */
-  CONTINUUM_CORE: '${socketDir}/continuum-core.sock',
+  CONTINUUM_CORE: \`\${_HOME}/.continuum/sockets/continuum-core.sock\`,
   /** Archive worker socket */
-  ARCHIVE: '${socketDir}/archive-worker.sock',
+  ARCHIVE: \`\${_HOME}/.continuum/sockets/archive-worker.sock\`,
   /** Inference/GPU worker socket (gRPC) */
-  INFERENCE: '${socketDir}/inference.sock',
+  INFERENCE: \`\${_HOME}/.continuum/sockets/inference.sock\`,
 } as const;
 
 // Active Example Configuration (from package.json)

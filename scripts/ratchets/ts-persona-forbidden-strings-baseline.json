@@ -1,0 +1,36 @@
+{
+  "_doc": "Lane F PR-2 (PR #1091 followup) \u2014 TS Persona Forbidden-Strings Ratchet. Tracks anti-pattern grep counts under src/system/user/server/. Per-pattern baseline; PR fails if any count GROWS. Mirrors the monotonic-decrease shape of ts-persona-cognition-baseline.json (PR #1091).",
+  "_to_lower_baseline": "After a PR that legitimately removes occurrences of a tracked pattern, run: bash scripts/ratchets/check-ts-persona-forbidden-strings.sh --update-baseline && git add scripts/ratchets/ts-persona-forbidden-strings-baseline.json && commit",
+  "_paths_glob_relative_to_repo_root": [
+    "src/system/user/server/**/*.ts"
+  ],
+  "_excludes": [
+    "*.test.ts",
+    "*.spec.ts"
+  ],
+  "_baseline_anchored_at_canary": "83513e6bd",
+  "_anchored_at_iso": "2026-05-11T21:31Z",
+  "patterns": [
+    {
+      "id": "fallback_mention",
+      "regex": "fallback",
+      "case_insensitive": true,
+      "baseline_count": 83,
+      "rationale": "Joel 2026-04-22: 'fallbacks have ruined this project ... they are ILLEGAL.' Counts every occurrence including comments \u2014 a comment saying 'no fallback here' counts because the WORD shouldn't be normalized in the persona surface. Currently 83 \u2014 the ratchet's job is to push that to zero over time. Direct anti-pattern matches (silent-fallback branches) are caught by code review; the WORD count is a proxy for the conceptual presence."
+    },
+    {
+      "id": "direct_adapter_instantiation",
+      "regex": "new [A-Z][a-zA-Z]*Adapter\\(",
+      "case_insensitive": false,
+      "baseline_count": 12,
+      "rationale": "TS persona surface should request providers from the registry/admission layer (Rust resolver), not instantiate adapters directly. Direct `new AnthropicAdapter()` / `new LlamaCppAdapter()` etc. bypasses the ModelRequirement \u2192 ResolvedModel path my Lane C #1066/#1074 work shipped. Currently 12 \u2014 should drop as adapter wiring moves to the Rust runtime."
+    },
+    {
+      "id": "direct_api_key_env_read",
+      "regex": "process\\.env\\.[A-Z_]*API_KEY",
+      "case_insensitive": false,
+      "baseline_count": 0,
+      "rationale": "TS surface must NOT read cloud API keys directly from env \u2014 the Rust provider registry owns that lookup (per Codex's #1077 Rust persona model boundary). Currently 0 (clean) \u2014 the ratchet locks this in. Any PR that adds `process.env.OPENAI_API_KEY` style reads in the persona surface fails CI."
+    }
+  ]
+}

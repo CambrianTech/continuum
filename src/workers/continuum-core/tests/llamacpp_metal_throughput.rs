@@ -23,6 +23,7 @@
 //! path, takes 10-30s, and isn't part of the regular CI test loop.
 
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
+use continuum_core::inference::backends::SamplingConfig;
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -105,10 +106,12 @@ fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
     );
 
     // Warm-up call so the first-call compile/cache cost doesn't pollute measurement.
+    // SamplingConfig::chat() = temp 0.6 + repeat_penalty 1.1 + top-k 40 + top-p 0.95,
+    // matching what live chat traffic uses (the throughput we want to measure).
     eprintln!("[smoke] warm-up generation (10 tokens)...");
     let warm_start = Instant::now();
     let warm_result = backend
-        .generate("Reply OK.", 10, 0.7, &[], &[])
+        .generate("Reply OK.", 10, SamplingConfig::chat(), &[], &[])
         .expect("warm-up generate failed");
     eprintln!(
         "[smoke] warm-up: {} tokens in {}ms ({:.1} tok/s) — text={:?}",
@@ -125,7 +128,7 @@ fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
         .generate(
             "Count from 1 to 50, separated by commas.",
             100,
-            0.7,
+            SamplingConfig::chat(),
             &[],
             &[],
         )

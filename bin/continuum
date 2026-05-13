@@ -35,11 +35,57 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; DIM='\033[0;2m'; RESET='\033[0m'
 # ── Find docker-compose.yml ────────────────────────────────
 find_compose() {
   [ -n "$COMPOSE_DIR" ] && return 0
-  # Current directory
+  # Priority 1: ask Docker about any RUNNING continuum project — this is
+  # the most authoritative source. Catches install.sh fresh-mode installs
+  # that mktemp into /var/folders/... (Mac) or /tmp/continuum-fresh-* (Linux)
+  # AND avoids false-positives where the cwd/walk-up finds a stale compose
+  # file for a project that isn't actually running. Without this priority,
+  # `continuum status` reports "Local: not running" even when 4 containers
+  # ARE healthy + the UI is responding, because the local docker-compose.yml
+  # belongs to a different project name (Carl-UX QA #95 from codex-b741
+  # 2026-05-03).
+  #
+  # Note: docker compose ls doesn't accept custom Go templates (--format
+  # only supports 'table' and 'json'), so parse the default tabular output.
+  # The ConfigFiles column is always the LAST whitespace-separated field,
+  # which is reliable even when the STATUS column contains spaces (e.g.
+  # "restarting(2), running(2)").
+  if command -v docker &>/dev/null; then
+    # Get project name AND first config-file path from `docker compose ls`.
+    # The yml path may NOT exist on disk if the install used a temp dir
+    # that macOS or systemd-tmpfiles reaped — the project is still alive
+    # in docker, but the compose file is gone. Fall back to setting just
+    # COMPOSE_PROJECT_NAME so subsequent `docker compose ps` calls find
+    # the project by name without needing a cd.
+    local found_line proj cfg first_cfg
+    found_line=$(docker compose ls 2>/dev/null | awk '
+      NR > 1 && tolower($1) ~ /continuum/ {
+        # name = $1; ConfigFiles = $NF (comma-separated)
+        print $1 "\t" $NF
+        exit
+      }
+    ')
+    if [ -n "$found_line" ]; then
+      proj="${found_line%%	*}"
+      cfg="${found_line#*	}"
+      first_cfg="${cfg%%,*}"
+      if [ -f "$first_cfg" ]; then
+        COMPOSE_DIR="$(dirname "$first_cfg")"
+      else
+        # Compose file gone but project still alive — set project name
+        # so `docker compose -p NAME ps` works without cd.
+        COMPOSE_PROJECT_NAME="$proj"
+        export COMPOSE_PROJECT_NAME
+        COMPOSE_DIR="/tmp"  # cd anywhere, project name overrides
+      fi
+      return 0
+    fi
+  fi
+  # Priority 2: Current directory (for `continuum start` from the repo)
   if [ -f "./docker-compose.yml" ] && [ -d "./src/system" ]; then
     COMPOSE_DIR="$(pwd)"; return 0
   fi
-  # Walk up
+  # Priority 3: Walk up
   local dir="$(pwd)"
   while [ "$dir" != "/" ]; do
     if [ -f "$dir/docker-compose.yml" ] && [ -d "$dir/src/system" ]; then
@@ -47,7 +93,7 @@ find_compose() {
     fi
     dir="$(dirname "$dir")"
   done
-  # Common locations
+  # Priority 4: Common locations
   for d in "$HOME/continuum" "/opt/continuum"; do
     if [ -f "$d/docker-compose.yml" ] && [ -d "$d/src/system" ]; then
       COMPOSE_DIR="$d"; return 0
@@ -104,6 +150,27 @@ is_local_running() {
   find_compose 2>/dev/null || return 1
   cd "$COMPOSE_DIR"
   docker compose ps node-server --format '{{.Health}}' 2>/dev/null | grep -q healthy
+}
+
+native_core_pids() {
+  pgrep -fl "continuum-core-server" 2>/dev/null | awk '{print $1}' | tr '\n' ' ' | sed 's/ $//'
+}
+
+is_native_core_running() {
+  local pids
+  pids=$(native_core_pids)
+  [ -n "$pids" ] || return 1
+  [ -S "$CONTINUUM_HOME/sockets/continuum-core.sock" ] || return 1
+}
+
+print_native_core_status() {
+  local pids="$1"
+  [ -n "$pids" ] || return 0
+  echo -e "    ${GREEN}●${RESET}  continuum-core-server        running (pid $pids)"
+  echo -e "    ${GREEN}●${RESET}  IPC                          $CONTINUUM_HOME/sockets/continuum-core.sock"
+  if command -v lsof &>/dev/null && lsof -nP -iTCP:9100 -sTCP:LISTEN &>/dev/null; then
+    echo -e "    ${GREEN}●${RESET}  TCP                          listening on :9100"
+  fi
 }
 
 # ── Get best URL ────────────────────────────────────────────
@@ -210,11 +277,21 @@ cmd_status() {
   echo ""
 
   # Local
+  local native_pids=""
+  if is_native_core_running; then
+    native_pids=$(native_core_pids)
+  fi
+
   if find_compose 2>/dev/null; then
     cd "$COMPOSE_DIR"
     local containers; containers=$(docker compose ps --format '{{.Name}} {{.Status}} {{.Health}}' 2>/dev/null || echo "")
     if [ -n "$containers" ]; then
-      echo -e "  ${GREEN}Local${RESET}  $COMPOSE_DIR"
+      # When find_compose set COMPOSE_PROJECT_NAME (file gone, project name
+      # known), show the project name instead of the dummy /tmp dir.
+      local label="$COMPOSE_DIR"
+      [ -n "${COMPOSE_PROJECT_NAME:-}" ] && [ "$COMPOSE_DIR" = "/tmp" ] && label="(project: $COMPOSE_PROJECT_NAME)"
+      echo -e "  ${GREEN}Local${RESET}  $label"
+      print_native_core_status "$native_pids"
       echo "$containers" | while read -r name status health; do
         local icon="⚪"
         case "$health" in
@@ -234,10 +311,18 @@ cmd_status() {
         echo -e "  ${DIM}→ $url${RESET}"
         echo ""
       fi
+    elif [ -n "$native_pids" ]; then
+      echo -e "  ${GREEN}Local${RESET}  native continuum-core"
+      print_native_core_status "$native_pids"
+      echo ""
     else
       echo -e "  ${DIM}Local: not running${RESET}"
       echo ""
     fi
+  elif [ -n "$native_pids" ]; then
+    echo -e "  ${GREEN}Local${RESET}  native continuum-core"
+    print_native_core_status "$native_pids"
+    echo ""
   else
     echo -e "  ${DIM}Local: no installation found${RESET}"
     echo ""
@@ -502,7 +587,21 @@ cmd_update() {
   fi
   cd "$COMPOSE_DIR"
   echo -e "${BLUE}📥 Updating...${RESET}"
-  git pull origin main
+  # Was `git pull origin main` — fails with 'divergent branches' whenever
+  # the local checkout has commits not on main (canary worktrees, agent
+  # tab branches, anything that's wandered off main). Carl-UX QA #101
+  # from codex-b741 2026-05-03: every continuum-update on Joel's canary
+  # install bailed here. Switch to a destructive-but-correct fast-forward:
+  # fetch + reset --hard to origin/main. The install dir is meant to be
+  # a managed deployment, not a place to keep local edits — anyone with
+  # commits to keep should be working in a separate worktree, which the
+  # bare-repo + worktree pattern already supports.
+  git fetch origin main || { echo -e "${RED}❌ git fetch failed${RESET}"; exit 1; }
+  if ! git diff --quiet HEAD || ! git diff --cached --quiet; then
+    echo -e "${YELLOW}⚠️  Uncommitted changes in $COMPOSE_DIR — stashing as 'continuum-update-backup-$(date +%s)'${RESET}"
+    git stash push -u -m "continuum-update-backup-$(date +%s)" || true
+  fi
+  git reset --hard origin/main || { echo -e "${RED}❌ git reset failed${RESET}"; exit 1; }
   echo -e "${BLUE}🔨 Rebuilding...${RESET}"
   docker compose build --parallel
   echo -e "${BLUE}🔄 Restarting...${RESET}"
@@ -522,7 +621,7 @@ cmd_tray_data() {
   local healthy=0 total=0
   if [ "$docker_ok" = "true" ] && find_compose 2>/dev/null; then
     cd "$COMPOSE_DIR"
-    healthy=$(docker compose ps --format '{{.Health}}' 2>/dev/null | grep -c healthy || echo 0)
+    healthy=$(docker compose ps --format '{{.Health}}' 2>/dev/null | awk '$0 == "healthy" { count++ } END { print count + 0 }')
     total=$(docker compose ps --format '{{.Name}}' 2>/dev/null | wc -l | tr -d ' ')
   fi
 
@@ -557,17 +656,27 @@ cmd_tray_data() {
 
   # Status
   local online_count
-  online_count=$(echo "$nodes_json" | grep -o '"online":true' | wc -l | tr -d ' ')
+  online_count=$(echo "$nodes_json" | awk 'BEGIN { count = 0 } { while (match($0, /"online":true/)) { count++; $0 = substr($0, RSTART + RLENGTH) } } END { print count }')
 
   local status="red" status_text="Not running"
+  local native_core="false"
+  if is_native_core_running; then
+    native_core="true"
+  fi
   if [ "$docker_ok" = "false" ] && [ "$online_count" -gt 0 ]; then
     status="yellow"; status_text="Docker off, $online_count grid nodes"
   elif [ "$docker_ok" = "false" ]; then
-    status="red"; status_text="Docker not running"
+    if [ "$native_core" = "true" ]; then
+      status="green"; status_text="Native core running, Docker off"
+    else
+      status="red"; status_text="Docker not running"
+    fi
   elif [ "$healthy" -ge 4 ]; then
     status="green"; status_text="$healthy services, $online_count nodes"
   elif [ "$healthy" -gt 0 ]; then
     status="yellow"; status_text="$healthy services, $online_count nodes"
+  elif [ "$native_core" = "true" ]; then
+    status="green"; status_text="Native core running"
   elif [ "$online_count" -gt 0 ]; then
     status="yellow"; status_text="$online_count grid nodes"
   fi
@@ -577,6 +686,7 @@ cmd_tray_data() {
   "status": "$status",
   "statusText": "$status_text",
   "docker": $docker_ok,
+  "nativeCore": $native_core,
   "services": {"healthy": $healthy, "total": $total},
   "tailnet": "$suffix",
   "nodes": $nodes_json,

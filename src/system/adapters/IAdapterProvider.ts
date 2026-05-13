@@ -2,7 +2,7 @@
  * Adapter Provider Interface
  *
  * Abstracts adapter operations across different backends:
- * - Local (Candle) - direct LoRA weight merging
+ * - Local - direct LoRA weight merging against supported local model families
  * - Together.ai - cloud LoRA hosting
  * - Fireworks.ai - cloud LoRA hosting
  * - Replicate - custom model deployment
@@ -21,9 +21,9 @@ export type ProviderType = 'local' | 'cloud-lora' | 'cloud-finetune';
  * Supported base models per provider
  */
 export interface SupportedModel {
-  id: string;           // e.g., "meta-llama/Llama-3.2-3B-Instruct"
-  name: string;         // e.g., "Llama 3.2 3B"
-  family: string;       // e.g., "llama"
+  id: string;           // e.g., "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+  name: string;         // e.g., "Qwen3.5 4B Code Forged"
+  family: string;       // e.g., "qwen3"
   maxContext: number;   // e.g., 128000
   supportedRanks: number[];  // e.g., [8, 16, 32, 64]
 }

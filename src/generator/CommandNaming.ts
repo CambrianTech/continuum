@@ -12,6 +12,7 @@ export interface CommandSpec {
   description: string;    // Human-readable description
   params: ParamSpec[];    // Parameter definitions
   results: ResultSpec[];  // Result field definitions
+  imports?: ImportSpec[]; // Extra type imports required by params/results
   examples?: ExampleSpec[];
   accessLevel?: 'ai-safe' | 'internal' | 'system' | 'dangerous';
   implementation?: 'server' | 'browser' | 'both';  // Defaults to 'server' (DEPRECATED: use environment)
@@ -28,7 +29,14 @@ export interface ParamSpec {
 export interface ResultSpec {
   name: string;
   type: string;
+  optional?: boolean;
   description?: string;
+}
+
+export interface ImportSpec {
+  names: string[];
+  from: string;
+  typeOnly?: boolean;
 }
 
 export interface ExampleSpec {

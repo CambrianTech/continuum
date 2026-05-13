@@ -113,7 +113,7 @@ irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | 
 
 One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-toggles the Docker Desktop AI settings (no manual GPU + TCP toggle anymore), drops a `continuum.cmd` on PATH, then hands off to `bootstrap.sh` inside WSL. Works from the default Windows PowerShell 5.1 (it bootstraps pwsh 7 only if needed).
 
-`setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. **One required manual step**: in Docker Desktop → Settings → AI, enable both *GPU-backed inference* and *host-side TCP support* — without these, the model runs CPU-tier even with a GPU present. See **[docs/SETUP.md](docs/SETUP.md)** for the per-OS walkthrough with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
+`setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. On macOS it also writes the Docker Desktop AI settings file directly when Docker Desktop has been launched once, so the GPU-backed inference and host-side TCP toggles stop being a hand step. See **[docs/SETUP.md](docs/SETUP.md)** for the per-OS walkthrough with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
 
 <details>
 <summary>Development (from source)</summary>

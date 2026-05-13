@@ -1,0 +1,40 @@
+# Lane F (PR #1084) — TS Persona Cognition Deletion Ratchet.
+#
+# Enforces the Rust-first alpha contract (PR #1070,
+# docs/planning/ALPHA-GAP-ANALYSIS.md "Rust core owns behavior"):
+# every PR touching the persona surface must keep the TS line count
+# flat or shrink it. New cognition logic belongs in Rust, not in TS.
+#
+# Fast: shell + python only, no node_modules, no cargo. Runs in <10s.
+# Doesn't block on TS compile or Rust build — independent gate.
+
+name: ts-persona-cognition-ratchet
+
+on:
+  pull_request:
+    branches: [canary, main]
+    paths:
+      - 'src/system/user/server/**/*.ts'
+      - 'scripts/ratchets/ts-persona-cognition-baseline.json'
+      - 'scripts/ratchets/check-ts-persona-cognition.sh'
+      - '.github/workflows/ts-persona-cognition-ratchet.yml'
+  push:
+    branches: [canary, main]
+
+jobs:
+  ratchet:
+    name: ts-persona-cognition-ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Run ratchet check
+        run: bash scripts/ratchets/check-ts-persona-cognition.sh
+
+      - name: Print verbose surface table on failure
+        if: failure()
+        run: bash scripts/ratchets/check-ts-persona-cognition.sh --verbose || true

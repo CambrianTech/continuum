@@ -193,8 +193,16 @@ impl OrpheusTts {
     /// Build SNAC decoder ONNX session
     fn build_snac_session(model_path: &Path) -> Result<Session, TTSError> {
         let threads = num_cpus::get().min(4);
+        // GPU execution providers via the centralized helper (#985 / #964).
+        // Per architecture, CPU fallback is forbidden — SNAC decoder must
+        // run on GPU. Pre-this-PR Orpheus never configured an EP at all,
+        // so ORT's implicit CPU EP took every op silently.
+        let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
+            .map_err(|e| TTSError::ModelNotLoaded(format!("ORT GPU EP setup failed (Orpheus SNAC): {e}")))?;
         Session::builder()
             .map_err(|e| TTSError::ModelNotLoaded(format!("SNAC session builder: {e}")))?
+            .with_execution_providers(providers)
+            .map_err(|e| TTSError::ModelNotLoaded(format!("SNAC EP register: {e}")))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| TTSError::ModelNotLoaded(format!("SNAC optimization: {e}")))?
             .with_intra_threads(threads)

@@ -85,7 +85,15 @@ Install-IfMissing -Name 'Docker Desktop'     -WingetId 'Docker.DockerDesktop' `
 function Install-WSL2 {
     $wslExe = Get-Command wsl.exe -ErrorAction SilentlyContinue
     if ($wslExe) {
-        $distros = & wsl.exe --list --quiet 2>$null
+        # wsl.exe writes its --list output as UTF-16 LE; PowerShell reads
+        # as UTF-8 by default, so each character ends up interspersed with
+        # null bytes ("U`0b`0u`0n`0t`0u`0") and the regex 'Ubuntu' never
+        # matches even when Ubuntu is genuinely installed and running.
+        # Pre-fix this caused install.ps1 to false-flag WSL2 as missing
+        # and demand admin elevation on every fresh-Windows-validator run.
+        # Caught by continuum-b69f 2026-05-02 during Carl-OOTB Windows test.
+        # Strip the embedded nulls before matching.
+        $distros = (& wsl.exe --list --quiet 2>$null) -replace "`0", ""
         $hasUbuntu = $distros | Where-Object { $_ -match 'Ubuntu' }
         if ($hasUbuntu) { Write-Ok 'WSL2 + Ubuntu already installed'; return }
     }
@@ -106,10 +114,9 @@ Install-WSL2
 # ── section: docker desktop AI settings auto-toggle ─────────────────────
 # Highest-leverage friction kill. Without these toggles continuum's
 # personas run on CPU at ~10 tok/s instead of GPU at ~80-237 tok/s, OR
-# the core container can't reach Docker Model Runner at all. Today the
-# README has these as a "manual one-time step" and every fresh dev hits
-# it. Programmatically write the keys + bounce Docker Desktop so the
-# user never has to think about it.
+# the core container can't reach Docker Model Runner at all. Write the
+# keys programmatically + bounce Docker Desktop so the user never has to
+# think about it.
 #
 # Key reference (from inspecting %APPDATA%\Docker\settings-store.json
 # on a real Docker Desktop 4.x install with both toggles set):
@@ -199,13 +206,54 @@ if ($userPath -notlike "*$shimDir*") {
 }
 Write-Ok "continuum CLI shim installed at $shimPath"
 
+# ── section: probe WSL2 networking before delegating ────────────────────
+# bootstrap.sh inside WSL needs to curl raw.githubusercontent.com. If the
+# WSL2 VM has lost network reachability (vEthernet/HNS corruption is
+# common on Win10/11 after sleep cycles or driver updates), the curl
+# inside the bootstrap step takes 30+ seconds to time out with a cryptic
+# error — and the user has no idea their issue is environmental, not
+# continuum-related. Probe upfront with a 5s budget; if external HTTP
+# from inside WSL is broken, surface explicit remediation instead of
+# delegating into a doom-spiral. Caught by continuum-b69f 2026-05-02
+# (issue #1006) when their WSL2 NAT broke after a system update.
+Write-Step 'Probing WSL2 networking (5s budget) ...'
+$probeOutput = & wsl.exe bash -c "curl -sfI -m 5 https://raw.githubusercontent.com/CambrianTech/continuum/main/bootstrap.sh -o /dev/null 2>&1; echo EXIT=`$?"
+$probeExit = $LASTEXITCODE
+$probeOk = ($probeExit -eq 0) -and ($probeOutput -match 'EXIT=0')
+if (-not $probeOk) {
+    Write-Fail 'WSL2 networking is broken — cannot reach raw.githubusercontent.com from inside WSL.'
+    Write-Host ''
+    Write-Host '  Probe output:'
+    if ($probeOutput) { $probeOutput | ForEach-Object { Write-Host "    $_" } }
+    Write-Host "    (LASTEXITCODE=$probeExit)"
+    Write-Host ''
+    Write-Host '  This is a Windows-side WSL2 issue (vEthernet / HNS corruption is the usual culprit).'
+    Write-Host '  Try in order:'
+    Write-Host '    1. wsl --shutdown                                 # forces VM restart, often heals NAT'
+    Write-Host '    2. (as admin)  Restart-Service hns -Force         # reset Host Networking Service'
+    Write-Host '    3. Reboot Windows'
+    Write-Host '    4. Edit %USERPROFILE%\.wslconfig — add  [wsl2]  then  networkingMode=NAT  on next line'
+    Write-Host ''
+    Write-Host '  Then re-run:  irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex'
+    exit 1
+}
+Write-Ok 'WSL2 networking OK'
+
 # ── section: delegate to bootstrap.sh inside WSL ────────────────────────
 # bootstrap.sh is the canonical install body -- clones the repo, pulls
 # docker compose images, brings the stack up, opens the browser. Runs
 # inside WSL2 here on Windows.
 
 Write-Step 'Handing off to bootstrap.sh inside WSL ...'
-& wsl.exe bash -ic "curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/bootstrap.sh | bash -s -- --mode=$Mode"
+# CONTINUUM_REF env override: when set, fetch bootstrap.sh + clone
+# repo at the specified branch/sha. Used by CI (Windows install
+# validation of PR src/) and power users testing pre-merge changes.
+# Defaults to main when unset. Without this, Windows installs always
+# fetched bootstrap.sh from main + cloned main — same chicken-and-egg
+# as install.sh had before CONTINUUM_REF support.
+$BootstrapRef = if ($env:CONTINUUM_REF) { $env:CONTINUUM_REF } else { 'main' }
+$BootstrapUrl = "https://raw.githubusercontent.com/CambrianTech/continuum/$BootstrapRef/bootstrap.sh"
+& wsl.exe bash -ic "CONTINUUM_REF='$BootstrapRef' curl -fsSL '$BootstrapUrl' | bash -s -- --mode=$Mode"
 $bootstrapExit = $LASTEXITCODE
 
 # ── section: post-install guidance ──────────────────────────────────────
@@ -214,9 +262,9 @@ if ($bootstrapExit -eq 0) {
     Write-Ok 'Continuum is up.'
     Write-Host ''
     switch ($Mode) {
-        'browser'  { Write-Host '  UI:        http://localhost:9000' }
+        'browser'  { Write-Host '  UI:        http://localhost:9003' }
         'cli'      { Write-Host '  CLI:       continuum   (from any new shell)' }
-        'headless' { Write-Host '  Server:    http://localhost:9000 (API only)' }
+        'headless' { Write-Host '  Server:    http://localhost:9003 (API only)' }
     }
     Write-Host '  Verify:    continuum doctor'
     Write-Host ''

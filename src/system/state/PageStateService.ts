@@ -53,7 +53,7 @@ export interface PageState {
 /**
  * Callback type for page state subscribers
  */
-export type PageStateListener = (state: PageState) => void;
+export type PageStateListener = (state: PageState | null) => void;
 
 /**
  * PageStateService implementation
@@ -151,6 +151,8 @@ class PageStateServiceImpl {
    */
   clear(): void {
     this.state = null;
+    console.log('📄 PageState: cleared');
+    this.notifyListeners();
   }
 
   /**
@@ -164,8 +166,6 @@ class PageStateServiceImpl {
    * Notify all listeners of state change
    */
   private notifyListeners(): void {
-    if (!this.state) return;
-
     for (const listener of this.listeners) {
       try {
         listener(this.state);

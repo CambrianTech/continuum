@@ -7,14 +7,13 @@
  *
  * Phase 1: Skeleton (ping-pong)
  * Phase 2: Mock evaluation
- * Phase 3: Real Candle (native Rust) inference
+ * Phase 3: Runtime gating delegates to Rust/heuristics.
  *
- * NOTE: Candle is the ONLY local inference path.
+ * NOTE: Candle is training/auxiliary only. Local chat inference is llama.cpp/Qwen
+ * through the Rust runtime, not this worker.
  */
 
 import { parentPort, workerData } from 'worker_threads';
-import { CandleGrpcAdapter } from '../../daemons/ai-provider-daemon/adapters/candle-grpc/shared/CandleGrpcAdapter';
-import type { BaseAIProviderAdapter } from '../../daemons/ai-provider-daemon/shared/BaseAIProviderAdapter';
 
 if (!parentPort) {
   throw new Error('This file must be run as a Worker Thread');
@@ -27,19 +26,10 @@ const _providerConfig: Record<string, unknown> = workerData.providerConfig || {}
 console.log(`🧵 PersonaWorker[${personaId}]: Starting...`);
 console.log(`🧵 PersonaWorker[${personaId}]: Provider type: ${providerType}`);
 
-// Initialize provider (if not mock)
-let provider: BaseAIProviderAdapter | null = null;
-
 async function initializeProvider(): Promise<void> {
-  // 'candle' or 'local' both use Candle
-  if (providerType === 'candle' || providerType === 'local') {
-    console.log(`🧵 PersonaWorker[${personaId}]: Initializing CandleGrpcAdapter...`);
-
-    const adapter = new CandleGrpcAdapter();
-    await adapter.initialize();
-    provider = adapter;
-    console.log(`✅ PersonaWorker[${personaId}]: CandleGrpcAdapter initialized`);
-  }
+  // Intentionally no local model initialization here. should-respond is
+  // handled by Rust fullEvaluate; this worker is only a fallback heuristic
+  // path. Do not load Candle/llama.cpp from this thread.
 }
 
 // Main async initialization
@@ -74,48 +64,10 @@ async function initializeProvider(): Promise<void> {
       let processingTime = 0;
 
       try {
-        if (provider) {
-          // Real Candle inference (Phase 3)
-          console.log(`🧠 PersonaWorker[${personaId}]: Using real Candle inference...`);
-
-          const prompt = `You are evaluating whether you should respond to a message in a conversation.
-
-Message: "${msg.message.content}"
-Sender: ${msg.message.senderId}
-
-Respond with a confidence score (0.0-1.0) indicating whether you should respond.
-Consider:
-- Is this message directed at you or relevant to your expertise?
-- Is it a test message that should be ignored?
-- Would your response add value to the conversation?
-
-Format your response as:
-CONFIDENCE: <number between 0.0 and 1.0>
-REASONING: <brief explanation>`;
-
-          const result = await provider.generateText({
-            messages: [
-              { role: 'user', content: prompt }
-            ],
-            model: (_providerConfig.model as string) || 'llama3.2:1b',
-            temperature: 0.7,
-            maxTokens: 200
-          });
-
-        // Parse confidence from AI response
-        const confidenceMatch = result.text.match(/CONFIDENCE:\s*([0-9.]+)/i);
-        const reasoningMatch = result.text.match(/REASONING:\s*(.+)/is);
-
-        confidence = confidenceMatch ? parseFloat(confidenceMatch[1]) : 0.5;
-        confidence = Math.max(0, Math.min(1, confidence)); // Clamp 0-1
-        shouldRespond = confidence > 0.5;
-        reasoning = reasoningMatch ? reasoningMatch[1].trim().substring(0, 200) : result.text.substring(0, 200);
-
-        processingTime = Date.now() - startTime;
-        console.log(`✅ PersonaWorker[${personaId}]: Real inference complete - conf=${confidence.toFixed(2)}, took ${processingTime}ms`);
-
-      } else {
-        // Smart heuristics evaluation with PersonaState integration
+        {
+          // Smart heuristics evaluation with PersonaState integration.
+          // This path is intentionally model-free; Rust fullEvaluate owns
+          // the authoritative gate in normal runtime.
         console.log(`🎭 PersonaWorker[${personaId}]: Using smart heuristics with state...`);
 
         const thinkTime = 100 + Math.random() * 400;

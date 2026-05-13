@@ -114,8 +114,8 @@ pub fn load_quantized_model(
 
     let tokenizer_sources = vec![
         tokenizer_repo.to_string(),
-        "unsloth/Llama-3.2-3B-Instruct".to_string(),
-        "unsloth/Meta-Llama-3.1-8B-Instruct".to_string(),
+        "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
+        "Qwen/Qwen2-VL-7B-Instruct-GGUF".to_string(),
     ];
 
     let mut tokenizer: Option<Tokenizer> = None;

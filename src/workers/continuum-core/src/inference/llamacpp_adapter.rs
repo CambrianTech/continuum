@@ -118,6 +118,29 @@ fn decode_data_url_or_base64(
     }
 }
 
+/// Typed failure for [`LlamaCppAdapter::try_new`] when the model
+/// registry has no `llamacpp-local` row with a resolved
+/// `gguf_local_path`. Surfaces install-time-no-Qwen state as observable
+/// runtime health rather than a process panic. Operators see this in
+/// install/health output and know exactly what's missing.
+///
+/// 2026-05-11: continuum-8e97 RTX 5090 finding showed cuda stack ready,
+/// VRAM available, zero personas replying — root cause was no Qwen
+/// GGUF seeded by carl install. Without this typed error the silent
+/// state was indistinguishable from "personas just slow."
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "no `{provider_id}` model with `gguf_local_path` resolved on disk \
+     ({rows_in_registry} provider rows, {rows_with_gguf_local_path} with \
+     a path on disk). Install seeded no local Qwen GGUF — run model-init \
+     downloader or seed manually."
+)]
+pub struct NoLocalModelLoadable {
+    pub provider_id: String,
+    pub rows_in_registry: usize,
+    pub rows_with_gguf_local_path: usize,
+}
+
 /// In-process llama.cpp adapter. Lazy-loads the model on first
 /// `generate_text` call (so adapter registration doesn't pay the
 /// 5-10s model-load cost up front). After load, the backend lives for
@@ -153,31 +176,65 @@ pub struct LlamaCppAdapter {
 
 impl LlamaCppAdapter {
     /// Construct from the model_registry. Looks up the first model under
-    /// provider `llamacpp-local` that has a non-None `gguf_local_path`
+    /// provider `llamacpp-local` whose GGUF artifact resolved locally
     /// and uses its id + path. If the registry has no such row, panics
     /// — that's a config bug, not a runtime failure mode (per the
     /// no-fallback rule).
+    ///
+    /// Prefer [`Self::try_new`] when calling from a path that should
+    /// surface the missing-Qwen state as observable runtime health
+    /// rather than crashing the process. Boot-time health checks
+    /// (continuum status, ai/status, install-time validators) MUST use
+    /// `try_new` so an install with no Qwen seeded reports
+    /// `NoLocalModelLoadable` cleanly instead of crash-looping.
     pub fn new() -> Self {
+        Self::try_new().unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// Result-returning variant of [`Self::new`]. Returns
+    /// [`NoLocalModelLoadable`] when the registry has no `llamacpp-local`
+    /// row with a resolved `gguf_local_path` — the typed failure mode
+    /// for "install seeded no local Qwen GGUF" which surfaces at
+    /// install-time on hosts where the model-init container did not
+    /// download a chat-capable model (RTX 5090 finding, 2026-05-11). The
+    /// caller decides whether to crash (legacy `new()` behavior),
+    /// degrade, or report the error to operators.
+    pub fn try_new() -> Result<Self, NoLocalModelLoadable> {
         let reg = crate::model_registry::global();
-        let model = reg
-            .models_for_provider(LLAMACPP_PROVIDER_ID)
-            .find(|m| m.gguf_local_path.is_some())
-            .expect(
-                "no llamacpp-local model with gguf_local_path in config/models.toml — \
-                 the in-process adapter has nothing to load",
-            );
+        Self::try_new_from(reg.models_for_provider(LLAMACPP_PROVIDER_ID))
+    }
+
+    /// Pure variant of [`Self::try_new`] taking a model iterator
+    /// directly — lets tests assemble synthetic registries without going
+    /// through the global singleton. Production code uses
+    /// [`Self::try_new`] which calls this with `global().models_for_provider(...)`.
+    pub fn try_new_from<'a, I>(models: I) -> Result<Self, NoLocalModelLoadable>
+    where
+        I: IntoIterator<Item = &'a crate::model_registry::Model>,
+    {
+        let candidates: Vec<&crate::model_registry::Model> = models.into_iter().collect();
+        let with_path: Vec<&crate::model_registry::Model> = candidates
+            .iter()
+            .copied()
+            .filter(|m| m.gguf_local_path.is_some())
+            .collect();
+        let model = with_path.first().ok_or_else(|| NoLocalModelLoadable {
+            provider_id: LLAMACPP_PROVIDER_ID.to_string(),
+            rows_in_registry: candidates.len(),
+            rows_with_gguf_local_path: 0,
+        })?;
         let model_path = model
             .gguf_local_path
             .clone()
-            .expect("gguf_local_path present — filtered by find()");
-        Self {
+            .expect("gguf_local_path present — filtered above");
+        Ok(Self {
             backend: Arc::new(RwLock::new(None)),
             model_path,
             last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
             default_model: model.id.clone(),
             context_length_override: None,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
-        }
+        })
     }
 
     /// Override the model path. Useful for tests + when the model isn't
@@ -271,8 +328,8 @@ impl LlamaCppAdapter {
         if !self.model_path.exists() {
             return Err(format!(
                 "model GGUF not found at {:?} for model `{}` — \
-                 either pull the artifact to that path (it's the \
-                 `gguf_local_path` declared in config/models.toml) or \
+                 either pull the artifact identified by the registry \
+                 `gguf_hint` or \
                  override via with_model_path()",
                 self.model_path, self.default_model,
             ));
@@ -804,9 +861,103 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     fn supports_model(&self, model_name: &str) -> bool {
-        let want = model_name.to_lowercase();
-        models_for_provider_via_registry(LLAMACPP_PROVIDER_ID)
-            .iter()
-            .any(|m| m.id.to_lowercase() == want)
+        self.default_model.eq_ignore_ascii_case(model_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
+    use crate::model_registry::Model;
+    use std::collections::BTreeSet;
+
+    fn synthetic_llamacpp_local_model(id: &str, gguf_path: Option<PathBuf>) -> Model {
+        Model {
+            id: id.into(),
+            name: None,
+            provider: LLAMACPP_PROVIDER_ID.into(),
+            arch: Arch::Qwen35,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 33.0,
+            capabilities: BTreeSet::new(),
+            cost_input_per_1k: 0.0,
+            cost_output_per_1k: 0.0,
+            gguf_hint: None,
+            gguf_local_path: gguf_path,
+            mmproj_local_path: None,
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            stop_sequences: vec![],
+        }
+    }
+
+    #[test]
+    fn try_new_from_errors_when_no_llamacpp_local_rows() {
+        // Empty iterator — no llamacpp-local rows at all (the worst-case
+        // install state continuum-8e97 saw on RTX 5090: install seeded
+        // only voice-models, registry has no llamacpp-local Qwen row).
+        let models: Vec<Model> = vec![];
+        match LlamaCppAdapter::try_new_from(models.iter()) {
+            Err(err) => {
+                assert_eq!(err.provider_id, LLAMACPP_PROVIDER_ID);
+                assert_eq!(err.rows_in_registry, 0);
+                assert_eq!(err.rows_with_gguf_local_path, 0);
+                // Error message must name the actionable next step so
+                // operators see what to do (run model-init / seed manually).
+                let msg = format!("{err}");
+                assert!(
+                    msg.contains("model-init"),
+                    "error must name the actionable remediation: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected NoLocalModelLoadable on empty registry"),
+        }
+    }
+
+    #[test]
+    fn try_new_from_errors_when_llamacpp_rows_exist_but_none_have_gguf_path() {
+        // Registry has llamacpp-local rows but artifact resolver couldn't
+        // find the GGUF on disk for any of them — `gguf_local_path` is
+        // None for every row. This is the SAME observable state as
+        // "registry empty" from the adapter's perspective: nothing to
+        // load. Operator-actionable signal must distinguish "registry is
+        // wrong" (zero rows) from "files aren't seeded" (rows exist,
+        // paths unresolved).
+        let models = vec![
+            synthetic_llamacpp_local_model("qwen3.5-4b-code-forged-GGUF", None),
+            synthetic_llamacpp_local_model("qwen2-vl-7b-instruct", None),
+        ];
+        match LlamaCppAdapter::try_new_from(models.iter()) {
+            Err(err) => {
+                assert_eq!(err.provider_id, LLAMACPP_PROVIDER_ID);
+                assert_eq!(err.rows_in_registry, 2);
+                assert_eq!(err.rows_with_gguf_local_path, 0);
+            }
+            Ok(_) => panic!("expected NoLocalModelLoadable when no row has gguf_local_path"),
+        }
+    }
+
+    #[test]
+    fn try_new_from_succeeds_with_at_least_one_resolved_path() {
+        // Mixed registry: one row has the path resolved, one doesn't.
+        // Adapter should pick the resolved row (matches the existing
+        // production behavior of legacy `new()`).
+        let resolved_path = PathBuf::from("/tmp/synthetic-test-only.gguf");
+        let models = vec![
+            synthetic_llamacpp_local_model("qwen3.5-4b-code-forged-GGUF", None),
+            synthetic_llamacpp_local_model(
+                "qwen2-vl-7b-instruct",
+                Some(resolved_path.clone()),
+            ),
+        ];
+        match LlamaCppAdapter::try_new_from(models.iter()) {
+            Ok(adapter) => {
+                assert_eq!(adapter.model_path, resolved_path);
+                assert_eq!(adapter.default_model, "qwen2-vl-7b-instruct");
+            }
+            Err(err) => panic!("expected Ok with resolved path; got {err:?}"),
+        }
     }
 }

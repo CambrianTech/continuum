@@ -179,8 +179,13 @@ const TTS_BUDGET_PCT: f64 = 0.10;
 const RENDERING_BUDGET_PCT: f64 = 0.10;
 const RESERVE_PCT: f64 = 0.05;
 
-/// CPU-only fallback: use 25% of system RAM as "GPU" budget.
-const CPU_FALLBACK_RAM_PCT: f64 = 0.25;
+// CPU_FALLBACK_RAM_PCT removed (#964 series PR #3 / #980 GPU-fallback
+// audit). Per Joel's architectural rule "lack of GPU integration is
+// forbidden", continuum-core refuses to start when no GPU is detected
+// rather than silently degrading to a CPU-budget pretend-GPU. Same shape
+// as install.sh's hard-fail on `IC_GPU_PATH=unsupported` — surface the
+// problem at startup with an actionable error instead of a slow-and-bad
+// runtime.
 
 /// Pressure thresholds.
 pub const PRESSURE_WARNING: f32 = 0.60;
@@ -745,8 +750,44 @@ fn detect_gpu() -> (u64, String) {
         }
     }
 
-    // CPU fallback
-    detect_cpu_fallback()
+    // Try Vulkan. Until 2026-05-04 detect_gpu() had no vulkan branch even
+    // though `vulkan` was listed as a supported path in the panic message
+    // and Cargo features. Result: continuum-core-vulkan binary panicked at
+    // boot on every host because the loader was never queried, regardless
+    // of whether a Vulkan ICD was present (NVIDIA, mesa-llvmpipe sw,
+    // mesa-radv, etc). Caught live by Carl-Windows install retest of the
+    // vulkan variant on bigmama-1 (continuum-b69f, 2026-05-04) — the
+    // image had libvulkan1 + mesa-vulkan-drivers + vulkan-tools but the
+    // binary never asked the loader. detect_vulkan() below mirrors the
+    // detect_cuda() subprocess shape, parsing `vulkaninfo --summary`
+    // (already in the runtime image via the vulkan-tools apt package).
+    #[cfg(feature = "vulkan")]
+    {
+        if let Some(result) = detect_vulkan() {
+            return result;
+        }
+    }
+
+    // No GPU detected. Per architecture, CPU fallback is forbidden
+    // (#964 series / #980 GPU-fallback audit). Hard-fail with the same
+    // shape install.sh's `IC_GPU_PATH=unsupported` branch uses: name
+    // what's supported, point at the diagnostic command, exit cleanly.
+    panic!(
+        "No GPU detected (Metal on macOS / CUDA on Linux+Nvidia). \
+         continuum-core requires GPU acceleration — CPU fallback is forbidden \
+         per architectural rule. Supported paths: macos:metal, linux:cuda, \
+         linux:rocm, linux:vulkan, wsl:cuda, wsl:vulkan, windows:cuda, \
+         windows:vulkan. If your hardware IS one of those, the detector \
+         missed something. Diagnose: \
+         - macOS: 'system_profiler SPDisplaysDataType' should list a Metal device \
+         - Linux/WSL CUDA: 'nvidia-smi' should print GPU info \
+         - Linux ROCm: 'rocminfo' should print GPU info \
+         - Linux/WSL/Windows Vulkan: 'vulkaninfo --summary' should list a deviceName \
+         If your hardware truly isn't supported, continuum-core can't run \
+         reliably on this machine. File an issue at \
+         https://github.com/CambrianTech/continuum/issues with the output of \
+         'uname -a' + nvidia-smi/rocminfo/vulkaninfo as applicable."
+    );
 }
 
 /// Metal detection via metal-rs crate.
@@ -795,21 +836,64 @@ fn detect_cuda() -> Option<(u64, String)> {
     Some((total_bytes, name))
 }
 
-/// CPU fallback: use 25% of system RAM.
-fn detect_cpu_fallback() -> (u64, String) {
-    let total_ram = get_system_ram();
-    let budget = (total_ram as f64 * CPU_FALLBACK_RAM_PCT) as u64;
+/// Vulkan detection via vulkaninfo subprocess.
+///
+/// Mirrors detect_cuda's nvidia-smi approach. The vulkan-tools apt package
+/// (already in continuum-core-vulkan.Dockerfile's runtime stage) ships
+/// vulkaninfo. Parsing --summary gives us a deviceName, which is enough
+/// to satisfy the architectural rule "Vulkan loader produced a usable
+/// device" — be it NVIDIA's ICD on a GPU host, mesa-radv on AMD, or
+/// llvmpipe (mesa software ICD) on a no-/dev/dri runner like
+/// ubuntu-latest CI.
+///
+/// Memory size is conservative because vulkaninfo --summary doesn't
+/// always report device-local heap totals reliably; runtime allocations
+/// query the loader directly via candle/llama-cpp's vulkan backend
+/// anyway, so this number is only used for the budget estimator.
+#[cfg(feature = "vulkan")]
+fn detect_vulkan() -> Option<(u64, String)> {
+    use std::process::Command;
 
-    log_info!(
-        "gpu",
-        "manager",
-        "No GPU detected — using CPU fallback: {}MB of {}MB system RAM",
-        budget / (1024 * 1024),
-        total_ram / (1024 * 1024)
-    );
+    let output = Command::new("vulkaninfo").arg("--summary").output().ok()?;
 
-    (budget, "CPU (no GPU)".to_string())
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+
+    // vulkaninfo --summary format (excerpt):
+    //   Devices:
+    //   ========
+    //   GPU0:
+    //           apiVersion         = 1.3.260
+    //           driverVersion      = 0x0
+    //           vendorID           = 0x10005
+    //           deviceID           = 0x0
+    //           deviceType         = PHYSICAL_DEVICE_TYPE_CPU
+    //           deviceName         = llvmpipe (LLVM 17.0.6, 256 bits)
+    //
+    // Take the FIRST deviceName (vulkaninfo orders discrete > integrated > CPU
+    // by default on most loaders). If absent, no usable ICD.
+    let device_name = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("deviceName"))
+        .and_then(|l| l.split('=').nth(1))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+
+    // Conservative VRAM budget: 4 GiB. Real allocations go through the
+    // Vulkan loader at runtime; this only seeds the GpuMemoryManager
+    // budget estimator. For a CUDA host we get exact memory.total via
+    // nvidia-smi; for Vulkan there's no equivalent single-line query
+    // that handles all ICDs uniformly without pulling in `ash`.
+    let total_bytes: u64 = 4 * 1024 * 1024 * 1024;
+
+    Some((total_bytes, device_name))
 }
+
+// detect_cpu_fallback() removed — see detect_gpu()'s panic for rationale.
+// CPU fallback is forbidden architecturally; absent GPU = absent system.
 
 /// Get total system RAM.
 #[cfg(target_os = "macos")]

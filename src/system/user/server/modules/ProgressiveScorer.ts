@@ -12,8 +12,9 @@
  * **Purpose**: Enable mid-stream model upgrades when lower-tier models show signs
  * of struggling, maintaining cost-efficiency while preserving quality.
  *
- * **Core Concept**: Start cheap/free (qwen2.5:7b), detect complexity as generating,
- * upgrade only when needed (llama3.1:70b → deepseek-chat → claude-3-5-sonnet).
+ * **Core Concept**: Start with the cheapest local-capable model selected by
+ * the Rust registry/admission layer, detect complexity as generating, and
+ * upgrade only when a richer local/cloud capability is explicitly available.
  *
  * **Integration**: Used by AIProviderDaemon streaming wrapper (Phase 2B)
  *

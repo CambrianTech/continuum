@@ -19,9 +19,6 @@ export interface SentinelCleanupParams extends CommandParams {
   /** If true, only report what would be deleted (default: false) */
   dryRun?: boolean;
 
-  /** If true, also clean up prompt capture logs (default: true) */
-  cleanPromptCaptures?: boolean;
-
   /** Max age in hours for LoRA adapter checkpoints (default: 336 = 14 days).
    *  Only deletes intermediate checkpoints (checkpoint-N/), not final adapters. */
   adapterMaxAgeHours?: number;
@@ -35,7 +32,6 @@ export interface CleanupStats {
   sentinelBytes: number;
   datasetFiles: number;
   datasetBytes: number;
-  promptCaptureBytes: number;
   adapterDirs: number;
   adapterBytes: number;
 }

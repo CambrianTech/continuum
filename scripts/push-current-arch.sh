@@ -207,6 +207,21 @@ if [ -e "$WORKTREE_DIR" ]; then
   git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
 fi
 
+# Ensure the SHA is a local commit object before `git worktree add`.
+# In CI, actions/checkout@v4 with default settings on a pull_request event
+# fetches refs/pull/<N>/merge as a shallow clone. STARTUP_SHA_FULL
+# (resolved above from .pull_request.head.sha) names the PR HEAD commit,
+# which exists as a remote ref but NOT as a local object — so
+# `git worktree add` fails with "fatal: invalid reference: <sha>".
+# Empirical hit on PR #950 / issue #966 in rebuild-stale-arm64. Dev-
+# machine path is unaffected: cat-file -e always succeeds on local HEAD.
+if ! git -C "$REPO_ROOT" cat-file -e "$STARTUP_SHA_FULL^{commit}" 2>/dev/null; then
+  echo "→ SHA $STARTUP_SHA_FULL not present as a local object — fetching from origin"
+  git -C "$REPO_ROOT" fetch --depth 1 origin "$STARTUP_SHA_FULL" 2>/dev/null \
+    || git -C "$REPO_ROOT" fetch origin "$STARTUP_SHA_FULL" 2>/dev/null \
+    || { echo "ERROR: cannot fetch sha $STARTUP_SHA_FULL from origin (not a real commit, or network/auth issue)" >&2; exit 1; }
+fi
+
 echo "→ Creating frozen worktree at $WORKTREE_DIR (pinned at $STARTUP_SHA_FULL)"
 git -C "$REPO_ROOT" worktree add --detach "$WORKTREE_DIR" "$STARTUP_SHA_FULL" >/dev/null
 

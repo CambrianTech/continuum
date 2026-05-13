@@ -221,25 +221,18 @@ impl MoonshineStt {
         let threads = num_cpus::get().min(4);
         let mut builder = Session::builder()
             .map_err(|e| STTError::ModelNotLoaded(format!("Session builder failed: {e}")))?;
-        // GPU EP first → fall back to CPU for unsupported ops. Without this,
-        // Moonshine STT matmul ran on MLAS CPU kernels per voice input. See
-        // #964. Only attaches when the corresponding build feature +
-        // target_os are enabled — non-Mac/non-CUDA paths remain CPU-only
-        // with no behavior change.
-        #[cfg(all(feature = "coreml", target_os = "macos"))]
-        {
-            use ort::execution_providers::CoreMLExecutionProvider;
-            builder = builder
-                .with_execution_providers([CoreMLExecutionProvider::default().build()])
-                .map_err(|e| STTError::ModelNotLoaded(format!("CoreML EP register failed: {e}")))?;
-        }
-        #[cfg(all(feature = "cuda", not(target_os = "macos")))]
-        {
-            use ort::execution_providers::CUDAExecutionProvider;
-            builder = builder
-                .with_execution_providers([CUDAExecutionProvider::default().build()])
-                .map_err(|e| STTError::ModelNotLoaded(format!("CUDA EP register failed: {e}")))?;
-        }
+        // GPU execution providers via the centralized helper. Per
+        // architecture, CPU fallback is forbidden — STT matmul must
+        // land on GPU. The prior cfg gate (`feature = "coreml"`) didn't
+        // match any actual cargo feature, so the CoreML EP was never
+        // added — ORT's implicit CPU EP took every op (#964 family).
+        // The helper uses the correct `feature = "metal"` gate that
+        // matches Cargo.toml.
+        let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
+            .map_err(|e| STTError::ModelNotLoaded(format!("ORT GPU EP setup failed (Moonshine STT): {e}")))?;
+        builder = builder
+            .with_execution_providers(providers)
+            .map_err(|e| STTError::ModelNotLoaded(format!("EP register failed: {e}")))?;
         builder
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| STTError::ModelNotLoaded(format!("Optimization level failed: {e}")))?

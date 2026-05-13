@@ -78,13 +78,11 @@ npm run hooks:status  # Check if hooks are installed
 npm run hooks:setup   # Reinstall if needed
 ```
 
-**Precommit too slow?**
-- The comprehensive validation is intentional (CRUD + State + TypeScript)
-- Ensures bulletproof commits but takes 2-3 minutes
-- Consider `git commit --no-verify` for emergency bypasses (not recommended)
+**Precommit too slow or failing because the worktree is stale?**
 
-**Want to bypass hooks temporarily?**
-```bash
-git commit --no-verify -m "emergency fix"
-git push --no-verify
-```
+- The validation is intentional.
+- Fix missing dependencies, submodules, generated files, or hook bugs instead
+  of bypassing the hook.
+- For docs-only changes, run focused docs checks first, then use normal
+  `git commit`.
+- If a hook is wrong, fix the hook in its own PR. Do not use `--no-verify`.

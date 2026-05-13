@@ -30,8 +30,8 @@ describe('PersonaUser Lifecycle (Baseline)', () => {
       displayName: 'Test Persona (Baseline)',
       type: 'persona',
       modelConfig: {
-        provider: 'candle',
-        model: 'llama3.2',
+        provider: 'local',
+        model: 'continuum-ai/qwen3.5-4b-code-forged-GGUF',
         capabilities: ['text']
       },
       capabilities: ['text'],

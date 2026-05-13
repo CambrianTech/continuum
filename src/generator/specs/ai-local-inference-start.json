@@ -1,0 +1,35 @@
+{
+  "name": "ai/local-inference/start",
+  "description": "Ensure Continuum's local inference HTTP server is running and return its URL. Idempotent — if already running, returns the existing URL without restarting. External agents (Claude Code via ANTHROPIC_BASE_URL, future Codex via OPENAI_BASE_URL) should call this once at startup, then use the returned URL. First-class surface for the AGENT-BACKBONE integration story (PR #976 §1-§4); previously only reachable as the Sentinel-internal sentinel/local-inference-start IPC command.",
+  "params": [],
+  "results": [
+    {
+      "name": "url",
+      "type": "string",
+      "description": "Base URL where the local inference server is accepting requests (e.g., http://127.0.0.1:8421)"
+    },
+    {
+      "name": "port",
+      "type": "number",
+      "description": "TCP port the server is bound to"
+    },
+    {
+      "name": "protocol",
+      "type": "string",
+      "description": "Wire protocol the server speaks. Currently always 'anthropic' (Messages API)."
+    },
+    {
+      "name": "alreadyRunning",
+      "type": "boolean",
+      "description": "True if the server was already up before this call (no spawn happened); false if this call started it"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Start local inference (idempotent)",
+      "params": {}
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "ai"
+}

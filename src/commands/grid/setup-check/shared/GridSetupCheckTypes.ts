@@ -20,22 +20,27 @@ export interface GridSetupCheck_DiagnosticCheck {
 }
 
 /**
- * Grid Setup Check Command Parameters
+ * Grid Setup Check Command Parameters — no command-specific params;
+ * CommandParams (context + sessionId + userId) is the full payload.
+ * Type alias (not `extends CommandParams {}` with `_noParams: never`)
+ * so the type is genuinely empty + structurally identical to
+ * CommandParams.
  */
-export interface GridSetupCheckParams extends CommandParams {
-  _noParams?: never;
-}
+export type GridSetupCheckParams = CommandParams;
 
 /**
- * Factory function for creating GridSetupCheckParams
+ * Factory function for creating GridSetupCheckParams.
+ *
+ * userId is REQUIRED on CommandParams (auto-injected at runtime by
+ * Commands.execute, explicit on server-side construction).
+ * createPayload<T> returns `T & JTAGPayload` which is structurally
+ * CommandParams when T = `{ userId: UUID }` — no casts needed.
  */
 export const createGridSetupCheckParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Record<string, unknown> = {}
-): GridSetupCheckParams => createPayload(context, sessionId, {
-  ...data
-}) as unknown as GridSetupCheckParams;
+  userId: UUID,
+): GridSetupCheckParams => createPayload(context, sessionId, { userId });
 
 /**
  * Grid Setup Check Command Result

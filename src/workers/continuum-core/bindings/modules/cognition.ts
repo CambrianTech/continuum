@@ -29,6 +29,8 @@ import type {
 	QualityScore,
 } from '../../../../shared/generated';
 import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
+import type { RecipeTurnBatchPlan } from '../../../../shared/generated/cognition/RecipeTurnBatchPlan';
+import type { RecipeTurnBatchRequest } from '../../../../shared/generated/cognition/RecipeTurnBatchRequest';
 import type { Signal } from '../../../../shared/generated/recipe/Signal';
 import type { PersonaContext } from '../../../../shared/generated/recipe/PersonaContext';
 
@@ -111,6 +113,7 @@ export interface CognitionMixin {
 	cognitionCacheMessage(personaId: string, roomId: string, messageId: string, senderId: string, senderType: string, senderName: string, content: string, timestamp: number): Promise<void>;
 	cognitionCheckContentDedup(personaId: string, roomId: string, content: string): Promise<{ is_duplicate: boolean; check_time_us: number }>;
 	cognitionRecordContent(personaId: string, roomId: string, content: string): Promise<void>;
+	cognitionPlanTurnBatch(request: RecipeTurnBatchRequest): Promise<RecipeTurnBatchPlan>;
 
 	/**
 	 * SHARED COGNITION — single external entry point for the per-persona
@@ -758,6 +761,24 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 				room_id: roomId,
 				content,
 			});
+		}
+
+		/**
+		 * Rust-owned Recipe/RAG turn boundary. Pure planning: deterministic
+		 * turn keys, shared RAG source keys, duplicate persona admission, and
+		 * local-generation concurrency policy. Node remains the host/UX wrapper.
+		 */
+		async cognitionPlanTurnBatch(request: RecipeTurnBatchRequest): Promise<RecipeTurnBatchPlan> {
+			const response = await this.request({
+				command: 'cognition/plan-turn-batch',
+				request,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to plan cognition turn batch');
+			}
+
+			return response.result as RecipeTurnBatchPlan;
 		}
 
 		/**

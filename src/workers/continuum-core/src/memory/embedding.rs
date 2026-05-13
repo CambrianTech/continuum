@@ -56,23 +56,18 @@ impl FastEmbedProvider {
         options.model_name = fastembed::EmbeddingModel::AllMiniLML6V2;
         options.show_download_progress = true;
 
-        // Push a GPU execution provider FIRST so the embedding matmul lands
-        // on the GPU instead of MLAS CPU kernels. fastembed fires per chat
-        // message; without this, every message ate ~800% of M5 Pro CPU
-        // observed via `sample` — entire stack was MlasSgemmThreaded inside
-        // libonnxruntime. ORT chains EPs in order and falls back through
-        // the list per op, so CoreML/CUDA first → CPU last is safe (any op
-        // the GPU EP can't run silently routes to CPU). See #964.
-        #[cfg(all(feature = "coreml", target_os = "macos"))]
-        {
-            use ort::execution_providers::CoreMLExecutionProvider;
-            options.execution_providers = vec![CoreMLExecutionProvider::default().build()];
-        }
-        #[cfg(all(feature = "cuda", not(target_os = "macos")))]
-        {
-            use ort::execution_providers::CUDAExecutionProvider;
-            options.execution_providers = vec![CUDAExecutionProvider::default().build()];
-        }
+        // GPU execution providers via the centralized helper (single
+        // source of truth — see inference/ort_providers.rs). Hard-fails
+        // when no GPU EP is configured: per architecture, CPU fallback
+        // is forbidden. fastembed fires per chat message and used to eat
+        // ~800% of M5 Pro CPU because the prior cfg gate (`feature =
+        // "coreml"`) didn't match any actual cargo feature, so the
+        // CoreML EP was never added — ORT's implicit CPU EP took every
+        // op (#964). The helper uses the correct `feature = "metal"`
+        // gate that matches Cargo.toml's `metal = [..., "ort/coreml"]`.
+        let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
+            .map_err(|e| EmbeddingError(format!("ORT GPU EP setup failed: {e}")))?;
+        options.execution_providers = providers;
 
         // ORT panics (instead of returning error) when libonnxruntime can't load.
         // catch_unwind prevents the panic from killing the process.

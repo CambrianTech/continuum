@@ -216,10 +216,19 @@ export class RustCoreIPCClientBase extends EventEmitter {
 				this._connected = false;
 				this._rejectAllPending(err instanceof Error ? err : new Error(String(err)));
 				this.emit('connection-error', err);
-				// Only reject the initial connect() promise — reconnects are handled internally
-				if (!this._wasConnected) {
-					reject(err);
-				}
+				// Always reject THIS connect() promise on socket error.
+				// Promise.reject is a no-op if already settled, so this is
+				// safe for both initial connects + post-reconnect calls.
+				//
+				// Pre-fix this only rejected when !_wasConnected, which left
+				// reconnect attempts hanging forever — `await this.connect()`
+				// in _scheduleReconnect's try/catch never resolved or
+				// rejected when the backend was dead, so the catch block
+				// (which increments _reconnectAttempts + reschedules) never
+				// fired. Counter stuck at 1 + no further reconnect attempts.
+				// Carl's #980 Bug 4 sub-bug: "[IPC] Reconnecting to
+				// continuum-core in 1000ms (attempt 1)" repeated forever.
+				reject(err);
 			});
 
 			this._socket.on('close', () => {

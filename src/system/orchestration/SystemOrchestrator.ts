@@ -10,7 +10,10 @@
 import { EventEmitter } from 'events';
 import { spawn, spawnSync, ChildProcess, exec } from 'child_process';
 import { promisify } from 'util';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { stat } from 'fs/promises';
+import * as net from 'net';
+import * as path from 'path';
 import { WorkingDirConfig } from '../core/config/WorkingDirConfig';
 
 const execAsync = promisify(exec);
@@ -77,7 +80,38 @@ export class SystemOrchestrator extends EventEmitter {
   private signaler: SystemReadySignaler;
   private serverProcess: ChildProcess | null = null;
   private currentEntryPoint: string = 'unknown';
-  
+
+  // continuum#722 — Rust core supervisor state
+  private coreProcess: ChildProcess | null = null;
+  private coreShuttingDown = false;
+  // Panic-loop detector: track restart timestamps within a rolling window.
+  // If we see >5 restarts within 60s the binary is structurally broken
+  // (e.g. missing dylib, port collision, model dir gone). Stop restarting
+  // and surface the failure rather than burning CPU on a doomed loop.
+  private coreRestartTimestamps: number[] = [];
+  private static readonly CORE_RESTART_WINDOW_MS = 60_000;
+  private static readonly CORE_RESTART_LIMIT = 5;
+  private static readonly CORE_READY_TIMEOUT_MS = 30_000;
+  private static readonly CORE_RESTART_BACKOFF_BASE_MS = 1_000;
+  private static readonly CORE_RESTART_BACKOFF_MAX_MS = 30_000;
+
+  // M5-QA Task 8 (live-observed 2026-05-01): if parallel-start.sh
+  // (or a previous orchestrator, or a manual user spawn) put a
+  // continuum-core-server up before our executeCoreStart ran, the
+  // pre-existing socket-alive check makes us SKIP the spawn — which
+  // means we have no this.coreProcess + no on('exit') handler. When
+  // that core dies (SIGABRT on Mac Metal init = NEW-A), the supervisor
+  // is blind to the death + doesn't respawn.
+  //
+  // Fix: when we skip the spawn, attach a PID-poll watcher. If the
+  // adopted core dies, we spawn a managed replacement (which we DO
+  // own via on('exit') for further restarts). After the first death-
+  // detect, the watcher is no longer needed because the replacement
+  // is in this.coreProcess.
+  private adoptedCorePid: number | null = null;
+  private adoptedCoreWatcher: ReturnType<typeof setInterval> | null = null;
+  private static readonly ADOPTED_CORE_POLL_MS = 2_000;
+
   constructor() {
     super();
     this.signaler = new SystemReadySignaler();
@@ -129,11 +163,8 @@ export class SystemOrchestrator extends EventEmitter {
           browserOpened: requiredMilestones.includes(SYSTEM_MILESTONES.BROWSER_READY)
         };
         
-        // TEST MODE: Generate signal and let caller handle exit
-        if (options.testMode) {
-          console.debug('🧪 Test mode - generating final system ready signal');
-          await this.signaler.generateReadySignal();
-        }
+        console.debug('📡 Generating system ready signal');
+        await this.signaler.generateReadySignal();
         
         return finalState;
       }
@@ -158,12 +189,9 @@ export class SystemOrchestrator extends EventEmitter {
       const finalState = await this.verifySystemState(requiredMilestones);
       console.debug('🎉 Orchestration complete');
       
-      // TEST MODE: Generate final signal after successful orchestration
-      if (options.testMode) {
-        console.debug('🧪 Test mode - generating final system ready signal');
-        await this.signaler.generateReadySignal();
-        console.debug('📡 Final system signal generated - ready for testing');
-      }
+      console.debug('📡 Generating final system ready signal');
+      await this.signaler.generateReadySignal();
+      console.debug('📡 Final system signal generated');
       
       return finalState;
       
@@ -353,6 +381,12 @@ export class SystemOrchestrator extends EventEmitter {
         case SYSTEM_MILESTONES.DEPLOY_COMPLETE:
           return await this.executeDeployComplete();
           
+        case SYSTEM_MILESTONES.CORE_START:
+          return await this.executeCoreStart();
+
+        case SYSTEM_MILESTONES.CORE_READY:
+          return await this.executeCoreReady();
+
         case SYSTEM_MILESTONES.SERVER_START:
           return await this.executeServerStart();
           
@@ -387,7 +421,7 @@ export class SystemOrchestrator extends EventEmitter {
           return await this.executeBrowserInterface();
           
         case SYSTEM_MILESTONES.BROWSER_READY:
-          return await this.executeBrowserReady();
+          return await this.executeBrowserReady(options);
           
         case SYSTEM_MILESTONES.SYSTEM_HEALTHY:
           return await this.executeSystemHealthy();
@@ -488,6 +522,407 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   /**
+   * RUST CORE MILESTONES (continuum#722)
+   *
+   * continuum-core-server is the Rust IPC backbone — Unix socket at
+   * .continuum/sockets/continuum-core.sock, talked to by the data daemon
+   * (ORMRustClient), AI provider daemon, code daemon, etc. Pre-fix the
+   * binary was BUILT by parallel-start.sh:203 but never LAUNCHED — users
+   * ended up with the all-widgets-blank-on-refresh symptom because every
+   * IPC call returned "All IPC connections to continuum-core failed."
+   *
+   * The orchestrator now owns the core's lifecycle:
+   *   - executeCoreStart spawns the binary (or yields if one is already
+   *     running per pidfile / socket-existence — supports the "user
+   *     manually launched it in another tab" case)
+   *   - executeCoreReady waits for the socket to accept a TCP-equivalent
+   *     connect (for Unix sockets, just connect() succeeds when the
+   *     server is listen()ing) — gates SERVER_READY which the browser
+   *     depends on
+   *   - on('exit') handler restarts the binary with exponential backoff
+   *     up to a panic-loop cap (5 restarts / 60s rolling window)
+   *
+   * Skip the spawn entirely when JTAG_SKIP_HTTP is set — that's the
+   * Docker-mode signal (widget-server container handles HTTP, the
+   * continuum-core container handles the Rust core, orchestrator does
+   * neither).
+   */
+  private async executeCoreStart(): Promise<boolean> {
+    if (process.env.JTAG_SKIP_HTTP) {
+      console.debug('⏭️ Skipping core spawn (JTAG_SKIP_HTTP set — docker stack owns continuum-core-server)');
+      await milestoneEmitter.completeMilestone(
+        SYSTEM_MILESTONES.CORE_START,
+        this.currentEntryPoint
+      );
+      return true;
+    }
+
+    // If a continuum-core-server is already running (user pre-launched it
+    // in another tab, or a previous orchestrator left one, or
+    // parallel-start.sh's Phase 3 spawn beat us to it), don't double-
+    // spawn. Detect via socket existence + a connect-test.
+    //
+    // M5-QA T8 fix (2026-05-01): we ALSO need to attach a PID-poll
+    // watcher on the inherited core so we still notice + respawn when
+    // it dies. Pre-fix this branch just returned, which left no
+    // on('exit') handler anywhere → SIGABRT in inherited core → no
+    // respawn → user-visible "AI dead" with no recovery.
+    const socketPath = await this.getCoreSocketPath();
+    const corePath = await this.resolveCoreBinaryPath();
+
+    if (await this.isCoreSocketAlive(socketPath)) {
+      console.debug(`✅ continuum-core-server already running (socket ${socketPath} alive) — adopting via PID watcher`);
+      if (corePath) {
+        await this.adoptInheritedCore(corePath, socketPath);
+      } else {
+        console.warn('   ⚠ corePath not resolvable — adopted core won\'t be re-spawnable on death; will surface as orchestrator-blind crash');
+      }
+      await milestoneEmitter.completeMilestone(
+        SYSTEM_MILESTONES.CORE_START,
+        this.currentEntryPoint
+      );
+      return true;
+    }
+
+    if (!corePath) {
+      console.error('❌ continuum-core-server binary not found — run npm start to build it (parallel-start.sh:203)');
+      console.error('   Searched: src/workers/target/release/, workers/target/release/');
+      await milestoneEmitter.failMilestone(
+        SYSTEM_MILESTONES.CORE_START,
+        this.currentEntryPoint,
+        'continuum-core-server binary not found'
+      );
+      return false;
+    }
+
+    this.spawnCoreProcess(corePath, socketPath);
+
+    await milestoneEmitter.completeMilestone(
+      SYSTEM_MILESTONES.CORE_START,
+      this.currentEntryPoint
+    );
+    return true;
+  }
+
+  /**
+   * Adopt an externally-spawned continuum-core-server.
+   *
+   * Set up a PID-poll watcher (kill -0 every ADOPTED_CORE_POLL_MS) that
+   * fires `spawnCoreProcess` when the adopted PID dies. Once we spawn
+   * a replacement, that one is fully owned (this.coreProcess +
+   * on('exit') handler from spawnCoreProcess), so subsequent restarts
+   * use the normal supervisor path.
+   *
+   * If we can't find the PID via `pgrep`, log loudly + skip the watcher
+   * — the inherited core will be invisible to supervision, but the rest
+   * of the orchestrator's milestones still complete. Same intent as the
+   * never-swallow-errors rule (CLAUDE.md): the gap is real + we surface
+   * it rather than pretend everything's fine.
+   */
+  private async adoptInheritedCore(corePath: string, socketPath: string): Promise<void> {
+    const pid = await this.findCoreProcessPid();
+    if (pid <= 0) {
+      console.warn('   ⚠ couldn\'t resolve adopted core PID via pgrep — supervisor will be blind to its death');
+      return;
+    }
+    this.adoptedCorePid = pid;
+    // Promoted debug → info: this is the supervisor's adoption signal +
+    // critical to seeing in logs when later debugging "why didn't respawn fire?"
+    // (#980 Bug 4 + the silent-success-is-failure rule applied to supervisor).
+    console.info(`   adopted continuum-core-server PID ${pid}; watcher polling every ${SystemOrchestrator.ADOPTED_CORE_POLL_MS}ms`);
+
+    this.adoptedCoreWatcher = setInterval(() => {
+      if (this.coreShuttingDown) {
+        return;
+      }
+      const adoptedPid = this.adoptedCorePid;
+      if (adoptedPid === null) {
+        return;
+      }
+      try {
+        // kill -0: signal-0 only checks if PID exists + we have permission.
+        // Throws ESRCH if dead, EPERM if alive-but-not-ours (we're the
+        // user that started it via parallel-start.sh, so EPERM
+        // shouldn't happen here — if it does, treat as not-ours +
+        // stop watching).
+        process.kill(adoptedPid, 0);
+      } catch (err) {
+        // PID is gone (or permission flipped). Stop watching, spawn a
+        // managed replacement.
+        const code = (err as NodeJS.ErrnoException).code;
+        console.warn(`📋 adopted continuum-core-server PID ${adoptedPid} no longer alive (${code ?? 'unknown'}); spawning managed replacement`);
+        this.stopAdoptedCoreWatcher();
+        this.adoptedCorePid = null;
+        this.spawnCoreProcess(corePath, socketPath);
+      }
+    }, SystemOrchestrator.ADOPTED_CORE_POLL_MS);
+  }
+
+  /**
+   * Find the PID of the running continuum-core-server via `pgrep -x`.
+   * Returns 0 if not found.
+   */
+  private async findCoreProcessPid(): Promise<number> {
+    // Use pgrep -f (full command-line match) instead of -x (exact comm
+    // match). On Linux `pgrep -x` checks /proc/PID/comm which is
+    // truncated to 15 chars (TASK_COMM_LEN); the binary name
+    // `continuum-core-server` is 22 chars → -x silently fails to match
+    // on Linux even when the process is running. macOS pgrep doesn't
+    // have this limit, but using -f works on both. Without this the
+    // adopted-core PID watcher silently never installs on Linux →
+    // supervisor blind to inherited-core death (#980 Bug 4 family).
+    return new Promise<number>((resolve) => {
+      const child = spawn('pgrep', ['-f', 'continuum-core-server'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
+      child.on('error', () => resolve(0));
+      child.on('close', () => {
+        // pgrep -f also matches the orchestrator's own pgrep invocation
+        // (briefly) + any tail/grep on the log. Filter to PIDs where the
+        // process name is exactly continuum-core-server using a second pass.
+        const candidates = stdout.trim().split('\n')
+          .map(line => Number.parseInt(line, 10))
+          .filter(n => Number.isFinite(n) && n > 0);
+        if (candidates.length === 0) { resolve(0); return; }
+        // Cross-check via ps to find the candidate whose argv[0] basename is the binary.
+        // Best-effort — if ps fails, fall back to first candidate.
+        const ps = spawn('ps', ['-o', 'pid=,comm=', ...candidates.flatMap(p => ['-p', String(p)])], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let psOut = '';
+        ps.stdout.on('data', (c: Buffer) => { psOut += c.toString('utf8'); });
+        ps.on('error', () => resolve(candidates[0] ?? 0));
+        ps.on('close', () => {
+          for (const line of psOut.trim().split('\n')) {
+            const m = line.trim().match(/^(\d+)\s+(.+)$/);
+            if (m && (m[2].endsWith('continuum-core-server') || m[2].includes('continuum-core'))) {
+              resolve(Number.parseInt(m[1], 10));
+              return;
+            }
+          }
+          resolve(candidates[0] ?? 0);
+        });
+      });
+    });
+  }
+
+  /**
+   * Stop the adopted-core PID watcher (interval timer). Idempotent.
+   */
+  private stopAdoptedCoreWatcher(): void {
+    if (this.adoptedCoreWatcher !== null) {
+      clearInterval(this.adoptedCoreWatcher);
+      this.adoptedCoreWatcher = null;
+    }
+  }
+
+  private async executeCoreReady(): Promise<boolean> {
+    if (process.env.JTAG_SKIP_HTTP) {
+      console.debug('⏭️ Skipping core readiness gate (JTAG_SKIP_HTTP — docker stack health-checks separately)');
+      await milestoneEmitter.completeMilestone(
+        SYSTEM_MILESTONES.CORE_READY,
+        this.currentEntryPoint
+      );
+      return true;
+    }
+
+    const socketPath = await this.getCoreSocketPath();
+    const deadline = Date.now() + SystemOrchestrator.CORE_READY_TIMEOUT_MS;
+    const pollMs = 200;
+
+    console.debug(`⏳ Waiting for continuum-core-server to accept connections (socket ${socketPath})...`);
+
+    while (Date.now() < deadline) {
+      if (await this.isCoreSocketAlive(socketPath)) {
+        const elapsedMs = SystemOrchestrator.CORE_READY_TIMEOUT_MS - (deadline - Date.now());
+        console.debug(`✅ continuum-core-server ready (${elapsedMs}ms)`);
+        await milestoneEmitter.completeMilestone(
+          SYSTEM_MILESTONES.CORE_READY,
+          this.currentEntryPoint
+        );
+        return true;
+      }
+      // Cheap exit check — if the spawn errored synchronously, don't burn 30s.
+      if (this.coreProcess && this.coreProcess.exitCode !== null) {
+        console.error(`❌ continuum-core-server exited code=${this.coreProcess.exitCode} during startup`);
+        await milestoneEmitter.failMilestone(
+          SYSTEM_MILESTONES.CORE_READY,
+          this.currentEntryPoint,
+          `continuum-core-server exited code=${this.coreProcess.exitCode} before becoming ready`
+        );
+        return false;
+      }
+      await new Promise(r => setTimeout(r, pollMs));
+    }
+
+    console.error(`❌ continuum-core-server did not become ready within ${SystemOrchestrator.CORE_READY_TIMEOUT_MS}ms`);
+    await milestoneEmitter.failMilestone(
+      SYSTEM_MILESTONES.CORE_READY,
+      this.currentEntryPoint,
+      `continuum-core-server readiness timeout (${SystemOrchestrator.CORE_READY_TIMEOUT_MS}ms)`
+    );
+    return false;
+  }
+
+  /**
+   * Resolve the absolute path of the continuum-core-server binary.
+   * Candidates ordered by likelihood given typical CWD on `npm start`:
+   *   1. <repoRoot>/src/workers/target/release/continuum-core-server
+   *   2. <repoRoot>/workers/target/release/continuum-core-server
+   *   3. <repoRoot>/src/workers/target/debug/continuum-core-server  (dev fallback)
+   */
+  private async resolveCoreBinaryPath(): Promise<string | null> {
+    const repoRoot = await this.findRepoRoot();
+    const candidates = [
+      path.join(repoRoot, 'src/workers/target/release/continuum-core-server'),
+      path.join(repoRoot, 'workers/target/release/continuum-core-server'),
+      path.join(repoRoot, 'src/workers/target/debug/continuum-core-server'),
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  /**
+   * Find repo root by walking up from CWD looking for a marker (package.json
+   * with the right name, or .git directory). Falls back to CWD if nothing found.
+   */
+  private async findRepoRoot(): Promise<string> {
+    let dir = process.cwd();
+    const root = path.parse(dir).root;
+    while (dir !== root) {
+      if (existsSync(path.join(dir, '.git'))) return dir;
+      const pkgPath = path.join(dir, 'package.json');
+      if (existsSync(pkgPath)) {
+        try {
+          const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+          if (pkg.name === 'continuum' || pkg.name === '@continuum/root') return dir;
+        } catch { /* ignore parse errors */ }
+      }
+      dir = path.dirname(dir);
+    }
+    return process.cwd();
+  }
+
+  /**
+   * Get the canonical Unix socket path for continuum-core-server.
+   * Mirror of the bindings' getContinuumCoreSocketPath() to avoid pulling
+   * in the entire bindings module here (which has its own initialization
+   * order concerns).
+   */
+  private async getCoreSocketPath(): Promise<string> {
+    const repoRoot = await this.findRepoRoot();
+    return path.join(repoRoot, '.continuum/sockets/continuum-core.sock');
+  }
+
+  /**
+   * Probe a Unix socket for liveness. Returns true if connect() succeeds
+   * AND the socket exists as a file (kernel has bound it for accept()).
+   *
+   * Why both checks: the file can exist as a stale socket file from a
+   * crashed previous process. connect() will fail in that case (ECONNREFUSED)
+   * — that's the discriminator. We treat any connect error as "not alive."
+   */
+  private async isCoreSocketAlive(socketPath: string): Promise<boolean> {
+    try {
+      const stats = await stat(socketPath);
+      if (!stats.isSocket()) return false;
+    } catch {
+      return false;
+    }
+    return new Promise<boolean>((resolve) => {
+      const sock = net.createConnection(socketPath);
+      const cleanup = () => {
+        try { sock.destroy(); } catch { /* ignore */ }
+      };
+      const timer = setTimeout(() => { cleanup(); resolve(false); }, 1000);
+      sock.once('connect', () => { clearTimeout(timer); cleanup(); resolve(true); });
+      sock.once('error', () => { clearTimeout(timer); cleanup(); resolve(false); });
+    });
+  }
+
+  /**
+   * Spawn continuum-core-server with lifecycle handlers. The on('exit')
+   * handler restarts the process unless we're shutting down OR the panic-
+   * loop detector trips.
+   */
+  private spawnCoreProcess(corePath: string, socketPath: string): void {
+    console.debug(`🦀 Spawning continuum-core-server: ${corePath} ${socketPath}`);
+
+    const childCwd = path.dirname(path.dirname(path.dirname(corePath))); // workers/target/release → workers
+    this.coreProcess = spawn(corePath, [socketPath], {
+      cwd: childCwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Detached false: tie lifecycle to orchestrator; if orchestrator dies,
+      // node sends SIGTERM to the group on cleanup. Detached true would
+      // orphan the core to launchd reaping which we don't want here.
+      detached: false,
+      env: { ...process.env },
+    });
+
+    this.coreProcess.stdout?.on('data', (data) => {
+      // Filter to debug — core writes a LOT to stdout in dev. Aggregating
+      // it here keeps it findable while not dominating the orchestrator log.
+      console.debug(`[core] ${data.toString().trimEnd()}`);
+    });
+    this.coreProcess.stderr?.on('data', (data) => {
+      console.error(`[core:err] ${data.toString().trimEnd()}`);
+    });
+
+    this.coreProcess.on('error', (err) => {
+      console.error(`❌ continuum-core-server spawn error: ${err.message}`);
+    });
+
+    this.coreProcess.on('exit', (code, signal) => {
+      const ts = Date.now();
+      // Promoted from debug → info so the supervisor's lifecycle is
+      // visible in default logs. Carl's #980 Bug 4 reported "no respawn"
+      // partly because the respawn-related debug logs weren't visible —
+      // can't diagnose what didn't happen if the logs hide what did.
+      console.info(`📋 continuum-core-server exited: code=${code} signal=${signal}`);
+      this.coreProcess = null;
+
+      if (this.coreShuttingDown) {
+        console.info('   (orchestrator shutting down — not restarting)');
+        return;
+      }
+
+      // Panic-loop detection: prune timestamps outside the rolling window,
+      // then check the rate.
+      const cutoff = ts - SystemOrchestrator.CORE_RESTART_WINDOW_MS;
+      this.coreRestartTimestamps = this.coreRestartTimestamps.filter(t => t >= cutoff);
+      this.coreRestartTimestamps.push(ts);
+
+      if (this.coreRestartTimestamps.length > SystemOrchestrator.CORE_RESTART_LIMIT) {
+        console.error(
+          `❌ continuum-core-server panic-loop: ${this.coreRestartTimestamps.length} restarts in ` +
+          `${SystemOrchestrator.CORE_RESTART_WINDOW_MS / 1000}s — STOPPING auto-restart.`
+        );
+        console.error('   The binary is structurally broken (missing dylib, port collision, model dir gone, etc).');
+        console.error('   Inspect the core stderr above + restart orchestrator after fixing.');
+        return;
+      }
+
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s.
+      const attemptIdx = this.coreRestartTimestamps.length - 1;
+      const delay = Math.min(
+        SystemOrchestrator.CORE_RESTART_BACKOFF_BASE_MS * Math.pow(2, attemptIdx),
+        SystemOrchestrator.CORE_RESTART_BACKOFF_MAX_MS
+      );
+      console.info(`🔁 Restarting continuum-core-server in ${delay}ms (attempt ${this.coreRestartTimestamps.length})`);
+      setTimeout(() => {
+        if (!this.coreShuttingDown) {
+          console.info(`🔁 Spawning continuum-core-server now (restart attempt ${this.coreRestartTimestamps.length})`);
+          this.spawnCoreProcess(corePath, socketPath);
+        }
+      }, delay);
+    });
+  }
+
+  /**
    * SERVER MILESTONES
    */
   private async executeServerStart(): Promise<boolean> {
@@ -514,33 +949,7 @@ export class SystemOrchestrator extends EventEmitter {
     // In Docker, the widget-server container handles HTTP separately,
     // so skip spawning the HTTP server when JTAG_SKIP_HTTP is set.
     if (!process.env.JTAG_SKIP_HTTP) {
-      const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
-      const activeExamplePath = getActiveExamplePath();
-      const serverScript = `${activeExamplePath}/src/minimal-server.ts`;
-
-      console.debug(`🎯 Starting HTTP server directly: ${serverScript}`);
-
-      this.serverProcess = spawn('npx', ['tsx', serverScript], {
-        cwd: activeExamplePath,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: false
-      });
-
-      this.serverProcess.stdout?.on('data', (data) => {
-        console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
-      });
-
-      this.serverProcess.stderr?.on('data', (data) => {
-        console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
-      });
-
-      this.serverProcess.on('error', (error) => {
-        console.error(`❌ Server process failed: ${error.message}`);
-      });
-
-      this.serverProcess.on('exit', (code, signal) => {
-        console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
-      });
+      await this.spawnHttpServer();
     } else {
       console.debug(`⏭️ Skipping HTTP server (JTAG_SKIP_HTTP set — widget-server handles HTTP)`);
     }
@@ -550,6 +959,47 @@ export class SystemOrchestrator extends EventEmitter {
       this.currentEntryPoint
     );
     return true;
+  }
+
+  private async spawnHttpServer(): Promise<void> {
+    const { getActiveExamplePath } = await import('../../examples/server/ExampleConfigServer');
+    const activeExamplePath = getActiveExamplePath();
+    const serverScript = `${activeExamplePath}/src/minimal-server.ts`;
+
+    console.debug(`🎯 Starting HTTP server directly: ${serverScript}`);
+
+    this.serverProcess = spawn('npx', ['tsx', serverScript], {
+      cwd: activeExamplePath,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false
+    });
+
+    this.serverProcess.stdout?.on('data', (data) => {
+      console.debug(`📄 HTTP Server: ${data.toString().trim()}`);
+    });
+
+    this.serverProcess.stderr?.on('data', (data) => {
+      console.debug(`⚠️ HTTP Server Error: ${data.toString().trim()}`);
+    });
+
+    this.serverProcess.on('error', (error) => {
+      console.error(`❌ Server process failed: ${error.message}`);
+    });
+
+    this.serverProcess.on('exit', (code, signal) => {
+      console.debug(`📋 HTTP Server process exited: code=${code}, signal=${signal}`);
+      this.serverProcess = null;
+      if (!this.coreShuttingDown && !process.env.JTAG_SKIP_HTTP) {
+        console.warn(`🔁 HTTP server exited unexpectedly; restarting in 1000ms`);
+        setTimeout(() => {
+          if (!this.coreShuttingDown && !this.serverProcess) {
+            this.spawnHttpServer().catch(error => {
+              console.error(`❌ Failed to restart HTTP server: ${error instanceof Error ? error.message : String(error)}`);
+            });
+          }
+        }, 1000);
+      }
+    });
   }
 
   private async executeServerProcess(): Promise<boolean> {
@@ -669,24 +1119,28 @@ export class SystemOrchestrator extends EventEmitter {
 
     console.debug('✅ Server is ready');
 
-    // Auto-seed database if empty (first run or after data:clear).
-    // In-process via Commands.execute() — zero subprocess spawns, works in both
-    // Docker and bare metal. The old npm run data:seed approach spawns jtag CLI
-    // subprocesses that connect via WebSocket, which is fragile and slow.
-    setTimeout(async () => {
-      try {
-        const { seedDatabase } = await import('../../server/seed-in-process');
-        const seeded = await seedDatabase();
-        if (seeded) {
-          console.log('✅ Database seeded (in-process)');
-        } else {
-          console.log('✅ Database already seeded');
-        }
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`⚠️ Auto-seed failed: ${msg}`);
-      }
-    }, 3000);
+    // Auto-seed database if empty BEFORE declaring SERVER_READY.
+    // Was setTimeout(3000) → fired-and-forget; orchestrator returned ready
+    // while seed was still running. carl-install-smoke probed chat/send 7-21s
+    // after install completed and intermittently hit "Room not found: general"
+    // because rooms hadn't landed yet. Awaiting seed here closes that race —
+    // by the time downstream sees SERVER_READY, rooms+personas exist.
+    //
+    // Throws (not warns) on failure: chat/send, room routing, persona
+    // allocation, and Carl's first-page experience all require seeded
+    // rooms/users to exist. A warn-and-continue path just masks the
+    // real failure — observed in run 25403866714 where the smoke saw
+    // 'general room not present after 60s' as a soft warning while the
+    // actual seed had silently broken upstream. Loud failure surfaces
+    // the bug per Joel's no-suppression rule.
+    try {
+      const { seedDatabase } = await import('../../server/seed-in-process');
+      const seeded = await seedDatabase();
+      console.log(seeded ? '✅ Database seeded (in-process)' : '✅ Database already seeded');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`Auto-seed failed before server readiness: ${msg}`);
+    }
 
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.SERVER_READY,
@@ -883,7 +1337,16 @@ export class SystemOrchestrator extends EventEmitter {
     return true;
   }
 
-  private async executeBrowserReady(): Promise<boolean> {
+  private async executeBrowserReady(options: OrchestrationOptions): Promise<boolean> {
+    if (options.skipBrowser) {
+      console.debug('⏭️ Browser readiness deferred (skipBrowser option)');
+      await milestoneEmitter.completeMilestone(
+        SYSTEM_MILESTONES.BROWSER_READY,
+        this.currentEntryPoint
+      );
+      return true;
+    }
+
     console.debug('⏳ Waiting for browser to be ready...');
     
     // For now, assume browser is ready after launch
@@ -988,9 +1451,27 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   /**
-   * Cleanup resources
+   * Cleanup resources — sets shutdown flag FIRST so the core's
+   * on('exit') handler doesn't restart the process during teardown.
    */
   async cleanup(): Promise<void> {
+    // Set shutdown flag before killing — without this the on('exit')
+    // handler would interpret the SIGTERM as a crash and respawn (#722
+    // panic-loop self-inflicted). The same flag stops the adopted-core
+    // PID watcher from re-spawning during shutdown.
+    this.coreShuttingDown = true;
+
+    // Stop the adopted-core PID watcher first (M5-QA T8 path); it
+    // doesn't own a process, just an interval timer.
+    this.stopAdoptedCoreWatcher();
+    this.adoptedCorePid = null;
+
+    if (this.coreProcess) {
+      console.debug('🛑 Cleaning up continuum-core-server process...');
+      try { this.coreProcess.kill('SIGTERM'); } catch { /* already dead */ }
+      this.coreProcess = null;
+    }
+
     if (this.serverProcess) {
       console.debug('🛑 Cleaning up server process...');
       this.serverProcess.kill('SIGTERM');

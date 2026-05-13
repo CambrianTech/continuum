@@ -97,7 +97,11 @@ export function paramsToRequest(params: AIGenerateParams): TextGenerationRequest
     model: params.model,
     temperature: params.temperature,
     maxTokens: params.maxTokens,
-    provider: params.provider,
+    // Default to 'local' (DMR via Rust IPC). Same rationale as the RAG-mode
+    // path in AIGenerateServerCommand.ts: continuum's architectural point
+    // is local models; cloud is opt-in via explicit provider, never silent
+    // fallback (#980 Bug 7).
+    provider: params.provider || 'local',
     context: params.context,
   };
 }

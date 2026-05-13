@@ -325,7 +325,8 @@ impl AIProviderModule {
             for model_meta in reg_arc.models_for_provider(crate::inference::LLAMACPP_PROVIDER_ID) {
                 let Some(gguf_path) = model_meta.gguf_local_path.clone() else {
                     self.log().info(&format!(
-                        "Skipping in-process adapter for `{}` — no gguf_local_path in TOML",
+                        "Skipping in-process adapter for `{}` — artifact resolver found no local GGUF. \
+                         Pull the model identified by gguf_hint or run the model download flow.",
                         model_meta.id
                     ));
                     continue;
@@ -569,7 +570,11 @@ impl ServiceModule for AIProviderModule {
             command_prefixes: &["ai/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
-            max_concurrency: 10, // Allow parallel inference requests
+            // Local inference adapters fan out into GPU/ORT/llama threadpools.
+            // Letting every persona call ai/generate concurrently saturates the
+            // machine and lowers throughput. Queue at the runtime boundary; the
+            // backend scheduler can batch/serialize work deliberately.
+            max_concurrency: 1,
             // DMR watchdog cadence — see DMR_TICK_INTERVAL. The runtime's
             // `start_tick_loops` spawns one tokio task that calls `tick()`
             // on this interval; on every fire we probe DMR and reconcile

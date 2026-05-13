@@ -338,8 +338,11 @@ export class CommandAuditor {
 
     while ((fieldMatch = fieldRegex.exec(body)) !== null) {
       const [, comment, name, optional, type] = fieldMatch;
-      // Skip inherited fields
-      if (['context', 'sessionId', 'userId', 'success', 'error', '_noParams'].includes(name)) continue;
+      // Skip inherited fields. `_noParams` marker is no longer emitted
+      // by the generator (TokenBuilder.buildParamsTypeDecl now emits a
+      // type alias for empty-params commands instead of an interface
+      // with the marker), so it's not in this list.
+      if (['context', 'sessionId', 'userId', 'success', 'error'].includes(name)) continue;
 
       fields.push({
         name,
