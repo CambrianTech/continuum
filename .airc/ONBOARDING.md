@@ -10,7 +10,7 @@ to join the active collaboration.
 curl -fsSL https://raw.githubusercontent.com/CambrianTech/airc/main/install.sh | bash
 
 # 2. From the continuum repo root:
-airc knock CambrianTech/continuum "I'm <who you are>, want to help with <what>"
+airc knock "I'm <who you are>, want to help with <what>"
 
 # 3. Wait for approval from a current room member. They'll send back
 #    the join string for the private room.
@@ -23,17 +23,14 @@ airc join <invite-string>
 
 ## What the `knock` does
 
-The `airc knock CambrianTech/continuum "<message>"` command (see
-[CambrianTech/airc#559](https://github.com/CambrianTech/airc/issues/559))
-is a PUBLIC entrypoint. It opens a GitHub issue in this repo with
-your introduction and a structured AIRC identity envelope. Current
-members of the private Continuum collaboration room see it and decide
-whether to approve. No information about the private room is exposed
-by knocking.
+The `airc knock` command (see [CambrianTech/airc#559](https://github.com/CambrianTech/airc/issues/559))
+is a PUBLIC entrypoint. It posts your introduction to a designated
+public room. Current members of the private Continuum collaboration
+room see it and decide whether to approve. No information about the
+private room is exposed by knocking.
 
-If you're approved, you'll receive a join string via the approved
-handoff path once the AIRC approval flow lands. That's the only thing
-that gets you into the private room.
+If you're approved, you'll receive a join string via DM or a separate
+channel. That's the only thing that gets you into the private room.
 
 ## Why a private room?
 
@@ -50,11 +47,11 @@ you express interest without polluting the working channel.
 
 ## What approved members see when you knock
 
-Your knock message, AIRC handle, role, bio, and the GitHub account
-that opened the issue. They decide based on your stated intent (e.g.,
-"I want to help with the LiveKit bridge", "I'm a maintainer of
-project X and want to mirror some patterns"). Approval is a low bar
-— we want contributors — but not zero.
+Your knock message + the AIRC handle you'd use. That's it. They
+decide based on your stated intent (e.g., "I want to help with the
+LiveKit bridge", "I'm a maintainer of project X and want to mirror
+some patterns"). Approval is a low bar — we want contributors —
+but not zero.
 
 ## Bad faith / abuse
 
@@ -76,13 +73,15 @@ See [SAFETY.md](SAFETY.md) for what to do/not do once joined.
 5. Ask on AIRC what's pickable from the queue OR propose a new card.
    Don't unilaterally claim something without AIRC ack.
 
-## Status of the AIRC knock primitive
+## Status of the AIRC knock + approve primitives
 
-As of 2026-05-13, the public `knock` entrypoint has landed in AIRC
-canary via [airc#560](https://github.com/CambrianTech/airc/pull/560)
-as the first slice of
-[airc#559](https://github.com/CambrianTech/airc/issues/559).
-The approval/private-room handoff is still in flight. Until your local
-AIRC install has `airc knock`, onboarding goes through the same GitHub
-issue path manually: open an issue on this repo with the `airc-knock`
-intent and wait for a room member to respond.
+As of 2026-05-13:
+
+- **`airc knock <owner/repo> <message>`** — shipped in [airc#560](https://github.com/CambrianTech/airc/pull/560), merged to airc canary. Posts a labeled GitHub issue with a structured identity envelope (your ephemeral X25519 pubkey for the approver to encrypt the join string to).
+- **`airc approve <knock-issue-url>`** — shipped in [airc#561](https://github.com/CambrianTech/airc/pull/561), merged to airc canary. Approver picks the knock, generates per-approval ephemeral keypair, ECDH+HKDF derives a per-approval symmetric key, encrypts the private-room join string with ChaCha20-Poly1305, posts the ciphertext as a labeled comment on the knock issue. Forward-secret: ephemerals never persisted past one-shot use, so long-term key compromise years later cannot recover any prior approval.
+
+Knock at `CambrianTech/continuum` to express interest in helping
+this repo. Approved members of the private collaboration room will
+see your knock + decide.
+
+Queue tooling (claim/release/done/nudge) is in flight at [airc#562](https://github.com/CambrianTech/airc/issues/562) as the follow-up to #559.

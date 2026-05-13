@@ -12,7 +12,7 @@
     "safety": ".airc/SAFETY.md"
   },
   "collaboration": {
-    "private_room_access": "via airc knock + approved handoff (approval flow post-airc#559)",
+    "private_room_access": "via `airc knock <owner/repo> <message>` + forward-secret approval handoff (airc#560 + airc#561, both merged to airc canary 2026-05-13)",
     "public_knock_repo": "CambrianTech/continuum",
     "public_knock_command": "airc knock CambrianTech/continuum \"<message>\"",
     "pr_target_branch": "canary",

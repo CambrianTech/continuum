@@ -39,14 +39,10 @@ shape generalizes to other repos.
 
 ## Status
 
-- **Docs**: drafted (this PR).
-- **Knock entrypoint**: first slice landed in
-  [airc#560](https://github.com/CambrianTech/airc/pull/560); approval
-  handoff continues under [airc#559](https://github.com/CambrianTech/airc/issues/559).
-- **Queue tooling**: PR-card format spec in QUEUE.md; tooling lives
-  in airc#559 once implemented.
-- **Pilot scope**: install/Docker image gates, Rust persona work,
-  LiveKit bridge, alpha gap cleanup (current release sprint).
+- **Docs**: this PR (continuum#1109 → #1110).
+- **Knock entrypoint**: `airc knock <owner/repo> <message>` — shipped in [airc#560](https://github.com/CambrianTech/airc/pull/560), merged to airc canary 2026-05-13.
+- **Approve flow**: `airc approve <knock-issue-url>` with forward-secret encrypted invite — shipped in [airc#561](https://github.com/CambrianTech/airc/pull/561), merged 2026-05-13.
+- **Queue tooling**: PR-card format spec in [QUEUE.md](QUEUE.md); runtime primitives (claim/release/done/nudge) in flight at [airc#562](https://github.com/CambrianTech/airc/issues/562).
+- **Pilot scope**: install/Docker image gates (#1085, #1071), Rust persona work, LiveKit bridge, alpha gap cleanup (current release sprint).
 
-Until your installed AIRC build has `airc knock`, ONBOARDING.md falls
-back to opening the same GitHub issue manually.
+Knock the repo: `airc knock CambrianTech/continuum "I want to help with X"`.
