@@ -1,0 +1,712 @@
+//! Persona Engram + Admission Membrane Types
+//!
+//! Pure value types for the AIRC-inbox → cognition-admission → engram-storage
+//! membrane (continuum#1121, queue card #1125).
+//!
+//! This module ships the storage-shape types ONLY — no Recipe impl, no
+//! admission-gate logic, no PersonaInbox wiring, no ORM persistence path.
+//! Subsequent PRs layer those over these types.
+//!
+//! Design principles (per AIRC discussion 2026-05-13):
+//!
+//! - **Cognition decides storage.** Raw AIRC messages never become engrams
+//!   automatically; the persona's admission Recipe (PR-2+) decides what
+//!   becomes memorable, with typed failure modes that keep the decision
+//!   itself auditable.
+//! - **Provenance is load-bearing.** Every admitted Engram carries
+//!   structured origin (source kind + protocol-compatible reference fields)
+//!   so later introspection can answer "where did this belief come from?"
+//!   This is the forensic surface against poisoning attacks (see
+//!   `docs/grid/COGNITIVE-IMMUNE-MODEL.md`).
+//! - **Protocol over client.** AIRC origin is a protocol-compatible reference
+//!   (`AircMessageRef`), not a binding to any specific client implementation.
+//!   `transport = "airc"` names the protocol; `client_name` is informational
+//!   only. Admission must judge valid envelope+signature data, not which
+//!   binary emitted it (per Joel 2026-05-13 + Codex relay).
+//! - **TrustState models policy, not implementation.** Trust variants
+//!   describe the source's policy/trust tier — not which client produced
+//!   the data.
+//! - **Typed failure modes only.** `AdmissionError` enumerates the explicit
+//!   reasons a candidate may not be engrammed; no silent drops, no
+//!   un-catchable refusals. Same shape as `NoLocalModelLoadable` (#1089)
+//!   and `NoMultimodalBase` (#1074).
+//!
+//! Pairs with:
+//! - [`docs/grid/FORGE-ALLOY-PROOF-CONTRACTS.md`] — artifact-verification
+//!   trust layer that this module is the runtime-cognition complement of.
+//! - [`docs/grid/COGNITIVE-IMMUNE-MODEL.md`] — defense posture this
+//!   substrate enables (detection, forensics, quarantine, recovery).
+//!
+//! Convention notes (matching existing `persona/*.rs` modules):
+//! - `Uuid` fields use `#[ts(type = "string")]` for the TS export.
+//! - Timestamps are `u64` epoch milliseconds with `#[ts(type = "number")]`,
+//!   matching `PersonaInboxFrame.oldest_timestamp` etc. Not
+//!   `chrono::DateTime<Utc>`, because the workspace's chrono crate doesn't
+//!   enable the `serde` feature and the existing persona modules use the
+//!   u64-epoch shape consistently.
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+use uuid::Uuid;
+
+//=============================================================================
+// CORE: ENGRAM
+//=============================================================================
+
+/// A single memorable cognition unit, durably storable + recall-addressable.
+///
+/// Engrams are the unit of long-term cognitive memory. They survive persona
+/// session boundaries, get indexed for recall, and carry full provenance so
+/// any persona (including future-self) can audit "where did this belief
+/// come from + why was it admitted." The biological metaphor (memory trace)
+/// is structural, not decorative — engrams accumulate, decay, get yanked,
+/// and contribute to recall via the same mechanisms a biological memory
+/// store does.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/Engram.ts"
+)]
+pub struct Engram {
+    /// Stable engram id. Used for recall keys, deduplication, and as the
+    /// referent target for `EngramOrigin::SelfReflection { parent_engram_id }`.
+    #[ts(type = "string")]
+    pub id: Uuid,
+
+    /// Engram category — episodic vs semantic vs procedural vs meta.
+    pub kind: EngramKind,
+
+    /// The memorable content itself. v1 is plain text; later PRs may
+    /// structure this further (e.g., `content: EngramContent` enum with
+    /// variants for text / embedding / structured fact / etc.).
+    pub content: String,
+
+    /// What kind of source this engram came from + the protocol-compatible
+    /// reference fields needed to verify or re-locate it.
+    pub origin: EngramOrigin,
+
+    /// Free-text recall keys / tags. v1 is unstructured strings; recall
+    /// (later PR) may add embeddings or structured indexes alongside.
+    pub recall_keys: Vec<String>,
+
+    /// When this engram was admitted (epoch milliseconds UTC).
+    #[ts(type = "number")]
+    pub admitted_at_ms: u64,
+
+    /// The trust tier of the source AT ADMISSION TIME. Snapshot, not live —
+    /// later trust changes don't retroactively rewrite this engram's
+    /// recorded trust. A trust degradation across the polity creates new
+    /// signal in introspection ("engrams admitted from peer X while their
+    /// trust was high but is now low — re-evaluate").
+    pub trust_state_at_admission: TrustState,
+
+    /// Optional pointer to the `CognitionTrace` SEAM record that explains
+    /// WHY this engram was admitted. v1 carries an optional trace id
+    /// string (the trace itself lives in the recorder); PR-2's IsMemorable
+    /// Recipe will populate this. None = trace not recorded (acceptable
+    /// for v1 manual admissions; should be Some for Recipe-driven
+    /// admissions in PR-2+).
+    pub admission_trace_id: Option<String>,
+}
+
+//=============================================================================
+// CATEGORY: ENGRAM KIND
+//=============================================================================
+
+/// Engram categories (biological-memory analogs).
+///
+/// `Episodic` — something happened (an interaction, an event, an observation).
+/// `Semantic` — a fact learned (a piece of knowledge separable from when/how
+/// it was learned).
+/// `Procedural` — a way to do things (a skill, a pattern, a heuristic).
+/// `SelfReflection` — meta-cognition: an engram ABOUT engrams or about the
+/// persona's own past decisions. The recursion that makes self-introspection
+/// possible (see `COGNITIVE-IMMUNE-MODEL.md` §3.9).
+///
+/// Single-Engram-with-discriminator (vs separate-types-per-kind) is
+/// intentional: composes better, lets recall + admission share machinery
+/// across kinds, and the discriminator is cheap. Per the airc design
+/// discussion 2026-05-13.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/EngramKind.ts"
+)]
+pub enum EngramKind {
+    Episodic,
+    Semantic,
+    Procedural,
+    SelfReflection,
+}
+
+//=============================================================================
+// PROVENANCE: ENGRAM ORIGIN
+//=============================================================================
+
+/// Where this engram came from.
+///
+/// Variant-typed (vs generic `Provenance` interface) so each origin kind
+/// has its identity primitive present in the type. A consumer can
+/// pattern-match and KNOW that `EngramOrigin::Airc(reference)` carries
+/// the protocol-compatible reference fields — the type system enforces
+/// structure rather than relying on documentation.
+///
+/// `SelfReflection` is the only origin without an external reference;
+/// it carries the parent engram id whose introspection produced this
+/// meta-engram.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/EngramOrigin.ts"
+)]
+#[serde(tag = "kind", content = "ref")]
+pub enum EngramOrigin {
+    /// Came from a protocol-compatible AIRC envelope. Reference fields
+    /// are sufficient to verify the envelope's signature and re-locate
+    /// the original on the AIRC substrate. NOT a binding to any specific
+    /// client implementation — see `AircMessageRef` doc.
+    Airc(AircMessageRef),
+
+    /// Came from a Continuum chat message (ChatMessageEntity).
+    Chat(ChatMessageRef),
+
+    /// Came from a tool invocation (the persona ran a tool and the
+    /// result was admitted as an engram).
+    Tool(ToolInvocationRef),
+
+    /// Meta: this engram was produced by introspection over an existing
+    /// engram. `parent_engram_id` is the engram the reflection was about.
+    SelfReflection {
+        #[ts(type = "string")]
+        parent_engram_id: Uuid,
+    },
+}
+
+/// Protocol-compatible reference to an AIRC-substrate event/message.
+///
+/// Per Joel 2026-05-13 (relayed by Codex): Continuum accepts AIRC data
+/// by **proof/contract**, not by client identity. Any producer that
+/// emits a valid envelope with these fields populated is acceptable;
+/// the official `airc` CLI is not privileged. `transport = "airc"` names
+/// the PROTOCOL; `client_name` is informational only (e.g., "airc-bash",
+/// "airc-py", "third-party-emitter"). Admission Recipes in PR-2+ judge
+/// the envelope's signature + provenance + trust metadata, not which
+/// binary produced the bytes.
+///
+/// Suggested field shape comes from Codex 2026-05-13 broadcast — see
+/// AIRC log for full design discussion.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/AircMessageRef.ts"
+)]
+pub struct AircMessageRef {
+    /// Protocol identifier. Always `"airc"` for this variant; field exists
+    /// to support future cross-protocol references where the variant might
+    /// represent multiple wire protocols.
+    pub transport: String,
+
+    /// AIRC room (channel) the message was posted to.
+    pub room_id: String,
+
+    /// Stable AIRC message/event id within the room.
+    pub message_id: String,
+
+    /// Sender pubkey or peer identity (the AIRC-whois identity, NOT a gh
+    /// login — per the gh-account-not-equal-identity rule from
+    /// `.airc/SAFETY.md` §Identity).
+    pub sender_id: String,
+
+    /// When the sender claims they sent it (epoch ms UTC, signed by sender).
+    #[ts(type = "number")]
+    pub sent_at_ms: u64,
+
+    /// When the receiving persona observed it (epoch ms UTC, local clock).
+    #[ts(type = "number")]
+    pub received_at_ms: u64,
+
+    /// SHA-256 of the canonical content. Used for tamper detection +
+    /// cross-grid forensic re-verification.
+    pub content_hash: String,
+
+    /// Detached signature over the canonical envelope. Verifiable against
+    /// `sender_id`'s public key. Required for the engram to admit via
+    /// non-trivial trust modes; PR-2+ Recipes will enforce.
+    pub signature: String,
+
+    /// Pointers to additional proof material (e.g., forge-alloy contract
+    /// settlement signatures, room-rotation event signatures, attestation
+    /// chain references). Empty for plain messages.
+    pub proof_refs: Vec<String>,
+
+    /// Schema version of the envelope this reference describes. v1 starts
+    /// at `"v1"`. Forward-compatibility hinge.
+    pub schema_version: String,
+
+    /// Informational client identity (e.g., "airc-bash", "airc-py",
+    /// "third-party-emitter"). Optional, NOT load-bearing for trust
+    /// decisions. Present so the polity can observe client-population
+    /// telemetry without admission ever depending on it.
+    pub client_name: Option<String>,
+}
+
+/// Protocol-compatible reference to a Continuum chat message.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ChatMessageRef.ts"
+)]
+pub struct ChatMessageRef {
+    /// Continuum chat message id.
+    #[ts(type = "string")]
+    pub message_id: Uuid,
+    /// Continuum room id.
+    #[ts(type = "string")]
+    pub room_id: Uuid,
+    /// Sender (Continuum user id).
+    #[ts(type = "string")]
+    pub sender_id: Uuid,
+    /// When the message was posted (epoch ms UTC).
+    #[ts(type = "number")]
+    pub posted_at_ms: u64,
+    /// SHA-256 of canonical content for tamper detection.
+    pub content_hash: String,
+}
+
+/// Reference to a tool invocation that produced this engram.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ToolInvocationRef.ts"
+)]
+pub struct ToolInvocationRef {
+    /// Stable invocation id.
+    #[ts(type = "string")]
+    pub invocation_id: Uuid,
+    /// Tool name (e.g., "search", "calculator").
+    pub tool_name: String,
+    /// When the tool was invoked (epoch ms UTC).
+    #[ts(type = "number")]
+    pub invoked_at_ms: u64,
+    /// SHA-256 of canonical input parameters.
+    pub input_hash: String,
+    /// SHA-256 of canonical output. Reproducibility check anchor.
+    pub output_hash: String,
+}
+
+//=============================================================================
+// ADMISSION OUTCOME
+//=============================================================================
+
+/// Outcome of running the admission gate over a candidate engram.
+///
+/// Three terminal states:
+/// - `Admit` — engram becomes part of the store. Includes the why-string
+///   for forensic auditability.
+/// - `Drop` — candidate is rejected; no engram created. Reason is typed.
+/// - `Quarantine` — candidate is held in a separate quarantine store,
+///   pending peer review or auto-expiry. Used when the gate is uncertain
+///   but doesn't want to silently drop.
+///
+/// Per `COGNITIVE-IMMUNE-MODEL.md` §3.8: forensic-not-destructive applies
+/// to admission too. `Quarantine` preserves the candidate for later
+/// review without admitting it to the live recall surface.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/AdmissionDecision.ts"
+)]
+#[serde(tag = "decision", content = "data")]
+pub enum AdmissionDecision {
+    Admit {
+        engram: Engram,
+        why: String,
+    },
+    Drop {
+        reason: AdmissionDropReason,
+    },
+    Quarantine {
+        engram: Engram,
+        reason: String,
+        /// Quarantine expiry (epoch ms UTC). After this time the
+        /// quarantined candidate auto-drops if not promoted.
+        #[ts(type = "number")]
+        expiry_ms: u64,
+    },
+}
+
+/// Categorized reason for dropping a candidate without admitting.
+///
+/// Distinct from `AdmissionError` (which is for failures of the admission
+/// machinery itself). `Drop` is the gate's intentional decision; `Error`
+/// is the gate failing to even reach a decision.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/AdmissionDropReason.ts"
+)]
+#[serde(tag = "reason", content = "detail")]
+pub enum AdmissionDropReason {
+    /// Candidate had no signal worth remembering (e.g., a routine
+    /// heartbeat ack, a duplicate of existing content, etc.).
+    NotMemorable { explanation: String },
+    /// Candidate matched the source-trust filter but the gate explicitly
+    /// chose not to admit (e.g., low-trust source + high-bar topic).
+    PolicyDeniedAdmission {
+        policy_id: String,
+        explanation: String,
+    },
+    /// Candidate was already engrammed (deduplication hit).
+    Duplicate {
+        #[ts(type = "string")]
+        existing_engram_id: Uuid,
+    },
+}
+
+//=============================================================================
+// ADMISSION ERROR (typed failure modes — fail loud, no silent drops)
+//=============================================================================
+
+/// Typed failure modes for the admission machinery itself.
+///
+/// Per Joel's no-fallback rule + the `try/catch in execute() is
+/// forbidden` discipline: these errors are returned, not swallowed.
+/// Callers handle them explicitly. Admission failure is never
+/// indistinguishable from "no engram created" — the error variant
+/// names the cause.
+///
+/// Same shape as `NoLocalModelLoadable` (#1089) and `NoMultimodalBase`
+/// (#1074).
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/AdmissionError.ts"
+)]
+#[serde(tag = "error", content = "detail")]
+pub enum AdmissionError {
+    /// The candidate envelope failed signature/proof verification. Cannot
+    /// proceed — no admission decision can be made on unverifiable data.
+    #[error("envelope verification failed: {detail}")]
+    EnvelopeVerificationFailed { detail: String },
+
+    /// The source's trust tier is below the configured threshold for any
+    /// admission. Not a `Drop` (which is a policy decision); this is a
+    /// hard structural reject before policy runs.
+    #[error("trust boundary rejected: source trust {source_trust:?} below threshold {threshold:?}")]
+    TrustBoundaryRejected {
+        source_trust: TrustState,
+        threshold: TrustState,
+    },
+
+    /// Replay protection: this nonce/message_id was already processed.
+    /// Distinct from `AdmissionDropReason::Duplicate` — that's content
+    /// duplication; this is wire-event replay.
+    #[error("replay detected: event {event_id} already processed at {previously_seen_at_ms}ms")]
+    ReplayDetected {
+        event_id: String,
+        #[ts(type = "number")]
+        previously_seen_at_ms: u64,
+    },
+
+    /// The admission Recipe itself failed (panicked, errored internally).
+    /// Caller should NOT retry blindly; investigate.
+    #[error("admission recipe failed: {recipe_id}: {detail}")]
+    RecipeFailure { recipe_id: String, detail: String },
+
+    /// The schema_version on the candidate envelope is one this admission
+    /// machinery doesn't understand. Caller should upgrade or reject.
+    #[error("unsupported schema version: {schema_version}")]
+    UnsupportedSchemaVersion { schema_version: String },
+}
+
+//=============================================================================
+// TRUST STATE (policy/trust of source, NOT implementation brand)
+//=============================================================================
+
+/// Trust tier of an engram's source at admission time.
+///
+/// Models the SOURCE'S POLICY/TRUST POSITION, not which client implementation
+/// produced the data (per Joel 2026-05-13 + Codex relay). A high-quality
+/// third-party client signing valid envelopes from an approved peer
+/// produces `ApprovedPeer` trust; the official airc CLI from an
+/// unauthenticated stranger produces `Untrusted`. Trust is about the
+/// source's standing in the polity, not the bytes that carried the data.
+///
+/// Ordered roughly from least to most trusted; `PartialOrd` derives so
+/// admission gates can compare `source_trust >= threshold` directly.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS,
+)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/TrustState.ts"
+)]
+pub enum TrustState {
+    /// Anonymous / unauthenticated — signature missing or fails.
+    Untrusted,
+    /// Signature verifies but the sender is not approved to any room
+    /// the persona is in.
+    Authenticated,
+    /// Sender has knocked (via airc#560) but has not yet been approved.
+    Knocker,
+    /// Approved peer — passed `airc approve` flow (airc#561), is a valid
+    /// member of at least one room the persona is in.
+    ApprovedPeer,
+    /// Member of the persona's intragrid (trusted Tailnet polity).
+    IntragridMember,
+    /// Member of a SOC governance room (security/audit role with
+    /// elevated review authority).
+    SocMember,
+    /// This persona itself (engrams produced by own cognition).
+    SelfTrust,
+}
+
+//=============================================================================
+// TESTS — serde roundtrip + ts-rs export verification
+//=============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FIXED_TIME_MS: u64 = 1_715_625_600_000;
+
+    fn sample_airc_ref() -> AircMessageRef {
+        AircMessageRef {
+            transport: "airc".to_string(),
+            room_id: "cambriantech".to_string(),
+            message_id: "msg-abc-123".to_string(),
+            sender_id: "airc-8a5e".to_string(),
+            sent_at_ms: FIXED_TIME_MS,
+            received_at_ms: FIXED_TIME_MS,
+            content_hash: "sha256:abc".to_string(),
+            signature: "sig-base64".to_string(),
+            proof_refs: vec![],
+            schema_version: "v1".to_string(),
+            client_name: Some("airc-bash".to_string()),
+        }
+    }
+
+    fn sample_engram() -> Engram {
+        Engram {
+            id: Uuid::nil(),
+            kind: EngramKind::Episodic,
+            content: "Test content".to_string(),
+            origin: EngramOrigin::Airc(sample_airc_ref()),
+            recall_keys: vec!["test".to_string(), "engram".to_string()],
+            admitted_at_ms: FIXED_TIME_MS,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: Some("trace-xyz".to_string()),
+        }
+    }
+
+    #[test]
+    fn engram_serde_roundtrip() {
+        let original = sample_engram();
+        let json = serde_json::to_string(&original).expect("serialize");
+        let back: Engram = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original.id, back.id);
+        assert_eq!(original.content, back.content);
+        assert_eq!(original.recall_keys, back.recall_keys);
+    }
+
+    #[test]
+    fn engram_kind_serde_all_variants() {
+        for kind in [
+            EngramKind::Episodic,
+            EngramKind::Semantic,
+            EngramKind::Procedural,
+            EngramKind::SelfReflection,
+        ] {
+            let json = serde_json::to_string(&kind).expect("serialize");
+            let back: EngramKind = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(kind, back);
+        }
+    }
+
+    #[test]
+    fn engram_origin_airc_variant_roundtrip() {
+        let origin = EngramOrigin::Airc(sample_airc_ref());
+        let json = serde_json::to_string(&origin).expect("serialize");
+        // Discriminator-tagged: must contain "kind":"Airc"
+        assert!(json.contains("\"kind\":\"Airc\""), "tagged json: {}", json);
+        let back: EngramOrigin = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            EngramOrigin::Airc(r) => {
+                assert_eq!(r.transport, "airc");
+                assert_eq!(r.room_id, "cambriantech");
+            }
+            _ => panic!("expected Airc variant"),
+        }
+    }
+
+    #[test]
+    fn engram_origin_self_reflection_carries_parent() {
+        let parent = Uuid::new_v4();
+        let origin = EngramOrigin::SelfReflection { parent_engram_id: parent };
+        let json = serde_json::to_string(&origin).expect("serialize");
+        let back: EngramOrigin = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            EngramOrigin::SelfReflection { parent_engram_id } => {
+                assert_eq!(parent_engram_id, parent);
+            }
+            _ => panic!("expected SelfReflection variant"),
+        }
+    }
+
+    #[test]
+    fn admission_decision_admit_carries_engram() {
+        let decision = AdmissionDecision::Admit {
+            engram: sample_engram(),
+            why: "high relevance".to_string(),
+        };
+        let json = serde_json::to_string(&decision).expect("serialize");
+        let back: AdmissionDecision = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            AdmissionDecision::Admit { why, .. } => assert_eq!(why, "high relevance"),
+            _ => panic!("expected Admit variant"),
+        }
+    }
+
+    #[test]
+    fn admission_decision_drop_typed_reason() {
+        let decision = AdmissionDecision::Drop {
+            reason: AdmissionDropReason::Duplicate {
+                existing_engram_id: Uuid::nil(),
+            },
+        };
+        let json = serde_json::to_string(&decision).expect("serialize");
+        let back: AdmissionDecision = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            AdmissionDecision::Drop {
+                reason: AdmissionDropReason::Duplicate { existing_engram_id },
+            } => {
+                assert_eq!(existing_engram_id, Uuid::nil());
+            }
+            _ => panic!("expected Drop with Duplicate reason"),
+        }
+    }
+
+    #[test]
+    fn admission_error_serializes_via_thiserror() {
+        let err = AdmissionError::TrustBoundaryRejected {
+            source_trust: TrustState::Untrusted,
+            threshold: TrustState::ApprovedPeer,
+        };
+        // thiserror Display path
+        let display = format!("{}", err);
+        assert!(display.contains("trust boundary rejected"));
+        assert!(display.contains("Untrusted"));
+        assert!(display.contains("ApprovedPeer"));
+        // serde JSON path
+        let json = serde_json::to_string(&err).expect("serialize");
+        let back: AdmissionError = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            AdmissionError::TrustBoundaryRejected { source_trust, threshold } => {
+                assert_eq!(source_trust, TrustState::Untrusted);
+                assert_eq!(threshold, TrustState::ApprovedPeer);
+            }
+            _ => panic!("expected TrustBoundaryRejected"),
+        }
+    }
+
+    #[test]
+    fn trust_state_ordering_supports_threshold_comparison() {
+        // The whole point of PartialOrd on TrustState: admission gates can
+        // compare `source_trust >= threshold` directly.
+        assert!(TrustState::ApprovedPeer >= TrustState::Knocker);
+        assert!(TrustState::IntragridMember >= TrustState::ApprovedPeer);
+        assert!(TrustState::SelfTrust >= TrustState::SocMember);
+        assert!(TrustState::Untrusted < TrustState::Authenticated);
+    }
+
+    #[test]
+    fn airc_message_ref_client_name_is_optional() {
+        // Joel's protocol-not-client rule: client_name is optional and
+        // informational only. A producer with NO client_name field must
+        // still be acceptable.
+        let mut r = sample_airc_ref();
+        r.client_name = None;
+        let json = serde_json::to_string(&r).expect("serialize");
+        let back: AircMessageRef = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.client_name.is_none());
+    }
+
+    #[test]
+    fn airc_message_ref_third_party_client_name_accepted() {
+        // The protocol-not-client rule means non-airc-CLI client names
+        // must be accepted at the type level (admission policy may still
+        // care, but the type does not gate).
+        let mut r = sample_airc_ref();
+        r.client_name = Some("third-party-emitter".to_string());
+        let json = serde_json::to_string(&r).expect("serialize");
+        let back: AircMessageRef = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.client_name.as_deref(), Some("third-party-emitter"));
+    }
+
+    // ── ts-rs binding tests ─────────────────────────────────────────────
+    // Mirror the pattern from gpu/memory_manager.rs: each type with
+    // #[ts(export, ...)] needs an explicit export_all invocation under a
+    // test so cargo test triggers .ts file generation. Without these,
+    // the shared/generated/persona/*.ts files don't materialize.
+
+    #[test]
+    fn export_bindings_engram() {
+        let cfg = ts_rs::Config::default();
+        Engram::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_engram_kind() {
+        let cfg = ts_rs::Config::default();
+        EngramKind::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_engram_origin() {
+        let cfg = ts_rs::Config::default();
+        EngramOrigin::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_airc_message_ref() {
+        let cfg = ts_rs::Config::default();
+        AircMessageRef::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_chat_message_ref() {
+        let cfg = ts_rs::Config::default();
+        ChatMessageRef::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_tool_invocation_ref() {
+        let cfg = ts_rs::Config::default();
+        ToolInvocationRef::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_admission_decision() {
+        let cfg = ts_rs::Config::default();
+        AdmissionDecision::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_admission_drop_reason() {
+        let cfg = ts_rs::Config::default();
+        AdmissionDropReason::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_admission_error() {
+        let cfg = ts_rs::Config::default();
+        AdmissionError::export_all(&cfg).unwrap();
+    }
+
+    #[test]
+    fn export_bindings_trust_state() {
+        let cfg = ts_rs::Config::default();
+        TrustState::export_all(&cfg).unwrap();
+    }
+}

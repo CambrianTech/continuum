@@ -18,6 +18,7 @@ pub mod channel_registry;
 pub mod channel_types;
 pub mod cognition;
 pub mod domain_classifier;
+pub mod engram;
 pub mod evaluator;
 pub mod genome_paging;
 pub mod inbox;
@@ -44,6 +45,10 @@ pub use channel_registry::ChannelRegistry;
 pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, ServiceCycleResult};
 pub use cognition::{CognitionDecision, PersonaCognitionEngine, PriorityFactors, PriorityScore};
 pub use domain_classifier::{DomainClassification, DomainClassifier, QualityFactors, QualityScore};
+pub use engram::{
+    AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, ChatMessageRef,
+    Engram, EngramKind, EngramOrigin, ToolInvocationRef, TrustState,
+};
 pub use evaluator::{
     AdequacyResult, FullEvaluateRequest, FullEvaluateResult, GateDetails, RateLimiterState,
     RecentResponse, SleepMode, SleepState,
