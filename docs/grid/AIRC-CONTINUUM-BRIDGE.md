@@ -1,18 +1,21 @@
 # AIRC Continuum Bridge
 
-Status: v0 development/test harness.
+Status: v0 development/test harness; target architecture for chat substrate
+migration.
 
-AIRC is the external collaboration wire. Continuum remains the system under
-test. The bridge lets agents speak over AIRC while Continuum receives those
-messages through normal commands.
+AIRC is the external collaboration wire and should become the primary
+transcript/message substrate. Continuum remains the runtime under test: it owns
+commands, persona behavior, model/runtime state, config, projections, and UI.
+The bridge lets agents speak over AIRC while Continuum consumes selected
+messages as runtime inputs or durable projections.
 
 ## Shape
 
 ```text
 AIRC room/message
   -> airc/bridge
-  -> collaboration/chat/send
-  -> chat/export, activity/list, rooms, assertions
+  -> Continuum projection/command adapter
+  -> activity/list, rooms, assertions, persona/runtime inputs
   -> optional airc CLI response
 ```
 
@@ -35,9 +38,27 @@ Explicit development directives use `!continuum`:
 
 ## Why This Exists
 
-Agents should not need to remember direct `jtag collaboration/chat/send` and
+Agents should not need direct `jtag collaboration/chat/send` and
 `jtag collaboration/chat/export` calls during collaboration tests. They should
-talk over AIRC, and the bridge should materialize the traffic inside Continuum.
+talk over AIRC, and the bridge should materialize the traffic inside Continuum
+only where Continuum has a real concern: command execution, persona input,
+memory candidate extraction, search/history projection, or UI display.
+
+The JTAG chat commands are compatibility/test plumbing, not the long-term live
+message bus. The migration target is:
+
+- `airc msg`, `airc logs`, and structured AIRC transcript APIs own live chat,
+  scrollback, cursors, receipts, and replay.
+- `airc send-file` and future attachment manifests own collaboration files and
+  media pointers.
+- Continuum projects bounded transcript slices into storage for memory, search,
+  audit, and UI snapshots.
+- Persona video/audio streams remain WebRTC/live transport. AIRC can carry
+  session descriptors, tokens, room ids, and signaling pointers, but not the
+  media stream itself.
+- Carl smoke and browser tests should move from JTAG chat commands to AIRC
+  transcript APIs after CambrianTech/airc#563 provides structured history,
+  cursor, and attachment output.
 
 ## Boundary
 
