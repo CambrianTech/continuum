@@ -942,7 +942,12 @@ EFFECTIVE_IMAGE_TAG="${CONTINUUM_IMAGE_TAG:-latest}"
 } > "$INSTALL_DIR/.env"
 
 info "Pulling container images (tag: $EFFECTIVE_IMAGE_TAG)..."
-$CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null || warn "Some images not published yet — will build locally"
+if ! $CONTAINER_CMD compose $COMPOSE_FILES $COMPOSE_ARGS pull 2>/dev/null; then
+  if [[ "${CONTINUUM_REQUIRE_PREBUILT_IMAGES:-0}" == "1" ]]; then
+    fail "Required prebuilt images for tag '$EFFECTIVE_IMAGE_TAG' are missing or not pullable. Run scripts/push-current-arch.sh on the required dev host, then retry."
+  fi
+  warn "Some images not published yet — will build locally"
+fi
 
 # ── 8. Start support services ──────────────────────────────
 PHASE="start support services"

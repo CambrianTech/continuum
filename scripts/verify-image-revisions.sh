@@ -37,7 +37,7 @@
 #
 # Exit codes:
 #   0 = no amd64 stale (arm64 stale OK — warning-only until #965 lands)
-#   1 = amd64 stale on at least one image
+#   1 = amd64 stale/missing on at least one image
 #   2 = usage / pre-flight error
 
 set -uo pipefail
@@ -170,7 +170,9 @@ for IMAGE in "${IMAGE_ARRAY[@]}"; do
   ' 2>/dev/null)
 
   if [[ -z "$ARCH_LIST" ]]; then
-    echo "  ⚠️  No manifest entries — image may not exist yet at this tag"
+    echo "  ❌ amd64: MISSING — image does not exist at this tag"
+    echo "$REF" >> "$STALE_AMD64_OUT"
+    FAILED=1
     continue
   fi
 

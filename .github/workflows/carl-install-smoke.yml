@@ -66,8 +66,27 @@ jobs:
           # githubusercontent.com wouldn't be the one in this PR. Same
           # rationale as docker-images.yml's ref pattern.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          # Smoke uses the local script directly; no need for full history.
-          fetch-depth: 1
+          # Full history lets scripts/verify-image-revisions.sh decide whether
+          # an image revision mismatch is real staleness or a non-image PR
+          # riding on the existing canary image set.
+          fetch-depth: 0
+
+      - name: Detect image-relevant changes
+        id: image-paths
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            image_relevant:
+              - 'src/**'
+              - 'src/workers/**/Cargo.toml'
+              - 'src/workers/**/Cargo.lock'
+              - 'docker/**'
+              - 'docker-compose*.yml'
+              - 'Dockerfile*'
+              - 'install.sh'
+              - 'src/scripts/install*.sh'
+              - 'src/scripts/download-voice-models.sh'
+              - 'src/scripts/download-models.sh'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -90,6 +109,16 @@ jobs:
       - name: Login to ghcr.io (so install.sh can pull pre-built images)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      - name: Verify Carl image set before install
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
+          # Canary PRs without image-relevant changes should exercise the PR's
+          # install script against the current canary image set. PRs that do
+          # change image bits must publish :pr-N first. Either way, verify
+          # before install.sh so CI never falls through to a long local build.
+          TAG: ${{ steps.image-paths.outputs.image_relevant == 'true' && github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
+        run: bash scripts/verify-image-revisions.sh
+
       - name: Run carl-install smoke
         env:
           # PR HEAD sha so smoke fetches install.sh from THIS PR.
@@ -111,11 +140,14 @@ jobs:
           # 25400718464). The conditional below makes manual triggers
           # default to the canary tag (the cadence we publish on) and lets
           # operators override via the image_tag input from the UI.
-          CONTINUUM_IMAGE_TAG: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
+          CONTINUUM_IMAGE_TAG: ${{ steps.image-paths.outputs.image_relevant == 'true' && github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
           # 25-min cap on the docker-only install. Hybrid (Mac source-build)
           # path would exceed this — by design, that's the gate firing on
           # the README/install mismatch.
           CARL_INSTALL_TIMEOUT_SEC: '1500'
+          # CI is a verifier, not an image builder. If the selected tag is
+          # missing, fail with the image-push fix instead of compiling Rust.
+          CONTINUUM_REQUIRE_PREBUILT_IMAGES: '1'
           # Generous health wait — model-init can take 3-5min on cold pull.
           CARL_HEALTH_TIMEOUT_SEC: '300'
           # Cold persona load on no-GPU CI runner (Linux ubuntu-latest, no
