@@ -239,13 +239,13 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
           .intelligenceLevel=${user.intelligenceLevel ?? 0}
         ></persona-tile>
         <div class="user-controls">
-          <button class="user-call-btn" title="Message" @click=${(e: Event) => this.handleCallClick(e, user)}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="user-call-btn" title="Message" aria-label="Message ${displayName}" @click=${(e: Event) => this.handleCallClick(e, user)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
             </svg>
           </button>
-          <button class="user-favorite-btn" title="Add to favorites" @click=${(e: Event) => this.handleFavoriteClick(e, user.id)}>⭐</button>
-          <button class="user-action-btn" title="Actions" @click=${(e: Event) => this.handleActionClick(e, user.id)}>»</button>
+          <button class="user-favorite-btn" title="Add to favorites" aria-label="Add ${displayName} to favorites" @click=${(e: Event) => this.handleFavoriteClick(e, user.id)}>⭐</button>
+          <button class="user-action-btn" title="Actions" aria-label="Actions for ${displayName}" @click=${(e: Event) => this.handleActionClick(e, user.id)}>»</button>
         </div>
       </div>
     `;

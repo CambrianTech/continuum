@@ -295,6 +295,10 @@ export class AIStatusIndicator {
     const element = document.createElement('div');
     element.className = 'ai-status-indicator';
     element.setAttribute('data-persona-id', state.personaId);
+    // Announce phase changes to assistive tech without stealing focus.
+    element.setAttribute('role', 'status');
+    element.setAttribute('aria-live', 'polite');
+    element.setAttribute('aria-atomic', 'true');
 
     this.updateStatusElement(element, state);
 
@@ -319,9 +323,9 @@ export class AIStatusIndicator {
 
     // Always show close button for manual dismissal
     element.innerHTML = `
-      <span class="ai-status-icon">${icon}</span>
+      <span class="ai-status-icon" aria-hidden="true">${icon}</span>
       <span class="ai-status-text">${text}</span>
-      <button class="ai-status-close" data-persona-id="${personaId}" title="Dismiss">×</button>
+      <button class="ai-status-close" data-persona-id="${personaId}" title="Dismiss" aria-label="Dismiss ${personaName} status">×</button>
     `;
 
     // Add click handler for close button
