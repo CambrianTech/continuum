@@ -83,9 +83,9 @@ trust-based.
 
 Per Codex 2026-05-13: cryptographically secure accounting is a
 **core abstraction, not an implementation detail.** Every consequential
-event in the polity sits on a Merkle-linked chain — AIRC events, engram
-admission decisions, forge-alloy settlements, trust changes, queue
-claims, quarantine/repair actions.
+event in the polity sits on a Merkle-linked chain — AIRC message/event
+envelopes, engram admission decisions, proof-contract settlement
+envelopes, trust changes, queue claims, quarantine/repair actions.
 
 What Merkle-linking gives us:
 
@@ -297,6 +297,15 @@ drift between Rust and TS.
 Per [FORGE-ALLOY-PROOF-CONTRACTS.md](FORGE-ALLOY-PROOF-CONTRACTS.md):
 artifact claims become falsifiable. v1 self-seal; v2+ adds external
 auditors and quorum.
+
+Layering boundary: AIRC does not know what forge-alloy is and does not
+depend on it. A proof contract may be delivered across AIRC channels,
+but AIRC only transports generic messages/events/files/pointers with
+timestamps, identities, signatures, and audit metadata. Forge-alloy and
+Continuum own the contract semantics, TDD/VDD suites, settlement
+interpretation, and verification harnesses. This keeps delivery
+abstract: any other proof layer can use the same AIRC substrate without
+changing AIRC.
 
 What this covers: artifact identity (model weights, training corpus,
 recipe steps), measurable performance claims (TDD/VDD), provenance
