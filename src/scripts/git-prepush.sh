@@ -64,6 +64,33 @@ RUST_RELEVANT=0
 if echo "$CHANGED_FILES" | grep -qE "^(src/workers/|docker/|src/shared/generated/|Cargo\.(toml|lock)$|src/workers/.*/Cargo\.(toml|lock)$)"; then
     RUST_RELEVANT=1
 fi
+TS_RELEVANT=0
+if echo "$CHANGED_FILES" | grep -qE "^src/.*\.tsx?$"; then
+    TS_RELEVANT=1
+fi
+PUSH_GENERATED_FILES="$(printf '%s\n' "$CHANGED_FILES" | grep -E "^src/shared/generated/.*\.tsx?$" || true)"
+
+restore_generated_type_drift() {
+    local current_dirty generated_to_restore path
+    current_dirty="$(git diff --name-only HEAD -- src/shared/generated 2>/dev/null | sort -u)"
+    [ -n "$current_dirty" ] || return 0
+
+    generated_to_restore=""
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        if ! printf '%s\n' "$PUSH_GENERATED_FILES" | grep -Fxq "$path"; then
+            generated_to_restore="${generated_to_restore}${path}"$'\n'
+        fi
+    done <<< "$current_dirty"
+
+    [ -n "$generated_to_restore" ] || return 0
+
+    echo "🔄 Restoring ts-rs generated type drift from Rust checks..."
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        git restore -- "$path" 2>/dev/null || true
+    done <<< "$generated_to_restore"
+}
 
 # Phase 1: TypeScript compilation (<15s)
 echo ""
@@ -78,6 +105,7 @@ else
     echo "   Run: cd src && npm run build:ts"
     FAILED=1
 fi
+restore_generated_type_drift
 
 # Phase 1b: ESLint — baseline-tolerant.
 #
@@ -120,10 +148,15 @@ else
         fi
     else
         DELTA=$(( CURRENT - BASELINE ))
-        echo "❌ ESLint: $CURRENT errors — baseline is $BASELINE, this push added $DELTA new violation(s)."
-        echo "   Run to see what's new:"
-        echo "   cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet"
-        FAILED=1
+        if [ "$TS_RELEVANT" -eq 0 ]; then
+            echo "⚠️  ESLint: $CURRENT errors — baseline is $BASELINE (+$DELTA), but this push has no TypeScript changes."
+            echo "   Not blocking this non-TS push. Refresh eslint-baseline.txt or fix the drift in a dedicated TS cleanup."
+        else
+            echo "❌ ESLint: $CURRENT errors — baseline is $BASELINE, this push added $DELTA new violation(s)."
+            echo "   Run to see what's new:"
+            echo "   cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet"
+            FAILED=1
+        fi
     fi
 fi
 
@@ -183,6 +216,8 @@ elif [ -d "$RUST_DIR" ]; then
 else
     echo "⚠️  Rust directory not found (skipping)"
 fi
+
+restore_generated_type_drift
 
 # Phase 4: Native-arch Docker images (conditional)
 # Fires only when the push touches Rust or Docker files. TS/docs/widget-

@@ -855,12 +855,9 @@ fn detect_vulkan() -> Option<(u64, String)> {
     use std::process::Command;
 
     let output = Command::new("vulkaninfo").arg("--summary").output().ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8(output.stdout).ok()?;
+    let mut text = String::new();
+    text.push_str(&String::from_utf8_lossy(&output.stdout));
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
 
     // vulkaninfo --summary format (excerpt):
     //   Devices:
@@ -875,12 +872,7 @@ fn detect_vulkan() -> Option<(u64, String)> {
     //
     // Take the FIRST deviceName (vulkaninfo orders discrete > integrated > CPU
     // by default on most loaders). If absent, no usable ICD.
-    let device_name = stdout
-        .lines()
-        .find(|l| l.trim_start().starts_with("deviceName"))
-        .and_then(|l| l.split('=').nth(1))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
+    let device_name = parse_vulkan_device_name(&text)?;
 
     // Conservative VRAM budget: 4 GiB. Real allocations go through the
     // Vulkan loader at runtime; this only seeds the GpuMemoryManager
@@ -890,6 +882,16 @@ fn detect_vulkan() -> Option<(u64, String)> {
     let total_bytes: u64 = 4 * 1024 * 1024 * 1024;
 
     Some((total_bytes, device_name))
+}
+
+#[cfg(feature = "vulkan")]
+fn parse_vulkan_device_name(vulkaninfo_output: &str) -> Option<String> {
+    vulkaninfo_output
+        .lines()
+        .find(|l| l.trim_start().starts_with("deviceName"))
+        .and_then(|l| l.split('=').nth(1))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 // detect_cpu_fallback() removed — see detect_gpu()'s panic for rationale.
@@ -979,6 +981,30 @@ mod tests {
         let (total, name) = detect_gpu();
         assert!(total > 0, "Total VRAM should be > 0");
         assert!(!name.is_empty(), "GPU name should not be empty");
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn test_parse_vulkan_device_name_with_headless_warnings() {
+        let output = r#"
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+Vulkan Instance Version: 1.3.275
+
+Devices:
+========
+GPU0:
+        apiVersion         = 1.3.275
+        driverVersion      = 0x1
+        vendorID           = 0x10005
+        deviceID           = 0x0000
+        deviceType         = PHYSICAL_DEVICE_TYPE_CPU
+        deviceName         = llvmpipe (LLVM 20.1.2, 256 bits)
+"#;
+
+        assert_eq!(
+            parse_vulkan_device_name(output).as_deref(),
+            Some("llvmpipe (LLVM 20.1.2, 256 bits)")
+        );
     }
 
     #[test]
