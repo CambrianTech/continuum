@@ -717,7 +717,7 @@ async buildContext(scopePath: string, personaId: UUID): Promise<RAGContext> {
 
 ## Related Documentation
 
-- [ARCHITECTURE-GAPS-PHASE1.md](ARCHITECTURE-GAPS-PHASE1.md) - Gap analysis identifying this as critical
+- [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) - Current alpha source of truth; codebase understanding remains an alpha workstream
 - [PRACTICAL-ROADMAP.md](PRACTICAL-ROADMAP.md) - Phase 1 Milestone 1
 - [RAG_ADAPTER_ARCHITECTURE.md](../system/rag/RAG_ADAPTER_ARCHITECTURE.md) - Existing RAG patterns
 - [CLAUDE.md](../CLAUDE.md) - Essential development patterns

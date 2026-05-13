@@ -43,7 +43,7 @@ Sentinels range from pure script to full LLM-driven execution:
 | Document | Summary |
 |----------|---------|
 | [SENTINEL-ARCHITECTURE.md](SENTINEL-ARCHITECTURE.md) | **Start here.** Canonical system doc — cognitive model, step types, pipeline composition, Academy, interpolation engine, full command reference |
-| [SENTINEL-GAP-ANALYSIS.md](SENTINEL-GAP-ANALYSIS.md) | Competitive analysis against Aider, Cursor, Sweep, Cline, OpenCode — our advantages and gaps |
+| [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) | Current alpha/gap source of truth, including sentinel, agent-collaboration, and release blockers |
 | [CODING-AI-FOUNDATION.md](CODING-AI-FOUNDATION.md) | Prerequisites for AI coding: cognition, governance, tool safety, collaborative memory |
 | [SENTINEL-LOGGING-PLAN.md](SENTINEL-LOGGING-PLAN.md) | Logging and observability — per-sentinel log dirs, real-time streaming, CLI commands |
 | [SENTINEL-PIPELINE-ARCHITECTURE.md](SENTINEL-PIPELINE-ARCHITECTURE.md) | Historical — initial Rust pipeline design (superseded by SENTINEL-ARCHITECTURE.md) |
