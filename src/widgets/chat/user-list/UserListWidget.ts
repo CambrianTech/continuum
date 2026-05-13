@@ -187,7 +187,11 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     `;
   }
 
-  // === A11Y === (#1099 phase 2)
+  // === A11Y === (#1099 phase 2 + 3a)
+  protected override isItemIdSelected(id: string): boolean {
+    return id === this._selectedUserId;
+  }
+
   protected override getItemLabel(user: UserEntity): string {
     const name = user.displayName ?? 'Unknown user';
     const typeLabel = user.type === 'persona' ? 'persona' : user.type === 'agent' ? 'agent' : 'user';

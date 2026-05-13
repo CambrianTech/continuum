@@ -195,7 +195,11 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     `;
   }
 
-  // === A11Y === (#1099 phase 2)
+  // === A11Y === (#1099 phase 2 + 3a)
+  protected override isItemIdSelected(id: string): boolean {
+    return id === this.currentRoomId;
+  }
+
   protected override getItemLabel(room: RoomEntity): string {
     if (this.isDM(room)) {
       const info = this.getDMDisplayInfo(room);
