@@ -4,6 +4,12 @@
 **Status**: Design
 **Packages**: `continuum-alloy` (crate, pip), `@continuum-ai/alloy` (npm)
 
+> **Trust layer addendum**: this spec defines the artifact SHAPE. For
+> the grid trust layer that turns alloy artifacts into mechanically-
+> verifiable claims (TDD + VDD basis, persona self-seal v1 → multi-
+> sig audit progression, SOC-style governance rooms), see
+> [docs/grid/FORGE-ALLOY-PROOF-CONTRACTS.md](../grid/FORGE-ALLOY-PROOF-CONTRACTS.md).
+
 ---
 
 ## What Is An Alloy?

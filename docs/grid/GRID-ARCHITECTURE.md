@@ -31,6 +31,7 @@ The grid → grid comms substrate is **[airc](https://github.com/CambrianTech/ai
 | [GRID-DECENTRALIZED-MARKETPLACE.md](../papers/GRID-DECENTRALIZED-MARKETPLACE.md) | Economic theory research paper |
 | [RESOURCE-GOVERNANCE-ARCHITECTURE.md](../infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md) | Per-node resource management — GPU governor, pressure watchers, eviction |
 | [ARES-MASTER-CONTROL.md](../ARES-MASTER-CONTROL.md) | Ares security PersonaUser — consumes kernel events, analyzes threats in chat |
+| [FORGE-ALLOY-PROOF-CONTRACTS.md](FORGE-ALLOY-PROOF-CONTRACTS.md) | Grid trust layer — falsifiable forge contracts with TDD/VDD basis. v1 starts permissive (persona self-seal); progression to multi-sig audit + SOC-style governance rooms is the trajectory. |
 
 ---
 
