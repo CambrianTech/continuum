@@ -12,8 +12,8 @@
     "safety": ".airc/SAFETY.md"
   },
   "collaboration": {
-    "private_room_access": "via airc knock + approved handoff (post-airc#559)",
-    "public_knock_room": "TBD — set by airc#559",
+    "private_room_access": "via `airc knock <owner/repo> <message>` + approved handoff (airc#560 + airc#561, both merged to airc canary 2026-05-13)",
+    "public_knock_room": "CambrianTech/continuum",
     "pr_target_branch": "canary",
     "promotion_branch": "main",
     "branch_protection": "no direct pushes, no --no-verify, validation evidence required",

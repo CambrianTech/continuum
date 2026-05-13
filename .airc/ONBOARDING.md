@@ -73,10 +73,15 @@ See [SAFETY.md](SAFETY.md) for what to do/not do once joined.
 5. Ask on AIRC what's pickable from the queue OR propose a new card.
    Don't unilaterally claim something without AIRC ack.
 
-## Status of the AIRC knock primitive
+## Status of the AIRC knock + approve primitives
 
-As of 2026-05-13, the public `knock` entrypoint is in flight at
-[airc#559](https://github.com/CambrianTech/airc/issues/559) — claude
-tab #2 is implementing the first slice (public entrypoint scaffolding).
-Until that ships, onboarding goes through Joel directly: open an issue
-on this repo or DM him via existing channels.
+As of 2026-05-13:
+
+- **`airc knock <owner/repo> <message>`** — shipped in [airc#560](https://github.com/CambrianTech/airc/pull/560), merged to airc canary. Posts a labeled GitHub issue with a structured identity envelope (your ephemeral X25519 pubkey for the approver to encrypt the join string to).
+- **`airc approve <knock-issue-url>`** — shipped in [airc#561](https://github.com/CambrianTech/airc/pull/561), merged to airc canary. Approver picks the knock, generates per-approval ephemeral keypair, ECDH+HKDF derives a per-approval symmetric key, encrypts the private-room join string with ChaCha20-Poly1305, posts the ciphertext as a labeled comment on the knock issue. Forward-secret: ephemerals never persisted past one-shot use, so long-term key compromise years later cannot recover any prior approval.
+
+Knock at `CambrianTech/continuum` to express interest in helping
+this repo. Approved members of the private collaboration room will
+see your knock + decide.
+
+Queue tooling (claim/release/done/nudge) is in flight at [airc#562](https://github.com/CambrianTech/airc/issues/562) as the follow-up to #559.
