@@ -30,10 +30,25 @@ The library plan is no longer a future refactor. It is the management plan for g
 The target is a Rust persona runtime with browser/TS as an adapter, not a TypeScript persona runtime with Rust helpers. That distinction is load-bearing:
 
 - **PersonaRuntime is the product core.** It owns turn batching, inbox consolidation, RAG/context assembly, model selection, inference, post-processing, memory events, tool execution, and resource accounting.
+- **Sensory I/O is core persona behavior.** A standard persona is expected to perceive text, image/video, and audio; speak or produce audio; drive avatar/control output; and appear in WebRTC rooms. Text-only is a compatibility/degraded path, not the product definition.
 - **TS is a host adapter.** It renders UI, receives browser/user events, invokes typed Rust commands, and posts results. It must not decide how a persona thinks.
 - **Every step must delete the old owner.** A Rust duplicate beside an active TS implementation is not migration; it is two sources of truth. #1068 and #1069 are the pattern: move the behavior to Rust, add Rust tests, remove the TS duplicate.
 - **Major rework is allowed when the boundary is wrong.** Do not preserve an API because downstream code is messy. Preserve user-visible behavior, not internal accidental architecture.
 - **Concurrency and pressure are first-class design inputs.** Persona code should be designed like a realtime engine: evented, bounded, backpressured, resource-aware, and measured.
+
+### Qwen-First Sensory Runtime Target
+
+The base local persona target is Qwen multimodal: Qwen 3.5 now, Qwen 3.6 as soon as it is viable. The runtime should ask for capabilities and budgets, not names: "needs vision + audio + tool/control output + context >= X + GPU residency within Y" is the contract. The model registry then resolves the best available Qwen-family or forged derivative on the current machine.
+
+This is why the model/provider registry belongs in Rust. It must reason about:
+
+- multimodal capability flags: text, vision, audio input, audio output, tool/control, embedding, LoRA, MoE;
+- hardware support: Metal, CUDA, Vulkan, DMR, unified memory, VRAM, context/KV footprint;
+- residency and paging: base model, mmproj, audio layers, LoRA adapters, KV cache, embeddings, and avatar/render resources;
+- degradation: explicit `Unavailable`, `MissingCapability`, `CpuFallbackRequired`, `InsufficientMemory`, or `KernelGap` states surfaced to UI/tests;
+- upstream work: llama.cpp, Candle training path, GGUF tooling, projector support, and kernels are modifiable dependencies. Fork/vendor/upstream when Qwen needs a layer or optimization.
+
+STT/TTS remain useful adapters for compatibility models, but they are not the happy-path architecture for standard personas. The happy path is sensory-native personas running on the user's GPU budget.
 
 The next major architectural milestone is a Rust-owned persona turn pipeline:
 

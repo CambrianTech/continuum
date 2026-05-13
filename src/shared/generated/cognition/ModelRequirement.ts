@@ -3,6 +3,7 @@ import type { Arch } from "../model_registry/Arch";
 import type { Capability } from "../model_registry/Capability";
 import type { HostCapability } from "./HostCapability";
 import type { LocalOrCloudPolicy } from "./LocalOrCloudPolicy";
+import type { SiliconResidencyRequirement } from "./SiliconResidencyRequirement";
 
 /**
  * Capability-shaped query for the resolver. Callers describe what the
@@ -12,7 +13,9 @@ import type { LocalOrCloudPolicy } from "./LocalOrCloudPolicy";
 export type ModelRequirement = { 
 /**
  * Capabilities every candidate must advertise. Empty set matches any
- * model (rare — usually callers want at least `Chat`).
+ * model (rare — usually callers want at least `Chat`). Standard-persona
+ * callers should use [`Self::standard_persona`] which bundles the
+ * sensory capability set required by the alpha bar.
  */
 requiredCapabilities: Array<Capability>, 
 /**
@@ -32,4 +35,12 @@ providerPolicy: LocalOrCloudPolicy,
 /**
  * Host capability snapshot. See [`HostCapability`].
  */
-host: HostCapability, };
+host: HostCapability, 
+/**
+ * Where the resolved model must physically run. Standard personas
+ * require [`SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly`]; the
+ * resolver REJECTS any model whose silicon would violate this. No
+ * silent CPU fallback. No silent Cloud fallback under preference for
+ * local. See [`SiliconResidencyRequirement`].
+ */
+siliconResidency: SiliconResidencyRequirement, };

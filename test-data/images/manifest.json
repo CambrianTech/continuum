@@ -1,0 +1,157 @@
+{
+  "_doc": "Opaque-fixture image manifest for sensory bench v2. Codex methodology flag 2026-05-11: filename-pattern + Wikipedia-commons priors let text-only models bluff vision. This manifest pairs each opaque-named fixture with a content fingerprint, content_kind, expected_facts, and OCR-text-if-any so a v2 bench can grade model output against ground truth rather than accept any plausible description. SHA-256 anchors each fixture so file swaps are caught.",
+  "_version": 1,
+  "_authoring_method": "Each fixture inspected by a multimodal reviewer (continuum-8e97, RTX 5090 / Windows / 2026-05-11) and described by direct visual content, not filename inference. NO consultation of source URLs or filenames during content-fingerprint authoring.",
+  "fixtures": [
+    {
+      "filename": "image-0.png",
+      "sha256": "eab420f820cd7e76740bc14bdd85de110db300daced07b61bb58b5a9de898e41",
+      "dimensions": "1114x858",
+      "format": "PNG RGBA",
+      "content_kind": "object_photo",
+      "leakage_risk": "low",
+      "expected_facts": [
+        "single red/orange clay brick with 3 vertical holes through its length",
+        "brick lying flat on a light gray concrete or workshop floor",
+        "no human or animal subjects",
+        "no overlay text"
+      ],
+      "ocr_text": null,
+      "grade_questions": [
+        "What single object is the main subject of this image?",
+        "How many holes are in the object?",
+        "What color is the object?"
+      ],
+      "grade_expected_substrings": ["brick", "three", "red"]
+    },
+    {
+      "filename": "image-1.png",
+      "sha256": "824d7a345ec39a0142af7870afc307970fd1c4f27e2d621c59ebc45ed7829cc9",
+      "dimensions": "1370x1290",
+      "format": "PNG RGBA",
+      "content_kind": "animal_photo",
+      "leakage_risk": "low",
+      "expected_facts": [
+        "yellow labrador retriever standing on a sandy beach in profile",
+        "snow-capped mountains and a body of water visible in the background",
+        "overcast sky",
+        "no overlay text"
+      ],
+      "ocr_text": null,
+      "grade_questions": [
+        "What animal is in this image?",
+        "What color is the animal?",
+        "What environment is the animal in?"
+      ],
+      "grade_expected_substrings": ["dog", "yellow", "beach"]
+    },
+    {
+      "filename": "image-2.jpg",
+      "sha256": "68a4b79fc935d2a94c4e30cc27a32aa4eebc7718785106eb859e2db68bc377f3",
+      "dimensions": "500x375",
+      "format": "JPEG",
+      "content_kind": "meme_with_text",
+      "leakage_risk": "high_template_low_text",
+      "expected_facts": [
+        "tabby cat at a table reaching one paw toward a hamburger on a wax paper liner",
+        "indoor scene with wooden chair back visible",
+        "white text overlay on dark background bar"
+      ],
+      "ocr_text": "\"I FINALLY HAS IT!!!!\" \"IT'S ABOUT TIME!\" ICANHASCHEEZBURGER.COM",
+      "grade_questions": [
+        "What text appears on this image?",
+        "What is the cat doing?"
+      ],
+      "grade_expected_substrings": ["FINALLY", "ABOUT TIME", "cheezburger", "hamburger"]
+    },
+    {
+      "filename": "image-3.jpg",
+      "sha256": "853ebda85659e1b20d57874efaebdf76088bf19eda7d50e8b72e30059eda6d7b",
+      "dimensions": "976x549",
+      "format": "JPEG",
+      "content_kind": "candid_photo_with_dramatic_subject",
+      "leakage_risk": "high_template_no_text",
+      "expected_facts": [
+        "young girl with brown hair in the right foreground looking toward the camera with a slight smile",
+        "burning house in the background with firefighters and fire hose visible",
+        "outdoor daytime scene",
+        "no overlay text"
+      ],
+      "ocr_text": null,
+      "grade_questions": [
+        "What is happening in the background of this image?",
+        "What is the foreground subject's expression?"
+      ],
+      "grade_expected_substrings": ["fire", "house", "smile", "girl"]
+    },
+    {
+      "filename": "image-4.jpg",
+      "sha256": "272de20c620c10acd0e334d5b6446d947d96e63c8005a4a400c1d90705050b94",
+      "dimensions": "500x756",
+      "format": "JPEG",
+      "content_kind": "two_panel_meme",
+      "leakage_risk": "high_template_unique_text",
+      "expected_facts": [
+        "two-panel comic image",
+        "top panel: two red buttons on a control panel with hand reaching toward them",
+        "bottom panel: sweating cartoon man with bandage on head, looking distressed",
+        "white text labels above each button + watermark text"
+      ],
+      "ocr_text": "make my own meme to use as an example | use an already existing meme | JAKE-CLARK.TUMBLR | IMGFLIP.COM",
+      "grade_questions": [
+        "How many panels does this image have?",
+        "What text labels appear on the two buttons?",
+        "What is the man in the bottom panel doing?"
+      ],
+      "grade_expected_substrings": ["meme", "two", "sweat", "button"]
+    },
+    {
+      "filename": "image-5.jpg",
+      "sha256": "0f4baa2f1df4e3f36510d532ca6edbf6250b3fad082de7b2b147b7b2f417e8e7",
+      "dimensions": "225x225",
+      "format": "JPEG",
+      "content_kind": "meme_with_text",
+      "leakage_risk": "high_template_unique_text",
+      "expected_facts": [
+        "young child making a determined fist gesture at the camera",
+        "geometric blue/purple gradient background",
+        "white text top and bottom"
+      ],
+      "ocr_text": "STAYED HOME | SAVED LIVES | imgflip.com",
+      "grade_questions": [
+        "What text appears at the top and bottom of this image?",
+        "What is the child doing with their hand?"
+      ],
+      "grade_expected_substrings": ["STAYED HOME", "SAVED LIVES", "fist", "child"]
+    },
+    {
+      "filename": "image-6.webp",
+      "sha256": "bc413a190f1e6e26391f02b60f4ad37ee5384b5660212bb12d8595ee8b6ca50f",
+      "dimensions": "390x300",
+      "format": "WebP VP8",
+      "content_kind": "tv_screencap_meme",
+      "leakage_risk": "high_template_unique_text",
+      "expected_facts": [
+        "scene from a science-fiction TV bridge with a bald man holding a large log of wood",
+        "two seated characters in the background",
+        "white text overlay at bottom"
+      ],
+      "ocr_text": "CAPTAIN'S LOG",
+      "grade_questions": [
+        "What is the man holding?",
+        "What text appears on the image?"
+      ],
+      "grade_expected_substrings": ["log", "CAPTAIN", "wood"]
+    }
+  ],
+  "negative_controls": [
+    {
+      "_doc": "Negative control suggestion: include 1-2 fixtures where the expected_facts EXCLUDE common training-distribution descriptions. Use these to catch hallucination. NOT YET POPULATED — needs an opaque non-internet-source fixture (e.g. screenshot of arbitrary uncommon UI, or generated abstract pattern). Future v2.1 addition.",
+      "filename": null
+    }
+  ],
+  "audio_fixtures": {
+    "_doc": "Audio fixtures need same opaque treatment. JFK speech is high-leakage. Recommended: tts-generated speech of a non-famous quote, or environmental audio (door slam, dog bark, single piano note). Not in this manifest revision; v2 audio bench gated on opaque audio fixture addition.",
+    "fixtures": []
+  }
+}

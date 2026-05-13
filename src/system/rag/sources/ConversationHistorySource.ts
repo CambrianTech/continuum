@@ -254,6 +254,7 @@ export class ConversationHistorySource implements RAGSource {
       // conversations that poison context and cause cascading failures.
       let filteredCount = 0;
       let metaSummaryCount = 0;
+      let toolInstructionLeakCount = 0;
       const cleanMessages = messages.filter((msg: MessageWithSender) => {
         const text = msg.content?.text || '';
         const poisonReason = detectConversationHistoryPoison(text);
@@ -265,6 +266,10 @@ export class ConversationHistorySource implements RAGSource {
           metaSummaryCount++;
           return false;
         }
+        if (poisonReason === 'tool-instruction-leak') {
+          toolInstructionLeakCount++;
+          return false;
+        }
         return true;
       });
       if (filteredCount > 0) {
@@ -272,6 +277,9 @@ export class ConversationHistorySource implements RAGSource {
       }
       if (metaSummaryCount > 0) {
         log.warn(`Filtered ${metaSummaryCount} meta-summary echo messages from history`);
+      }
+      if (toolInstructionLeakCount > 0) {
+        log.warn(`Filtered ${toolInstructionLeakCount} tool-instruction leak messages from history`);
       }
 
       // Sanitize bare tool call messages — replace with contextual note

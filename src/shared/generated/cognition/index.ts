@@ -5,6 +5,7 @@
 export type { AdaptiveThroughputPlan } from './AdaptiveThroughputPlan';
 export type { AdaptiveThroughputRequest } from './AdaptiveThroughputRequest';
 export type { HostCapability } from './HostCapability';
+export type { ProbeError } from './HostProbeError';
 export type { HwCapabilityTier } from './HwCapabilityTier';
 export type { LeverCall } from './LeverCall';
 export type { LeverName } from './LeverName';
@@ -31,6 +32,7 @@ export type { ResponderDecision } from './ResponderDecision';
 export type { SharedAnalysis } from './SharedAnalysis';
 export type { SharedAnalysisIntent } from './SharedAnalysisIntent';
 export type { SharedRagSourcePlan } from './SharedRagSourcePlan';
+export type { SiliconResidencyRequirement } from './SiliconResidencyRequirement';
 export type { TargetSilicon } from './TargetSilicon';
 export type { ThroughputJob } from './ThroughputJob';
 export type { ThroughputLaneBudget } from './ThroughputLaneBudget';

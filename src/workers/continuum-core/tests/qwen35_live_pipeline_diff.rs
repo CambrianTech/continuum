@@ -14,6 +14,7 @@
 //!   cargo test --release --test qwen35_live_pipeline_diff -- --ignored --nocapture
 
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
+use continuum_core::inference::backends::SamplingConfig;
 use std::path::PathBuf;
 
 mod common;
@@ -38,8 +39,16 @@ fn qwen35_live_pipeline_produces_correct_answer() {
 
     // temperature=0.0 → triggers Sampler::greedy() in start_request, fully
     // deterministic. Same path the chat persona uses for inference.
+    // Pure greedy (no repeat_penalty) so output matches the bare-decode test.
+    let sampling = SamplingConfig {
+        temperature: 0.0,
+        repeat_penalty: 1.0,
+        top_k: 0,
+        top_p: 1.0,
+        grammar: None,
+    };
     let (text, n_tokens) = backend
-        .generate(PROMPT, N_GENERATE, 0.0, &[], &[])
+        .generate(PROMPT, N_GENERATE, sampling, &[], &[])
         .expect("generate");
 
     eprintln!("[live-pipeline] tokens={n_tokens} text={text:?}");

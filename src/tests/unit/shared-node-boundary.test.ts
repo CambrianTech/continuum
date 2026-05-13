@@ -33,7 +33,6 @@ const KNOWN_SHARED_NODE_IMPORTS = new Set([
   'shared/workers/PersonaWorkerThread.ts',
   'system/core/router/shared/JTAGRouterOptimized.ts',
   'system/core/shared/TimingHarness.ts',
-  'system/rag/shared/PromptCapture.ts',
   'system/shared/Config.ts',
   'system/typescript/shared/TypeScriptCompiler.ts',
   'system/user/shared/BaseUser.ts',
@@ -48,7 +47,12 @@ const KNOWN_SHARED_NODE_IMPORTS = new Set([
 function walk(dir: string): string[] {
   const results: string[] = [];
   for (const entry of readdirSync(dir)) {
-    if (entry === 'node_modules' || entry === 'dist' || entry === 'build') {
+    if (
+      entry === '.git' ||
+      entry === 'node_modules' ||
+      entry === 'dist' ||
+      entry === 'build'
+    ) {
       continue;
     }
 
@@ -78,7 +82,7 @@ describe('shared/browser Node import boundary', () => {
     const offenders = walk(ROOT)
       .filter(isSharedRuntimeFile)
       .filter(file => NODE_IMPORT_PATTERN.test(readFileSync(file, 'utf8')))
-      .map(file => relative(ROOT, file).replaceAll('\\', '/'))
+      .map(file => relative(ROOT, file).replaceAll('\\', '/').replace(/^src\//, ''))
       .sort();
 
     expect(offenders).toEqual([...KNOWN_SHARED_NODE_IMPORTS].sort());
