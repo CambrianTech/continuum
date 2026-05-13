@@ -737,6 +737,7 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host,
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         }
     }
 
@@ -801,15 +802,23 @@ mod tests {
             context_window_min: 0,
             provider_policy: LocalOrCloudPolicy::LocalOnly,
             host: host_rtx5090(),
+            silicon_residency: SiliconResidencyRequirement::AnySilicon,
         };
         let err = resolve_model(&req, r.iter(), providers().iter()).unwrap_err();
-        let ResolutionError::NoModelMatchesRequirement { unmet_filters, .. } = err;
-        assert!(
-            unmet_filters
-                .iter()
-                .any(|filter| filter.contains("provider_policy=LocalOnly")),
-            "local full-sensory must not fall back to cloud audio-output, got {unmet_filters:?}"
-        );
+        match err {
+            ResolutionError::NoMultimodalBase {
+                required_sensory_capabilities,
+                ..
+            } => {
+                assert!(
+                    required_sensory_capabilities
+                        .iter()
+                        .any(|capability| capability == "AudioOutput"),
+                    "local full-sensory must name the missing sensory bundle instead of falling back to cloud audio-output, got {required_sensory_capabilities:?}"
+                );
+            }
+            other => panic!("expected NoMultimodalBase; got {other:?}"),
+        }
     }
 
     #[test]
