@@ -6,6 +6,8 @@ export type { ActivateSkillResult } from './ActivateSkillResult';
 export type { ActivityDomain } from './ActivityDomain';
 export type { AdapterInfo } from './AdapterInfo';
 export type { AdequacyResult } from './AdequacyResult';
+export type { AdmissionCandidate } from './AdmissionCandidate';
+export type { AdmissionConfig } from './AdmissionConfig';
 export type { AdmissionDecision } from './AdmissionDecision';
 export type { AdmissionDropReason } from './AdmissionDropReason';
 export type { AdmissionError } from './AdmissionError';
