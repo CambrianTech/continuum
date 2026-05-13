@@ -139,7 +139,7 @@ Implementation consequences:
 
 | Area | Current read | Alpha risk |
 |---|---|---|
-| AIRC collaboration | Usable enough for agent coordination; PR #1046 bridge harness is open; airc has carried PR review/status traffic | Continuum personas are not yet first-class AIRC peers; internal AI chat still needs bridge validation |
+| AIRC collaboration | AIRC canary has public `knock` plus forward-secret `approve`/`decrypt-approval` handoff; Continuum PR #1110 pilots repo-local `.airc/` collaboration rules | Queue/nudge work is tracked in CambrianTech/airc#562; Continuum personas and external agent providers are not yet first-class workers on the shared queue |
 | UI room state | PR #1047 merged to `canary` for stale duplicate General tab recovery | Needs live UI reload validation before `main` promotion |
 | Docker | Too much historical bulk and mixed responsibility; several open Docker issues remain | Docker can mask failures and slow iteration |
 | Rust core | Strong core exists, but GPU lifecycle, paging, and persona runtime boundaries are still incomplete | Core instability can make UI/Node fixes irrelevant |
@@ -489,6 +489,9 @@ that prevents new verb-shaped TS cognition and forces deletion as Rust lands.
 | PR #1069 | Rust response cleanup, TS sanitizer removed | Merged to canary; sets the "move behavior Rust-side, delete TS duplicate" pattern |
 | stale canary PRs (#941, #972, #973, #1026, #912) | PR debt | Rebase and validate within one work session or close with issue notes |
 | #967 | personas as AIRC peers | Treat as the collaboration unlock: Continuum personas should participate without manual CLI glue |
+| CambrianTech/airc#559 | public knock, approved room handoff, shared sprint queue | AIRC canary has knock and encrypted approve handoff; Continuum must consume the workflow through `.airc/` and persona/agent integration |
+| CambrianTech/airc#562 | peer-to-peer work queue/nudges | Use as the always-on flywheel: any approved peer can nudge idle agents, discover stale/unowned work, and keep the queue moving |
+| PR #1110 | repo-local `.airc/` pilot | Land to canary once docs match current AIRC commands and validation passes; this is the first Continuum-side collaboration contract |
 
 Rules:
 
@@ -499,6 +502,50 @@ Rules:
 - Open PRs are triaged every session before new feature work. Each gets one of four states: `merge-after-green`, `needs-rebase`, `convert-to-issue`, or `close-stale`.
 - A PR older than 48 hours without a concrete blocker is presumed stale until proven otherwise.
 - If a PR is correct but incomplete, finish and merge it to canary; do not recreate the same work on a new branch.
+
+### 0A. AIRC As The Development Substrate
+
+**Goal**: Continuum should be able to develop itself through a shared grid of
+agents, personas, local models, and humans. AIRC owns the coordination substrate;
+Continuum exposes reliable generated commands and consumes AIRC as an
+integration layer.
+
+The operating model:
+
+- AIRC remains available even when Continuum is down, rebuilding, wedged, or
+  being restarted. It is the continuity layer for work state, handoffs, and
+  recovery.
+- GitHub issues and PRs are the durable work cards. AIRC provides the concise
+  room digest, presence, nudges, approval, and peer-to-peer coordination around
+  those cards.
+- One GitHub account may run many agents. Assignment and presence must use AIRC
+  peer/session identity, nick, role, bio, and whois data rather than assuming
+  one GitHub login equals one worker.
+- Agents should not need a human to ask what to do. An approved agent joins,
+  receives the room rules and current queue digest, claims or reviews a card,
+  posts evidence, and releases or completes the card.
+- `airc nudge` / queue nudges must be peer-to-peer, not manager-only. Any
+  online approved peer can poke idle peers to poll the queue, report blockers,
+  or pick up stale work.
+- Cloud models, local models, Continuum personas, OpenClaw, Hermes, and future
+  grid workers all plug in as workers if they can speak AIRC and execute the
+  relevant Continuum command surface.
+- Continuum commands used by these workers must be generated/template-first.
+  Manual command scaffolds break the self-development loop because agents need
+  one predictable command contract.
+
+Near-term Continuum tasks:
+
+1. Land PR #1110 so this repo advertises its AIRC front door, rules, and queue
+   expectations from `.airc/`.
+2. Wire Continuum personas into AIRC rooms as first-class peers for issue/PR
+   digest, claim/release/done, and nudge handling.
+3. Expose generated Continuum commands that let agents run bounded smoke tests,
+   image preflights, install checks, and forge/factory preflights without
+   needing bespoke shell knowledge.
+4. Validate the pilot by having at least one external peer join through knock,
+   receive approval, claim a GitHub-backed work card, post validation evidence,
+   and hand off through AIRC.
 
 ### 1. First-Run And Install Stability
 
@@ -850,6 +897,11 @@ Use AIRC for live coordination, but also create protocol tests:
 - persona responds
 - response mirrors back to AIRC
 - duplicate/replay protection is verified
+- approved peer receives `.airc/` rules plus a concise issue/PR queue digest
+- idle peer receives `nudge`, polls for unowned/stale work, and either claims a
+  card or reports why it cannot
+- local-model persona and cloud agent both operate on the same GitHub-backed
+  queue without assuming separate GitHub users
 
 ## Merge Gates
 
@@ -884,18 +936,23 @@ This document owns execution order and alpha gates. Detailed architecture remain
 - [Docker Node Architecture](../grid/DOCKER-NODE-ARCHITECTURE.md)
 - [Grid Architecture](../grid/GRID-ARCHITECTURE.md)
 - [AIRC Continuum Bridge](../grid/AIRC-CONTINUUM-BRIDGE.md)
+- repo-local AIRC pilot files under `../../.airc/`
+- CambrianTech/airc#559 and CambrianTech/airc#562 for public entry, approval,
+  queue, and nudge behavior
 
 If those docs disagree with this one on sequence, update this one first or explicitly revise the sequence in the PR.
 
 ## Immediate Next Actions
 
-1. Land this doc to `canary`.
-2. Use the newly filed alpha substrate issues as implementation anchors:
-   - #1048 mmproj/mtmd init mutex
-   - #1050 backend recovery state machine
-   - #1049 PressureBroker admission gate
-   - #1051 MtmdContext pooling
-3. Ask Mac/Windows agents to review the issue mapping and mark any issue stale/misclassified.
-4. Start `fix/gpu-backend-lifecycle` from `canary`.
-5. In parallel, have another agent inspect Docker profile boundaries and propose `fix/docker-alpha-profiles`.
-6. Validate #1047 live in UI before any canary -> main promotion.
+1. Merge or unblock current canary PRs:
+   - #1071 and #1085 are blocked on fresh Linux/amd64 `:pr-*` image publishes,
+     then Carl smoke reruns.
+   - #1110 is the Continuum `.airc/` pilot and should land after validation.
+   - #1026 is superseded by #1071 unless a reviewer finds unique salvageable
+     work.
+2. Keep AIRC current: AIRC canary contains #560 and #561; #562 owns the next
+   queue/nudge slice.
+3. Use AIRC to assign image publishing, CI triage, and pilot validation to
+   online agents instead of relying on chat history.
+4. Resume Rust persona/runtime work only after the canary lane has a clear
+   state: merged, image-blocked with owner, or closed as stale.
