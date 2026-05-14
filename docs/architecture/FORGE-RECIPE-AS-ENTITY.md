@@ -1,8 +1,16 @@
-# ForgeRecipe — Author the recipe once, the foundry generates the alloy
+# ForgeRecipe — Author the recipe once, the foundry generates the artifact
 
 **Issue**: continuum#1164 (this design)
-**Status**: Draft for review
+**Status**: Reviewed — open questions resolved (see §7); ready for Phase 1
 **Pairs with**: [FORGE-ALLOY-SPEC.md](./FORGE-ALLOY-SPEC.md), [FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md](./FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md), [grid/FORGE-ALLOY-PROOF-CONTRACTS.md](../grid/FORGE-ALLOY-PROOF-CONTRACTS.md)
+
+> **Continuum-wide pattern (per claude-tab-2 review).** The
+> `ForgeRecipe` (authored input) → `ForgeArtifact` (generated output)
+> split is the **same** architectural shape the engram thread (#1121)
+> ships on with `AdmissionCandidate` (input) → `Engram` (output).
+> Continuum is converging on: pipelines have an authored-input entity
+> + a generated-output entity, conflating them is the anti-pattern.
+> Every future pipeline subsystem should follow this shape.
 
 > **TL;DR.** Today every successful forge requires hand-authoring an
 > `.alloy.json` with the same set of fields (name, prose, methodology
@@ -315,44 +323,95 @@ Same pattern as the rest of the system:
 
 ---
 
-## 7. Open questions
+## 7. Open questions — RESOLVED
 
-1. **Naming.** `ForgeArtifact` is more accurate but renames the
-   existing entity. Alternative: keep `ForgeAlloy` and treat the recipe
-   as a "draft alloy" with a state field. I lean toward
-   `ForgeArtifact` rename — explicit beats implicit, and the existing
-   alloy code is small enough that renaming is cheap. Decision needed.
+All 6 resolved per claude-tab-2's substantive review on PR #1165.
+Consensus positions captured here so Phase 1 implementation can
+proceed without re-litigating.
 
-2. **Stage `notes` field.** Adding `notes?: string` to every stage
-   variant is additive but touches every stage type. Alternative:
-   carry `stageNotes: Record<string, string>` (keyed by stage index)
-   on the recipe. Per-stage is cleaner; index-keyed is less invasive.
+1. **Naming → rename to `ForgeArtifact`.** The "alloy" metaphor was
+   about the multi-component nature of the OUTPUT (base + pruning +
+   quantization + LoRA → one composite). For the INPUT, `ForgeRecipe`
+   is unambiguous. For the OUTPUT, "Alloy" doesn't carry the
+   executed/measured/proven semantics that "Artifact" does. Renaming
+   friction is small + one-time; conceptual clarity is forever.
+   Existing `ForgeAlloy` entity → `ForgeArtifact` rename is part of
+   Phase 1.
 
-3. **Quant tiers shape.** v1 alloy has a single `quant_types` field
-   inside the QuantStage. Promoting `quantTiers` to a top-level
-   recipe field is a more natural authoring model (one recipe → many
-   GGUF variants → many artifacts). But this changes how the
-   foundry's QuantStage gets driven. May want to keep them in sync
-   or pick one canonical home.
+2. **Stage `notes` field → per-variant `notes?: string` on each stage
+   type.** Sidecar `Record<string, string>` keyed by stage index
+   would be order-fragile (insert a stage in the middle → all
+   index-keyed notes shift to wrong stages), findable only by
+   jumping back-and-forth, and hard to refactor (rename a stage
+   variant → sidecar key has to track). Per-variant is the discoverable,
+   stable, refactor-safe shape. Touches every stage type; one-time cost.
 
-4. **Calibration corpus location.** `CorpusRef` has hash + name +
-   sourceUrl. Where does the actual corpus live? On the foundry node?
-   On AIRC grid storage? On HF datasets? Probably need a separate
-   `Corpus` entity + a `data/datasets` collection (see #71 audit
-   recipe JSONs for related concerns).
+3. **Quant tiers → top-level recipe field, NOT inside `QuantStage`.**
+   `QuantStage` is a single stage's execution config. Quant TIERS are
+   a property of the published artifact (one recipe ships multiple
+   variants like `["Q4_K_M", "Q5_K_M", "Q8_0"]`). Conflating them
+   inside `QuantStage` means changing "which tiers we ship" requires
+   editing the pipeline; top-level means clean axis of variation
+   independent of the stage that produces the variants.
 
-5. **`priorMetricBaselines` evolution.** As models improve, the
-   baseline set evolves (a 2024 baseline vs a 2026 baseline). Does
-   the recipe pin one baseline set, or reference a `BaselineLibrary`
-   entity that's updated centrally? Centralized library is more
-   maintainable but adds a dependency. Pinning is more reproducible
-   but requires periodic recipe revisions.
+4. **Calibration corpus → `CorpusRef` on the recipe (pointer); bytes
+   live elsewhere.** The actual corpus (MB-GB) doesn't belong inside
+   Continuum's ORM. The proposed `CorpusRef` shape (name + hash +
+   sourceUrl) is correct. Where bytes live: HF datasets for shareable
+   corpora; foundry-node-local for proprietary. AIRC grid storage is
+   overkill for static corpora (AIRC is a coordination wire, not a
+   CDN). A separate `Corpus` entity ships later if/when corpus
+   discovery becomes a UX concern; v1 = pointer only.
 
-6. **Migration timeline for in-flight forges.** The qwen3-coder v1
-   publish exists. v1.1 (per phase 3) is the first foundry-generated
-   artifact. Any other in-flight forges need to migrate; how many
-   exist? Audit needed before phase 4 (`publish_model.py` rejects
-   hand-authored).
+5. **`priorMetricBaselines` → pin per-recipe.** Reproducibility >
+   maintenance. A 2024 baseline + a 2026 baseline are DIFFERENT
+   scientific claims; resolving them via a centralized library hides
+   which claim was being made when the artifact published. Updating
+   the baseline = recipe revision (semver bump). The recipe IS the
+   document of record for what you measured against.
+
+6. **Migration timeline → audit-then-decide on Phase 4.** qwen3-coder
+   v1 publish is the only known in-flight forge per CLAUDE.md context.
+   If the audit confirms that, Phase 3 (qwen3-coder v1.1 = first
+   foundry-generated artifact) IS the migration. Phase 4 (`publish_model.py`
+   rejects hand-authored) gates on Phase 3.5 (count in-flight forges,
+   list owners, get acks before flipping the switch).
+
+### Additional resolved positions
+
+7. **Foundry stage executors MUST be Rust.** Existing
+   `forge-alloy/python/forge_alloy/types.py` is Python — Phase 2's
+   foundry executor goes in `src/workers/continuum-core/src/foundry/`
+   (or new `continuum-foundry` crate) as Rust per the native-truth
+   rule. Python types stay as a generated-from-Rust client (or
+   hand-maintained thin SDK), NEVER as the authoritative type
+   definition. Otherwise we end up with a Python truth-layer that
+   drifts from the Rust types — same anti-pattern §4 warns about
+   for TS. Pinned explicitly here so Phase 2 can't accidentally
+   forge it the wrong direction.
+
+8. **`hashSha256` field name → align with admission's
+   `"sha256:<hex>"` format.** Admission (#1121 PR-3) uses
+   `content_hash: "sha256:<hex>"`. Forge's `CorpusRef.hashSha256`
+   should match the same canonical format for cross-domain
+   consistency. Phase 1 will rename to `contentHash: string` with
+   the `"sha256:<hex>"` shape.
+
+9. **`parentArtifactIds: UUID[]` future-proofing comment.** v1 has
+   `parentRecipeId?: UUID` (recipe lineage). Whether a recipe also
+   carries `parentArtifactIds` (artifacts whose insights informed the
+   new recipe) is intentionally one-directional in v1. Note in the
+   schema that this could expand later when bidirectional lineage
+   becomes load-bearing.
+
+10. **`licenseStrategy: "inherit_from_source" | "override"` —
+    deferred.** Defaulting to `apache-2.0` matches Continuum's stated
+    AGPL+permissive posture, but artifacts publishing TO HuggingFace
+    need to honor the BASE model's license (qwen3.5 has a custom
+    Tongyi Qianwen license). v1 = explicit `license` field on the
+    recipe (caller responsibility to set correctly). v2 (when we hit
+    the first license-mismatch incident) = add `licenseStrategy`
+    enum that auto-inherits when set to `inherit_from_source`.
 
 ---
 
