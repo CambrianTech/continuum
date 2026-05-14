@@ -432,6 +432,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       messageElement.className = `message-row ${isCurrentUser ? 'right' : 'left'}${postingClass}`;
       // CRITICAL: Add entity ID to DOM for testing/debugging (test expects 'message-id')
       messageElement.setAttribute('message-id', message.id);
+      // A11Y (#1099 phase 2). Each message row gets a screen-reader
+      // label and role=article so the chat transcript can be navigated
+      // message-by-message instead of word-by-word. The transcript
+      // container already carries role=log + aria-live=polite from
+      // phase 1, so new messages auto-announce.
+      messageElement.setAttribute('role', 'article');
+      const ts = new Date(message.timestamp).toLocaleString();
+      messageElement.setAttribute(
+        'aria-label',
+        `${senderName} at ${ts}${message.status === 'sending' ? ', sending' : ''}`
+      );
 
       // Build message structure with DOM APIs (no innerHTML for static structure)
       const bubble = globalThis.document.createElement('div');
