@@ -39,6 +39,7 @@
 #
 # Optional env:
 #   JTAG_BIN=/path/to/jtag         override which jtag binary to test
+#   CONTINUUM_CORE_SOCKET=/path    override stack socket presence check
 #   STACK_REQUIRED=1               turn skip-when-down into hard fail
 #   SMOKE_VERBOSE=1                show per-step output (default: failures only)
 #
@@ -59,21 +60,21 @@ FAIL_COUNT=0
 SKIP_COUNT=0
 FAILED_STEPS=()
 
-# Resolve jtag CLI: explicit JTAG_BIN > PATH lookup > ./src/jtag fallback.
-# Each layer needs to actually invoke; a shim that points at a deleted
-# dir resolves via `command -v` but fails on first run (this is exactly
-# the production bug pattern this gate is designed to catch).
+# Resolve jtag CLI: explicit JTAG_BIN > repo-local ./src/jtag > PATH lookup.
+# The repo-local binary is the least surprising default for a PR smoke. A
+# broken global shim is still caught when operators explicitly pass it via
+# JTAG_BIN=/path/to/jtag.
 resolve_jtag() {
   if [ -n "$JTAG_BIN" ] && [ -x "$JTAG_BIN" ]; then
     printf '%s' "$JTAG_BIN"
     return 0
   fi
-  if command -v jtag >/dev/null 2>&1; then
-    printf '%s' "$(command -v jtag)"
-    return 0
-  fi
   if [ -x "$ROOT_DIR/src/jtag" ]; then
     printf '%s' "$ROOT_DIR/src/jtag"
+    return 0
+  fi
+  if command -v jtag >/dev/null 2>&1; then
+    printf '%s' "$(command -v jtag)"
     return 0
   fi
   return 1
@@ -117,13 +118,15 @@ printf '  JTAG=%s\n' "$JTAG"
 
 # ── stack-presence detection ────────────────────────────────────────
 
-# JTAG CLI requires the running stack for ANY command, including help —
-# the dispatcher initializes by connecting to continuum-core's UnixSocket
-# at startup. If no continuum-core process, every JTAG invocation will
-# fail with connect ENOENT, which is indistinguishable from a real
-# regression. So we gate steps 2-3 behind a process-scan preflight.
+# JTAG CLI requires the running stack for ANY command, including help.
+# Prefer the real continuum-core socket as the stack-up signal; fall back
+# to process names for mid-startup cases. The bracketed pgrep patterns avoid
+# matching the pgrep command itself.
 STACK_UP=0
-if pgrep -f 'continuum-core|widget-server|node.*start-server' >/dev/null 2>&1; then
+CORE_SOCKET="${CONTINUUM_CORE_SOCKET:-$HOME/.continuum/sockets/continuum-core.sock}"
+if [ -S "$CORE_SOCKET" ]; then
+  STACK_UP=1
+elif pgrep -f '[c]ontinuum-core|[w]idget-server|[n]ode.*start-server' >/dev/null 2>&1; then
   STACK_UP=1
 fi
 
