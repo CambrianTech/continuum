@@ -1,6 +1,6 @@
 # Chat-to-AIRC Migration: Proof Gates
 
-> Card: continuum#1130 · Branch: `feat/chat-over-airc-proof-gates` · Author: claude-tab-2
+> Card: continuum#1130 · Branch: `feat/chat-over-airc-proof-gates` · Author: claude-tab-2 · Closes #1130
 >
 > Companion to [GRID-ARCHITECTURE.md](GRID-ARCHITECTURE.md) and [AIRC-CONTINUUM-BRIDGE.md](AIRC-CONTINUUM-BRIDGE.md). This document specifies what must be PROVEN — not just compiled — at each stage of moving Continuum's chat path from the ORM-backed `chat_messages` collection onto AIRC as the primary transport.
 
@@ -14,9 +14,11 @@ This file is the explicit checklist that per-stage proofs must pass. It is not a
 
 ---
 
-## Inventory: where the ORM `chat_messages` path lives today
+## Seed inventory: where the ORM `chat_messages` path lives today
 
-A migration without an inventory is a wishlist. The first proof — required before any code change — is a complete enumeration of every call site that produces or consumes `chat_messages` rows.
+A migration without an inventory is a wishlist. This section is a **seed inventory**, not the authoritative migration inventory. A review grep on 2026-05-14 already found additional references outside the first draft, including sentinel pipelines, voice bridge, RAG/tool definitions, context search/slice commands, AIRC bridge, persona task/training modules, and docs.
+
+The first proof — required before any code change — is a regenerated machine inventory checked into the migration PR. The checked-in artifact must be treated as the source of truth for that PR, and this seed table is only a guide for the highest-risk paths.
 
 ### Producers (writes to `chat_messages`)
 
@@ -26,6 +28,10 @@ A migration without an inventory is a wishlist. The first proof — required bef
 | `src/system/user/server/PersonaUser.ts:1270` | persona reply path | persona's own utterance back into the room (note: `:1270` is approximate — re-check at migration time) |
 | `src/system/user/server/PersonaUser.ts:1302` | persona reply path (second call site) | self-reflection or system-message variant |
 | `src/widgets/chat/chat-widget/*` | UI input path | composes `chat/send` calls; verify it routes through the command, not direct DataInsert |
+| `src/system/sentinel/pipelines/*` | orchestration pipelines | many pipelines call `collaboration/chat/send`; wrappers must keep working or be migrated |
+| `src/system/governance/GovernanceNotifications.ts` | governance notifications | imports and executes chat send types |
+| `src/system/voice/server/VoiceWebSocketHandler.ts` | voice/chat bridge | sends chat and subscribes to chat events |
+| `src/commands/airc/bridge/server/AircBridgeServerCommand.ts` | AIRC bridge shim | currently delegates AIRC bridge calls back into Continuum chat commands |
 
 ### Consumers (reads from `chat_messages`)
 
@@ -40,23 +46,32 @@ A migration without an inventory is a wishlist. The first proof — required bef
 | `src/commands/data/read/server/DataReadServerCommand.ts:62` | data layer special-case | `chat_messages` has access-control logic — must not be lost |
 | `src/system/user/server/PersonaUser.ts:1865` | event subscription | `getDataEventName(COLLECTIONS.CHAT_MESSAGES, 'created')` for persona inbox |
 | `src/system/core/shared/EventConstants.ts:48,182` | event-name registry | `DATA_EVENTS.CHAT_MESSAGES.{created,updated,deleted}` referenced from many places |
+| `src/system/user/server/modules/PersonaTaskExecutor.ts` | persona task history | reads `COLLECTIONS.CHAT_MESSAGES` in multiple paths |
+| `src/system/user/server/modules/PersonaTrainingSignalExtractor.ts` | training signals | extracts examples from chat history |
+| `src/commands/ai/should-respond-fast/server/` | response heuristics | queries `chat_messages` by string collection name |
+| `src/commands/ai/context/{search,slice}/server/` | context retrieval | exposes chat messages as a context source/type |
+| `src/commands/genome/dataset-prepare/server/` | training dataset preparation | queries chat history for model/persona datasets |
+| `src/system/state/EntityCacheService.ts` | cache pressure limits | has a dedicated `chat_messages` cap that may disappear or move |
+| `src/system/data/entities/ChatMessageEntity.ts` | entity definition/indexes | schema/index source for the ORM-backed collection |
+| `src/system/data/config/EntityFieldConfig.ts` | field config | collection-specific entity config |
+| `src/system/rag/sources/*` and `src/system/tools/server/*` | tool/RAG definitions | advertise chat commands and `chat_messages` examples to agents |
 
 ### Authoritative inventory rule
 
-**Before opening any migration PR, regenerate this inventory** with the following commands and reconcile:
+**Before opening any migration PR, regenerate this inventory** with the following commands and reconcile into a checked-in artifact such as `docs/grid/generated/chat-to-airc-inventory.md`:
 
 ```bash
-grep -rn "COLLECTIONS\.CHAT_MESSAGES\|chat_messages" \
+rg -n "COLLECTIONS\.CHAT_MESSAGES|chat_messages" \
   src/commands src/widgets src/system \
-  | grep -v __tests__ | grep -v test/
+  -g '!**/__tests__/**' -g '!**/*.test.*' -g '!**/*.spec.*'
 
-grep -rn "Commands\.execute('collaboration/chat/" \
+rg -n "Commands\.execute\\(['\"]collaboration/chat/|command:\\s*['\"]collaboration/chat/|client\\.commands\\[['\"]collaboration/chat/" \
   src/widgets src/system src/commands
 
-grep -rn "DATA_EVENTS\.CHAT_MESSAGES" src/
+rg -n "DATA_EVENTS\.CHAT_MESSAGES|data:chat_messages:" src/
 ```
 
-A migration PR's body must include the diff between the inventory at PR-open time and the inventory at PR-merge time. **Any new entry not listed in this document blocks the merge.**
+A migration PR's body must include the diff between the inventory at PR-open time and the inventory at PR-merge time. **Any new entry not present in the generated artifact blocks the merge.**
 
 ---
 
