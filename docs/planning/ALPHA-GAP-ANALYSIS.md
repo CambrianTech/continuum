@@ -532,6 +532,16 @@ The operating model:
 - Cloud models, local models, Continuum personas, OpenClaw, Hermes, and future
   grid workers all plug in as workers if they can speak AIRC and execute the
   relevant Continuum command surface.
+- This is intentionally an OpenClaw-lite/Hermes-lite development framework,
+  not a replacement for those projects. AIRC supplies the small, durable
+  collaboration/control plane: rooms, identity, queue cards, nudge/stale
+  detection, PR proof, and handoff. Continuum supplies the local runtime,
+  cognition, Sentinels, generated commands, grid execution, and product UI.
+- The alpha target is useful even with no web interface running. A developer
+  should be able to install AIRC, join the project room, run Continuum's Rust
+  backend/Sentinel worker surface, and let approved agents coordinate work
+  across local and grid machines without Node being required for the core
+  worker loop.
 - Continuum commands used by these workers must be generated/template-first.
   Manual command scaffolds break the self-development loop because agents need
   one predictable command contract.
@@ -549,7 +559,11 @@ Near-term Continuum tasks:
 3. Expose generated Continuum commands that let agents run bounded smoke tests,
    image preflights, install checks, and forge/factory preflights without
    needing bespoke shell knowledge.
-4. Validate the pilot by having at least one external peer join through knock,
+4. Move the core agent worker path toward Rust-only execution: queue polling,
+   Sentinel dispatch, generated command execution, and proof emission must have
+   a no-Node path so Continuum can serve agents while the browser/UI stack is
+   down.
+5. Validate the pilot by having at least one external peer join through knock,
    receive approval, claim a GitHub-backed work card, post validation evidence,
    and hand off through AIRC.
 
@@ -767,6 +781,7 @@ TS is acceptable here because this is UI/session state. Still, data validation a
 | Issue / PR | Priority | Direction | Test gate |
 |---|---:|---|---|
 | #967 | P0 | expose personas as AIRC peers | persona receives AIRC room message and replies through Continuum chat |
+| [#1167](https://github.com/CambrianTech/continuum/issues/1167) AIRC/Rust agent flywheel | P0 | treat AIRC as the agent development substrate and Continuum Rust/Sentinel as the no-Node execution plane | approved agent claims queue card, runs Rust/Sentinel command path without Node, opens PR to canary, and close-merged removes the card |
 | PR #1046 | P0 | AIRC bridge harness | bridge protocol test and live room smoke |
 | #856 grid event streaming | P1 | persistent event channels between nodes | cross-node event smoke, no polling-only path |
 | #798 route inference through mesh | P2 | use grid routing for GPU-heavy inference | command from non-GPU node routes to GPU node |
