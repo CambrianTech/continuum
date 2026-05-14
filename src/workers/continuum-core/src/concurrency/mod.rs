@@ -369,6 +369,232 @@ mod tests {
         assert_eq!(policy.in_flight_count(), 0, "second call should also clean up");
     }
 
+    /// What this catches: regression in the #1235 fix. The previous
+    /// "only the analyzer holds a Drop guard" model removed the
+    /// in_flight entry as soon as the analyzer cancelled, even if
+    /// awaiters were still holding the Shared. A NEW caller arriving
+    /// after the analyzer drop but before the awaiter completed would
+    /// find no entry and start duplicate work for the same key.
+    ///
+    /// With the refcount fix, the entry survives analyzer cancellation
+    /// for as long as ANY caller still holds a guard. A new caller
+    /// arriving in that window joins the existing Shared instead of
+    /// kicking off a duplicate.
+    ///
+    /// Test shape:
+    ///   1. Analyzer.single_flight("k") starts long-running work, then
+    ///      its hosting task is dropped (cancellation).
+    ///   2. While the analyzer task is dropping, an awaiter holds a
+    ///      clone of the Shared via its own single_flight call.
+    ///   3. After analyzer drop, a NEW caller arrives for "k".
+    ///   4. The new caller MUST join the same Shared (work executes
+    ///      ONCE total across all three callers), not start fresh.
+    ///
+    /// This test would FAIL on pre-#1235 code because step (1)'s drop
+    /// would have removed the in_flight entry, and step (3) would have
+    /// triggered a fresh `work` future. After #1235 the analyzer's
+    /// guard drop only decrements the refcount; the awaiter's guard
+    /// keeps the entry alive.
+    #[tokio::test]
+    async fn analyzer_cancellation_does_not_evict_entry_while_awaiters_hold_it() {
+        let policy = Arc::new(TokioConcurrencyPolicy::<String, usize, String>::new());
+        let producers = Arc::new(AtomicUsize::new(0));
+        let key = "k".to_string();
+
+        // Start the work-future producer with a release-on-signal handle
+        // so the test can hold it open until we're ready.
+        let release = Arc::new(tokio::sync::Notify::new());
+
+        // (1) Analyzer task: starts the work, awaits indefinitely until
+        // we drop its handle to simulate cancellation.
+        let analyzer_handle = {
+            let policy = Arc::clone(&policy);
+            let producers = Arc::clone(&producers);
+            let release = Arc::clone(&release);
+            let key = key.clone();
+            tokio::spawn(async move {
+                policy
+                    .single_flight(
+                        key,
+                        async move {
+                            producers.fetch_add(1, Ordering::AcqRel);
+                            // Block until released so the test can stage
+                            // cancellation + new-caller arrival.
+                            release.notified().await;
+                            Ok::<usize, String>(7)
+                        }
+                        .boxed(),
+                    )
+                    .await
+            })
+        };
+
+        // (2) Awaiter task: joins the same key. Hold this open across
+        // analyzer cancellation so the entry refcount stays >= 1.
+        let awaiter_handle = {
+            let policy = Arc::clone(&policy);
+            let release = Arc::clone(&release);
+            let key = key.clone();
+            tokio::spawn(async move {
+                // Yield so analyzer registers first.
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                let result = policy
+                    .single_flight(
+                        key,
+                        async move {
+                            // Should NEVER run: awaiter joins existing
+                            // Shared, doesn't create its own work.
+                            release.notified().await;
+                            Ok::<usize, String>(999)
+                        }
+                        .boxed(),
+                    )
+                    .await;
+                result
+            })
+        };
+
+        // Give both tasks time to register / clone the Shared.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            policy.in_flight_count(),
+            1,
+            "after analyzer + awaiter, exactly one in-flight key"
+        );
+
+        // (3) Cancel the analyzer task. With the old model, this would
+        // remove the in_flight entry. With #1235 the awaiter's
+        // refcount keeps it alive.
+        analyzer_handle.abort();
+        let _ = analyzer_handle.await; // observe the cancellation
+
+        // The entry MUST still be in the map because the awaiter holds
+        // a guard. Pre-#1235 this assertion failed.
+        assert_eq!(
+            policy.in_flight_count(),
+            1,
+            "analyzer cancellation must NOT evict the entry — \
+             awaiter still holds the Shared (#1235)"
+        );
+
+        // (4) NEW caller arrives. With #1235 it joins the awaiter's
+        // Shared. Pre-#1235 it would have started fresh work.
+        let new_caller_handle = {
+            let policy = Arc::clone(&policy);
+            let key = key.clone();
+            tokio::spawn(async move {
+                policy
+                    .single_flight(
+                        key,
+                        async move {
+                            // Should NEVER run: joins existing Shared.
+                            Ok::<usize, String>(999)
+                        }
+                        .boxed(),
+                    )
+                    .await
+            })
+        };
+
+        // Give new caller time to enter single_flight + bump refcount.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Release the original work future. Awaiter + new caller both
+        // observe its result via the same Shared.
+        release.notify_waiters();
+
+        let awaiter_result = awaiter_handle.await.unwrap();
+        let new_caller_result = new_caller_handle.await.unwrap();
+
+        assert_eq!(
+            awaiter_result,
+            Ok(7),
+            "awaiter should see the original work's result"
+        );
+        assert_eq!(
+            new_caller_result,
+            Ok(7),
+            "NEW caller MUST see the SAME shared result, not a fresh \
+             work-future's value (would be 999 if duplicate work ran)"
+        );
+        assert_eq!(
+            producers.load(Ordering::Acquire),
+            1,
+            "work-future producer body must have run EXACTLY ONCE \
+             across analyzer + awaiter + new-caller (the contract \
+             #1235 enforces). Pre-#1235 this would have been 2 \
+             because the new caller started a duplicate after the \
+             analyzer's guard evicted the entry."
+        );
+        assert_eq!(
+            policy.in_flight_count(),
+            0,
+            "all callers complete → refcount → 0 → entry evicted"
+        );
+    }
+
+    /// What this catches: regression in the all-callers-cancelled path.
+    /// If every holder drops without completing, the entry should be
+    /// removed (refcount → 0) and a brand-new caller for the same key
+    /// should correctly start fresh — the prior abandoned work is
+    /// no longer of interest to anyone.
+    #[tokio::test]
+    async fn all_callers_cancelled_evicts_entry_for_fresh_start() {
+        let policy = Arc::new(TokioConcurrencyPolicy::<String, usize, String>::new());
+        let producers = Arc::new(AtomicUsize::new(0));
+        let key = "k".to_string();
+
+        // Two cancellable callers, both holding the same key.
+        let release_never = Arc::new(tokio::sync::Notify::new());
+        let make_caller = || {
+            let policy = Arc::clone(&policy);
+            let producers = Arc::clone(&producers);
+            let release = Arc::clone(&release_never);
+            let key = key.clone();
+            tokio::spawn(async move {
+                policy
+                    .single_flight(
+                        key,
+                        async move {
+                            producers.fetch_add(1, Ordering::AcqRel);
+                            release.notified().await;
+                            Ok::<usize, String>(1)
+                        }
+                        .boxed(),
+                    )
+                    .await
+            })
+        };
+
+        let a = make_caller();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let b = make_caller();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        assert_eq!(policy.in_flight_count(), 1);
+
+        // Cancel both — entry should evict cleanly.
+        a.abort();
+        b.abort();
+        let _ = a.await;
+        let _ = b.await;
+        // Yield so the abort drops + Drop chain run.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        assert_eq!(
+            policy.in_flight_count(),
+            0,
+            "all guards dropped → entry evicted"
+        );
+
+        // Fresh caller for the same key: starts fresh work (the prior
+        // abandoned work is gone).
+        let result = policy
+            .single_flight(key, async move { Ok::<usize, String>(42) }.boxed())
+            .await;
+        assert_eq!(result, Ok(42), "fresh caller after eviction succeeds");
+        assert_eq!(policy.in_flight_count(), 0);
+    }
+
     #[tokio::test]
     async fn bounded_caps_concurrent_work() {
         let policy = Arc::new(TokioConcurrencyPolicy::<String, (), ()>::with_limit(2));
