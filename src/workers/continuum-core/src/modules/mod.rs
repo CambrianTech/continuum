@@ -20,6 +20,7 @@ pub mod data;
 pub mod dataset;
 pub mod embedding;
 pub mod entity_schemas;
+pub mod forge;
 pub mod gpu;
 pub mod grid;
 pub mod health;
