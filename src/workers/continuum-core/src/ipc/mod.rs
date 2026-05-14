@@ -2,6 +2,7 @@ use crate::code::{FileEngine, ShellSession};
 use crate::gpu::GpuMemoryManager;
 use crate::modules::agent::AgentModule;
 use crate::modules::ai_provider::AIProviderModule;
+use crate::modules::airc::AircModule;
 use crate::modules::auth::ExternalWebviewAuthModule;
 use crate::modules::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
@@ -928,6 +929,10 @@ pub fn start_server(
     // AgentModule: Autonomous AI coding agents with structured tool calling
     // Provides agent/start, agent/status, agent/stop, agent/list, agent/wait
     runtime.register(Arc::new(AgentModule::new(rt_handle.clone())));
+
+    // AircModule: Rust-native AIRC queue/flywheel primitives.
+    // Provides airc/queue-scan without routing through Node/TypeScript.
+    runtime.register(Arc::new(AircModule::new()));
 
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health

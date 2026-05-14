@@ -17,6 +17,7 @@
 extern crate objc;
 
 pub mod ai;
+pub mod airc;
 pub mod audio_constants;
 pub mod code;
 pub mod cognition;
