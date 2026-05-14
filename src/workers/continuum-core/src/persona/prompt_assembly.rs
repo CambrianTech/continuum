@@ -238,33 +238,51 @@ fn build_messages_single_user_turn(
     current: &HistoryMessage,
     persona_name: &str,
 ) -> Vec<PromptMessage> {
-    let mut transcript = String::new();
+    // Pre-size the transcript buffer (#1218a — alloc discipline). Each
+    // history line is roughly len(name) + len(content) + 4 bytes;
+    // overhead covers the "Recent conversation:\n" header + the closing
+    // cue. write! into the buffer instead of `push_str(&format!(...))`
+    // so the format intermediate doesn't allocate a throw-away String.
+    let header_overhead: usize = 96;
+    let history_capacity: usize = history
+        .iter()
+        .map(|m| m.name.as_ref().map_or(0, |n| n.len() + 2) + m.content.len() + 1)
+        .sum();
+    let current_capacity = current.name.as_ref().map_or(20, |n| n.len() + 22)
+        + current.content.len();
+    let closing_cue_capacity = persona_name.len() + 128;
+    let mut transcript = String::with_capacity(
+        header_overhead + history_capacity + current_capacity + closing_cue_capacity,
+    );
+
     if !history.is_empty() {
         transcript.push_str("Recent conversation:\n");
         for msg in history {
-            let line = if let Some(ref name) = msg.name {
-                format!("{}: {}\n", name, msg.content)
+            if let Some(ref name) = msg.name {
+                let _ = writeln!(transcript, "{}: {}", name, msg.content);
             } else {
-                format!("{}\n", msg.content)
-            };
-            transcript.push_str(&line);
+                let _ = writeln!(transcript, "{}", msg.content);
+            }
         }
         transcript.push('\n');
     }
     if let Some(ref name) = current.name {
-        transcript.push_str(&format!("New message from {name}:\n{}\n", current.content));
+        let _ = writeln!(transcript, "New message from {name}:");
     } else {
-        transcript.push_str(&format!("New message:\n{}\n", current.content));
+        transcript.push_str("New message:\n");
     }
+    transcript.push_str(&current.content);
+    transcript.push('\n');
     // Closing cue. Same intent as the analyzer's "Respond with ONLY ..."
     // — without this the render model has no clear signal that it should
     // produce content for THIS turn (vs. summarizing a passive log).
     // Lives inside the same user turn so chat-template structure stays
     // single-system + single-user → assistant.
-    transcript.push_str(&format!(
+    let _ = write!(
+        transcript,
         "\nRespond now as {persona_name}. Reply directly to the new message above — \
          no name prefix, no quoting, just your contribution.\n"
-    ));
+    );
     vec![PromptMessage {
         role: "user".to_string(),
         content: transcript,
