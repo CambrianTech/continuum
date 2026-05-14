@@ -29,6 +29,7 @@ import { ImageMessageAdapter } from '../adapters/ImageMessageAdapter';
 import { URLCardAdapter } from '../adapters/URLCardAdapter';
 import { ToolOutputAdapter } from '../adapters/ToolOutputAdapter';
 import { TextMessageAdapter } from '../adapters/TextMessageAdapter';
+import '../../shared/EmptyStateWidget';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { MentionAutocomplete } from '../message-input/MentionAutocomplete';
 import { AIStatusIndicator } from './AIStatusIndicator';
@@ -982,6 +983,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
           <!-- EntityScroller will populate this container -->
         </div>
 
+        <!-- Empty state for rooms with no messages (#1101). Hidden until
+             updateEntityCount() reveals it after the first load completes,
+             so the user never sees a blank "is this loading?" panel. -->
+        <empty-state
+          id="chatEmptyState"
+          hidden
+          icon="💬"
+          empty-title="Send your first message"
+          subtitle="Try @Helper for a hand, or just say hi — the AIs in this room will respond."
+        ></empty-state>
+
         <div class="typing-indicator-container" id="typingIndicator" role="status" aria-live="polite" aria-label="Typing indicators"></div>
 
         ${this.renderFooter()}
@@ -998,6 +1010,23 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         <button class="send-button" id="sendButton" aria-label="Send message">Send</button>
       </div>
     `;
+  }
+
+  /**
+   * Toggle the empty-state panel on top of the standard count-badge
+   * update. The base implementation only updates the .list-count text;
+   * we also reveal the "Send your first message" panel when the room
+   * has zero messages so a new user isn't staring at a blank surface.
+   * Called after the initial scroller load and after every CRUD event
+   * — the messages-container is hidden via CSS sibling rules during
+   * the empty state to avoid a stacked-empty-box look.
+   */
+  protected override updateEntityCount(): void {
+    super.updateEntityCount();
+    const emptyState = this.shadowRoot?.getElementById('chatEmptyState') as HTMLElement | null;
+    if (!emptyState) return;
+    const isEmpty = this.getEntityCount() === 0;
+    emptyState.toggleAttribute('hidden', !isEmpty);
   }
 
   /**

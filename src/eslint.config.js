@@ -41,6 +41,9 @@ export default tseslint.config(
     ignores: [
       'dist/**',
       'node_modules/**',
+      'shared/config.ts',
+      'shared/generated/**',
+      'workers/target/**',
       'workers/vendor/**',
       '**/*.d.ts',
       '**/*.js',

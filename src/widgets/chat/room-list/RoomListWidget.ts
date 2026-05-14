@@ -16,6 +16,7 @@ import {
   type TemplateResult,
   type CSSResultGroup
 } from '../../shared/ReactiveListWidget';
+import '../../shared/EmptyStateWidget';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { CONTENT_TYPE_CONFIGS, type ContentType } from '../../../shared/generated/ContentTypes';
@@ -114,6 +115,24 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     this.activeFilter = filter;
     this.scroller?.clear();
     this.scroller?.load();
+  }
+
+  // === EMPTY STATE === (#1101)
+  protected override renderEmptyState(): TemplateResult {
+    // Copy depends on which filter is active so the message matches what
+    // the user is looking at. The "create your first room" CTA is left
+    // unwired for now — emits an event the parent can listen for once
+    // room-creation UX lands.
+    const isDmFilter = this.activeFilter === 'dms';
+    return html`
+      <empty-state
+        icon=${isDmFilter ? '✉️' : '#'}
+        empty-title=${isDmFilter ? 'No direct messages yet' : 'No rooms yet'}
+        subtitle=${isDmFilter
+          ? 'Open a DM with another user or persona to start a private conversation.'
+          : 'Rooms are shared spaces for conversations with humans and AI personas.'}
+      ></empty-state>
+    `;
   }
 
   // === ITEM ===
