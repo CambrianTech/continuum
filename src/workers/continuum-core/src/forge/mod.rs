@@ -1,0 +1,17 @@
+//! Forge — recipe-as-entity and foundry artifact types.
+//!
+//! Per the design at `docs/architecture/FORGE-RECIPE-AS-ENTITY.md`
+//! (continuum#1164/#1165). Phase 1a: pure value types (recipe, artifact,
+//! and supporting structs). Phase 1b: rename existing TS-side `ForgeAlloy`
+//! to `ForgeArtifact` across the 15 referencing files. Phase 2: typed
+//! `RecipeStage` enum and typed `AlloyResults`/`AlloyReceipt`/
+//! `IntegrityAttestation` (currently `serde_json::Value` blobs). Phase 3:
+//! entity registry registration plus the `forge/run` IPC.
+
+pub mod artifact;
+pub mod recipe;
+
+pub use artifact::{ForgeArtifact, HardwareProfile};
+pub use recipe::{
+    AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, ForgeRecipe, PriorBaseline, QuantTier,
+};

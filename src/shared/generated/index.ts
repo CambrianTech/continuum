@@ -35,6 +35,7 @@ export type { VideoInput } from './ai';
 export * from './code';
 export * from './cognition';
 export * from './dataset';
+export * from './forge';
 export * from './gpu';
 export * from './grid';
 export * from './inference';
