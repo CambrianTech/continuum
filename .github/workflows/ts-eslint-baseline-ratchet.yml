@@ -1,0 +1,46 @@
+name: ts-eslint-baseline-ratchet
+
+on:
+  pull_request:
+    branches: [canary, main]
+    paths:
+      - 'src/**/*.ts'
+      - 'src/eslint.config.js'
+      - 'src/eslint-baseline*.txt'
+      - 'src/package.json'
+      - 'src/package-lock.json'
+      - 'src/tsconfig.eslint.json'
+      - 'scripts/ratchets/check-eslint-baseline.sh'
+      - '.github/workflows/ts-eslint-baseline-ratchet.yml'
+  push:
+    branches: [canary, main]
+
+jobs:
+  ratchet:
+    name: ts-eslint-baseline-ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: src/package-lock.json
+
+      - name: Install dependencies
+        working-directory: src
+        run: npm ci
+
+      - name: Run ESLint baseline ratchet
+        run: bash scripts/ratchets/check-eslint-baseline.sh
+
+      - name: Print ESLint details on failure
+        if: failure()
+        run: bash scripts/ratchets/check-eslint-baseline.sh --verbose || true
