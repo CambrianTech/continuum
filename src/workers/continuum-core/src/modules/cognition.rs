@@ -940,6 +940,22 @@ impl ServiceModule for CognitionModule {
 
                 let input = crate::persona::cognition_io::build_respond_input(&signal, &ctx)?;
 
+                // ── Hot-path admission gate (continuum#1211) ────────
+                // Run admission BEFORE inference so the persona's
+                // engram store grows from real chat turns. Without
+                // this call the admission machinery (#1121 PR-1..5) is
+                // plumbed end-to-end but never reached on the chat
+                // path — personas accumulate zero memory.
+                //
+                // Forensic-not-destructive: a missing AdmissionState
+                // (persona never had `cognition/create-engine` called)
+                // is logged and skipped, NOT a chat-blocking error.
+                // The persona still responds; it just doesn't grow
+                // memory until the engine is created. PR-2 will
+                // surface recalled engrams to prompt_assembly so the
+                // recall side starts working too.
+                run_inline_admission_gate(&self.state, &signal, &ctx);
+
                 // Diagnostic: log what media survived the projection.
                 // Vision routing was failing 2026-04-21 and this stays
                 // as the in-flight tap to confirm media shape arriving
@@ -1364,6 +1380,198 @@ fn parse_messages(arr: &[Value]) -> Vec<text_analysis::ConversationMessage> {
             })
         })
         .collect()
+}
+
+/// Outcome of the inline admission gate. Made testable by extracting
+/// from the `cognition/respond` IPC handler — claude-tab-2 review nit
+/// #3 on PR #1213 (the forensic-skip path was untested as inline code).
+///
+/// Logged for the same funnel-metric grep-ability as the underlying
+/// `AdmissionDecision::label()` (#1213 nit #2 — label moved to live
+/// next to the type in `persona/engram.rs`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum InlineAdmissionOutcome {
+    /// Admission ran and produced a decision. Variant carried so
+    /// callers (today: hot-path log) can branch on `admit` vs
+    /// `drop`/`quarantine` without re-walking the full enum.
+    Decided(&'static str),
+    /// Admission machinery itself errored (envelope verify, replay,
+    /// etc.). Carried so the warn log reads the typed cause.
+    MachineryError(String),
+    /// Persona had no `AdmissionState` — `cognition/create-engine`
+    /// was never called for this persona. Forensic-not-destructive:
+    /// log + continue, don't block the chat turn.
+    NoPersona,
+}
+
+/// Run the admission gate inline as a pre-step to `respond()`. Side
+/// effects: AdmissionState's engram store grows on Admit; a warn log
+/// fires on MachineryError or NoPersona. Returns the typed outcome
+/// for caller-side telemetry / unit tests (claude-tab-2 review nit
+/// #3 on PR #1213).
+///
+/// **Hot-path log discipline (claude-tab-2 review nit #1):** the
+/// steady-state `Admit` decision does NOT log — every chat turn for
+/// every persona would otherwise pay a `format!` allocation that
+/// nobody reads. The engram store growth itself is observable via
+/// `cognition/recall-engrams` (#1121 PR-5) for funnel telemetry.
+/// Drop and Quarantine decisions DO log at info because they're the
+/// unhappy paths a debugger needs to find. Errors and missing-state
+/// log at warn.
+pub(crate) fn run_inline_admission_gate(
+    state: &CognitionState,
+    signal: &crate::persona::cognition_io::Signal,
+    ctx: &crate::persona::cognition_io::PersonaContext,
+) -> InlineAdmissionOutcome {
+    let inbox_msg = crate::persona::cognition_io::signal_to_inbox_message(signal, ctx);
+    let Some(persona) = state.personas.get(&ctx.persona_id) else {
+        runtime::logger("cognition").warn(&format!(
+            "cognition/respond: no AdmissionState for persona={} \
+             — skipping admission (call cognition/create-engine first \
+             to enable memory accumulation)",
+            ctx.persona_id,
+        ));
+        return InlineAdmissionOutcome::NoPersona;
+    };
+
+    let mut admission_trace = crate::persona::trace::CognitionTrace::new();
+    match persona.admission.admit(&inbox_msg, &mut admission_trace) {
+        Ok(decision) => {
+            let label = decision.label();
+            // Skip Admit — common case, no allocation. Drop +
+            // Quarantine are the noteworthy outcomes a debugger wants
+            // to grep for; log those at info. Engram count piggy-
+            // backs the unhappy-path log so funnel monitoring can
+            // join "% drops" against "engram store size" without a
+            // separate query.
+            if label != "admit" {
+                runtime::logger("cognition").info(&format!(
+                    "cognition/respond: admission decision={label} \
+                     engrams={} (persona={})",
+                    persona.admission.engram_count(),
+                    ctx.persona_id,
+                ));
+            }
+            InlineAdmissionOutcome::Decided(label)
+        }
+        Err(err) => {
+            let err_string = err.to_string();
+            runtime::logger("cognition").warn(&format!(
+                "cognition/respond: admission error \
+                 (continuing without memory grow): {err_string} \
+                 (persona={})",
+                ctx.persona_id,
+            ));
+            InlineAdmissionOutcome::MachineryError(err_string)
+        }
+    }
+}
+
+// ─── Tests for the inline admission gate (claude-tab-2 review nit
+// #3 on PR #1213) ────────────────────────────────────────────────────
+//
+// The inline admission gate inside the `cognition/respond` IPC
+// handler used to live as inline code, untestable without a full
+// IPC fixture. Extracting `run_inline_admission_gate` made it a
+// callable function; these tests exercise the forensic-skip branch
+// (no AdmissionState for the persona) so a future refactor can't
+// silently change the behavior to an error-and-block (which would
+// make every chat turn for an uncreated persona fail).
+//
+// Tests use a real `CognitionState` constructed with an empty
+// `RagEngine` — same shape `persona::evaluator::tests` uses. No
+// mocks; the substrate is small enough to construct as-is.
+#[cfg(test)]
+mod inline_admission_tests {
+    use super::*;
+    use crate::cognition::RecentMessage;
+    use crate::persona::cognition_io::{Signal, SignalKind, SignalOriginator};
+    use std::sync::Arc;
+
+    /// Build a minimal Signal + PersonaContext pair for the test.
+    /// Both are wire-shape types; the test mirrors what `cognition/respond`
+    /// receives over IPC at the inline-gate site.
+    fn fixture(persona_id: Uuid) -> (Signal, crate::persona::cognition_io::PersonaContext) {
+        let signal = Signal {
+            kind: SignalKind::ChatMessage,
+            text: "hello world".to_string(),
+            media: vec![],
+            originator: SignalOriginator::User { user_id: Uuid::new_v4() },
+            timestamp_ms: 1_715_625_600_000,
+            message_id: Some(Uuid::new_v4()),
+        };
+        let ctx = crate::persona::cognition_io::PersonaContext {
+            persona_id,
+            display_name: "Test Persona".to_string(),
+            specialty: "general".to_string(),
+            model: "test-model".to_string(),
+            capabilities: vec![],
+            system_prompt: String::new(),
+            recent_history: Vec::<RecentMessage>::new(),
+            known_specialties: vec![],
+            other_persona_names: vec![],
+            room_id: Some(Uuid::new_v4()),
+            is_voice: false,
+        };
+        (signal, ctx)
+    }
+
+    /// What this catches: the forensic-not-destructive missing-
+    /// AdmissionState branch returns `NoPersona` and continues
+    /// (no panic, no error propagated). If a future edit changes
+    /// the `let Some(persona) = ...` to a `?` or an `expect()`,
+    /// this test fails and surfaces the regression at unit-test
+    /// time rather than during a live chat-roundtrip smoke.
+    #[test]
+    fn missing_admission_state_returns_no_persona_no_panic() {
+        let rag_engine = Arc::new(crate::rag::RagEngine::new());
+        let state = CognitionState::new(rag_engine);
+        // Note: state.personas is empty — no `cognition/create-engine`
+        // was ever called for this persona, modeling the bootstrap
+        // edge case where a chat turn lands before the engine is up.
+        let persona_id = Uuid::new_v4();
+        let (signal, ctx) = fixture(persona_id);
+
+        let outcome = run_inline_admission_gate(&state, &signal, &ctx);
+        assert_eq!(outcome, InlineAdmissionOutcome::NoPersona);
+        // Verify the state DashMap stays empty — the gate is a
+        // pure no-op when there's no AdmissionState to mutate.
+        assert_eq!(state.personas.len(), 0);
+    }
+
+    /// What this catches: when the persona DOES have AdmissionState,
+    /// the gate runs admission and returns `Decided(...)`. The label
+    /// is one of the documented variants — guards against
+    /// `AdmissionDecision::label` ever returning a fresh slug that
+    /// would silently break log-grep dashboards.
+    #[test]
+    fn admission_with_persona_returns_decided_variant() {
+        let rag_engine = Arc::new(crate::rag::RagEngine::new());
+        let state = CognitionState::new(rag_engine.clone());
+        let persona_id = Uuid::new_v4();
+        // Materialize the persona state — same path
+        // `cognition/create-engine` takes during bootstrap.
+        state.personas.insert(
+            persona_id,
+            crate::persona::PersonaCognition::new(
+                persona_id,
+                "Test Persona".to_string(),
+                rag_engine,
+            ),
+        );
+
+        let (signal, ctx) = fixture(persona_id);
+        let outcome = run_inline_admission_gate(&state, &signal, &ctx);
+        match outcome {
+            InlineAdmissionOutcome::Decided(label) => {
+                assert!(
+                    matches!(label, "admit" | "drop" | "quarantine"),
+                    "label must be one of the documented slugs, got: {label}",
+                );
+            }
+            other => panic!("expected Decided, got {other:?}"),
+        }
+    }
 }
 
 /// Parse an InboxMessage from JSON value.
