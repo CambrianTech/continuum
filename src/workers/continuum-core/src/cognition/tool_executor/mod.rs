@@ -31,7 +31,7 @@
 pub mod types;
 
 pub use types::{
-    MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite,
+    MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite, ToolError,
     ToolExecutionContext, ToolInvocation, ToolOutcome,
 };
 
@@ -45,17 +45,29 @@ use crate::ai::types::ToolCall as NativeToolCall;
 ///
 /// All methods async because the TS-IPC impl is async; a rust-native
 /// impl stays async-compatible trivially.
+///
+/// **Errors are typed** (`ToolError`, see `types.rs`) rather than
+/// `String`. Rationale + variant catalog live with the type, not
+/// here. Callers can pattern-match on the discriminant for retry /
+/// correction / forbidden-handling logic; ts-rs exports the type so
+/// TS callers get the same discriminator at the IPC boundary.
+/// (continuum#1207)
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     /// Execute a batch of native tool calls. Called by the agent loop
     /// after the model emits `finish_reason = tool_use`. Each call's
     /// outcome correlates back by `NativeToolCall::id`.
+    ///
+    /// Per-call failure modes (one bad call shouldn't fail the batch)
+    /// land inside `NativeBatchOutcome`. `Err(ToolError)` is reserved
+    /// for batch-level failures (e.g. the executor itself is
+    /// unavailable / IPC channel down).
     async fn execute_native_batch(
         &self,
         calls: &[NativeToolCall],
         context: &ToolExecutionContext,
         max_result_chars: usize,
-    ) -> Result<NativeBatchOutcome, String>;
+    ) -> Result<NativeBatchOutcome, ToolError>;
 
     /// Parse tool calls from a raw AI response string (XML-fallback path
     /// for models that don't emit native tool_use blocks). Returns
@@ -63,21 +75,31 @@ pub trait ToolExecutor: Send + Sync {
     /// telemetry. Delegates straight to `AgentToolExecutor.parseResponse`
     /// on the TS side; Rust never does the parsing itself (the format
     /// adapter constellation lives in TS).
+    ///
+    /// Returns `Err(ToolError::ParseFailed { raw_preview, reason })`
+    /// when the response contained no parseable tool block — distinct
+    /// from `Ok` with empty tool_calls (which means "model emitted
+    /// text, no tools requested" — a normal silence outcome).
     async fn parse_response(
         &self,
         response_text: &str,
         model_family: Option<&str>,
-    ) -> Result<ParsedToolBatch, String>;
+    ) -> Result<ParsedToolBatch, ToolError>;
 
     /// Store a tool result in working memory as a ChatMessageEntity.
     /// Returns the assigned id so the caller can reference the stored
     /// row for later recall/expansion. Fire-and-forget from the
     /// response path — caller doesn't await.
+    ///
+    /// `Err(ToolError::StoreFailed { tool, underlying })` is for
+    /// observability — the cognition turn already produced its
+    /// outcome by the time storage runs; storage failure should be
+    /// LOGGED with structure, not propagated as a turn failure.
     async fn store_outcome(
         &self,
         outcome: &ToolOutcome,
         context: &ToolExecutionContext,
-    ) -> Result<uuid::Uuid, String>;
+    ) -> Result<uuid::Uuid, ToolError>;
 }
 
 #[cfg(test)]
