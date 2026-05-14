@@ -12,6 +12,7 @@
 use crate::cognition::types::SharedAnalysisIntent;
 use std::collections::HashMap;
 
+use super::error::AnalysisError;
 use super::types::AnalysisInput;
 
 /// Recent-history snapshot size used in the analysis prompt + cache key.
@@ -181,7 +182,7 @@ fn find_substr(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 pub(super) fn parse_model_output(
     raw: &str,
     known_specialties: &[String],
-) -> Result<ParsedOutput, String> {
+) -> Result<ParsedOutput, AnalysisError> {
     // Strip code fences if the model wrapped its JSON.
     let candidate = strip_code_fence(raw).trim();
 
@@ -218,20 +219,21 @@ pub(super) fn parse_model_output(
         idx += 1;
     }
 
-    let obj = best.ok_or_else(|| {
-        format!(
-            "model output did not contain a JSON object with 'summary'. Got: {}",
-            preview(raw)
-        )
+    let obj = best.ok_or_else(|| AnalysisError::MissingEnvelope {
+        raw_excerpt: preview(raw),
     })?;
 
     let summary = obj
         .get("summary")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "missing required field 'summary'".to_string())?
+        .ok_or_else(|| AnalysisError::MissingField {
+            field: "summary".to_string(),
+        })?
         .to_string();
     if summary.is_empty() {
-        return Err("required field 'summary' was empty".to_string());
+        return Err(AnalysisError::EmptyField {
+            field: "summary".to_string(),
+        });
     }
 
     let key_concepts: Vec<String> = obj
@@ -381,17 +383,68 @@ mod tests {
     }
 
     #[test]
-    fn parse_fails_loud_on_missing_summary() {
+    fn parse_fails_loud_on_missing_summary_key() {
+        // JSON object present but lacks `summary` key entirely. The
+        // envelope detector specifically looks for objects with
+        // `summary`, so this surfaces as MissingEnvelope (the parser
+        // never identifies a candidate envelope at all). Different
+        // from `parse_fails_loud_on_summary_wrong_type` which fires
+        // MissingField for the case where `summary` is present but
+        // the wrong shape.
         let raw = r#"{"intent":"question","suggestedAngles":{}}"#;
         let err = parse_model_output(raw, &[]).unwrap_err();
-        assert!(err.contains("summary"));
+        match err {
+            AnalysisError::MissingEnvelope { raw_excerpt } => {
+                assert!(raw_excerpt.contains("intent"), "got: {raw_excerpt}");
+            }
+            other => panic!("expected MissingEnvelope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_fails_loud_on_summary_wrong_type() {
+        // JSON envelope IS detected (summary key present), but the
+        // value is not a string — the typed MissingField variant
+        // fires from the .as_str() guard (#1207). This is the only
+        // realistic path that surfaces MissingField in the current
+        // parse logic.
+        let raw = r#"{"summary":42,"intent":"question","suggestedAngles":{}}"#;
+        let err = parse_model_output(raw, &[]).unwrap_err();
+        match err {
+            AnalysisError::MissingField { field } => assert_eq!(field, "summary"),
+            other => panic!("expected MissingField{{ summary }}, got {other:?}"),
+        }
     }
 
     #[test]
     fn parse_fails_loud_on_garbage() {
+        // No JSON envelope at all — typed MissingEnvelope variant
+        // carries an excerpt of the raw input for diagnosability (#1207).
         let raw = "this is not JSON at all";
         let err = parse_model_output(raw, &[]).unwrap_err();
-        assert!(err.contains("did not contain a JSON object"));
+        match err {
+            AnalysisError::MissingEnvelope { raw_excerpt } => {
+                assert!(
+                    raw_excerpt.contains("not JSON"),
+                    "expected raw_excerpt to include input, got: {raw_excerpt}"
+                );
+            }
+            other => panic!("expected MissingEnvelope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_fails_loud_on_empty_summary() {
+        // JSON envelope + summary key + empty string value.
+        // Empty summary would cascade into empty persona renders;
+        // typed EmptyField variant lets callers distinguish from
+        // MissingField for clearer logs (#1207).
+        let raw = r#"{"summary":"","intent":"question","suggestedAngles":{}}"#;
+        let err = parse_model_output(raw, &[]).unwrap_err();
+        match err {
+            AnalysisError::EmptyField { field } => assert_eq!(field, "summary"),
+            other => panic!("expected EmptyField{{ summary }}, got {other:?}"),
+        }
     }
 
     #[test]

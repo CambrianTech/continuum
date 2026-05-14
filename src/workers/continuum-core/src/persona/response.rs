@@ -220,6 +220,13 @@ async fn respond_inner(
     //    Provides matched-angle hints for the prompt — informational,
     //    NOT gating. The persona's own model is the only thing that
     //    decides what to say (or whether to stay quiet).
+    //
+    // analyze() returns Result<_, AnalysisError> as of #1207. We map
+    // back to String here at the boundary because response.rs's own
+    // public surface still uses Result<_, String>; pushing the typed
+    // error up further is a follow-up (would touch persona::respond
+    // signature + IPC handler + recorder traces). For now the typed
+    // info is preserved in logs via Display.
     let analyze_start = now_ms();
     let analysis = analyze(AnalysisInput {
         message_id: input.message_id,
@@ -233,7 +240,8 @@ async fn respond_inner(
         recent_history: input.turn_context.recent_history.clone(),
         known_specialties: input.turn_context.known_specialties.clone(),
     })
-    .await?;
+    .await
+    .map_err(|e| e.to_string())?;
     trace.record(
         SEAM_ANALYZE,
         analyze_start,
