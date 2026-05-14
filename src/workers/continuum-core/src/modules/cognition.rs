@@ -14,6 +14,7 @@
 //! - `cognition/enqueue-message`: Enqueue message to persona inbox
 //! - `cognition/get-state`: Get persona cognitive state
 //! - `inbox/drain-frame`: Drain a bounded same-room persona work frame
+//! - `cognition/admit-inbox-message`: Run admission gate on an InboxMessage (#1121 PR-4)
 //! - `cognition/full-evaluate`: Unified 6-gate evaluation (replaces 5 TS gates)
 //! - `cognition/track-response`: Track response for rate limiting
 //! - `cognition/set-sleep-mode`: Set voluntary sleep mode
@@ -290,6 +291,40 @@ impl ServiceModule for CognitionModule {
                 Ok(CommandResult::Json(
                     serde_json::to_value(&frame).map_err(|e| format!("Serialize error: {e}"))?,
                 ))
+            }
+
+            // ================================================================
+            // Admission Gate (continuum#1121 PR-4)
+            // ================================================================
+            // Run the persona's admission gate over an InboxMessage. Returns
+            // the typed AdmissionDecision (Admit/Drop/Quarantine) or a typed
+            // error. Records side-effects (admitted engram → store, content_hash
+            // → dedup record, AIRC event_id → replay-protection record).
+            //
+            // Caller responsibility: TS/IPC layer chooses WHEN to call this
+            // (typically per drained inbox frame). Persona state must already
+            // exist (created via cognition/create-engine or get_or_create_persona!).
+            "cognition/admit-inbox-message" => {
+                let _timer = TimingGuard::new("module", "cognition_admit_inbox_message");
+                let persona_uuid = p.uuid("persona_id")?;
+                let message_value = p.value("message").ok_or("Missing message")?;
+                let inbox_msg = parse_inbox_message(message_value)?;
+
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
+
+                let mut trace = crate::persona::trace::CognitionTrace::new();
+                match persona.admission.admit(&inbox_msg, &mut trace) {
+                    Ok(decision) => Ok(CommandResult::Json(serde_json::json!({
+                        "decision": decision,
+                        "engram_count": persona.admission.engram_count(),
+                        "trace_seam_count": trace.seam_count(),
+                    }))),
+                    Err(err) => Err(format!("admission error: {err}")),
+                }
             }
 
             // ================================================================

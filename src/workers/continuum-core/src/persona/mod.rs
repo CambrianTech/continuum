@@ -12,6 +12,7 @@
 //!   - channel_registry: Domain-to-queue routing + service_cycle()
 
 pub mod admission;
+pub mod admission_state;
 pub mod allocator;
 pub mod channel_items;
 pub mod channel_queue;
@@ -42,6 +43,7 @@ pub use admission::{
     build_engram_from_candidate, AdmissionCandidate, AdmissionConfig, AdmissionContext,
     AdmissionGate, HeuristicIsMemorable, IsMemorable, SeenContentLookup, SeenEventLookup,
 };
+pub use admission_state::AdmissionState;
 pub use allocator::{
     allocate as allocate_personas, load_catalog, select_local_model, AllocationResult,
     PersonaAllocation, PersonaCatalogEntry,
