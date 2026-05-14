@@ -1,7 +1,7 @@
 {
   "$schemaVersion": 1,
-  "$generatedAt": "2026-05-13T17:01:40.910Z",
-  "$sha256": "27d02233ae3839f7fad6affbd9b4e308a7a08c3bb72329aafa2cb39fcbcd3217",
+  "$generatedAt": "2026-05-14T16:06:33.742Z",
+  "$sha256": "d5c1cff2a1ed6a6cb2e9a766ae0e39209fc8e766a300a8b87513eb349e9174e2",
   "entities": {
     "users": {
       "collection": "users",
@@ -1152,6 +1152,428 @@
           "fieldType": "json",
           "options": {
             "nullable": false
+          }
+        }
+      ],
+      "compositeIndexes": [],
+      "archive": null
+    },
+    "forge_recipes": {
+      "collection": "forge_recipes",
+      "entityClass": "ForgeRecipeEntity",
+      "fields": [
+        {
+          "fieldName": "id",
+          "fieldType": "primary",
+          "options": {
+            "unique": true,
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "createdAt",
+          "fieldType": "date",
+          "options": {
+            "nullable": false,
+            "index": true
+          }
+        },
+        {
+          "fieldName": "updatedAt",
+          "fieldType": "date",
+          "options": {
+            "nullable": false,
+            "index": true
+          }
+        },
+        {
+          "fieldName": "version",
+          "fieldType": "number",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "name",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 256,
+            "index": true,
+            "unique": true
+          }
+        },
+        {
+          "fieldName": "recipeVersion",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 30
+          }
+        },
+        {
+          "fieldName": "description",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 1024
+          }
+        },
+        {
+          "fieldName": "userSummary",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 256
+          }
+        },
+        {
+          "fieldName": "author",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 256,
+            "index": true
+          }
+        },
+        {
+          "fieldName": "tags",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "license",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 30
+          }
+        },
+        {
+          "fieldName": "methodologyPaperUrl",
+          "fieldType": "text",
+          "options": {
+            "nullable": true,
+            "maxLength": 1024
+          }
+        },
+        {
+          "fieldName": "limitations",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "priorMetricBaselines",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "source",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "stages",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "cycles",
+          "fieldType": "number",
+          "options": {
+            "nullable": false,
+            "default": 1
+          }
+        },
+        {
+          "fieldName": "calibrationCorpus",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "quantTiers",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "evaluationBenchmarks",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "hardware",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "parentRecipeId",
+          "fieldType": "text",
+          "options": {
+            "nullable": true,
+            "maxLength": 30,
+            "index": true
+          }
+        },
+        {
+          "fieldName": "authoredAtMs",
+          "fieldType": "number",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "updatedAtMs",
+          "fieldType": "number",
+          "options": {
+            "nullable": false
+          }
+        }
+      ],
+      "compositeIndexes": [],
+      "archive": null
+    },
+    "forge_artifacts": {
+      "collection": "forge_artifacts",
+      "entityClass": "ForgeArtifactEntity",
+      "fields": [
+        {
+          "fieldName": "id",
+          "fieldType": "primary",
+          "options": {
+            "unique": true,
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "createdAt",
+          "fieldType": "date",
+          "options": {
+            "nullable": false,
+            "index": true
+          }
+        },
+        {
+          "fieldName": "updatedAt",
+          "fieldType": "date",
+          "options": {
+            "nullable": false,
+            "index": true
+          }
+        },
+        {
+          "fieldName": "version",
+          "fieldType": "number",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "recipeId",
+          "fieldType": "foreign_key",
+          "options": {
+            "index": true,
+            "nullable": false,
+            "references": "forge_recipes"
+          }
+        },
+        {
+          "fieldName": "recipeVersion",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 30
+          }
+        },
+        {
+          "fieldName": "recipeName",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 256,
+            "index": true
+          }
+        },
+        {
+          "fieldName": "description",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 1024
+          }
+        },
+        {
+          "fieldName": "userSummary",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 256
+          }
+        },
+        {
+          "fieldName": "author",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 256,
+            "index": true
+          }
+        },
+        {
+          "fieldName": "tags",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "license",
+          "fieldType": "text",
+          "options": {
+            "nullable": false,
+            "maxLength": 30
+          }
+        },
+        {
+          "fieldName": "methodologyPaperUrl",
+          "fieldType": "text",
+          "options": {
+            "nullable": true,
+            "maxLength": 1024
+          }
+        },
+        {
+          "fieldName": "limitations",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "priorMetricBaselines",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "source",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "calibrationCorpus",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "quantTiers",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "evaluationBenchmarks",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "hardware",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "forgedAtMs",
+          "fieldType": "number",
+          "options": {
+            "nullable": false,
+            "summary": true
+          }
+        },
+        {
+          "fieldName": "durationMinutes",
+          "fieldType": "number",
+          "options": {
+            "nullable": true
+          }
+        },
+        {
+          "fieldName": "forgedParamsB",
+          "fieldType": "number",
+          "options": {
+            "nullable": true,
+            "summary": true
+          }
+        },
+        {
+          "fieldName": "activeParamsB",
+          "fieldType": "number",
+          "options": {
+            "nullable": true
+          }
+        },
+        {
+          "fieldName": "hardwareVerified",
+          "fieldType": "json",
+          "options": {
+            "nullable": false
+          }
+        },
+        {
+          "fieldName": "alloyHash",
+          "fieldType": "text",
+          "options": {
+            "nullable": true,
+            "maxLength": 256,
+            "index": true,
+            "unique": true
+          }
+        },
+        {
+          "fieldName": "results",
+          "fieldType": "json",
+          "options": {
+            "nullable": true
+          }
+        },
+        {
+          "fieldName": "receipt",
+          "fieldType": "json",
+          "options": {
+            "nullable": true
+          }
+        },
+        {
+          "fieldName": "integrity",
+          "fieldType": "json",
+          "options": {
+            "nullable": true
           }
         }
       ],

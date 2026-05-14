@@ -45,6 +45,8 @@ import { TrainingSessionEntity as FineTuningTrainingSessionEntity } from '../sha
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import { ContentTypeEntity } from '../../../system/data/entities/ContentTypeEntity';
 import { RecipeEntity } from '../../../system/data/entities/RecipeEntity';
+import { ForgeRecipeEntity } from '../../../system/data/entities/ForgeRecipeEntity';
+import { ForgeArtifactEntity } from '../../../system/data/entities/ForgeArtifactEntity';
 import { GenomeEntity } from '../../../system/genome/entities/GenomeEntity';
 import { GenomeLayerEntity } from '../../../system/genome/entities/GenomeLayerEntity';
 import { AIGenerationEntity } from '../../../system/data/entities/AIGenerationEntity';
@@ -110,6 +112,8 @@ export function initializeEntityRegistry(): void {
   new UserStateEntity();
   new ContentTypeEntity();
   new RecipeEntity();
+  new ForgeRecipeEntity();
+  new ForgeArtifactEntity();
   new GenomeEntity();
   new GenomeLayerEntity();
   new AIGenerationEntity();
@@ -167,6 +171,8 @@ export function initializeEntityRegistry(): void {
   registerEntity(UserStateEntity.collection, UserStateEntity);
   registerEntity(ContentTypeEntity.collection, ContentTypeEntity);
   registerEntity(RecipeEntity.collection, RecipeEntity);
+  registerEntity(ForgeRecipeEntity.collection, ForgeRecipeEntity);
+  registerEntity(ForgeArtifactEntity.collection, ForgeArtifactEntity);
   registerEntity(GenomeEntity.collection, GenomeEntity);
   registerEntity(GenomeLayerEntity.collection, GenomeLayerEntity);
   registerEntity(AIGenerationEntity.collection, AIGenerationEntity);
