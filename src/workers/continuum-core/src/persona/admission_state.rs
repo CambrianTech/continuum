@@ -243,6 +243,104 @@ impl AdmissionState {
     pub fn runner(&self) -> &InboxAdmissionRunner<HeuristicIsMemorable> {
         &self.runner
     }
+
+    //=========================================================================
+    // RECALL SURFACE (continuum#1121 PR-5)
+    //=========================================================================
+    //
+    // Read-side query API on the admitted-engram store. v1 backs against
+    // the in-memory `Vec<Engram>` from PR-4; PR-6+ swaps in an ORM-backed
+    // store without changing this API. Pattern is the same as how
+    // `cv::Algorithm` exposes a stable interface over swappable backends.
+
+    /// Recall the most recent N admitted engrams, newest first. Returns
+    /// at most `limit` engrams. `limit == 0` returns an empty Vec.
+    ///
+    /// "Newest first" = reverse insertion order in the in-memory v1 store.
+    /// PR-6 will swap to ORM-backed storage indexed by `admitted_at_ms`
+    /// for the same ordering guarantee under restart.
+    pub fn recall_recent(&self, limit: usize) -> Vec<Engram> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let engrams = self.engrams.lock().unwrap();
+        engrams.iter().rev().take(limit).cloned().collect()
+    }
+
+    /// Recall a specific engram by id. None if not present in the store
+    /// (either never admitted, or evicted in a future GC pass).
+    pub fn recall_by_id(&self, id: Uuid) -> Option<Engram> {
+        let engrams = self.engrams.lock().unwrap();
+        engrams.iter().find(|e| e.id == id).cloned()
+    }
+
+    /// Recall engrams whose content contains `keyword` (case-insensitive
+    /// substring match). Returns matches in newest-first order, capped
+    /// at `limit`. v1 = linear scan over the in-memory store; PR-6 will
+    /// add an ORM-side query / index.
+    ///
+    /// Empty `keyword` returns an empty Vec — the caller meant to skip
+    /// search. (Avoids the gotcha where every engram contains the empty
+    /// string.)
+    pub fn recall_by_keyword(&self, keyword: &str, limit: usize) -> Vec<Engram> {
+        if keyword.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let needle = keyword.to_lowercase();
+        let engrams = self.engrams.lock().unwrap();
+        engrams
+            .iter()
+            .rev()
+            .filter(|e| e.content.to_lowercase().contains(&needle))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    /// Recall engrams filtered by origin variant (Chat / Airc / Tool /
+    /// SelfReflection). Newest first, capped at `limit`. Useful for
+    /// callers that want "what did I learn from chat" vs "what did I
+    /// learn from tool invocations".
+    pub fn recall_by_origin_kind(
+        &self,
+        kind: EngramOriginKind,
+        limit: usize,
+    ) -> Vec<Engram> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let engrams = self.engrams.lock().unwrap();
+        engrams
+            .iter()
+            .rev()
+            .filter(|e| EngramOriginKind::from(&e.origin) == kind)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+}
+
+/// Discriminator over `EngramOrigin` variants. Used by `recall_by_origin_kind`
+/// so callers can filter without pattern-matching the full origin (which
+/// carries variant-specific reference fields they don't need for the
+/// filter decision).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngramOriginKind {
+    Chat,
+    Airc,
+    Tool,
+    SelfReflection,
+}
+
+impl From<&EngramOrigin> for EngramOriginKind {
+    fn from(origin: &EngramOrigin) -> Self {
+        match origin {
+            EngramOrigin::Chat(_) => Self::Chat,
+            EngramOrigin::Airc(_) => Self::Airc,
+            EngramOrigin::Tool(_) => Self::Tool,
+            EngramOrigin::SelfReflection { .. } => Self::SelfReflection,
+        }
+    }
 }
 
 //=============================================================================
@@ -512,6 +610,157 @@ mod tests {
             "airc-origin quarantine MUST NOT record content_hash (would dangle)"
         );
         assert_eq!(state.engram_count(), 0, "quarantine MUST NOT add to engram store");
+    }
+
+    // ── Recall surface (#1121 PR-5) ──────────────────────────────────────
+
+    /// Helper: admit N synthetic human messages with distinct content,
+    /// returning the engram ids in admission order.
+    fn admit_n_distinct(state: &AdmissionState, contents: &[&str]) -> Vec<Uuid> {
+        let mut trace = CognitionTrace::new();
+        let mut ids = Vec::new();
+        for c in contents {
+            match state.admit(&synthetic_human_message(c), &mut trace).unwrap() {
+                AdmissionDecision::Admit { engram, .. } => ids.push(engram.id),
+                other => panic!("expected Admit for content {c:?}, got {other:?}"),
+            }
+        }
+        ids
+    }
+
+    /// What this catches: recall_recent returns engrams in NEWEST-FIRST
+    /// order (reverse insertion). A regression to insertion-order would
+    /// silently invert what callers expect when they ask for "recent".
+    #[test]
+    fn recall_recent_returns_newest_first() {
+        let state = AdmissionState::new();
+        let ids = admit_n_distinct(
+            &state,
+            &[
+                "first observation worth storing here",
+                "second observation worth storing here",
+                "third observation worth storing here",
+            ],
+        );
+        let recent = state.recall_recent(3);
+        assert_eq!(recent.len(), 3);
+        // Newest first → reverse of admission order.
+        assert_eq!(recent[0].id, ids[2]);
+        assert_eq!(recent[1].id, ids[1]);
+        assert_eq!(recent[2].id, ids[0]);
+    }
+
+    /// What this catches: recall_recent honors the limit, never exceeds
+    /// it, never panics on limit > available.
+    #[test]
+    fn recall_recent_respects_limit_above_and_below_count() {
+        let state = AdmissionState::new();
+        admit_n_distinct(
+            &state,
+            &[
+                "alpha observation worth storing",
+                "beta observation worth storing",
+            ],
+        );
+        assert_eq!(state.recall_recent(0).len(), 0, "limit=0 returns empty");
+        assert_eq!(state.recall_recent(1).len(), 1, "limit=1 returns one");
+        assert_eq!(state.recall_recent(99).len(), 2, "limit > count caps at count");
+    }
+
+    /// What this catches: recall_by_id returns the exact engram for a
+    /// known id, None for an unknown id. Foundation of any future recall
+    /// pipeline that walks parent/reflection links.
+    #[test]
+    fn recall_by_id_finds_known_returns_none_unknown() {
+        let state = AdmissionState::new();
+        let ids = admit_n_distinct(
+            &state,
+            &["first observation worth storing", "second observation worth storing"],
+        );
+        let found = state.recall_by_id(ids[0]).expect("known id must resolve");
+        assert_eq!(found.id, ids[0]);
+        assert_eq!(found.content, "first observation worth storing");
+        assert!(state.recall_by_id(Uuid::new_v4()).is_none(), "unknown id is None");
+    }
+
+    /// What this catches: keyword search is case-insensitive substring,
+    /// returns newest-first, honors limit. Empty keyword returns empty
+    /// (caller-meant-to-skip semantic, not match-everything).
+    #[test]
+    fn recall_by_keyword_case_insensitive_newest_first_with_limit() {
+        let state = AdmissionState::new();
+        admit_n_distinct(
+            &state,
+            &[
+                "the recall ratchet design needs work",
+                "not relevant to our search needle here",
+                "another RECALL ratchet observation",
+            ],
+        );
+        let hits = state.recall_by_keyword("recall", 10);
+        assert_eq!(hits.len(), 2, "two engrams contain 'recall' (case-insensitive)");
+        // Newest first: "another RECALL..." was admitted last.
+        assert!(
+            hits[0].content.contains("another RECALL"),
+            "newest-first ordering: got {}",
+            hits[0].content
+        );
+        // Empty needle = caller skipped search.
+        assert!(state.recall_by_keyword("", 10).is_empty());
+        // Zero limit short-circuits.
+        assert!(state.recall_by_keyword("recall", 0).is_empty());
+        // Limit caps result count.
+        assert_eq!(state.recall_by_keyword("recall", 1).len(), 1);
+    }
+
+    /// What this catches: origin-kind filter returns only matching
+    /// variants. Inbox-sourced messages currently always synthesize
+    /// `Chat` origins (per PR-3 design); if someone admits via a
+    /// different origin path (PR-5+ tool/reflection ingestion), the
+    /// filter must still segregate cleanly.
+    #[test]
+    fn recall_by_origin_kind_filters_to_requested_variant() {
+        let state = AdmissionState::new();
+        admit_n_distinct(
+            &state,
+            &[
+                "human observation worth storing here",
+                "another human observation worth storing",
+            ],
+        );
+        // All inbox admits are Chat-origin.
+        let chat_hits = state.recall_by_origin_kind(EngramOriginKind::Chat, 10);
+        assert_eq!(chat_hits.len(), 2);
+        // No Airc origins admitted via the inbox path.
+        let airc_hits = state.recall_by_origin_kind(EngramOriginKind::Airc, 10);
+        assert!(airc_hits.is_empty());
+        // Limit honored.
+        assert_eq!(
+            state.recall_by_origin_kind(EngramOriginKind::Chat, 1).len(),
+            1
+        );
+        // Limit zero = empty.
+        assert!(state
+            .recall_by_origin_kind(EngramOriginKind::Chat, 0)
+            .is_empty());
+    }
+
+    /// What this catches: EngramOriginKind::from(&EngramOrigin) covers
+    /// every variant of EngramOrigin. If a future PR adds a new variant
+    /// to EngramOrigin without updating the From impl, this test fails
+    /// to compile (exhaustive match in From). The recall filter would
+    /// otherwise silently miss the new origin variant.
+    #[test]
+    fn engram_origin_kind_covers_all_origin_variants() {
+        // Construct one of each variant; `From` impl is exhaustive at
+        // compile time. This test confirms the runtime mapping.
+        let chat = synthetic_engram_with_chat_origin("x");
+        let airc = synthetic_engram_with_airc_origin("y", "evt-1");
+        assert_eq!(EngramOriginKind::from(&chat.origin), EngramOriginKind::Chat);
+        assert_eq!(EngramOriginKind::from(&airc.origin), EngramOriginKind::Airc);
+        // Tool + SelfReflection variants exist on EngramOrigin (per PR-1)
+        // and are covered by the From impl's exhaustive match — no need
+        // to construct them here; the compiler enforces coverage.
     }
 
     /// What this catches: Admit (NOT Quarantine) records BOTH content_hash

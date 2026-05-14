@@ -15,6 +15,7 @@
 //! - `cognition/get-state`: Get persona cognitive state
 //! - `inbox/drain-frame`: Drain a bounded same-room persona work frame
 //! - `cognition/admit-inbox-message`: Run admission gate on an InboxMessage (#1121 PR-4)
+//! - `cognition/recall-engrams`: Query the persona's admitted engram store (#1121 PR-5)
 //! - `cognition/full-evaluate`: Unified 6-gate evaluation (replaces 5 TS gates)
 //! - `cognition/track-response`: Track response for rate limiting
 //! - `cognition/set-sleep-mode`: Set voluntary sleep mode
@@ -334,6 +335,74 @@ impl ServiceModule for CognitionModule {
                     // (claude-tab-2 review nit on #1155.)
                     Err(err) => Err(format!("admission error: {err}")),
                 }
+            }
+
+            // ================================================================
+            // Engram Recall Surface (continuum#1121 PR-5)
+            // ================================================================
+            // Query the persona's admitted-engram store. Modes:
+            //   - kind=recent + limit  → newest-first N engrams
+            //   - kind=by_id + id      → exact lookup by uuid
+            //   - kind=by_keyword + keyword + limit → case-insensitive substring
+            //   - kind=by_origin + origin (chat|airc|tool|self_reflection) + limit
+            // Defaults to kind=recent + limit=10 if no kind given.
+            //
+            // v1 backs against the in-memory engram Vec from PR-4. PR-6+
+            // swaps to ORM-backed store with the same API.
+            "cognition/recall-engrams" => {
+                let _timer = TimingGuard::new("module", "cognition_recall_engrams");
+                let persona_uuid = p.uuid("persona_id")?;
+                let kind = p.str_opt("kind").unwrap_or("recent");
+                let limit_u64 = p.u64_or("limit", 10);
+                let limit = usize::try_from(limit_u64)
+                    .map_err(|_| format!("limit too large: {limit_u64}"))?;
+
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
+
+                let engrams = match kind {
+                    "recent" => persona.admission.recall_recent(limit),
+                    "by_id" => {
+                        let id = p.uuid("id")?;
+                        persona.admission.recall_by_id(id).into_iter().collect()
+                    }
+                    "by_keyword" => {
+                        let keyword = p.str("keyword")?;
+                        persona.admission.recall_by_keyword(keyword, limit)
+                    }
+                    "by_origin" => {
+                        let origin_str = p.str("origin")?;
+                        let origin_kind = match origin_str {
+                            "chat" => crate::persona::EngramOriginKind::Chat,
+                            "airc" => crate::persona::EngramOriginKind::Airc,
+                            "tool" => crate::persona::EngramOriginKind::Tool,
+                            "self_reflection" => {
+                                crate::persona::EngramOriginKind::SelfReflection
+                            }
+                            other => {
+                                return Err(format!(
+                                    "unknown origin kind '{other}'; expected one of: \
+                                     chat, airc, tool, self_reflection"
+                                ))
+                            }
+                        };
+                        persona.admission.recall_by_origin_kind(origin_kind, limit)
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown recall kind '{other}'; expected one of: \
+                             recent, by_id, by_keyword, by_origin"
+                        ))
+                    }
+                };
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "engrams": engrams,
+                    "count": engrams.len(),
+                })))
             }
 
             // ================================================================
