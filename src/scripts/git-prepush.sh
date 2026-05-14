@@ -97,16 +97,23 @@ fi
 #      (cleanup is welcome, but the baseline should track real state).
 #
 # Update baseline after a real cleanup pass:
-#   cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 \
-#     | grep -cE "error\s+" > eslint-baseline.txt
+#   bash scripts/ratchets/check-eslint-baseline.sh --update-baseline
 echo ""
 echo "📋 Phase 1b: ESLint (baseline-tolerant)"
 echo "----------------------------------------"
 LINT_START=$(date +%s)
 BASELINE_FILE="$SRC_DIR/eslint-baseline.txt"
+ESLINT_RATCHET="$REPO_ROOT/scripts/ratchets/check-eslint-baseline.sh"
 if [ ! -f "$BASELINE_FILE" ]; then
     echo "⚠️  eslint-baseline.txt not present at $BASELINE_FILE — skipping ESLint gate."
-    echo "   Generate it once with: cd src && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE \"error\\s+\" > eslint-baseline.txt"
+    echo "   Generate it once with: bash scripts/ratchets/check-eslint-baseline.sh --update-baseline"
+elif [ -x "$ESLINT_RATCHET" ]; then
+    if "$ESLINT_RATCHET"; then
+        LINT_DUR=$(( $(date +%s) - LINT_START ))
+        echo "✅ ESLint ratchet passed (${LINT_DUR}s)"
+    else
+        FAILED=1
+    fi
 else
     BASELINE=$(cat "$BASELINE_FILE" | tr -d '[:space:]')
     CURRENT=$(cd "$SRC_DIR" && npx eslint './**/*.ts' --max-warnings 0 --quiet 2>&1 | grep -cE "error\s+" || true)
