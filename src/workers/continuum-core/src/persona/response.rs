@@ -31,9 +31,10 @@
 //!     manipulation in Rust is ~100x what TS does on the same input.
 
 use crate::cognition::tool_executor::types::MediaItemLite;
-use crate::cognition::{analyze, AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis};
+use crate::cognition::{analyze, AnalysisInput, PersonaSlot, SharedAnalysis};
+use crate::persona::turn_context::TurnContext;
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 use ts_rs::TS;
 use uuid::Uuid;
@@ -46,17 +47,14 @@ use uuid::Uuid;
 pub struct RespondInput {
     /// THIS persona's identity + specialty for scoring.
     pub persona: PersonaSlot,
-    pub room_id: Uuid,
+    /// Per-turn shared context (room_id + recent_history +
+    /// known_specialties). All personas responding to the same
+    /// message share an `Arc` to the same `TurnContext` instance —
+    /// no per-persona deep clone of the same data (continuum#1206).
+    pub turn_context: Arc<TurnContext>,
     pub message_id: Uuid,
     /// The new message that triggered this response cycle.
     pub message_text: String,
-    /// Recent messages for analysis context. Most-recent last.
-    pub recent_history: Vec<RecentMessage>,
-    /// Stable specialty identifiers in the room (all personas in the
-    /// room, not just this one). The analyzer uses this list to know
-    /// which `suggested_angles` keys to populate. This persona's own
-    /// specialty must appear here.
-    pub known_specialties: Vec<String>,
     /// Display names of OTHER personas in the room (excluding self).
     /// Forwarded to `prompt_assembly` so the
     /// `ProperChatMlSingleParty` strategy can drop other-AI history
@@ -225,10 +223,15 @@ async fn respond_inner(
     let analyze_start = now_ms();
     let analysis = analyze(AnalysisInput {
         message_id: input.message_id,
-        room_id: input.room_id,
+        room_id: input.turn_context.room_id,
         text: input.message_text.clone(),
-        recent_history: input.recent_history.clone(),
-        known_specialties: input.known_specialties.clone(),
+        // These two are the only field-level clones still on the
+        // analyze path. PR-2 (continuum#1206 follow-up) will rework
+        // AnalysisInput to also accept &TurnContext directly so the
+        // clone goes away here too — but that ripples into the
+        // shared_analysis cache key, separate concern.
+        recent_history: input.turn_context.recent_history.clone(),
+        known_specialties: input.turn_context.known_specialties.clone(),
     })
     .await?;
     trace.record(
@@ -347,6 +350,7 @@ async fn run_render(
     //    we have; if the chat path later wants role/timestamp distinction,
     //    extend RecentMessage and the conversion follows.
     let history: Vec<HistoryMessage> = input
+        .turn_context
         .recent_history
         .iter()
         .map(|m| HistoryMessage {
@@ -438,7 +442,7 @@ async fn run_render(
         active_adapters: None,
         request_id: None,
         user_id: None,
-        room_id: Some(input.room_id.to_string()),
+        room_id: Some(input.turn_context.room_id.to_string()),
         purpose: Some("persona-respond".to_string()),
         // The whole point of this request is to generate a response on
         // behalf of THIS persona — its KV bytes belong in this persona's

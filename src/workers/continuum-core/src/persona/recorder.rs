@@ -124,7 +124,7 @@ impl<'a> From<&'a RespondInput> for RequestEcho<'a> {
             persona_id: input.persona.persona_id,
             persona_specialty: &input.persona.specialty,
             persona_display_name: &input.persona.display_name,
-            room_id: input.room_id,
+            room_id: input.turn_context.room_id,
             message_id: input.message_id,
             message_text: &input.message_text,
             system_prompt: &input.system_prompt,
@@ -132,6 +132,7 @@ impl<'a> From<&'a RespondInput> for RequestEcho<'a> {
             is_voice: input.is_voice,
             capabilities,
             recent_history: input
+                .turn_context
                 .recent_history
                 .iter()
                 .map(|m| RecentEcho {
@@ -172,7 +173,7 @@ pub fn record_turn(input: &RespondInput, response: &PersonaResponse, trace: &Cog
         "personaId": input.persona.persona_id,
         "personaName": input.persona.display_name,
         "messageId": input.message_id,
-        "roomId": input.room_id,
+        "roomId": input.turn_context.room_id,
         "model": input.model,
         "rustRequest": RequestEcho::from(input),
         "rustResponse": response,
@@ -202,7 +203,7 @@ pub fn record_failed_turn(
         "personaId": input.persona.persona_id,
         "personaName": input.persona.display_name,
         "messageId": input.message_id,
-        "roomId": input.room_id,
+        "roomId": input.turn_context.room_id,
         "model": input.model,
         "rustRequest": RequestEcho::from(input),
         "rustResponse": null,
@@ -340,17 +341,20 @@ mod tests {
     use tempfile::tempdir;
 
     fn fake_input() -> RespondInput {
+        use crate::persona::turn_context::TurnContext;
         RespondInput {
             persona: PersonaSlot {
                 persona_id: Uuid::nil(),
                 specialty: "general".to_string(),
                 display_name: "Test Persona".to_string(),
             },
-            room_id: Uuid::nil(),
+            turn_context: TurnContext::arc(
+                Uuid::nil(),
+                vec![],
+                vec!["general".to_string()],
+            ),
             message_id: Uuid::nil(),
             message_text: "hello".to_string(),
-            recent_history: vec![],
-            known_specialties: vec!["general".to_string()],
             other_persona_names: vec![],
             system_prompt: "you are helpful".to_string(),
             model: "test-model".to_string(),
@@ -476,7 +480,7 @@ mod tests {
             "personaId": input.persona.persona_id,
             "personaName": input.persona.display_name,
             "messageId": input.message_id,
-            "roomId": input.room_id,
+            "roomId": input.turn_context.room_id,
             "model": input.model,
             "rustRequest": RequestEcho::from(&input),
             "rustResponse": &response,
