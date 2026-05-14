@@ -335,6 +335,24 @@ pub enum AdmissionDecision {
     },
 }
 
+impl AdmissionDecision {
+    /// Short funnel label for log lines + metrics. Lives next to the
+    /// enum so adding a new variant is a compile-fail at this match
+    /// rather than a silent fall-through (per claude-tab-2 review nit
+    /// on PR #1213 — keeping the label in lockstep with new variants).
+    ///
+    /// Returns one of `"admit" | "drop" | "quarantine"` — stable
+    /// string slugs suitable for grep on log lines and Prometheus
+    /// counter labels.
+    pub fn label(&self) -> &'static str {
+        match self {
+            AdmissionDecision::Admit { .. } => "admit",
+            AdmissionDecision::Drop { .. } => "drop",
+            AdmissionDecision::Quarantine { .. } => "quarantine",
+        }
+    }
+}
+
 /// Categorized reason for dropping a candidate without admitting.
 ///
 /// Distinct from `AdmissionError` (which is for failures of the admission
