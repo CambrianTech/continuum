@@ -36,12 +36,22 @@ use std::time::SystemTime;
 ///
 /// `tier_name()` returns "docker" so logs / pressure-broker telemetry
 /// distinguish it from VRAM ("vram"), DRAM ("dram"), KV cache ("kv-cache").
-#[derive(Debug, Clone, Default)]
-pub struct DockerTierPool;
+#[derive(Debug, Clone)]
+pub struct DockerTierPool {
+    loaded_at_ms: u64,
+}
+
+impl Default for DockerTierPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl DockerTierPool {
     pub fn new() -> Self {
-        Self
+        Self {
+            loaded_at_ms: now_ms(),
+        }
     }
 }
 
@@ -114,11 +124,12 @@ impl ResourcePool for DockerTierPool {
                     pinned_count: 0,
                     // No real "loaded_at" for a sparse disk image —
                     // it's been there since Docker Desktop installed.
-                    // Use now_ms as a stable-per-process value so the
+                    // Use the pool construction time as a stable
+                    // per-process value so the
                     // broker doesn't see a 0 epoch and treat it as
                     // ancient (which would prioritize it for eviction
                     // even though we can't actually evict it yet).
-                    loaded_at: now,
+                    loaded_at: self.loaded_at_ms,
                     last_access_at: now,
                     access_count: 0,
                 }]
@@ -197,6 +208,10 @@ mod tests {
                     entry.key.ends_with("Docker.raw"),
                     "entry key should be the Docker.raw path, got: {}",
                     entry.key
+                );
+                assert_eq!(
+                    entry.loaded_at, pool.loaded_at_ms,
+                    "loaded_at should be stable for the pool instance"
                 );
             }
             _ => {
