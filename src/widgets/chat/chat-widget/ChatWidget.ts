@@ -454,22 +454,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       const contentDiv = globalThis.document.createElement('div');
       contentDiv.className = 'message-content';
 
-      // Adapter content: prefer the DOM-returning path (#1100). Adapters
-      // that have migrated return a fully-built HTMLElement we append
-      // directly. Adapters not yet migrated still return an HTML string
-      // we innerHTML — that path stays until every adapter is migrated.
-      const adapterElement = adapter?.renderMessageElement?.(message, this._myUserId) ?? null;
-      if (adapterElement) {
-        contentDiv.appendChild(adapterElement);
-      } else if (adapter) {
-        contentDiv.innerHTML = adapter.renderMessage(message, this._myUserId);
-      } else {
-        // No adapter — render fallback via textContent to avoid any
-        // HTML interpretation of arbitrary message text.
-        const fallback = globalThis.document.createElement('p');
-        fallback.textContent = message.content?.text || '(no content)';
-        contentDiv.appendChild(fallback);
-      }
+      // Adapter content: ALWAYS the DOM-returning path (#1100). All four
+      // current adapters (Text, Image, URLCard, ToolOutput) implement
+      // `renderMessageElement` so the live message-content slot never
+      // sees `innerHTML` — Lit-bound children inside the message body
+      // survive sibling updates, and user text lives in `.textContent`
+      // not in a concatenated HTML string.
+      this.renderAdapterContentInto(contentDiv, adapter, message);
 
       bubble.appendChild(header);
       bubble.appendChild(contentDiv);
@@ -485,6 +476,38 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       return messageElement;
     };
+  }
+
+  /**
+   * Adapter render seam (#1100). Calls the adapter's DOM-returning path
+   * and appends the result. Defense-in-depth: if a future adapter
+   * forgets to override OR its override returns null on a render
+   * failure, fall back to textContent on the raw message text rather
+   * than re-introducing the innerHTML hole. Logged loudly so the gap
+   * surfaces.
+   *
+   * Extracted from `getRenderFunction()` to keep that arrow function's
+   * cyclomatic complexity at the project's max of 15 — it touches a lot
+   * of conditional setup already.
+   */
+  private renderAdapterContentInto(
+    contentDiv: HTMLElement,
+    adapter: ReturnType<AdapterRegistry['selectAdapter']>,
+    message: ChatMessageEntity
+  ): void {
+    const adapterElement = adapter?.renderMessageElement?.(message, this._myUserId) ?? null;
+    if (adapterElement) {
+      contentDiv.appendChild(adapterElement);
+      return;
+    }
+    if (adapter) {
+      console.warn(
+        `[chat-widget] adapter ${adapter.constructor?.name ?? '<anonymous>'} returned null from renderMessageElement; falling back to textContent. Adapter must implement renderMessageElement (#1100).`
+      );
+    }
+    const fallback = globalThis.document.createElement('p');
+    fallback.textContent = message.content?.text ?? '(no content)';
+    contentDiv.appendChild(fallback);
   }
 
   // Required by EntityScrollerWidget - load function using data/list command
