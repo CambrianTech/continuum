@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { SystemOrchestration } from '../system/core/SystemOrchestrator';
+import { systemOrchestrator } from '../system/orchestration/SystemOrchestrator';
 
 interface OutputFilter {
   shouldShowLine(line: string): boolean;
@@ -249,14 +249,16 @@ async function main(): Promise<void> {
       console.log('✅ System already running and healthy - reusing existing system');
     } else {
       console.log('🚀 No healthy system detected - starting fresh system');
-      // Start the system via SystemOrchestration's testing preset.
-      // (Earlier code imported a non-existent './system-startup' module —
-      // see continuum#1120 for context. The canonical entry for npm-test
-      // is SystemOrchestration.forTesting() in
-      // src/system/core/SystemOrchestrator.ts.)
-      const result = await SystemOrchestration.forTesting();
+      // The canonical orchestrator (system/orchestration/SystemOrchestrator.ts)
+      // exposes 'npm-test' as an EntryPointType in ENTRY_POINT_REQUIREMENTS,
+      // requiring SERVER_READY + BROWSER_READY milestones — exactly what
+      // the test runner needs. The previous SystemOrchestration.forTesting()
+      // shim was a stub that threw 'Not implemented' (continuum#1196).
+      const result = await systemOrchestrator.orchestrate('npm-test');
       if (!result.success) {
-        throw new Error('System startup failed for npm-test mode');
+        throw new Error(
+          `System startup failed for npm-test mode: ${result.error ?? 'unknown error'}`
+        );
       }
     }
     
