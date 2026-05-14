@@ -110,6 +110,7 @@
 | [CONTINUUM-STATE-ARCHITECTURE](CONTINUUM-STATE-ARCHITECTURE.md) | Global system state management: initialization, lifecycle, shutdown |
 | [SYSTEM-CONFIG-ARCHITECTURE](SYSTEM-CONFIG-ARCHITECTURE.md) | Configuration system: sources, merging, validation, hot-reload |
 | [SYSTEM-DAEMON-ARCHITECTURE](SYSTEM-DAEMON-ARCHITECTURE.md) | System daemon design: the orchestrator that manages all other daemons |
+| [PATH-OWNERSHIP](PATH-OWNERSHIP.md) | Ownership contract for `.airc`, `.continuum`, user-local state, and machine-specific path bans |
 | [SYSTEM-PATHS-MIGRATION](SYSTEM-PATHS-MIGRATION.md) | Migration of hardcoded paths to centralized path constants |
 | [ARCHITECTURE_INCONSISTENCIES](ARCHITECTURE_INCONSISTENCIES.md) | Catalog of architectural inconsistencies found during audit |
 | [RUST-TS-INFERENCE-ARCHITECTURE](RUST-TS-INFERENCE-ARCHITECTURE.md) | Architecture for Rust-TypeScript inference boundary: type generation, IPC typing |

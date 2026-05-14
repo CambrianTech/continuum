@@ -177,6 +177,7 @@ src/commands/**/*.d.ts
 
 # Runtime directories (session data, logs, temp files)
 .continuum/
+/src/.airc/
 .continuum-comm/
 .continuum-system/
 .continuum-safe-backup/
