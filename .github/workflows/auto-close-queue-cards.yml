@@ -73,7 +73,7 @@ jobs:
       # Best-effort: never fails the workflow if the nudge step errors.
       # The auto-close above is the load-bearing primitive; the nudge
       # is a UX win on top.
-      - name: Post-merge auto-nudge (queue next for PR author)
+      - name: Post-merge auto-nudge (queue next candidates)
         if: always()
         continue-on-error: true
         env:
@@ -82,24 +82,30 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -uo pipefail
-          # Get top-5 next candidates for the PR author. If the queue
-          # is empty or 'queue next' isn't available in this airc build
-          # yet (the verb shipped in airc#604), skip silently rather
-          # than failing the workflow — auto-close already succeeded.
+          # Get top-5 next candidates from the queue. We intentionally
+          # do NOT pass --owner here — codex review on continuum#1181
+          # caught that the workflow's airc binary (checked out from
+          # CambrianTech/airc:canary) may not yet support that flag in
+          # all build envs, and the nudge silently soft-fails when an
+          # unsupported flag is passed. Until that's stable, the
+          # post-merge comment shows the top-5 unowned-or-stale cards
+          # — useful as a "here's pickable work" surface even without
+          # per-author personalization. Personalization comes back in
+          # a follow-up PR once --owner is guaranteed across all
+          # consumer airc builds.
           if ! .airc-src/airc queue next --help >/dev/null 2>&1; then
             echo "::notice::airc queue next not available in this airc build; skipping post-merge nudge"
             exit 0
           fi
-          NEXT_OUT=$(.airc-src/airc queue next CambrianTech/continuum \
-            --owner "$PR_AUTHOR" --limit 5 2>&1) || {
-            echo "::warning::queue next failed for $PR_AUTHOR; skipping nudge"
+          NEXT_OUT=$(.airc-src/airc queue next CambrianTech/continuum --limit 5 2>&1) || {
+            echo "::warning::queue next failed; skipping nudge"
             echo "$NEXT_OUT" | head -20
             exit 0
           }
-          # If the candidate list is empty (queue clean for this owner),
-          # don't post a comment — empty nudge is noise.
+          # If the candidate list is empty (queue clean), don't post a
+          # comment — empty nudge is noise.
           if ! printf '%s' "$NEXT_OUT" | grep -qE '^## [0-9]+\.'; then
-            echo "::notice::no candidates for $PR_AUTHOR — skipping nudge comment"
+            echo "::notice::no candidates available — skipping nudge comment"
             exit 0
           fi
           # Post as a PR comment with a clear header + the candidate list.
@@ -107,7 +113,8 @@ jobs:
           # code spans) doesn't get shell-interpreted (continuum#1142 lesson).
           BODY_FILE=$(mktemp)
           {
-            printf '## 🎯 Next pickable for @%s\n\n' "$PR_AUTHOR"
+            printf '## 🎯 Next pickable from the queue\n\n'
+            printf '@%s — your PR just merged. ' "$PR_AUTHOR"
             printf 'Auto-fired by [post-merge nudge](https://github.com/CambrianTech/continuum/issues/1179) — closes the "I forgot to look for next work" gap that leaves agents idle between events.\n\n'
             printf '<details>\n<summary>Top candidates from `airc queue next`</summary>\n\n```\n'
             printf '%s\n' "$NEXT_OUT"
