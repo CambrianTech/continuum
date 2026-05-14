@@ -18,161 +18,36 @@
 //! heuristics" (the philosophy this module already preaches).
 //!
 //! Types exported to TypeScript via ts-rs.
+//!
+//! # Module layout (continuum#1208)
+//!
+//! Split out of a single 1231-LOC file into focused submodules:
+//! - [`sleep_state`] — `SleepMode` + `SleepState` (Gate 1 input)
+//! - [`rate_limiter`] — `RateLimiterState` + `RoomRateState` (signal source)
+//! - [`adequacy`] — post-inference response-adequacy check (`check_response_adequacy`)
+//!
+//! This module (the gate orchestrator) owns `FullEvaluateRequest`,
+//! `FullEvaluateResult`, `GateDetails`, `SocialSignals`, and the
+//! `full_evaluate` function that composes the submodules' state. Submodule
+//! types are re-exported at the parent path so existing callers don't
+//! see the move.
+
+pub mod adequacy;
+pub mod rate_limiter;
+pub mod sleep_state;
+
+pub use adequacy::{check_response_adequacy, AdequacyResult, RecentResponse};
+pub use rate_limiter::{RateLimiterState, RoomRateState};
+pub use sleep_state::{SleepMode, SleepState};
 
 use crate::persona::cognition::PersonaCognitionEngine;
 use crate::persona::message_cache::RecentMessageCache;
 use crate::persona::text_analysis;
 use crate::persona::types::{InboxMessage, Modality, SenderType};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::Instant;
 use ts_rs::TS;
 use uuid::Uuid;
-
-// =============================================================================
-// SLEEP MODE (mirrors TypeScript PersonaSleepManager)
-// =============================================================================
-
-/// Voluntary sleep modes — persona controls own attention.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../shared/generated/persona/SleepMode.ts")]
-pub enum SleepMode {
-    #[default]
-    Active,
-    MentionedOnly,
-    HumanOnly,
-    Sleeping,
-    UntilTopic,
-}
-
-/// Per-persona sleep state with optional auto-wake.
-#[derive(Debug, Clone)]
-pub struct SleepState {
-    pub mode: SleepMode,
-    pub reason: String,
-    pub set_at_ms: u64,
-    pub wake_at_ms: Option<u64>,
-}
-
-impl Default for SleepState {
-    fn default() -> Self {
-        Self {
-            mode: SleepMode::Active,
-            reason: String::new(),
-            set_at_ms: 0,
-            wake_at_ms: None,
-        }
-    }
-}
-
-impl SleepState {
-    /// Check if auto-wake time has passed. Returns true if should wake.
-    pub fn should_auto_wake(&self, now_ms: u64) -> bool {
-        if let Some(wake_at) = self.wake_at_ms {
-            now_ms >= wake_at
-        } else {
-            false
-        }
-    }
-
-    /// Get effective mode, accounting for auto-wake.
-    pub fn effective_mode(&self, now_ms: u64) -> SleepMode {
-        if self.should_auto_wake(now_ms) {
-            SleepMode::Active
-        } else {
-            self.mode
-        }
-    }
-}
-
-// =============================================================================
-// RATE LIMITER STATE (mirrors TypeScript RateLimiter)
-// =============================================================================
-
-/// Per-room rate limiting state.
-#[derive(Debug, Clone)]
-pub struct RoomRateState {
-    pub last_response_time_ms: u64,
-    pub response_count: u32,
-}
-
-/// Per-persona rate limiter with per-room tracking.
-#[derive(Debug, Clone)]
-pub struct RateLimiterState {
-    pub rooms: HashMap<Uuid, RoomRateState>,
-    pub min_seconds_between_responses: f64,
-    pub max_responses_per_session: u32,
-}
-
-impl Default for RateLimiterState {
-    fn default() -> Self {
-        Self {
-            rooms: HashMap::new(),
-            min_seconds_between_responses: 10.0,
-            max_responses_per_session: 50,
-        }
-    }
-}
-
-impl RateLimiterState {
-    pub fn new(min_seconds: f64, max_responses: u32) -> Self {
-        Self {
-            rooms: HashMap::new(),
-            min_seconds_between_responses: min_seconds,
-            max_responses_per_session: max_responses,
-        }
-    }
-
-    /// Check if response cap reached for a room.
-    pub fn has_reached_response_cap(&self, room_id: Uuid) -> bool {
-        self.rooms
-            .get(&room_id)
-            .map(|r| r.response_count >= self.max_responses_per_session)
-            .unwrap_or(false)
-    }
-
-    /// Check if rate limited for a room (time-based).
-    pub fn is_rate_limited(&self, room_id: Uuid, now_ms: u64) -> bool {
-        self.rooms
-            .get(&room_id)
-            .map(|r| {
-                let elapsed_seconds = (now_ms - r.last_response_time_ms) as f64 / 1000.0;
-                elapsed_seconds < self.min_seconds_between_responses
-            })
-            .unwrap_or(false)
-    }
-
-    /// Get seconds until rate limit expires. None if not limited.
-    pub fn rate_limit_wait_seconds(&self, room_id: Uuid, now_ms: u64) -> Option<f64> {
-        self.rooms.get(&room_id).and_then(|r| {
-            let elapsed = (now_ms - r.last_response_time_ms) as f64 / 1000.0;
-            if elapsed < self.min_seconds_between_responses {
-                Some(self.min_seconds_between_responses - elapsed)
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Track a response in a room.
-    pub fn track_response(&mut self, room_id: Uuid, now_ms: u64) {
-        let entry = self.rooms.entry(room_id).or_insert(RoomRateState {
-            last_response_time_ms: 0,
-            response_count: 0,
-        });
-        entry.last_response_time_ms = now_ms;
-        entry.response_count += 1;
-    }
-
-    /// Get response count for a room.
-    pub fn response_count(&self, room_id: Uuid) -> u32 {
-        self.rooms
-            .get(&room_id)
-            .map(|r| r.response_count)
-            .unwrap_or(0)
-    }
-}
 
 // =============================================================================
 // REQUEST / RESULT TYPES (ts-rs exported)
@@ -541,89 +416,6 @@ pub fn full_evaluate(
 // =============================================================================
 // TESTS
 // =============================================================================
-
-// =============================================================================
-// POST-INFERENCE ADEQUACY CHECK (Phase 5)
-// =============================================================================
-
-/// A recent AI response to check for adequacy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecentResponse {
-    pub sender_name: String,
-    pub text: String,
-}
-
-/// Result of the post-inference adequacy check.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/persona/AdequacyResult.ts"
-)]
-pub struct AdequacyResult {
-    pub is_adequate: bool,
-    pub confidence: f32,
-    pub reason: String,
-    /// Name of the AI that already answered (if adequate)
-    #[ts(optional)]
-    pub responder_name: Option<String>,
-    /// How long the check took (microseconds)
-    #[ts(type = "number")]
-    pub check_time_us: u64,
-}
-
-/// Check if any existing AI responses already adequately answer the original question.
-///
-/// ONE Rust call replaces N individual text-similarity IPC calls.
-///
-/// Thresholds:
-/// - Minimum response length: 100 chars
-/// - Minimum similarity: 0.2 (word n-gram Jaccard)
-/// - Confidence: similarity + 0.5 (capped at 1.0)
-pub fn check_response_adequacy(
-    original_text: &str,
-    responses: &[RecentResponse],
-) -> AdequacyResult {
-    let start = Instant::now();
-
-    // Pre-compute original text ngrams once — reuse across all response comparisons
-    let original_ngrams = text_analysis::build_word_ngrams(original_text);
-
-    for response in responses {
-        // Skip short responses (likely not adequate)
-        if response.text.len() < 100 {
-            continue;
-        }
-
-        // Check if response is related to original question
-        let response_ngrams = text_analysis::build_word_ngrams(&response.text);
-        let similarity = text_analysis::jaccard_from_sets(&original_ngrams, &response_ngrams);
-
-        // Substantial response (>100 chars) that's related to the question (>0.2 similarity)
-        if similarity > 0.2 {
-            let confidence = (similarity as f32 + 0.5).min(1.0);
-            return AdequacyResult {
-                is_adequate: true,
-                confidence,
-                reason: format!(
-                    "{} already provided a substantial response ({} chars, {}% related)",
-                    response.sender_name,
-                    response.text.len(),
-                    (similarity * 100.0) as u32
-                ),
-                responder_name: Some(response.sender_name.clone()),
-                check_time_us: start.elapsed().as_micros() as u64,
-            };
-        }
-    }
-
-    AdequacyResult {
-        is_adequate: false,
-        confidence: 0.0,
-        reason: "No adequate responses found".into(),
-        responder_name: None,
-        check_time_us: start.elapsed().as_micros() as u64,
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1087,145 +879,8 @@ mod tests {
         assert_ne!(result.gate, "sleep_mode");
     }
 
-    #[test]
-    fn test_track_response_increments() {
-        let mut rate_limiter = RateLimiterState::new(10.0, 50);
-        let room_id = Uuid::new_v4();
-        let now = now_ms();
-
-        assert_eq!(rate_limiter.response_count(room_id), 0);
-        assert!(!rate_limiter.has_reached_response_cap(room_id));
-
-        rate_limiter.track_response(room_id, now);
-        assert_eq!(rate_limiter.response_count(room_id), 1);
-
-        rate_limiter.track_response(room_id, now);
-        assert_eq!(rate_limiter.response_count(room_id), 2);
-    }
-
-    #[test]
-    fn test_rate_limit_expired() {
-        let mut rate_limiter = RateLimiterState::new(10.0, 50);
-        let room_id = Uuid::new_v4();
-        let now = now_ms();
-
-        // Response 15 seconds ago — outside 10s window
-        rate_limiter.track_response(room_id, now - 15_000);
-
-        assert!(!rate_limiter.is_rate_limited(room_id, now));
-    }
-
-    // ── Adequacy Check (Phase 5) ──────────────────────────────────────
-
-    #[test]
-    fn test_adequacy_no_responses() {
-        let result = check_response_adequacy("What is Rust?", &[]);
-        assert!(!result.is_adequate);
-        assert_eq!(result.confidence, 0.0);
-    }
-
-    #[test]
-    fn test_adequacy_short_response_ignored() {
-        let responses = vec![RecentResponse {
-            sender_name: "Helper".into(),
-            text: "Rust is good.".into(), // < 100 chars
-        }];
-        let result = check_response_adequacy("What is Rust?", &responses);
-        assert!(!result.is_adequate, "Short response should be ignored");
-    }
-
-    #[test]
-    fn test_adequacy_substantial_related_response() {
-        // Jaccard n-gram = |intersection|/|union|. Long responses dilute the score
-        // because the union grows much faster than the intersection. Use a focused
-        // response that echoes question terms without excessive additional vocabulary.
-        let original = "Can someone explain how PersonaGenome activateSkill works with LRU eviction and memory budget for paging adapters in and out?";
-        let response_text = "PersonaGenome activateSkill works by checking LRU eviction \
-                   scores against memory budget. Adapters with low LRU scores get paged \
-                   out to free budget for the new skill adapter being paged in.";
-        let sim = text_analysis::jaccard_ngram_similarity(original, response_text);
-        let responses = vec![RecentResponse {
-            sender_name: "CodeReview AI".into(),
-            text: response_text.into(),
-        }];
-        let result = check_response_adequacy(original, &responses);
-        assert!(
-            result.is_adequate,
-            "Substantial related response should be adequate (similarity={sim:.3})"
-        );
-        assert!(result.confidence > 0.5);
-        assert_eq!(result.responder_name.as_deref(), Some("CodeReview AI"));
-    }
-
-    #[test]
-    fn test_adequacy_unrelated_long_response() {
-        let original = "What is Rust?";
-        let responses = vec![RecentResponse {
-            sender_name: "Helper".into(),
-            text: "The weather today is absolutely wonderful with clear skies and temperatures around \
-                   seventy degrees. Perfect conditions for outdoor activities like hiking, swimming, \
-                   or simply enjoying a picnic in the park with friends and family members.".into(),
-        }];
-        let result = check_response_adequacy(original, &responses);
-        assert!(
-            !result.is_adequate,
-            "Unrelated response should not be adequate"
-        );
-    }
-
-    #[test]
-    fn test_adequacy_first_adequate_wins() {
-        // Longer question with more terms gives Jaccard more intersection surface area
-        let original = "How does Rust handle memory management with ownership borrowing and lifetimes for safe concurrent access?";
-        let responses = vec![
-            RecentResponse {
-                sender_name: "Short AI".into(),
-                text: "Ownership.".into(), // Too short (<100 chars)
-            },
-            RecentResponse {
-                sender_name: "First Good AI".into(),
-                text: "Rust handle memory management with ownership and borrowing rules. \
-                       Lifetimes ensure safe concurrent access. Memory management in Rust \
-                       is ownership borrowing and lifetimes working together for safe access."
-                    .into(),
-            },
-            RecentResponse {
-                sender_name: "Second Good AI".into(),
-                text: "Rust handle memory management with ownership borrowing and lifetimes. \
-                       Safe concurrent access is guaranteed by the borrowing rules and lifetimes \
-                       for memory management in Rust."
-                    .into(),
-            },
-        ];
-        let result = check_response_adequacy(original, &responses);
-        assert!(result.is_adequate);
-        assert_eq!(
-            result.responder_name.as_deref(),
-            Some("First Good AI"),
-            "First adequate response should win"
-        );
-    }
-
-    #[test]
-    fn test_adequacy_check_is_fast() {
-        let original = "What is the meaning of life?";
-        let responses: Vec<RecentResponse> = (0..10).map(|i| RecentResponse {
-            sender_name: format!("AI-{i}"),
-            text: format!("Response number {i} that contains enough text to exceed the minimum character \
-                           threshold of one hundred characters to be considered for adequacy checking purposes. \
-                           This should be sufficient length."),
-        }).collect();
-        let result = check_response_adequacy(original, &responses);
-        assert!(
-            result.check_time_us < 10_000,
-            "10 responses should be checked in <10ms, took {}μs",
-            result.check_time_us
-        );
-    }
-
-    #[test]
-    fn export_bindings_adequacyresult() {
-        let cfg = ts_rs::Config::default();
-        AdequacyResult::export_all(&cfg).unwrap();
-    }
+    // RateLimiterState unit tests + the post-inference adequacy tests
+    // moved to their respective submodules in continuum#1208:
+    //   - rate_limiter::tests
+    //   - adequacy::tests
 }
