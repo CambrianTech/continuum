@@ -22,6 +22,7 @@ pub mod code;
 pub mod cognition;
 pub mod concurrent;
 pub mod ffi;
+pub mod forge;
 pub mod gpu;
 pub mod http;
 pub mod inference;
