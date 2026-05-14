@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { startSystem } from './system-startup';
+import { SystemOrchestration } from '../system/core/SystemOrchestrator';
 
 interface OutputFilter {
   shouldShowLine(line: string): boolean;
@@ -249,8 +249,15 @@ async function main(): Promise<void> {
       console.log('✅ System already running and healthy - reusing existing system');
     } else {
       console.log('🚀 No healthy system detected - starting fresh system');
-      // Start the system using shared startup logic for testing
-      await startSystem('npm-test');
+      // Start the system via SystemOrchestration's testing preset.
+      // (Earlier code imported a non-existent './system-startup' module —
+      // see continuum#1120 for context. The canonical entry for npm-test
+      // is SystemOrchestration.forTesting() in
+      // src/system/core/SystemOrchestrator.ts.)
+      const result = await SystemOrchestration.forTesting();
+      if (!result.success) {
+        throw new Error('System startup failed for npm-test mode');
+      }
     }
     
     // Run tests with verbose flag
