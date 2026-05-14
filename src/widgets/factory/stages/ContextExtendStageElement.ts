@@ -2,7 +2,7 @@
  * ContextExtendStageElement — UI for the alloy 'context-extend' stage
  *
  * Controls: target length, RoPE method (YaRN, NTK, linear, dynamic-NTK), training steps
- * Maps 1:1 to ForgeAlloy ContextExtendStage schema.
+ * Maps 1:1 to ForgeRecipe ContextExtendStage schema.
  */
 
 import { html, css, reactive, type TemplateResult, type CSSResultGroup } from '../../shared/ReactiveWidget';

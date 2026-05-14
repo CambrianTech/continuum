@@ -3,7 +3,7 @@
  *
  * MoE expert selection: keep the best N experts, remove the rest.
  * Controls: keep count, selection strategy, profiling config
- * Maps 1:1 to ForgeAlloy ExpertPruneStage schema.
+ * Maps 1:1 to ForgeRecipe ExpertPruneStage schema.
  */
 
 import { html, css, reactive, type TemplateResult, type CSSResultGroup } from '../../shared/ReactiveWidget';

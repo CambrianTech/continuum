@@ -2,7 +2,7 @@
  * LoraStageElement — UI for the alloy 'lora' stage
  *
  * Controls: rank, alpha, dropout, target modules, QLoRA config, dataset, epochs, merge
- * Maps 1:1 to ForgeAlloy LoraStage schema.
+ * Maps 1:1 to ForgeRecipe LoraStage schema.
  */
 
 import { html, css, reactive, type TemplateResult, type CSSResultGroup } from '../../shared/ReactiveWidget';

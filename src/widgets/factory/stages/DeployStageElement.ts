@@ -1,7 +1,7 @@
 /**
  * DeployStageElement — Output stage: deploy to grid or endpoint
  *
- * Maps to ForgeAlloy DeployStage.
+ * Maps to ForgeRecipe DeployStage.
  * Target node, health check, warmup, auto-scale.
  */
 

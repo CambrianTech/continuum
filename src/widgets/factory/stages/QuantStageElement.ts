@@ -1,7 +1,7 @@
 /**
  * QuantStageElement — Output stage: quantization for device targets
  *
- * Maps to ForgeAlloy QuantStage.
+ * Maps to ForgeRecipe QuantStage.
  * Format (GGUF/MLX/ONNX), quant types, device targets.
  */
 

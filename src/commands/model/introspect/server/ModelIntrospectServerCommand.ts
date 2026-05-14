@@ -2,7 +2,7 @@
  * Model Introspect Command - Server Implementation
  *
  * Introspects a model to detect its architecture, capabilities, and which
- * ForgeAlloy stages can be applied. Returns the model's current state as
+ * ForgeRecipe stages can be applied. Returns the model's current state as
  * an alloy-compatible spec. Tries local HF cache first, then SSH to grid
  * nodes, then HF API.
  */

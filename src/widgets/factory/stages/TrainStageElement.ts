@@ -2,7 +2,7 @@
  * TrainStageElement — UI for the alloy 'train' stage
  *
  * Controls: domain, dataset, steps, learning rate, batch size, scheduler, precision, optimizations
- * Maps 1:1 to ForgeAlloy TrainStage schema.
+ * Maps 1:1 to ForgeRecipe TrainStage schema.
  */
 
 import { html, css, reactive, type TemplateResult, type CSSResultGroup } from '../../shared/ReactiveWidget';
