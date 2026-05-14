@@ -23,6 +23,7 @@ pub mod engram;
 pub mod evaluator;
 pub mod genome_paging;
 pub mod inbox;
+pub mod inbox_admission;
 pub mod media_policy;
 pub mod message_cache;
 pub mod model_selection;
@@ -63,6 +64,10 @@ pub use genome_paging::{
     GenomePagingState,
 };
 pub use inbox::{PersonaInbox, PersonaInboxFrame, PersonaInboxFrameMetrics};
+pub use inbox_admission::{
+    content_hash_sha256, inbox_message_to_candidate, inbox_message_to_origin,
+    InboxAdmissionRunner, TrustMapping,
+};
 pub use message_cache::{
     CachedMessage, ContentDedupResult, ContentDeduplicator, EchoChamberResult, RecentMessageCache,
     SenderCategory,
