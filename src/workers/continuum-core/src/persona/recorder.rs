@@ -361,6 +361,7 @@ mod tests {
             is_voice: false,
             message_media: vec![],
             capabilities: HashSet::new(),
+            recalled_engrams: vec![],
         }
     }
 

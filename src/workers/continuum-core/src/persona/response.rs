@@ -105,6 +105,26 @@ pub struct RespondInput {
     /// declaration travels with the request — registry-key drift can't
     /// silently disable vision.
     pub capabilities: std::collections::HashSet<crate::model_registry::Capability>,
+    /// Recalled engrams (per-persona admitted memory) injected as
+    /// system-prompt context (continuum#1211 PR-2). The IPC layer
+    /// pulls these from `AdmissionState::recall_recent` after the
+    /// inline admission gate runs, then passes them through so
+    /// `prompt_assembly` can render them as a `[Recent Memory]`
+    /// section. Empty when the persona has no admission state OR no
+    /// admitted engrams yet — both are normal early-life states and
+    /// neither blocks the response cycle.
+    ///
+    /// Per-persona (each persona's admission store is independent)
+    /// so this lives on `RespondInput`, not the per-turn-shared
+    /// `TurnContext` (#1206) — different personas in the same room
+    /// recall different memory.
+    ///
+    /// `String` (the engram's content text) rather than `Engram`
+    /// because prompt_assembly only needs the text. Keeping the full
+    /// `Engram` type out of this layer means a future structural
+    /// change to engrams (kind enum, embeddings, recall_keys reshape)
+    /// doesn't ripple into the prompt path.
+    pub recalled_engrams: Vec<String>,
 }
 
 /// What `respond()` returns.
@@ -395,6 +415,13 @@ async fn run_render(
         social_signals: None,
         multi_party_strategy,
         other_persona_names: input.other_persona_names.clone(),
+        // Recalled engrams populated by the IPC layer post-admission
+        // (continuum#1211 PR-2). respond() is just a pass-through —
+        // caller decides how many engrams to recall (sensible default
+        // is 5-10, see modules/cognition.rs cognition/respond
+        // handler). Empty when admission was skipped or persona has
+        // no memory yet.
+        recalled_engrams: input.recalled_engrams.clone(),
     };
 
     let assembled = assemble(&prompt_input);

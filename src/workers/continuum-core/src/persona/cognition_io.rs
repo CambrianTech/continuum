@@ -263,6 +263,14 @@ pub fn build_respond_input(
         // declared them at construction; the projection doesn't
         // second-guess.
         capabilities: ctx.capabilities.iter().copied().collect(),
+        // Recalled engrams default empty here. The IPC layer
+        // (`cognition/respond` handler in modules/cognition.rs)
+        // populates this AFTER the inline admission gate runs and
+        // BEFORE calling respond(). Keeping the default empty means
+        // any RespondInput constructed outside the IPC path (tests,
+        // direct callers) gets a no-op memory render — same shape
+        // as the system pre-#1211 PR-2.
+        recalled_engrams: Vec::new(),
     })
 }
 
