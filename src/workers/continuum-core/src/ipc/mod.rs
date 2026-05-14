@@ -11,6 +11,7 @@ use crate::modules::cognition::{CognitionModule, CognitionState};
 use crate::modules::data::DataModule;
 use crate::modules::dataset::DatasetModule;
 use crate::modules::embedding::EmbeddingModule;
+use crate::modules::forge::ForgeModule;
 use crate::modules::gpu::GpuModule;
 use crate::modules::grid::GridModule;
 use crate::modules::health::HealthModule;
@@ -838,6 +839,11 @@ pub fn start_server(
 
     // Phase 1: GpuModule (GPU stats + pressure IPC)
     runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
+
+    // ForgeModule (continuum#1164 Phase 4 stub — forge/run IPC).
+    // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
+    // real foundry executor.
+    runtime.register(Arc::new(ForgeModule::new()));
 
     // Phase 1: PersonaAllocatorModule (hardware-aware persona allocation)
     runtime.register(Arc::new(PersonaAllocatorModule::new(gpu_manager.clone())));
