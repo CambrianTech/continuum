@@ -16,9 +16,11 @@
 //! - `mod.rs` (this file) — orchestration: `analyze` entry, cache +
 //!   single-flight concurrency, inference call, cache-layer tests.
 
+pub mod error;
 pub mod prompt;
 pub mod types;
 
+pub use error::AnalysisError;
 pub use types::{AnalysisInput, RecentMessage};
 
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
@@ -66,7 +68,7 @@ static ANALYSIS_CACHE: Lazy<Arc<DashMap<String, SharedAnalysis>>> =
 ///      map so a follow-up cache miss starts a fresh analysis
 ///
 /// Type alias keeps the IN_FLIGHT static signature legible.
-type SharedAnalysisFuture = Shared<BoxFuture<'static, Result<SharedAnalysis, String>>>;
+type SharedAnalysisFuture = Shared<BoxFuture<'static, Result<SharedAnalysis, AnalysisError>>>;
 
 static IN_FLIGHT: Lazy<Arc<ParkingMutex<HashMap<String, SharedAnalysisFuture>>>> =
     Lazy::new(|| Arc::new(ParkingMutex::new(HashMap::new())));
@@ -93,10 +95,14 @@ const DEFAULT_ANALYSIS_PROVIDER: &str = "local";
 /// inference via `IN_FLIGHT` — persona A starts analyzing, persona B
 /// awaits the same future, both get the same result.
 ///
-/// Returns `Err` if the model output can't be parsed into the contract
-/// shape — failing loud is right; silent fallback to a degraded
-/// analysis would mask a real model regression.
-pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, String> {
+/// Returns `Err(AnalysisError)` if the model output can't be parsed
+/// into the contract shape — failing loud is right; silent fallback
+/// to a degraded analysis would mask a real model regression. Typed
+/// error so callers can pattern-match on the failure mode (#1207):
+///   - MissingEnvelope: model emitted prose, not JSON
+///   - MissingField / EmptyField: structural shape OK but content gap
+///   - InferenceFailed: provider-side failure (timeout, API error, etc.)
+pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisError> {
     let cache_key = compute_cache_key(&input);
 
     // L1 hit: return immediately, mark from_cache for telemetry.
@@ -204,7 +210,10 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-async fn run_analysis(input: &AnalysisInput, cache_key: &str) -> Result<SharedAnalysis, String> {
+async fn run_analysis(
+    input: &AnalysisInput,
+    cache_key: &str,
+) -> Result<SharedAnalysis, AnalysisError> {
     let start = SystemTime::now();
     let prompt_text = build_prompt(input);
 
@@ -250,7 +259,12 @@ async fn run_analysis(input: &AnalysisInput, cache_key: &str) -> Result<SharedAn
     // Acquire the registry read lock for the duration of the call.
     let registry = global_registry();
     let registry_guard = registry.read().await;
-    let response = generate_text(&registry_guard, request).await?;
+    // Provider-side errors are opaque strings (the provider has its
+    // own typed-error space we don't want to leak). Wrap into the
+    // typed InferenceFailed variant so callers can pattern-match.
+    let response = generate_text(&registry_guard, request)
+        .await
+        .map_err(AnalysisError::from_inference)?;
 
     // qwen3.5-family models emit <think>...</think> reasoning before the
     // user-visible output. parse_model_output wants the JSON envelope; if
