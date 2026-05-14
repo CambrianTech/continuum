@@ -35,8 +35,8 @@
 //!   not a single file. Returns `Probe::Unsupported`; PR-2 wires
 //!   `docker system df --format json`.
 
+use crate::paths::docker::{raw_image_path, DockerRawPath};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use ts_rs::TS;
 
 /// Result of probing the Docker storage tier on the current host.
@@ -117,12 +117,34 @@ impl DockerTierProbe {
     }
 
     /// macOS-specific probe. Inspects the Docker Desktop sparse disk
-    /// image at the standard install path. `stat(2)` returns both the
-    /// apparent size (`st_size`) and the on-disk block count
-    /// (`st_blocks` × 512 bytes).
+    /// image at the path resolved by `paths::docker::raw_image_path()`.
+    /// `stat(2)` returns both the apparent size (`st_size`) and the
+    /// on-disk block count (`st_blocks` × 512 bytes).
+    ///
+    /// Defers path resolution to the policy module so the same path
+    /// answer is shared by future consumers (cap-on-install logic in
+    /// #1222 PR-2, etc.) without copy-pasting the path string.
     #[cfg(target_os = "macos")]
     fn probe_macos() -> Self {
-        let path = macos_docker_raw_path();
+        let path = match raw_image_path() {
+            DockerRawPath::Resolved(p) => p,
+            DockerRawPath::HomeUnset => {
+                return Self::Unsupported {
+                    os: "macos".to_string(),
+                    reason: "$HOME env var not set; cannot resolve \
+                             ~/Library/Containers/com.docker.docker path"
+                        .to_string(),
+                };
+            }
+            DockerRawPath::Unsupported(os) => {
+                return Self::Unsupported {
+                    os: os.to_string(),
+                    reason: "paths::docker::raw_image_path returned Unsupported \
+                             from macos branch — should be unreachable"
+                        .to_string(),
+                };
+            }
+        };
         let path_string = path.display().to_string();
         match std::fs::metadata(&path) {
             Ok(meta) => {
@@ -150,21 +172,6 @@ impl DockerTierProbe {
             reason: "probe_macos() called on non-macos host".to_string(),
         }
     }
-}
-
-/// Standard install path of the Docker Desktop sparse disk image on
-/// macOS. Resolved relative to `$HOME` so it works under both Homebrew
-/// + standalone installs (both put the file at the same Library path).
-#[cfg(target_os = "macos")]
-fn macos_docker_raw_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    PathBuf::from(home).join("Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw")
-}
-
-#[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
-fn macos_docker_raw_path() -> PathBuf {
-    PathBuf::new()
 }
 
 #[cfg(test)]
