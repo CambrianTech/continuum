@@ -317,8 +317,14 @@ impl ServiceModule for CognitionModule {
                     .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
+                // The TS-IPC `cognition/admit-inbox-message` caller wants
+                // the trace seam-count back in the response (it surfaces
+                // funnel telemetry to the TS observer), so this site DOES
+                // build a trace and passes Some. The in-process inline
+                // gate (`run_inline_admission_gate` below) passes None
+                // because it doesn't propagate the trace anywhere.
                 let mut trace = crate::persona::trace::CognitionTrace::new();
-                match persona.admission.admit(&inbox_msg, &mut trace) {
+                match persona.admission.admit(&inbox_msg, Some(&mut trace)) {
                     Ok(decision) => Ok(CommandResult::Json(serde_json::json!({
                         "decision": decision,
                         "engram_count": persona.admission.engram_count(),
@@ -1434,8 +1440,17 @@ pub(crate) fn run_inline_admission_gate(
         return InlineAdmissionOutcome::NoPersona;
     };
 
-    let mut admission_trace = crate::persona::trace::CognitionTrace::new();
-    match persona.admission.admit(&inbox_msg, &mut admission_trace) {
+    // Pass `None` for the trace — the inline gate doesn't propagate
+    // it anywhere (the cognition/respond IPC handler doesn't surface
+    // an admission trace seam to its caller; the recorder doesn't
+    // capture admission seams as part of the per-turn fixture). With
+    // `None`, the admission codepath skips `record_seam` entirely:
+    // no `now_ms()` syscall, no `serde_json::json!` Map allocation,
+    // no String allocations for seam name/metadata. Cuts ~7
+    // allocations per chat turn per persona. The TS-IPC
+    // `cognition/admit-inbox-message` handler still passes `Some` —
+    // it surfaces the seam count in the response.
+    match persona.admission.admit(&inbox_msg, None) {
         Ok(decision) => {
             let label = decision.label();
             // Skip Admit — common case, no allocation. Drop +

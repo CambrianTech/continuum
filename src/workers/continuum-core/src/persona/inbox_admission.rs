@@ -254,7 +254,7 @@ impl<R: IsMemorable> InboxAdmissionRunner<R> {
         msg: &InboxMessage,
         seen_content: &'a dyn SeenContentLookup,
         seen_events: &'a dyn SeenEventLookup,
-        trace: &mut CognitionTrace,
+        trace: Option<&mut CognitionTrace>,
     ) -> Result<AdmissionDecision, AdmissionError> {
         let candidate = inbox_message_to_candidate(msg, &self.trust_mapping);
         let ctx = AdmissionContext::new(&self.config, seen_content, seen_events);
@@ -482,7 +482,7 @@ mod tests {
         );
 
         let decision = runner
-            .admit(&msg, &content, &events, &mut trace)
+            .admit(&msg, &content, &events, Some(&mut trace))
             .expect("well-formed message should admit cleanly");
         match decision {
             AdmissionDecision::Admit { engram, .. } => {
@@ -511,7 +511,7 @@ mod tests {
         let mut trace = CognitionTrace::new();
         let msg = synthetic_message("short", SenderType::Human);
 
-        match runner.admit(&msg, &content, &events, &mut trace).unwrap() {
+        match runner.admit(&msg, &content, &events, Some(&mut trace)).unwrap() {
             AdmissionDecision::Drop { reason: AdmissionDropReason::NotMemorable { .. } } => {}
             other => panic!("expected Drop NotMemorable, got {other:?}"),
         }
@@ -532,7 +532,7 @@ mod tests {
         let mut trace = CognitionTrace::new();
 
         let msg = synthetic_message(content_text, SenderType::Human);
-        match runner.admit(&msg, &content, &events, &mut trace).unwrap() {
+        match runner.admit(&msg, &content, &events, Some(&mut trace)).unwrap() {
             AdmissionDecision::Drop { reason: AdmissionDropReason::Duplicate { existing_engram_id } } => {
                 assert_eq!(existing_engram_id, existing);
             }
@@ -555,7 +555,7 @@ mod tests {
         );
 
         let decision = runner
-            .admit(&msg, &content, &events, &mut trace)
+            .admit(&msg, &content, &events, Some(&mut trace))
             .expect("system messages reach SelfTrust which clears any threshold");
         assert!(matches!(decision, AdmissionDecision::Admit { .. }));
     }
@@ -575,7 +575,7 @@ mod tests {
             SenderType::Persona,
         );
 
-        match runner.admit(&msg, &content, &events, &mut trace) {
+        match runner.admit(&msg, &content, &events, Some(&mut trace)) {
             Err(AdmissionError::TrustBoundaryRejected { source_trust, threshold }) => {
                 assert_eq!(source_trust, TrustState::Authenticated);
                 assert_eq!(threshold, TrustState::IntragridMember);
@@ -630,7 +630,7 @@ mod tests {
         // via the custom recipe — proves the custom recipe is the one being
         // consulted.
         let msg = synthetic_message("short", SenderType::Human);
-        let decision = runner.admit(&msg, &content, &events, &mut trace).unwrap();
+        let decision = runner.admit(&msg, &content, &events, Some(&mut trace)).unwrap();
         assert!(matches!(decision, AdmissionDecision::Admit { .. }));
     }
 
@@ -655,7 +655,7 @@ mod tests {
                 ),
                 &content,
                 &events,
-                &mut trace,
+                Some(&mut trace),
             );
         }
         assert_eq!(trace.seam_count(), 1);
@@ -668,7 +668,7 @@ mod tests {
                 &synthetic_message("short", SenderType::Human),
                 &content,
                 &events,
-                &mut trace,
+                Some(&mut trace),
             );
         }
         assert_eq!(trace.seam_count(), 2);
