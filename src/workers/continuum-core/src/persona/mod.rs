@@ -36,6 +36,7 @@ pub mod resource_forecast;
 pub mod response;
 pub mod self_task_generator;
 pub mod text_analysis;
+pub mod turn_context;
 pub mod types;
 pub mod unified;
 
@@ -77,5 +78,6 @@ pub use message_cache::{
 pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionError, ModelSelectionRequest, ModelSelectionResult,
 };
+pub use turn_context::TurnContext;
 pub use types::*;
 pub use unified::PersonaCognition;

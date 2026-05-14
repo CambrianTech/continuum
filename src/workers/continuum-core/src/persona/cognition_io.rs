@@ -36,6 +36,7 @@ use crate::cognition::PersonaSlot;
 use crate::cognition::RecentMessage;
 use crate::model_registry::Capability;
 use crate::persona::response::RespondInput;
+use crate::persona::turn_context::TurnContext;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -226,13 +227,28 @@ pub fn build_respond_input(
     let message_id = signal.message_id.unwrap_or(Uuid::nil());
     let room_id = ctx.room_id.unwrap_or(Uuid::nil());
 
+    // Per-turn shared context. Hoisting the room-level fields
+    // (room_id + recent_history + known_specialties) into an
+    // Arc<TurnContext> is the continuum#1206 perf move: with N
+    // personas responding to the same message, every persona's
+    // RespondInput now shares one allocation instead of N deep
+    // clones of identical data. Internally inside respond() the
+    // savings compound (analyze + render + recorder all share via
+    // the Arc instead of cloning). When the IPC layer later batches
+    // N personas into one call (#1206 PR-2 / #1201 RTOS-for-AI),
+    // building the TurnContext once and Arc-cloning it per persona
+    // is the unblocked next step.
+    let turn_context = TurnContext::arc(
+        room_id,
+        ctx.recent_history.clone(),
+        ctx.known_specialties.clone(),
+    );
+
     Ok(RespondInput {
         persona: ctx.slot(),
-        room_id,
+        turn_context,
         message_id,
         message_text: signal.text.clone(),
-        recent_history: ctx.recent_history.clone(),
-        known_specialties: ctx.known_specialties.clone(),
         other_persona_names: ctx.other_persona_names.clone(),
         system_prompt: ctx.system_prompt.clone(),
         model: ctx.model.clone(),
@@ -400,5 +416,27 @@ mod tests {
         assert!(input.capabilities.contains(&Capability::Vision));
         assert!(input.capabilities.contains(&Capability::ToolUse));
         assert_eq!(input.capabilities.len(), 2);
+    }
+
+    /// What this catches (continuum#1206): the projection populates
+    /// `turn_context` with the room-level fields from PersonaContext.
+    /// Hoisted fields are no longer accessed via `input.room_id`
+    /// etc. — they live on `input.turn_context`. If a future refactor
+    /// accidentally puts `room_id` back on `RespondInput` directly,
+    /// this test catches the regression.
+    #[test]
+    fn projection_populates_turn_context() {
+        let mut ctx = empty_ctx();
+        let room_id = Uuid::new_v4();
+        ctx.room_id = Some(room_id);
+        ctx.known_specialties = vec!["code".to_string(), "general".to_string()];
+
+        let input = build_respond_input(&chat_signal("hi"), &ctx).unwrap();
+        assert_eq!(input.turn_context.room_id, room_id);
+        assert_eq!(
+            input.turn_context.known_specialties,
+            vec!["code".to_string(), "general".to_string()],
+        );
+        assert!(input.turn_context.recent_history.is_empty());
     }
 }
