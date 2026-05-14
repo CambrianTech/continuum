@@ -35,6 +35,7 @@ export type { VideoInput } from './ai';
 export * from './airc';
 export * from './code';
 export * from './cognition';
+export * from './comms';
 export * from './dataset';
 export * from './forge';
 export * from './gpu';

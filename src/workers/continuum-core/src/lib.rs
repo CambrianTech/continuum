@@ -20,6 +20,7 @@ pub mod ai;
 pub mod airc;
 pub mod audio_constants;
 pub mod code;
+pub mod comms;
 pub mod cognition;
 pub mod concurrent;
 pub mod ffi;
