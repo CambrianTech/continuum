@@ -25,13 +25,12 @@ pub use types::{AnalysisInput, RecentMessage};
 
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::types::SharedAnalysis;
+use crate::concurrency::{ConcurrencyPolicy, TokioConcurrencyPolicy};
 use crate::modules::ai_provider::{generate_text, global_registry};
 use dashmap::DashMap;
-use futures::future::{BoxFuture, FutureExt, Shared};
+use futures::FutureExt;
 use once_cell::sync::Lazy;
-use parking_lot::Mutex as ParkingMutex;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -46,32 +45,12 @@ use prompt::{
 static ANALYSIS_CACHE: Lazy<Arc<DashMap<String, SharedAnalysis>>> =
     Lazy::new(|| Arc::new(DashMap::new()));
 
-/// In-flight single-flight tracker. When persona A starts analyzing
-/// message M and persona B requests the same analysis a few ms later,
-/// B awaits A's result instead of firing a second inference.
-///
-/// Implementation (perf, #1204): each in-flight request stores a
-/// `Shared<BoxFuture<...>>` — N concurrent awaiters .await the SAME
-/// future and get the same result with no polling, no inner mutex,
-/// no per-tick lock acquisition. The outer map is guarded by a
-/// `parking_lot::Mutex` instead of `tokio::sync::Mutex` because the
-/// critical section (HashMap get/insert/remove) is microseconds and
-/// never spans an `.await`. parking_lot is ~3x cheaper for that
-/// pattern than tokio's async-aware mutex.
-///
-/// Lifecycle:
-///   1. analyzer task acquires the parking mutex, inserts a fresh
-///      Shared future built from `run_analysis(...).boxed().shared()`
-///   2. all subsequent callers (analyzer + awaiters) `.await` the
-///      same Shared and receive Result by clone
-///   3. once the future resolves, analyzer removes the key from the
-///      map so a follow-up cache miss starts a fresh analysis
-///
-/// Type alias keeps the IN_FLIGHT static signature legible.
-type SharedAnalysisFuture = Shared<BoxFuture<'static, Result<SharedAnalysis, AnalysisError>>>;
-
-static IN_FLIGHT: Lazy<Arc<ParkingMutex<HashMap<String, SharedAnalysisFuture>>>> =
-    Lazy::new(|| Arc::new(ParkingMutex::new(HashMap::new())));
+/// Shared single-flight policy. When persona A starts analyzing message M and
+/// persona B requests the same analysis a few ms later, B awaits A's result
+/// instead of firing a second inference.
+static ANALYSIS_CONCURRENCY: Lazy<
+    Arc<dyn ConcurrencyPolicy<String, SharedAnalysis, AnalysisError>>,
+> = Lazy::new(|| Arc::new(TokioConcurrencyPolicy::new()));
 
 /// Cache size cap. Old entries evicted FIFO when over.
 const CACHE_MAX_ENTRIES: usize = 200;
@@ -117,54 +96,24 @@ pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisErr
         ANALYSIS_CACHE.remove(&cache_key);
     }
 
-    // Single-flight via Shared<BoxFuture> (#1204). Two paths:
-    //
-    //   - First caller for this cache_key: builds a fresh Shared
-    //     future and registers it in IN_FLIGHT. They are also the
-    //     analyzer — running the future drives the inference. They
-    //     additionally own cleanup (cache the result, remove the
-    //     IN_FLIGHT entry).
-    //
-    //   - Subsequent callers: clone the registered Shared future and
-    //     .await it. Both arms of `analyze` collapse onto the SAME
-    //     underlying inference future — N awaiters share one future
-    //     poll, no busy-loop, no inner mutex.
-    //
-    // Critical section under the parking mutex is the HashMap
-    // get/insert only — never spans an .await — so a sync mutex is
-    // both safe and cheaper than tokio::Mutex would be here.
-    let (is_analyzer, fut) = {
-        let mut inflight = IN_FLIGHT.lock();
-        if let Some(existing) = inflight.get(&cache_key) {
-            (false, existing.clone())
-        } else {
-            let cache_key_owned = cache_key.clone();
-            let new_fut: SharedAnalysisFuture = async move {
-                run_analysis(&input, &cache_key_owned).await
+    // Single-flight via the shared concurrency policy. The policy owns
+    // the Shared<BoxFuture> map; this module only supplies the analysis
+    // work and successful-result cache publication.
+    let input = Arc::new(input);
+    let result = ANALYSIS_CONCURRENCY
+        .single_flight(cache_key.clone(), {
+            let input = Arc::clone(&input);
+            let cache_key = cache_key.clone();
+            async move {
+                let result = run_analysis(&input, &cache_key).await;
+                if let Ok(ref analysis) = result {
+                    cache_put(cache_key, analysis.clone());
+                }
+                result
             }
             .boxed()
-            .shared();
-            inflight.insert(cache_key.clone(), new_fut.clone());
-            (true, new_fut)
-        }
-    };
-
-    // Both analyzer + awaiters await the SAME future. Shared::poll
-    // dispatches to the first poller; subsequent pollers register a
-    // waker and resume when the future resolves. Result is cloned per
-    // caller (cheap: SharedAnalysis is Clone).
-    let result = fut.await;
-
-    // Analyzer-only post-processing: publish to L1 cache and clear the
-    // IN_FLIGHT entry so a follow-up cache miss starts a fresh
-    // inference. Awaiters skip this (the analyzer already did it,
-    // and doing it twice would be a benign no-op anyway).
-    if is_analyzer {
-        if let Ok(ref analysis) = result {
-            cache_put(cache_key.clone(), analysis.clone());
-        }
-        IN_FLIGHT.lock().remove(&cache_key);
-    }
+        })
+        .await;
 
     result
 }
@@ -328,6 +277,7 @@ mod tests {
     //! the chat-path validation gate Joel set.
     use super::*;
     use crate::cognition::types::SharedAnalysisIntent;
+    use std::collections::HashMap;
     use uuid::Uuid;
 
     #[test]
