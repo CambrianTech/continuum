@@ -1,0 +1,61 @@
+name: auto-close-queue-cards
+
+# Auto-close airc-queue cards when their PR merges into canary.
+#
+# GitHub's native "Closes #N" only closes issues automatically when the PR
+# lands in the default branch. Continuum lands work in canary first, so queue
+# cards otherwise remain open until someone cleans them up manually.
+#
+# On PR merge into canary, this workflow parses the PR body for queue-card refs,
+# verifies each target has an airc-queue-card-v1 envelope, marks it merged with
+# a status-log entry, and closes it. The AIRC CLI is checked out from
+# CambrianTech/airc because Continuum intentionally does not vendor it.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [canary]
+
+concurrency:
+  group: auto-close-queue-cards
+  cancel-in-progress: false
+
+jobs:
+  close-cards:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+      pull-requests: read
+      contents: read
+
+    steps:
+      - name: Checkout Continuum
+        uses: actions/checkout@v4
+
+      - name: Checkout AIRC CLI
+        uses: actions/checkout@v4
+        with:
+          repository: CambrianTech/airc
+          ref: canary
+          path: .airc-src
+
+      - name: Verify environment
+        run: |
+          set -euo pipefail
+          which gh python3 bash
+          gh --version | head -1
+          python3 --version
+          bash --version | head -1
+          test -x .airc-src/airc
+
+      - name: Run airc queue close-merged
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          .airc-src/airc queue close-merged \
+            "${{ github.event.pull_request.html_url }}" \
+            --merge-sha "${{ github.event.pull_request.merge_commit_sha }}" \
+            --actor "github-actions[continuum#1142]"
