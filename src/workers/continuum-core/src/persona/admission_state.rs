@@ -131,7 +131,7 @@ impl AdmissionState {
     pub fn admit(
         &self,
         message: &InboxMessage,
-        trace: &mut CognitionTrace,
+        trace: Option<&mut CognitionTrace>,
     ) -> Result<AdmissionDecision, AdmissionError> {
         let decision = self.runner.admit(
             message,
@@ -383,7 +383,7 @@ mod tests {
         let content = "this is a non-trivial design observation worth storing";
         let msg = synthetic_human_message(content);
 
-        let first = state.admit(&msg, &mut trace).unwrap();
+        let first = state.admit(&msg, Some(&mut trace)).unwrap();
         assert!(matches!(first, AdmissionDecision::Admit { .. }));
         assert_eq!(state.engram_count(), 1);
         assert!(state.is_content_seen(&content_hash_sha256(content)));
@@ -391,7 +391,7 @@ mod tests {
         // Second admit of identical content (different message id, same content)
         // should drop as Duplicate.
         let msg2 = synthetic_human_message(content);
-        let second = state.admit(&msg2, &mut trace).unwrap();
+        let second = state.admit(&msg2, Some(&mut trace)).unwrap();
         match second {
             AdmissionDecision::Drop {
                 reason: AdmissionDropReason::Duplicate { .. },
@@ -413,7 +413,7 @@ mod tests {
         // Short content → drops with NotMemorable.
         let msg = synthetic_human_message("short");
 
-        let decision = state.admit(&msg, &mut trace).unwrap();
+        let decision = state.admit(&msg, Some(&mut trace)).unwrap();
         match decision {
             AdmissionDecision::Drop {
                 reason: AdmissionDropReason::NotMemorable { .. },
@@ -437,7 +437,7 @@ mod tests {
             "third design observation worth recording",
         ];
         for content in messages {
-            let _ = state.admit(&synthetic_human_message(content), &mut trace);
+            let _ = state.admit(&synthetic_human_message(content), Some(&mut trace));
         }
         assert_eq!(state.engram_count(), 3);
         assert_eq!(
@@ -464,9 +464,9 @@ mod tests {
         let msg1 = synthetic_human_message("a long enough observation worth recording");
         let msg2 = synthetic_human_message("short");
         let msg3 = synthetic_human_message("a long enough observation worth recording");
-        let _ = state.admit(&msg1, &mut trace);
-        let _ = state.admit(&msg2, &mut trace);
-        let _ = state.admit(&msg3, &mut trace);
+        let _ = state.admit(&msg1, Some(&mut trace));
+        let _ = state.admit(&msg2, Some(&mut trace));
+        let _ = state.admit(&msg3, Some(&mut trace));
         assert_eq!(trace.seam_count(), 3, "one seam per admit() call");
     }
 
@@ -620,7 +620,7 @@ mod tests {
         let mut trace = CognitionTrace::new();
         let mut ids = Vec::new();
         for c in contents {
-            match state.admit(&synthetic_human_message(c), &mut trace).unwrap() {
+            match state.admit(&synthetic_human_message(c), Some(&mut trace)).unwrap() {
                 AdmissionDecision::Admit { engram, .. } => ids.push(engram.id),
                 other => panic!("expected Admit for content {c:?}, got {other:?}"),
             }
