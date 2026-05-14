@@ -18,6 +18,7 @@ pub mod code;
 pub mod cognition;
 pub mod data;
 pub mod dataset;
+pub mod docker_tier;
 pub mod embedding;
 pub mod entity_schemas;
 pub mod forge;
