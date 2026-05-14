@@ -317,8 +317,14 @@ impl ServiceModule for CognitionModule {
                     .get(&persona_uuid)
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
+                // The TS-IPC `cognition/admit-inbox-message` caller wants
+                // the trace seam-count back in the response (it surfaces
+                // funnel telemetry to the TS observer), so this site DOES
+                // build a trace and passes Some. The in-process inline
+                // gate (`run_inline_admission_gate` below) passes None
+                // because it doesn't propagate the trace anywhere.
                 let mut trace = crate::persona::trace::CognitionTrace::new();
-                match persona.admission.admit(&inbox_msg, &mut trace) {
+                match persona.admission.admit(&inbox_msg, Some(&mut trace)) {
                     Ok(decision) => Ok(CommandResult::Json(serde_json::json!({
                         "decision": decision,
                         "engram_count": persona.admission.engram_count(),
@@ -938,9 +944,9 @@ impl ServiceModule for CognitionModule {
                 let signal: crate::persona::cognition_io::Signal = p.json("signal")?;
                 let ctx: crate::persona::cognition_io::PersonaContext = p.json("personaContext")?;
 
-                let input = crate::persona::cognition_io::build_respond_input(&signal, &ctx)?;
+                let mut input = crate::persona::cognition_io::build_respond_input(&signal, &ctx)?;
 
-                // ── Hot-path admission gate (continuum#1211) ────────
+                // ── Hot-path admission gate (continuum#1211 PR-1) ──
                 // Run admission BEFORE inference so the persona's
                 // engram store grows from real chat turns. Without
                 // this call the admission machinery (#1121 PR-1..5) is
@@ -951,10 +957,39 @@ impl ServiceModule for CognitionModule {
                 // (persona never had `cognition/create-engine` called)
                 // is logged and skipped, NOT a chat-blocking error.
                 // The persona still responds; it just doesn't grow
-                // memory until the engine is created. PR-2 will
-                // surface recalled engrams to prompt_assembly so the
-                // recall side starts working too.
+                // memory until the engine is created.
                 run_inline_admission_gate(&self.state, &signal, &ctx);
+
+                // ── Hot-path recall surface (continuum#1211 PR-2) ──
+                // After admission gate, populate input.recalled_engrams
+                // with the persona's most-recently-admitted memory so
+                // prompt_assembly can render a `[Recent Memory]` block
+                // in the system prompt. Closes the engram loop:
+                // admit (PR-1) → store → recall (PR-2) → context →
+                // model sees its own memory.
+                //
+                // Cap = 5 most-recent engrams. The number is a budget
+                // policy: enough to ground the persona in continuity
+                // ("yes the user mentioned teal earlier") without
+                // dominating the prompt. Future tunable via per-persona
+                // AdmissionConfig; v1 is a hardcoded sensible default.
+                //
+                // Empty when persona has no AdmissionState (same
+                // forensic-skip path as the gate above) OR no admitted
+                // engrams yet (cold-start). Both are normal early-life
+                // states; a no-recall persona is unchanged from
+                // pre-PR-2 behavior. Prompt_assembly skips rendering
+                // when the list is empty (no `[Recent Memory]` header
+                // appears).
+                const RECALL_LIMIT: usize = 5;
+                if let Some(persona) = self.state.personas.get(&ctx.persona_id) {
+                    input.recalled_engrams = persona
+                        .admission
+                        .recall_recent(RECALL_LIMIT)
+                        .into_iter()
+                        .map(|e| e.content)
+                        .collect();
+                }
 
                 // Diagnostic: log what media survived the projection.
                 // Vision routing was failing 2026-04-21 and this stays
@@ -970,7 +1005,7 @@ impl ServiceModule for CognitionModule {
                             format!("{}(b64={}, desc={})", item.item_type, has_b64, has_desc)
                         })
                         .collect();
-                    runtime::logger("cognition").info(&format!(
+                    runtime::logger("cognition").info_fmt(format_args!(
                         "cognition/respond: message_media count={} shapes=[{}]",
                         input.message_media.len(),
                         shape.join(", ")
@@ -1425,7 +1460,7 @@ pub(crate) fn run_inline_admission_gate(
 ) -> InlineAdmissionOutcome {
     let inbox_msg = crate::persona::cognition_io::signal_to_inbox_message(signal, ctx);
     let Some(persona) = state.personas.get(&ctx.persona_id) else {
-        runtime::logger("cognition").warn(&format!(
+        runtime::logger("cognition").warn_fmt(format_args!(
             "cognition/respond: no AdmissionState for persona={} \
              — skipping admission (call cognition/create-engine first \
              to enable memory accumulation)",
@@ -1434,8 +1469,17 @@ pub(crate) fn run_inline_admission_gate(
         return InlineAdmissionOutcome::NoPersona;
     };
 
-    let mut admission_trace = crate::persona::trace::CognitionTrace::new();
-    match persona.admission.admit(&inbox_msg, &mut admission_trace) {
+    // Pass `None` for the trace — the inline gate doesn't propagate
+    // it anywhere (the cognition/respond IPC handler doesn't surface
+    // an admission trace seam to its caller; the recorder doesn't
+    // capture admission seams as part of the per-turn fixture). With
+    // `None`, the admission codepath skips `record_seam` entirely:
+    // no `now_ms()` syscall, no `serde_json::json!` Map allocation,
+    // no String allocations for seam name/metadata. Cuts ~7
+    // allocations per chat turn per persona. The TS-IPC
+    // `cognition/admit-inbox-message` handler still passes `Some` —
+    // it surfaces the seam count in the response.
+    match persona.admission.admit(&inbox_msg, None) {
         Ok(decision) => {
             let label = decision.label();
             // Skip Admit — common case, no allocation. Drop +
@@ -1445,7 +1489,7 @@ pub(crate) fn run_inline_admission_gate(
             // join "% drops" against "engram store size" without a
             // separate query.
             if label != "admit" {
-                runtime::logger("cognition").info(&format!(
+                runtime::logger("cognition").info_fmt(format_args!(
                     "cognition/respond: admission decision={label} \
                      engrams={} (persona={})",
                     persona.admission.engram_count(),
@@ -1456,7 +1500,7 @@ pub(crate) fn run_inline_admission_gate(
         }
         Err(err) => {
             let err_string = err.to_string();
-            runtime::logger("cognition").warn(&format!(
+            runtime::logger("cognition").warn_fmt(format_args!(
                 "cognition/respond: admission error \
                  (continuing without memory grow): {err_string} \
                  (persona={})",

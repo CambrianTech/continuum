@@ -81,7 +81,7 @@ impl SelfTaskGenerator {
                         created_tasks.push(stored);
                         self.last_memory_review = now;
                     }
-                    Err(e) => log.warn(&format!("Failed to persist memory task: {e}")),
+                    Err(e) => log.warn_fmt(format_args!("Failed to persist memory task: {e}")),
                 }
             }
         }
@@ -100,7 +100,7 @@ impl SelfTaskGenerator {
                         created_tasks.push(stored);
                         self.last_skill_audit = now;
                     }
-                    Err(e) => log.warn(&format!("Failed to persist skill audit task: {e}")),
+                    Err(e) => log.warn_fmt(format_args!("Failed to persist skill audit task: {e}")),
                 }
             }
         }
@@ -111,7 +111,7 @@ impl SelfTaskGenerator {
                 for task in tasks {
                     match self.persist_task(db_path, &task, executor).await {
                         Ok(stored) => created_tasks.push(stored),
-                        Err(e) => log.warn(&format!("Failed to persist resume task: {e}")),
+                        Err(e) => log.warn_fmt(format_args!("Failed to persist resume task: {e}")),
                     }
                 }
             }
@@ -126,7 +126,9 @@ impl SelfTaskGenerator {
                 for task in tasks {
                     match self.persist_task(db_path, &task, executor).await {
                         Ok(stored) => created_tasks.push(stored),
-                        Err(e) => log.warn(&format!("Failed to persist learning task: {e}")),
+                        Err(e) => {
+                            log.warn_fmt(format_args!("Failed to persist learning task: {e}"))
+                        }
                     }
                 }
             }

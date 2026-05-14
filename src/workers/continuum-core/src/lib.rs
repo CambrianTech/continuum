@@ -38,6 +38,7 @@ pub mod models;
 pub mod modules;
 pub mod orm;
 pub mod paging;
+pub mod paths;
 pub mod persona;
 pub mod rag;
 pub mod runtime;

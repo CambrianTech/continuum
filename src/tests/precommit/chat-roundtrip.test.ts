@@ -46,6 +46,30 @@ interface ChatMessageRow {
   readonly timestamp?: number | string;
 }
 
+interface CommandResult {
+  readonly success?: boolean;
+  readonly items?: readonly unknown[];
+  readonly shortId?: string;
+  readonly messageId?: string;
+}
+
+interface JtagClient {
+  readonly commands: Record<string, (params: Record<string, unknown>) => Promise<CommandResult>>;
+  readonly disconnect?: () => Promise<void>;
+}
+
+interface AutoResponderUser {
+  readonly id?: string;
+  readonly displayName?: string;
+  readonly capabilities?: { readonly autoResponds?: boolean };
+}
+
+interface ProbeRecord {
+  readonly text: string;
+  readonly sentAtMs: number;
+  readonly responderCount: number;
+}
+
 function probeText(): string {
   // Unique tag for finding our own message in the chat log + an
   // explicit ask. Locally-running personas filter messages they don't
@@ -61,15 +85,127 @@ async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function listAutoResponders(client: JtagClient): Promise<readonly AutoResponderUser[]> {
+  const usersResult = await client.commands['data/list']({
+    collection: 'users'
+  });
+  if (!usersResult?.success) {
+    throw new Error('data/list users failed: ' + JSON.stringify(usersResult));
+  }
+  const users = (usersResult.items ?? []) as readonly AutoResponderUser[];
+  const responders = users.filter(u => u.capabilities?.autoResponds === true);
+  if (responders.length === 0) {
+    throw new Error(
+      `No auto-responding users found in seeded data. ` +
+      `Found ${users.length} users total but none have ` +
+      `capabilities.autoResponds=true. Persona seed step likely broke.`
+    );
+  }
+  console.log(`✅ Found ${responders.length} auto-responder(s) — ${users.length} users total\n`);
+  return responders;
+}
+
+async function sendProbe(client: JtagClient, responderCount: number): Promise<ProbeRecord> {
+  const text = probeText();
+  const sentAtMs = Date.now();
+  console.log(`📤 Sending probe: "${text}"`);
+  const sendResult = await client.commands['collaboration/chat/send']({
+    room: PROBE_ROOM,
+    message: text
+  });
+  if (!sendResult?.success) {
+    throw new Error(
+      `collaboration/chat/send rejected the probe: ` +
+      JSON.stringify(sendResult)
+    );
+  }
+  const probeMessageId = sendResult.shortId ?? sendResult.messageId ?? null;
+  console.log(`✅ Probe accepted (id=${probeMessageId})\n`);
+  return { text, sentAtMs, responderCount };
+}
+
+function findProbe(messages: readonly ChatMessageRow[], probe: ProbeRecord): ChatMessageRow | undefined {
+  return messages.find(m => m.content?.text === probe.text);
+}
+
+function findReply(
+  messages: readonly ChatMessageRow[],
+  probe: ProbeRecord,
+  probeSenderId: string,
+  probeRoomId: string,
+  probeTimestampMs: number
+): ChatMessageRow | undefined {
+  return messages.find(m =>
+    m.roomId === probeRoomId &&
+    m.senderId !== undefined &&
+    m.senderId !== probeSenderId &&
+    toMs(m.timestamp) >= probeTimestampMs &&
+    (m.content?.text?.length ?? 0) > 0 &&
+    m.content?.text !== probe.text
+  );
+}
+
+function logReply(reply: ChatMessageRow): void {
+  const preview = (reply.content?.text ?? '').slice(0, 80).replace(/\s+/g, ' ');
+  console.log(`✅ Persona reply received from ${reply.senderName ?? reply.senderId}: "${preview}…"`);
+  console.log('🎉 CHAT ROUNDTRIP TEST: PASSED');
+  console.log('=================================\n');
+}
+
+async function pollForReply(client: JtagClient, probe: ProbeRecord): Promise<void> {
+  console.log(`👂 Polling chat_messages for a persona reply (window=${REPLY_WINDOW_MS / 1000}s)...`);
+  const deadline = probe.sentAtMs + REPLY_WINDOW_MS;
+  let probeSenderId: string | undefined;
+  let probeRoomId: string | undefined;
+  let probeTimestampMs = 0;
+  let lastSeenCount = 0;
+
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS);
+    const listResult = await client.commands['data/list']({
+      collection: 'chat_messages',
+      orderBy: [{ field: 'timestamp', direction: 'desc' }],
+      limit: 50
+    });
+    if (!listResult?.success) continue;
+    const messages = (listResult.items ?? []) as readonly ChatMessageRow[];
+    if (messages.length !== lastSeenCount) {
+      console.log(`   …${messages.length} chat_messages rows visible`);
+      lastSeenCount = messages.length;
+    }
+
+    const probeMsg = findProbe(messages, probe);
+    if (probeMsg && !probeSenderId) {
+      probeSenderId = probeMsg.senderId;
+      probeRoomId = probeMsg.roomId;
+      probeTimestampMs = toMs(probeMsg.timestamp);
+    }
+    if (!probeSenderId || !probeRoomId) continue;
+
+    const reply = findReply(messages, probe, probeSenderId, probeRoomId, probeTimestampMs);
+    if (reply) {
+      logReply(reply);
+      return;
+    }
+  }
+
+  throw new Error(
+    `No persona reply received within ${REPLY_WINDOW_MS / 1000}s window. ` +
+    `Probe was sent and ${probeSenderId ? 'observed' : 'NOT observed'} in chat_messages. ` +
+    `${probe.responderCount} auto-responder(s) seeded. ` +
+    `Cognition / response pipeline is silently broken.`
+  );
+}
+
 async function testChatRoundtrip(): Promise<void> {
   console.log('💬 CHAT ROUNDTRIP TEST (#1186)');
   console.log('=================================');
 
-  let client: any;
+  let client: JtagClient | undefined;
 
   try {
     console.log('🔗 Connecting to JTAG system...');
-    client = await jtag.connect();
+    client = await jtag.connect() as JtagClient;
     console.log('✅ Connected\n');
 
     // 1. There must be at least one user seeded with autoResponds
@@ -79,45 +215,12 @@ async function testChatRoundtrip(): Promise<void> {
     //    expose a `userType=persona` field — `capabilities.autoResponds`
     //    is the real signal for "this user replies to chat" today.
     console.log('🤖 Verifying at least one auto-responding user is seeded...');
-    const usersResult = await client.commands['data/list']({
-      collection: 'users'
-    });
-    if (!usersResult?.success) {
-      throw new Error('data/list users failed: ' + JSON.stringify(usersResult));
-    }
-    const users = (usersResult.items ?? []) as Array<{
-      readonly id?: string;
-      readonly displayName?: string;
-      readonly capabilities?: { readonly autoResponds?: boolean };
-    }>;
-    const responders = users.filter(u => u.capabilities?.autoResponds === true);
-    if (responders.length === 0) {
-      throw new Error(
-        `No auto-responding users found in seeded data. ` +
-        `Found ${users.length} users total but none have ` +
-        `capabilities.autoResponds=true. Persona seed step likely broke.`
-      );
-    }
-    console.log(`✅ Found ${responders.length} auto-responder(s) — ${users.length} users total\n`);
+    const responders = await listAutoResponders(client);
 
     // 2. Send the probe. Capture the timestamp so we can scope the
     //    reply check to messages written AFTER our send (avoids false
     //    positives from any pre-existing reply in the room).
-    const probe = probeText();
-    const sendStartedAt = Date.now();
-    console.log(`📤 Sending probe: "${probe}"`);
-    const sendResult = await client.commands['collaboration/chat/send']({
-      room: PROBE_ROOM,
-      message: probe
-    });
-    if (!sendResult?.success) {
-      throw new Error(
-        `collaboration/chat/send rejected the probe: ` +
-        JSON.stringify(sendResult)
-      );
-    }
-    const probeMessageId = sendResult.shortId ?? sendResult.messageId ?? null;
-    console.log(`✅ Probe accepted (id=${probeMessageId})\n`);
+    const probe = await sendProbe(client, responders.length);
 
     // 3. Poll chat_messages for a reply. We're looking for any
     //    message with a timestamp >= probe and a senderId that
@@ -125,71 +228,8 @@ async function testChatRoundtrip(): Promise<void> {
     //    rather than collaboration/chat/export because export returns
     //    a single rendered markdown blob; structured rows give us
     //    cleaner field access (senderId, senderType, roomId UUID).
-    console.log(`👂 Polling chat_messages for a persona reply (window=${REPLY_WINDOW_MS / 1000}s)...`);
-    const deadline = sendStartedAt + REPLY_WINDOW_MS;
-    let probeSenderId: string | undefined;
-    let probeRoomId: string | undefined;
-    let lastSeenCount = 0;
-
-    while (Date.now() < deadline) {
-      await sleep(POLL_INTERVAL_MS);
-      const listResult = await client.commands['data/list']({
-        collection: 'chat_messages',
-        orderBy: [{ field: 'timestamp', direction: 'desc' }],
-        limit: 50
-      });
-      if (!listResult?.success) {
-        // Don't fail immediately — data/list can race with seed on a
-        // cold boot. Only fail if we exit the window without ever
-        // succeeding.
-        continue;
-      }
-      const messages = (listResult.items ?? []) as ChatMessageRow[];
-      if (messages.length !== lastSeenCount) {
-        console.log(`   …${messages.length} chat_messages rows visible`);
-        lastSeenCount = messages.length;
-      }
-
-      // Find our probe by content match — robust whether the storage
-      // layer assigns the id we expect or rewrites it.
-      const probeMsg = messages.find(m => m.content?.text === probe);
-      if (probeMsg && !probeSenderId) {
-        probeSenderId = probeMsg.senderId;
-        probeRoomId = probeMsg.roomId;
-      }
-      if (!probeSenderId) {
-        // Probe hasn't been written/indexed yet. Keep polling.
-        continue;
-      }
-
-      // Look for a reply: any message in the same room as the probe,
-      // after the probe, authored by someone else, with non-empty
-      // content. Empty replies are a known cognition-failure mode and
-      // should NOT count as a pass.
-      const probeTs = toMs(probeMsg!.timestamp);
-      const reply = messages.find(m =>
-        m.roomId === probeRoomId &&
-        m.senderId && m.senderId !== probeSenderId &&
-        toMs(m.timestamp) >= probeTs &&
-        (m.content?.text?.length ?? 0) > 0 &&
-        m.content?.text !== probe
-      );
-      if (reply) {
-        const preview = (reply.content?.text ?? '').slice(0, 80).replace(/\s+/g, ' ');
-        console.log(`✅ Persona reply received from ${reply.senderName ?? reply.senderId}: "${preview}…"`);
-        console.log('🎉 CHAT ROUNDTRIP TEST: PASSED');
-        console.log('=================================\n');
-        process.exit(0);
-      }
-    }
-
-    throw new Error(
-      `No persona reply received within ${REPLY_WINDOW_MS / 1000}s window. ` +
-      `Probe was sent and ${probeSenderId ? 'observed' : 'NOT observed'} in chat_messages. ` +
-      `${responders.length} auto-responder(s) seeded. ` +
-      `Cognition / response pipeline is silently broken.`
-    );
-
+    await pollForReply(client, probe);
+    process.exitCode = 0;
   } catch (error) {
     console.error('\n❌ Chat roundtrip test failed:', error);
     console.error('❌ Error details:', {
@@ -197,12 +237,14 @@ async function testChatRoundtrip(): Promise<void> {
       stack: error instanceof Error ? error.stack : undefined
     });
     console.log('=================================\n');
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     if (client?.disconnect) {
       await client.disconnect();
     }
   }
+
+  process.exit(process.exitCode ?? 0);
 }
 
 function toMs(ts: number | string | undefined): number {
@@ -214,4 +256,4 @@ function toMs(ts: number | string | undefined): number {
   return 0;
 }
 
-testChatRoundtrip();
+void testChatRoundtrip();
