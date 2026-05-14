@@ -1,7 +1,7 @@
 /**
  * SourceConfigStageElement — Front bookend: declare model capabilities
  *
- * Maps to ForgeAlloy SourceConfigStage.
+ * Maps to ForgeRecipe SourceConfigStage.
  * Context window, input modalities, target devices.
  */
 

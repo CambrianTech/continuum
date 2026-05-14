@@ -3,7 +3,7 @@
  *
  * Utilization-aware mixed-precision compaction.
  * Controls: utilization thresholds (dead/dormant/low/medium/high), target size, quantization
- * Maps 1:1 to ForgeAlloy CompactStage schema.
+ * Maps 1:1 to ForgeRecipe CompactStage schema.
  *
  * Head precision tiers (from Rust HeadPrecision):
  *   Dead (<deadThreshold)       → Removed entirely

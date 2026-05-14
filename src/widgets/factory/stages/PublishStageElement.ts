@@ -4,7 +4,7 @@
  * Prepares forge output for review. The actual publish to HuggingFace
  * happens manually via model/publish command after reviewing results.
  * Controls: org, repo name, tags, privacy, card generation
- * Maps 1:1 to ForgeAlloy DeliverStage schema.
+ * Maps 1:1 to ForgeRecipe DeliverStage schema.
  */
 
 import { html, css, reactive, type TemplateResult, type CSSResultGroup } from '../../shared/ReactiveWidget';

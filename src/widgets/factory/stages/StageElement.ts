@@ -1,7 +1,7 @@
 /**
  * StageElement — Abstract base for alloy pipeline stage UI components
  *
- * Each ForgeAlloy stage type (prune, train, lora, quant, eval, publish, etc.)
+ * Each ForgeRecipe stage type (prune, train, lora, quant, eval, publish, etc.)
  * extends this class. The spec defines the interface, the UI implements it.
  *
  * Responsibilities:
