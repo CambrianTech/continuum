@@ -940,6 +940,63 @@ impl ServiceModule for CognitionModule {
 
                 let input = crate::persona::cognition_io::build_respond_input(&signal, &ctx)?;
 
+                // ── Hot-path admission gate (continuum#1211) ────────
+                // Run admission BEFORE inference so the persona's
+                // engram store grows from real chat turns. Without
+                // this call the admission machinery (#1121 PR-1..5) is
+                // plumbed end-to-end but never reached on the chat
+                // path — personas accumulate zero memory.
+                //
+                // Forensic-not-destructive: a missing AdmissionState
+                // (persona never had `cognition/create-engine` called)
+                // is logged and skipped, NOT a chat-blocking error.
+                // The persona still responds; it just doesn't grow
+                // memory until the engine is created. PR-2 will
+                // surface recalled engrams to prompt_assembly so the
+                // recall side starts working too.
+                {
+                    let inbox_msg =
+                        crate::persona::cognition_io::signal_to_inbox_message(&signal, &ctx);
+                    match self.state.personas.get(&ctx.persona_id) {
+                        Some(persona) => {
+                            let mut admission_trace =
+                                crate::persona::trace::CognitionTrace::new();
+                            match persona.admission.admit(&inbox_msg, &mut admission_trace) {
+                                Ok(decision) => {
+                                    runtime::logger("cognition").info(&format!(
+                                        "cognition/respond: admission decision={} \
+                                         engrams={} (persona={})",
+                                        admission_decision_label(&decision),
+                                        persona.admission.engram_count(),
+                                        ctx.persona_id,
+                                    ));
+                                }
+                                Err(err) => {
+                                    // Admission *machinery* failure (envelope
+                                    // verification, replay-detected, etc.) —
+                                    // log and continue. The chat turn isn't
+                                    // gated on admission today; PR-2 may
+                                    // change that policy.
+                                    runtime::logger("cognition").warn(&format!(
+                                        "cognition/respond: admission error \
+                                         (continuing without memory grow): {err} \
+                                         (persona={})",
+                                        ctx.persona_id,
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            runtime::logger("cognition").warn(&format!(
+                                "cognition/respond: no AdmissionState for persona={} \
+                                 — skipping admission (call cognition/create-engine first \
+                                 to enable memory accumulation)",
+                                ctx.persona_id,
+                            ));
+                        }
+                    }
+                }
+
                 // Diagnostic: log what media survived the projection.
                 // Vision routing was failing 2026-04-21 and this stays
                 // as the in-flight tap to confirm media shape arriving
@@ -1364,6 +1421,19 @@ fn parse_messages(arr: &[Value]) -> Vec<text_analysis::ConversationMessage> {
             })
         })
         .collect()
+}
+
+/// Short label for an `AdmissionDecision` — used in hot-path log lines
+/// so funnel metrics can be grep'd from cognition logs without parsing
+/// the full JSON. (Used only by the cognition/respond hot-path admission
+/// integration, continuum#1211.)
+fn admission_decision_label(d: &crate::persona::engram::AdmissionDecision) -> &'static str {
+    use crate::persona::engram::AdmissionDecision;
+    match d {
+        AdmissionDecision::Admit { .. } => "admit",
+        AdmissionDecision::Drop { .. } => "drop",
+        AdmissionDecision::Quarantine { .. } => "quarantine",
+    }
 }
 
 /// Parse an InboxMessage from JSON value.
