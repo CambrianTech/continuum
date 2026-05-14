@@ -15,6 +15,25 @@ use tokio::sync::Semaphore;
 
 type SharedResult<V, E> = Shared<BoxFuture<'static, Result<V, E>>>;
 
+/// Per-key in-flight entry: the shared future + a refcount of how many
+/// callers (analyzer + awaiters) currently hold a `RefCountGuard` for
+/// this key. The entry is removed when the refcount drops to zero
+/// (#1235 — replaces the previous "only-analyzer-cleans-up" model so
+/// analyzer cancellation can no longer remove the entry while awaiters
+/// still hold the Shared, which previously let a brand-new caller race
+/// in and start duplicate work for the same key).
+struct KeyEntry<V, E>
+where
+    V: Clone + Send + Sync + 'static,
+    E: Clone + Send + Sync + 'static,
+{
+    shared: SharedResult<V, E>,
+    /// Number of `single_flight` calls currently holding a guard for
+    /// this key. Bumped under the in_flight mutex on every entry path
+    /// (analyzer + awaiter), decremented on every guard drop.
+    refcount: Arc<AtomicUsize>,
+}
+
 #[async_trait]
 pub trait ConcurrencyPolicy<K, V, E>: Send + Sync
 where
@@ -40,7 +59,7 @@ where
     V: Clone + Send + Sync + 'static,
     E: Clone + Send + Sync + 'static,
 {
-    in_flight: Mutex<HashMap<K, SharedResult<V, E>>>,
+    in_flight: Mutex<HashMap<K, KeyEntry<V, E>>>,
     in_flight_count: AtomicUsize,
     limiter: Option<Arc<Semaphore>>,
 }
@@ -94,53 +113,97 @@ where
     }
 }
 
-/// RAII guard for the analyzer's in-flight entry (#1232).
+/// RAII refcount guard for an in-flight entry (#1232 + #1235).
 ///
-/// Owns cleanup of `in_flight[key]` regardless of whether the work
-/// future returns normally OR unwinds via panic. Without this guard,
-/// a panic inside the work future skips the post-await cleanup and
-/// the in_flight entry stays in the map forever — every subsequent
-/// call for the same key sees the poisoned shared future + tries to
-/// await it again, hanging or replaying the panic.
+/// **Every** caller — the analyzer (first caller for this key) AND each
+/// awaiter — holds a `RefCountGuard` for the duration of its
+/// `single_flight` call. The entry's `Arc<AtomicUsize>` is bumped under
+/// the in_flight mutex when the guard is constructed, and decremented
+/// when the guard drops. The map entry is removed only when the
+/// refcount hits zero (under the lock, double-checked to handle a new
+/// caller racing in between fetch_sub and the lock acquisition).
 ///
-/// Only the **analyzer** holds the guard. Awaiters hold `None` because
-/// the analyzer owns the lifecycle; if the analyzer's work panics,
-/// awaiters of the same Shared get a cancellation, the analyzer's
-/// guard cleans up the entry, and the next caller for the same key
-/// starts a fresh inference instead of finding the broken entry.
-struct InFlightGuard<'a, K, V, E>
+/// # Why every caller holds one (not just the analyzer)
+///
+/// Pre-#1235 only the analyzer held a Drop guard. That correctly fixed
+/// the panic-cleanup case (#1232) but left a window during analyzer
+/// cancellation:
+///
+/// ```text
+///   T0: analyzer.single_flight("k") → creates entry, holds guard
+///   T1: awaiter1.single_flight("k") → clones Shared, no guard
+///   T2: analyzer task is dropped (cancellation)
+///   T3: analyzer's guard.drop fires → removes entry from in_flight
+///   T4: NEW caller.single_flight("k") → finds no entry → starts a
+///       FRESH `work` future for "k" — duplicate work, contract
+///       violated. awaiter1 still completes the original Shared, but
+///       there are now two concurrent inferences for the same key.
+/// ```
+///
+/// With per-caller refcounts, the entry stays alive as long as ANY
+/// caller (analyzer or awaiter) is still holding the Shared. Only when
+/// the last holder drops does cleanup fire — at which point any future
+/// caller correctly starts fresh (no one is waiting for the old
+/// result).
+///
+/// # Panic behavior preserved
+///
+/// If the work future panics, the panic unwinds through `shared.await`
+/// in every caller (Shared re-raises to clones). All guards drop during
+/// unwind, refcount → 0, entry removed. Same end state as #1232.
+struct RefCountGuard<'a, K, V, E>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
     E: Clone + Send + Sync + 'static,
 {
-    in_flight: &'a Mutex<HashMap<K, SharedResult<V, E>>>,
+    in_flight: &'a Mutex<HashMap<K, KeyEntry<V, E>>>,
     in_flight_count: &'a AtomicUsize,
+    /// Same Arc the entry holds — pre-bumped under the in_flight lock
+    /// when this guard was constructed.
+    refcount: Arc<AtomicUsize>,
     /// Wrapped in Option so Drop can take() it. Always Some until
-    /// drop fires; a None here would mean the guard already cleaned
-    /// up (used as a no-double-cleanup guard if we add `complete()`
-    /// later).
+    /// drop fires.
     key: Option<K>,
 }
 
-impl<K, V, E> Drop for InFlightGuard<'_, K, V, E>
+impl<K, V, E> Drop for RefCountGuard<'_, K, V, E>
 where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
     E: Clone + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        if let Some(key) = self.key.take() {
-            // parking_lot::Mutex::lock is poison-free (vs std::sync) so
-            // a previously-panicking future cannot poison this lock.
-            // The cleanup runs in BOTH the normal-return path (drop
-            // at scope end) and the panic-unwind path (drop during
-            // unwind). Atomic decrement matches the analyzer's
-            // earlier increment exactly once.
-            let mut in_flight = self.in_flight.lock();
-            if in_flight.remove(&key).is_some() {
+        let Some(key) = self.key.take() else { return };
+
+        // Decrement first; this is the contract that as long as ANY
+        // refcount > 0 the entry MUST be in the map. The decrement is
+        // unconditional — every guard pre-incremented in single_flight
+        // under the lock, so every drop must match it exactly once.
+        let prev = self.refcount.fetch_sub(1, Ordering::AcqRel);
+        if prev != 1 {
+            // Other callers are still holding the entry; nothing to
+            // clean up. The entry stays in the map for them.
+            return;
+        }
+
+        // We were the last holder (refcount went 1 → 0). Acquire the
+        // lock and DOUBLE-CHECK the per-key refcount under the lock —
+        // a brand-new single_flight call may have raced in between our
+        // fetch_sub and our lock acquisition, found the entry, bumped
+        // refcount back to 1, and we'd erroneously remove the entry
+        // with that fresh caller still expecting it.
+        //
+        // parking_lot::Mutex::lock is poison-free (vs std::sync) so a
+        // previously-panicking future cannot poison this lock.
+        let mut in_flight = self.in_flight.lock();
+        if let Some(entry) = in_flight.get(&key) {
+            if entry.refcount.load(Ordering::Acquire) == 0 {
+                in_flight.remove(&key);
                 self.in_flight_count.fetch_sub(1, Ordering::AcqRel);
             }
+            // else: a new caller raced in and bumped the refcount under
+            // the lock. Leave the entry — it now belongs to them.
         }
     }
 }
@@ -153,41 +216,54 @@ where
     E: Clone + Send + Sync + 'static,
 {
     async fn single_flight(&self, key: K, work: BoxFuture<'static, Result<V, E>>) -> Result<V, E> {
-        // Two paths:
-        //   - Analyzer (first caller for this key): registers a fresh
-        //     Shared future + holds an InFlightGuard. The guard owns
-        //     cleanup via RAII — fires on normal return AND on panic
-        //     unwind (#1232).
-        //   - Awaiter (subsequent callers): clones the registered
-        //     Shared future + holds NO guard. The analyzer owns the
-        //     lifecycle.
+        // EVERY caller (analyzer + awaiters) gets a RefCountGuard so
+        // the entry's lifetime is tied to all outstanding holders, not
+        // just the first caller (#1235). The two paths differ only in
+        // whether they create a fresh entry or join an existing one;
+        // both increment the per-key refcount under the in_flight lock.
         let (shared, _guard) = {
             let mut in_flight = self.in_flight.lock();
-            if let Some(existing) = in_flight.get(&key) {
-                // Awaiter path: no guard. Analyzer's guard runs cleanup.
-                (existing.clone(), None)
-            } else {
-                let shared = work.shared();
-                in_flight.insert(key.clone(), shared.clone());
-                self.in_flight_count.fetch_add(1, Ordering::AcqRel);
-                // Analyzer path: hold the RAII guard so cleanup fires
-                // even if shared.await panics or the task is cancelled.
+            if let Some(entry) = in_flight.get(&key) {
+                // Awaiter path: bump existing refcount, clone Shared.
+                entry.refcount.fetch_add(1, Ordering::AcqRel);
                 (
-                    shared,
-                    Some(InFlightGuard {
+                    entry.shared.clone(),
+                    RefCountGuard {
                         in_flight: &self.in_flight,
                         in_flight_count: &self.in_flight_count,
+                        refcount: entry.refcount.clone(),
                         key: Some(key),
-                    }),
+                    },
+                )
+            } else {
+                // Analyzer path: create fresh entry with refcount=1.
+                let shared = work.shared();
+                let refcount = Arc::new(AtomicUsize::new(1));
+                in_flight.insert(
+                    key.clone(),
+                    KeyEntry {
+                        shared: shared.clone(),
+                        refcount: refcount.clone(),
+                    },
+                );
+                self.in_flight_count.fetch_add(1, Ordering::AcqRel);
+                (
+                    shared,
+                    RefCountGuard {
+                        in_flight: &self.in_flight,
+                        in_flight_count: &self.in_flight_count,
+                        refcount,
+                        key: Some(key),
+                    },
                 )
             }
         };
 
-        // Both arms await the SAME Shared future. If the work panics,
-        // the panic unwinds OUT of this .await — and the analyzer's
-        // _guard drops on the way out, cleaning up the in_flight entry.
-        // Awaiters get the panic re-raised by Shared (they didn't run
-        // it); their _guard is None so they don't try to clean up.
+        // Every caller awaits the SAME Shared future. The Shared keeps
+        // the underlying BoxFuture alive across analyzer cancellation
+        // (Arc internal); whichever awaiter polls drives it forward.
+        // If work panics, panic re-raises through every clone; the
+        // guards drop on the way out, refcount → 0, entry removed.
         shared.await
     }
 
