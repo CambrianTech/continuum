@@ -24,5 +24,5 @@ pub use broker::{
 };
 pub use pool::{
     lru_priority, size_weighted_lru, EvictionPriority, PagedResourcePool, PinHandle, PoolConfig,
-    PoolEntry, PoolEntryView, PoolStats, Sizer,
+    PoolEntry, PoolEntryView, PoolStats, ResourceError, ResourcePool, ResourcePoolEntry, Sizer,
 };
