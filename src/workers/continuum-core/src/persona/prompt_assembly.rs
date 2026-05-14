@@ -8,6 +8,7 @@
 
 use crate::model_registry::types::MultiPartyChatStrategy;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 /// Input to prompt assembly. Carries everything needed to build the
 /// LLM message array for a single persona's render pass.
@@ -88,25 +89,37 @@ pub struct PromptMessage {
 /// This is a pure function — no IO, no IPC, no state. Takes data in,
 /// produces a prompt out. The caller (response.rs) handles inference.
 pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
-    let mut system_prompt = input.system_prompt.clone();
+    // Pre-size the system_prompt buffer based on the system_prompt
+    // input + a generous overhead estimate for the optional blocks.
+    // Avoids the realloc that would otherwise fire on the first
+    // `push_str` of an angle/social/voice block (#1209).
+    let mut system_prompt =
+        String::with_capacity(input.system_prompt.len() + 512);
+    system_prompt.push_str(&input.system_prompt);
 
     // Inject shared analysis angle if present — grounds the persona's
     // contribution in the specific perspective the orchestrator matched.
+    //
+    // write! into the existing buffer instead of `push_str(&format!(...))`
+    // so the format intermediate doesn't allocate a throw-away String
+    // just to be appended (#1209). Trait method's Result is infallible
+    // for String; the let-binding to `_` is for the trait signature.
     if !input.matched_angle.is_empty() {
-        system_prompt.push_str(&format!(
+        let _ = write!(
+            system_prompt,
             "\n\n[Shared Analysis — Your Angle]\n\
              The following aspect of this conversation is specifically relevant \
              to your expertise. Focus your contribution here:\n{}",
             input.matched_angle
-        ));
+        );
     }
 
     // Inject social awareness signals
     if let Some(ref signals) = input.social_signals {
-        let social_block = build_social_block(signals);
-        if !social_block.is_empty() {
-            system_prompt.push_str(&social_block);
-        }
+        // append_social_block writes directly into system_prompt instead
+        // of returning a fresh String (#1209). Saves the intermediate
+        // allocation for callers that have a pre-existing buffer.
+        append_social_block(&mut system_prompt, signals);
     }
 
     // Voice mode instructions
@@ -365,39 +378,47 @@ fn build_messages_proper_chatml_single_party(
     messages
 }
 
-/// Build social awareness block from signals.
-fn build_social_block(signals: &SocialSignals) -> String {
-    let mut lines = Vec::new();
+/// Append the social-awareness block (if any signals fire) directly
+/// into a caller-owned buffer.
+///
+/// Replaces the previous `build_social_block(...) -> String` shape that
+/// allocated a `Vec<String>` of lines + N `format!` strings + a final
+/// `format!` (#1209). The new shape: peek at signals to decide if
+/// anything fires, then `write!` lines straight into the caller's
+/// buffer. Saves Vec + N+1 String allocations per call when signals
+/// fire; no-op (zero allocations) when they don't.
+fn append_social_block(buf: &mut String, signals: &SocialSignals) {
+    // Peek-pass: figure out if any signal fires before writing the
+    // header. Avoids dropping a stranded "[Social Awareness]\n" header
+    // into the buffer when nothing follows.
+    let any_signal = signals.ai_messages_recent > 0
+        || !signals.human_spoke_recently
+        || (signals.has_directed_mention && !signals.is_mentioned)
+        || signals.seconds_since_last_response.is_some()
+        || (signals.response_count_this_session.is_some() && signals.response_cap.is_some());
+    if !any_signal {
+        return;
+    }
 
+    buf.push_str("\n\n[Social Awareness]");
     if signals.ai_messages_recent > 0 {
-        lines.push(format!(
-            "- {} AI messages in this room in the last 2 minutes",
+        let _ = write!(
+            buf,
+            "\n- {} AI messages in this room in the last 2 minutes",
             signals.ai_messages_recent
-        ));
+        );
     }
     if !signals.human_spoke_recently {
-        lines.push("- No human has spoken recently in this room".to_string());
+        buf.push_str("\n- No human has spoken recently in this room");
     }
     if signals.has_directed_mention && !signals.is_mentioned {
-        lines.push("- This message is directed at another persona (not you)".to_string());
+        buf.push_str("\n- This message is directed at another persona (not you)");
     }
     if let Some(secs) = signals.seconds_since_last_response {
-        lines.push(format!(
-            "- You last responded {}s ago in this room",
-            secs.round() as i64
-        ));
+        let _ = write!(buf, "\n- You last responded {}s ago in this room", secs.round() as i64);
     }
     if let (Some(count), Some(cap)) = (signals.response_count_this_session, signals.response_cap) {
-        lines.push(format!(
-            "- You have responded {}/{} times this session",
-            count, cap
-        ));
-    }
-
-    if lines.is_empty() {
-        String::new()
-    } else {
-        format!("\n\n[Social Awareness]\n{}", lines.join("\n"))
+        let _ = write!(buf, "\n- You have responded {}/{} times this session", count, cap);
     }
 }
 
