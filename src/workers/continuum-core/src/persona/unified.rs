@@ -8,6 +8,7 @@
 //! After: 1 DashMap<Uuid, PersonaCognition> — 1 lock, contiguous memory,
 //! atomic access to engine + rate_limiter + sleep_state + adapters + genome.
 
+use crate::persona::admission_state::AdmissionState;
 use crate::persona::cognition::PersonaCognitionEngine;
 use crate::persona::domain_classifier::DomainClassifier;
 use crate::persona::evaluator::{RateLimiterState, SleepState};
@@ -32,6 +33,12 @@ pub struct PersonaCognition {
     pub message_cache: RecentMessageCache,
     /// Content hash dedup — prevents duplicate responses within time window
     pub content_dedup: ContentDeduplicator,
+    /// Admission gate state — engram dedup + replay protection +
+    /// in-memory engram store. Holds `InboxAdmissionRunner` configured
+    /// with `default_v1()` recipe + permissive trust mapping. Per-persona
+    /// because each persona's memory + dedup are independent. See
+    /// `persona::admission_state` (#1121 PR-4).
+    pub admission: AdmissionState,
 }
 
 impl PersonaCognition {
@@ -59,6 +66,7 @@ impl PersonaCognition {
             domain_classifier: DomainClassifier::new(),
             message_cache: RecentMessageCache::new(),
             content_dedup: ContentDeduplicator::new(),
+            admission: AdmissionState::new(),
         }
     }
 }
