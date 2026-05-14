@@ -59,6 +59,8 @@
 //!   needs envelope material this module's input doesn't carry; that
 //!   conversion is a separate function in a separate slice (PR-5+).
 
+use std::fmt::Write as _;
+
 use sha2::{Digest, Sha256};
 
 use super::admission::{
@@ -133,6 +135,12 @@ impl TrustMapping {
 /// Canonical content hash format used by all admission paths. Returns
 /// `"sha256:<lowercase-hex>"` so dedup keys are stable across origin
 /// kinds (chat / AIRC / tool) and machine boundaries.
+///
+/// Hot path: called once per inbox message at admission time. Hex
+/// encoding writes directly into the preallocated string buffer
+/// (single allocation total) rather than `format!()` per byte (which
+/// allocated 32 small `String`s per hash). See claude-tab-2's review
+/// nit on continuum#1143.
 pub fn content_hash_sha256(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
@@ -140,7 +148,10 @@ pub fn content_hash_sha256(content: &str) -> String {
     let mut hex = String::with_capacity(7 + digest.len() * 2);
     hex.push_str("sha256:");
     for byte in digest {
-        hex.push_str(&format!("{:02x}", byte));
+        // `write!` into a `String` cannot fail — the `Write` impl for
+        // `String` returns `Ok` unconditionally — so the unwrap is the
+        // standard idiom for this pattern.
+        write!(&mut hex, "{:02x}", byte).expect("write to String never fails");
     }
     hex
 }
