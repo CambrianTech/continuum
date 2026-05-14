@@ -32,6 +32,7 @@ export type { ToolChoice } from './ai';
 export type { ToolInputSchema } from './ai';
 export type { UsageMetrics } from './ai';
 export type { VideoInput } from './ai';
+export * from './airc';
 export * from './code';
 export * from './cognition';
 export * from './dataset';
