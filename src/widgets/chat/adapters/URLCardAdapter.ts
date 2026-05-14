@@ -136,39 +136,12 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
     `;
   }
 
-  /**
-   * DOM-returning render path (issue #1100). Same shape as
-   * `TextMessageAdapter.renderMessageElement` — builds the wrapper via
-   * DOM APIs, parses the rich content on a detached `<template>`, and
-   * adopts as a `DocumentFragment` so the live message-content slot
-   * never sees an `innerHTML` assignment. Reactive children inside the
-   * message bubble survive sibling updates.
-   *
-   * Sanitization model is unchanged from the string path. The string
-   * `renderContent` still has interpolation hot spots (originalText,
-   * title, description, siteName) — those are the URL-metadata-XSS
-   * surface and need a separate hardening PR. This PR closes the
-   * `innerHTML` Lit-reactivity hole; the metadata-string XSS hardening
-   * is tracked as a follow-up to #1100.
-   */
-  override renderMessageElement(message: ChatMessageEntity, currentUserId: string): HTMLElement | null {
-    try {
-      const data = this.parseContent(message);
-      if (!data) return null;
-      this.contentData = data;
-
-      const wrapper = this.createAdapterWrapper();
-      const contentHtml = this.renderContent(data, currentUserId);
-
-      const template = globalThis.document.createElement('template');
-      template.innerHTML = contentHtml;
-      wrapper.appendChild(template.content.cloneNode(true));
-      return wrapper;
-    } catch (error) {
-      console.error('URLCardAdapter.renderMessageElement failed:', error);
-      return null;
-    }
-  }
+  // renderMessageElement: inherits the DRY base default (#1158).
+  // The string `renderContent` still has interpolation hot spots
+  // (originalText, title, description, siteName) — those are the
+  // URL-metadata-XSS surface and need a separate hardening PR
+  // (continuum#1159). The base default closes the innerHTML
+  // Lit-reactivity hole; metadata-string XSS hardening is the follow-up.
 
   /**
    * Handle URL metadata fetching and card population
