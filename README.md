@@ -121,7 +121,10 @@ One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-togg
 Requires Node.js 20+ and Rust nightly. Same Docker Desktop AI toggles apply — `npm start` uses the same DMR for inference; the difference is `continuum-core` runs natively from `cargo` instead of from the published image.
 
 ```bash
-cd continuum/src && npm install && npm start
+cd continuum/src
+npm install
+npm run setup:git-hooks   # optional, for commit/pre-push validation
+npm start
 ```
 
 Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.
