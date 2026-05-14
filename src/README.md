@@ -371,6 +371,7 @@ Rooms are where activity happens. Same primitives, infinite possibilities:
 git clone <repo-url>
 cd continuum/src
 npm install
+npm run setup:git-hooks   # optional, for commit/pre-push validation
 
 # Configure API keys (optional — works without, just no AI responses)
 open ~/.continuum/config.env
@@ -502,4 +503,3 @@ Open source with teeth. If you benefit from our work, you must keep improvements
 <p align="center">
   <strong>Built with <a href="https://claude.com/claude-code">Claude Code</a></strong>
 </p>
-
