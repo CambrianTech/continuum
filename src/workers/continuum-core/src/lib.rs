@@ -22,6 +22,7 @@ pub mod audio_constants;
 pub mod code;
 pub mod comms;
 pub mod cognition;
+pub mod concurrency;
 pub mod concurrent;
 pub mod ffi;
 pub mod forge;
