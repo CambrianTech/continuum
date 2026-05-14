@@ -145,18 +145,25 @@ impl AdmissionState {
 
     /// Apply the decision's side-effects to the stores. Pulled out so the
     /// admission path stays linear and testable.
+    ///
+    /// **Quarantine subtlety (claude-tab-2 review nit on #1155):** v1 has
+    /// no quarantine store, so a Quarantined engram gets dropped on the
+    /// floor. Recording its `content_hash` in `seen_content` would leave
+    /// a dangling pointer — future dedup hits would return an
+    /// `existing_engram_id` that can't be looked up. So Quarantine ONLY
+    /// records the `event_id` (replay protection — the load-bearing
+    /// behaviour for `AdmissionError::ReplayDetected`). Once PR-5+ adds
+    /// a real quarantine store, the engram lands somewhere lookup-able
+    /// and content_hash recording can come back.
     fn record_side_effects(&self, decision: &AdmissionDecision) {
         match decision {
             AdmissionDecision::Admit { engram, .. } => {
-                self.record_engram_origin(engram);
+                self.record_admitted(engram);
                 self.engrams.lock().unwrap().push(engram.clone());
             }
             AdmissionDecision::Quarantine { engram, .. } => {
-                // Quarantine drops the engram on the floor for v1 (no
-                // quarantine store yet — PR-5+). Replay protection still
-                // applies: record the event_id so a duplicate quarantined
-                // event doesn't re-fire admission.
-                self.record_engram_origin(engram);
+                // Replay-only recording — see method-doc Quarantine note.
+                self.record_replay_only(engram);
             }
             AdmissionDecision::Drop { .. } => {
                 // Pure drop. No side-effect — by design, dropped messages
@@ -165,10 +172,11 @@ impl AdmissionState {
         }
     }
 
-    /// Record content_hash + (for AIRC origins) event_id from the engram's
-    /// origin. Pulled out so Admit + Quarantine share the same recording
-    /// shape.
-    fn record_engram_origin(&self, engram: &Engram) {
+    /// Full recording for an admitted engram: content_hash → engram_id
+    /// (dedup) PLUS, for AIRC origins, event_id → timestamp (replay).
+    /// Use only when the engram is actually being stored, otherwise the
+    /// dedup pointer dangles.
+    fn record_admitted(&self, engram: &Engram) {
         match &engram.origin {
             EngramOrigin::Chat(r) => {
                 self.seen_content
@@ -188,6 +196,22 @@ impl AdmissionState {
                 // these origins from the inbox path.
             }
         }
+    }
+
+    /// Replay-only recording for a Quarantined engram: event_id → timestamp
+    /// for AIRC origins (so a duplicate quarantined event doesn't re-fire
+    /// admission). Skips content_hash because v1 doesn't actually store
+    /// quarantined engrams; recording dedup pointers to dropped engrams
+    /// would leave dangling `existing_engram_id` references in
+    /// `AdmissionDropReason::Duplicate` results.
+    fn record_replay_only(&self, engram: &Engram) {
+        if let EngramOrigin::Airc(r) = &engram.origin {
+            self.seen_events
+                .record(r.message_id.clone(), engram.admitted_at_ms);
+        }
+        // Chat / Tool / SelfReflection origins have no replay surface
+        // distinct from content dedup, so quarantine of those origins
+        // records nothing here. PR-5's quarantine store will revisit.
     }
 
     //--- read-only inspection (for tests + future recall surface) -----------
@@ -229,7 +253,9 @@ impl AdmissionState {
 mod tests {
     use super::*;
     use crate::persona::admission::IsMemorable as _;
-    use crate::persona::engram::AdmissionDropReason;
+    use crate::persona::engram::{
+        AdmissionDropReason, AircMessageRef, ChatMessageRef, EngramKind, TrustState,
+    };
     use crate::persona::inbox_admission::content_hash_sha256;
     use crate::persona::types::SenderType;
 
@@ -364,5 +390,162 @@ mod tests {
     fn admission_state_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<AdmissionState>();
+    }
+
+    // ── Quarantine side-effect rule (claude-tab-2 review nit on #1155) ──
+    //
+    // v1 has no quarantine store, so a Quarantined engram is dropped on
+    // the floor. Recording its content_hash → engram_id in the dedup
+    // store would leave a dangling pointer (future Duplicate drops would
+    // surface an existing_engram_id that can't be looked up). The right
+    // behaviour: ONLY record event_id (replay protection still applies),
+    // never record content_hash on Quarantine.
+    //
+    // These tests construct synthetic AdmissionDecision values + call
+    // `record_side_effects` directly so they don't need a custom recipe
+    // — the heuristic recipe shipped here doesn't naturally emit
+    // Quarantine, but the rule is about the side-effect helper itself.
+
+    fn synthetic_engram_with_chat_origin(content: &str) -> Engram {
+        Engram {
+            id: Uuid::new_v4(),
+            kind: EngramKind::Episodic,
+            content: content.to_string(),
+            origin: EngramOrigin::Chat(ChatMessageRef {
+                message_id: Uuid::new_v4(),
+                room_id: Uuid::new_v4(),
+                sender_id: Uuid::new_v4(),
+                posted_at_ms: 1_000_000,
+                content_hash: content_hash_sha256(content),
+            }),
+            recall_keys: vec!["test".to_string()],
+            admitted_at_ms: 1_000_000,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: None,
+        }
+    }
+
+    fn synthetic_engram_with_airc_origin(content: &str, message_id: &str) -> Engram {
+        Engram {
+            id: Uuid::new_v4(),
+            kind: EngramKind::Episodic,
+            content: content.to_string(),
+            origin: EngramOrigin::Airc(AircMessageRef {
+                transport: "airc".to_string(),
+                room_id: "cambriantech".to_string(),
+                message_id: message_id.to_string(),
+                sender_id: "airc-8a5e".to_string(),
+                sent_at_ms: 1_000_000,
+                received_at_ms: 1_000_000,
+                content_hash: content_hash_sha256(content),
+                signature: "sig".to_string(),
+                proof_refs: vec![],
+                schema_version: "v1".to_string(),
+                client_name: None,
+            }),
+            recall_keys: vec!["test".to_string()],
+            admitted_at_ms: 1_000_000,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: None,
+        }
+    }
+
+    /// What this catches: Quarantine of a Chat-origin engram records
+    /// NEITHER content_hash NOR event_id. Chat origins have no replay
+    /// surface distinct from content dedup, so quarantine on chat is a
+    /// pure no-op as far as the side-effect stores are concerned.
+    /// Original PR-4 code recorded content_hash here, leaving a dangling
+    /// pointer.
+    #[test]
+    fn quarantine_chat_origin_records_no_side_effects() {
+        let state = AdmissionState::new();
+        let engram = synthetic_engram_with_chat_origin("borderline observation");
+        let content_hash = match &engram.origin {
+            EngramOrigin::Chat(r) => r.content_hash.clone(),
+            _ => unreachable!(),
+        };
+        let decision = AdmissionDecision::Quarantine {
+            engram,
+            reason: "test borderline".to_string(),
+            expiry_ms: 2_000_000,
+        };
+
+        state.record_side_effects(&decision);
+
+        assert!(
+            !state.is_content_seen(&content_hash),
+            "chat-origin quarantine MUST NOT record content_hash (would dangle)"
+        );
+        assert_eq!(state.engram_count(), 0, "quarantine MUST NOT add to engram store");
+    }
+
+    /// What this catches: Quarantine of an AIRC-origin engram records
+    /// the event_id (replay protection — the load-bearing behaviour) but
+    /// MUST NOT record the content_hash (which would dangle since v1
+    /// doesn't store quarantined engrams).
+    #[test]
+    fn quarantine_airc_origin_records_event_id_only_not_content_hash() {
+        let state = AdmissionState::new();
+        let event_id = "airc-msg-quarantine-1";
+        let engram = synthetic_engram_with_airc_origin(
+            "borderline observation worth holding",
+            event_id,
+        );
+        let content_hash = match &engram.origin {
+            EngramOrigin::Airc(r) => r.content_hash.clone(),
+            _ => unreachable!(),
+        };
+        let decision = AdmissionDecision::Quarantine {
+            engram,
+            reason: "test borderline".to_string(),
+            expiry_ms: 2_000_000,
+        };
+
+        state.record_side_effects(&decision);
+
+        assert!(
+            state.is_event_seen(event_id),
+            "airc-origin quarantine MUST record event_id (replay protection)"
+        );
+        assert!(
+            !state.is_content_seen(&content_hash),
+            "airc-origin quarantine MUST NOT record content_hash (would dangle)"
+        );
+        assert_eq!(state.engram_count(), 0, "quarantine MUST NOT add to engram store");
+    }
+
+    /// What this catches: Admit (NOT Quarantine) records BOTH content_hash
+    /// AND event_id for AIRC origins. This is the regression-anchor for
+    /// the refactor that split `record_engram_origin` → `record_admitted`
+    /// + `record_replay_only`. If the refactor accidentally narrowed the
+    /// Admit path's recording, dedup would silently break.
+    #[test]
+    fn admit_airc_origin_still_records_both_content_hash_and_event_id() {
+        let state = AdmissionState::new();
+        let event_id = "airc-msg-admit-1";
+        let engram = synthetic_engram_with_airc_origin(
+            "valuable observation worth recalling",
+            event_id,
+        );
+        let content_hash = match &engram.origin {
+            EngramOrigin::Airc(r) => r.content_hash.clone(),
+            _ => unreachable!(),
+        };
+        let decision = AdmissionDecision::Admit {
+            engram,
+            why: "test admit".to_string(),
+        };
+
+        state.record_side_effects(&decision);
+
+        assert!(
+            state.is_event_seen(event_id),
+            "airc-origin admit MUST record event_id"
+        );
+        assert!(
+            state.is_content_seen(&content_hash),
+            "airc-origin admit MUST record content_hash"
+        );
+        assert_eq!(state.engram_count(), 1, "admit MUST add to engram store");
     }
 }

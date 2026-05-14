@@ -323,6 +323,15 @@ impl ServiceModule for CognitionModule {
                         "engram_count": persona.admission.engram_count(),
                         "trace_seam_count": trace.seam_count(),
                     }))),
+                    // TODO(#1121 PR-5+): return the typed `AdmissionError`
+                    // as JSON via serde so TS callers can pattern-match
+                    // on the variant (`EnvelopeVerificationFailed`,
+                    // `TrustBoundaryRejected`, `ReplayDetected`, etc.).
+                    // The current `format!()` flattens to a string, losing
+                    // the discriminant. Caller can still parse the prefix
+                    // for now; PR-5 swaps to `Err(serde_json::to_string(&err)?)`
+                    // or a CommandResult error variant that preserves shape.
+                    // (claude-tab-2 review nit on #1155.)
                     Err(err) => Err(format!("admission error: {err}")),
                 }
             }
