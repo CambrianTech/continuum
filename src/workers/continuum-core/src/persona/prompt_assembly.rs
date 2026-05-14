@@ -43,6 +43,16 @@ pub struct PromptAssemblyInput {
     /// and `SingleUserTurnFlattenedHistory` ignore this field.
     #[serde(default)]
     pub other_persona_names: Vec<String>,
+    /// Recalled engrams (per-persona admitted memory) — content
+    /// strings only, ordered most-recent first, already trimmed by
+    /// the caller. Rendered as a `[Recent Memory]` block right after
+    /// the matched-angle injection so the persona sees its own
+    /// memory adjacent to the analyzer's per-turn perspective. Empty
+    /// = no memory recall on this turn (normal early-life state, or
+    /// admission gate skipped because no AdmissionState).
+    /// Continuum#1211 PR-2.
+    #[serde(default)]
+    pub recalled_engrams: Vec<String>,
 }
 
 /// A message in conversation history.
@@ -112,6 +122,33 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
              to your expertise. Focus your contribution here:\n{}",
             input.matched_angle
         );
+    }
+
+    // Inject recalled engrams as a memory block — continuum#1211 PR-2.
+    // The persona's admission gate (#1213) collected these from prior
+    // chat turns; rendering them here is what closes the engram loop
+    // (admit → store → recall → context). Caller (cognition/respond
+    // IPC handler) is responsible for trimming to a sensible count
+    // before calling assemble — prompt_assembly stays a pure
+    // formatter, doesn't make policy decisions about budget.
+    //
+    // Empty list = no rendering, no header. A persona that hasn't
+    // accumulated memory yet (or the inline gate skipped because no
+    // AdmissionState exists) sees the prompt unchanged from before
+    // PR-2 — backwards-compatible.
+    if !input.recalled_engrams.is_empty() {
+        system_prompt.push_str(
+            "\n\n[Recent Memory]\n\
+             Things you have remembered from prior conversations in this room. \
+             Use this context as background; not every memory needs to be cited:\n",
+        );
+        for engram in &input.recalled_engrams {
+            // `- ` bullet prefix keeps each engram visually separable
+            // even when the content runs multiple lines. writeln!
+            // appends the newline without the trailing-newline-in-
+            // format-string clippy lint.
+            let _ = writeln!(system_prompt, "- {engram}");
+        }
     }
 
     // Inject social awareness signals
@@ -466,6 +503,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -474,6 +512,87 @@ mod tests {
         assert!(result.system_message.contains("Rust error handling"));
         assert!(result.messages.len() >= 2); // history + current (identity reminder removed 2026-04-20)
         assert!(result.estimated_tokens > 0);
+    }
+
+    /// What this catches (continuum#1211 PR-2): when recalled_engrams
+    /// is non-empty, the assembled system_message includes the
+    /// `[Recent Memory]` block AND each engram bullet.
+    /// Regression: a future formatter change that drops the bullet
+    /// prefix or the header would break the persona's ability to
+    /// distinguish memory from current context.
+    #[test]
+    fn recalled_engrams_render_as_memory_block() {
+        let input = PromptAssemblyInput {
+            persona_name: "Helper AI".to_string(),
+            system_prompt: "You are Helper AI.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: Some("Joel".to_string()),
+                content: "what color did I say I liked?".to_string(),
+                timestamp_ms: Some(1000),
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![
+                "Joel's favorite color is teal.".to_string(),
+                "Joel works in San Francisco.".to_string(),
+            ],
+        };
+
+        let result = assemble(&input);
+        assert!(
+            result.system_message.contains("[Recent Memory]"),
+            "expected Recent Memory header in: {}",
+            result.system_message
+        );
+        assert!(
+            result.system_message.contains("- Joel's favorite color is teal."),
+            "expected bullet-prefixed engram in: {}",
+            result.system_message
+        );
+        assert!(
+            result.system_message.contains("- Joel works in San Francisco."),
+            "expected second bullet in: {}",
+            result.system_message
+        );
+    }
+
+    /// What this catches (continuum#1211 PR-2): empty recalled_engrams
+    /// produces NO `[Recent Memory]` block and NO header. Backwards-
+    /// compat with all pre-PR-2 callers + cold-start personas (no
+    /// engrams yet). Regression: a formatter that always emits the
+    /// header would clutter every prompt for every persona that hasn't
+    /// accumulated memory yet.
+    #[test]
+    fn empty_recalled_engrams_emits_no_memory_block() {
+        let input = PromptAssemblyInput {
+            persona_name: "Helper AI".to_string(),
+            system_prompt: "You are Helper AI.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "hi".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![],
+        };
+
+        let result = assemble(&input);
+        assert!(
+            !result.system_message.contains("[Recent Memory]"),
+            "should NOT render Recent Memory header for empty engrams: {}",
+            result.system_message
+        );
     }
 
     #[test]
@@ -493,6 +612,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -516,6 +636,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -547,6 +668,7 @@ mod tests {
             }),
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -588,6 +710,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -630,6 +753,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);

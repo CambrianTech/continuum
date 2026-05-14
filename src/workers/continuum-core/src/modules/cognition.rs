@@ -944,9 +944,9 @@ impl ServiceModule for CognitionModule {
                 let signal: crate::persona::cognition_io::Signal = p.json("signal")?;
                 let ctx: crate::persona::cognition_io::PersonaContext = p.json("personaContext")?;
 
-                let input = crate::persona::cognition_io::build_respond_input(&signal, &ctx)?;
+                let mut input = crate::persona::cognition_io::build_respond_input(&signal, &ctx)?;
 
-                // ── Hot-path admission gate (continuum#1211) ────────
+                // ── Hot-path admission gate (continuum#1211 PR-1) ──
                 // Run admission BEFORE inference so the persona's
                 // engram store grows from real chat turns. Without
                 // this call the admission machinery (#1121 PR-1..5) is
@@ -957,10 +957,39 @@ impl ServiceModule for CognitionModule {
                 // (persona never had `cognition/create-engine` called)
                 // is logged and skipped, NOT a chat-blocking error.
                 // The persona still responds; it just doesn't grow
-                // memory until the engine is created. PR-2 will
-                // surface recalled engrams to prompt_assembly so the
-                // recall side starts working too.
+                // memory until the engine is created.
                 run_inline_admission_gate(&self.state, &signal, &ctx);
+
+                // ── Hot-path recall surface (continuum#1211 PR-2) ──
+                // After admission gate, populate input.recalled_engrams
+                // with the persona's most-recently-admitted memory so
+                // prompt_assembly can render a `[Recent Memory]` block
+                // in the system prompt. Closes the engram loop:
+                // admit (PR-1) → store → recall (PR-2) → context →
+                // model sees its own memory.
+                //
+                // Cap = 5 most-recent engrams. The number is a budget
+                // policy: enough to ground the persona in continuity
+                // ("yes the user mentioned teal earlier") without
+                // dominating the prompt. Future tunable via per-persona
+                // AdmissionConfig; v1 is a hardcoded sensible default.
+                //
+                // Empty when persona has no AdmissionState (same
+                // forensic-skip path as the gate above) OR no admitted
+                // engrams yet (cold-start). Both are normal early-life
+                // states; a no-recall persona is unchanged from
+                // pre-PR-2 behavior. Prompt_assembly skips rendering
+                // when the list is empty (no `[Recent Memory]` header
+                // appears).
+                const RECALL_LIMIT: usize = 5;
+                if let Some(persona) = self.state.personas.get(&ctx.persona_id) {
+                    input.recalled_engrams = persona
+                        .admission
+                        .recall_recent(RECALL_LIMIT)
+                        .into_iter()
+                        .map(|e| e.content)
+                        .collect();
+                }
 
                 // Diagnostic: log what media survived the projection.
                 // Vision routing was failing 2026-04-21 and this stays
