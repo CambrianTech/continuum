@@ -222,7 +222,7 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
         None => return, // HOME unset; treat as opted-out, no warning spam
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        runtime::logger("recorder").warn(&format!(
+        runtime::logger("recorder").warn_fmt(format_args!(
             "couldn't create fixture dir {}: {e} — recording skipped",
             dir.display()
         ));
@@ -233,7 +233,8 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     let serialized = match serde_json::to_vec_pretty(&payload) {
         Ok(b) => b,
         Err(e) => {
-            runtime::logger("recorder").warn(&format!("turn capture serialize failed: {e}"));
+            runtime::logger("recorder")
+                .warn_fmt(format_args!("turn capture serialize failed: {e}"));
             return;
         }
     };
@@ -241,14 +242,14 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     // missing file rather than a half-written one that breaks parsers.
     let tmp_path = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp_path, &serialized) {
-        runtime::logger("recorder").warn(&format!(
+        runtime::logger("recorder").warn_fmt(format_args!(
             "turn capture write failed: {e} (target: {})",
             path.display()
         ));
         return;
     }
     if let Err(e) = std::fs::rename(&tmp_path, &path) {
-        runtime::logger("recorder").warn(&format!(
+        runtime::logger("recorder").warn_fmt(format_args!(
             "turn capture rename failed: {e} (target: {})",
             path.display()
         ));

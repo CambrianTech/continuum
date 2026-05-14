@@ -970,7 +970,7 @@ impl ServiceModule for CognitionModule {
                             format!("{}(b64={}, desc={})", item.item_type, has_b64, has_desc)
                         })
                         .collect();
-                    runtime::logger("cognition").info(&format!(
+                    runtime::logger("cognition").info_fmt(format_args!(
                         "cognition/respond: message_media count={} shapes=[{}]",
                         input.message_media.len(),
                         shape.join(", ")
@@ -1425,7 +1425,7 @@ pub(crate) fn run_inline_admission_gate(
 ) -> InlineAdmissionOutcome {
     let inbox_msg = crate::persona::cognition_io::signal_to_inbox_message(signal, ctx);
     let Some(persona) = state.personas.get(&ctx.persona_id) else {
-        runtime::logger("cognition").warn(&format!(
+        runtime::logger("cognition").warn_fmt(format_args!(
             "cognition/respond: no AdmissionState for persona={} \
              — skipping admission (call cognition/create-engine first \
              to enable memory accumulation)",
@@ -1445,7 +1445,7 @@ pub(crate) fn run_inline_admission_gate(
             // join "% drops" against "engram store size" without a
             // separate query.
             if label != "admit" {
-                runtime::logger("cognition").info(&format!(
+                runtime::logger("cognition").info_fmt(format_args!(
                     "cognition/respond: admission decision={label} \
                      engrams={} (persona={})",
                     persona.admission.engram_count(),
@@ -1456,7 +1456,7 @@ pub(crate) fn run_inline_admission_gate(
         }
         Err(err) => {
             let err_string = err.to_string();
-            runtime::logger("cognition").warn(&format!(
+            runtime::logger("cognition").warn_fmt(format_args!(
                 "cognition/respond: admission error \
                  (continuing without memory grow): {err_string} \
                  (persona={})",

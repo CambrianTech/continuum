@@ -8,6 +8,7 @@
 //! - Library code: Use `ModuleLogger::for_component("component_name")` for any code
 //!   that needs logging but isn't a ServiceModule (e.g., AI adapters, inference code)
 
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -55,15 +56,19 @@ impl ModuleLogger {
     }
 
     fn write(&self, level: &str, msg: &str) {
+        self.write_fmt(level, format_args!("{msg}"));
+    }
+
+    fn write_fmt(&self, level: &str, args: fmt::Arguments<'_>) {
         let timestamp = chrono::Utc::now().to_rfc3339();
-        let line = format!(
-            "[{}] [{}] [{}] {}\n",
-            timestamp, level, &self.module_name, msg
-        );
 
         if let Ok(mut guard) = self.log_file.lock() {
             if let Some(ref mut file) = *guard {
-                let _ = file.write_all(line.as_bytes());
+                let _ = writeln!(
+                    file,
+                    "[{}] [{}] [{}] {}",
+                    timestamp, level, &self.module_name, args
+                );
                 let _ = file.flush();
             }
         }
@@ -73,28 +78,44 @@ impl ModuleLogger {
         self.write("DEBUG", msg);
     }
 
+    pub fn debug_fmt(&self, args: fmt::Arguments<'_>) {
+        self.write_fmt("DEBUG", args);
+    }
+
     pub fn info(&self, msg: &str) {
         self.write("INFO", msg);
+    }
+
+    pub fn info_fmt(&self, args: fmt::Arguments<'_>) {
+        self.write_fmt("INFO", args);
     }
 
     pub fn warn(&self, msg: &str) {
         self.write("WARN", msg);
     }
 
+    pub fn warn_fmt(&self, args: fmt::Arguments<'_>) {
+        self.write_fmt("WARN", args);
+    }
+
     pub fn error(&self, msg: &str) {
         self.write("ERROR", msg);
     }
 
+    pub fn error_fmt(&self, args: fmt::Arguments<'_>) {
+        self.write_fmt("ERROR", args);
+    }
+
     /// Structured timing log for performance analysis
     pub fn timing(&self, operation: &str, duration_ms: u64) {
-        self.write("TIMING", &format!("{} took {}ms", operation, duration_ms));
+        self.write_fmt("TIMING", format_args!("{operation} took {duration_ms}ms"));
     }
 
     /// Timing with metadata
     pub fn timing_with_meta(&self, operation: &str, duration_ms: u64, meta: &str) {
-        self.write(
+        self.write_fmt(
             "TIMING",
-            &format!("{} took {}ms | {}", operation, duration_ms, meta),
+            format_args!("{operation} took {duration_ms}ms | {meta}"),
         );
     }
 
