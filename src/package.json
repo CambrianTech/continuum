@@ -206,6 +206,7 @@
     "test:simple": "echo '🚀 SIMPLE TEST SUITE' && npx tsx tests/bootstrap-comprehensive.test.ts",
     "test:precommit": "./scripts/git-precommit.sh",
     "test:prepush": "./scripts/git-prepush.sh",
+    "test:rust": "./scripts/cargo-test.sh",
     "hooks:setup": "./scripts/setup-git-hooks.sh",
     "hooks:test": "echo '🧪 Testing all git hooks...' && echo '📋 Pre-commit:' && ./scripts/git-precommit.sh && echo '📋 Pre-push:' && ./scripts/git-prepush.sh && echo '✅ All hooks tested successfully'",
     "hooks:status": "echo '📋 Git Hook Status:' && ls -la .git/hooks/ | grep -E '(pre-commit|post-commit|pre-push)' && echo '' && echo '📁 Hook Scripts:' && ls -la scripts/git-*.sh",

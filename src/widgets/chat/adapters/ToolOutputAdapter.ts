@@ -431,36 +431,10 @@ export class ToolOutputAdapter extends AbstractMessageAdapter<ToolOutputContentD
     `;
   }
 
-  /**
-   * DOM-returning render path (issue #1100). Same shape as
-   * `TextMessageAdapter.renderMessageElement` — builds the wrapper via
-   * DOM APIs and adopts the rich content as a `DocumentFragment` so the
-   * live message-content slot never sees `innerHTML`. Reactive children
-   * inside the message bubble survive sibling updates.
-   *
-   * Sanitization: tool data is already passed through `escapeHtml` at
-   * `renderContent` interpolation sites (see lines 404-432) — the
-   * detached-template parse keeps that contract; this PR doesn't change
-   * the escape path.
-   */
-  override renderMessageElement(message: ChatMessageEntity, currentUserId: string): HTMLElement | null {
-    try {
-      const data = this.parseContent(message);
-      if (!data) return null;
-      this.contentData = data;
-
-      const wrapper = this.createAdapterWrapper();
-      const contentHtml = this.renderContent(data, currentUserId);
-
-      const template = globalThis.document.createElement('template');
-      template.innerHTML = contentHtml;
-      wrapper.appendChild(template.content.cloneNode(true));
-      return wrapper;
-    } catch (error) {
-      console.error('ToolOutputAdapter.renderMessageElement failed:', error);
-      return null;
-    }
-  }
+  // renderMessageElement: inherits the DRY base default (#1158).
+  // Tool data is already passed through `escapeHtml` at `renderContent`
+  // interpolation sites — the base's detached-template parse keeps that
+  // contract intact; no override needed.
 
   async handleContentLoading(_element: HTMLElement): Promise<void> {
     // Tool outputs are synchronous text — no async loading needed
