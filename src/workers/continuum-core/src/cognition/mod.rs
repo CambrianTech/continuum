@@ -30,6 +30,7 @@
 pub mod adaptive_throughput;
 pub mod host_capability_probe;
 pub mod model_resolver;
+pub mod rate_proposals;
 pub mod response_orchestrator;
 pub mod response_validator;
 pub mod shared_analysis;
