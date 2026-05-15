@@ -874,7 +874,7 @@ impl ServiceModule for CognitionModule {
             // formula and victim selection as activate_skill's implicit
             // eviction; respects critical-adapter protection (priority > 0.9).
             // Returns bytes_freed + post-eviction state. When the broker
-            // singleton lands and registers per-persona PressureSource
+            // singleton lands and registers per-persona ResourcePool
             // wrappers, this command is what those wrappers will call;
             // until then it's manually testable for verification.
             "cognition/genome-evict-under-pressure" => {

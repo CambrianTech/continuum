@@ -9,79 +9,61 @@
 //! priority arbitration, ML-policy-driven tiering decisions, and
 //! eventually LLM-mediated control for novel pressure situations.
 //!
-//! This commit lands the trait + broker scaffolding + tick loop. Pools
-//! register themselves as `PressureSource` implementors; the broker
-//! aggregates pressure on a periodic tick; when global pressure crosses
-//! threshold, eviction fires on the highest-pressure pool first.
+//! ## Trait collapse (#1246)
+//!
+//! Pools register themselves as `ResourcePool` implementors directly —
+//! the formerly-parallel `PressureSource` trait was collapsed into
+//! `ResourcePool` since both expressed "tier with capacity + eviction +
+//! snapshot." `ResourcePool::pressure()` and `stats_snapshot()` carry
+//! default impls so `DockerTierPool` / `HFCacheTierPool` / future tiers
+//! plug in for free. `PagedResourcePool` overrides `stats_snapshot()` to
+//! expose its richer hit/miss/eviction telemetry.
+//!
+//! Eviction calls `evict_at_least(want)` where `want` = max(overshoot,
+//! 10% of capacity). The 10% floor ensures a pool at exactly 100%
+//! pressure (overshoot=0) still gets a non-zero eviction request.
 //!
 //! What's NOT in this commit (intentionally — separate phases):
 //!   - ML/LLM policy hook (the broker exposes the lever; the brain
-//!     plugs in later via PressureSource priority overrides)
+//!     plugs in later via per-tier eviction-priority overrides)
 //!   - Recipe activation/deactivation hooks (Phase 9)
 //!   - Cross-machine pressure (grid-level paging is its own layer)
 //!
 //! See: docs/architecture/RESOURCE-ARCHITECTURE.md (Phase 7)
 
-use crate::paging::pool::{PagedResourcePool, PoolStats};
+use crate::paging::pool::{PoolStats, ResourcePool};
 use crate::runtime;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
 use ts_rs::TS;
 
-/// Anything the broker can read pressure from + evict to relieve it.
-///
-/// Implemented by every paged resource pool in the system. The trait is
-/// deliberately minimal — name for diagnostics, pressure for decisions,
-/// `evict_some` for action. Eviction strategy lives inside the pool;
-/// the broker just asks for some relief.
-pub trait PressureSource: Send + Sync {
-    /// Stable identifier used in logs and broker diagnostics.
-    fn name(&self) -> &str;
+/// Target pressure the broker aims to drop to after an eviction pass.
+/// Below the Warning threshold (0.60) so post-eviction the pool sits in
+/// the Normal tier with margin. Picked to match the behavior of
+/// `PagedResourcePool::evict_under_pressure` which evicted until
+/// pressure dropped to "healthy" — the same intent generalized to
+/// every `ResourcePool` impl, including tiers (Docker, HF cache) where
+/// pressure-aware internal eviction logic doesn't exist.
+const HEALTHY_TARGET_PRESSURE: f64 = 0.60;
 
-    /// Current pressure 0.0..1.0 (or higher if over-budget). Snapshot
-    /// only — no side effects. Cheap; called every tick from the broker.
-    fn pressure(&self) -> f64;
-
-    /// Drop unpinned entries until pressure returns to a healthy level.
-    /// Returns the byte count freed (or 0 if nothing was evictable —
-    /// fully pinned pool).
-    fn evict_some(&self) -> u64;
-
-    /// Snapshot stats for monitoring / IPC export. Same shape as
-    /// `PagedResourcePool::stats()` so the broker can present a
-    /// uniform view across pools of any value type.
-    fn stats_snapshot(&self) -> PoolStats;
-}
-
-/// Blanket impl — every `PagedResourcePool<K, V>` automatically satisfies
-/// `PressureSource`. Consumers wrap their pool in `Arc<...>` and pass it
-/// straight to `broker.register()`; no per-pool adapter struct needed.
-///
-/// This is the architectural point of the trait: the broker speaks a tiny
-/// interface, every pool plugs in for free, and future ML/LLM policy
-/// hooks can specialize behavior per pool by overriding the `evict_some`
-/// strategy via `PoolConfig::eviction_priority` instead of by writing a
-/// custom `PressureSource`.
-impl<K, V> PressureSource for PagedResourcePool<K, V>
-where
-    K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
-{
-    fn name(&self) -> &str {
-        self.config_name()
+/// Compute the "want_bytes" eviction request for a pool. Aims to bring
+/// pressure to `HEALTHY_TARGET_PRESSURE` (= drop usage to 60% of cap).
+/// Falls back to 10% of capacity as a floor so a pool at exactly 100%
+/// pressure still gets a non-zero request. This is the canonical
+/// broker→pool eviction-amount derivation, kept in one place so every
+/// tier sees the same policy regardless of where the call originates.
+fn evict_amount_for(pool: &dyn ResourcePool) -> u64 {
+    let cap = pool.capacity_bytes();
+    if cap == 0 {
+        return 0;
     }
-    fn pressure(&self) -> f64 {
-        self.stats_blocking().pressure
-    }
-    fn evict_some(&self) -> u64 {
-        self.evict_under_pressure()
-    }
-    fn stats_snapshot(&self) -> PoolStats {
-        self.stats_blocking()
-    }
+    let used = pool.usage_bytes();
+    let target_used = (cap as f64 * HEALTHY_TARGET_PRESSURE) as u64;
+    let to_drop = used.saturating_sub(target_used);
+    let ten_percent_floor = cap / 10;
+    to_drop.max(ten_percent_floor)
 }
 
 /// Pressure tier — drives the broker's response.
@@ -229,7 +211,7 @@ impl PressureTier {
 /// process is sufficient (cross-machine pressure lives at the grid
 /// layer, not here).
 pub struct PressureBroker {
-    pools: RwLock<Vec<Arc<dyn PressureSource>>>,
+    pools: RwLock<Vec<Arc<dyn ResourcePool>>>,
     config: BrokerConfig,
     evictions_fired: parking_lot::Mutex<u64>,
     bytes_freed: parking_lot::Mutex<u64>,
@@ -280,11 +262,11 @@ impl PressureBroker {
     /// Register a pool as a pressure source. The broker holds a weak-ish
     /// reference (Arc) so pools that outlive the broker stay valid; the
     /// broker iterates the registered set each tick.
-    pub fn register(&self, pool: Arc<dyn PressureSource>) {
+    pub fn register(&self, pool: Arc<dyn ResourcePool>) {
         let mut pools = self.pools.write();
-        let name = pool.name().to_string();
+        let name = pool.tier_name().to_string();
         // Dedup by name — registering twice replaces (avoids duplicate eviction calls).
-        pools.retain(|p| p.name() != name);
+        pools.retain(|p| p.tier_name() != name);
         pools.push(pool);
     }
 
@@ -292,7 +274,7 @@ impl PressureBroker {
     /// a subsystem that owned the pool).
     pub fn unregister(&self, name: &str) {
         let mut pools = self.pools.write();
-        pools.retain(|p| p.name() != name);
+        pools.retain(|p| p.tier_name() != name);
     }
 
     /// Read pressure across all pools — global = max(per-pool). Cheap;
@@ -327,13 +309,13 @@ impl PressureBroker {
         }
         let pools = self.pools.read();
         // Build (pressure, ref) list, sorted descending by pressure.
-        let mut pressured: Vec<(f64, Arc<dyn PressureSource>)> = pools
+        let mut pressured: Vec<(f64, Arc<dyn ResourcePool>)> = pools
             .iter()
             .map(|p| (p.pressure(), p.clone()))
             .filter(|(p, _)| *p >= self.config.act_above)
             .collect();
         pressured.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        let act_on: &[(f64, Arc<dyn PressureSource>)] = match tier {
+        let act_on: &[(f64, Arc<dyn ResourcePool>)] = match tier {
             PressureTier::High => pressured.first().map(std::slice::from_ref).unwrap_or(&[]),
             PressureTier::Critical => &pressured[..],
             _ => &[],
@@ -345,13 +327,14 @@ impl PressureBroker {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         for (pre_pressure, pool) in act_on {
-            let freed = pool.evict_some();
+            let want = evict_amount_for(pool.as_ref());
+            let freed = pool.evict_at_least(want);
             // Always emit ONE alert per pool the broker tried to relieve
             // — even if eviction freed 0 bytes. Zero-byte alert IS the
             // signal "this tier is hot AND stuck" (e.g. fully pinned
             // pool, docker daemon down). Operator needs to know.
             self.emit_alert(PressureAlert {
-                tier_name: pool.name().to_string(),
+                tier_name: pool.tier_name().to_string(),
                 pressure: *pre_pressure,
                 tier: PressureTier::for_pressure(*pre_pressure)
                     .label()
@@ -362,7 +345,7 @@ impl PressureBroker {
             });
             if freed > 0 {
                 bytes_freed += freed;
-                pools_acted.push(pool.name().to_string());
+                pools_acted.push(pool.tier_name().to_string());
             }
         }
         if bytes_freed > 0 {
@@ -386,7 +369,7 @@ impl PressureBroker {
             .map(|p| {
                 let pressure = p.pressure();
                 PoolView {
-                    name: p.name().to_string(),
+                    name: p.tier_name().to_string(),
                     pressure,
                     tier: PressureTier::for_pressure(pressure),
                     stats: p.stats_snapshot(),
@@ -433,7 +416,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Mock pool for broker testing — exposes a settable pressure value
-    /// and counts evict_some invocations.
+    /// and counts evict_at_least invocations. Implements ResourcePool
+    /// (the unified trait post-#1246); overrides pressure() because the
+    /// mock's pressure is settable rather than usage/capacity-derived.
     struct MockPool {
         name: String,
         pressure_val: AtomicU64, // f64 bits
@@ -458,33 +443,36 @@ mod tests {
         }
     }
 
-    impl PressureSource for MockPool {
-        fn name(&self) -> &str {
+    impl ResourcePool for MockPool {
+        fn tier_name(&self) -> &str {
             &self.name
         }
-        fn pressure(&self) -> f64 {
-            f64::from_bits(self.pressure_val.load(Ordering::Acquire))
+        fn capacity_bytes(&self) -> u64 {
+            // Synthetic capacity: enough that the broker's evict_amount_for
+            // request is non-zero. Tests don't validate the request value
+            // itself; they validate eviction count + bytes returned.
+            1_000
         }
-        fn evict_some(&self) -> u64 {
+        fn usage_bytes(&self) -> u64 {
+            // Synthetic usage tracking the settable pressure value so the
+            // 10%-of-capacity floor in evict_amount_for produces a sane
+            // request even when tests bypass the usage path.
+            (self.pressure() * 1_000.0) as u64
+        }
+        fn evict_at_least(&self, _want_bytes: u64) -> u64 {
             self.evict_count.fetch_add(1, Ordering::AcqRel);
             // Simulate eviction reducing pressure.
             let cur = self.pressure();
             self.set_pressure((cur - 0.3).max(0.0));
             self.bytes_per_evict
         }
-        fn stats_snapshot(&self) -> PoolStats {
-            PoolStats {
-                name: self.name.clone(),
-                entry_count: 0,
-                pinned_count: 0,
-                total_bytes: 0,
-                max_bytes: 0,
-                pressure: self.pressure(),
-                hit_count: 0,
-                miss_count: 0,
-                eviction_count: 0,
-                inflight_count: 0,
-            }
+        fn snapshot(&self) -> Vec<crate::paging::pool::ResourcePoolEntry> {
+            Vec::new()
+        }
+        // Override default `pressure()` because mock pressure is settable
+        // (not usage/capacity-derived).
+        fn pressure(&self) -> f64 {
+            f64::from_bits(self.pressure_val.load(Ordering::Acquire))
         }
     }
 
@@ -566,7 +554,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn real_paged_resource_pool_plugs_into_broker_via_blanket_impl() {
+    async fn real_paged_resource_pool_plugs_into_broker_via_resource_pool() {
         use crate::paging::pool::{lru_priority, PagedResourcePool, PoolConfig};
 
         // Build a real pool and fill it past the act_above threshold.
@@ -589,9 +577,11 @@ mod tests {
             "expected pressure ≥0.80, got {}",
             pool.pressure()
         );
-        assert_eq!(pool.name(), "real-embeddings");
+        assert_eq!(pool.tier_name(), "real-embeddings");
 
-        // Register via blanket impl — no adapter struct needed.
+        // Register directly — PagedResourcePool implements ResourcePool
+        // (post-#1246 trait collapse — no separate PressureSource shim
+        // needed).
         let broker = PressureBroker::new(BrokerConfig::default());
         broker.register(pool.clone());
 
@@ -602,7 +592,7 @@ mod tests {
         );
         assert!(
             report.bytes_freed > 0,
-            "blanket evict_some should free bytes"
+            "evict_at_least should free bytes"
         );
         assert_eq!(report.pools_acted, vec!["real-embeddings".to_string()]);
         // Pressure should drop after eviction.
@@ -723,29 +713,21 @@ mod tests {
     #[test]
     fn alert_fires_with_zero_bytes_when_pool_cant_evict() {
         struct StuckPool;
-        impl PressureSource for StuckPool {
-            fn name(&self) -> &str {
+        impl ResourcePool for StuckPool {
+            fn tier_name(&self) -> &str {
                 "stuck"
             }
-            fn pressure(&self) -> f64 {
-                0.99
+            fn capacity_bytes(&self) -> u64 {
+                100
             }
-            fn evict_some(&self) -> u64 {
-                0
+            fn usage_bytes(&self) -> u64 {
+                99 // → pressure 0.99 via the trait default
             }
-            fn stats_snapshot(&self) -> PoolStats {
-                PoolStats {
-                    name: "stuck".to_string(),
-                    entry_count: 0,
-                    pinned_count: 0,
-                    total_bytes: 0,
-                    max_bytes: 0,
-                    pressure: 0.99,
-                    hit_count: 0,
-                    miss_count: 0,
-                    eviction_count: 0,
-                    inflight_count: 0,
-                }
+            fn evict_at_least(&self, _want_bytes: u64) -> u64 {
+                0 // simulating fully-pinned / docker-down
+            }
+            fn snapshot(&self) -> Vec<crate::paging::pool::ResourcePoolEntry> {
+                Vec::new()
             }
         }
         let broker = PressureBroker::new(BrokerConfig::default());
