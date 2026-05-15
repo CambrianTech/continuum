@@ -412,6 +412,26 @@ impl ServiceModule for CognitionModule {
             }
 
             // ================================================================
+            // Vision Describe (continuum#1276 — TS→Rust oxidizer)
+            // ================================================================
+            // Migrated from `system/vision/VisionInferenceProvider.ts` (176 LOC).
+            // Selects a vision-capable model from the model registry, builds the
+            // describe prompt, dispatches `ai/generate` with multimodal content,
+            // and parses the response. The TS file becomes a thin shim that
+            // calls this IPC. Outlier-validation pair with codex's #1284
+            // (structured-decision shape: AIDecisionService.evaluateGating).
+            "cognition/vision-describe" => {
+                let _timer = TimingGuard::new("module", "cognition_vision_describe");
+                let request: crate::cognition::vision_describe::VisionDescribeRequest =
+                    serde_json::from_value(params)
+                        .map_err(|e| format!("invalid vision-describe params: {e}"))?;
+                let result = crate::cognition::vision_describe::describe_image(request).await?;
+                Ok(CommandResult::Json(serde_json::to_value(result).map_err(
+                    |e| format!("vision-describe serialize result: {e}"),
+                )?))
+            }
+
+            // ================================================================
             // Message Deduplication (single source of truth in Rust)
             // ================================================================
             "cognition/has-evaluated" => {

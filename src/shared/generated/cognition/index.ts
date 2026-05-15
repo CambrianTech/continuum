@@ -44,3 +44,6 @@ export type { ToolExecutionContext } from './ToolExecutionContext';
 export type { ToolError } from './ToolError';
 export type { ToolInvocation } from './ToolInvocation';
 export type { ToolOutcome } from './ToolOutcome';
+export type { VisionDescribeOptions } from './VisionDescribeOptions';
+export type { VisionDescribeRequest } from './VisionDescribeRequest';
+export type { VisionDescription } from './VisionDescription';
