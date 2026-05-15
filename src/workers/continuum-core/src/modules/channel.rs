@@ -123,6 +123,16 @@ impl ChannelModule {
     pub fn new(state: Arc<ChannelState>) -> Self {
         Self { state }
     }
+
+    fn tick_db_handle_from_env(override_value: Option<String>) -> String {
+        override_value
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "main".to_string())
+    }
+
+    fn tick_db_handle() -> String {
+        Self::tick_db_handle_from_env(std::env::var("CONTINUUM_DB_URL").ok())
+    }
 }
 
 #[async_trait]
@@ -437,10 +447,9 @@ impl ServiceModule for ChannelModule {
             .map(|c| c.clone())
             .unwrap_or_default();
 
-        // Resolve db_path once per tick — use Postgres (main DB), not SQLite
-        let user = std::env::var("USER").unwrap_or_default();
-        let db_path = std::env::var("CONTINUUM_DB_URL")
-            .unwrap_or_else(|_| format!("postgres://{user}@localhost:5432/continuum"));
+        // Use DataModule's main handle by default so fresh installs stay SQLite-first.
+        // CONTINUUM_DB_URL remains an explicit deployment override.
+        let db_path = Self::tick_db_handle();
 
         // Collect persona IDs to avoid holding DashMap ref across await
         let persona_ids: Vec<Uuid> = self
@@ -518,9 +527,9 @@ impl ServiceModule for ChannelModule {
                     );
                 }
 
-                if let Some(gen_entry) = self.state.self_task_generators.get(persona_id) {
-                    let mut gen = gen_entry.lock().await;
-                    match gen.generate_and_persist(&db_path, &executor).await {
+                if let Some(generator_entry) = self.state.self_task_generators.get(persona_id) {
+                    let mut generator = generator_entry.lock().await;
+                    match generator.generate_and_persist(&db_path, &executor).await {
                         Ok(tasks) => {
                             let count = tasks.len() as u32;
                             if count > 0 {
@@ -553,11 +562,11 @@ impl ServiceModule for ChannelModule {
             // Uses genome coverage report to find domains with activity but no adapter.
             // Creates enroll-academy tasks when gap meets threshold.
             if config.self_task_enabled {
-                if let Some(gen_entry) = self.state.self_task_generators.get(persona_id) {
-                    let gen = gen_entry.lock().await;
+                if let Some(generator_entry) = self.state.self_task_generators.get(persona_id) {
+                    let generator = generator_entry.lock().await;
                     if let Some(persona) = self.state.personas.get(persona_id) {
                         let enrollment_tasks =
-                            gen.detect_enrollment_opportunities(&persona.genome_engine);
+                            generator.detect_enrollment_opportunities(&persona.genome_engine);
                         if !enrollment_tasks.is_empty() {
                             for task_json in &enrollment_tasks {
                                 if let Some(item) =
@@ -753,5 +762,33 @@ impl ChannelModule {
             related_task_ids: Vec::new(),
             consolidated_count: 1,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChannelModule;
+
+    #[test]
+    fn tick_db_handle_defaults_to_main() {
+        assert_eq!(ChannelModule::tick_db_handle_from_env(None), "main");
+    }
+
+    #[test]
+    fn tick_db_handle_ignores_blank_override() {
+        assert_eq!(
+            ChannelModule::tick_db_handle_from_env(Some("  ".to_string())),
+            "main"
+        );
+    }
+
+    #[test]
+    fn tick_db_handle_preserves_explicit_override() {
+        let db_url = "postgres://user@localhost:5432/continuum".to_string();
+
+        assert_eq!(
+            ChannelModule::tick_db_handle_from_env(Some(db_url.clone())),
+            db_url
+        );
     }
 }
