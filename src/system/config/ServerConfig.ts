@@ -65,12 +65,13 @@ export class ServerConfig {
   }
 
   /**
-   * Get main database connection string.
+   * Get main database handle/path.
    *
-   * Returns PostgreSQL connection URL. Override via DATABASE_URL env var.
+   * Defaults to the local SQLite database. DATABASE_URL is an explicit opt-in
+   * for Postgres or future remote adapters.
    */
   getDatabasePath(): string {
-    return process.env.DATABASE_URL || DATABASE_PATHS.POSTGRES;
+    return process.env.DATABASE_URL || this.expandPath(DATABASE_PATHS.MAIN_SQLITE);
   }
 
   /**
