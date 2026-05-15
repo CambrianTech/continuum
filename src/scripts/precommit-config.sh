@@ -29,11 +29,18 @@ export ENABLE_TYPESCRIPT_CHECK=true
 export RESTART_STRATEGY="on_code_change"
 
 # Phase 2: Browser test (PRECOMMIT_TESTS via vitest in tests/precommit/).
-# v1: just browser-ping.test.ts ("server didn't crash"). claude-tab-2 is
-# extending this in continuum#1186 to add chat-roundtrip + adapter unit
-# tests; once that lands, this list will grow.
+# Tests run sequentially, each capped at 60s by the runner.
+#
+#   browser-ping       — server didn't crash, browser is reachable (low bar)
+#   chat-roundtrip     — a persona actually replies to a chat probe (#1186 PR-1)
+#                        catches: cognition pipeline silently broken, persona
+#                        seed regressed, chat_messages write path broken,
+#                        empty-reply cognition-failure mode
+#
+# Adapter unit tests + path-tier dispatcher (only run heavy tests when
+# relevant paths touched) are #1186 PR-2 / PR-3 follow-ups.
 export ENABLE_BROWSER_TEST=true
-export PRECOMMIT_TESTS="tests/precommit/browser-ping.test.ts"
+export PRECOMMIT_TESTS="tests/precommit/browser-ping.test.ts tests/precommit/chat-roundtrip.test.ts"
 
 # Phase 3: Artifact collection (test reports, screenshots). Disabled until
 # Phase 2 actually produces artifacts worth collecting.

@@ -94,7 +94,10 @@ else
     export ENABLE_TYPESCRIPT_CHECK=true
     export ENABLE_BROWSER_TEST=true
     export RESTART_STRATEGY="on_code_change"
-    export PRECOMMIT_TESTS="tests/precommit/browser-ping.test.ts"
+    # Browser ping = "server didn't crash + browser is reachable" (low bar).
+    # Chat roundtrip = "a persona actually replies to a chat probe" (#1186).
+    # Run BOTH on every commit until path-tier dispatcher lands (#1186 PR-2).
+    export PRECOMMIT_TESTS="tests/precommit/browser-ping.test.ts tests/precommit/chat-roundtrip.test.ts"
 fi
 
 echo "🔒 GIT PRECOMMIT: Modular validation (config-driven)"
