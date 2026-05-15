@@ -10,7 +10,7 @@
 //! `provider` doesn't resolve to a registered `Provider` — each gets its
 //! own variant so the caller's logs pinpoint the issue.
 
-use super::artifacts::{expand_user_path, resolve_model_artifacts};
+use super::artifacts::resolve_model_artifacts;
 use super::types::{Model, Provider};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -168,6 +168,7 @@ pub fn load_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_registry::artifacts::expand_user_path;
     use crate::model_registry::types::{Arch, AuthKind, Capability};
 
     fn write(dir: &Path, name: &str, contents: &str) -> PathBuf {

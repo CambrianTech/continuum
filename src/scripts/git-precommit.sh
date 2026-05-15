@@ -4,6 +4,66 @@ set -e  # Exit immediately on any error
 # Navigate to the correct working directory
 cd "$(dirname "$0")/.."
 
+# ==============================================================================
+# BRANCH-STATE GUARD (continuum#1187)
+# ==============================================================================
+# Capture the branch + HEAD sha BEFORE the hook does any work. The end-of-
+# script guard verifies these are unchanged before printing "Commit approved";
+# if they HAVE changed, the script aborts with exit 1 + a loud error so git
+# refuses to create the commit on the wrong ref.
+#
+# Root-cause family of #1187: backticks in commit messages can be evaluated
+# by bash if the user runs `git commit -m "fix \`git checkout\` bug"` — bash
+# executes the backtick subcommand and its side-effects (an unintended
+# `git checkout`) silently change the branch. Single-quoted HEREDOC commit
+# messages don't have this problem, but the hook can't enforce caller quoting.
+# Defense in depth: even if the bug recurs (this hook OR caller), the guard
+# catches it.
+PRECOMMIT_INITIAL_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'DETACHED')"
+PRECOMMIT_INITIAL_HEAD="$(git rev-parse HEAD 2>/dev/null || echo '')"
+PRECOMMIT_INITIAL_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || echo '')"
+export PRECOMMIT_INITIAL_BRANCH PRECOMMIT_INITIAL_HEAD PRECOMMIT_INITIAL_TOPLEVEL
+
+# Verify the captured state still holds. Used at end of script + can be
+# called from any sub-step that wants to assert mid-run.
+verify_branch_state_unchanged() {
+    local now_branch
+    local now_head
+    local now_toplevel
+    now_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'DETACHED')"
+    now_head="$(git rev-parse HEAD 2>/dev/null || echo '')"
+    now_toplevel="$(git rev-parse --show-toplevel 2>/dev/null || echo '')"
+
+    if [ "$now_branch" != "$PRECOMMIT_INITIAL_BRANCH" ] \
+        || [ "$now_head" != "$PRECOMMIT_INITIAL_HEAD" ] \
+        || [ "$now_toplevel" != "$PRECOMMIT_INITIAL_TOPLEVEL" ]; then
+        echo ""
+        echo "🚨🚨🚨 BRANCH-STATE GUARD TRIPPED — ABORTING COMMIT 🚨🚨🚨"
+        echo "==================================================================="
+        echo "The precommit hook changed branch state mid-run. Aborting before"
+        echo "git can create a commit on the wrong ref. This protects you from"
+        echo "the silent loss-of-work failure mode tracked in continuum#1187."
+        echo ""
+        echo "  branch:    '$PRECOMMIT_INITIAL_BRANCH' -> '$now_branch'"
+        echo "  HEAD:      '$PRECOMMIT_INITIAL_HEAD' -> '$now_head'"
+        echo "  toplevel:  '$PRECOMMIT_INITIAL_TOPLEVEL' -> '$now_toplevel'"
+        echo ""
+        echo "Likely cause: backticks in your commit message that bash evaluated"
+        echo "as subcommands. Switch to single-quoted HEREDOC for commit messages:"
+        echo ""
+        echo "  git commit -m \"\$(cat <<'EOF'"
+        echo "  fix(...): your message with \`backticks\` is now safe"
+        echo "  EOF"
+        echo "  )\""
+        echo ""
+        echo "Your staged changes are still in the index. Recover with:"
+        echo "  git switch '$PRECOMMIT_INITIAL_BRANCH'"
+        echo "  git stash list   # if anything got auto-stashed"
+        echo "==================================================================="
+        exit 1
+    fi
+}
+
 require_node_deps() {
     if [ -x "node_modules/.bin/tsx" ] \
         && [ -x "node_modules/.bin/eslint" ] \
@@ -34,7 +94,10 @@ else
     export ENABLE_TYPESCRIPT_CHECK=true
     export ENABLE_BROWSER_TEST=true
     export RESTART_STRATEGY="on_code_change"
-    export PRECOMMIT_TESTS="tests/precommit/browser-ping.test.ts"
+    # Browser ping = "server didn't crash + browser is reachable" (low bar).
+    # Chat roundtrip = "a persona actually replies to a chat probe" (#1186).
+    # Run BOTH on every commit until path-tier dispatcher lands (#1186 PR-2).
+    export PRECOMMIT_TESTS="tests/precommit/browser-ping.test.ts tests/precommit/chat-roundtrip.test.ts"
 fi
 
 echo "🔒 GIT PRECOMMIT: Modular validation (config-driven)"
@@ -616,6 +679,12 @@ git restore src/.continuum/sessions/validation/test-output.txt 2>/dev/null || tr
 cd src
 echo "✅ Test artifacts cleaned up"
 
+# continuum#1187 — verify the hook didn't silently switch branches or
+# move HEAD via a backticks-in-commit-message side-effect or a buggy
+# sub-script. If it did, abort before printing "Commit approved" so
+# git refuses to create the commit on the wrong ref.
+verify_branch_state_unchanged
+
 # Final Summary
 echo ""
 echo "🎉 PRECOMMIT VALIDATION COMPLETE!"
@@ -624,5 +693,6 @@ echo "=================================================="
 [ "$ENABLE_SYSTEM_RESTART" = true ] && echo "✅ System restart: COMPLETED (strategy: $RESTART_STRATEGY)"
 [ "$ENABLE_BROWSER_TEST" = true ] && echo "✅ Browser tests: PASSED"
 echo "✅ Test artifacts cleaned up"
+echo "✅ Branch-state guard: ON branch '$PRECOMMIT_INITIAL_BRANCH' at $PRECOMMIT_INITIAL_HEAD"
 echo ""
 echo "🚀 Commit approved - all enabled validations passed!"

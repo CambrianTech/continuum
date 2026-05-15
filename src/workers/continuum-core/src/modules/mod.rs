@@ -10,6 +10,7 @@
 
 pub mod agent;
 pub mod ai_provider;
+pub mod airc;
 pub mod auth;
 pub mod avatar;
 pub mod channel;
@@ -17,8 +18,11 @@ pub mod code;
 pub mod cognition;
 pub mod data;
 pub mod dataset;
+pub mod docker_tier;
+pub mod docker_tier_pool;
 pub mod embedding;
 pub mod entity_schemas;
+pub mod forge;
 pub mod gpu;
 pub mod grid;
 pub mod health;

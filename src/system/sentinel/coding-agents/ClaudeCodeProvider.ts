@@ -8,8 +8,8 @@
  * isAvailable() returns false and the system degrades gracefully.
  */
 
-import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { ensureDaemonPath } from '@system/server/process/ProcessPathPolicy';
 import type {
   CodingAgentConfig,
   CodingAgentInteraction,
@@ -70,7 +70,7 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
     // CRITICAL: Must set process.env.PATH directly because the SDK uses the PARENT
     // process's PATH to locate the node binary BEFORE spawning the child process.
     // The env option only controls the child's environment, not the SDK's lookup.
-    const ensuredPath = this.ensurePath(process.env.PATH || '');
+    const ensuredPath = ensureDaemonPath(process.env.PATH || '');
     process.env.PATH = ensuredPath;
 
     // Build SDK options
@@ -321,33 +321,5 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
       case 'dontAsk': return 'dontAsk';
       default: return 'default';
     }
-  }
-
-  /**
-   * Ensure PATH includes standard binary locations.
-   * When the server runs as a nohup daemon, PATH can be minimal.
-   * The SDK spawns `node` as a child process and needs to find it.
-   *
-   * CRITICAL: process.execPath resolves symlinks, so /opt/homebrew/bin/node
-   * becomes /opt/homebrew/Cellar/node/25.2.1/bin/node — a directory NOT in
-   * the standard PATH dirs. We must include the resolved directory explicitly.
-   */
-  private ensurePath(currentPath: string): string {
-    const nodeDir = path.dirname(process.execPath);
-    const requiredDirs = [
-      nodeDir,                   // Resolved node binary directory (MUST be first)
-      '/opt/homebrew/bin',       // macOS ARM homebrew
-      '/usr/local/bin',          // macOS Intel homebrew / standard
-      '/usr/bin',                // System binaries
-      `${process.env.HOME}/.local/bin`, // User-local (claude CLI)
-      `${process.env.HOME}/.nvm/current/bin`, // nvm users
-    ];
-    const pathDirs = new Set(currentPath.split(':'));
-    for (const dir of requiredDirs) {
-      if (dir && !pathDirs.has(dir)) {
-        pathDirs.add(dir);
-      }
-    }
-    return Array.from(pathDirs).join(':');
   }
 }

@@ -36,6 +36,8 @@ use crate::cognition::PersonaSlot;
 use crate::cognition::RecentMessage;
 use crate::model_registry::Capability;
 use crate::persona::response::RespondInput;
+use crate::persona::turn_context::TurnContext;
+use crate::persona::types::{InboxMessage, Modality, SenderType};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -234,13 +236,28 @@ pub fn build_respond_input(
             .to_string()
     })?;
 
+    // Per-turn shared context. Hoisting the room-level fields
+    // (room_id + recent_history + known_specialties) into an
+    // Arc<TurnContext> is the continuum#1206 perf move: with N
+    // personas responding to the same message, every persona's
+    // RespondInput now shares one allocation instead of N deep
+    // clones of identical data. Internally inside respond() the
+    // savings compound (analyze + render + recorder all share via
+    // the Arc instead of cloning). When the IPC layer later batches
+    // N personas into one call (#1206 PR-2 / #1201 RTOS-for-AI),
+    // building the TurnContext once and Arc-cloning it per persona
+    // is the unblocked next step.
+    let turn_context = TurnContext::arc(
+        room_id,
+        ctx.recent_history.clone(),
+        ctx.known_specialties.clone(),
+    );
+
     Ok(RespondInput {
         persona: ctx.slot(),
-        room_id,
+        turn_context,
         message_id,
         message_text: signal.text.clone(),
-        recent_history: ctx.recent_history.clone(),
-        known_specialties: ctx.known_specialties.clone(),
         other_persona_names: ctx.other_persona_names.clone(),
         system_prompt: ctx.system_prompt.clone(),
         model: ctx.model.clone(),
@@ -254,7 +271,81 @@ pub fn build_respond_input(
         // declared them at construction; the projection doesn't
         // second-guess.
         capabilities: ctx.capabilities.iter().copied().collect(),
+        // Recalled engrams default empty here. The IPC layer
+        // (`cognition/respond` handler in modules/cognition.rs)
+        // populates this AFTER the inline admission gate runs and
+        // BEFORE calling respond(). Keeping the default empty means
+        // any RespondInput constructed outside the IPC path (tests,
+        // direct callers) gets a no-op memory render — same shape
+        // as the system pre-#1211 PR-2.
+        recalled_engrams: Vec::new(),
     })
+}
+
+// ─── Signal → InboxMessage projection ────────────────────────────────
+//
+// The admission gate (`AdmissionState::admit`) consumes `InboxMessage`,
+// not `Signal`. To run admission inline on the chat hot path
+// (continuum#1211 — wire admission into `respond()`), the cognition/respond
+// IPC handler needs to project the inbound `Signal + PersonaContext`
+// into an `InboxMessage` BEFORE calling `respond()`.
+//
+// One canonical projection. Lives next to `build_respond_input` so the
+// two projections evolve together.
+//
+// **Sender mapping** is the only non-trivial part: `SignalOriginator` is
+// open-vocab (User | Persona | Tool | GameEngine | System) and
+// `SenderType` is closed (Human | Persona | Agent | System). The mapping:
+//
+//   User      → Human       (with user_id as sender_id)
+//   Persona   → Persona     (with persona_id as sender_id)
+//   Tool      → Agent       (Uuid::nil sender_id; `Tool` carries no id)
+//   GameEngine→ System      (Uuid::nil sender_id)
+//   System    → System      (Uuid::nil sender_id)
+//
+// **Modality**: derived from `ctx.is_voice` (true → Voice, false → Chat).
+// **Priority**: 0.5 default — the host doesn't carry per-message priority
+// in `Signal` today; admission's own scoring re-evaluates anyway.
+// **voice_session_id**: None (Signal doesn't carry one in v1).
+
+/// Project `(Signal, PersonaContext) → InboxMessage` so the admission
+/// gate can score the inbound event. The projection is total — every
+/// `SignalOriginator` variant maps to a `SenderType` (with `Uuid::nil()`
+/// for variants that don't carry an id).
+pub fn signal_to_inbox_message(signal: &Signal, ctx: &PersonaContext) -> InboxMessage {
+    let (sender_id, sender_name, sender_type) = match &signal.originator {
+        SignalOriginator::User { user_id } => {
+            (*user_id, String::new(), SenderType::Human)
+        }
+        SignalOriginator::Persona { persona_id } => {
+            // Best-effort name — the originator's display name isn't on
+            // Signal. Empty string is acceptable; admission scoring uses
+            // sender_type, not the name.
+            (*persona_id, String::new(), SenderType::Persona)
+        }
+        SignalOriginator::Tool { tool_name } => {
+            (Uuid::nil(), tool_name.clone(), SenderType::Agent)
+        }
+        SignalOriginator::GameEngine => {
+            (Uuid::nil(), "game-engine".to_string(), SenderType::System)
+        }
+        SignalOriginator::System => {
+            (Uuid::nil(), "system".to_string(), SenderType::System)
+        }
+    };
+
+    InboxMessage {
+        id: signal.message_id.unwrap_or_else(Uuid::new_v4),
+        room_id: ctx.room_id.unwrap_or(Uuid::nil()),
+        sender_id,
+        sender_name,
+        sender_type,
+        content: signal.text.clone(),
+        timestamp: signal.timestamp_ms,
+        priority: 0.5,
+        source_modality: Some(if ctx.is_voice { Modality::Voice } else { Modality::Chat }),
+        voice_session_id: None,
+    }
 }
 
 #[cfg(test)]
@@ -441,5 +532,122 @@ mod tests {
         assert!(input.capabilities.contains(&Capability::Vision));
         assert!(input.capabilities.contains(&Capability::ToolUse));
         assert_eq!(input.capabilities.len(), 2);
+    }
+
+    /// What this catches (continuum#1206): the projection populates
+    /// `turn_context` with the room-level fields from PersonaContext.
+    /// Hoisted fields are no longer accessed via `input.room_id`
+    /// etc. — they live on `input.turn_context`. If a future refactor
+    /// accidentally puts `room_id` back on `RespondInput` directly,
+    /// this test catches the regression.
+    #[test]
+    fn projection_populates_turn_context() {
+        let mut ctx = empty_ctx();
+        let room_id = Uuid::new_v4();
+        ctx.room_id = Some(room_id);
+        ctx.known_specialties = vec!["code".to_string(), "general".to_string()];
+
+        let input = build_respond_input(&chat_signal("hi"), &ctx).unwrap();
+        assert_eq!(input.turn_context.room_id, room_id);
+        assert_eq!(
+            input.turn_context.known_specialties,
+            vec!["code".to_string(), "general".to_string()],
+        );
+        assert!(input.turn_context.recent_history.is_empty());
+    }
+
+    // ─── signal_to_inbox_message ────────────────────────────────────
+
+    /// What this catches: a User-originated chat Signal projects to
+    /// SenderType::Human with the user_id preserved. Admission scoring
+    /// keys off sender_type for trust-mapping; if Human messages got
+    /// labeled as Agent, the trust threshold would silently downgrade.
+    #[test]
+    fn signal_to_inbox_user_origin_maps_to_human() {
+        let mut signal = chat_signal("hi");
+        let user_id = Uuid::new_v4();
+        signal.originator = SignalOriginator::User { user_id };
+        signal.timestamp_ms = 12345;
+        let mut ctx = empty_ctx();
+        ctx.room_id = Some(Uuid::new_v4());
+
+        let msg = signal_to_inbox_message(&signal, &ctx);
+        assert_eq!(msg.sender_id, user_id);
+        assert!(matches!(msg.sender_type, SenderType::Human));
+        assert_eq!(msg.content, "hi");
+        assert_eq!(msg.timestamp, 12345);
+        assert_eq!(msg.room_id, ctx.room_id.unwrap());
+    }
+
+    /// What this catches: Persona-originated signals correctly become
+    /// SenderType::Persona with the persona_id preserved. Without this,
+    /// AI-to-AI messages would route through the Human trust mapping
+    /// and admission's loop-prevention heuristics would silently misfire.
+    #[test]
+    fn signal_to_inbox_persona_origin_maps_to_persona() {
+        let mut signal = chat_signal("from another persona");
+        let persona_id = Uuid::new_v4();
+        signal.originator = SignalOriginator::Persona { persona_id };
+
+        let msg = signal_to_inbox_message(&signal, &empty_ctx());
+        assert_eq!(msg.sender_id, persona_id);
+        assert!(matches!(msg.sender_type, SenderType::Persona));
+    }
+
+    /// What this catches: Tool/GameEngine/System originators map
+    /// without panicking and use Uuid::nil() as a stable sender_id
+    /// (since these variants carry no id). The match is exhaustive —
+    /// adding a new SignalOriginator variant later WILL be caught at
+    /// compile time, not at runtime.
+    #[test]
+    fn signal_to_inbox_handles_all_originator_variants() {
+        let cases = [
+            (SignalOriginator::Tool { tool_name: "search".to_string() }, SenderType::Agent),
+            (SignalOriginator::GameEngine, SenderType::System),
+            (SignalOriginator::System, SenderType::System),
+        ];
+        for (origin, expected) in cases {
+            let mut signal = chat_signal("noop");
+            signal.originator = origin;
+            let msg = signal_to_inbox_message(&signal, &empty_ctx());
+            assert_eq!(msg.sender_id, Uuid::nil(), "non-id originators use nil");
+            assert!(
+                std::mem::discriminant(&msg.sender_type) == std::mem::discriminant(&expected),
+                "expected SenderType variant didn't match",
+            );
+        }
+    }
+
+    /// What this catches: voice context flows from PersonaContext
+    /// through to InboxMessage::source_modality. Admission policy may
+    /// score voice messages differently in future; preserving the
+    /// modality bit ensures it can.
+    #[test]
+    fn signal_to_inbox_modality_follows_is_voice() {
+        let mut ctx = empty_ctx();
+        ctx.is_voice = true;
+        let msg = signal_to_inbox_message(&chat_signal("hello"), &ctx);
+        assert!(matches!(msg.source_modality, Some(Modality::Voice)));
+
+        ctx.is_voice = false;
+        let msg = signal_to_inbox_message(&chat_signal("hello"), &ctx);
+        assert!(matches!(msg.source_modality, Some(Modality::Chat)));
+    }
+
+    /// What this catches: when Signal carries a message_id, the
+    /// projection preserves it (admission dedup keys off content_hash
+    /// but consumers may want to correlate the engram to the original
+    /// chat message). When absent, the projection generates a fresh
+    /// Uuid — never panics, never returns nil.
+    #[test]
+    fn signal_to_inbox_preserves_or_generates_id() {
+        let known_id = Uuid::new_v4();
+        let mut signal = chat_signal("known id");
+        signal.message_id = Some(known_id);
+        assert_eq!(signal_to_inbox_message(&signal, &empty_ctx()).id, known_id);
+
+        signal.message_id = None;
+        let generated = signal_to_inbox_message(&signal, &empty_ctx()).id;
+        assert_ne!(generated, Uuid::nil(), "fresh id, not nil");
     }
 }

@@ -72,7 +72,26 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
   }
 
   /**
-   * Render rich URL card with metadata
+   * Render rich URL card with metadata.
+   *
+   * **XSS hardening (#1159 — closes the metadata-XSS surface PR-1
+   * deferred):** every interpolation is now passed through `escapeHtml`
+   * before landing in the HTML template. Three classes of input feed
+   * the template:
+   *   1. Raw user text (`originalText`, `additionalText`) — directly
+   *      from chat content, fully attacker-controlled.
+   *   2. Parsed URL fields (`url`, `domain`, `siteName` initial value)
+   *      — parsed via `new URL()` so the hostname is structurally
+   *      safe, but `url` itself is the raw input string and may
+   *      contain quotes, angle brackets, or a `javascript:` scheme.
+   *   3. Async metadata (`title`, `description`, `siteName` post-fetch
+   *      via `updateCardWithMetadata`) — fetched from a remote URL,
+   *      attacker-controlled in the worst case.
+   *
+   * The `href="${url}"` slot additionally goes through `safeHref` to
+   * neutralize `javascript:` / `data:` / `vbscript:` URLs (these
+   * become `#` so a click does nothing instead of executing script in
+   * the page's origin).
    */
   renderContent(data: URLCardData, currentUserId: string): string {
     const { url, title, description, siteName, favicon, domain, isSecure, originalText } = data;
@@ -81,11 +100,20 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
     // Extract any text that isn't the URL
     const additionalText = originalText.replace(url, '').trim();
 
+    const safeAdditionalText = this.escapeHtml(additionalText);
+    const safeUrlAttr = this.escapeHtml(url);
+    const safeFavicon = this.escapeHtml(favicon ?? '');
+    const safeDomain = this.escapeHtml(domain);
+    const safeSiteName = this.escapeHtml(siteName ?? domain);
+    const safeTitle = this.escapeHtml(title ?? '');
+    const safeDescription = this.escapeHtml(description ?? '');
+    const safeHrefValue = this.escapeHtml(this.safeHref(url));
+
     return `
       <div class="url-card-content">
-        ${additionalText ? `<div class="url-message-text">${additionalText}</div>` : ''}
+        ${additionalText ? `<div class="url-message-text">${safeAdditionalText}</div>` : ''}
 
-        <div class="url-card" data-card-id="${cardId}" data-url="${url}" data-action="url-card-click">
+        <div class="url-card" data-card-id="${cardId}" data-url="${safeUrlAttr}" data-action="url-card-click">
           <div class="url-card-loading" style="display: block;">
             <div class="loading-spinner"></div>
             <span class="loading-text">Loading preview...</span>
@@ -93,11 +121,11 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
 
           <div class="url-card-content-area" style="display: none;">
             <div class="url-card-header">
-              <img src="${favicon}" alt="${domain} favicon" class="site-favicon" loading="lazy" />
+              <img src="${safeFavicon}" alt="${safeDomain} favicon" class="site-favicon" loading="lazy" />
               <div class="site-info">
-                <span class="site-name">${siteName}</span>
+                <span class="site-name">${safeSiteName}</span>
                 <span class="url-domain ${isSecure ? 'secure' : 'insecure'}">
-                  ${isSecure ? '🔒' : '🔓'} ${domain}
+                  ${isSecure ? '🔒' : '🔓'} ${safeDomain}
                 </span>
               </div>
               <div class="card-actions">
@@ -107,10 +135,10 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
             </div>
 
             <div class="url-card-body">
-              <h3 class="url-title">${title}</h3>
-              <p class="url-description">${description}</p>
+              <h3 class="url-title">${safeTitle}</h3>
+              <p class="url-description">${safeDescription}</p>
               <div class="url-metadata">
-                <span class="url-full" title="${url}">${url}</span>
+                <span class="url-full" title="${safeUrlAttr}">${safeUrlAttr}</span>
               </div>
             </div>
 
@@ -123,11 +151,11 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
             <div class="error-content">
               <span class="error-icon">🔗</span>
               <span class="error-text">Preview unavailable</span>
-              <button class="retry-preview" data-action="url-retry-preview" data-url="${url}">Retry</button>
+              <button class="retry-preview" data-action="url-retry-preview" data-url="${safeUrlAttr}">Retry</button>
             </div>
             <div class="fallback-link">
-              <a href="${url}" target="_blank" rel="noopener noreferrer" class="external-link-fallback">
-                ${url}
+              <a href="${safeHrefValue}" target="_blank" rel="noopener noreferrer" class="external-link-fallback">
+                ${safeUrlAttr}
               </a>
             </div>
           </div>
@@ -135,6 +163,66 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
       </div>
     `;
   }
+
+  /**
+   * HTML-escape the 5 dangerous characters. Same shape as
+   * TextMessageAdapter.escapeHtml — the canonical pattern in this
+   * codebase. Safe in both text-content and double-quoted-attribute
+   * contexts because it escapes both `"` and `'`.
+   *
+   * KEPT after the #1158 base-default lift (#1189) because URLCardAdapter's
+   * `renderContent` still interpolates url/title/description/siteName as
+   * raw strings into HTML — the XSS hardening from #1159 (PR #1250) lives
+   * in those interpolations and depends on this method.
+   */
+  private escapeHtml(unsafe: string): string {
+    return unsafe
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  /**
+   * Neutralize dangerous URL schemes so `<a href="${safeHref(url)}">`
+   * cannot execute script. Whitelist approach: keep http/https/mailto/
+   * tel/ftp/sftp + protocol-relative + same-document fragments;
+   * otherwise return `#` (renders as a no-op click).
+   *
+   * Why a whitelist not a blacklist: a blacklist of `javascript:` /
+   * `data:` / `vbscript:` misses `\tjavascript:` (control-character
+   * smuggling), `JaVaScRiPt:` case mixing, `&NewLine;javascript:`
+   * (HTML-entity smuggling once the attribute is decoded), and any
+   * future scheme that turns out to be code-executing. Whitelist of
+   * known-safe schemes is the only audit-once approach.
+   */
+  private safeHref(url: string): string {
+    if (typeof url !== 'string' || url.length === 0) return '#';
+    const trimmed = url.trim();
+    if (trimmed.length === 0) return '#';
+    // Same-document fragment + protocol-relative URLs — both safe.
+    if (trimmed.startsWith('#') || trimmed.startsWith('//')) return trimmed;
+    // Schemed URL — only allow the audit-once safe set. Match scheme
+    // case-insensitively because the URL spec is case-insensitive.
+    const schemeMatch = trimmed.match(/^([a-z][a-z0-9+.\-]*):/i);
+    if (!schemeMatch) {
+      // No scheme — relative URL. Safe (cannot escape the document
+      // origin without a scheme).
+      return trimmed;
+    }
+    const scheme = schemeMatch[1].toLowerCase();
+    const safeSchemes = new Set(['http', 'https', 'mailto', 'tel', 'ftp', 'sftp']);
+    return safeSchemes.has(scheme) ? trimmed : '#';
+  }
+
+  // renderMessageElement: inherits the DRY base default (#1158/#1189).
+  // The string `renderContent` already does the
+  // template.innerHTML → cloneNode(true) DocumentFragment trick that the
+  // base default expects, so the inherited path produces identical DOM
+  // output. The escapeHtml + safeHref methods above stay LOCAL because
+  // they're only used by this adapter's renderContent interpolation
+  // hardening (#1159 PR #1250), not by the base default.
 
   /**
    * Handle URL metadata fetching and card population

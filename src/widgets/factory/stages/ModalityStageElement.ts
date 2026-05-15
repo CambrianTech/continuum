@@ -3,7 +3,7 @@
  *
  * Bolt vision, audio, or multimodal encoders onto a text model.
  * Controls: modality type, encoder model, projection arch, freeze options, training
- * Maps 1:1 to ForgeAlloy ModalityStage schema.
+ * Maps 1:1 to ForgeRecipe ModalityStage schema.
  */
 
 import { html, css, reactive, type TemplateResult, type CSSResultGroup } from '../../shared/ReactiveWidget';

@@ -178,3 +178,196 @@ pub struct ParsedToolBatch {
     pub cleaned_text: String,
     pub parse_time_us: u64,
 }
+
+// ─── Typed error surface for the ToolExecutor trait (continuum#1207) ──
+//
+// Before: every `ToolExecutor` method returned `Result<T, String>`. TS
+// callers seeing an error from execute_native_batch / parse_response /
+// store_outcome had to substring-match on `error: "some string"` to
+// distinguish "tool not found" (user typo) from "execution failed"
+// (legitimate runtime failure) from "forbidden" (auth/policy). That
+// violates Joel's standing typed-error rule
+// (feedback_two_ironclad_rules_tests_and_fallbacks.md): error variants
+// must preserve the discriminant so callers can pattern-match.
+//
+// `ToolError` is the typed replacement. Same shape pattern as
+// `AdmissionError` (#1129), `NoLocalModelLoadable` (#1089),
+// `NoMultimodalBase` (#1074): a tagged enum with structured `detail`.
+// ts-rs exports the type so TS callers can `switch (err.error)` on the
+// discriminant and read the structured fields directly.
+//
+// Variant catalog (see issue #1207 + tool_executor/mod.rs trait doc):
+// - `ToolNotFound` — caller named a tool the registry doesn't know.
+//   Carries the requested name so retry/correction logic can suggest
+//   alternatives.
+// - `InvalidArgs` — tool exists, but the params didn't satisfy its
+//   schema (missing required field, wrong type, out-of-range value).
+//   Carries the tool name + an actionable reason.
+// - `ExecutionFailed` — tool ran and threw / returned an error
+//   (filesystem error, HTTP failure, etc.). Carries the tool name +
+//   the underlying error string. This is the one variant where the
+//   inner cause is a free-form string — the underlying systems
+//   (shell, fetch, db) emit unstructured errors and we preserve them
+//   verbatim rather than discarding information.
+// - `Forbidden` — policy / auth check rejected the call (persona
+//   doesn't have the capability, sandbox denial, rate-limit hit).
+//   Carries tool name + reason so the persona can either skip or
+//   request the capability.
+// - `ParseFailed` — XML-fallback parsing of `parse_response` couldn't
+//   extract any valid tool call from the model output. Carries a
+//   bounded preview of the raw text + the parser's reason so the
+//   persona's prompt can be tightened on retry.
+// - `StoreFailed` — `store_outcome` couldn't persist the outcome to
+//   working memory (DB error, disk full, foreign-key violation).
+//   The cognition turn already succeeded by the time storage runs;
+//   storage failure is observability, not user-facing failure, so
+//   the variant exists to be LOGGED with structure, not to gate
+//   behavior. Carries the tool name + the underlying error.
+//
+// All variants use `tag = "error"` for the discriminant key so TS
+// can `if (err.error === 'ToolNotFound')` directly. `data` holds
+// the structured fields. Same pattern as `AdmissionDecision`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/ToolError.ts"
+)]
+#[serde(tag = "error", content = "data")]
+pub enum ToolError {
+    /// Caller named a tool that isn't in the registry.
+    ToolNotFound { name: String },
+    /// Tool exists but the supplied params didn't satisfy its schema.
+    InvalidArgs { tool: String, reason: String },
+    /// Tool ran and produced a runtime failure. `underlying` is the
+    /// raw error message from the tool's own system — not stringly-
+    /// typed by choice, but by upstream constraint (shell exit
+    /// status, HTTP body, DB driver string). The variant + tool
+    /// name preserve enough structure for retry / correction logic.
+    ExecutionFailed { tool: String, underlying: String },
+    /// Policy / auth check rejected the call.
+    Forbidden { tool: String, reason: String },
+    /// `parse_response` couldn't extract a tool call from the model
+    /// output. `raw_preview` is bounded (first ~200 chars) so the
+    /// error can be logged without spamming the trace with the full
+    /// model output.
+    ParseFailed { raw_preview: String, reason: String },
+    /// `store_outcome` failed to persist. Recorded for observability;
+    /// caller should NOT propagate as a turn failure.
+    StoreFailed { tool: String, underlying: String },
+}
+
+impl std::fmt::Display for ToolError {
+    /// Human-readable rendering for log lines + std::error::Error
+    /// compatibility. JSON wire format (used by IPC + ts-rs callers)
+    /// always carries the structured form via serde — `Display` is
+    /// only for log scrapes / panic messages where the discriminant
+    /// is enough.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolError::ToolNotFound { name } => {
+                write!(f, "tool not found: '{name}'")
+            }
+            ToolError::InvalidArgs { tool, reason } => {
+                write!(f, "invalid args for tool '{tool}': {reason}")
+            }
+            ToolError::ExecutionFailed { tool, underlying } => {
+                write!(f, "tool '{tool}' execution failed: {underlying}")
+            }
+            ToolError::Forbidden { tool, reason } => {
+                write!(f, "tool '{tool}' forbidden: {reason}")
+            }
+            ToolError::ParseFailed { raw_preview, reason } => {
+                write!(f, "tool parse failed ({reason}); raw preview: {raw_preview}")
+            }
+            ToolError::StoreFailed { tool, underlying } => {
+                write!(f, "tool '{tool}' store failed: {underlying}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ToolError {}
+
+#[cfg(test)]
+mod tool_error_tests {
+    use super::*;
+
+    /// What this catches: ts-rs serde tagging stays `error` /
+    /// `data`. If a future serde rename slips, TS callers'
+    /// `switch (err.error)` discriminator silently breaks (every
+    /// case becomes `default`). Round-trip + key inspection guards
+    /// the wire contract.
+    #[test]
+    fn tool_error_serializes_with_typed_discriminant() {
+        let err = ToolError::ToolNotFound {
+            name: "code/nonexistent".to_string(),
+        };
+        let wire = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(wire["error"], "ToolNotFound");
+        assert_eq!(wire["data"]["name"], "code/nonexistent");
+
+        let back: ToolError = serde_json::from_value(wire).expect("round-trip");
+        assert!(matches!(back, ToolError::ToolNotFound { name } if name == "code/nonexistent"));
+    }
+
+    /// What this catches: every variant carries the structured
+    /// fields the trait promises. If a variant ever drops a field
+    /// (e.g. `Forbidden { reason }` becomes `Forbidden { }`), the
+    /// constructor call here fails to compile. Compile-time
+    /// enforcement of the variant shape contract.
+    #[test]
+    fn every_variant_constructs_with_documented_fields() {
+        let _ = ToolError::ToolNotFound { name: "x".into() };
+        let _ = ToolError::InvalidArgs {
+            tool: "x".into(),
+            reason: "missing 'path'".into(),
+        };
+        let _ = ToolError::ExecutionFailed {
+            tool: "x".into(),
+            underlying: "ENOENT".into(),
+        };
+        let _ = ToolError::Forbidden {
+            tool: "x".into(),
+            reason: "no capability".into(),
+        };
+        let _ = ToolError::ParseFailed {
+            raw_preview: "<<garbage>>".into(),
+            reason: "no tool block".into(),
+        };
+        let _ = ToolError::StoreFailed {
+            tool: "x".into(),
+            underlying: "DB constraint".into(),
+        };
+    }
+
+    /// What this catches: Display impl renders the discriminant +
+    /// key context for every variant. Log scrapes / panic outputs
+    /// stay grep-able by tool name + error class even when the
+    /// JSON form isn't reachable.
+    #[test]
+    fn display_rendering_includes_variant_and_tool() {
+        let cases = [
+            (
+                ToolError::ToolNotFound { name: "x".into() },
+                "tool not found: 'x'",
+            ),
+            (
+                ToolError::InvalidArgs {
+                    tool: "y".into(),
+                    reason: "missing field".into(),
+                },
+                "invalid args for tool 'y': missing field",
+            ),
+            (
+                ToolError::ExecutionFailed {
+                    tool: "z".into(),
+                    underlying: "boom".into(),
+                },
+                "tool 'z' execution failed: boom",
+            ),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(format!("{err}"), expected);
+        }
+    }
+}

@@ -1,6 +1,6 @@
 # The Grid: Architecture & Vision
 
-> **"The same two primitives that work across browser and server today work across Continuums via airc — no new protocol needed. Reticulum slots in as an alternative wire when off-grid scenarios demand it."**
+> **"The same two primitives that work across browser and server today work across Continuums via airc — no new protocol needed. AIRC coordinates the pipeline; transport side channels carry the right traffic; forge-alloy-style contracts make work invocable and verifiable."**
 
 ---
 
@@ -16,7 +16,18 @@ The Grid is a decentralized mesh of Continuum instances sharing compute, intelli
 
 ### What this looks like in practice TODAY
 
-The grid → grid comms substrate is **[airc](https://github.com/CambrianTech/airc)** — gh-rooted IRC over Tailscale. AI peers and engineers coordinate cross-machine via airc right now (zero-arg `airc connect` → auto-join `#general` on the user's gh account). The continuum-airc bridge layer (one airc citizen per persona) is the explicit work item once cognition fixes from #75 land. See [docs/grid/README.md](README.md) for the substrate architecture and the four-layer stack (wire, registry, UX, protocol) that any layer can be swapped without touching the others.
+The grid → grid comms substrate is **[airc](https://github.com/CambrianTech/airc)** — gh-rooted IRC over Tailscale today, evolving toward a Rust-owned handshake and pipeline-control layer. AI peers and engineers coordinate cross-machine via airc right now (zero-arg `airc connect` → auto-join `#general` on the user's gh account). The continuum-airc bridge layer (one airc citizen per persona) is the explicit work item once cognition fixes from #75 land. See [docs/grid/README.md](README.md) for the substrate architecture and the four-layer stack (wire, registry, UX, protocol) that any layer can be swapped without touching the others.
+
+The important abstraction is not "which socket moved the bytes." The grid is a
+distributed mesh of room/server-like nodes. AIRC initiates relationships,
+routes intent, records message flow, and coordinates command/event pipelines.
+Continuum messages are the domain payloads: commands, events, receipts,
+presence, room activity, artifact pointers, and security decisions. Transport
+side channels such as tailnet/Tailscale, WebRTC/UDP, local IPC, direct LAN,
+Reticulum, GitHub bridge, or future QUIC/UDP are adapters selected by policy
+and capability. Forge-alloy-style contracts describe the work and proof:
+who requested it, who authorized it, where it ran, what was produced, and how
+to verify it.
 
 **Document map:**
 
@@ -32,10 +43,48 @@ The grid → grid comms substrate is **[airc](https://github.com/CambrianTech/ai
 | [RESOURCE-GOVERNANCE-ARCHITECTURE.md](../infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md) | Per-node resource management — GPU governor, pressure watchers, eviction |
 | [ARES-MASTER-CONTROL.md](../ARES-MASTER-CONTROL.md) | Ares security PersonaUser — consumes kernel events, analyzes threats in chat |
 | [FORGE-ALLOY-PROOF-CONTRACTS.md](FORGE-ALLOY-PROOF-CONTRACTS.md) | Grid trust layer — falsifiable forge contracts with TDD/VDD basis. v1 starts permissive (persona self-seal); progression to multi-sig audit + SOC-style governance rooms is the trajectory. |
+| [COGNITIVE-IMMUNE-MODEL.md](COGNITIVE-IMMUNE-MODEL.md) | Defense posture for persona cognitive integrity — zero-trust as cooperative safety, Merkle-linked accounting, threat model (poisoning > death), layered defenses, WebAuthn-shape attestation. Modest v1 claim: substrate enables detection/forensics/quarantine/recovery, not prevention. |
 
 ---
 
 ## 2. Design Principles
+
+### 2.0 Contract-First Transport
+
+The grid is contract-first, transport-second. AIRC is the handshake and
+pipeline-control layer. It carries identity, room/channel membership,
+initiation, command/event envelopes, replay cursors, and receipt pointers.
+It does not have to carry every byte.
+
+Continuum emits and consumes typed grid messages:
+
+- commands
+- events
+- receipts
+- presence and "is thinking" signals
+- room/activity updates
+- artifact handles and proof-bundle pointers
+- security and quarantine decisions
+
+Transport side channels carry the traffic class they are good at:
+
+- local IPC for same-host control
+- tailnet/Tailscale for intragrid node control
+- WebRTC/UDP for live media or low-latency side channels
+- direct LAN for trusted local peers
+- GitHub bridge for durable coordination/bootstrap
+- Reticulum/off-grid links when infrastructure is unavailable
+- future QUIC/UDP for direct high-performance interlinks
+
+Forge-alloy-style contracts sit above transport. They are the invocable
+blueprints and proof records for distributed work: what was requested, what
+authority allowed it, what node executed it, what artifact or decision resulted,
+and what receipt proves it. Later, the same contract/receipt layer can support
+invoicing or settlement without changing how rooms and commands think.
+
+This keeps domain code future-proof. Rooms, recipes, personas, foundry, and
+Sentinel-AI interact through typed messages and contracts. Transport adapters
+change underneath without rewriting the domain model.
 
 ### 2.1 Accessibility First
 

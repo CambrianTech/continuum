@@ -2,6 +2,7 @@ use crate::code::{FileEngine, ShellSession};
 use crate::gpu::GpuMemoryManager;
 use crate::modules::agent::AgentModule;
 use crate::modules::ai_provider::AIProviderModule;
+use crate::modules::airc::AircModule;
 use crate::modules::auth::ExternalWebviewAuthModule;
 use crate::modules::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
@@ -10,6 +11,7 @@ use crate::modules::cognition::{CognitionModule, CognitionState};
 use crate::modules::data::DataModule;
 use crate::modules::dataset::DatasetModule;
 use crate::modules::embedding::EmbeddingModule;
+use crate::modules::forge::ForgeModule;
 use crate::modules::gpu::GpuModule;
 use crate::modules::grid::GridModule;
 use crate::modules::health::HealthModule;
@@ -916,6 +918,11 @@ pub fn start_server(
     // Phase 1: GpuModule (GPU stats + pressure IPC)
     runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
 
+    // ForgeModule (continuum#1164 Phase 4 stub — forge/run IPC).
+    // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
+    // real foundry executor.
+    runtime.register(Arc::new(ForgeModule::new()));
+
     // Phase 1: PersonaAllocatorModule (hardware-aware persona allocation)
     runtime.register(Arc::new(PersonaAllocatorModule::new(gpu_manager.clone())));
 
@@ -1006,6 +1013,10 @@ pub fn start_server(
     // AgentModule: Autonomous AI coding agents with structured tool calling
     // Provides agent/start, agent/status, agent/stop, agent/list, agent/wait
     runtime.register(Arc::new(AgentModule::new(rt_handle.clone())));
+
+    // AircModule: Rust-native AIRC queue/flywheel primitives.
+    // Provides airc/queue-scan without routing through Node/TypeScript.
+    runtime.register(Arc::new(AircModule::new()));
 
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health

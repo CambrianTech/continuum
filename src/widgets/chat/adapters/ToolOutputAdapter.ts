@@ -431,6 +431,11 @@ export class ToolOutputAdapter extends AbstractMessageAdapter<ToolOutputContentD
     `;
   }
 
+  // renderMessageElement: inherits the DRY base default (#1158).
+  // Tool data is already passed through `escapeHtml` at `renderContent`
+  // interpolation sites — the base's detached-template parse keeps that
+  // contract intact; no override needed.
+
   async handleContentLoading(_element: HTMLElement): Promise<void> {
     // Tool outputs are synchronous text — no async loading needed
   }

@@ -29,6 +29,7 @@ import { ImageMessageAdapter } from '../adapters/ImageMessageAdapter';
 import { URLCardAdapter } from '../adapters/URLCardAdapter';
 import { ToolOutputAdapter } from '../adapters/ToolOutputAdapter';
 import { TextMessageAdapter } from '../adapters/TextMessageAdapter';
+import '../../shared/EmptyStateWidget';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { MentionAutocomplete } from '../message-input/MentionAutocomplete';
 import { AIStatusIndicator } from './AIStatusIndicator';
@@ -431,6 +432,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       messageElement.className = `message-row ${isCurrentUser ? 'right' : 'left'}${postingClass}`;
       // CRITICAL: Add entity ID to DOM for testing/debugging (test expects 'message-id')
       messageElement.setAttribute('message-id', message.id);
+      // A11Y (#1099 phase 2). Each message row gets a screen-reader
+      // label and role=article so the chat transcript can be navigated
+      // message-by-message instead of word-by-word. The transcript
+      // container already carries role=log + aria-live=polite from
+      // phase 1, so new messages auto-announce.
+      messageElement.setAttribute('role', 'article');
+      const ts = new Date(message.timestamp).toLocaleString();
+      messageElement.setAttribute(
+        'aria-label',
+        `${senderName} at ${ts}${message.status === 'sending' ? ', sending' : ''}`
+      );
 
       // Build message structure with DOM APIs (no innerHTML for static structure)
       const bubble = globalThis.document.createElement('div');
@@ -453,22 +465,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       const contentDiv = globalThis.document.createElement('div');
       contentDiv.className = 'message-content';
 
-      // Adapter content: prefer the DOM-returning path (#1100). Adapters
-      // that have migrated return a fully-built HTMLElement we append
-      // directly. Adapters not yet migrated still return an HTML string
-      // we innerHTML — that path stays until every adapter is migrated.
-      const adapterElement = adapter?.renderMessageElement?.(message, this._myUserId) ?? null;
-      if (adapterElement) {
-        contentDiv.appendChild(adapterElement);
-      } else if (adapter) {
-        contentDiv.innerHTML = adapter.renderMessage(message, this._myUserId);
-      } else {
-        // No adapter — render fallback via textContent to avoid any
-        // HTML interpretation of arbitrary message text.
-        const fallback = globalThis.document.createElement('p');
-        fallback.textContent = message.content?.text || '(no content)';
-        contentDiv.appendChild(fallback);
-      }
+      // Adapter content: ALWAYS the DOM-returning path (#1100). All four
+      // current adapters (Text, Image, URLCard, ToolOutput) implement
+      // `renderMessageElement` so the live message-content slot never
+      // sees `innerHTML` — Lit-bound children inside the message body
+      // survive sibling updates, and user text lives in `.textContent`
+      // not in a concatenated HTML string.
+      this.renderAdapterContentInto(contentDiv, adapter, message);
 
       bubble.appendChild(header);
       bubble.appendChild(contentDiv);
@@ -484,6 +487,38 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       return messageElement;
     };
+  }
+
+  /**
+   * Adapter render seam (#1100). Calls the adapter's DOM-returning path
+   * and appends the result. Defense-in-depth: if a future adapter
+   * forgets to override OR its override returns null on a render
+   * failure, fall back to textContent on the raw message text rather
+   * than re-introducing the innerHTML hole. Logged loudly so the gap
+   * surfaces.
+   *
+   * Extracted from `getRenderFunction()` to keep that arrow function's
+   * cyclomatic complexity at the project's max of 15 — it touches a lot
+   * of conditional setup already.
+   */
+  private renderAdapterContentInto(
+    contentDiv: HTMLElement,
+    adapter: ReturnType<AdapterRegistry['selectAdapter']>,
+    message: ChatMessageEntity
+  ): void {
+    const adapterElement = adapter?.renderMessageElement?.(message, this._myUserId) ?? null;
+    if (adapterElement) {
+      contentDiv.appendChild(adapterElement);
+      return;
+    }
+    if (adapter) {
+      console.warn(
+        `[chat-widget] adapter ${adapter.constructor?.name ?? '<anonymous>'} returned null from renderMessageElement; falling back to textContent. Adapter must implement renderMessageElement (#1100).`
+      );
+    }
+    const fallback = globalThis.document.createElement('p');
+    fallback.textContent = message.content?.text ?? '(no content)';
+    contentDiv.appendChild(fallback);
   }
 
   // Required by EntityScrollerWidget - load function using data/list command
@@ -982,6 +1017,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
           <!-- EntityScroller will populate this container -->
         </div>
 
+        <!-- Empty state for rooms with no messages (#1101). Hidden until
+             updateEntityCount() reveals it after the first load completes,
+             so the user never sees a blank "is this loading?" panel. -->
+        <empty-state
+          id="chatEmptyState"
+          hidden
+          icon="💬"
+          empty-title="Send your first message"
+          subtitle="Try @Helper for a hand, or just say hi — the AIs in this room will respond."
+        ></empty-state>
+
         <div class="typing-indicator-container" id="typingIndicator" role="status" aria-live="polite" aria-label="Typing indicators"></div>
 
         ${this.renderFooter()}
@@ -998,6 +1044,23 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         <button class="send-button" id="sendButton" aria-label="Send message">Send</button>
       </div>
     `;
+  }
+
+  /**
+   * Toggle the empty-state panel on top of the standard count-badge
+   * update. The base implementation only updates the .list-count text;
+   * we also reveal the "Send your first message" panel when the room
+   * has zero messages so a new user isn't staring at a blank surface.
+   * Called after the initial scroller load and after every CRUD event
+   * — the messages-container is hidden via CSS sibling rules during
+   * the empty state to avoid a stacked-empty-box look.
+   */
+  protected override updateEntityCount(): void {
+    super.updateEntityCount();
+    const emptyState = this.shadowRoot?.getElementById('chatEmptyState') as HTMLElement | null;
+    if (!emptyState) return;
+    const isEmpty = this.getEntityCount() === 0;
+    emptyState.toggleAttribute('hidden', !isEmpty);
   }
 
   /**

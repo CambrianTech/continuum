@@ -1,7 +1,7 @@
 /**
  * EvalStageElement — Output stage: benchmark evaluation
  *
- * Maps to ForgeAlloy EvalStage.
+ * Maps to ForgeRecipe EvalStage.
  * Select benchmarks, set passing threshold, compare to base.
  */
 

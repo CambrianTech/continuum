@@ -9,7 +9,7 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        project: './tsconfig.eslint.json',
+        project: ['./tsconfig.eslint.json', './tsconfig.eslint.precommit.json'],
       },
     },
     rules: {
@@ -41,6 +41,9 @@ export default tseslint.config(
     ignores: [
       'dist/**',
       'node_modules/**',
+      'shared/config.ts',
+      'shared/generated/**',
+      'workers/target/**',
       'workers/vendor/**',
       '**/*.d.ts',
       '**/*.js',

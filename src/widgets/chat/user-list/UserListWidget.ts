@@ -16,6 +16,7 @@ import {
   type TemplateResult,
   type CSSResultGroup
 } from '../../shared/ReactiveListWidget';
+import '../../shared/EmptyStateWidget';
 import { render } from 'lit';
 import type { RenderFn, RenderContext } from '../../shared/EntityScroller';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
@@ -173,14 +174,49 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   }
 
   // === MAIN RENDER ===
+  // Keep this container/empty-state shape in sync with
+  // ReactiveListWidget.render(); UserListWidget overrides render() so it can
+  // keep its entity-list-container DOM contract.
   override render(): TemplateResult {
     return html`
       <div class="entity-list-container">
         ${this.renderHeader()}
-        <div class="${this.containerClass}"></div>
+        <div
+          class="${this.containerClass}"
+          ?hidden=${this.isEmpty}
+          role="listbox"
+          aria-label="Users and personas"
+        ></div>
+        ${this.isEmpty ? this.renderEmptyState() : nothing}
         ${this.renderFooter()}
       </div>
     `;
+  }
+
+  // === EMPTY STATE === (#1101)
+  protected override renderEmptyState(): TemplateResult {
+    const filterActive = this.activeFilters.size > 0 && !this.activeFilters.has('all');
+    return html`
+      <empty-state
+        icon=${filterActive ? '🔎' : '👥'}
+        empty-title=${filterActive ? 'No users match this filter' : 'No users yet'}
+        subtitle=${filterActive
+          ? 'Try clearing or changing the filter chips above.'
+          : 'Humans, personas, and agents will appear here once they join the workspace.'}
+      ></empty-state>
+    `;
+  }
+
+  // === A11Y === (#1099 phase 2 + 3a)
+  protected override isItemIdSelected(id: string): boolean {
+    return id === this._selectedUserId;
+  }
+
+  protected override getItemLabel(user: UserEntity): string {
+    const name = user.displayName ?? 'Unknown user';
+    const typeLabel = user.type === 'persona' ? 'persona' : user.type === 'agent' ? 'agent' : 'user';
+    const status = user.status ?? 'offline';
+    return `${name}, ${typeLabel}, ${status}`;
   }
 
   // === ITEM RENDERING ===
@@ -289,10 +325,22 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
       const div = globalThis.document.createElement('div');
       div.className = 'list-item';
       div.dataset.id = user.id;
+      div.setAttribute('role', 'option');
+      const isSelected = this.isItemIdSelected(user.id);
+      div.tabIndex = isSelected ? 0 : -1;
+      div.setAttribute('aria-label', this.getItemLabel(user));
+      div.setAttribute('aria-selected', String(isSelected));
       render(this.renderItem(user), div);
       div.addEventListener('click', (e) => {
         e.stopPropagation();
         this.onItemClick(user);
+      });
+      div.addEventListener('keydown', (e: KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.onItemClick(user);
+        }
       });
       return div;
     };
@@ -301,6 +349,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   // === EVENT HANDLERS ===
   private handleUserClick(e: Event, user: UserEntity): void {
     if ((e.target as HTMLElement).tagName === 'BUTTON') return;
+    e.stopPropagation();
     this._selectedUserId = user.id;
     this.openUserProfile(user);
   }
@@ -387,7 +436,8 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   }
 
   // === SELECTION HOOK (override base) ===
-  protected override onItemClick(_item: UserEntity): void {
-    // Handled by @click in renderItem template
+  protected override onItemClick(item: UserEntity): void {
+    this._selectedUserId = item.id;
+    this.openUserProfile(item);
   }
 }

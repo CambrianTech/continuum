@@ -787,7 +787,7 @@ export class FactoryStatsWidget extends ReactiveWidget {
 
     return html`
       <div>
-        <div class="section-label">ForgeAlloy</div>
+        <div class="section-label">ForgeArtifact</div>
         <div class="alloy-panel">
           <div class="alloy-row">
             <span class="alloy-key">Models</span>

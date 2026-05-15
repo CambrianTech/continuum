@@ -17,11 +17,15 @@
 extern crate objc;
 
 pub mod ai;
+pub mod airc;
 pub mod audio_constants;
 pub mod code;
+pub mod comms;
 pub mod cognition;
+pub mod concurrency;
 pub mod concurrent;
 pub mod ffi;
+pub mod forge;
 pub mod gpu;
 pub mod http;
 pub mod inference;
@@ -34,6 +38,7 @@ pub mod models;
 pub mod modules;
 pub mod orm;
 pub mod paging;
+pub mod paths;
 pub mod persona;
 pub mod rag;
 pub mod runtime;

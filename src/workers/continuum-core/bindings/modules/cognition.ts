@@ -33,6 +33,8 @@ import type { RecipeTurnBatchPlan } from '../../../../shared/generated/cognition
 import type { RecipeTurnBatchRequest } from '../../../../shared/generated/cognition/RecipeTurnBatchRequest';
 import type { Signal } from '../../../../shared/generated/recipe/Signal';
 import type { PersonaContext } from '../../../../shared/generated/recipe/PersonaContext';
+import type { AdmissionDecision } from '../../../../shared/generated/persona/AdmissionDecision';
+import type { Engram } from '../../../../shared/generated/persona/Engram';
 
 /**
  * Caller-supplied input for `cognition/respond`.
@@ -114,6 +116,46 @@ export interface CognitionMixin {
 	cognitionCheckContentDedup(personaId: string, roomId: string, content: string): Promise<{ is_duplicate: boolean; check_time_us: number }>;
 	cognitionRecordContent(personaId: string, roomId: string, content: string): Promise<void>;
 	cognitionPlanTurnBatch(request: RecipeTurnBatchRequest): Promise<RecipeTurnBatchPlan>;
+
+	/**
+	 * Run the per-persona admission gate over a single InboxMessage.
+	 *
+	 * Returns the typed `AdmissionDecision` (Admit | Drop | Quarantine)
+	 * plus the post-call admitted-engram count and trace seam count.
+	 *
+	 * Caller (recipe pipeline / chat path) chooses WHEN to call this —
+	 * typically per drained inbox frame, between `rag/build` and
+	 * `ai/should-respond`. Persona state must already exist via
+	 * `cognitionCreateEngine`.
+	 *
+	 * Wraps `cognition/admit-inbox-message` (Rust IPC, #1121 PR-4).
+	 */
+	cognitionAdmitInboxMessage(
+		personaId: string,
+		message: InboxMessageRequest
+	): Promise<{
+		decision: AdmissionDecision;
+		engram_count: number;
+		trace_seam_count: number;
+	}>;
+
+	/**
+	 * Query a persona's admitted-engram store. Modes:
+	 *   - `recent` (default) + `limit` → newest-first N engrams
+	 *   - `by_id` + `id` → exact lookup
+	 *   - `by_keyword` + `keyword` + `limit` → case-insensitive substring
+	 *   - `by_origin` + `origin` (chat|airc|tool|self_reflection) + `limit`
+	 *
+	 * Wraps `cognition/recall-engrams` (Rust IPC, #1121 PR-5).
+	 */
+	cognitionRecallEngrams(params: {
+		personaId: string;
+		kind?: 'recent' | 'by_id' | 'by_keyword' | 'by_origin';
+		limit?: number;
+		id?: string;
+		keyword?: string;
+		origin?: 'chat' | 'airc' | 'tool' | 'self_reflection';
+	}): Promise<{ engrams: Engram[]; count: number }>;
 
 	/**
 	 * SHARED COGNITION — single external entry point for the per-persona
@@ -824,6 +866,74 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as PersonaResponse;
+		}
+
+		/**
+		 * Run admission gate over a single InboxMessage. Side effects:
+		 * admitted engram → store, content_hash → dedup record,
+		 * AIRC event_id → replay-protection record.
+		 *
+		 * Wraps `cognition/admit-inbox-message`. The recipe pipeline calls
+		 * this between `rag/build` and `ai/should-respond` so the gate's
+		 * decision can influence whether to respond.
+		 */
+		async cognitionAdmitInboxMessage(
+			personaId: string,
+			message: InboxMessageRequest
+		): Promise<{
+			decision: AdmissionDecision;
+			engram_count: number;
+			trace_seam_count: number;
+		}> {
+			const response = await this.request({
+				command: 'cognition/admit-inbox-message',
+				persona_id: personaId,
+				message,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error ?? 'Failed to admit inbox message');
+			}
+
+			return response.result as {
+				decision: AdmissionDecision;
+				engram_count: number;
+				trace_seam_count: number;
+			};
+		}
+
+		/**
+		 * Recall engrams from a persona's admitted-engram store.
+		 *
+		 * Wraps `cognition/recall-engrams`. The recipe pipeline calls this
+		 * inside / alongside `rag/build` so admitted memory becomes part
+		 * of the assembled context.
+		 */
+		async cognitionRecallEngrams(params: {
+			personaId: string;
+			kind?: 'recent' | 'by_id' | 'by_keyword' | 'by_origin';
+			limit?: number;
+			id?: string;
+			keyword?: string;
+			origin?: 'chat' | 'airc' | 'tool' | 'self_reflection';
+		}): Promise<{ engrams: Engram[]; count: number }> {
+			const wire: Record<string, unknown> = {
+				command: 'cognition/recall-engrams',
+				persona_id: params.personaId,
+			};
+			if (params.kind !== undefined) wire.kind = params.kind;
+			if (params.limit !== undefined) wire.limit = params.limit;
+			if (params.id !== undefined) wire.id = params.id;
+			if (params.keyword !== undefined) wire.keyword = params.keyword;
+			if (params.origin !== undefined) wire.origin = params.origin;
+
+			const response = await this.request(wire);
+
+			if (!response.success) {
+				throw new Error(response.error ?? 'Failed to recall engrams');
+			}
+
+			return response.result as { engrams: Engram[]; count: number };
 		}
 	};
 }

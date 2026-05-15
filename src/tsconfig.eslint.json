@@ -18,6 +18,8 @@
     "generator/generate-command-schemas.ts",
     "widgets/**/*.ts",
     "tests/workers/**/*.ts",
+    "tests/unit/seed-install-tier.spec.ts",
+    "tests/unit/url-card-adapter-xss.spec.ts",
     "test-path-aliases.ts",
     "test-path-aliases-runtime.ts"
   ],

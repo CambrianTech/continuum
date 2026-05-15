@@ -2,7 +2,7 @@
  * Model Introspect Command - Server Implementation
  *
  * Introspects a model to detect its architecture, capabilities, and which
- * ForgeAlloy stages can be applied. Returns the model's current state as
+ * ForgeRecipe stages can be applied. Returns the model's current state as
  * an alloy-compatible spec. Tries local HF cache first, then SSH to grid
  * nodes, then HF API.
  */
@@ -12,12 +12,14 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { ModelIntrospectParams, ModelIntrospectResult } from '../shared/ModelIntrospectTypes';
 import { createModelIntrospectResultFromParams } from '../shared/ModelIntrospectTypes';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
 /** Grid nodes discovered at runtime — no hardcoded IPs */
 const SENTINEL_NODES: Array<{ name: string; ip: string }> = [];
+
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 export class ModelIntrospectServerCommand extends CommandBase<ModelIntrospectParams, ModelIntrospectResult> {
 
@@ -78,9 +80,10 @@ export class ModelIntrospectServerCommand extends CommandBase<ModelIntrospectPar
       if (!fs.existsSync(script)) continue;
 
       try {
-        const output = execSync(
-          `cd ${sentinelPath} && python3 scripts/stages/introspect.py "${model}"`,
-          { timeout: 15000, encoding: 'utf-8' }
+        const output = execFileSync(
+          'python3',
+          ['scripts/stages/introspect.py', model],
+          { cwd: sentinelPath, timeout: 15000, encoding: 'utf-8' }
         );
         return JSON.parse(output.trim());
       } catch {
@@ -92,9 +95,22 @@ export class ModelIntrospectServerCommand extends CommandBase<ModelIntrospectPar
 
   private tryRemoteIntrospect(model: string, ip: string): any {
     const home = process.env.HOME ?? '';
+    const sshUser = process.env.CONTINUUM_SSH_USER ?? process.env.USER ?? process.env.LOGNAME;
+    if (!sshUser) return null;
+
     try {
-      const output = execSync(
-        `ssh -i ${home}/.ssh/id_ed25519 -o ConnectTimeout=3 -o StrictHostKeyChecking=no joel@${ip} "cd ~/sentinel-ai && python3 scripts/stages/introspect.py '${model}'" 2>/dev/null`,
+      const output = execFileSync(
+        'ssh',
+        [
+          '-i',
+          path.join(home, '.ssh', 'id_ed25519'),
+          '-o',
+          'ConnectTimeout=3',
+          '-o',
+          'StrictHostKeyChecking=no',
+          `${sshUser}@${ip}`,
+          `cd ~/sentinel-ai && python3 scripts/stages/introspect.py ${shellQuote(model)}`,
+        ],
         { timeout: 15000, encoding: 'utf-8' }
       );
       return JSON.parse(output.trim());

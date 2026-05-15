@@ -66,6 +66,7 @@
 | [RUST-WORKER-REGISTRATION-PATTERN](RUST-WORKER-REGISTRATION-PATTERN.md) | How Rust workers register with the TypeScript command system |
 | [RUST-WORKER-DUAL-PATH-PATTERN](RUST-WORKER-DUAL-PATH-PATTERN.md) | Dual-path pattern: commands handled in Rust vs forwarded to TypeScript |
 | [RUST-WORKER-PATH-ANALYSIS](RUST-WORKER-PATH-ANALYSIS.md) | Analysis of command routing paths through the Rust worker layer |
+| [RUST-COMMS-TRANSPORT-TRAITS](RUST-COMMS-TRANSPORT-TRAITS.md) | Rust-owned transport traits for envelopes, budgets, zero-copy ownership, and comms adapters |
 | [RUST-DATA-DAEMON-VISION](RUST-DATA-DAEMON-VISION.md) | Vision for moving the data daemon to Rust: performance, SQLite native access |
 | [RUST-DATA-WORKER-ARCHITECTURE](RUST-DATA-WORKER-ARCHITECTURE.md) | Architecture for Rust-backed data operations: query execution, type mapping |
 | [UNIVERSAL-RUST-WORKER-PATTERN](UNIVERSAL-RUST-WORKER-PATTERN.md) | Universal pattern for all Rust workers: lifecycle, IPC, error propagation |
@@ -109,6 +110,7 @@
 | [CONTINUUM-STATE-ARCHITECTURE](CONTINUUM-STATE-ARCHITECTURE.md) | Global system state management: initialization, lifecycle, shutdown |
 | [SYSTEM-CONFIG-ARCHITECTURE](SYSTEM-CONFIG-ARCHITECTURE.md) | Configuration system: sources, merging, validation, hot-reload |
 | [SYSTEM-DAEMON-ARCHITECTURE](SYSTEM-DAEMON-ARCHITECTURE.md) | System daemon design: the orchestrator that manages all other daemons |
+| [PATH-OWNERSHIP](PATH-OWNERSHIP.md) | Ownership contract for `.airc`, `.continuum`, user-local state, and machine-specific path bans |
 | [SYSTEM-PATHS-MIGRATION](SYSTEM-PATHS-MIGRATION.md) | Migration of hardcoded paths to centralized path constants |
 | [ARCHITECTURE_INCONSISTENCIES](ARCHITECTURE_INCONSISTENCIES.md) | Catalog of architectural inconsistencies found during audit |
 | [RUST-TS-INFERENCE-ARCHITECTURE](RUST-TS-INFERENCE-ARCHITECTURE.md) | Architecture for Rust-TypeScript inference boundary: type generation, IPC typing |

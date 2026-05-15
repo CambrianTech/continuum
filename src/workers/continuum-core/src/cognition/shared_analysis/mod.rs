@@ -16,21 +16,23 @@
 //! - `mod.rs` (this file) — orchestration: `analyze` entry, cache +
 //!   single-flight concurrency, inference call, cache-layer tests.
 
+pub mod error;
 pub mod prompt;
 pub mod types;
 
+pub use error::AnalysisError;
 pub use types::{AnalysisInput, RecentMessage};
 
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::types::SharedAnalysis;
+use crate::concurrency::{ConcurrencyPolicy, TokioConcurrencyPolicy};
 use crate::modules::ai_provider::{generate_text, global_registry};
 use dashmap::DashMap;
+use futures::FutureExt;
 use once_cell::sync::Lazy;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::Mutex as TokioMutex;
 
 use prompt::{
     build_prompt, parse_model_output, strip_think_blocks, ANALYSIS_MAX_TOKENS,
@@ -43,13 +45,12 @@ use prompt::{
 static ANALYSIS_CACHE: Lazy<Arc<DashMap<String, SharedAnalysis>>> =
     Lazy::new(|| Arc::new(DashMap::new()));
 
-/// In-flight single-flight tracker. When persona A starts analyzing
-/// message M and persona B requests the same analysis a few ms later,
-/// B awaits A's result instead of firing a second inference. Same
-/// shape as PagedResourcePool's load_or_share.
-static IN_FLIGHT: Lazy<
-    Arc<TokioMutex<HashMap<String, Arc<TokioMutex<Option<Result<SharedAnalysis, String>>>>>>>,
-> = Lazy::new(|| Arc::new(TokioMutex::new(HashMap::new())));
+/// Shared single-flight policy. When persona A starts analyzing message M and
+/// persona B requests the same analysis a few ms later, B awaits A's result
+/// instead of firing a second inference.
+static ANALYSIS_CONCURRENCY: Lazy<
+    Arc<dyn ConcurrencyPolicy<String, SharedAnalysis, AnalysisError>>,
+> = Lazy::new(|| Arc::new(TokioConcurrencyPolicy::new()));
 
 /// Cache size cap. Old entries evicted FIFO when over.
 const CACHE_MAX_ENTRIES: usize = 200;
@@ -73,10 +74,14 @@ const DEFAULT_ANALYSIS_PROVIDER: &str = "local";
 /// inference via `IN_FLIGHT` — persona A starts analyzing, persona B
 /// awaits the same future, both get the same result.
 ///
-/// Returns `Err` if the model output can't be parsed into the contract
-/// shape — failing loud is right; silent fallback to a degraded
-/// analysis would mask a real model regression.
-pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, String> {
+/// Returns `Err(AnalysisError)` if the model output can't be parsed
+/// into the contract shape — failing loud is right; silent fallback
+/// to a degraded analysis would mask a real model regression. Typed
+/// error so callers can pattern-match on the failure mode (#1207):
+///   - MissingEnvelope: model emitted prose, not JSON
+///   - MissingField / EmptyField: structural shape OK but content gap
+///   - InferenceFailed: provider-side failure (timeout, API error, etc.)
+pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisError> {
     let cache_key = compute_cache_key(&input);
 
     // L1 hit: return immediately, mark from_cache for telemetry.
@@ -91,41 +96,26 @@ pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, String> {
         ANALYSIS_CACHE.remove(&cache_key);
     }
 
-    // Single-flight: if another caller is already analyzing this same
-    // input, await their result. Otherwise become the analyzer.
-    let slot = {
-        let mut inflight = IN_FLIGHT.lock().await;
-        if let Some(existing) = inflight.get(&cache_key) {
-            existing.clone()
-        } else {
-            let new_slot: Arc<TokioMutex<Option<Result<SharedAnalysis, String>>>> =
-                Arc::new(TokioMutex::new(None));
-            inflight.insert(cache_key.clone(), new_slot.clone());
-            // Mark THIS task as the analyzer.
-            drop(inflight);
-            // Run inference + parse, store result in slot, then remove
-            // from in-flight map so future cache misses re-analyze.
-            let result = run_analysis(&input, &cache_key).await;
-            *new_slot.lock().await = Some(result.clone());
-            IN_FLIGHT.lock().await.remove(&cache_key);
-            // Cache successful results only — failed parses don't poison.
-            if let Ok(ref analysis) = result {
-                cache_put(cache_key.clone(), analysis.clone());
+    // Single-flight via the shared concurrency policy. The policy owns
+    // the Shared<BoxFuture> map; this module only supplies the analysis
+    // work and successful-result cache publication.
+    let input = Arc::new(input);
+    let result = ANALYSIS_CONCURRENCY
+        .single_flight(cache_key.clone(), {
+            let input = Arc::clone(&input);
+            let cache_key = cache_key.clone();
+            async move {
+                let result = run_analysis(&input, &cache_key).await;
+                if let Ok(ref analysis) = result {
+                    cache_put(cache_key, analysis.clone());
+                }
+                result
             }
-            return result;
-        }
-    };
+            .boxed()
+        })
+        .await;
 
-    // Awaiter path: another task is the analyzer; wait for its slot.
-    // Loop because the slot might be taken but result not yet stored.
-    loop {
-        if let Some(result) = slot.lock().await.clone() {
-            return result;
-        }
-        // Tiny yield — the analyzer is in flight. In practice the lock
-        // hand-off above means one wake-up is enough.
-        tokio::task::yield_now().await;
-    }
+    result
 }
 
 /// Stable hash of (room + current message + sorted specialty list).
@@ -169,7 +159,10 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-async fn run_analysis(input: &AnalysisInput, cache_key: &str) -> Result<SharedAnalysis, String> {
+async fn run_analysis(
+    input: &AnalysisInput,
+    cache_key: &str,
+) -> Result<SharedAnalysis, AnalysisError> {
     let start = SystemTime::now();
     let prompt_text = build_prompt(input);
 
@@ -215,7 +208,12 @@ async fn run_analysis(input: &AnalysisInput, cache_key: &str) -> Result<SharedAn
     // Acquire the registry read lock for the duration of the call.
     let registry = global_registry();
     let registry_guard = registry.read().await;
-    let response = generate_text(&registry_guard, request).await?;
+    // Provider-side errors are opaque strings (the provider has its
+    // own typed-error space we don't want to leak). Wrap into the
+    // typed InferenceFailed variant so callers can pattern-match.
+    let response = generate_text(&registry_guard, request)
+        .await
+        .map_err(AnalysisError::from_inference)?;
 
     // qwen3.5-family models emit <think>...</think> reasoning before the
     // user-visible output. parse_model_output wants the JSON envelope; if
@@ -279,6 +277,7 @@ mod tests {
     //! the chat-path validation gate Joel set.
     use super::*;
     use crate::cognition::types::SharedAnalysisIntent;
+    use std::collections::HashMap;
     use uuid::Uuid;
 
     #[test]

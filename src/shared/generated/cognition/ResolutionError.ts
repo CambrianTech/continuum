@@ -2,9 +2,9 @@
 import type { TargetSilicon } from "./TargetSilicon";
 
 /**
- * Why a [`resolve_model`] call failed. Each variant names the SPECIFIC
- * filter that eliminated all candidates so the caller's error message
- * can be actionable.
+ * Why a [`super::resolve_model`] call failed. Each variant names the
+ * SPECIFIC filter that eliminated all candidates so the caller's error
+ * message can be actionable.
  *
  * No `Fallback` variant. Per Joel's rule: missing-model is an error, not
  * a soft retry on a default. Callers that want graceful degradation must

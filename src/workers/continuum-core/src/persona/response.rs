@@ -31,9 +31,10 @@
 //!     manipulation in Rust is ~100x what TS does on the same input.
 
 use crate::cognition::tool_executor::types::MediaItemLite;
-use crate::cognition::{analyze, AnalysisInput, PersonaSlot, RecentMessage, SharedAnalysis};
+use crate::cognition::{analyze, AnalysisInput, PersonaSlot, SharedAnalysis};
+use crate::persona::turn_context::TurnContext;
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 use ts_rs::TS;
 use uuid::Uuid;
@@ -46,17 +47,14 @@ use uuid::Uuid;
 pub struct RespondInput {
     /// THIS persona's identity + specialty for scoring.
     pub persona: PersonaSlot,
-    pub room_id: Uuid,
+    /// Per-turn shared context (room_id + recent_history +
+    /// known_specialties). All personas responding to the same
+    /// message share an `Arc` to the same `TurnContext` instance —
+    /// no per-persona deep clone of the same data (continuum#1206).
+    pub turn_context: Arc<TurnContext>,
     pub message_id: Uuid,
     /// The new message that triggered this response cycle.
     pub message_text: String,
-    /// Recent messages for analysis context. Most-recent last.
-    pub recent_history: Vec<RecentMessage>,
-    /// Stable specialty identifiers in the room (all personas in the
-    /// room, not just this one). The analyzer uses this list to know
-    /// which `suggested_angles` keys to populate. This persona's own
-    /// specialty must appear here.
-    pub known_specialties: Vec<String>,
     /// Display names of OTHER personas in the room (excluding self).
     /// Forwarded to `prompt_assembly` so the
     /// `ProperChatMlSingleParty` strategy can drop other-AI history
@@ -107,6 +105,26 @@ pub struct RespondInput {
     /// declaration travels with the request — registry-key drift can't
     /// silently disable vision.
     pub capabilities: std::collections::HashSet<crate::model_registry::Capability>,
+    /// Recalled engrams (per-persona admitted memory) injected as
+    /// system-prompt context (continuum#1211 PR-2). The IPC layer
+    /// pulls these from `AdmissionState::recall_recent` after the
+    /// inline admission gate runs, then passes them through so
+    /// `prompt_assembly` can render them as a `[Recent Memory]`
+    /// section. Empty when the persona has no admission state OR no
+    /// admitted engrams yet — both are normal early-life states and
+    /// neither blocks the response cycle.
+    ///
+    /// Per-persona (each persona's admission store is independent)
+    /// so this lives on `RespondInput`, not the per-turn-shared
+    /// `TurnContext` (#1206) — different personas in the same room
+    /// recall different memory.
+    ///
+    /// `String` (the engram's content text) rather than `Engram`
+    /// because prompt_assembly only needs the text. Keeping the full
+    /// `Engram` type out of this layer means a future structural
+    /// change to engrams (kind enum, embeddings, recall_keys reshape)
+    /// doesn't ripple into the prompt path.
+    pub recalled_engrams: Vec<String>,
 }
 
 /// What `respond()` returns.
@@ -222,15 +240,28 @@ async fn respond_inner(
     //    Provides matched-angle hints for the prompt — informational,
     //    NOT gating. The persona's own model is the only thing that
     //    decides what to say (or whether to stay quiet).
+    //
+    // analyze() returns Result<_, AnalysisError> as of #1207. We map
+    // back to String here at the boundary because response.rs's own
+    // public surface still uses Result<_, String>; pushing the typed
+    // error up further is a follow-up (would touch persona::respond
+    // signature + IPC handler + recorder traces). For now the typed
+    // info is preserved in logs via Display.
     let analyze_start = now_ms();
     let analysis = analyze(AnalysisInput {
         message_id: input.message_id,
-        room_id: input.room_id,
+        room_id: input.turn_context.room_id,
         text: input.message_text.clone(),
-        recent_history: input.recent_history.clone(),
-        known_specialties: input.known_specialties.clone(),
+        // These two are the only field-level clones still on the
+        // analyze path. PR-2 (continuum#1206 follow-up) will rework
+        // AnalysisInput to also accept &TurnContext directly so the
+        // clone goes away here too — but that ripples into the
+        // shared_analysis cache key, separate concern.
+        recent_history: input.turn_context.recent_history.clone(),
+        known_specialties: input.turn_context.known_specialties.clone(),
     })
-    .await?;
+    .await
+    .map_err(|e| e.to_string())?;
     trace.record(
         SEAM_ANALYZE,
         analyze_start,
@@ -355,6 +386,7 @@ async fn run_render(
     //    we have; if the chat path later wants role/timestamp distinction,
     //    extend RecentMessage and the conversion follows.
     let history: Vec<HistoryMessage> = input
+        .turn_context
         .recent_history
         .iter()
         .map(|m| HistoryMessage {
@@ -391,6 +423,13 @@ async fn run_render(
         social_signals: None,
         multi_party_strategy,
         other_persona_names: input.other_persona_names.clone(),
+        // Recalled engrams populated by the IPC layer post-admission
+        // (continuum#1211 PR-2). respond() is just a pass-through —
+        // caller decides how many engrams to recall (sensible default
+        // is 5-10, see modules/cognition.rs cognition/respond
+        // handler). Empty when admission was skipped or persona has
+        // no memory yet.
+        recalled_engrams: input.recalled_engrams.clone(),
     };
 
     let assembled = assemble(&prompt_input);
@@ -446,7 +485,7 @@ async fn run_render(
         active_adapters: None,
         request_id: None,
         user_id: None,
-        room_id: Some(input.room_id.to_string()),
+        room_id: Some(input.turn_context.room_id.to_string()),
         purpose: Some("persona-respond".to_string()),
         // The whole point of this request is to generate a response on
         // behalf of THIS persona — its KV bytes belong in this persona's
