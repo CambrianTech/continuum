@@ -14,7 +14,7 @@ use crate::orm::{
     postgres::PostgresAdapter,
     query::{FieldFilter, StorageQuery},
     sqlite::SqliteAdapter,
-    types::{BatchOperation, CollectionSchema, DataRecord, RecordMetadata, UUID},
+    types::{BatchOperation, DataRecord, RecordMetadata, UUID},
 };
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::{log_error, log_info};
@@ -2096,6 +2096,7 @@ impl DataModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orm::types::CollectionSchema;
 
     /// Helper: per-test isolated SQLite file routed through resolve_handle's
     /// legacy passthrough. Tests still hit the abstraction (handle resolves

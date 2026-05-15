@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/cognition/admit-inbox-message",
+  "version": "1.0.0",
+  "description": "Run the per-persona admission gate over a single InboxMessage. Returns the typed AdmissionDecision (Admit | Drop | Quarantine) plus the post-call admitted-engram count and trace seam count. Side effects: admitted engram → store, content_hash → dedup record, AIRC event_id → replay-protection record. Wraps the Rust IPC handler shipped in #1121 PR-4.",
+  "main": "server/CognitionAdmitInboxMessageServerCommand.ts",
+  "types": "shared/CognitionAdmitInboxMessageTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/CognitionAdmitInboxMessageIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "cognition/admit-inbox-message"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

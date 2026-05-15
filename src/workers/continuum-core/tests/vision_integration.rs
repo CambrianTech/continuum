@@ -32,6 +32,7 @@
 
 use continuum_core::cognition::tool_executor::types::MediaItemLite;
 use continuum_core::persona::response::{respond, PersonaResponse, RespondInput};
+use continuum_core::persona::turn_context::TurnContext;
 use uuid::Uuid;
 
 /// Minimal valid JPEG — 8x8 red square, ~160 bytes encoded.
@@ -83,11 +84,17 @@ fn build_vision_request(model_id: &str) -> RespondInput {
             specialty: "vision".to_string(),
             display_name: "VisionTestPersona".to_string(),
         },
-        room_id: Uuid::nil(),
+        // Per-turn shared context (continuum#1206). Room-level fields
+        // moved off RespondInput into Arc<TurnContext>; constructing
+        // here mirrors the projection done by `build_respond_input`
+        // for the live IPC path.
+        turn_context: TurnContext::arc(
+            Uuid::nil(),
+            Vec::new(),
+            vec!["vision".to_string()],
+        ),
         message_id: Uuid::nil(),
         message_text: "What do you see in this image?".to_string(),
-        recent_history: Vec::new(),
-        known_specialties: vec!["vision".to_string()],
         other_persona_names: Vec::new(),
         system_prompt: "You are a vision-capable assistant. Describe what you see in any image attached to the user's message. Keep the response under 40 words.".to_string(),
         model: model_id.to_string(),

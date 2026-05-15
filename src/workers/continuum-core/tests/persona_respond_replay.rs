@@ -20,6 +20,7 @@
 use continuum_core::ai::AIProviderAdapter;
 use continuum_core::cognition::{PersonaSlot, RecentMessage};
 use continuum_core::persona::response::{respond, PersonaResponse, RespondInput};
+use continuum_core::persona::turn_context::TurnContext;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -166,11 +167,17 @@ fn build_input(fix: &Fixture, known_specialties: Vec<String>) -> RespondInput {
             specialty: fix.rust_request.specialty.clone(),
             display_name: fix.rust_request.persona_name.clone(),
         },
-        room_id: fix.rust_request.room_id,
+        // Per-turn shared context (continuum#1206). Replay reconstructs
+        // the room-level fields from the captured fixture, then bundles
+        // them into Arc<TurnContext> so the constructed RespondInput
+        // matches the live IPC path's shape.
+        turn_context: TurnContext::arc(
+            fix.rust_request.room_id,
+            recent_history,
+            known_specialties,
+        ),
         message_id: fix.rust_request.message_id,
         message_text: fix.rust_request.message_text.clone(),
-        recent_history,
-        known_specialties,
         other_persona_names: Vec::new(),
         system_prompt: fix.rust_request.system_prompt.clone(),
         model: fix.rust_request.model.clone(),
@@ -273,15 +280,18 @@ async fn clean_minimal_input_produces_spoke() {
             specialty: "general".to_string(),
             display_name: "Helper AI".to_string(),
         },
-        room_id: Uuid::new_v4(),
+        // Per-turn shared context (continuum#1206).
+        turn_context: TurnContext::arc(
+            Uuid::new_v4(),
+            vec![RecentMessage {
+                id: Uuid::new_v4(),
+                sender_name: "Developer".to_string(),
+                text: "Hi everyone, what's a good way to learn Rust?".to_string(),
+            }],
+            vec!["general".to_string()],
+        ),
         message_id: Uuid::new_v4(),
         message_text: "Hi everyone, what's a good way to learn Rust?".to_string(),
-        recent_history: vec![RecentMessage {
-            id: Uuid::new_v4(),
-            sender_name: "Developer".to_string(),
-            text: "Hi everyone, what's a good way to learn Rust?".to_string(),
-        }],
-        known_specialties: vec!["general".to_string()],
         other_persona_names: Vec::new(),
         system_prompt: "You are Helper AI. Respond naturally and concisely.".to_string(),
         model: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
@@ -454,16 +464,19 @@ async fn synthesized_prod_shape_input_produces_coherent_response() {
             specialty: "general".to_string(),
             display_name: "Helper AI".to_string(),
         },
-        room_id: Uuid::new_v4(),
+        // Per-turn shared context (continuum#1206).
+        turn_context: TurnContext::arc(
+            Uuid::new_v4(),
+            recent_history,
+            vec![
+                "general".to_string(),
+                "code".to_string(),
+                "learning".to_string(),
+                "local".to_string(),
+            ],
+        ),
         message_id: Uuid::new_v4(),
         message_text,
-        recent_history,
-        known_specialties: vec![
-            "general".to_string(),
-            "code".to_string(),
-            "learning".to_string(),
-            "local".to_string(),
-        ],
         other_persona_names: Vec::new(),
         system_prompt,
         model: "continuum-ai/qwen3.5-4b-code-forged-GGUF".to_string(),
@@ -586,7 +599,16 @@ async fn long_code_generation_request_completes_without_clipping() {
             specialty: fix.rust_request.specialty.clone(),
             display_name: fix.rust_request.persona_name.clone(),
         },
-        room_id: fix.rust_request.room_id,
+        // Per-turn shared context (continuum#1206).
+        turn_context: TurnContext::arc(
+            fix.rust_request.room_id,
+            vec![],
+            vec![
+                fix.rust_request.specialty.clone(),
+                "general".to_string(),
+                "code".to_string(),
+            ],
+        ),
         message_id: Uuid::new_v4(),
         message_text: "Write a complete recursive descent parser in Rust for a small expression \
              language (numbers, +, -, *, /, parentheses). Include the AST types, the \
@@ -594,12 +616,6 @@ async fn long_code_generation_request_completes_without_clipping() {
              explaining grammar precedence and associativity decisions. Output the full \
              code, not a sketch."
             .to_string(),
-        recent_history: vec![],
-        known_specialties: vec![
-            fix.rust_request.specialty.clone(),
-            "general".to_string(),
-            "code".to_string(),
-        ],
         other_persona_names: Vec::new(),
         system_prompt: fix.rust_request.system_prompt.clone(),
         model: fix.rust_request.model.clone(),

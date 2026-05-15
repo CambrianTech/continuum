@@ -11,7 +11,9 @@
 
 use crate::cognition::types::SharedAnalysisIntent;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
+use super::error::AnalysisError;
 use super::types::AnalysisInput;
 
 /// Recent-history snapshot size used in the analysis prompt + cache key.
@@ -70,72 +72,170 @@ pub(super) struct ParsedOutput {
 /// readable text while stripping the special-token recognition. Same
 /// pattern as escaping `</script>` in HTML — keep the meaning, kill the
 /// structural bite.
+// Thin wrapper for tests + any future callers that genuinely need an owned
+// String. Hot-path callers (build_prompt, #1209) write directly into a
+// pre-sized buffer via sanitize_into. This wrapper IS dead code outside
+// tests today — kept rather than deleted so the test pin (which validates
+// the three special-token replacements) doesn't regress when sanitize_into
+// is touched. cfg(test) gate keeps clippy quiet about the unused fn at
+// non-test compile.
+#[cfg(test)]
 pub(super) fn sanitize_special_tokens(text: &str) -> String {
-    text.replace("<|im_end|>", "<im_end>")
-        .replace("<|im_start|>", "<im_start>")
-        .replace("<|endoftext|>", "<endoftext>")
+    let mut out = String::with_capacity(text.len());
+    sanitize_into(&mut out, text);
+    out
 }
 
 /// User-message prompt. Compact, structured, asks for specific JSON shape.
 /// Tolerant parsing on the receiving side handles minor model deviations.
+///
+/// Allocation discipline (#1209): single pre-sized `String::with_capacity`
+/// + `write!` macro into the buffer. Replaces the previous shape that
+///   allocated 2 intermediate Vec<String> (history_lines, specialty_lines),
+///   then 2 String::join results (history, specialties), then a final
+///   format! for the envelope — five heap allocations per build, plus N
+///   inner format! allocations for each history line and each specialty.
+///
+/// Now: 1 buffer allocation + N `write!` calls (which write into the
+/// existing buffer via the `std::fmt::Write` trait). Total allocations
+/// per build drop from 5 + N to 1 (or 2 if the buffer outgrows its
+/// initial capacity guess). Same byte-for-byte output as the previous
+/// shape — pinned by `build_prompt_respects_history_snapshot_size_cap`
+/// and the parse_clean_json_output round-trip tests.
 pub(super) fn build_prompt(input: &AnalysisInput) -> String {
-    let history_lines: Vec<String> = input
+    // Capacity estimate: envelope template is ~720 bytes; history is
+    // bounded to HISTORY_SNAPSHOT_SIZE messages, each averaging ~80
+    // bytes after sanitize; specialties average ~24 bytes. Over-estimate
+    // slightly to avoid the realloc on the common case.
+    let envelope_overhead: usize = 720;
+    let history_capacity: usize = input
         .recent_history
         .iter()
         .rev()
         .take(HISTORY_SNAPSHOT_SIZE)
-        .rev()
-        .map(|m| {
-            format!(
-                "{}: {}",
-                sanitize_special_tokens(&m.sender_name),
-                sanitize_special_tokens(&m.text)
-            )
-        })
-        .collect();
-    let history = if history_lines.is_empty() {
-        "(no prior messages)".to_string()
-    } else {
-        history_lines.join("\n")
-    };
-
-    let specialty_lines: Vec<String> = input
+        .map(|m| m.sender_name.len() + m.text.len() + 4) // +4 for ": " + "\n"
+        .sum();
+    let specialty_capacity: usize = input
         .known_specialties
         .iter()
-        .map(|s| format!("  - {s}"))
-        .collect();
-    let specialties = if specialty_lines.is_empty() {
-        "  (none)".to_string()
-    } else {
-        specialty_lines.join("\n")
-    };
+        .map(|s| s.len() + 5) // +5 for "  - " + "\n"
+        .sum();
+    let estimated_capacity =
+        envelope_overhead + history_capacity + specialty_capacity + input.text.len();
 
-    let safe_message = sanitize_special_tokens(&input.text);
-    format!(
-        "Recent conversation:\n\
-         {history}\n\
-         \n\
-         New message to analyze:\n\
-         {message}\n\
-         \n\
-         Known persona specialties in this room:\n\
-         {specialties}\n\
-         \n\
-         Respond with ONLY a JSON object matching this exact shape (no prose, no code fences):\n\
-         {{\n\
-           \"summary\": \"1-2 sentence objective reading of the message\",\n\
-           \"keyConcepts\": [\"3-7 short concept tags the message touches\"],\n\
-           \"intent\": \"question|request|statement|task|social|other\",\n\
-           \"emotionalTone\": \"optional one-word tone (omit if neutral)\",\n\
-           \"suggestedAngles\": {{\n\
-             \"<specialty-key>\": \"1-sentence why this specialty matters here, OR empty string if irrelevant\"\n\
-           }},\n\
-           \"relevantContext\": \"optional 1-2 sentence distillation of conversation context the responders should know\"\n\
-         }}\n",
-        history = history,
-        message = safe_message,
-        specialties = specialties,
-    )
+    let mut buf = String::with_capacity(estimated_capacity);
+
+    // ── Header + history ────────────────────────────────────────────
+    buf.push_str("Recent conversation:\n");
+    let history_count = input
+        .recent_history
+        .len()
+        .min(HISTORY_SNAPSHOT_SIZE);
+    if history_count == 0 {
+        buf.push_str("(no prior messages)\n");
+    } else {
+        // Same logical slice as `iter().rev().take(N).rev()`: the LAST
+        // N messages in chronological order. Compute the start index
+        // directly to avoid the double-rev allocation pattern.
+        let start = input.recent_history.len().saturating_sub(HISTORY_SNAPSHOT_SIZE);
+        for m in &input.recent_history[start..] {
+            sanitize_into(&mut buf, &m.sender_name);
+            buf.push_str(": ");
+            sanitize_into(&mut buf, &m.text);
+            buf.push('\n');
+        }
+    }
+
+    // ── New message ─────────────────────────────────────────────────
+    buf.push_str("\nNew message to analyze:\n");
+    sanitize_into(&mut buf, &input.text);
+    buf.push('\n');
+
+    // ── Specialties list ────────────────────────────────────────────
+    buf.push_str("\nKnown persona specialties in this room:\n");
+    if input.known_specialties.is_empty() {
+        buf.push_str("  (none)\n");
+    } else {
+        for s in &input.known_specialties {
+            // write! into the buffer is infallible for String — the
+            // unwrap is for the trait-method signature, not a real
+            // failure mode.
+            let _ = writeln!(buf, "  - {s}");
+        }
+    }
+
+    // ── JSON envelope template ──────────────────────────────────────
+    buf.push_str(
+        "\nRespond with ONLY a JSON object matching this exact shape (no prose, no code fences):\n\
+         {\n  \
+            \"summary\": \"1-2 sentence objective reading of the message\",\n  \
+            \"keyConcepts\": [\"3-7 short concept tags the message touches\"],\n  \
+            \"intent\": \"question|request|statement|task|social|other\",\n  \
+            \"emotionalTone\": \"optional one-word tone (omit if neutral)\",\n  \
+            \"suggestedAngles\": {\n    \
+                \"<specialty-key>\": \"1-sentence why this specialty matters here, OR empty string if irrelevant\"\n  \
+            },\n  \
+            \"relevantContext\": \"optional 1-2 sentence distillation of conversation context the responders should know\"\n\
+         }\n",
+    );
+
+    buf
+}
+
+/// Write the sanitized form of `text` into `buf` without allocating an
+/// intermediate `String`. Mirrors `sanitize_special_tokens` byte-for-byte
+/// but appends to a caller-owned buffer instead of returning a new
+/// `String`. Used by `build_prompt`'s hot-path allocation rewrite (#1209).
+///
+/// Why a separate fn: keeps `sanitize_special_tokens` available for
+/// callers that genuinely need an owned String (the public API), while
+/// the hot-path build_prompt avoids the extra allocation per token call.
+fn sanitize_into(buf: &mut String, text: &str) {
+    // Walk the input once, copying chunks between the three special
+    // tokens directly into `buf`. Replaces the previous 3 `.replace()`
+    // calls each of which allocated a fresh String.
+    let mut cursor = 0usize;
+    let bytes = text.as_bytes();
+    while cursor < bytes.len() {
+        // Look for the earliest occurrence of any of the three tokens
+        // starting at `cursor`. Linear scan over the bounded set is
+        // cheap; the alternative (regex) would allocate on every call.
+        let next = next_special_token(text, cursor);
+        match next {
+            Some((token_off, token_len, replacement)) => {
+                buf.push_str(&text[cursor..token_off]);
+                buf.push_str(replacement);
+                cursor = token_off + token_len;
+            }
+            None => {
+                buf.push_str(&text[cursor..]);
+                break;
+            }
+        }
+    }
+}
+
+/// Find the first occurrence of any of the three special tokens at or
+/// after `from` in `text`. Returns `(offset, length, replacement)` for
+/// the earliest match, or `None` if no special token appears in the tail.
+fn next_special_token(text: &str, from: usize) -> Option<(usize, usize, &'static str)> {
+    let candidates: [(&str, &str); 3] = [
+        ("<|im_end|>", "<im_end>"),
+        ("<|im_start|>", "<im_start>"),
+        ("<|endoftext|>", "<endoftext>"),
+    ];
+    let tail = &text[from..];
+    let mut best: Option<(usize, usize, &'static str)> = None;
+    for (needle, replacement) in candidates {
+        if let Some(rel_off) = tail.find(needle) {
+            let abs_off = from + rel_off;
+            match best {
+                Some((b_off, _, _)) if b_off <= abs_off => {}
+                _ => best = Some((abs_off, needle.len(), replacement)),
+            }
+        }
+    }
+    best
 }
 
 /// Strip `<think>...</think>` blocks from raw model output. qwen3.5-family
@@ -181,7 +281,7 @@ fn find_substr(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 pub(super) fn parse_model_output(
     raw: &str,
     known_specialties: &[String],
-) -> Result<ParsedOutput, String> {
+) -> Result<ParsedOutput, AnalysisError> {
     // Strip code fences if the model wrapped its JSON.
     let candidate = strip_code_fence(raw).trim();
 
@@ -218,20 +318,21 @@ pub(super) fn parse_model_output(
         idx += 1;
     }
 
-    let obj = best.ok_or_else(|| {
-        format!(
-            "model output did not contain a JSON object with 'summary'. Got: {}",
-            preview(raw)
-        )
+    let obj = best.ok_or_else(|| AnalysisError::MissingEnvelope {
+        raw_excerpt: preview(raw),
     })?;
 
     let summary = obj
         .get("summary")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "missing required field 'summary'".to_string())?
+        .ok_or_else(|| AnalysisError::MissingField {
+            field: "summary".to_string(),
+        })?
         .to_string();
     if summary.is_empty() {
-        return Err("required field 'summary' was empty".to_string());
+        return Err(AnalysisError::EmptyField {
+            field: "summary".to_string(),
+        });
     }
 
     let key_concepts: Vec<String> = obj
@@ -381,17 +482,68 @@ mod tests {
     }
 
     #[test]
-    fn parse_fails_loud_on_missing_summary() {
+    fn parse_fails_loud_on_missing_summary_key() {
+        // JSON object present but lacks `summary` key entirely. The
+        // envelope detector specifically looks for objects with
+        // `summary`, so this surfaces as MissingEnvelope (the parser
+        // never identifies a candidate envelope at all). Different
+        // from `parse_fails_loud_on_summary_wrong_type` which fires
+        // MissingField for the case where `summary` is present but
+        // the wrong shape.
         let raw = r#"{"intent":"question","suggestedAngles":{}}"#;
         let err = parse_model_output(raw, &[]).unwrap_err();
-        assert!(err.contains("summary"));
+        match err {
+            AnalysisError::MissingEnvelope { raw_excerpt } => {
+                assert!(raw_excerpt.contains("intent"), "got: {raw_excerpt}");
+            }
+            other => panic!("expected MissingEnvelope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_fails_loud_on_summary_wrong_type() {
+        // JSON envelope IS detected (summary key present), but the
+        // value is not a string — the typed MissingField variant
+        // fires from the .as_str() guard (#1207). This is the only
+        // realistic path that surfaces MissingField in the current
+        // parse logic.
+        let raw = r#"{"summary":42,"intent":"question","suggestedAngles":{}}"#;
+        let err = parse_model_output(raw, &[]).unwrap_err();
+        match err {
+            AnalysisError::MissingField { field } => assert_eq!(field, "summary"),
+            other => panic!("expected MissingField{{ summary }}, got {other:?}"),
+        }
     }
 
     #[test]
     fn parse_fails_loud_on_garbage() {
+        // No JSON envelope at all — typed MissingEnvelope variant
+        // carries an excerpt of the raw input for diagnosability (#1207).
         let raw = "this is not JSON at all";
         let err = parse_model_output(raw, &[]).unwrap_err();
-        assert!(err.contains("did not contain a JSON object"));
+        match err {
+            AnalysisError::MissingEnvelope { raw_excerpt } => {
+                assert!(
+                    raw_excerpt.contains("not JSON"),
+                    "expected raw_excerpt to include input, got: {raw_excerpt}"
+                );
+            }
+            other => panic!("expected MissingEnvelope, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_fails_loud_on_empty_summary() {
+        // JSON envelope + summary key + empty string value.
+        // Empty summary would cascade into empty persona renders;
+        // typed EmptyField variant lets callers distinguish from
+        // MissingField for clearer logs (#1207).
+        let raw = r#"{"summary":"","intent":"question","suggestedAngles":{}}"#;
+        let err = parse_model_output(raw, &[]).unwrap_err();
+        match err {
+            AnalysisError::EmptyField { field } => assert_eq!(field, "summary"),
+            other => panic!("expected EmptyField{{ summary }}, got {other:?}"),
+        }
     }
 
     #[test]

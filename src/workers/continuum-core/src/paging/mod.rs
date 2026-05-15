@@ -15,14 +15,16 @@
 //!
 //! See: docs/architecture/UNIFIED-PAGING.md
 
+pub mod adapter;
 pub mod broker;
 pub mod pool;
 
+pub use adapter::ResourcePoolAdapter;
 pub use broker::{
-    BrokerConfig, BrokerSnapshot, PoolView, PressureBroker, PressureSource, PressureTier,
-    ReliefReport,
+    BrokerConfig, BrokerSnapshot, PoolView, PressureAlert, PressureBroker, PressureSource,
+    PressureTier, ReliefReport,
 };
 pub use pool::{
     lru_priority, size_weighted_lru, EvictionPriority, PagedResourcePool, PinHandle, PoolConfig,
-    PoolEntry, PoolEntryView, PoolStats, Sizer,
+    PoolEntry, PoolEntryView, PoolStats, ResourceError, ResourcePool, ResourcePoolEntry, Sizer,
 };
