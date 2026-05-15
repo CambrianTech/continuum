@@ -102,6 +102,7 @@ fn build_vision_request(model_id: &str) -> RespondInput {
         message_media: media,
         // Vision capability — caller-declared, no registry lookup.
         capabilities: caps,
+        recalled_engrams: Vec::new(),
     }
 }
 

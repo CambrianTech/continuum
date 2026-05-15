@@ -11,9 +11,15 @@
  * "if not UI/UX it is rust" rule: this TS file exists ONLY so the
  * recipe pipeline + ./jtag CLI can route through `Commands.execute`.
  * It is a thin bridge. No business logic. No reimplementation.
+ *
+ * **Refactored to RustBackedCommand (#1198 follow-on to #1256):** the
+ * standard validate + call mixin + wrap-result envelope is now in the
+ * base class. Only the variable bits — required-param list, kind-
+ * companion validation, mixin call, result mapping — remain here.
  */
 
-import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import { RustBackedCommand } from '@daemons/command-daemon/shared/RustBackedCommand';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type {
@@ -21,53 +27,60 @@ import type {
   CognitionRecallEngramsResult,
 } from '../shared/CognitionRecallEngramsTypes';
 import { createCognitionRecallEngramsResultFromParams } from '../shared/CognitionRecallEngramsTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 
-export class CognitionRecallEngramsServerCommand extends CommandBase<
+/** Snake-case shape returned by the Rust mixin — matches the IPC payload. */
+type RecallEngramsRustResponse = {
+  engrams: unknown;
+  count: number;
+};
+
+export class CognitionRecallEngramsServerCommand extends RustBackedCommand<
   CognitionRecallEngramsParams,
-  CognitionRecallEngramsResult
+  CognitionRecallEngramsResult,
+  RecallEngramsRustResponse
 > {
+  protected override readonly requiredParams = ['personaId'] as const;
+
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('cognition/recall-engrams', context, subpath, commander);
   }
 
   /**
-   * Per-kind required-companion-field check. Returns the field name +
-   * message if a required companion is missing, else null.
+   * Subclass override: in addition to the base required-param check
+   * (personaId non-empty), the recall command's `kind` discriminator
+   * has per-variant required-companion fields. by_id needs `id`,
+   * by_keyword needs `keyword`, by_origin needs `origin`. Recent (the
+   * default) needs nothing extra.
    */
-  private validateKindCompanion(
-    params: CognitionRecallEngramsParams,
-  ): { field: string; message: string } | null {
+  protected override validateParams(params: CognitionRecallEngramsParams): void {
+    super.validateParams(params);
     const kind = params.kind ?? 'recent';
     if (kind === 'by_id' && (params.id === undefined || params.id.trim() === '')) {
-      return { field: 'id', message: `kind='by_id' requires an 'id' parameter (the engram UUID to look up).` };
-    }
-    if (kind === 'by_keyword' && (params.keyword === undefined || params.keyword.trim() === '')) {
-      return { field: 'keyword', message: `kind='by_keyword' requires a 'keyword' parameter (substring to match).` };
-    }
-    if (kind === 'by_origin' && params.origin === undefined) {
-      return { field: 'origin', message: `kind='by_origin' requires an 'origin' parameter (chat | airc | tool | self_reflection).` };
-    }
-    return null;
-  }
-
-  async execute(
-    params: CognitionRecallEngramsParams,
-  ): Promise<CognitionRecallEngramsResult> {
-    if (params.personaId === undefined || params.personaId.trim() === '') {
       throw new ValidationError(
-        'personaId',
-        `Missing required parameter 'personaId'. Provide the UUID of the persona whose engram store to query. See the cognition/recall-engrams README for usage.`,
+        'id',
+        `kind='by_id' requires an 'id' parameter (the engram UUID to look up).`,
       );
     }
-
-    const companionMiss = this.validateKindCompanion(params);
-    if (companionMiss !== null) {
-      throw new ValidationError(companionMiss.field, companionMiss.message);
+    if (kind === 'by_keyword' && (params.keyword === undefined || params.keyword.trim() === '')) {
+      throw new ValidationError(
+        'keyword',
+        `kind='by_keyword' requires a 'keyword' parameter (substring to match).`,
+      );
     }
+    if (kind === 'by_origin' && params.origin === undefined) {
+      throw new ValidationError(
+        'origin',
+        `kind='by_origin' requires an 'origin' parameter (chat | airc | tool | self_reflection).`,
+      );
+    }
+  }
 
-    const client = await RustCoreIPCClient.getInstanceAsync();
-    const { engrams, count } = await client.cognitionRecallEngrams({
+  protected override async callRust(
+    params: CognitionRecallEngramsParams,
+    client: RustCoreIPCClient,
+  ): Promise<RecallEngramsRustResponse> {
+    return client.cognitionRecallEngrams({
       personaId: params.personaId,
       kind: params.kind ?? 'recent',
       limit: params.limit,
@@ -75,11 +88,16 @@ export class CognitionRecallEngramsServerCommand extends CommandBase<
       keyword: params.keyword,
       origin: params.origin,
     });
+  }
 
+  protected override toResult(
+    raw: RecallEngramsRustResponse,
+    params: CognitionRecallEngramsParams,
+  ): CognitionRecallEngramsResult {
     return createCognitionRecallEngramsResultFromParams(params, {
       success: true,
-      engrams: engrams as unknown as Array<Record<string, unknown>>,
-      count,
+      engrams: raw.engrams as Array<Record<string, unknown>>,
+      count: raw.count,
     });
   }
 }

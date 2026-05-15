@@ -187,6 +187,7 @@ fn build_input(fix: &Fixture, known_specialties: Vec<String>) -> RespondInput {
         // text-only path. Tests that DO exercise vision should
         // populate this explicitly (see vision_integration.rs).
         capabilities: std::collections::HashSet::new(),
+        recalled_engrams: Vec::new(),
     }
 }
 
@@ -298,6 +299,7 @@ async fn clean_minimal_input_produces_spoke() {
         is_voice: false,
         message_media: Vec::new(),
         capabilities: std::collections::HashSet::new(),
+        recalled_engrams: Vec::new(),
     };
     let response = respond(input)
         .await
@@ -483,6 +485,7 @@ async fn synthesized_prod_shape_input_produces_coherent_response() {
         is_voice: false,
         message_media: Vec::new(),
         capabilities: std::collections::HashSet::new(),
+        recalled_engrams: Vec::new(),
     };
     let response = respond(input)
         .await
@@ -622,6 +625,7 @@ async fn long_code_generation_request_completes_without_clipping() {
         is_voice: false,
         message_media: Vec::new(),
         capabilities: std::collections::HashSet::new(),
+        recalled_engrams: Vec::new(),
     };
 
     let response = respond(input)

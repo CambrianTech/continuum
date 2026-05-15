@@ -2,7 +2,7 @@
 import type { ResourceClass } from "./ResourceClass";
 import type { TargetSilicon } from "./TargetSilicon";
 
-export type ThroughputLaneBudget = {
+export type ThroughputLaneBudget = { 
 /**
  * Semantic owner for observability. Admission is keyed by target_silicon
  * so LocalGeneration, Media, and Render can share one physical GPU budget.

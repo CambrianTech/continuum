@@ -3,6 +3,7 @@
 **Issue**: continuum#1164 (this design)
 **Status**: Reviewed — open questions resolved (see §7); ready for Phase 1
 **Pairs with**: [FORGE-ALLOY-SPEC.md](./FORGE-ALLOY-SPEC.md), [FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md](./FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md), [grid/FORGE-ALLOY-PROOF-CONTRACTS.md](../grid/FORGE-ALLOY-PROOF-CONTRACTS.md)
+**Graph invariant**: continuum#1266 (recipes are templates; instantiated rooms/activities are graph nodes)
 
 > **Continuum-wide pattern (per claude-tab-2 review).** The
 > `ForgeRecipe` (authored input) → `ForgeArtifact` (generated output)
@@ -22,6 +23,15 @@
 > output. The forge **never consumes a hand-authored alloy**; the foundry
 > generates it. The pattern matches how every other Continuum subsystem
 > works: data lives in entities, behavior lives in pipelines.
+
+> **Recipe graph rule.** A recipe is a reusable template. It defines the
+> content/activity shape, execution stages, capabilities, and defaults.
+> It is not the live room/activity itself. Running or instantiating a
+> recipe creates an entity with its own identity and lifecycle:
+> `ForgeRecipe -> ForgeArtifact` for model foundry work, and
+> `RecipeEntity -> ActivityEntity/RoomEntity` for collaborative
+> experiences. Parent/child structure stays graph-shaped through IDs and
+> edges, not copied nested state.
 
 ---
 
