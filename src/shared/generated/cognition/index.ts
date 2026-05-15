@@ -4,6 +4,7 @@
 
 export type { AdaptiveThroughputPlan } from './AdaptiveThroughputPlan';
 export type { AdaptiveThroughputRequest } from './AdaptiveThroughputRequest';
+export type { AnalysisError } from './AnalysisError';
 export type { HostCapability } from './HostCapability';
 export type { ProbeError } from './HostProbeError';
 export type { HwCapabilityTier } from './HwCapabilityTier';
@@ -40,5 +41,6 @@ export type { ThroughputLease } from './ThroughputLease';
 export type { ThroughputLeaseRevocationPolicy } from './ThroughputLeaseRevocationPolicy';
 export type { ThroughputLeaseSnapshot } from './ThroughputLeaseSnapshot';
 export type { ToolExecutionContext } from './ToolExecutionContext';
+export type { ToolError } from './ToolError';
 export type { ToolInvocation } from './ToolInvocation';
 export type { ToolOutcome } from './ToolOutcome';

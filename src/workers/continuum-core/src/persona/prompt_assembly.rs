@@ -8,6 +8,7 @@
 
 use crate::model_registry::types::MultiPartyChatStrategy;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 /// Input to prompt assembly. Carries everything needed to build the
 /// LLM message array for a single persona's render pass.
@@ -42,6 +43,16 @@ pub struct PromptAssemblyInput {
     /// and `SingleUserTurnFlattenedHistory` ignore this field.
     #[serde(default)]
     pub other_persona_names: Vec<String>,
+    /// Recalled engrams (per-persona admitted memory) — content
+    /// strings only, ordered most-recent first, already trimmed by
+    /// the caller. Rendered as a `[Recent Memory]` block right after
+    /// the matched-angle injection so the persona sees its own
+    /// memory adjacent to the analyzer's per-turn perspective. Empty
+    /// = no memory recall on this turn (normal early-life state, or
+    /// admission gate skipped because no AdmissionState).
+    /// Continuum#1211 PR-2.
+    #[serde(default)]
+    pub recalled_engrams: Vec<String>,
 }
 
 /// A message in conversation history.
@@ -88,25 +99,64 @@ pub struct PromptMessage {
 /// This is a pure function — no IO, no IPC, no state. Takes data in,
 /// produces a prompt out. The caller (response.rs) handles inference.
 pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
-    let mut system_prompt = input.system_prompt.clone();
+    // Pre-size the system_prompt buffer based on the system_prompt
+    // input + a generous overhead estimate for the optional blocks.
+    // Avoids the realloc that would otherwise fire on the first
+    // `push_str` of an angle/social/voice block (#1209).
+    let mut system_prompt =
+        String::with_capacity(input.system_prompt.len() + 512);
+    system_prompt.push_str(&input.system_prompt);
 
     // Inject shared analysis angle if present — grounds the persona's
     // contribution in the specific perspective the orchestrator matched.
+    //
+    // write! into the existing buffer instead of `push_str(&format!(...))`
+    // so the format intermediate doesn't allocate a throw-away String
+    // just to be appended (#1209). Trait method's Result is infallible
+    // for String; the let-binding to `_` is for the trait signature.
     if !input.matched_angle.is_empty() {
-        system_prompt.push_str(&format!(
+        let _ = write!(
+            system_prompt,
             "\n\n[Shared Analysis — Your Angle]\n\
              The following aspect of this conversation is specifically relevant \
              to your expertise. Focus your contribution here:\n{}",
             input.matched_angle
-        ));
+        );
+    }
+
+    // Inject recalled engrams as a memory block — continuum#1211 PR-2.
+    // The persona's admission gate (#1213) collected these from prior
+    // chat turns; rendering them here is what closes the engram loop
+    // (admit → store → recall → context). Caller (cognition/respond
+    // IPC handler) is responsible for trimming to a sensible count
+    // before calling assemble — prompt_assembly stays a pure
+    // formatter, doesn't make policy decisions about budget.
+    //
+    // Empty list = no rendering, no header. A persona that hasn't
+    // accumulated memory yet (or the inline gate skipped because no
+    // AdmissionState exists) sees the prompt unchanged from before
+    // PR-2 — backwards-compatible.
+    if !input.recalled_engrams.is_empty() {
+        system_prompt.push_str(
+            "\n\n[Recent Memory]\n\
+             Things you have remembered from prior conversations in this room. \
+             Use this context as background; not every memory needs to be cited:\n",
+        );
+        for engram in &input.recalled_engrams {
+            // `- ` bullet prefix keeps each engram visually separable
+            // even when the content runs multiple lines. writeln!
+            // appends the newline without the trailing-newline-in-
+            // format-string clippy lint.
+            let _ = writeln!(system_prompt, "- {engram}");
+        }
     }
 
     // Inject social awareness signals
     if let Some(ref signals) = input.social_signals {
-        let social_block = build_social_block(signals);
-        if !social_block.is_empty() {
-            system_prompt.push_str(&social_block);
-        }
+        // append_social_block writes directly into system_prompt instead
+        // of returning a fresh String (#1209). Saves the intermediate
+        // allocation for callers that have a pre-existing buffer.
+        append_social_block(&mut system_prompt, signals);
     }
 
     // Voice mode instructions
@@ -225,33 +275,51 @@ fn build_messages_single_user_turn(
     current: &HistoryMessage,
     persona_name: &str,
 ) -> Vec<PromptMessage> {
-    let mut transcript = String::new();
+    // Pre-size the transcript buffer (#1218a — alloc discipline). Each
+    // history line is roughly len(name) + len(content) + 4 bytes;
+    // overhead covers the "Recent conversation:\n" header + the closing
+    // cue. write! into the buffer instead of `push_str(&format!(...))`
+    // so the format intermediate doesn't allocate a throw-away String.
+    let header_overhead: usize = 96;
+    let history_capacity: usize = history
+        .iter()
+        .map(|m| m.name.as_ref().map_or(0, |n| n.len() + 2) + m.content.len() + 1)
+        .sum();
+    let current_capacity = current.name.as_ref().map_or(20, |n| n.len() + 22)
+        + current.content.len();
+    let closing_cue_capacity = persona_name.len() + 128;
+    let mut transcript = String::with_capacity(
+        header_overhead + history_capacity + current_capacity + closing_cue_capacity,
+    );
+
     if !history.is_empty() {
         transcript.push_str("Recent conversation:\n");
         for msg in history {
-            let line = if let Some(ref name) = msg.name {
-                format!("{}: {}\n", name, msg.content)
+            if let Some(ref name) = msg.name {
+                let _ = writeln!(transcript, "{}: {}", name, msg.content);
             } else {
-                format!("{}\n", msg.content)
-            };
-            transcript.push_str(&line);
+                let _ = writeln!(transcript, "{}", msg.content);
+            }
         }
         transcript.push('\n');
     }
     if let Some(ref name) = current.name {
-        transcript.push_str(&format!("New message from {name}:\n{}\n", current.content));
+        let _ = writeln!(transcript, "New message from {name}:");
     } else {
-        transcript.push_str(&format!("New message:\n{}\n", current.content));
+        transcript.push_str("New message:\n");
     }
+    transcript.push_str(&current.content);
+    transcript.push('\n');
     // Closing cue. Same intent as the analyzer's "Respond with ONLY ..."
     // — without this the render model has no clear signal that it should
     // produce content for THIS turn (vs. summarizing a passive log).
     // Lives inside the same user turn so chat-template structure stays
     // single-system + single-user → assistant.
-    transcript.push_str(&format!(
+    let _ = write!(
+        transcript,
         "\nRespond now as {persona_name}. Reply directly to the new message above — \
          no name prefix, no quoting, just your contribution.\n"
-    ));
+    );
     vec![PromptMessage {
         role: "user".to_string(),
         content: transcript,
@@ -365,39 +433,47 @@ fn build_messages_proper_chatml_single_party(
     messages
 }
 
-/// Build social awareness block from signals.
-fn build_social_block(signals: &SocialSignals) -> String {
-    let mut lines = Vec::new();
+/// Append the social-awareness block (if any signals fire) directly
+/// into a caller-owned buffer.
+///
+/// Replaces the previous `build_social_block(...) -> String` shape that
+/// allocated a `Vec<String>` of lines + N `format!` strings + a final
+/// `format!` (#1209). The new shape: peek at signals to decide if
+/// anything fires, then `write!` lines straight into the caller's
+/// buffer. Saves Vec + N+1 String allocations per call when signals
+/// fire; no-op (zero allocations) when they don't.
+fn append_social_block(buf: &mut String, signals: &SocialSignals) {
+    // Peek-pass: figure out if any signal fires before writing the
+    // header. Avoids dropping a stranded "[Social Awareness]\n" header
+    // into the buffer when nothing follows.
+    let any_signal = signals.ai_messages_recent > 0
+        || !signals.human_spoke_recently
+        || (signals.has_directed_mention && !signals.is_mentioned)
+        || signals.seconds_since_last_response.is_some()
+        || (signals.response_count_this_session.is_some() && signals.response_cap.is_some());
+    if !any_signal {
+        return;
+    }
 
+    buf.push_str("\n\n[Social Awareness]");
     if signals.ai_messages_recent > 0 {
-        lines.push(format!(
-            "- {} AI messages in this room in the last 2 minutes",
+        let _ = write!(
+            buf,
+            "\n- {} AI messages in this room in the last 2 minutes",
             signals.ai_messages_recent
-        ));
+        );
     }
     if !signals.human_spoke_recently {
-        lines.push("- No human has spoken recently in this room".to_string());
+        buf.push_str("\n- No human has spoken recently in this room");
     }
     if signals.has_directed_mention && !signals.is_mentioned {
-        lines.push("- This message is directed at another persona (not you)".to_string());
+        buf.push_str("\n- This message is directed at another persona (not you)");
     }
     if let Some(secs) = signals.seconds_since_last_response {
-        lines.push(format!(
-            "- You last responded {}s ago in this room",
-            secs.round() as i64
-        ));
+        let _ = write!(buf, "\n- You last responded {}s ago in this room", secs.round() as i64);
     }
     if let (Some(count), Some(cap)) = (signals.response_count_this_session, signals.response_cap) {
-        lines.push(format!(
-            "- You have responded {}/{} times this session",
-            count, cap
-        ));
-    }
-
-    if lines.is_empty() {
-        String::new()
-    } else {
-        format!("\n\n[Social Awareness]\n{}", lines.join("\n"))
+        let _ = write!(buf, "\n- You have responded {}/{} times this session", count, cap);
     }
 }
 
@@ -427,6 +503,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -435,6 +512,87 @@ mod tests {
         assert!(result.system_message.contains("Rust error handling"));
         assert!(result.messages.len() >= 2); // history + current (identity reminder removed 2026-04-20)
         assert!(result.estimated_tokens > 0);
+    }
+
+    /// What this catches (continuum#1211 PR-2): when recalled_engrams
+    /// is non-empty, the assembled system_message includes the
+    /// `[Recent Memory]` block AND each engram bullet.
+    /// Regression: a future formatter change that drops the bullet
+    /// prefix or the header would break the persona's ability to
+    /// distinguish memory from current context.
+    #[test]
+    fn recalled_engrams_render_as_memory_block() {
+        let input = PromptAssemblyInput {
+            persona_name: "Helper AI".to_string(),
+            system_prompt: "You are Helper AI.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: Some("Joel".to_string()),
+                content: "what color did I say I liked?".to_string(),
+                timestamp_ms: Some(1000),
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![
+                "Joel's favorite color is teal.".to_string(),
+                "Joel works in San Francisco.".to_string(),
+            ],
+        };
+
+        let result = assemble(&input);
+        assert!(
+            result.system_message.contains("[Recent Memory]"),
+            "expected Recent Memory header in: {}",
+            result.system_message
+        );
+        assert!(
+            result.system_message.contains("- Joel's favorite color is teal."),
+            "expected bullet-prefixed engram in: {}",
+            result.system_message
+        );
+        assert!(
+            result.system_message.contains("- Joel works in San Francisco."),
+            "expected second bullet in: {}",
+            result.system_message
+        );
+    }
+
+    /// What this catches (continuum#1211 PR-2): empty recalled_engrams
+    /// produces NO `[Recent Memory]` block and NO header. Backwards-
+    /// compat with all pre-PR-2 callers + cold-start personas (no
+    /// engrams yet). Regression: a formatter that always emits the
+    /// header would clutter every prompt for every persona that hasn't
+    /// accumulated memory yet.
+    #[test]
+    fn empty_recalled_engrams_emits_no_memory_block() {
+        let input = PromptAssemblyInput {
+            persona_name: "Helper AI".to_string(),
+            system_prompt: "You are Helper AI.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "hi".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![],
+        };
+
+        let result = assemble(&input);
+        assert!(
+            !result.system_message.contains("[Recent Memory]"),
+            "should NOT render Recent Memory header for empty engrams: {}",
+            result.system_message
+        );
     }
 
     #[test]
@@ -454,6 +612,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -477,6 +636,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -508,6 +668,7 @@ mod tests {
             }),
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -549,6 +710,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);
@@ -591,6 +753,7 @@ mod tests {
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
+            recalled_engrams: vec![],
         };
 
         let result = assemble(&input);

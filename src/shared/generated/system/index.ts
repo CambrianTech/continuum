@@ -3,6 +3,7 @@
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
 export type { CpuStats } from './CpuStats';
+export type { DockerTierProbe } from './DockerTierProbe';
 export type { MemoryBudgetAllocation } from './MemoryBudgetAllocation';
 export type { MemoryBudgetSnapshot } from './MemoryBudgetSnapshot';
 export type { MemoryBudgetSpec } from './MemoryBudgetSpec';

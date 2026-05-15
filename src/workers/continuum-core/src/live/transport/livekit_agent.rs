@@ -77,15 +77,34 @@ fn bevy_effective_dimensions(requested_w: u32, requested_h: u32) -> (u32, u32) {
 }
 
 // =============================================================================
-// Per-identity creation locks for get_or_create_agent / remove_agent.
-// MUST be a single module-level static — function-level statics are separate
-// instances per function, so remove_agent wouldn't clean up get_or_create_agent's entries.
+// Per-identity single-flight policy for get_or_create_agent (#1247).
+//
+// Replaces the prior `HashMap<(call_id, user_id), Arc<tokio::Mutex<()>>>`
+// hand-rolled per-key lock map with the canonical `ConcurrencyPolicy`
+// from `crate::concurrency` (the substrate primitive #1230 + #1235).
+//
+// Why: the same single-flight shape was already implemented once and
+// battle-tested (refcount-per-key cleanup so analyzer cancellation
+// doesn't drop the entry while awaiters hold it; panic-safe RAII Drop
+// guards). Keeping a parallel reimplementation here carried the exact
+// bug class the substrate already solved AND drifted on cleanup
+// semantics (the prior code's per-key entries leaked until `remove_agent`
+// ran — never for agents that errored on connect).
+//
+// Module-level OnceLock because policy state must be shared across every
+// `LiveKitAgentManager` instance — the contract is single-flight per
+// (call_id, user_id), regardless of which manager handle initiates.
 // =============================================================================
 
-#[allow(clippy::type_complexity)]
-static AGENT_CREATION_LOCKS: std::sync::Mutex<
-    Option<std::collections::HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
-> = std::sync::Mutex::new(None);
+use std::sync::OnceLock;
+
+type AgentSingleFlight =
+    crate::concurrency::TokioConcurrencyPolicy<(String, String), Arc<LiveKitAgent>, String>;
+
+fn agent_creation_policy() -> &'static Arc<AgentSingleFlight> {
+    static POLICY: OnceLock<Arc<AgentSingleFlight>> = OnceLock::new();
+    POLICY.get_or_init(|| Arc::new(AgentSingleFlight::new()))
+}
 
 // =============================================================================
 // Participant metadata — typed role classification instead of string prefixes.
@@ -1526,7 +1545,9 @@ impl LiveKitAgentManager {
     ) -> Result<Arc<LiveKitAgent>, String> {
         let key = (call_id.to_string(), user_id.to_string());
 
-        // Fast path: agent already exists
+        // Fast path: agent already exists. Skip the policy entirely so
+        // an unloaded steady-state cache hit doesn't pay the policy
+        // bookkeeping cost.
         {
             let agents = self.agents.read().await;
             if let Some(agent) = agents.get(&key) {
@@ -1534,54 +1555,78 @@ impl LiveKitAgentManager {
             }
         }
 
-        // Acquire per-identity creation lock to prevent TOCTOU race.
-        // Without this, 3 concurrent callers can all pass the fast path check,
-        // then all call connect(), creating 3 agents and 3 video loops
-        // that burn 3 Bevy render slots for the same identity.
-        let creation_lock = {
-            let mut locks = AGENT_CREATION_LOCKS.lock().unwrap();
-            let map = locks.get_or_insert_with(std::collections::HashMap::new);
-            map.entry(key.clone())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
-        };
-        let _guard = creation_lock.lock().await;
+        // Slow path: per-identity single-flight via the substrate
+        // ConcurrencyPolicy (#1247 — replaces the prior per-key
+        // `HashMap<K, Arc<tokio::Mutex>>`). The policy guarantees:
+        //   - Concurrent callers for the same (call_id, user_id) all
+        //     await ONE in-flight `connect()` call
+        //   - The Arc<LiveKitAgent> result is shared back to every caller
+        //   - Refcount-per-key cleanup (#1235) drops the in-flight slot
+        //     only after the LAST awaiter completes — analyzer
+        //     cancellation while awaiters still hold the Shared no
+        //     longer drops the entry
+        //   - Panic in `connect()` unwinds through the Shared to every
+        //     caller AND fires Drop guards that clean the in-flight
+        //     slot, so the next call starts fresh instead of finding
+        //     a poisoned future (#1232)
+        //
+        // Self-clone for the work closure since it crosses an .await
+        // and the policy holds the future for the duration of the call.
+        let livekit_url = self.livekit_url.clone();
+        let agents_map = self.agents.clone();
+        let call_id_owned = call_id.to_string();
+        let user_id_owned = user_id.to_string();
+        let display_name_owned = display_name.unwrap_or(user_id).to_string();
+        let key_for_work = key.clone();
 
-        // Re-check after acquiring lock — another task may have created the agent
-        {
-            let agents = self.agents.read().await;
-            if let Some(agent) = agents.get(&key) {
-                return Ok(agent.clone());
+        use futures::FutureExt;
+        let work = async move {
+            // Re-check after policy granted us the analyzer slot — a
+            // concurrent caller may have populated agents while we
+            // were waiting for the policy lock.
+            {
+                let agents = agents_map.read().await;
+                if let Some(agent) = agents.get(&key_for_work) {
+                    return Ok(agent.clone());
+                }
             }
+
+            let (agent, _event_rx) = LiveKitAgent::connect(
+                &livekit_url,
+                &call_id_owned,
+                &user_id_owned, // Identity = persona's userId (unique UUID, no prefix needed)
+                &display_name_owned, // Display name shown in browser
+            )
+            .await?;
+
+            let agent = Arc::new(agent);
+            agents_map.write().await.insert(key_for_work, agent.clone());
+
+            // Speaking agents don't process their own event_rx — the STT listener
+            // handles all incoming audio processing centrally (one per call).
+
+            // Start video loop immediately — the avatar should appear as soon as
+            // the persona connects, not wait for first speech. Voice name isn't
+            // available yet, so avatar selection uses deterministic hash (same persona
+            // always gets the same model).
+            start_video_loop(agent.clone());
+
+            Ok::<Arc<LiveKitAgent>, String>(agent)
         }
+        .boxed();
 
-        // Create new agent with ai_persona role in metadata
-        let name = display_name.unwrap_or(user_id);
-        let (agent, _event_rx) = LiveKitAgent::connect(
-            &self.livekit_url,
-            call_id,
-            user_id, // Identity = persona's userId (unique UUID, no prefix needed)
-            name,    // Display name shown in browser
-        )
-        .await?;
-
-        let agent = Arc::new(agent);
-        self.agents.write().await.insert(key, agent.clone());
-
-        // Speaking agents don't process their own event_rx — the STT listener
-        // handles all incoming audio processing centrally (one per call).
-
-        // Start video loop immediately — the avatar should appear as soon as
-        // the persona connects, not wait for first speech. Voice name isn't
-        // available yet, so avatar selection uses deterministic hash (same persona
-        // always gets the same model).
-        start_video_loop(agent.clone());
-
-        Ok(agent)
+        use crate::concurrency::ConcurrencyPolicy;
+        agent_creation_policy().single_flight(key, work).await
     }
 
     /// Remove an agent when a persona leaves a call. Disconnects from LiveKit room
     /// and drops the Arc, freeing WebRTC state and media buffers.
+    ///
+    /// Post-#1247: no creation-lock cleanup needed here — the
+    /// `ConcurrencyPolicy` self-evicts in-flight entries via refcount
+    /// (#1235), so a transient agent that errored on connect doesn't
+    /// leak a lock-map entry the way the prior hand-rolled implementation
+    /// did. `remove_agent` only owns the steady-state agents map now.
     pub async fn remove_agent(&self, call_id: &str, user_id: &str) {
         let key = (call_id.to_string(), user_id.to_string());
         let removed = self.agents.write().await.remove(&key);
@@ -1595,13 +1640,6 @@ impl LiveKitAgentManager {
             // sole ownership. Room close causes the video loop to exit on its next
             // publish attempt (channel error), which then drops its Arc clone.
             agent.disconnect().await;
-        }
-
-        // Clean up creation lock for this key
-        if let Ok(mut locks) = AGENT_CREATION_LOCKS.lock() {
-            if let Some(map) = locks.as_mut() {
-                map.remove(&key);
-            }
         }
     }
 

@@ -19,10 +19,10 @@ pub mod broker;
 pub mod pool;
 
 pub use broker::{
-    BrokerConfig, BrokerSnapshot, PoolView, PressureBroker, PressureSource, PressureTier,
+    BrokerConfig, BrokerSnapshot, PoolView, PressureAlert, PressureBroker, PressureTier,
     ReliefReport,
 };
 pub use pool::{
     lru_priority, size_weighted_lru, EvictionPriority, PagedResourcePool, PinHandle, PoolConfig,
-    PoolEntry, PoolEntryView, PoolStats, Sizer,
+    PoolEntry, PoolEntryView, PoolStats, ResourceError, ResourcePool, ResourcePoolEntry, Sizer,
 };

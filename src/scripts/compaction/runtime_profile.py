@@ -6,7 +6,10 @@ import sys
 from collections import defaultdict
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-MODEL = "/home/joel/.continuum/models/qwen3.5-35b-a3b-opus"
+MODEL = os.environ.get(
+    "CONTINUUM_COMPACTION_MODEL",
+    os.path.expanduser("~/.continuum/models/qwen3.5-35b-a3b-opus"),
+)
 
 PROMPTS = [
     "Write a TypeScript function that implements a rate limiter using the token bucket algorithm.",

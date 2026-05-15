@@ -22,6 +22,29 @@ Every recipe follows this pattern:
 3. **Execute Actions** - Do the thing (generate text, make game move, adjust LoRA weights)
 4. **Store Artifacts** - What gets saved/shared? (responses, screenshots, training data)
 
+## Template, Not Room State
+
+A recipe is a reusable template for a collaborative experience. It can
+define widgets, capabilities, command pipelines, context strategy,
+default child activities, and AI participation rules. It is not the live
+room/activity instance.
+
+When a recipe is instantiated, Continuum creates an activity/room entity:
+
+```
+RecipeEntity
+  -> ActivityEntity / RoomEntity
+      -> child ActivityEntity IDs
+      -> artifacts, events, participants, runtime state
+```
+
+The hierarchy is a graph of entity references. Recipes may point to other
+recipes as default child templates, but live child room state belongs on
+the child activity entity. Do not copy nested child room payloads into
+the parent or into the recipe. This keeps recipes shareable and
+versionable while letting runtime rooms be paged, cached, synchronized,
+and optimized independently.
+
 ## Recipe Entity Structure
 
 ```typescript

@@ -46,15 +46,33 @@
 //! - `docs/grid/COGNITIVE-IMMUNE-MODEL.md` — defense posture this gate
 //!   participates in (apoptosis-cheaper-than-corruption, B-cell anergy,
 //!   forensic-not-destructive).
+//!
+//! # Module layout (continuum#1208)
+//!
+//! Split out of a 1225-LOC file:
+//! - this `mod.rs` — gate machinery (`AdmissionGate::admit`), candidate
+//!   + context types, IsMemorable trait, structural-gate tests,
+//!   helpers (build_engram_from_candidate, envelope verification,
+//!   trace seam emission).
+//! - [`recipes`] — concrete `IsMemorable` implementations Continuum
+//!   ships (currently `HeuristicIsMemorable`); re-exported here so
+//!   external callers see no API change.
+
+pub mod recipes;
+
+pub use recipes::HeuristicIsMemorable;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::engram::{
-    AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, Engram, EngramKind,
+// Re-exported pub so submodules (`recipes`) can import via `super::`
+// without reaching across to `crate::persona::engram` for every type.
+pub use super::engram::{
+    AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, EngramKind,
     EngramOrigin, TrustState,
 };
+use super::engram::Engram;
 use super::trace::{now_ms, CognitionTrace, SEAM_ADMISSION};
 
 //=============================================================================
@@ -270,13 +288,26 @@ impl AdmissionGate {
         candidate: &AdmissionCandidate,
         recipe: &R,
         ctx: &AdmissionContext<'_>,
-        trace: &mut CognitionTrace,
+        trace: Option<&mut CognitionTrace>,
     ) -> Result<AdmissionDecision, AdmissionError> {
+        // Wrap the optional trace in a reference cell so the per-step
+        // `record_seam` call sites stay uniform (one borrow API regardless
+        // of whether the caller wanted a trace). When None, all
+        // record-side work is skipped — no `now_ms()`, no `serde_json::json!`
+        // Map allocation, no String allocations for seam name/metadata.
+        // continuum#1213 follow-up: cuts ~7 allocations per chat turn per
+        // persona on the admission hot path. Trace-using callers (TS-IPC
+        // `cognition/admit-inbox-message` + the unit tests + the future
+        // recorder integration) keep their existing per-seam visibility
+        // by passing `Some(&mut trace)`; the in-process inline gate added
+        // by #1213 passes `None` because it doesn't propagate the trace
+        // anywhere.
+        let mut trace = trace;
         let started = now_ms();
 
         // Step 1: Envelope structure
         if let Err(err) = verify_envelope(&candidate.origin) {
-            record_seam(trace, recipe.id(), started, "EnvelopeVerificationFailed", None);
+            record_seam(trace.as_deref_mut(), recipe.id(), started, "EnvelopeVerificationFailed", None);
             return Err(err);
         }
 
@@ -286,7 +317,7 @@ impl AdmissionGate {
                 source_trust: candidate.trust_state,
                 threshold: ctx.config.trust_threshold,
             };
-            record_seam(trace, recipe.id(), started, "TrustBoundaryRejected", None);
+            record_seam(trace.as_deref_mut(), recipe.id(), started, "TrustBoundaryRejected", None);
             return Err(err);
         }
 
@@ -297,7 +328,7 @@ impl AdmissionGate {
                     event_id,
                     previously_seen_at_ms: prev_ms,
                 };
-                record_seam(trace, recipe.id(), started, "ReplayDetected", None);
+                record_seam(trace.as_deref_mut(), recipe.id(), started, "ReplayDetected", None);
                 return Err(err);
             }
         }
@@ -306,135 +337,19 @@ impl AdmissionGate {
         match recipe.evaluate(candidate, ctx) {
             Ok(decision) => {
                 let label = decision_label(&decision);
+                // Last use of `trace` in this branch — pass by move
+                // rather than `as_deref_mut()` (clippy
+                // `needless_option_as_deref` would fire on a final
+                // reborrow when the next line is just `Ok(...)`).
                 record_seam(trace, recipe.id(), started, "accepted", Some(label));
                 Ok(decision)
             }
             Err(err) => {
+                // Last use of `trace` in this branch — same as above.
                 record_seam(trace, recipe.id(), started, "RecipeError", None);
                 Err(err)
             }
         }
-    }
-}
-
-//=============================================================================
-// HEURISTIC RECIPE: v1 default IsMemorable impl
-//=============================================================================
-
-/// Cheap heuristic recipe — the v1 default. Suitable as a starting point
-/// for any persona; richer recipes can compose on top.
-///
-/// Decision logic:
-/// 1. **Dedup** — content_hash hit in `seen_content` → `Drop::Duplicate`.
-/// 2. **Length** — content shorter than `min_content_length` chars →
-///    `Drop::NotMemorable("content too short")`.
-/// 3. **Noise phrases** — content (case-insensitive, trimmed) matches a
-///    phrase in `noise_phrases` → `Drop::NotMemorable("noise phrase")`.
-/// 4. Otherwise → `Admit` with a synthesized `Engram`.
-///
-/// No `Quarantine` outcome from this recipe — quarantine is for uncertain
-/// cases, and this recipe is binary on its inputs. A future
-/// `SimilarityIsMemorable` recipe will be the first to use quarantine
-/// (for content that's borderline-similar to existing engrams).
-pub struct HeuristicIsMemorable {
-    /// Minimum content length to consider memorable. Chars, not bytes.
-    pub min_content_length: usize,
-    /// Phrases that, alone, are noise (e.g., "ack", "ok", "👍"). Stored
-    /// pre-normalized (lowercased, trimmed) so the per-call hot path
-    /// doesn't repeat the normalization for every candidate. Use
-    /// [`HeuristicIsMemorable::with_noise_phrases`] to construct with a
-    /// custom set rather than mutating directly.
-    pub noise_phrases: Vec<String>,
-}
-
-impl HeuristicIsMemorable {
-    /// v1 defaults — minimal length 16 chars, common ack phrases as noise.
-    /// Tuned for AIRC-style chatter where one-word acks dominate volume.
-    pub fn default_v1() -> Self {
-        Self::with_noise_phrases(
-            16,
-            [
-                "ack", "ok", "okay", "thanks", "thx", "got it", "+1", "👍",
-            ],
-        )
-    }
-
-    /// Construct with a custom minimum length + noise-phrase set. Phrases
-    /// are normalized once here (lowercased, trimmed) so the per-call
-    /// noise check is a plain string comparison — heuristic recipes are
-    /// the per-message hot path and re-lowercasing on every candidate
-    /// would be wasted work.
-    pub fn with_noise_phrases<I, S>(min_content_length: usize, phrases: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let noise_phrases = phrases
-            .into_iter()
-            .map(|p| p.as_ref().trim().to_lowercase())
-            .collect();
-        Self {
-            min_content_length,
-            noise_phrases,
-        }
-    }
-}
-
-impl IsMemorable for HeuristicIsMemorable {
-    fn id(&self) -> &'static str {
-        "heuristic.v1"
-    }
-
-    fn evaluate(
-        &self,
-        candidate: &AdmissionCandidate,
-        ctx: &AdmissionContext<'_>,
-    ) -> Result<AdmissionDecision, AdmissionError> {
-        // Dedup first — cheapest check, eliminates the most common drop case.
-        if let Some(existing) = ctx.seen_content.find_by_content_hash(&candidate.content_hash) {
-            return Ok(AdmissionDecision::Drop {
-                reason: AdmissionDropReason::Duplicate {
-                    existing_engram_id: existing,
-                },
-            });
-        }
-
-        // Length check
-        let char_count = candidate.content.chars().count();
-        if char_count < self.min_content_length {
-            return Ok(AdmissionDecision::Drop {
-                reason: AdmissionDropReason::NotMemorable {
-                    explanation: format!(
-                        "content too short ({} < {} chars)",
-                        char_count, self.min_content_length
-                    ),
-                },
-            });
-        }
-
-        // Noise phrase check. `noise_phrases` is pre-normalized
-        // (lowercased + trimmed) at construction time, so the per-call
-        // hot path is a plain string comparison.
-        let normalized = candidate.content.trim().to_lowercase();
-        for phrase in &self.noise_phrases {
-            if normalized == *phrase {
-                return Ok(AdmissionDecision::Drop {
-                    reason: AdmissionDropReason::NotMemorable {
-                        explanation: format!("matches noise phrase: {phrase:?}"),
-                    },
-                });
-            }
-        }
-
-        // Admit
-        Ok(AdmissionDecision::Admit {
-            engram: build_engram_from_candidate(candidate, ctx),
-            why: format!(
-                "{} accepted (len={}, no dedup hit, no noise match)",
-                self.id(),
-                char_count
-            ),
-        })
     }
 }
 
@@ -516,14 +431,23 @@ fn wire_event_id(origin: &EngramOrigin) -> Option<String> {
     }
 }
 
-/// Append a `SEAM_ADMISSION` entry to the trace.
+/// Append a `SEAM_ADMISSION` entry to the trace, when one is supplied.
+///
+/// When `trace` is `None` (the in-process hot-path admission gate added
+/// by continuum#1213, which doesn't propagate the trace), this function
+/// is a complete no-op — no `now_ms()` syscall, no `serde_json::json!`
+/// Map allocation, no String allocations. Cuts ~7 allocations per chat
+/// turn per persona on the admission hot path.
 fn record_seam(
-    trace: &mut CognitionTrace,
+    trace: Option<&mut CognitionTrace>,
     recipe_id: &str,
     started_ms: u64,
     structural: &str,
     decision: Option<&'static str>,
 ) {
+    let Some(trace) = trace else {
+        return;
+    };
     let duration_ms = now_ms().saturating_sub(started_ms);
     let metadata = match decision {
         Some(label) => serde_json::json!({
@@ -648,7 +572,7 @@ mod tests {
             EngramOrigin::Airc(airc_ref("msg-1", "", "hash", "v1")),
         );
 
-        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace);
+        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace));
         match result {
             Err(AdmissionError::EnvelopeVerificationFailed { detail }) => {
                 assert!(detail.contains("signature"), "detail: {detail}");
@@ -680,7 +604,7 @@ mod tests {
             EngramOrigin::Airc(airc_ref("msg-x", "sig", "", "v1")),
         );
 
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace) {
+        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace)) {
             Err(AdmissionError::EnvelopeVerificationFailed { detail }) => {
                 assert!(detail.contains("content_hash"), "detail: {detail}");
             }
@@ -708,7 +632,7 @@ mod tests {
             EngramOrigin::Airc(airc_ref("msg-x", "sig", "hash", "")),
         );
 
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace) {
+        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace)) {
             Err(AdmissionError::EnvelopeVerificationFailed { detail }) => {
                 assert!(detail.contains("schema_version"), "detail: {detail}");
             }
@@ -735,7 +659,7 @@ mod tests {
             EngramOrigin::Airc(airc_ref("msg-x", "sig", "hash", "v2")),
         );
 
-        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace);
+        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace));
         match result {
             Err(AdmissionError::UnsupportedSchemaVersion { schema_version }) => {
                 assert_eq!(schema_version, "v2");
@@ -771,7 +695,7 @@ mod tests {
             },
         );
 
-        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace)
+        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace))
             .expect("self-reflection should pass structural checks");
         match result {
             AdmissionDecision::Admit { engram, .. } => {
@@ -804,7 +728,7 @@ mod tests {
         // ApprovedPeer is below IntragridMember (strict_v1's threshold).
         let cand = airc_candidate("totally legitimate content here", TrustState::ApprovedPeer, "msg-2");
 
-        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace);
+        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace));
         match result {
             Err(AdmissionError::TrustBoundaryRejected {
                 source_trust,
@@ -834,7 +758,7 @@ mod tests {
             "msg-3",
         );
 
-        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace)
+        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace))
             .expect("equal-tier source should pass threshold");
         assert!(matches!(result, AdmissionDecision::Admit { .. }));
     }
@@ -856,7 +780,7 @@ mod tests {
 
         let cand = airc_candidate("perfectly novel content here", TrustState::ApprovedPeer, "msg-replay");
 
-        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace);
+        let result = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace));
         match result {
             Err(AdmissionError::ReplayDetected {
                 event_id,
@@ -893,128 +817,12 @@ mod tests {
             },
         );
 
-        AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace)
+        AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace))
             .expect("non-airc origin should bypass replay check");
     }
 
-    // ── HeuristicIsMemorable policy ─────────────────────────────────────
-
-    /// What this catches: content shorter than `min_content_length` drops
-    /// with `NotMemorable` reason carrying the actual lengths. Operators
-    /// debugging admission funnels need the explanation string to be
-    /// informative, not opaque.
-    #[test]
-    fn heuristic_drops_short_content_with_explanation() {
-        let cfg = AdmissionConfig::permissive_v1();
-        let content = InMemoryContent::default();
-        let events = InMemoryEvents::default();
-        let ctx = permissive_ctx(&cfg, &content, &events);
-        let mut trace = CognitionTrace::new();
-
-        let cand = airc_candidate("short", TrustState::ApprovedPeer, "msg-short");
-
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace).unwrap() {
-            AdmissionDecision::Drop {
-                reason: AdmissionDropReason::NotMemorable { explanation },
-            } => {
-                assert!(explanation.contains("too short"), "explanation: {explanation}");
-                assert!(explanation.contains("16"), "must mention threshold: {explanation}");
-            }
-            other => panic!("expected Drop NotMemorable, got {other:?}"),
-        }
-    }
-
-    /// What this catches: noise phrase match is case-insensitive and
-    /// trim-tolerant, so "  ACK  " drops the same as "ack".
-    #[test]
-    fn heuristic_drops_noise_phrase_case_insensitive() {
-        let cfg = AdmissionConfig::permissive_v1();
-        let content = InMemoryContent::default();
-        let events = InMemoryEvents::default();
-        let ctx = permissive_ctx(&cfg, &content, &events);
-        let mut trace = CognitionTrace::new();
-
-        // "  ACK  " trimmed+lower = "ack" which is in noise_phrases.
-        // Must use a noise phrase that's >= 16 chars before normalization
-        // so the length check doesn't catch it first — but ACK is short.
-        // So we need: noise check happens AFTER length check passes.
-        // Pad the content with whitespace to clear the length check, then
-        // verify the noise check still fires after trim.
-        let padded = "                ACK                ";
-        let cand = airc_candidate(padded, TrustState::ApprovedPeer, "msg-noise");
-
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace).unwrap() {
-            AdmissionDecision::Drop {
-                reason: AdmissionDropReason::NotMemorable { explanation },
-            } => {
-                assert!(explanation.contains("noise phrase"), "explanation: {explanation}");
-            }
-            other => panic!("expected Drop NotMemorable for noise phrase, got {other:?}"),
-        }
-    }
-
-    /// What this catches: dedup hit returns `Drop::Duplicate` with the
-    /// existing engram id surfaced. Recall surfaces depend on this id
-    /// being present so they can link the new arrival back to the
-    /// already-stored memory.
-    #[test]
-    fn heuristic_drops_duplicate_with_existing_engram_id() {
-        let cfg = AdmissionConfig::permissive_v1();
-        let content = InMemoryContent::default();
-        let existing_id = Uuid::new_v4();
-        content
-            .0
-            .lock()
-            .unwrap()
-            .insert("sha256:fake-29".to_string(), existing_id);
-        let events = InMemoryEvents::default();
-        let ctx = permissive_ctx(&cfg, &content, &events);
-        let mut trace = CognitionTrace::new();
-
-        // content_hash = sha256:fake-{len}; pick a content with len 29
-        // matching the seeded entry.
-        let cand = airc_candidate("twenty-nine character content", TrustState::ApprovedPeer, "msg-d");
-        assert_eq!(cand.content_hash, "sha256:fake-29");
-
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace).unwrap() {
-            AdmissionDecision::Drop {
-                reason: AdmissionDropReason::Duplicate { existing_engram_id },
-            } => {
-                assert_eq!(existing_engram_id, existing_id);
-            }
-            other => panic!("expected Drop Duplicate, got {other:?}"),
-        }
-    }
-
-    /// What this catches: when the heuristic admits, the synthesized
-    /// `Engram` carries the full provenance + trust snapshot. A
-    /// regression that drops the trust_state_at_admission would silently
-    /// erase forensic context that later introspection needs.
-    #[test]
-    fn heuristic_admit_synthesizes_engram_with_full_provenance() {
-        let cfg = AdmissionConfig::permissive_v1();
-        let content = InMemoryContent::default();
-        let events = InMemoryEvents::default();
-        let ctx = permissive_ctx(&cfg, &content, &events);
-        let mut trace = CognitionTrace::new();
-
-        let cand = airc_candidate(
-            "design discussion about cognitive immune model layers",
-            TrustState::IntragridMember,
-            "msg-admit-1",
-        );
-
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace).unwrap() {
-            AdmissionDecision::Admit { engram, why } => {
-                assert_eq!(engram.kind, EngramKind::Episodic);
-                assert_eq!(engram.trust_state_at_admission, TrustState::IntragridMember);
-                assert!(matches!(engram.origin, EngramOrigin::Airc(_)));
-                assert_eq!(engram.admitted_at_ms, FIXED_NOW_MS);
-                assert!(why.contains("heuristic.v1"), "why: {why}");
-            }
-            other => panic!("expected Admit, got {other:?}"),
-        }
-    }
+    // (HeuristicIsMemorable policy tests moved to admission/recipes.rs
+    // per continuum#1208 — keep mod.rs focused on gate-level tests.)
 
     // ── trace seam emission ─────────────────────────────────────────────
 
@@ -1037,7 +845,7 @@ mod tests {
                 TrustState::ApprovedPeer,
                 EngramOrigin::Airc(airc_ref("e1", "", "h", "v1")),
             );
-            let _ = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace);
+            let _ = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace));
         }
         assert_eq!(trace.seam_count(), 1);
 
@@ -1051,7 +859,7 @@ mod tests {
                 TrustState::ApprovedPeer,
                 "e2",
             );
-            let _ = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace);
+            let _ = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace));
         }
         assert_eq!(trace.seam_count(), 2);
 
@@ -1061,7 +869,7 @@ mod tests {
             let events = InMemoryEvents::default();
             let ctx = permissive_ctx(&cfg, &content, &events);
             let cand = airc_candidate("short", TrustState::ApprovedPeer, "e3");
-            let _ = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace);
+            let _ = AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace));
         }
         assert_eq!(trace.seam_count(), 3);
 
@@ -1089,7 +897,7 @@ mod tests {
             "msg-trace-1",
         );
 
-        AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, &mut trace).unwrap();
+        AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace)).unwrap();
         let seam = &trace.seams[0];
         assert_eq!(seam.metadata["recipe"], serde_json::json!("heuristic.v1"));
         assert_eq!(seam.metadata["structural"], serde_json::json!("accepted"));
@@ -1133,7 +941,7 @@ mod tests {
             "msg-fail",
         );
 
-        let result = AdmissionGate::admit(&cand, &FailingRecipe, &ctx, &mut trace);
+        let result = AdmissionGate::admit(&cand, &FailingRecipe, &ctx, Some(&mut trace));
         match result {
             Err(AdmissionError::RecipeFailure { recipe_id, detail }) => {
                 assert_eq!(recipe_id, "test.failing");
@@ -1179,7 +987,7 @@ mod tests {
             "msg-quar",
         );
 
-        match AdmissionGate::admit(&cand, &QuarantineRecipe, &ctx, &mut trace).unwrap() {
+        match AdmissionGate::admit(&cand, &QuarantineRecipe, &ctx, Some(&mut trace)).unwrap() {
             AdmissionDecision::Quarantine {
                 engram, expiry_ms, ..
             } => {

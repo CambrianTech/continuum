@@ -5,6 +5,10 @@ use crate::{clog_error, clog_warn};
 use std::collections::HashMap;
 use std::process::Command;
 
+fn espeak_ng_bin() -> String {
+    std::env::var("ESPEAK_NG_BIN").unwrap_or_else(|_| "espeak-ng".to_string())
+}
+
 pub struct Phonemizer {
     phoneme_to_id: HashMap<String, i64>,
 }
@@ -39,7 +43,7 @@ impl Phonemizer {
 
     /// Call espeak-ng to phonemize text
     fn call_espeak(&self, text: &str) -> Result<String, String> {
-        let output = Command::new("/opt/homebrew/bin/espeak-ng")
+        let output = Command::new(espeak_ng_bin())
             .args(["-v", "en-us", "-q", "--ipa=3"])
             .arg(text)
             .output()

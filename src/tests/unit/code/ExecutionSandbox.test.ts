@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ExecutionSandbox, type SandboxConfig, type SandboxResult } from '../../../system/code/server/ExecutionSandbox';
+import { sandboxPathDirs } from '../../../system/server/process/ProcessPathPolicy';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 // Mock Logger
@@ -227,7 +228,7 @@ describe('ExecutionSandbox', () => {
 
       // PATH should only contain restricted locations
       const pathDirs = result.stdout.trim().split(':');
-      const allowedDirs = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+      const allowedDirs = sandboxPathDirs();
       for (const dir of pathDirs) {
         expect(allowedDirs).toContain(dir);
       }
