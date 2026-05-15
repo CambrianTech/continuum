@@ -113,6 +113,41 @@ and acknowledgements so humans and agents can coordinate, but actual credential
 material must move only through the secret/capability command path described in
 [GRID-ARCHITECTURE.md](GRID-ARCHITECTURE.md).
 
+## Realtime Event Contract
+
+The typed Rust boundary for live chat coordination is
+`continuum-core::airc::realtime`. Its exported `AircRealtimeEnvelope` is the
+unit AIRC can persist, replay, coalesce, or acknowledge. The envelope carries
+delivery semantics alongside a payload:
+
+- `durable`: transcript slices, JTAG messages, event bridge payloads, and
+  Grid frames that must be indexed and replayable.
+- `ephemeral_coalesced`: presence states such as typing, thinking, speaking,
+  listening, and active. These are latest-value updates with TTLs, not permanent
+  transcript records.
+- `control`: subscribe/unsubscribe/replay commands and WebRTC/LiveKit
+  control-plane state.
+- `receipt_only`: acknowledgements and replay cursors.
+
+This is not a new Continuum event model. `AircRealtimePayloadRef` points at the
+existing schemas that already own meaning:
+
+- `JTAGMessage` from `src/system/core/types/JTAGTypes.ts`
+- `EventBridgePayload` from `src/system/events/shared/EventSystemTypes.ts`
+- `GridFrame` from `continuum-core::modules::grid::frame`
+- `BridgeCommand` and `BridgeEvent` from `livekit-protocol`
+
+AIRC owns transport mechanics: envelope ids, room routing, delivery semantics,
+cursor resume, replay, receipts, fanout, backpressure, coalesced presence, and
+health telemetry. Continuum owns domain policy: which rooms exist, which
+persona/user may speak, how chat is projected into memory/search/UI, and how
+LiveKit commands map to calls and avatars.
+
+WebRTC remains a side channel for media. AIRC may route room ids, session
+pointers, control events, bridge events, and state transitions; it must not
+carry raw audio/video frames. Binary media stays in LiveKit/Grid transport, and
+AIRC carries only handles or typed control payloads.
+
 Forge-alloy proof contracts follow the same split. Per
 [FORGE-ALLOY-PROOF-CONTRACTS.md](FORGE-ALLOY-PROOF-CONTRACTS.md):
 
