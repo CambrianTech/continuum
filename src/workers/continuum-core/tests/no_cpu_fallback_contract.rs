@@ -1,24 +1,32 @@
-//! Regression test for the no-CPU-fallback alpha contract (#1262 → #1275).
+//! Regression test for the no-CPU-fallback alpha contract (#1262 → #1275 → #1280).
 //!
 //! Continuum's documented contract per `project_continuum_alpha_product_bar_sensory_personas.md`
 //! and `docs/architecture/SENSORY-PERSONA-ALPHA-CONTRACT.md` is **NO silent CPU fallback**:
 //! standard personas use `SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly` and the model
 //! resolver is supposed to refuse rather than fall through to CPU.
 //!
-//! The contract is enforced at runtime by `inference::model::select_best_device` (panics if
-//! no GPU device is available) and by `inference::ort_providers` (CPU-fallback comment block
-//! at line ~119). This test asserts those invariants by inspection of the source files —
-//! a future PR that removes the loud-fail panic, weakens the message, or adds a silent
-//! CPU branch will fail this test.
+//! Pre-#1280 this contract was enforced (in part) by an explicit `panic!` inside
+//! `inference::model::select_best_device`. That function lived in the dead Candle
+//! chain (CandleAdapter → ContinuumModel → select_best_device), unreachable from
+//! `AIProviderModule::register_adapters`. #1280 deleted the chain and moved the
+//! contract assertion to its actually-load-bearing site:
 //!
-//! This is a **forbidden-strings ratchet** following the established pattern from lane F
-//! PR-2 (#1129 — TS persona forbidden-strings) applied to the Rust inference layer.
+//!   `LlamaCppConfig::default()` sets `n_gpu_layers: -1` (= "all layers on GPU").
+//!   When no GPU is available, llama.cpp's own model loader hard-fails — this is
+//!   the runtime mechanism that prevents CPU fallback on the production hot path.
+//!
+//! This test asserts the `n_gpu_layers: -1` invariant by source inspection plus the
+//! ort_providers + LlamaCppAdapter assertions that survived #1280 unchanged.
+//!
+//! Pattern: forbidden-strings ratchet (same shape as lane F PR-2 #1129 — TS persona
+//! forbidden-strings ratchet) applied to the Rust inference layer.
 //!
 //! Audit context:
 //!   https://github.com/CambrianTech/continuum/issues/1262#issuecomment-4461757997
+//!   https://github.com/CambrianTech/continuum/issues/1280#issuecomment-4462181316
 
-const SELECT_BEST_DEVICE_SOURCE: &str =
-    include_str!("../src/inference/model.rs");
+const LLAMACPP_BACKEND_SOURCE: &str =
+    include_str!("../src/inference/backends/llamacpp.rs");
 
 const ORT_PROVIDERS_SOURCE: &str =
     include_str!("../src/inference/ort_providers.rs");
@@ -27,30 +35,24 @@ const LLAMACPP_ADAPTER_SOURCE: &str =
     include_str!("../src/inference/llamacpp_adapter.rs");
 
 #[test]
-fn select_best_device_panics_loudly_on_no_gpu() {
-    // The function MUST contain an explicit panic with a message that tells
-    // the user why we won't fall through to CPU. If a future PR removes the
-    // panic, weakens the message, or replaces it with a silent fallback
-    // (e.g. `Device::Cpu` return), this test fails and the no-CPU-fallback
-    // alpha contract is preserved.
+fn llamacpp_default_config_requires_full_gpu_offload() {
+    // The production load path is `LlamaCppConfig::default()` →
+    // `LlamaCppBackend::load(config)` → llama.cpp `Model::load_from_file`.
+    // `n_gpu_layers: -1` means "put ALL layers on the GPU" — when no GPU
+    // is available, llama.cpp's loader returns an error rather than
+    // silently running on CPU.
+    //
+    // If a future PR changes the default to a positive integer (partial
+    // offload) or to 0 (CPU-only), the no-CPU-fallback alpha contract is
+    // broken on the production hot path. This assertion stops that from
+    // shipping.
 
     assert!(
-        SELECT_BEST_DEVICE_SOURCE.contains("panic!(\"No GPU device available for inference. CPU fallback is disabled.\")"),
-        "select_best_device must loud-fail with the documented message. \
-         If you changed it, update both this test and the alpha contract docs \
-         (docs/architecture/SENSORY-PERSONA-ALPHA-CONTRACT.md). \
-         A silent fallthrough to Device::Cpu was the bug #1262 was filed for."
-    );
-
-    // Belt-and-suspenders: verify the function explicitly returns Device early
-    // for both Cuda and Metal cases (the only legitimate non-panic exits).
-    assert!(
-        SELECT_BEST_DEVICE_SOURCE.contains("Device::new_cuda(0)"),
-        "select_best_device must try CUDA before panicking"
-    );
-    assert!(
-        SELECT_BEST_DEVICE_SOURCE.contains("Device::new_metal(0)"),
-        "select_best_device must try Metal before panicking"
+        LLAMACPP_BACKEND_SOURCE.contains("n_gpu_layers: -1"),
+        "LlamaCppConfig::default() must set n_gpu_layers: -1 (all layers on GPU) so llama.cpp \
+         loud-fails on no-GPU hosts rather than silently running on CPU. If you changed it, \
+         update both this test and docs/architecture/SENSORY-PERSONA-ALPHA-CONTRACT.md. \
+         A partial-offload or CPU-only default was the bug #1262 was filed for."
     );
 }
 
