@@ -43,6 +43,7 @@ export default tseslint.config(
       'node_modules/**',
       'shared/config.ts',
       'shared/generated/**',
+      'src/**',
       'workers/target/**',
       'workers/vendor/**',
       '**/*.d.ts',
