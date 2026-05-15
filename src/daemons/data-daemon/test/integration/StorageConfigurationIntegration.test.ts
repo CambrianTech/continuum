@@ -45,12 +45,13 @@ class StorageConfigurationValidator {
     
     try {
       // Test that defaults are properly defined next to types (Rust-like convention)
-      assert(DEFAULT_STORAGE_CONFIG.strategy === 'file', 'Default storage strategy is file');
-      assert(DEFAULT_STORAGE_CONFIG.backend === 'file', 'Default storage backend is file');
-      assert(DEFAULT_STORAGE_CONFIG.paths.data === '.continuum/jtag/data', 'Default data path is correct');
-      assert(DEFAULT_STORAGE_CONFIG.paths.backups === '.continuum/jtag/backups', 'Default backup path is correct');
+      assert(DEFAULT_STORAGE_CONFIG.strategy === 'sql', 'Default storage strategy is sql');
+      assert(DEFAULT_STORAGE_CONFIG.backend === 'sqlite', 'Default storage backend is sqlite');
+      assert(DEFAULT_STORAGE_CONFIG.connectionString === 'main', 'Default storage uses opaque main handle');
+      assert(DEFAULT_STORAGE_CONFIG.paths.data === '.continuum/database/main.db', 'Default data path is correct');
+      assert(DEFAULT_STORAGE_CONFIG.paths.backups === '.continuum/data/backups', 'Default backup path is correct');
       assert(DEFAULT_STORAGE_CONFIG.features?.enableCaching === true, 'Default enables caching');
-      assert(DEFAULT_STORAGE_CONFIG.features?.enableTransactions === false, 'Default disables transactions');
+      assert(DEFAULT_STORAGE_CONFIG.features?.enableTransactions === true, 'Default enables transactions');
       
       console.log('   ✅ All storage configuration defaults are correct');
       
@@ -85,7 +86,7 @@ class StorageConfigurationValidator {
       const testData = {
         message: 'Real storage config test',
         timestamp: new Date().toISOString(),
-        strategy: 'file',
+        strategy: 'sql',
         configuredProperly: true
       };
       
@@ -96,7 +97,7 @@ class StorageConfigurationValidator {
       });
       
       assert(createResult.success === true, 'Real storage create succeeded');
-      assert(createResult.id !== undefined, 'Real storage create returned valid ID');
+      assert(createResult.data?.id !== undefined, 'Real storage create returned valid ID');
       
       console.log('⚡ Testing real storage configuration via data/list command...');
       
@@ -148,11 +149,12 @@ class StorageConfigurationValidator {
       
       if (storageConfig) {
         // Verify our configuration defaults are loaded
-        assert(storageConfig.strategy === 'file', 'System uses file storage strategy');
-        assert(storageConfig.backend === 'file', 'System uses file storage backend');
-        assert(storageConfig.paths.data === '.continuum/jtag/data', 'System uses correct data path');
+        assert(storageConfig.strategy === 'sql', 'System uses sql storage strategy');
+        assert(storageConfig.backend === 'sqlite', 'System uses sqlite storage backend');
+        assert(storageConfig.connectionString === 'main', 'System uses opaque main handle');
+        assert(storageConfig.paths.data === '.continuum/database/main.db', 'System uses correct data path');
         assert(storageConfig.features?.enableCaching === true, 'System has caching enabled');
-        assert(storageConfig.features?.enableTransactions === false, 'System has transactions disabled');
+        assert(storageConfig.features?.enableTransactions === true, 'System has transactions enabled');
       }
       
       console.log('   ✅ Storage configuration properly integrated into system context');
@@ -220,6 +222,11 @@ class StorageConfigurationValidator {
     } catch (error) {
       console.error('\n❌ Storage configuration tests failed:', (error as Error).message);
       process.exit(1);
+    } finally {
+      if (this.client) {
+        await this.client.disconnect(false);
+        this.client = null;
+      }
     }
   }
 }
@@ -233,7 +240,12 @@ export async function runAllStorageConfigurationTests(): Promise<void> {
 // Run if called directly
 if (require.main === module) {
   const validator = new StorageConfigurationValidator();
-  validator.runAllTests();
+  validator.runAllTests()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      console.error('\n❌ Storage configuration tests failed:', (error as Error).message);
+      process.exit(1);
+    });
 }
 
 /**
