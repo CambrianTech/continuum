@@ -33,6 +33,7 @@ pub mod model_resolver;
 pub mod response_orchestrator;
 pub mod response_validator;
 pub mod shared_analysis;
+pub mod should_respond;
 pub mod throughput_lease;
 pub mod tool_executor;
 pub mod turn_batch;
@@ -45,6 +46,7 @@ pub use response_orchestrator::{
 };
 pub use response_validator::{ValidationOutcome, clean_and_validate, is_hard_failure};
 pub use shared_analysis::{AnalysisInput, RecentMessage, analyze};
+pub use should_respond::*;
 pub use throughput_lease::*;
 pub use tool_executor::{
     MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite,

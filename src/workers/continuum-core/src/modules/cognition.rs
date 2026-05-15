@@ -16,6 +16,7 @@
 //! - `inbox/drain-frame`: Drain a bounded same-room persona work frame
 //! - `cognition/admit-inbox-message`: Run admission gate on an InboxMessage (#1121 PR-4)
 //! - `cognition/recall-engrams`: Query the persona's admitted engram store (#1121 PR-5)
+//! - `cognition/should-respond`: Rust-owned AI gating decision
 //! - `cognition/full-evaluate`: Unified 6-gate evaluation (replaces 5 TS gates)
 //! - `cognition/track-response`: Track response for rate limiting
 //! - `cognition/set-sleep-mode`: Set voluntary sleep mode
@@ -409,6 +410,23 @@ impl ServiceModule for CognitionModule {
                     "engrams": engrams,
                     "count": engrams.len(),
                 })))
+            }
+
+            // ================================================================
+            // AI Gating (continuum#1284)
+            // ================================================================
+            "cognition/should-respond" => {
+                let _timer = TimingGuard::new("module", "cognition_should_respond");
+                let request = serde_json::from_value::<crate::cognition::ShouldRespondRequest>(
+                    params.clone(),
+                )
+                .map_err(|e| format!("Invalid should-respond request: {e}"))?;
+                let decision = crate::cognition::evaluate_gating(request)
+                    .await
+                    .map_err(|e| format!("should-respond error: {e}"))?;
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&decision).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
             }
 
             // ================================================================

@@ -47,6 +47,7 @@ export * from './logger';
 export * from './mcp';
 export * from './model_registry';
 export * from './orm';
+export * from './paging';
 export * from './persona';
 export * from './plasticity';
 export * from './rag';
