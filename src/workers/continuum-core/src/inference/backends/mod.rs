@@ -19,7 +19,6 @@ pub mod llama_safetensors;
 pub mod llamacpp;
 pub mod llamacpp_scheduler;
 pub mod qwen2_safetensors;
-pub mod qwen35_gguf;
 
 // MLX adapter: macOS + `mlx` feature only. Gated here so non-Mac / feature-off
 // builds don't see the module at all. Phase A scaffold — see continuum#897
@@ -717,27 +716,24 @@ pub fn load_gguf_backend(
             Ok(Box::new(backend))
         }
         // Qwen3.5 — hybrid DeltaNet + Attention architecture.
-        // NOT compatible with Llama backend (has SSM layers, fused QKV, partial RoPE).
-        "qwen3" | "qwen35" => {
-            let backend = qwen35_gguf::Qwen35GgufBackend::from_gguf(
-                content,
-                &mut reader,
-                tokenizer,
-                model_id,
-                model_path,
-                device,
-            )?;
-            log.info(&format!(
-                "Loaded Qwen3.5 via hybrid DeltaNet+Attention backend: context_length={}",
-                backend.context_length()
-            ));
-            Ok(Box::new(backend))
-        }
+        // The Candle implementation (Qwen35GgufBackend + vendored
+        // quantized_qwen35) was deleted in #1273 — it was vestigial
+        // post-llama.cpp migration; production routes Qwen3.5 through
+        // LlamaCppAdapter, not through this Candle-side load path.
+        "qwen3" | "qwen35" => Err(
+            "Qwen3.5 GGUF routing through the Candle backend was removed in #1273. \
+             Use LlamaCppAdapter (the production hot path) — it owns Qwen3.5 inference \
+             via the bundled llama.cpp library. The Candle path was unreachable from \
+             AIProviderModule::register_adapters and only kept the vendored DeltaNet \
+             + Attention recurrence loop alive as dead code."
+                .to_string(),
+        ),
         // Future architectures:
         // "phi3" => { phi3_gguf::... }
         other => Err(format!(
             "Unsupported GGUF architecture: '{other}'. \
-             Supported: llama. \
+             Supported: llama, qwen2 (via Llama backend). \
+             Qwen3.5 routes through LlamaCppAdapter, not this loader. \
              Add a new backend in inference/backends/ to support this architecture."
         )),
     }
