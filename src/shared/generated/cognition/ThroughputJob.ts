@@ -2,7 +2,7 @@
 import type { ResourceClass } from "./ResourceClass";
 import type { TargetSilicon } from "./TargetSilicon";
 
-export type ThroughputJob = { jobId: string, artifactKey: string, resourceClass: ResourceClass, targetSilicon: TargetSilicon, priority: number, costUnits: number, dependencyKeys: Array<string>, createdAtMs: number,
+export type ThroughputJob = { jobId: string, artifactKey: string, resourceClass: ResourceClass, targetSilicon: TargetSilicon, priority: number, costUnits: number, dependencyKeys: Array<string>, createdAtMs: number, 
 /**
  * Zero means never stale.
  */
