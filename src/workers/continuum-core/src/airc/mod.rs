@@ -7,6 +7,7 @@
 pub mod client;
 pub mod process;
 pub mod realtime;
+pub mod realtime_store;
 pub mod types;
 
 pub use client::{AircQueueClient, CliAircQueueClient};
@@ -15,6 +16,10 @@ pub use realtime::{
     AircMediaControlEvent, AircPresenceEvent, AircPresenceState, AircRealtimeDelivery,
     AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema,
     AircReceipt, AircReplayCursor, AircSubscriptionAction, AircSubscriptionEvent,
+};
+pub use realtime_store::{
+    AircRealtimePublishParams, AircRealtimePublishResult, AircRealtimeReplayParams,
+    AircRealtimeReplayResult, AircRealtimeStore, InMemoryAircRealtimeStore,
 };
 pub use types::{
     AircQueueCardEnvelope, AircQueueIssue, AircQueueListEnvelope, AircQueueListRequest,
