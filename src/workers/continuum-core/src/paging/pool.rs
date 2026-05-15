@@ -96,12 +96,57 @@ pub struct ResourcePoolEntry {
 /// implementation. VRAM, Docker, HF cache, KV cache, and future NVMe
 /// pools can all report pressure and take eviction commands through the
 /// same interface instead of reimplementing capacity math in each tier.
+///
+/// `PressureBroker` consumes `Arc<dyn ResourcePool>` directly for
+/// cross-tier orchestration — the formerly-parallel `PressureSource`
+/// trait was collapsed into this one (#1246) since both expressed
+/// "tier with capacity + eviction + snapshot." `pressure()` and
+/// `stats_snapshot()` carry default impls so existing tier implementors
+/// (e.g. `DockerTierPool`) get broker integration for free; tiers that
+/// already track richer telemetry (like `PagedResourcePool`) override
+/// `stats_snapshot()` to expose their internal hit/miss/eviction counts.
 pub trait ResourcePool: Send + Sync {
     fn tier_name(&self) -> &str;
     fn capacity_bytes(&self) -> u64;
     fn usage_bytes(&self) -> u64;
     fn evict_at_least(&self, want_bytes: u64) -> u64;
     fn snapshot(&self) -> Vec<ResourcePoolEntry>;
+
+    /// Current pressure ratio in `0.0..1.0+` (over-budget ⇒ >1.0).
+    /// Default = `usage_bytes / capacity_bytes`. Returns 0 when capacity
+    /// is 0 (tier "not under management" — broker neither alerts nor
+    /// acts on it). Override only if your tier has a non-byte-driven
+    /// pressure metric (none currently do).
+    fn pressure(&self) -> f64 {
+        let cap = self.capacity_bytes();
+        if cap == 0 {
+            return 0.0;
+        }
+        self.usage_bytes() as f64 / cap as f64
+    }
+
+    /// `PoolStats` for monitoring / broker dashboards. Default derives
+    /// name/capacity/usage/pressure from the trait core. Tier impls that
+    /// track richer telemetry (`PagedResourcePool` knows hit/miss/
+    /// eviction counts internally) override to expose those counts.
+    fn stats_snapshot(&self) -> PoolStats {
+        let cap = self.capacity_bytes();
+        let used = self.usage_bytes();
+        let snap = self.snapshot();
+        let pressure = if cap == 0 { 0.0 } else { used as f64 / cap as f64 };
+        PoolStats {
+            name: self.tier_name().to_string(),
+            entry_count: snap.len(),
+            pinned_count: snap.iter().map(|e| e.pinned_count as usize).sum(),
+            total_bytes: used,
+            max_bytes: cap,
+            pressure,
+            hit_count: 0,
+            miss_count: 0,
+            eviction_count: 0,
+            inflight_count: 0,
+        }
+    }
 }
 
 /// Stats snapshot — for monitoring + PressureBroker decisions.
@@ -697,6 +742,14 @@ where
 
     fn snapshot(&self) -> Vec<ResourcePoolEntry> {
         self.resource_snapshot()
+    }
+
+    /// Override the trait default — `PagedResourcePool` tracks
+    /// hit/miss/eviction/inflight counts internally via `stats_blocking()`,
+    /// so we expose those directly instead of taking the trait's
+    /// zero-defaults. Same `PoolStats` shape either way.
+    fn stats_snapshot(&self) -> PoolStats {
+        self.stats_blocking()
     }
 }
 
