@@ -10,31 +10,17 @@
 //! Block → caller refuses the turn rather than silently letting llama.cpp
 //! split layers to CPU.
 //!
-//! Wiring (not in this PR — left for callers to integrate at the
-//! adapter-construction or per-turn point that fits their concurrency
-//! model best):
-//!
-//! ```ignore
-//! // In LlamaCppAdapter::try_new_from, after resolving model_path:
-//! use crate::inference_capability::enforcement::{enforce_residency, ResidencyBlock};
-//!
-//! let evidence = enforce_residency(&model_path).map_err(|block: ResidencyBlock| {
-//!     // Extend NoLocalModelLoadable or wrap with a new enum variant
-//!     // surfacing the typed BlockReason list to the caller.
-//!     NoLocalModelLoadable::residency_blocked(block)
-//! })?;
-//! // proceed with adapter construction, store evidence for telemetry
-//! ```
+//! Production wiring lives in `LlamaCppAdapter::ensure_loaded`: before
+//! llama.cpp loads the selected GGUF, the adapter reads model metadata,
+//! probes hardware, runs this gate, and refuses with typed reasons if
+//! full GPU residency cannot be proven.
 //!
 //! ## Why a helper, not wired directly
 //!
-//! - The injection point is a hot path (run_render → adapter → generate).
-//!   The helper is pure-composition + can be tested independently of any
-//!   adapter or dispatcher. Wiring into a specific call-site involves
-//!   choices about caching, per-turn-vs-per-load, and error-type
-//!   extensions that deserve their own PR + review.
-//! - PR-4 (this) ships the typed composition. PR-5 ships the wiring.
-//!   This isolates the riskier change.
+//! - The adapter load path is the narrow enforcement point: one model
+//!   load proves residency once before any local generation uses it.
+//! - The helper stays callable for future scheduler-level rechecks when
+//!   hardware pressure changes between turns.
 
 use crate::inference_capability::gguf_loader::read_qwen_model_metadata;
 use crate::inference_capability::hw_probe::probe_hardware_profile;
@@ -312,6 +298,10 @@ mod tests {
             "model_name should encode GGUF failure: {}",
             block.attempted_model.model_name
         );
+        assert!(block
+            .reasons
+            .iter()
+            .any(|r| matches!(r, BlockReason::ModelMetadataUnreadable { .. })));
         assert!(!block.reasons.is_empty());
     }
 
@@ -334,5 +324,9 @@ mod tests {
             .attempted_model
             .model_name
             .contains("GGUF_READ_FAILED"));
+        assert!(block
+            .reasons
+            .iter()
+            .any(|r| matches!(r, BlockReason::ModelMetadataUnreadable { .. })));
     }
 }

@@ -836,6 +836,10 @@ mod tests {
     #[test]
     fn block_reason_serde_round_trip() {
         let reasons = vec![
+            BlockReason::ModelMetadataUnreadable {
+                model_path: "/models/qwen.gguf".into(),
+                error: "missing general.architecture".into(),
+            },
             BlockReason::NoGpuBackendOnNode {
                 platform: "test".into(),
             },
