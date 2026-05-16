@@ -37,6 +37,7 @@ pub mod response;
 pub mod self_task_generator;
 pub mod text_analysis;
 pub mod turn_context;
+pub mod turn_frame;
 pub mod types;
 pub mod unified;
 
@@ -79,5 +80,6 @@ pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionError, ModelSelectionRequest, ModelSelectionResult,
 };
 pub use turn_context::TurnContext;
+pub use turn_frame::{ConsolidatedInboxChunk, PersonaTurnFrame, RagAssemblySeed};
 pub use types::*;
 pub use unified::PersonaCognition;
