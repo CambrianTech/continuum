@@ -24,6 +24,7 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+pub mod artifact_handle;
 pub mod command_executor;
 pub mod control;
 pub mod message_bus;
@@ -36,6 +37,7 @@ pub mod runtime;
 pub mod service_module;
 pub mod shared_compute;
 
+pub use artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
 pub use command_executor::{
     execute as execute_command, execute_json as execute_command_json, executor, init_executor,
     CommandExecutor,
