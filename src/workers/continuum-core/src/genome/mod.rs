@@ -59,9 +59,15 @@
 //!    `PageFault` / `AccessDenied` shapes. PR-1's types are the
 //!    coordination substrate.
 
+pub mod blob;
+pub mod manager;
+pub mod store;
 pub mod tier;
 pub mod working_set;
 
+pub use blob::{ArtifactBlob, Provenance};
+pub use manager::WorkingSetManager;
+pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
 pub use working_set::{
     AccessDenied, ArtifactId, PageFault, PageHandle, PageKind, PageOffset, PageRef, PersonaId,

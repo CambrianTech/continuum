@@ -12,6 +12,7 @@ export type { PageKind } from './PageKind';
 export type { PageOffset } from './PageOffset';
 export type { PageRef } from './PageRef';
 export type { PersonaId } from './PersonaId';
+export type { Provenance } from './Provenance';
 export type { ResidentPage } from './ResidentPage';
 export type { TierCapacity } from './TierCapacity';
 export type { TierError } from './TierError';
