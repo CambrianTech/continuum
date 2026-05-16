@@ -60,12 +60,14 @@
 //!    coordination substrate.
 
 pub mod blob;
+pub mod local_manager;
 pub mod manager;
 pub mod store;
 pub mod tier;
 pub mod working_set;
 
 pub use blob::{ArtifactBlob, Provenance};
+pub use local_manager::LocalWorkingSetManager;
 pub use manager::WorkingSetManager;
 pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
