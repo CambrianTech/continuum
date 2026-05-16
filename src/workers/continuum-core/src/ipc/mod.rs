@@ -892,6 +892,20 @@ pub fn start_server(
     system_resource_module.set_pressure_monitor(pressure_monitor);
     runtime.register(system_resource_module);
 
+    // Phase 2 of #1239 (continuum#1299 PR-1): PressureBrokerModule.
+    // Brings the cross-pool PressureBroker online — instantiates the
+    // singleton, pre-registers DockerTierPool as a ResourcePool, and
+    // hands the broker's `relieve()` tick to the runtime's standard
+    // start_tick_loops() machinery (cadence = BrokerConfig.tick_interval,
+    // default 5s, matching DMR_TICK_INTERVAL). Other pools (VRAM, KV
+    // cache) attach via `module.broker().register(...)` from their own
+    // construction sites. Observer-only in PR-1: no commands routed
+    // here yet. PR-2 of #1299 adds `system/pressure-broker-state` IPC;
+    // PR-3 wires the chat-substrate alert sink.
+    runtime.register(Arc::new(
+        crate::modules::pressure_broker_module::PressureBrokerModule::new(),
+    ));
+
     // Phase 1: InferenceModule — exposes inference/capacity so TS side
     // (InferenceCoordinator) reads a single Rust source of truth instead
     // of duplicating the RAM formula. See issue #887.

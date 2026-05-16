@@ -34,6 +34,7 @@ pub mod memory;
 pub mod models;
 pub mod persona_allocator;
 pub mod plasticity;
+pub mod pressure_broker_module;
 pub mod python_adapter;
 pub mod rag;
 pub mod runtime_control;
