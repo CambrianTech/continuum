@@ -42,7 +42,10 @@ use crate::persona::text_analysis;
 use crate::persona::text_analysis::LoopDetector;
 use crate::persona::GenomeAdapterInfo;
 use crate::persona::{AdapterInfo, ModelSelectionRequest};
-use crate::persona::{InboxMessage, Modality, PersonaCognition, SenderType};
+use crate::persona::{
+    InboxMessage, Modality, PersonaCognition, PersonaInboxFrame, PersonaTurnFrame,
+    PersonaTurnFrameReplayRecord, SenderType,
+};
 use crate::persona::{RecentResponse, SleepMode};
 use crate::rag::RagEngine;
 use crate::runtime;
@@ -294,6 +297,7 @@ impl ServiceModule for CognitionModule {
                     .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
                 let frame = persona.inbox.drain_frame(window_ms, max_items);
+                record_drained_turn_frame(&frame);
 
                 Ok(CommandResult::Json(
                     serde_json::to_value(&frame).map_err(|e| format!("Serialize error: {e}"))?,
@@ -1471,6 +1475,99 @@ impl ServiceModule for CognitionModule {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+fn record_drained_turn_frame(frame: &Option<PersonaInboxFrame>) {
+    if let Some(record) = turn_frame_replay_record(frame) {
+        tokio::task::spawn_blocking(move || {
+            crate::persona::recorder::record_turn_frame_replay(&record);
+        });
+    }
+}
+
+fn turn_frame_replay_record(
+    frame: &Option<PersonaInboxFrame>,
+) -> Option<PersonaTurnFrameReplayRecord> {
+    frame
+        .as_ref()
+        .and_then(|frame| PersonaTurnFrame::from_inbox_frame(frame.clone()).replay_record())
+}
+
+#[cfg(test)]
+mod turn_frame_recording_tests {
+    use super::*;
+    use crate::persona::PersonaInboxFrameMetrics;
+
+    fn frame_with_messages(messages: Vec<InboxMessage>) -> PersonaInboxFrame {
+        let persona_id = Uuid::new_v4();
+        let room_id = messages
+            .first()
+            .map(|message| message.room_id)
+            .unwrap_or_else(Uuid::new_v4);
+        let oldest_timestamp = messages
+            .iter()
+            .map(|message| message.timestamp)
+            .min()
+            .unwrap_or_default();
+        let newest_timestamp = messages
+            .iter()
+            .map(|message| message.timestamp)
+            .max()
+            .unwrap_or_default();
+        let frame_span_ms = newest_timestamp.saturating_sub(oldest_timestamp);
+        PersonaInboxFrame {
+            persona_id,
+            room_id,
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: messages.len(),
+                queue_depth_after: 0,
+                messages_drained: messages.len(),
+                oldest_timestamp,
+                newest_timestamp,
+                frame_span_ms,
+                drain_duration_us: 3,
+            },
+            messages,
+        }
+    }
+
+    fn message(content: &str, timestamp: u64) -> InboxMessage {
+        let room_id = Uuid::new_v4();
+        InboxMessage {
+            id: Uuid::new_v4(),
+            room_id,
+            sender_id: Uuid::new_v4(),
+            sender_name: "Joel".to_string(),
+            sender_type: SenderType::Human,
+            content: content.to_string(),
+            timestamp,
+            priority: 0.9,
+            source_modality: Some(Modality::Chat),
+            voice_session_id: None,
+        }
+    }
+
+    #[test]
+    fn drained_frame_builds_replay_record_for_background_write() {
+        let frame = frame_with_messages(vec![message("record the frame", 20_000)]);
+        let record =
+            turn_frame_replay_record(&Some(frame)).expect("non-empty frame creates record");
+
+        assert_eq!(
+            record.consolidated_inbox.transcript,
+            "Joel: record the frame"
+        );
+        assert_eq!(record.rag_seed.query_text, "Joel: record the frame");
+        assert_eq!(record.inbox_frame.metrics.messages_drained, 1);
+    }
+
+    #[test]
+    fn missing_or_empty_frame_does_not_build_replay_record() {
+        let empty = frame_with_messages(vec![]);
+
+        assert!(turn_frame_replay_record(&None).is_none());
+        assert!(turn_frame_replay_record(&Some(empty)).is_none());
     }
 }
 
