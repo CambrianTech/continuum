@@ -3,6 +3,13 @@
 > The generic RAG pipeline doesn't just enable cognition — it enables universal learning.
 > Training, memory, and optimization all emerge from the same domain-agnostic composition.
 
+> **Status @ 2026-05-16.** The *insight* this document encodes — that the (context, response) pair from queue-driven cognition is universal training signal, and that training + memory + action all consume the same generic output — is still load-bearing and unchanged. The *implementation* (TS-shaped `TrainingDataAccumulator`, Hippocampus class, genome-as-skill-marketplace) has been superseded by the canonical Rust substrate:
+>
+> - **[GENOME-FOUNDRY-SENTINEL.md](architecture/GENOME-FOUNDRY-SENTINEL.md)** — Sentinel-AI is the profile-guided optimizer that consumes cognition traces and produces refined LoRA layers + MoE experts + engrams. The "three outputs" of this document (training pair / memory / action) are reified there as: traces → sentinel refinement passes; engrams → longterm.db via consolidation; action → back to the queue substrate. The foundry handles the SOTA-import side; sentinel handles the lived-experience side; both feed the same genome pool with provenance.
+> - **[CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)** — the trace bus that carries the (context, response) tuple as a typed event, and the substrate's "evidence travels verbatim" rule that makes the learning signal auditable.
+>
+> The genome-as-skill-marketplace concept in this doc is reframed in GENOME-FOUNDRY-SENTINEL as **sharing protocol with provenance + eventual consistency**. Trust is learned, not declared. If the marketplace prose ever conflicts with the sharing-protocol prose, defer to GENOME-FOUNDRY-SENTINEL.
+
 ## The Insight
 
 Queue-driven cognition (see [QUEUE-DRIVEN-COGNITION.md](QUEUE-DRIVEN-COGNITION.md)) makes RAG composition generic: every queue item declares its own context requirements, the persona composes them without domain-specific logic, and the response flows back.

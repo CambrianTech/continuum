@@ -5,6 +5,13 @@
 > equal access to every sense. Like accessibility aids for the visually impaired:
 > the infrastructure provides what the model lacks.
 
+> **Status @ 2026-05-16.** The *principle* this document encodes — every model gets every modality through universal sensory adapters, no model is structurally blind/deaf/mute — is still load-bearing and unchanged. The *implementation* (TS-shaped sensory adapter classes, modality routing in PersonaUser) has been superseded by the canonical Rust substrate:
+>
+> - **[CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)** — sensory adapters are `RuntimeModule`s (after Lane D, `RuntimeModule: ServiceModule`). They subscribe to `ArtifactSelector`s for the modalities they translate to/from, declare a `CadencePolicy`, and emit translated artifacts onto the `RuntimeFrame`. The substrate's typed subscriptions replace the TS pattern of registering adapters by string.
+> - **[GENOME-FOUNDRY-SENTINEL.md](architecture/GENOME-FOUNDRY-SENTINEL.md)** — vision encoders, STT models, TTS voices, embedders are all `ImportedArtifact`s the foundry adapts from SOTA. The sensory adapter does not own its model weights; it composes against the genome pool via `DemandAlignedRecall`. A blind 0.8B text model recalls a vision encoder for the modality it needs, not a different *adapter implementation*.
+>
+> The "modality routing in PersonaUser" pattern is reframed as: the persona's current `CompositionPlan` includes whatever sensory `ImportedArtifact`s its `CapabilityQuery` ranked high for the current `TaskKind`. If a section here implies the persona owns a static set of sensory adapters, defer to the canonical docs — composition is dynamic, demand-aligned, and substrate-owned.
+
 ## The Principle
 
 No model is truly blind, deaf, or mute in Continuum. The system provides universal
