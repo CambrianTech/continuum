@@ -98,6 +98,7 @@ impl Provenance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     fn sample_id() -> ArtifactId {
         ArtifactId::new(Uuid::nil())
