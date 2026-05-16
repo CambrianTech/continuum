@@ -46,15 +46,23 @@ pub struct LlamaCppConfig {
     /// Batch size for prefill / per-decode token cap. Larger = faster
     /// prefill but more Metal compute buffer.
     pub n_batch: u32,
+    /// Physical backend ubatch. On llama.cpp this controls the largest graph
+    /// reserved for prompt processing. Keeping it configurable lets Rust avoid
+    /// known-bad fused Metal graph shapes without changing model/provider.
+    pub n_ubatch: u32,
     /// GPU layers to offload (-1 = all)
     pub n_gpu_layers: i32,
     /// Maximum concurrent sequences in the shared context. Each persona
     /// inflight occupies one seq_id (0..n_seq_max). Scaled by RAM in the
     /// caller (CandleAdapter) and matched by the TS InferenceCoordinator.
     pub n_seq_max: u32,
-    /// Flash attention. `Auto` lets llama.cpp pick per-backend (Metal: ON
-    /// for supported head dims). Default Auto is the right call.
+    /// Flash attention. `Auto` lets llama.cpp pick per-backend.
     pub flash_attn: FlashAttn,
+    /// Fused Gated Delta Net graph toggles. Defaults match upstream; callers
+    /// can disable for model/backend combinations whose fused Metal kernels
+    /// throw across FFI while preserving GPU residency.
+    pub fused_gdn_ar: bool,
+    pub fused_gdn_ch: bool,
     /// KV cache K element type. F16 = lossless. Q8_0 halves K memory.
     pub type_k: KvCacheType,
     /// KV cache V element type. V is more sensitive than K — keep F16
@@ -79,10 +87,13 @@ impl Default for LlamaCppConfig {
             // window (rare on M5+/RTX class).
             context_length: None,
             n_batch: 512,
+            n_ubatch: 512,
             n_gpu_layers: -1,
             // 3 = M5 Pro tier (48GB+). CandleAdapter overrides per-RAM.
             n_seq_max: 3,
             flash_attn: FlashAttn::Auto,
+            fused_gdn_ar: true,
+            fused_gdn_ch: true,
             // F16/F16 measured fastest for single-token decode on M5 Pro.
             // K=Q8_0 was slower (44 vs 47.5 tok/s) due to per-token dequant
             // overhead. Q8_0 only pays off when KV memory pressure is the
@@ -336,8 +347,11 @@ impl LlamaCppBackend {
             .new_context(llama::ContextParams {
                 n_ctx: per_seq,
                 n_batch: self.config.n_batch,
+                n_ubatch: self.config.n_ubatch,
                 n_seq_max: 1,
                 flash_attn: self.config.flash_attn,
+                fused_gdn_ar: self.config.fused_gdn_ar,
+                fused_gdn_ch: self.config.fused_gdn_ch,
                 type_k: self.config.type_k,
                 type_v: self.config.type_v,
             })
@@ -428,7 +442,6 @@ impl LlamaCppBackend {
         // honors -1 as that position.
         loop {
             let token = sampler.sample(&ctx, -1);
-            sampler.accept(token);
             if self.model.is_eog_token(token) {
                 break;
             }
@@ -535,8 +548,11 @@ impl LlamaCppBackend {
                 SchedulerConfig {
                     n_ctx: total_n_ctx,
                     n_batch: self.config.n_batch,
+                    n_ubatch: self.config.n_ubatch,
                     n_seq_max: self.config.n_seq_max,
                     flash_attn: self.config.flash_attn,
+                    fused_gdn_ar: self.config.fused_gdn_ar,
+                    fused_gdn_ch: self.config.fused_gdn_ch,
                     type_k: self.config.type_k,
                     type_v: self.config.type_v,
                 },

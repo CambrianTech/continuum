@@ -203,9 +203,7 @@ pub fn server_is_running() -> bool {
 pub fn dmr_model_gguf(model_name: &str) -> Option<std::path::PathBuf> {
     let env_override_var = format!(
         "TEST_MODEL_PATH_{}",
-        model_name
-            .to_uppercase()
-            .replace(['/', '.', '-', ':'], "_")
+        model_name.to_uppercase().replace(['/', '.', '-', ':'], "_")
     );
     if let Ok(p) = std::env::var(&env_override_var) {
         let pb = std::path::PathBuf::from(p);
@@ -283,6 +281,13 @@ fn lookup_dmr_bundle(model_name: &str) -> Option<std::path::PathBuf> {
 /// install hint.
 #[allow(dead_code)]
 pub fn qwen35_4b_code_gguf() -> Option<std::path::PathBuf> {
+    if let Ok(path) = std::env::var("QWEN35_4B_GGUF") {
+        let path = std::path::PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
     for name in [
         "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf",
         "hf.co/continuum-ai/qwen3.5-4b-code-forged-gguf",

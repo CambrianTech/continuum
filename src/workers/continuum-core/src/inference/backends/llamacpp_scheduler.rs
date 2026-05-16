@@ -92,11 +92,14 @@ pub struct GenerationRequest {
 pub struct SchedulerConfig {
     pub n_ctx: u32,
     pub n_batch: u32,
+    pub n_ubatch: u32,
     pub n_seq_max: u32,
     /// Flash attention. Default `Auto` lets llama.cpp pick per-backend; on
     /// Metal with supported head dims (qwen3.5-4b's 256 qualifies) it turns
     /// on. Helps prefill more than single-token decode but cheap to enable.
     pub flash_attn: FlashAttn,
+    pub fused_gdn_ar: bool,
+    pub fused_gdn_ch: bool,
     /// KV cache K element type. `F16` lossless / `Q8_0` halves K memory.
     pub type_k: KvCacheType,
     /// KV cache V element type. `F16` lossless / `Q8_0` halves V memory.
@@ -193,8 +196,11 @@ fn driver_loop(
     let mut ctx = match model.new_context(ContextParams {
         n_ctx: config.n_ctx,
         n_batch: config.n_batch,
+        n_ubatch: config.n_ubatch,
         n_seq_max: config.n_seq_max,
         flash_attn: config.flash_attn,
+        fused_gdn_ar: config.fused_gdn_ar,
+        fused_gdn_ch: config.fused_gdn_ch,
         type_k: config.type_k,
         type_v: config.type_v,
     }) {
@@ -205,8 +211,8 @@ fn driver_loop(
         }
     };
     log.info(&format!(
-        "Scheduler context ready (n_ctx={}, n_batch={}, n_seq_max={})",
-        config.n_ctx, config.n_batch, config.n_seq_max
+        "Scheduler context ready (n_ctx={}, n_batch={}, n_ubatch={}, n_seq_max={})",
+        config.n_ctx, config.n_batch, config.n_ubatch, config.n_seq_max
     ));
 
     let n_batch = config.n_batch as usize;
@@ -242,7 +248,6 @@ fn driver_loop(
     let mut post_sample_total = std::time::Duration::ZERO;
     let mut tokens_sampled_window: u64 = 0;
     const PERF_LOG_INTERVAL_TOKENS: u64 = 50;
-
     loop {
         // ── Phase 1: Accept new requests into free slots ──
         // If nothing is active, block on the first request (avoid spinning).
@@ -437,7 +442,6 @@ fn driver_loop(
                 let token = seq.sampler.sample(&ctx, logit_idx);
                 let sample_call_elapsed = sample_call_start.elapsed();
                 sample_call_iter_total += sample_call_elapsed;
-                seq.sampler.accept(token);
 
                 // If this role was PrefillFinal (first decode for the seq),
                 // llama.cpp has now committed the seq's KV cache. Ask the
