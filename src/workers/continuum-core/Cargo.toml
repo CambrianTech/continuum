@@ -141,6 +141,7 @@ bevy = { version = "0.18", default-features = false, features = [
 wgpu = "27"
 wgpu-hal = "27"
 
+arc-swap = "1.7"           # Wait-free policy publish for SubstrateGovernor (Lane H)
 crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
 image = "0.25"             # RGBA → PNG encoding for avatar snapshots
 
