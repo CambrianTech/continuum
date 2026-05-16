@@ -80,6 +80,9 @@ pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionError, ModelSelectionRequest, ModelSelectionResult,
 };
 pub use turn_context::TurnContext;
-pub use turn_frame::{ConsolidatedInboxChunk, PersonaTurnFrame, RagAssemblySeed};
+pub use turn_frame::{
+    ConsolidatedInboxChunk, PersonaTurnFrame, PersonaTurnFrameReplayRecord, RagAssemblySeed,
+    PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,
+};
 pub use types::*;
 pub use unified::PersonaCognition;
