@@ -38,11 +38,13 @@
 //! JTAG shim can choose to surface that as the same TS error envelope (preserving
 //! CommandBase contract) without losing diagnostic info.
 
+pub mod orchestrator;
 pub mod parser;
 pub mod prompt;
 pub mod types;
 pub mod validator;
 
+pub use orchestrator::{generate_recipe_with_ai, GenerateRecipeOrchestratorParams};
 pub use parser::{parse_recipe_from_ai_response, ParseError};
 pub use prompt::{build_recipe_system_prompt, build_recipe_user_prompt};
 pub use types::{
