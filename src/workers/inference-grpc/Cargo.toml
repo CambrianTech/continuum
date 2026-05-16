@@ -35,7 +35,7 @@ once_cell.workspace = true
 rand.workspace = true
 half.workspace = true
 dirs = "5.0"
-sys-info = "0.9"
+num_cpus = "1.16"
 
 # Logging
 log = "0.4"
