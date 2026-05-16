@@ -153,8 +153,32 @@ pub trait ServiceModule: Send + Sync + Any {
 
     /// Handle an event published on the message bus.
     /// Only called for events matching event_subscriptions globs.
-    /// Default: no-op (most modules only handle commands).
-    async fn handle_event(&self, _event_name: &str, _payload: Value) -> Result<(), String> {
+    ///
+    /// Default behavior (PIECE-2 PR-3): auto-route to
+    /// `on_artifact_available` when `event_name` matches one of this
+    /// module's `artifact_subscriptions`. This is what makes the
+    /// artifact dispatch path work without every module overriding
+    /// `handle_event` manually — the runtime subscribes the module's
+    /// artifact keys to the bus, the bus delivers via `handle_event`,
+    /// and the default impl forwards to `on_artifact_available`.
+    ///
+    /// Modules with `event_subscriptions` (glob patterns on the bus
+    /// that are NOT artifact keys) MUST override `handle_event` —
+    /// otherwise a bus event matching their glob will be silently
+    /// checked against `artifact_subscriptions` and dropped if it
+    /// doesn't match. Overriding restores explicit control; from an
+    /// override the module can still call
+    /// `self.on_artifact_available(key, payload).await` to opt into
+    /// the same auto-route behavior.
+    async fn handle_event(&self, event_name: &str, payload: Value) -> Result<(), String> {
+        let subs = self.artifact_subscriptions();
+        if subs.is_empty() {
+            return Ok(());
+        }
+        let key = ArtifactKey::from(event_name);
+        if subs.iter().any(|sel| sel.matches(&key)) {
+            return self.on_artifact_available(&key, payload).await;
+        }
         Ok(())
     }
 
