@@ -149,6 +149,9 @@ impl QwenModelMetadata {
     export_to = "../../../shared/generated/inference_capability/BlockReason.ts"
 )]
 pub enum BlockReason {
+    /// The selected model could not be inspected as GGUF metadata, so
+    /// the runtime cannot prove all layers will remain GPU resident.
+    ModelMetadataUnreadable { model_path: String, error: String },
     /// No GPU on this node — CPU-only would be a silent fallback, which
     /// is forbidden. Routing to a peer-grid node (PR-3 of
     /// GRID-INFERENCE-ROUTING) is the right escape hatch.
@@ -507,7 +510,10 @@ mod tests {
     /// inference through CUDA-or-nothing.
     #[test]
     fn select_backend_picks_metal_on_mac() {
-        assert_eq!(select_backend(&macbook_air_m2_8gb()), Some(BackendChoice::Metal));
+        assert_eq!(
+            select_backend(&macbook_air_m2_8gb()),
+            Some(BackendChoice::Metal)
+        );
         assert_eq!(select_backend(&m5_pro_48gb()), Some(BackendChoice::Metal));
     }
 
@@ -518,7 +524,10 @@ mod tests {
     #[test]
     fn select_backend_picks_cuda_over_vulkan_on_nvidia() {
         // Blackwell has BOTH has_cuda + has_vulkan
-        assert_eq!(select_backend(&blackwell_rtx_5090()), Some(BackendChoice::Cuda));
+        assert_eq!(
+            select_backend(&blackwell_rtx_5090()),
+            Some(BackendChoice::Cuda)
+        );
     }
 
     /// What this catches: Vulkan-only host (AMD without CUDA) gets
@@ -526,7 +535,10 @@ mod tests {
     /// silently CPU-only.
     #[test]
     fn select_backend_picks_vulkan_when_amd_only() {
-        assert_eq!(select_backend(&amd_with_vulkan_only()), Some(BackendChoice::Vulkan));
+        assert_eq!(
+            select_backend(&amd_with_vulkan_only()),
+            Some(BackendChoice::Vulkan)
+        );
     }
 
     /// What this catches: no GPU at all → None. The gate then
@@ -621,7 +633,9 @@ mod tests {
         assert!(!result.is_pass(), "30B on 5GB free must block");
         match result {
             ResidencyGateResult::Block { reasons } => {
-                assert!(reasons.iter().any(|r| matches!(r, BlockReason::PartialGpuSplit { .. })));
+                assert!(reasons
+                    .iter()
+                    .any(|r| matches!(r, BlockReason::PartialGpuSplit { .. })));
             }
             _ => panic!("expected Block"),
         }
@@ -641,7 +655,10 @@ mod tests {
                 let has_unsupported = reasons
                     .iter()
                     .any(|r| matches!(r, BlockReason::UnsupportedLayer { layer_kind, .. } if layer_kind == "moe_gate"));
-                assert!(has_unsupported, "expected UnsupportedLayer moe_gate; got {reasons:?}");
+                assert!(
+                    has_unsupported,
+                    "expected UnsupportedLayer moe_gate; got {reasons:?}"
+                );
             }
             _ => panic!("expected Block"),
         }
@@ -691,9 +708,16 @@ mod tests {
         let result = check_residency_gate(&qwen3_30b_a3b_q4km(), &hw);
         match result {
             ResidencyGateResult::Block { reasons } => {
-                assert!(reasons.len() >= 2, "expected multi-reason block; got {reasons:?}");
-                assert!(reasons.iter().any(|r| matches!(r, BlockReason::UnsupportedLayer { .. })));
-                assert!(reasons.iter().any(|r| matches!(r, BlockReason::PartialGpuSplit { .. })));
+                assert!(
+                    reasons.len() >= 2,
+                    "expected multi-reason block; got {reasons:?}"
+                );
+                assert!(reasons
+                    .iter()
+                    .any(|r| matches!(r, BlockReason::UnsupportedLayer { .. })));
+                assert!(reasons
+                    .iter()
+                    .any(|r| matches!(r, BlockReason::PartialGpuSplit { .. })));
             }
             _ => panic!("expected Block"),
         }
@@ -724,7 +748,11 @@ mod tests {
         let m = qwen3_30b_a3b_q4km();
         let est = m.estimated_vram_bytes();
         let gb = 1024u64 * 1024 * 1024;
-        assert!(est >= 14 * gb && est <= 18 * gb, "30B Q4: got {est} ({} GB)", est as f64 / gb as f64);
+        assert!(
+            est >= 14 * gb && est <= 18 * gb,
+            "30B Q4: got {est} ({} GB)",
+            est as f64 / gb as f64
+        );
     }
 
     /// What this catches: bigger quantization → bigger estimate.
@@ -737,7 +765,10 @@ mod tests {
         q4.bytes_per_parameter_quantized = 1.0; // Q8_0
         let q8_est = q4.estimated_vram_bytes();
         assert!(q8_est > q4_est, "Q8 must estimate higher than Q4");
-        assert!(q8_est >= 2 * q4_est - 1024 * 1024 * 1024, "Q8 should be ~2× Q4");
+        assert!(
+            q8_est >= 2 * q4_est - 1024 * 1024 * 1024,
+            "Q8 should be ~2× Q4"
+        );
     }
 
     // ===== Pass with full evidence =====
@@ -784,9 +815,18 @@ mod tests {
     /// stability for PR-3 + PR-4 + the eventual cross-node dispatcher.
     #[test]
     fn backend_choice_serializes_lowercase() {
-        assert_eq!(serde_json::to_string(&BackendChoice::Metal).unwrap(), "\"metal\"");
-        assert_eq!(serde_json::to_string(&BackendChoice::Cuda).unwrap(), "\"cuda\"");
-        assert_eq!(serde_json::to_string(&BackendChoice::Vulkan).unwrap(), "\"vulkan\"");
+        assert_eq!(
+            serde_json::to_string(&BackendChoice::Metal).unwrap(),
+            "\"metal\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackendChoice::Cuda).unwrap(),
+            "\"cuda\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackendChoice::Vulkan).unwrap(),
+            "\"vulkan\""
+        );
     }
 
     /// What this catches: BlockReason serde round-trip (tagged-union
@@ -796,7 +836,13 @@ mod tests {
     #[test]
     fn block_reason_serde_round_trip() {
         let reasons = vec![
-            BlockReason::NoGpuBackendOnNode { platform: "test".into() },
+            BlockReason::ModelMetadataUnreadable {
+                model_path: "/models/qwen.gguf".into(),
+                error: "missing general.architecture".into(),
+            },
+            BlockReason::NoGpuBackendOnNode {
+                platform: "test".into(),
+            },
             BlockReason::UnsupportedLayer {
                 backend: BackendChoice::Vulkan,
                 architecture: "qwen3moe".into(),
@@ -878,7 +924,10 @@ mod tests {
         let mut hw = m5_pro_48gb();
         hw.free_vram_bytes = est;
         let result = check_residency_gate(&m, &hw);
-        assert!(result.is_pass(), "VRAM == estimate must pass; got {result:?}");
+        assert!(
+            result.is_pass(),
+            "VRAM == estimate must pass; got {result:?}"
+        );
     }
 
     /// What this catches: free VRAM one byte below estimate → block.
@@ -921,7 +970,9 @@ mod tests {
         let hw = macbook_air_m2_8gb();
         let probe_caps = probe_inference_capabilities(&hw);
         // probe advertises llamacpp on this host
-        assert!(probe_caps.iter().any(|c| c.kind.as_str() == kinds::LLAMACPP));
+        assert!(probe_caps
+            .iter()
+            .any(|c| c.kind.as_str() == kinds::LLAMACPP));
 
         // but residency gate blocks a 30B model on it
         let result = check_residency_gate(&qwen3_30b_a3b_q4km(), &hw);

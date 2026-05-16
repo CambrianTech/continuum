@@ -38,6 +38,7 @@
 //! - **No `unwrap_or` / silent defaults**: every field carries explicit
 //!   data; no "default to zero VRAM and pretend it works."
 
+pub mod enforcement;
 pub mod gguf_loader;
 pub mod hw_probe;
 pub mod probe;
@@ -45,6 +46,7 @@ pub mod registry;
 pub mod residency;
 pub mod types;
 
+pub use enforcement::{enforce_residency, enforce_residency_with, ResidencyBlock};
 pub use gguf_loader::read_qwen_model_metadata;
 pub use hw_probe::{build_hardware_profile, probe_hardware_profile};
 pub use probe::probe_inference_capabilities;

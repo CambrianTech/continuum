@@ -6,7 +6,7 @@ import type { BackendChoice } from "./BackendChoice";
  * the calling code can render specific user-facing messages + so the
  * recorder can capture exact reasons for VDD review.
  */
-export type BlockReason = { "kind": "noGpuBackendOnNode", 
+export type BlockReason = { "kind": "modelMetadataUnreadable", model_path: string, error: string, } | { "kind": "noGpuBackendOnNode", 
 /**
  * Platform identifier ("macos-arm64-m2", "linux-x86_64-generic", etc).
  */
