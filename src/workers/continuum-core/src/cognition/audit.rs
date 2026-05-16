@@ -196,8 +196,7 @@ impl From<serde_json::Error> for AuditError {
 }
 
 /// Genesis prev-hash: 64 zeros (matches SHA-256 output length).
-pub const GENESIS_HASH: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+pub const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Compute the chain hash for an entry. Pure function — same inputs
 /// always produce the same hash.
@@ -208,13 +207,36 @@ fn compute_chain_hash(
     payload: &serde_json::Value,
     prev_chain_hash: &str,
 ) -> String {
+    let kind_json =
+        serde_json::to_string(kind).expect("AuditEntryKind serialization is infallible");
+    let payload_json = payload.to_string();
+
     let mut hasher = Sha256::new();
     hasher.update(seq.to_le_bytes());
     hasher.update(timestamp_ms.to_le_bytes());
-    hasher.update(serde_json::to_string(kind).unwrap_or_default().as_bytes());
-    hasher.update(serde_json::to_string(payload).unwrap_or_default().as_bytes());
+    hasher.update(kind_json.as_bytes());
+    hasher.update(payload_json.as_bytes());
     hasher.update(prev_chain_hash.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+fn build_audit_entry(
+    seq: u64,
+    prev_chain_hash: String,
+    timestamp_ms: u64,
+    kind: AuditEntryKind,
+    payload: serde_json::Value,
+) -> AuditEntry {
+    let chain_hash = compute_chain_hash(seq, timestamp_ms, &kind, &payload, &prev_chain_hash);
+
+    AuditEntry {
+        seq,
+        timestamp_ms,
+        kind,
+        payload,
+        chain_hash,
+        prev_chain_hash,
+    }
 }
 
 /// Append-only audit chain backed by an `audit.jsonl` file. One entry
@@ -267,20 +289,16 @@ impl AuditChain {
         payload: serde_json::Value,
     ) -> AuditEntry {
         let seq = self.next_seq;
-        let prev = self.last_chain_hash.clone();
-        let chain_hash = compute_chain_hash(seq, timestamp_ms, &kind, &payload, &prev);
-
-        let entry = AuditEntry {
+        let entry = build_audit_entry(
             seq,
+            self.last_chain_hash.clone(),
             timestamp_ms,
             kind,
             payload,
-            chain_hash: chain_hash.clone(),
-            prev_chain_hash: prev,
-        };
+        );
 
         self.next_seq += 1;
-        self.last_chain_hash = chain_hash;
+        self.last_chain_hash = entry.chain_hash.clone();
         entry
     }
 
@@ -293,10 +311,19 @@ impl AuditChain {
         kind: AuditEntryKind,
         payload: serde_json::Value,
     ) -> Result<AuditEntry, AuditError> {
-        let entry = self.build_next(timestamp_ms, kind, payload);
+        let entry = build_audit_entry(
+            self.next_seq,
+            self.last_chain_hash.clone(),
+            timestamp_ms,
+            kind,
+            payload,
+        );
         let line = serde_json::to_string(&entry)?;
         let mut file = OpenOptions::new().append(true).create(true).open(path)?;
         writeln!(file, "{line}")?;
+
+        self.next_seq += 1;
+        self.last_chain_hash = entry.chain_hash.clone();
         Ok(entry)
     }
 
@@ -449,11 +476,7 @@ mod tests {
     fn chain_seq_increments_monotonically() {
         let mut chain = AuditChain::new();
         for i in 0..5 {
-            let entry = chain.build_next(
-                1000 + i,
-                AuditEntryKind::AccessDenied,
-                json!({"i": i}),
-            );
+            let entry = chain.build_next(1000 + i, AuditEntryKind::AccessDenied, json!({"i": i}));
             assert_eq!(entry.seq, i);
         }
     }
@@ -498,12 +521,24 @@ mod tests {
     #[test]
     fn compute_chain_hash_sensitive_to_each_input() {
         let base = compute_chain_hash(0, 1000, &AuditEntryKind::Refusal, &json!({}), GENESIS_HASH);
-        let diff_seq = compute_chain_hash(1, 1000, &AuditEntryKind::Refusal, &json!({}), GENESIS_HASH);
-        let diff_ts = compute_chain_hash(0, 2000, &AuditEntryKind::Refusal, &json!({}), GENESIS_HASH);
-        let diff_kind =
-            compute_chain_hash(0, 1000, &AuditEntryKind::AccessDenied, &json!({}), GENESIS_HASH);
-        let diff_payload =
-            compute_chain_hash(0, 1000, &AuditEntryKind::Refusal, &json!({"a": 1}), GENESIS_HASH);
+        let diff_seq =
+            compute_chain_hash(1, 1000, &AuditEntryKind::Refusal, &json!({}), GENESIS_HASH);
+        let diff_ts =
+            compute_chain_hash(0, 2000, &AuditEntryKind::Refusal, &json!({}), GENESIS_HASH);
+        let diff_kind = compute_chain_hash(
+            0,
+            1000,
+            &AuditEntryKind::AccessDenied,
+            &json!({}),
+            GENESIS_HASH,
+        );
+        let diff_payload = compute_chain_hash(
+            0,
+            1000,
+            &AuditEntryKind::Refusal,
+            &json!({"a": 1}),
+            GENESIS_HASH,
+        );
         let diff_prev = compute_chain_hash(
             0,
             1000,
@@ -563,6 +598,25 @@ mod tests {
         }
     }
 
+    /// What this catches: failed disk writes must not advance the
+    /// in-memory chain. If append moves next_seq/last_hash before I/O
+    /// succeeds, the next successful write no longer matches the file.
+    #[test]
+    fn append_failure_does_not_advance_chain_position() {
+        let mut chain = AuditChain::new();
+        let missing_dir = Path::new("/nonexistent/audit-recorder-dir/audit.jsonl");
+
+        let result = chain.append(
+            missing_dir,
+            1000,
+            AuditEntryKind::Refusal,
+            json!({"why": "missing dir"}),
+        );
+
+        assert!(matches!(result, Err(AuditError::Io(_))));
+        assert_eq!(chain.position(), (0, GENESIS_HASH));
+    }
+
     /// What this catches: read_audit_log on a non-existent path
     /// returns empty Vec (not error). The recorder must handle
     /// "first-boot, no log yet" cleanly.
@@ -583,7 +637,12 @@ mod tests {
         let mut chain = AuditChain::new();
         for i in 0..3 {
             chain
-                .append(tmp.path(), 1000 + i, AuditEntryKind::Refusal, json!({"i": i}))
+                .append(
+                    tmp.path(),
+                    1000 + i,
+                    AuditEntryKind::Refusal,
+                    json!({"i": i}),
+                )
                 .unwrap();
         }
         let restored = AuditChain::load(tmp.path()).unwrap();
@@ -606,7 +665,12 @@ mod tests {
         let mut chain = AuditChain::new();
         for i in 0..3 {
             chain
-                .append(tmp.path(), 1000 + i, AuditEntryKind::Refusal, json!({"i": i}))
+                .append(
+                    tmp.path(),
+                    1000 + i,
+                    AuditEntryKind::Refusal,
+                    json!({"i": i}),
+                )
                 .unwrap();
         }
         // Tamper: rewrite entry 1's payload on disk
@@ -643,10 +707,7 @@ mod tests {
             chain_hash: "deadbeef".repeat(8),
             prev_chain_hash: chain.last_chain_hash.clone(),
         };
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(tmp.path())
-            .unwrap();
+        let mut file = OpenOptions::new().append(true).open(tmp.path()).unwrap();
         writeln!(file, "{}", serde_json::to_string(&entry_2).unwrap()).unwrap();
 
         match read_audit_log(tmp.path()) {
@@ -666,12 +727,22 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let mut chain = AuditChain::new();
         chain
-            .append(tmp.path(), 5000, AuditEntryKind::Refusal, json!({"first": true}))
+            .append(
+                tmp.path(),
+                5000,
+                AuditEntryKind::Refusal,
+                json!({"first": true}),
+            )
             .unwrap();
         // Append with earlier timestamp via build_next (chain hash is
         // correct, but ts violates monotonic-non-decreasing)
         chain
-            .append(tmp.path(), 1000, AuditEntryKind::Refusal, json!({"second": true}))
+            .append(
+                tmp.path(),
+                1000,
+                AuditEntryKind::Refusal,
+                json!({"second": true}),
+            )
             .unwrap();
 
         match read_audit_log(tmp.path()) {
