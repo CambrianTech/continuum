@@ -13,8 +13,8 @@
 //!   cargo test --release --test qwen35_chat_pipeline_full -- --ignored --nocapture
 
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
-use continuum_core::inference::backends::SamplingConfig;
-use llama::{render_chat, ChatMsg};
+use continuum_core::inference::backends::{SamplingConfig, JSON_GRAMMAR};
+use llama::{render_chat, ChatMsg, FlashAttn};
 use std::path::PathBuf;
 
 mod common;
@@ -33,6 +33,12 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     let backend = LlamaCppBackend::load(LlamaCppConfig {
         model_path: PathBuf::from(model_path()),
         n_gpu_layers: -1,
+        context_length: Some(32_768),
+        n_seq_max: 1,
+        n_ubatch: 128,
+        flash_attn: FlashAttn::Disabled,
+        fused_gdn_ar: false,
+        fused_gdn_ch: false,
         ..Default::default()
     })
     .expect("load");
@@ -98,5 +104,50 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     assert!(
         text.contains("84") || text.contains("eighty-four") || text.contains("eighty four"),
         "answer (84) not in output: {text:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires local GGUF; cargo test --release --test qwen35_chat_pipeline_full -- --ignored --nocapture"]
+fn qwen35_scheduler_json_grammar_returns_object() {
+    let backend = LlamaCppBackend::load(LlamaCppConfig {
+        model_path: PathBuf::from(model_path()),
+        n_gpu_layers: -1,
+        context_length: Some(32_768),
+        n_seq_max: 1,
+        n_ubatch: 128,
+        flash_attn: FlashAttn::Disabled,
+        fused_gdn_ar: false,
+        fused_gdn_ch: false,
+        ..Default::default()
+    })
+    .expect("load");
+
+    let messages = vec![
+        ChatMsg {
+            role: "system".to_string(),
+            content: "Return only a compact JSON object with key ok and boolean value true."
+                .to_string(),
+        },
+        ChatMsg {
+            role: "user".to_string(),
+            content: "Report whether the cognition pipeline is live.".to_string(),
+        },
+    ];
+    let prompt = render_chat(Some(CHATML), &messages, true).expect("render_chat");
+    let sampling = SamplingConfig {
+        grammar: Some(JSON_GRAMMAR.to_string()),
+        ..SamplingConfig::chat()
+    };
+
+    let (text, n_tokens) = backend
+        .generate(&prompt, 128, sampling, &["<|im_end|>", "<|endoftext|>"], &[])
+        .expect("generate");
+
+    eprintln!("[json-grammar] tokens={n_tokens} text={text:?}");
+    assert!(n_tokens > 0, "no tokens generated");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(text.trim()).is_ok(),
+        "grammar-constrained output should parse as JSON object: {text:?}"
     );
 }

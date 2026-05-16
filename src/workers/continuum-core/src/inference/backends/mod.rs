@@ -209,18 +209,33 @@ impl SamplingConfig {
     }
 }
 
-/// Built-in JSON grammar (GBNF) — produces any valid JSON value. Used
-/// when callers request `response_format: JsonObject`. Lifted from the
-/// llama.cpp grammars/json.gbnf reference grammar; trimmed to the
-/// expressions actually needed for chat persona analyze responses.
+/// Built-in JSON grammar (GBNF) — produces a valid JSON object. Used when
+/// callers request `response_format: JsonObject`. Keep this aligned with the
+/// vendored llama.cpp `grammars/json.gbnf`.
 pub const JSON_GRAMMAR: &str = r#"
 root   ::= object
 value  ::= object | array | string | number | ("true" | "false" | "null") ws
-object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws
-array  ::= "[" ws ( value ("," ws value)* )? "]" ws
-string ::= "\"" ( [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) )* "\"" ws
-number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
-ws ::= ([ \t\n] ws)?
+
+object ::=
+  "{" ws (
+            string ":" ws value
+    ("," ws string ":" ws value)*
+  )? "}" ws
+
+array  ::=
+  "[" ws (
+            value
+    ("," ws value)*
+  )? "]" ws
+
+string ::=
+  "\"" (
+    [^"\\\x7F\x00-\x1F] |
+    "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4})
+  )* "\"" ws
+
+number ::= ("-"? ([0-9] | [1-9] [0-9]{0,15})) ("." [0-9]+)? ([eE] [-+]? [0-9] [1-9]{0,15})? ws
+ws ::= | " " | "\n" [ \t]{0,20}
 "#;
 
 /// Generate text from a prompt using ANY ModelBackend.
@@ -610,12 +625,14 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
         .get("general.architecture")
         .and_then(|v| v.to_string().ok())
         .cloned()
-        .ok_or_else(|| format!(
-            "GGUF {} is missing required metadata key 'general.architecture' — cannot \
+        .ok_or_else(|| {
+            format!(
+                "GGUF {} is missing required metadata key 'general.architecture' — cannot \
              determine backend. Silent fallback to 'llama' has been removed; fix the \
              GGUF file or re-export it with proper metadata.",
-            path.display()
-        ))?;
+                path.display()
+            )
+        })?;
 
     // Try architecture-specific key first, then llama fallback for the context_length
     // key only (some older tools wrote 'llama.context_length' regardless of actual
@@ -626,12 +643,14 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
         .or_else(|| content.metadata.get("llama.context_length"))
         .and_then(|v| v.to_u32().ok())
         .map(|v| v as usize)
-        .ok_or_else(|| format!(
-            "GGUF {} (architecture={architecture}) is missing context_length metadata \
+        .ok_or_else(|| {
+            format!(
+                "GGUF {} (architecture={architecture}) is missing context_length metadata \
              (tried '{architecture}.context_length' and 'llama.context_length'). Silent \
              fallback to 4096 has been removed; fix the GGUF file.",
-            path.display()
-        ))?;
+                path.display()
+            )
+        })?;
 
     let model_name = content
         .metadata
@@ -670,11 +689,13 @@ pub fn load_gguf_backend(
         .get("general.architecture")
         .and_then(|v| v.to_string().ok())
         .cloned()
-        .ok_or_else(|| format!(
-            "GGUF {} is missing required 'general.architecture' metadata — cannot \
+        .ok_or_else(|| {
+            format!(
+                "GGUF {} is missing required 'general.architecture' metadata — cannot \
              determine backend. Fix the GGUF file or re-export it with proper metadata.",
-            model_path.display()
-        ))?;
+                model_path.display()
+            )
+        })?;
 
     log.info(&format!("GGUF architecture: {architecture}"));
 

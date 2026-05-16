@@ -26,8 +26,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 use std::thread;
+use std::time::Instant;
 
 use llama::{Batch, ContextParams, Model, ModelParams, Sampler};
 
@@ -38,7 +38,9 @@ fn test_model() -> Option<PathBuf> {
             .join("models--continuum-ai--qwen3.5-4b-code-forged-GGUF/snapshots")
             .join("6cfe43981913730b1abc4ad520510a24b3f05922")
             .join("qwen3.5-4b-code-forged-Q4_K_M.gguf");
-        if p.exists() { return Some(p); }
+        if p.exists() {
+            return Some(p);
+        }
     }
     None
 }
@@ -71,8 +73,9 @@ fn generate_once(model: &Model, prompt: &str, max_tokens: usize) -> (usize, u128
     let start = Instant::now();
     for _ in 0..max_tokens {
         let token = sampler.sample(&ctx, -1);
-        sampler.accept(token);
-        if model.is_eog_token(token) { break; }
+        if model.is_eog_token(token) {
+            break;
+        }
         batch.clear();
         batch.push(token, n_cur, &[0], true);
         ctx.decode(&batch).expect("gen");
@@ -84,11 +87,7 @@ fn generate_once(model: &Model, prompt: &str, max_tokens: usize) -> (usize, u128
 
 /// Helper: load model once, run N parallel generate calls on the same
 /// Arc<Model>. Returns (per-thread token counts, wall-clock ms).
-fn run_concurrent(
-    n_streams: usize,
-    prompt: &str,
-    max_tokens: usize,
-) -> Option<(Vec<usize>, u128)> {
+fn run_concurrent(n_streams: usize, prompt: &str, max_tokens: usize) -> Option<(Vec<usize>, u128)> {
     let path = test_model()?;
     let model = Arc::new(Model::load(&path, ModelParams::default()).ok()?);
 
@@ -120,7 +119,10 @@ fn run_concurrent(
 fn no_corruption_two_streams() {
     let path = match test_model() {
         Some(p) => p,
-        None => { eprintln!("no model — skipping"); return; }
+        None => {
+            eprintln!("no model — skipping");
+            return;
+        }
     };
     let model = Arc::new(Model::load(&path, ModelParams::default()).expect("load"));
 
@@ -144,7 +146,10 @@ fn no_corruption_two_streams() {
 fn no_corruption_four_streams() {
     let model = match test_model().and_then(|p| Model::load(&p, ModelParams::default()).ok()) {
         Some(m) => Arc::new(m),
-        None => { eprintln!("no model — skipping"); return; }
+        None => {
+            eprintln!("no model — skipping");
+            return;
+        }
     };
 
     let prompts = [
@@ -154,10 +159,13 @@ fn no_corruption_four_streams() {
         "fn gcd(a: u32, b: u32) -> u32 {\n",
     ];
 
-    let handles: Vec<_> = prompts.iter().map(|&p| {
-        let m = Arc::clone(&model);
-        thread::spawn(move || generate_once(&m, p, 8))
-    }).collect();
+    let handles: Vec<_> = prompts
+        .iter()
+        .map(|&p| {
+            let m = Arc::clone(&model);
+            thread::spawn(move || generate_once(&m, p, 8))
+        })
+        .collect();
 
     for (i, h) in handles.into_iter().enumerate() {
         let (n, _) = h.join().unwrap();
@@ -175,7 +183,10 @@ fn no_corruption_four_streams() {
 fn solo_throughput_baseline() {
     let path = match test_model() {
         Some(p) => p,
-        None => { eprintln!("no model — skipping"); return; }
+        None => {
+            eprintln!("no model — skipping");
+            return;
+        }
     };
     let model = Model::load(&path, ModelParams::default()).expect("load");
     let _ = generate_once(&model, "warm", 4); // warmup
@@ -205,7 +216,10 @@ fn concurrent_streams_match_solo_throughput() {
     // Solo baseline
     let path = match test_model() {
         Some(p) => p,
-        None => { eprintln!("no model — skipping"); return; }
+        None => {
+            eprintln!("no model — skipping");
+            return;
+        }
     };
     let model = Model::load(&path, ModelParams::default()).expect("load");
     let _ = generate_once(&model, "warm", 4);
@@ -216,7 +230,10 @@ fn concurrent_streams_match_solo_throughput() {
     // 4-stream concurrent run, same prompt + max_tokens
     let (tok_counts, wall_ms) = match run_concurrent(4, "fn add(a: u32, b: u32) -> u32 {\n", 32) {
         Some(x) => x,
-        None => { eprintln!("concurrent run failed — skipping"); return; }
+        None => {
+            eprintln!("concurrent run failed — skipping");
+            return;
+        }
     };
 
     let total_tokens: usize = tok_counts.iter().sum();
@@ -227,8 +244,10 @@ fn concurrent_streams_match_solo_throughput() {
     eprintln!("SOLO:        {:.1} tok/s", solo_tok_s);
     eprintln!("CONCURRENT:  {} streams produced {} tok in {} ms = {:.1} tok/s aggregate, {:.1} tok/s per stream",
         tok_counts.len(), total_tokens, wall_ms, aggregate_tok_s, per_stream_tok_s);
-    eprintln!("EFFICIENCY:  {:.2}x solo per stream  (1.0 = perfect batching, 0.25 = serialized 4-way)",
-        efficiency);
+    eprintln!(
+        "EFFICIENCY:  {:.2}x solo per stream  (1.0 = perfect batching, 0.25 = serialized 4-way)",
+        efficiency
+    );
 
     // Per-call-context on 4 streams should land near 0.25x (serialized).
     // Floor is 0.15x — catches deadlocks/starvation without flagging
@@ -244,16 +263,21 @@ fn concurrent_does_not_panic_or_segv() {
     // races, double-frees in shared Model, batch buffer aliasing.
     let model = match test_model().and_then(|p| Model::load(&p, ModelParams::default()).ok()) {
         Some(m) => Arc::new(m),
-        None => { eprintln!("no model — skipping"); return; }
+        None => {
+            eprintln!("no model — skipping");
+            return;
+        }
     };
 
-    let handles: Vec<_> = (0..8).map(|i| {
-        let m = Arc::clone(&model);
-        thread::spawn(move || {
-            let p = format!("fn f_{}() {{\n", i);
-            generate_once(&m, &p, 4)
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let m = Arc::clone(&model);
+            thread::spawn(move || {
+                let p = format!("fn f_{}() {{\n", i);
+                generate_once(&m, &p, 4)
+            })
         })
-    }).collect();
+        .collect();
 
     let mut survived = 0;
     for h in handles {

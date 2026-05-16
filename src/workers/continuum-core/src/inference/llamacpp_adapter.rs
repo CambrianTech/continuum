@@ -35,12 +35,14 @@
 use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::registry_bridge::models_for_provider_via_registry;
 use crate::ai::types::{
-    FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo, TextGenerationRequest,
-    TextGenerationResponse, UsageMetrics,
+    FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo, ResponseFormat,
+    TextGenerationRequest, TextGenerationResponse, UsageMetrics,
 };
 use crate::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
+use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
 use crate::runtime;
 use async_trait::async_trait;
+use llama::FlashAttn;
 use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -69,6 +71,26 @@ fn model_info_with_runtime(
     info.max_output_tokens = n_ctx;
     info.tokens_per_second = last_tok_per_s as f32;
     info
+}
+
+fn sampling_config_from_request(request: &TextGenerationRequest) -> SamplingConfig {
+    let mut sampling = SamplingConfig::chat();
+    if let Some(t) = request.temperature {
+        sampling.temperature = t as f64;
+    }
+    if let Some(k) = request.top_k {
+        sampling.top_k = k as usize;
+    }
+    if let Some(p) = request.top_p {
+        sampling.top_p = p as f64;
+    }
+    if let Some(rp) = request.repeat_penalty {
+        sampling.repeat_penalty = rp;
+    }
+    if matches!(request.response_format, Some(ResponseFormat::JsonObject)) {
+        sampling.grammar = Some(JSON_GRAMMAR.to_string());
+    }
+    sampling
 }
 
 /// Decode an `ImageInput` to raw bytes the multimodal projector can
@@ -361,6 +383,16 @@ impl LlamaCppAdapter {
             // this via with_context_length() to bound the KV cache (24GB
             // at 262K → 500MB at 16K).
             context_length: self.context_length_override,
+            // qwen3.5's recurrent/Gated-Delta-Net Metal graph aborts inside
+            // llama.cpp on the default aggressive graph shape. Keep this path
+            // GPU-only but choose a conservative graph explicitly: single seq,
+            // no FlashAttention auto-upgrade, smaller ubatch. That preserves
+            // Rust-owned local inference while avoiding the known abort path.
+            n_seq_max: 1,
+            n_ubatch: 128,
+            flash_attn: FlashAttn::Disabled,
+            fused_gdn_ar: false,
+            fused_gdn_ch: false,
             type_k: active_kv.k,
             type_v: active_kv.v,
             ..Default::default()
@@ -630,32 +662,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .max_tokens
             .map(|n| n as usize)
             .unwrap_or_else(|| backend.n_ctx_train() as usize);
-        // Build the full SamplingConfig from the request. Caller's fields
-        // override our defaults; if caller asked for JsonObject response
-        // format, attach the JSON grammar so output is structurally valid.
-        // Same value-object pattern Joel called for ('pass the struct').
-        use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
-        let mut sampling = SamplingConfig::chat();
-        if let Some(t) = request.temperature {
-            sampling.temperature = t as f64;
-        }
-        if let Some(k) = request.top_k {
-            sampling.top_k = k as usize;
-        }
-        if let Some(p) = request.top_p {
-            sampling.top_p = p as f64;
-        }
-        if let Some(rp) = request.repeat_penalty {
-            sampling.repeat_penalty = rp;
-        }
-        // GRAMMAR ENFORCEMENT DISABLED. Wiring response_format=JsonObject
-        // to llama.cpp grammar via llama_sampler_init_grammar crashed the
-        // scheduler ('scheduler closed without Done event'); the grammar
-        // string or pointer-handling needs more diagnosis. Falling back to
-        // prompt-only JSON guidance — cognition's existing parser tolerates
-        // model deviations. Re-enable once grammar is verified safe.
-        let _ = request.response_format; // suppress unused warning
-        let _ = JSON_GRAMMAR;
+        let sampling = sampling_config_from_request(&request);
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
         // the wrong tokenizer.ggml.eos_token_id, so is_eog_token never
@@ -867,9 +874,38 @@ impl AIProviderAdapter for LlamaCppAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::{ChatMessage, MessageContent};
     use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
     use crate::model_registry::Model;
     use std::collections::BTreeSet;
+
+    fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationRequest {
+        TextGenerationRequest {
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("Return JSON.".to_string()),
+                name: None,
+            }],
+            system_prompt: None,
+            model: None,
+            provider: None,
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            top_k: None,
+            repeat_penalty: None,
+            stop_sequences: None,
+            tools: None,
+            tool_choice: None,
+            response_format,
+            active_adapters: None,
+            request_id: None,
+            user_id: None,
+            room_id: None,
+            purpose: None,
+            persona_id: None,
+        }
+    }
 
     fn synthetic_llamacpp_local_model(id: &str, gguf_path: Option<PathBuf>) -> Model {
         Model {
@@ -916,6 +952,19 @@ mod tests {
     }
 
     #[test]
+    fn json_object_response_format_enables_json_grammar() {
+        let sampling =
+            sampling_config_from_request(&text_request(Some(ResponseFormat::JsonObject)));
+        assert_eq!(sampling.grammar.as_deref(), Some(JSON_GRAMMAR));
+    }
+
+    #[test]
+    fn text_response_format_leaves_grammar_unconstrained() {
+        let sampling = sampling_config_from_request(&text_request(Some(ResponseFormat::Text)));
+        assert!(sampling.grammar.is_none());
+    }
+
+    #[test]
     fn try_new_from_errors_when_llamacpp_rows_exist_but_none_have_gguf_path() {
         // Registry has llamacpp-local rows but artifact resolver couldn't
         // find the GGUF on disk for any of them — `gguf_local_path` is
@@ -946,10 +995,7 @@ mod tests {
         let resolved_path = PathBuf::from("/tmp/synthetic-test-only.gguf");
         let models = vec![
             synthetic_llamacpp_local_model("qwen3.5-4b-code-forged-GGUF", None),
-            synthetic_llamacpp_local_model(
-                "qwen2-vl-7b-instruct",
-                Some(resolved_path.clone()),
-            ),
+            synthetic_llamacpp_local_model("qwen2-vl-7b-instruct", Some(resolved_path.clone())),
         ];
         match LlamaCppAdapter::try_new_from(models.iter()) {
             Ok(adapter) => {

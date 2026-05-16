@@ -24,6 +24,7 @@
 
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use continuum_core::inference::backends::SamplingConfig;
+use llama::FlashAttn;
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -95,6 +96,12 @@ fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
     let config = LlamaCppConfig {
         model_path,
         n_gpu_layers: -1, // Offload all layers to GPU (Metal on Mac)
+        context_length: Some(32768),
+        n_seq_max: 1,
+        n_ubatch: 128,
+        flash_attn: FlashAttn::Disabled,
+        fused_gdn_ar: false,
+        fused_gdn_ch: false,
         ..Default::default()
     };
     let backend = LlamaCppBackend::load(config).expect("failed to load llama.cpp backend");
@@ -292,7 +299,6 @@ fn qwen35_4b_spec_dec_throughput() {
 
     // Seed: sample target's first token (off the prompt's last-token logits).
     let mut last_token = target_sampler.sample(&target_ctx, prompt_len - 1);
-    target_sampler.accept(last_token);
     output_tokens.push(last_token);
 
     // Prime draft with the same first token so both contexts agree on pos.
@@ -316,7 +322,6 @@ fn qwen35_4b_spec_dec_throughput() {
             // draft's last decode had logits at its last position; sample from there
             let draft_last_logit_idx = if k == 0 { 0 } else { 0 }; // always position 0 of last batch
             let next = draft_sampler.sample(&draft_ctx, draft_last_logit_idx);
-            draft_sampler.accept(next);
             drafts.push(next);
             // feed next into draft so it can produce draft[k+1]
             let mut batch = Batch::allocated(1, 1);
@@ -349,7 +354,6 @@ fn qwen35_4b_spec_dec_throughput() {
         for i in 0..k_drafted {
             let tgt_pred = target_sampler.sample(&target_ctx, i as i32);
             if tgt_pred == drafts[i] {
-                target_sampler.accept(tgt_pred);
                 accepted += 1;
             } else {
                 correction = Some(tgt_pred);
@@ -388,7 +392,6 @@ fn qwen35_4b_spec_dec_throughput() {
                 // [p0, p1). Passing p1 = -1 means "to the end". So we cut everything
                 // from pos+accepted inclusive — BOTH contexts had drafts[accepted] or
                 // later cached there and none of that is valid anymore.
-                target_sampler.accept(c);
                 output_tokens.push(c);
                 last_token = c;
                 let cut_pos = pos + accepted as i32;
@@ -410,7 +413,6 @@ fn qwen35_4b_spec_dec_throughput() {
                 // Target's logits_ith(K-1) gives the prediction for position pos+K
                 // (what comes after drafts[K-1]). Bonus token lands at position pos+k_drafted.
                 let bonus = target_sampler.sample(&target_ctx, (k_drafted - 1) as i32);
-                target_sampler.accept(bonus);
                 output_tokens.push(bonus);
                 last_token = bonus;
                 let bonus_pos = pos + k_drafted as i32;

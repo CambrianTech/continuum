@@ -150,7 +150,9 @@ unsafe fn assert_gpu_backend_registered_when_expected() {
         let name = if name_ptr.is_null() {
             "<unnamed>".to_string()
         } else {
-            std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+            std::ffi::CStr::from_ptr(name_ptr)
+                .to_string_lossy()
+                .into_owned()
         };
         // Anything that isn't CPU counts as a GPU/accelerator device for
         // this purpose. ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_CPU
@@ -221,7 +223,9 @@ pub fn render_chat(
     // default. Useful for GGUFs that don't embed a template in metadata
     // (continuum-ai/qwen3.5-4b-code-forged is one such model — see
     // forge recipe TODO to add tokenizer.chat_template at next bake).
-    let tmpl_c = template.map(|t| CString::new(t).map_err(|e| format!("template has nul byte: {e}"))).transpose()?;
+    let tmpl_c = template
+        .map(|t| CString::new(t).map_err(|e| format!("template has nul byte: {e}")))
+        .transpose()?;
     let owned: Vec<(CString, CString)> = messages
         .iter()
         .map(|m| {
@@ -232,10 +236,16 @@ pub fn render_chat(
         .collect::<Result<_, _>>()?;
     let chat: Vec<sys::llama_chat_message> = owned
         .iter()
-        .map(|(r, c)| sys::llama_chat_message { role: r.as_ptr(), content: c.as_ptr() })
+        .map(|(r, c)| sys::llama_chat_message {
+            role: r.as_ptr(),
+            content: c.as_ptr(),
+        })
         .collect();
 
-    let tmpl_ptr = tmpl_c.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null());
+    let tmpl_ptr = tmpl_c
+        .as_ref()
+        .map(|c| c.as_ptr())
+        .unwrap_or(std::ptr::null());
     let render = |buf: &mut Vec<i8>| -> i32 {
         unsafe {
             sys::llama_chat_apply_template(
@@ -288,7 +298,10 @@ pub struct ModelParams {
 
 impl Default for ModelParams {
     fn default() -> Self {
-        Self { n_gpu_layers: -1, use_mmap: true }
+        Self {
+            n_gpu_layers: -1,
+            use_mmap: true,
+        }
     }
 }
 
@@ -306,9 +319,8 @@ impl Model {
         ffi_params.use_mmap = params.use_mmap;
 
         let raw = unsafe { sys::llama_model_load_from_file(c_path.as_ptr(), ffi_params) };
-        let ptr = NonNull::new(raw).ok_or_else(|| {
-            format!("failed to load model from {}", path.display())
-        })?;
+        let ptr = NonNull::new(raw)
+            .ok_or_else(|| format!("failed to load model from {}", path.display()))?;
 
         Ok(Self { ptr })
     }
@@ -331,7 +343,11 @@ impl Model {
     /// rather than redefining the model's natural capability.
     pub fn n_ctx_train(&self) -> u32 {
         let n = unsafe { sys::llama_model_n_ctx_train(self.ptr.as_ptr()) };
-        if n > 0 { n as u32 } else { 0 }
+        if n > 0 {
+            n as u32
+        } else {
+            0
+        }
     }
 
     /// Create an inference context.
@@ -339,12 +355,15 @@ impl Model {
         let mut ffi = unsafe { sys::llama_context_default_params() };
         ffi.n_ctx = params.n_ctx;
         ffi.n_batch = params.n_batch;
+        ffi.n_ubatch = params.n_ubatch;
         ffi.n_seq_max = params.n_seq_max;
         ffi.flash_attn_type = match params.flash_attn {
             FlashAttn::Auto => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_AUTO,
             FlashAttn::Enabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_ENABLED,
             FlashAttn::Disabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_DISABLED,
         };
+        ffi.fused_gdn_ar = params.fused_gdn_ar;
+        ffi.fused_gdn_ch = params.fused_gdn_ch;
         ffi.type_k = match params.type_k {
             KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
             KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
@@ -356,7 +375,10 @@ impl Model {
 
         let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
         let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
-        Ok(Context { ptr: ctx, _model: PhantomData })
+        Ok(Context {
+            ptr: ctx,
+            _model: PhantomData,
+        })
     }
 
     /// Load a LoRA adapter bound to this model. Used for genome paging.
@@ -372,9 +394,8 @@ impl Model {
         let c_path = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|e| format!("invalid path: {e}"))?;
         let raw = unsafe { sys::llama_adapter_lora_init(self.ptr.as_ptr(), c_path.as_ptr()) };
-        let ptr = NonNull::new(raw).ok_or_else(|| {
-            format!("failed to load LoRA from {}", path.display())
-        })?;
+        let ptr = NonNull::new(raw)
+            .ok_or_else(|| format!("failed to load LoRA from {}", path.display()))?;
         Ok(LoraAdapter { ptr })
     }
 
@@ -424,7 +445,10 @@ impl Model {
         if p.is_null() {
             None
         } else {
-            unsafe { std::ffi::CStr::from_ptr(p) }.to_str().ok().map(String::from)
+            unsafe { std::ffi::CStr::from_ptr(p) }
+                .to_str()
+                .ok()
+                .map(String::from)
         }
     }
 
@@ -442,7 +466,9 @@ impl Model {
                 false,
             )
         };
-        if n < 0 { return String::new(); }
+        if n < 0 {
+            return String::new();
+        }
         buf.truncate(n as usize);
         String::from_utf8_lossy(&buf).into_owned()
     }
@@ -467,7 +493,9 @@ impl Model {
 
 impl Drop for Model {
     fn drop(&mut self) {
-        unsafe { sys::llama_model_free(self.ptr.as_ptr()); }
+        unsafe {
+            sys::llama_model_free(self.ptr.as_ptr());
+        }
     }
 }
 
@@ -486,7 +514,9 @@ unsafe impl Sync for LoraAdapter {}
 
 impl Drop for LoraAdapter {
     fn drop(&mut self) {
-        unsafe { sys::llama_adapter_lora_free(self.ptr.as_ptr()); }
+        unsafe {
+            sys::llama_adapter_lora_free(self.ptr.as_ptr());
+        }
     }
 }
 
@@ -521,6 +551,11 @@ pub enum KvCacheType {
 pub struct ContextParams {
     pub n_ctx: u32,
     pub n_batch: u32,
+    /// Physical Metal/CUDA graph size for prompt processing. Keep separate
+    /// from n_batch so the scheduler can accept larger logical prompt chunks
+    /// while reserving smaller backend graphs on model families with fragile
+    /// fused kernels.
+    pub n_ubatch: u32,
     /// Maximum parallel sequences. Default llama.cpp sets this > 1 which
     /// DIVIDES n_ctx among sequences — a 4096 n_ctx with default n_seq_max
     /// yields only ~512-1024 usable positions per sequence, making RAG
@@ -529,6 +564,12 @@ pub struct ContextParams {
     pub n_seq_max: u32,
     /// Flash attention setting. Default `Auto` — runtime picks per-backend.
     pub flash_attn: FlashAttn,
+    /// Fused Gated Delta Net autoregressive graph. Some new Metal stacks can
+    /// compile the kernels but throw foreign exceptions during graph setup;
+    /// callers can disable the fused graph while keeping the model on GPU.
+    pub fused_gdn_ar: bool,
+    /// Fused Gated Delta Net chunked graph. Same contract as fused_gdn_ar.
+    pub fused_gdn_ch: bool,
     /// KV cache element type for K. Default `F16` (lossless).
     pub type_k: KvCacheType,
     /// KV cache element type for V. Default `F16` (lossless).
@@ -540,8 +581,11 @@ impl Default for ContextParams {
         Self {
             n_ctx: 4096,
             n_batch: 512,
+            n_ubatch: 512,
             n_seq_max: 1,
             flash_attn: FlashAttn::Auto,
+            fused_gdn_ar: true,
+            fused_gdn_ch: true,
             type_k: KvCacheType::F16,
             type_v: KvCacheType::F16,
         }
@@ -606,9 +650,9 @@ impl<'m> Context<'m> {
     ///
     /// Use `-1` for the last token that had logits requested.
     pub fn logits_ith(&self, i: i32) -> &[f32] {
-        let n_vocab = unsafe {
-            sys::llama_vocab_n_tokens(sys::llama_model_get_vocab(self.model_ptr()))
-        } as usize;
+        let n_vocab =
+            unsafe { sys::llama_vocab_n_tokens(sys::llama_model_get_vocab(self.model_ptr())) }
+                as usize;
         unsafe {
             let ptr = sys::llama_get_logits_ith(self.ptr.as_ptr(), i);
             if ptr.is_null() {
@@ -622,9 +666,9 @@ impl<'m> Context<'m> {
     /// Mutable logits for the i-th position — for repetition penalty / logit bias
     /// applied before sampling without routing through a sampler.
     pub fn logits_ith_mut(&mut self, i: i32) -> &mut [f32] {
-        let n_vocab = unsafe {
-            sys::llama_vocab_n_tokens(sys::llama_model_get_vocab(self.model_ptr()))
-        } as usize;
+        let n_vocab =
+            unsafe { sys::llama_vocab_n_tokens(sys::llama_model_get_vocab(self.model_ptr())) }
+                as usize;
         unsafe {
             let ptr = sys::llama_get_logits_ith(self.ptr.as_ptr(), i);
             if ptr.is_null() {
@@ -646,12 +690,24 @@ impl<'m> Context<'m> {
         let rc = unsafe {
             sys::llama_set_adapters_lora(
                 self.ptr.as_ptr(),
-                if ptrs.is_empty() { std::ptr::null_mut() } else { ptrs.as_mut_ptr() },
+                if ptrs.is_empty() {
+                    std::ptr::null_mut()
+                } else {
+                    ptrs.as_mut_ptr()
+                },
                 ptrs.len(),
-                if scales.is_empty() { std::ptr::null_mut() } else { scales.as_mut_ptr() },
+                if scales.is_empty() {
+                    std::ptr::null_mut()
+                } else {
+                    scales.as_mut_ptr()
+                },
             )
         };
-        if rc == 0 { Ok(()) } else { Err(format!("llama_set_adapters_lora returned {rc}")) }
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(format!("llama_set_adapters_lora returned {rc}"))
+        }
     }
 
     /// Clear all LoRA adapters.
@@ -661,7 +717,9 @@ impl<'m> Context<'m> {
 
     /// Number of threads used for single-token generation.
     pub fn set_n_threads(&mut self, n_threads: i32, n_threads_batch: i32) {
-        unsafe { sys::llama_set_n_threads(self.ptr.as_ptr(), n_threads, n_threads_batch); }
+        unsafe {
+            sys::llama_set_n_threads(self.ptr.as_ptr(), n_threads, n_threads_batch);
+        }
     }
 
     fn model_ptr(&self) -> *const sys::llama_model {
@@ -701,7 +759,9 @@ impl<'m> Context<'m> {
 
 impl<'m> Drop for Context<'m> {
     fn drop(&mut self) {
-        unsafe { sys::llama_free(self.ptr.as_ptr()); }
+        unsafe {
+            sys::llama_free(self.ptr.as_ptr());
+        }
     }
 }
 
@@ -741,10 +801,11 @@ impl Batch {
         backend_init();
         // SAFETY: tokens' backing storage is kept alive via storage field;
         // llama_batch_get_one points at the slice, does not take ownership.
-        let inner = unsafe {
-            sys::llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32)
-        };
-        Self { inner, storage: BatchStorage::OneSequence(tokens) }
+        let inner = unsafe { sys::llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
+        Self {
+            inner,
+            storage: BatchStorage::OneSequence(tokens),
+        }
     }
 
     /// Preallocated batch capable of holding up to `n_tokens` with up to
@@ -754,7 +815,10 @@ impl Batch {
         let inner = unsafe { sys::llama_batch_init(n_tokens, 0, n_seq_max) };
         let mut b = Self {
             inner,
-            storage: BatchStorage::Allocated { n_seq_max, capacity: n_tokens },
+            storage: BatchStorage::Allocated {
+                n_seq_max,
+                capacity: n_tokens,
+            },
         };
         // init leaves n_tokens uninitialized; clear forces it to 0.
         b.clear();
@@ -766,7 +830,10 @@ impl Batch {
     /// `seq_ids.len() > n_seq_max`.
     pub fn push(&mut self, token: i32, pos: i32, seq_ids: &[i32], want_logits: bool) {
         let (n_seq_max, capacity) = match self.storage {
-            BatchStorage::Allocated { n_seq_max, capacity } => (n_seq_max, capacity),
+            BatchStorage::Allocated {
+                n_seq_max,
+                capacity,
+            } => (n_seq_max, capacity),
             BatchStorage::OneSequence(_) => panic!("push() on single-sequence batch"),
         };
         assert!(
@@ -774,12 +841,14 @@ impl Batch {
             "Batch::push overflow: n_tokens={} already at capacity={}. \
              Chunk your prefill into capacity-sized decode calls \
              (prompts longer than the batch size must be decoded in pieces).",
-            self.inner.n_tokens, capacity
+            self.inner.n_tokens,
+            capacity
         );
         assert!(
             seq_ids.len() as i32 <= n_seq_max,
             "seq_ids.len()={} exceeds n_seq_max={}",
-            seq_ids.len(), n_seq_max
+            seq_ids.len(),
+            n_seq_max
         );
         let idx = self.inner.n_tokens as usize;
         // SAFETY: we write INTO llama-allocated arrays (token/pos/n_seq_id/
@@ -812,7 +881,9 @@ impl Batch {
 impl Drop for Batch {
     fn drop(&mut self) {
         if matches!(self.storage, BatchStorage::Allocated { .. }) {
-            unsafe { sys::llama_batch_free(self.inner); }
+            unsafe {
+                sys::llama_batch_free(self.inner);
+            }
         }
         // OneSequence: Vec drop handles token memory; batch struct itself is
         // stack-allocated, no free needed.
@@ -834,7 +905,9 @@ impl Sampler {
     pub fn greedy() -> Self {
         let raw = unsafe { sys::llama_sampler_init_greedy() };
         // SAFETY: init_greedy is infallible in upstream llama.cpp.
-        Self { ptr: NonNull::new(raw).expect("llama_sampler_init_greedy returned null") }
+        Self {
+            ptr: NonNull::new(raw).expect("llama_sampler_init_greedy returned null"),
+        }
     }
 
     /// Start building a sampler chain. Samplers apply in insertion order;
@@ -848,27 +921,35 @@ impl Sampler {
         }
     }
 
-    /// Sample the next token from logits at `idx` in the context. Updates the
-    /// sampler's internal state (e.g., penalties).
+    /// Sample and accept the next token from logits at `idx` in the context.
+    /// llama.cpp's `llama_sampler_sample` applies the sampler chain and then
+    /// calls `llama_sampler_accept` before returning; callers must not accept
+    /// the returned token again.
     pub fn sample(&mut self, ctx: &Context<'_>, idx: i32) -> i32 {
         unsafe { sys::llama_sampler_sample(self.ptr.as_ptr(), ctx.ptr.as_ptr(), idx) }
     }
 
-    /// Notify the sampler a token was accepted (for stateful samplers like
-    /// penalties / mirostat). Usually called after sample() by the caller.
+    /// Notify the sampler that an externally-selected token was accepted.
+    /// Do not call this after `sample()`; `sample()` already accepts.
     pub fn accept(&mut self, token: i32) {
-        unsafe { sys::llama_sampler_accept(self.ptr.as_ptr(), token); }
+        unsafe {
+            sys::llama_sampler_accept(self.ptr.as_ptr(), token);
+        }
     }
 
     /// Reset sampler state (e.g., clear penalty history).
     pub fn reset(&mut self) {
-        unsafe { sys::llama_sampler_reset(self.ptr.as_ptr()); }
+        unsafe {
+            sys::llama_sampler_reset(self.ptr.as_ptr());
+        }
     }
 }
 
 impl Drop for Sampler {
     fn drop(&mut self) {
-        unsafe { sys::llama_sampler_free(self.ptr.as_ptr()); }
+        unsafe {
+            sys::llama_sampler_free(self.ptr.as_ptr());
+        }
     }
 }
 
@@ -880,7 +961,9 @@ pub struct SamplerChainBuilder {
 impl SamplerChainBuilder {
     fn add(self, smpl: *mut sys::llama_sampler) -> Self {
         // SAFETY: chain takes ownership of smpl per llama.h docs.
-        unsafe { sys::llama_sampler_chain_add(self.chain.as_ptr(), smpl); }
+        unsafe {
+            sys::llama_sampler_chain_add(self.chain.as_ptr(), smpl);
+        }
         self
     }
 
@@ -906,16 +989,8 @@ impl SamplerChainBuilder {
 
     /// Repetition/frequency/presence penalties, llama.cpp style.
     /// `last_n` = number of recent tokens to consider (0 disables, -1 = n_ctx).
-    pub fn penalties(
-        self,
-        last_n: i32,
-        repeat: f32,
-        freq: f32,
-        presence: f32,
-    ) -> Self {
-        let s = unsafe {
-            sys::llama_sampler_init_penalties(last_n, repeat, freq, presence)
-        };
+    pub fn penalties(self, last_n: i32, repeat: f32, freq: f32, presence: f32) -> Self {
+        let s = unsafe { sys::llama_sampler_init_penalties(last_n, repeat, freq, presence) };
         self.add(s)
     }
 

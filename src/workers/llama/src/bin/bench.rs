@@ -20,16 +20,26 @@ fn main() {
     let load_start = Instant::now();
     let model = Model::load(
         PathBuf::from(model_path),
-        ModelParams { n_gpu_layers: -1, use_mmap: true },
-    ).expect("load");
-    println!("Loaded in {:.2}s (vocab={})", load_start.elapsed().as_secs_f64(), model.n_vocab());
+        ModelParams {
+            n_gpu_layers: -1,
+            use_mmap: true,
+        },
+    )
+    .expect("load");
+    println!(
+        "Loaded in {:.2}s (vocab={})",
+        load_start.elapsed().as_secs_f64(),
+        model.n_vocab()
+    );
 
-    let mut ctx = model.new_context(ContextParams {
-        n_ctx: 4096,
-        n_batch: 512,
-        n_seq_max: 1,
-        ..Default::default()
-    }).expect("context");
+    let mut ctx = model
+        .new_context(ContextParams {
+            n_ctx: 4096,
+            n_batch: 512,
+            n_seq_max: 1,
+            ..Default::default()
+        })
+        .expect("context");
 
     let prompt_tokens = model.tokenize(prompt, true, false).expect("tokenize");
     let prompt_len = prompt_tokens.len();
@@ -45,8 +55,12 @@ fn main() {
     ctx.decode(&batch).expect("prefill decode");
     let prefill_elapsed = prefill_start.elapsed();
     let prefill_tok_s = prompt_len as f64 / prefill_elapsed.as_secs_f64();
-    println!("Prefill: {} tokens in {:.3}s = {:.1} tok/s",
-        prompt_len, prefill_elapsed.as_secs_f64(), prefill_tok_s);
+    println!(
+        "Prefill: {} tokens in {:.3}s = {:.1} tok/s",
+        prompt_len,
+        prefill_elapsed.as_secs_f64(),
+        prefill_tok_s
+    );
 
     // Generate N tokens
     let mut sampler = Sampler::greedy();
@@ -57,8 +71,9 @@ fn main() {
 
     for _ in 0..n_tokens {
         let token = sampler.sample(&ctx, -1);
-        sampler.accept(token);
-        if model.is_eog_token(token) { break; }
+        if model.is_eog_token(token) {
+            break;
+        }
         output.push_str(&model.token_to_piece(token));
 
         batch.clear();
@@ -71,8 +86,15 @@ fn main() {
 
     let gen_elapsed = gen_start.elapsed();
     let gen_tok_s = n_decoded as f64 / gen_elapsed.as_secs_f64();
-    println!("Generation: {} tokens in {:.3}s = {:.1} tok/s",
-        n_decoded, gen_elapsed.as_secs_f64(), gen_tok_s);
+    println!(
+        "Generation: {} tokens in {:.3}s = {:.1} tok/s",
+        n_decoded,
+        gen_elapsed.as_secs_f64(),
+        gen_tok_s
+    );
     println!("\n--- Output ---\n{}\n--- End ---", output);
-    println!("\nSummary:  prefill={:.1} tok/s  generation={:.1} tok/s", prefill_tok_s, gen_tok_s);
+    println!(
+        "\nSummary:  prefill={:.1} tok/s  generation={:.1} tok/s",
+        prefill_tok_s, gen_tok_s
+    );
 }

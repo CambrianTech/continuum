@@ -59,7 +59,6 @@ fn run(n_gpu_layers: i32, label: &str) -> Vec<i32> {
     let mut text = String::new();
     for _ in 0..N_GENERATE {
         let tok = sampler.sample(&ctx, -1);
-        sampler.accept(tok);
         if model.is_eog_token(tok) {
             break;
         }
