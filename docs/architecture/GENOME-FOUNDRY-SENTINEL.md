@@ -382,46 +382,252 @@ Two design choices that shape the rest of the architecture:
 
 ## Part 7: Demand-Aligned Recall
 
-The substrate's *default lookup* is not "load adapter by name." It is "I need help with this; give me a ranked pool I can compose from."
+The substrate's *default lookup* is not "load adapter by name." It is "I need help with this; give me a ranked pool I can compose from." Recall is the single most-used substrate primitive in this design and the place where consumer-hardware federation either earns its keep or doesn't — every cell touches it, every turn, and the ingenuity of how it spans local cache → cross-instance grid → federated peers is what makes the underdog architecture competitive.
+
+### Trait Surface
 
 ```rust
 // PROPOSED — src/workers/continuum-core/src/genome/recall.rs
 pub trait DemandAlignedRecall: Send + Sync {
+    /// The hot-path lookup. Sub-ms target on local L1/L2 hits; grid-aware
+    /// budget when results must come from a peer or federation pull.
     async fn recall(
         &self,
         query: &CapabilityQuery,
         context: &PersonaContext,
     ) -> Result<RankedPool, RecallError>;
+
+    /// Replay a previous recall deterministically from its trace record.
+    /// Used by sentinel for outcome attribution and by VDD for regression
+    /// testing. Replay produces the same RankedPool the live recall did,
+    /// using snapshotted scoring weights + artifact set at that time.
+    async fn replay(
+        &self,
+        trace: &RecallTrace,
+    ) -> Result<RankedPool, RecallError>;
 }
 
 pub struct CapabilityQuery {
-    pub task_kind: TaskKind,                       // Chat | Code | Vision | ToolUse | Memory | Plan | ...
-    pub domain_hints: Vec<DomainHint>,             // free-form tags from the persona's plan
-    pub budget: ResourceBudget,                    // memory + time budget for the composition
-    pub must_include: Vec<ArtifactRef>,            // hard pins (persona-private LoRA, sticky engrams)
-    pub prefer_refined: bool,                      // default true; sentinel-refined > foundry-imported
+    pub task_kind:        TaskKind,                // Chat | Code | Vision | ToolUse | Memory | Plan | ...
+    pub domain_hints:     Vec<DomainHint>,         // free-form tags from the persona's plan
+    pub budget:           ResourceBudget,          // memory + time budget for the composition
+    pub must_include:     Vec<ArtifactRef>,        // hard pins (persona-private LoRA, sticky engrams)
+    pub prefer_refined:   bool,                    // default true; sentinel-refined > foundry-imported
+    pub scope:            RecallScope,             // Local | LocalThenGrid | Federation { ... }
+    pub freshness_target: FreshnessTarget,         // BestEffort | FreshAsOf(ts) | Strict
+}
+
+pub struct PersonaContext {
+    pub persona:                 PersonaId,
+    pub current_composition:     Option<CompositionRef>,   // what's already hot
+    pub recent_outcomes:         OutcomeWindow,            // last N turns of outcomes (sentinel input)
+    pub conversation_trajectory: TrajectoryHint,           // for speculative weight on probable next-task
+    pub trust_overrides:         Vec<(PeerId, TrustClass)>,// user-explicit trust adjustments
 }
 
 pub struct RankedPool {
-    pub layers: Vec<(LoRALayerRef, RecallScore)>,
-    pub experts: Vec<(MoEExpertRef, RecallScore)>,
-    pub engrams: Vec<(EngramRef, RecallScore)>,
+    pub layers:           Vec<(LoRALayerRef,  RecallScore, ResidencyHint)>,
+    pub experts:          Vec<(MoEExpertRef,  RecallScore, ResidencyHint)>,
+    pub engrams:          Vec<(EngramRef,     RecallScore, ResidencyHint)>,
     pub composition_hint: CompositionHint,         // suggested stack order + weights
+    pub trace_ref:        RecallTrace,             // sentinel + VDD replay handle
 }
 
-pub struct RecallScore {
-    pub semantic: f32,                             // query → artifact metadata similarity
-    pub outcome_history: f32,                      // how well this artifact did in similar contexts
-    pub recency: f32,                              // recent-use bonus
-    pub tier_proximity: f32,                       // already-hot artifacts get small bonus (cache locality)
-    pub provenance_trust: f32,                     // sentinel-refined > imported; trusted source > unknown
-    pub combined: f32,                             // weighted combination; weights are governor-tunable
+pub enum RecallScope {
+    Local,                                          // never leave this machine
+    LocalThenGrid { max_grid_pulls: usize },        // local first; grid pulls bounded
+    Federation { peers: Vec<PeerId>, max_latency_ms: u32 },
+}
+
+pub enum ResidencyHint {
+    Hot { tier: Tier },                             // already L1/L2-resident
+    Local { tier: Tier },                           // L3-L5 on this machine; promotable
+    GridPeer { peer: PeerId, est_latency_ms: u32 }, // resident on a federated peer
+    NotResident { acquirable_from: AcquireSource }, // foundry would have to import or sentinel refine
 }
 ```
 
-The persona doing X asks for help with X under a budget; the substrate returns the ranked pool; the persona keeps agency over *how* to compose. The substrate handles *what's available + relevant + cached*.
+`ResidencyHint` is the load-bearing addition: the persona doesn't just see *what's relevant*, it sees *where it lives* and *what it costs to use*. A persona on a MacBook Air running tight on VRAM can pick the local L3 layer over a slightly-higher-scoring layer on a peer's 5090 — because the scoring already incorporates `tier_proximity`, but the explicit `ResidencyHint` lets the persona make the cost trade-off visibly.
 
-This is the API every cell should reach for. It is the single most-used substrate primitive in this design.
+### The Scoring Function — Explicit, Tunable, Sentinel-Refined
+
+The combined score is a weighted sum, but the weights are dynamic — governor-tunable per hardware class and sentinel-refined per persona over time. The base function is intentionally simple so its behavior is auditable:
+
+```rust
+// PROPOSED — src/workers/continuum-core/src/genome/recall/scoring.rs
+pub fn score(
+    artifact: &ArtifactCandidate,
+    query:    &CapabilityQuery,
+    ctx:      &PersonaContext,
+    weights:  &RecallScoreWeights,
+) -> RecallScore {
+    let semantic         = cosine(query.embed(), artifact.embed());
+    let outcome_history  = outcome_window_score(artifact.id, ctx.recent_outcomes);
+    let recency          = recency_decay(artifact.last_used, now(), HALF_LIFE);
+    let tier_proximity   = match artifact.residency {
+        ResidencyHint::Hot { .. }        => 1.0,
+        ResidencyHint::Local { tier }    => 0.7 - 0.1 * (tier as f32),    // L3 ≈ 0.4, L4 ≈ 0.3, L5 ≈ 0.2
+        ResidencyHint::GridPeer { est_latency_ms, .. } => grid_penalty(est_latency_ms),
+        ResidencyHint::NotResident { .. } => 0.0,
+    };
+    let provenance_trust = trust_score(artifact.provenance, ctx.trust_overrides);
+
+    let combined =
+          weights.semantic         * semantic
+        + weights.outcome_history  * outcome_history
+        + weights.recency          * recency
+        + weights.tier_proximity   * tier_proximity
+        + weights.provenance_trust * provenance_trust;
+
+    RecallScore { semantic, outcome_history, recency, tier_proximity, provenance_trust, combined }
+}
+```
+
+Each factor has a clean definition:
+
+- **`semantic`** is cosine similarity between query embedding and artifact metadata embedding. The embedding model is itself a foundry-imported artifact in v1 (bootstrap), sentinel-refined in v2 (Open Question 2 in this doc).
+- **`outcome_history`** scores how well this artifact performed in the persona's last N turns of similar tasks. `outcome_window_score` is exponentially-decayed weighting of explicit outcomes (user signal) and implicit outcomes (downstream tool success, conversation continuation length).
+- **`recency`** is exponential decay over time-since-last-use. Half-life is governor-tunable; default 24h.
+- **`tier_proximity`** penalizes cost-to-promote. Hot artifacts score 1.0; cold archive scores 0.2; grid peers score a function of estimated latency (see `grid_penalty` below).
+- **`provenance_trust`** is the artifact's trust score adjusted by the persona's trust overrides. Sentinel-refined-locally > sentinel-refined-by-trusted-peer > foundry-imported > anonymous-public.
+
+`grid_penalty(latency_ms)` is the load-bearing cost function for federated recall:
+
+```rust
+fn grid_penalty(est_latency_ms: u32) -> f32 {
+    // Same-LAN peer (< 10 ms):   ~0.55  — slightly worse than local L3
+    // Same-region (< 50 ms):     ~0.35
+    // Cross-region (< 200 ms):   ~0.15
+    // Slow / unreliable:         ~0.05
+    0.6 * (-(est_latency_ms as f32 / 100.0)).exp()
+}
+```
+
+The penalty is *steep* — a peer's slightly-better artifact has to be substantially better to overcome the latency cost. This is the architectural choice: on consumer hardware, **a hot local L3 hit usually wins**, and that's why a federated swarm of MacBook Airs can compete with a single datacenter — the swarm's local cache wins on latency, the swarm's diversity wins on coverage, and the substrate's recall makes both visible to the persona without it having to know the topology.
+
+### Dynamic Weights — Governor And Sentinel Both Tune
+
+`RecallScoreWeights` is part of `GovernorPolicy` (Part 11). The governor sets it per hardware class:
+
+```toml
+[recall_weights]
+# Air: cache locality matters more (smaller hot set)
+semantic         = 0.40
+outcome_history  = 0.30
+recency          = 0.10
+tier_proximity   = 0.15
+provenance_trust = 0.05
+
+[recall_weights]
+# 5090: semantic match matters more (room to hold more artifacts hot)
+semantic         = 0.50
+outcome_history  = 0.20
+recency          = 0.10
+tier_proximity   = 0.05
+provenance_trust = 0.15
+```
+
+Sentinel observes which `recall → composition → outcome` chains produced good results and refines the weights *per persona over time*. A persona that consistently does better with sentinel-refined artifacts than foundry-imported ones gets a higher local `provenance_trust` weight. A persona that does better with semantically-distant-but-recently-used artifacts gets higher `recency`. This is profile-guided optimization of the recall function itself.
+
+Sentinel writes its refinements to the governor as `RecallScoreWeights` updates with provenance. The governor applies them per persona (the policy carries a per-persona override table) and they propagate through the normal `arc_swap`-published policy. Sentinel-refined recall weights are also a publishable artifact in the genome pool — federated peers can adopt another instance's weights with the usual `provenance_trust` gating.
+
+### Indexing — Sub-ms Local, Coordinated Grid
+
+The recall index is a layered structure:
+
+| Layer | Purpose | Backed by | Lookup cost |
+|---|---|---|---|
+| Working-set index | "is this artifact ref hot for this persona right now" | `HashMap<PersonaId, BTreeSet<ArtifactRef>>` | O(log n), in-memory |
+| Local catalog | All artifacts in tiers L1–L5 with embeddings + metadata | sqlite + on-disk ANN index (hnsw) over embeddings | < 1 ms for top-K |
+| Grid catalog | Federated peers' artifact summaries (id + embedding + provenance + last_seen) | gossip-propagated via the sharing protocol | < 5 ms cached; cross-peer fetch if cold |
+| Federation catalog | The broader hive (opt-in) | pull-based, governor-rate-limited | bounded by `federation_pull_cadence` |
+
+A recall query touches the layers in order. The first that satisfies the budget + freshness target wins. Most queries return from the local catalog (or even the working-set index for repeat-within-turn queries). Grid + federation catalogs are consulted only when the local set is insufficient or when the persona's `RecallScope` explicitly asks for them.
+
+### Within-Turn Caching And Coalescing
+
+A persona doing one turn often issues multiple recalls — initial context-gather, then re-recall after a tool-use, then again for response composition. These should not re-execute the full pipeline:
+
+```rust
+// PROPOSED — src/workers/continuum-core/src/genome/recall/cache.rs
+pub struct WithinTurnRecallCache {
+    persona:    PersonaId,
+    turn_id:    TurnId,
+    by_query:   HashMap<QueryFingerprint, Arc<RankedPool>>,
+    in_flight:  HashMap<QueryFingerprint, BroadcastReceiver<Arc<RankedPool>>>,
+}
+```
+
+Two behaviors:
+
+1. **Memoization within the turn.** Identical `CapabilityQuery` from the same persona in the same turn returns the cached `RankedPool` immediately. Cleared when the turn frame is released.
+2. **Coalescing of concurrent identical queries.** If two cells in the same persona's turn issue the same query milliseconds apart, the second one subscribes to the first's in-flight `BroadcastReceiver` rather than re-executing.
+
+Across personas, similar queries may not be identical (different `must_include` pins, different `PersonaContext`) so cross-persona coalescing is at the *sub-query* level: the embedding generation step coalesces (one embed call per unique query text), the catalog lookup step coalesces (one ANN query per unique embedding), the scoring step does not (each persona's `PersonaContext` differs).
+
+### Cross-Instance Recall — The Grid Coordination Layer
+
+When a recall's `RecallScope` is `LocalThenGrid` and the local catalog doesn't satisfy the budget, the substrate consults the grid. This is the ingenuity layer — the federated swarm has to coordinate without becoming a chatter storm.
+
+Three rules:
+
+1. **No instance queries the grid more often than its `federation_pull_cadence` allows.** Set per-hardware-class by the governor: Air ≈ once per 10 minutes; 5090 ≈ once per minute. This is the same cadence that publishes new artifacts; pull and push share a budget.
+2. **Grid catalog is gossip-propagated, not query-on-demand.** Each instance publishes its artifact summaries (not the artifact blobs) on its `federation_pull_cadence`. Other instances cache the summaries. A recall query against the grid catalog hits the *local cache of the gossip*, not the live peer — sub-ms latency for what would otherwise be a multi-hop network query.
+3. **Fetching a grid artifact blob requires explicit promotion.** A `RecallResult` containing a `ResidencyHint::GridPeer` does *not* fetch the blob until the persona's composition pins it. The substrate pulls the blob into the local L4 with provenance preserved; subsequent recalls find it locally.
+
+The win condition: **a swarm of Airs gossiping summaries every 10 minutes produces a federated artifact catalog that's effectively realtime for the recall scoring function**, because the scoring function uses the cached summary, not the live blob. Only on pin does the blob move. This is how the architecture stays performant on cellular-class bandwidth while still letting the swarm coordinate at the level of "what exists, what's been refined, what's been retired."
+
+### Replay Semantics
+
+Sentinel attribution and VDD regression both require replaying a previous recall and getting the same `RankedPool`. The trait's `replay(trace)` method does this:
+
+```rust
+pub struct RecallTrace {
+    pub trace_id:           TraceId,
+    pub query:              CapabilityQuery,            // snapshot at recall time
+    pub context_snapshot:   PersonaContextSnapshot,     // snapshot at recall time
+    pub policy_version:     u64,                        // governor policy at recall time
+    pub catalog_snapshot:   CatalogSnapshotRef,         // content-hashed; deterministic replay
+    pub timestamp:          SystemTime,
+    pub returned_pool:      RankedPool,                 // for outcome attribution
+}
+```
+
+A replay re-runs `score()` over the snapshotted catalog with the snapshotted weights. The result is deterministic and bit-equal to the original `returned_pool`. Sentinel uses this to attribute "did the artifact I refined actually win the ranking on the turn it should have?" — without it, sentinel can't tell the difference between "my refinement helped" and "the artifact I refined just happened to be hot when it ran."
+
+### Recall Under Pressure
+
+The governor's cascade (Part 11) affects recall in defined ways:
+
+| Cascade step | Effect on recall |
+|---|---|
+| 0 (normal) | full pipeline; grid + federation as requested |
+| 1 | speculation deprioritized; recall returns slightly smaller pools (top-K reduced) |
+| 2 | grid pulls deferred unless `RecallScope::Federation` explicit; otherwise local-only |
+| 3 | working-set index is the only fast layer; ANN index falls back to higher-error / faster K |
+| 4 | federation pulls suspended; grid catalog stale-served |
+| 5 | recall caps at L1+L2 only; cold-archive lookups return `Deferred(MemoryPressure)` |
+
+Recall under pressure is *correct* — it doesn't lie, doesn't return placeholders. It returns smaller, more-conservative pools with explicit `ResidencyHint::Deferred` entries when an artifact exists but can't safely be promoted. The persona's composer sees this and either narrows its composition or defers the turn — never silently degrades.
+
+### Performance Budget
+
+Recall is in the hot path. The budget is tight:
+
+| Operation | Air target | 5090 target |
+|---|---|---|
+| Within-turn cache hit | < 50 μs | < 30 μs |
+| Working-set index hit | < 200 μs | < 100 μs |
+| Local catalog (ANN top-K) | < 5 ms | < 2 ms |
+| Grid catalog (cached gossip) | < 5 ms | < 5 ms |
+| Federation catalog (cached) | < 10 ms | < 10 ms |
+| Federation pull (cold) | bounded by `federation_pull_cadence`, off hot path |
+
+The first three rows cover ≥ 95% of recalls. The substrate's acceptance criteria includes a smoke test that verifies P50/P99 against these budgets on both anchors.
+
+### Why This Earns Its Space In The Doc
+
+Recall is where the architecture wins or loses on consumer hardware. A naive recall that hit GitHub or HuggingFace for every query would make the system unusable on cellular bandwidth. A purely local recall would forfeit the federation's collective intelligence. The substrate's win is that recall is **local-first, gossip-aware, sentinel-refined, governor-tuned, cost-visible to the persona, and deterministic in replay** — five properties that together let an Air running solo, a 5090 running solo, and a swarm of Airs + 5090s all use the same Rust code path and all benefit from each other's evolved genome. That's the dynamicism-across-the-grid claim made concrete.
 
 ## Part 8: Composition
 
