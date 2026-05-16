@@ -440,20 +440,36 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
     echo "-----------------------------------------------------------"
 
     # Skip gracefully when the browser-test prerequisites aren't met.
-    # The browser-ping test pings the BROWSER through the core socket;
-    # if either continuum-core isn't running OR the browser isn't
-    # connected/responsive, the test sits for 10 minutes then fails.
+    # The browser-ping + chat-roundtrip tests both round-trip through
+    # continuum-core's Rust IPC socket. If continuum-core isn't running
+    # OR the browser isn't connected/responsive, chat-roundtrip hangs
+    # or fails on IPC.
     #
-    # Probe with a real `./jtag ping` and a short timeout. If it
-    # succeeds within 10 seconds, both core + browser are healthy and
-    # the gate is meaningful. If it times out or errors, the gate
-    # can't run — skip with a loud warning rather than block the
-    # commit. CI's verify-architectures + GitHub Actions remain the
-    # authoritative pre-merge check.
-    # 10s timeout via perl fork+wait. perl's `alarm` doesn't propagate
-    # through `exec` (the SIGALRM handler is lost when the process
-    # image is replaced), so we have to fork: parent times out and
-    # kills the child if it overruns.
+    # TWO probes are required because they cover different layers:
+    #
+    # (1) `./jtag ping` — verifies the jtag-client TS surface is alive.
+    #     This is the historical probe but is INSUFFICIENT on its own:
+    #     `jtag ping` runs through PingServerCommand which collects
+    #     server info + optionally pings browser, but NEVER touches the
+    #     Rust continuum-core IPC socket. Returns OK even when core is
+    #     down. (Bug surfaced 2026-05-16 — see codex's airc broadcast
+    #     and claude-tab-1's second-source confirmation that same day.)
+    #
+    # (2) Continuum-core Unix socket probe — verifies the Rust server
+    #     is actually accepting IPC connections. This is what
+    #     chat-roundtrip needs; without it, the gate runs a test that
+    #     can only fail. Two-stage: socket file exists (-S) AND nc
+    #     accepts a 1s connection. A stale socket file from a crashed
+    #     core stays on disk but won't accept, hence both checks.
+    #
+    # If EITHER probe fails, ENABLE_BROWSER_TEST=false and the gate
+    # SKIPS browser tests rather than blocking the commit. CI's
+    # verify-architectures + GitHub Actions remain the authoritative
+    # pre-merge check.
+    #
+    # 10s perl-fork timeout pattern for jtag ping — perl's `alarm`
+    # doesn't propagate through `exec` (SIGALRM lost when process
+    # image replaced), so parent times out + kills child on overrun.
     PING_OK=true
     if ! perl -e '
         my $pid = fork();
@@ -470,16 +486,41 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
     ' > /dev/null 2>&1; then
         PING_OK=false
     fi
-    if [ "$PING_OK" = false ]; then
+
+    # Continuum-core Unix socket probe. Path matches SOCKETS.CONTINUUM_CORE
+    # in src/shared/config.ts (`${HOME}/.continuum/sockets/continuum-core.sock`).
+    # nc -U dial with 1s timeout: file-exists alone isn't enough because a
+    # stale socket from a crashed core lingers on disk; the actual connect
+    # is the truth.
+    CORE_OK=true
+    CORE_SOCKET="$HOME/.continuum/sockets/continuum-core.sock"
+    if [ ! -S "$CORE_SOCKET" ]; then
+        CORE_OK=false
+    elif ! echo "" | nc -U -w 1 "$CORE_SOCKET" >/dev/null 2>&1; then
+        CORE_OK=false
+    fi
+
+    if [ "$PING_OK" = false ] || [ "$CORE_OK" = false ]; then
         echo ""
-        echo "⚠️  System not responsive to './jtag ping' within 10s."
+        echo "⚠️  Browser-test prerequisites not met within timeout."
+        if [ "$PING_OK" = false ]; then
+            echo "     • ./jtag ping: FAILED (jtag-client / browser surface)"
+        else
+            echo "     • ./jtag ping: ok"
+        fi
+        if [ "$CORE_OK" = false ]; then
+            echo "     • continuum-core IPC ($CORE_SOCKET): NOT REACHABLE"
+        else
+            echo "     • continuum-core IPC: ok"
+        fi
         echo "   Skipping browser tests for this commit."
         echo "   To enable the browser-test gate, ensure the system is running:"
         echo "     cd src && npm start"
         echo "   Then verify with:"
         echo "     cd src && ./jtag ping"
+        echo "     [ -S $CORE_SOCKET ] && echo 'core socket present'"
         echo ""
-        echo "✅ Browser tests: SKIPPED (system not responsive)"
+        echo "✅ Browser tests: SKIPPED (prerequisite not met)"
         ENABLE_BROWSER_TEST=false
     fi
 fi
