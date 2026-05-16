@@ -29,6 +29,7 @@ pub mod forge;
 pub mod gpu;
 pub mod http;
 pub mod inference;
+pub mod inference_capability;
 pub mod ipc;
 pub mod live;
 pub mod logging;
