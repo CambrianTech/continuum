@@ -170,6 +170,7 @@ if an agent cannot work a lane, it says so on AIRC and the lane is reassigned.
 | E. Pressure broker and paging gate | Bootstrap landed (#1307 PR-1 broker types/registry, #1308 PR-2 IPC, #1310 PR-3 status surface, #1313 runtime lease broker); paging (KV/LoRA residency) + pooled mtmd context still open | RTX/Mac runtime lanes | `feature/pressurebroker-admission-gate` (bootstrap stack merged); follow-ups branch per PR | Unified admission gate blocks unsafe backend/model/context loads | Concurrency test refuses unsafe second load and reports `Backpressured`/`Unavailable` |
 | F. TS cognition deletion ratchet | Manual deletion progressing (~2500 LOC TS deleted via 8 PRs this session) but mechanical CI gate not yet enforced | **Needs owner claim** — without the ratchet, new TS cognition can still mechanically slip back in | `feature/persona-ts-deletion-ratchet` | CI/check script enforces no new persona cognition TS and net-negative touched cognition | PR fails if verb-shaped TS cognition grows or introduces forbidden provider/fallback strings |
 | G. Canary PR hygiene | In progress; rotating from Codex PM → this manager. Doc refresh in flight on `joel/docs-alpha-refresh` | This manager | `docs/alpha-rust-workstreams` (current refresh: `joel/docs-alpha-refresh`) | This document plus issue/PR checklist cleanup | Every active PR has owner, blocker, validation command, and canary target |
+| H. Substrate governor + tiered genome cache | **Proposed** — design landed via continuum#1327. 7-PR implementation sequence: governor types → tier stores → recall API → composer+speculator → foundry skeleton → sentinel skeleton → sharing-protocol local-first | **Needs owner claim** | `feature/substrate-governor-genome-cache` | `SubstrateGovernor` + `HardwareClass` + hardware detection at boot | Same Rust binary writes different policy on MacBook Air vs RTX 5090; VDD records prove different tier sizes / concurrency / speculation aggressiveness |
 
 Adjacent active workstream not in the lane table:
 
@@ -219,6 +220,17 @@ Lane claim updates as of 2026-05-16:
 - Lane G refresh in flight: this document, the supporting doc cross-links
   (CBAR-SUBSTRATE precedence rule added), and the lane status table you are
   reading.
+- Lane H proposed via continuum#1327
+  ([GENOME-FOUNDRY-SENTINEL.md](../architecture/GENOME-FOUNDRY-SENTINEL.md)).
+  Owns the artifact-sharing economy layered on top of CBAR-SUBSTRATE:
+  tiered genome cache (L1–L5), `WorkingSetManager` + page faults, foundry
+  (JIT for SOTA absorption), sentinel-AI (profile-guided optimization
+  from lived traces), demand-aligned recall, composer + speculator, and
+  the `SubstrateGovernor` (DVFS for AI — same Rust code on MacBook Air
+  and RTX 5090, different governor policy). Sibling to Lane E
+  (`PressureBroker`): broker owns admission; governor owns sizing.
+  Needs owner claim; 7-PR sequence detailed in the GENOME-FOUNDRY-SENTINEL
+  doc's Part 13.
 
 ### Lane A: Rust Model Registry And Admission
 
@@ -1002,6 +1014,13 @@ supporting docs are the specifications its lanes converge on.
   Module authors declare subscriptions/lane/cadence and write the small piece
   of actual work — everything else is inherited "for free." Lanes C/D/E in
   this document converge on this substrate.
+- [Genome, Foundry, Sentinel-AI](../architecture/GENOME-FOUNDRY-SENTINEL.md)
+  — the artifact-sharing economy on top of the CBAR substrate. Tiered genome
+  cache (L1–L5), `WorkingSetManager` + page faults, foundry (JIT for SOTA
+  absorption), sentinel-AI (profile-guided optimization from lived traces),
+  demand-aligned recall, composer + speculator, and the `SubstrateGovernor`
+  (DVFS — same Rust code on MacBook Air and RTX 5090, different governor
+  policy). Lane H converges on this doc.
 
 **Cognition / persona migration:**
 
@@ -1089,17 +1108,29 @@ this up, claim explicitly on AIRC before you start.
    when it lands. PR-2 is the routing decision; PR-3 is the eviction-on-grid
    policy. Owner remains airc-8a5e unless they explicitly hand off on AIRC.
 
-9. **Doc refresh follow-ups (this manager).** After this batch lands on
-   canary, refine the supporting docs and cross-link each back into the
-   Document Map above:
-   - `CBAR-SUBSTRATE-ARCHITECTURE.md` — tighten trait sketch; add an
-     engram-analyzer worked example so "new module inherits concurrency,
-     scheduling, memory and pressure responses for free" is a concrete
-     reference and not a slogan.
-   - `CONTINUUM-ARCHITECTURE.md` — strip stale TS pseudocode; reflect that
-     cognition is migrating to continuum-core.
-   - `CONTINUUM-VISION.md` — audit TS-shaped interface types.
-   - `CLAUDE.md` — point at CBAR-SUBSTRATE as the canonical substrate spec.
-   - `UNIVERSAL-SENSORY-ARCHITECTURE.md`, `UNIVERSAL-LEARNING-ARCHITECTURE.md`,
-     `QUEUE-DRIVEN-COGNITION.md` — mark stale sections DEPRECATED with a
-     pointer to the canonical replacement rather than silently editing.
+9. **Claim Lane H (Substrate governor + tiered genome cache).** Proposed via
+   continuum#1327 ([GENOME-FOUNDRY-SENTINEL.md](../architecture/GENOME-FOUNDRY-SENTINEL.md)).
+   7-PR implementation sequence is detailed in that doc's Part 13: governor
+   types → tier stores → recall API → composer + speculator → foundry
+   skeleton → sentinel skeleton → sharing-protocol local-first. Lane H is
+   sibling to Lane E: broker owns admission; governor owns sizing. The
+   alpha-floor pieces are governor + tier stores + recall API; the rest is
+   alpha-stretch but the sequence is fixed.
+
+10. **Doc refresh follow-ups (this manager).** After this batch lands on
+    canary, refine the supporting docs and cross-link each back into the
+    Document Map above:
+    - `CBAR-SUBSTRATE-ARCHITECTURE.md` — landed via continuum#1324 with the
+      engram-analyzer worked example and codex's derive-macro acceptance gate.
+    - `GENOME-FOUNDRY-SENTINEL.md` — landed via continuum#1327; the
+      artifact-economy doc on top of CBAR substrate.
+    - `CONTINUUM-ARCHITECTURE.md` — landed via continuum#1317; stale TS
+      pseudocode framed correctly and codex's persona-cognition invariants
+      pinned in the Substrate Contract section.
+    - `CONTINUUM-VISION.md` — landed via continuum#1320; TS-shaped interface
+      types labelled illustrative with concept→Rust map.
+    - `CLAUDE.md` — point at CBAR-SUBSTRATE + GENOME-FOUNDRY-SENTINEL as the
+      canonical substrate specs. (Next.)
+    - `UNIVERSAL-SENSORY-ARCHITECTURE.md`, `UNIVERSAL-LEARNING-ARCHITECTURE.md`,
+      `QUEUE-DRIVEN-COGNITION.md` — mark stale sections DEPRECATED with a
+      pointer to the canonical replacement rather than silently editing.
