@@ -161,36 +161,64 @@ on each other. Each lane starts from `canary`, opens a focused PR back to
 `canary`, and posts validation evidence before merge. Assignment is explicit:
 if an agent cannot work a lane, it says so on AIRC and the lane is reassigned.
 
-| Lane | Current owner | Branch | First PR | Merge gate |
-|---|---|---|---|---|
-| A. Rust model registry and admission | Claimed: Codex/AIRC lane | `feature/rust-model-registry-admission` | Typed Rust catalog, capability request, resolver/admission explanation | Rust resolver tests plus missing-Qwen fail-hard test |
-| B. Installer model seeding and GPU profiles | Claimed: RTX/Windows Docker lane; Lane A owns registry artifact contract | `feature/docker-gpu-profile-modular` | `model-init`/installer seeds required Qwen artifacts into the runtime model volume | Windows/RTX fresh install reaches model-ready state or fails loud |
-| C. VDD telemetry substrate | Claimed: RTX/Windows substrate; Mac/Metal adapter sub-task claimed | `feature/rust-vdd-telemetry-substrate` | Structured timing/resource metrics flow into trace/event bus | VDD report shows first-token, tok/s, CPU, GPU, VRAM/RSS from structured data |
-| D. CBAR persona runtime frame | Suggested for Mac/Rust runtime lane; explicit owner still needed | `feature/cbar-persona-runtime-frame` | Rust `PersonaTurnFrame` with lazy RAG/media/priority outputs and inbox coalescing | Multi-message smoke produces one consolidated turn, not per-event inference flood |
-| E. Pressure broker and paging gate | Needs owner claim after C/D boundaries settle | `feature/pressurebroker-admission-gate` | Unified admission gate blocks unsafe backend/model/context loads | Concurrency test refuses unsafe second load and reports `Backpressured`/`Unavailable` |
-| F. TS cognition deletion ratchet | Needs owner claim; can run in parallel | `feature/persona-ts-deletion-ratchet` | CI/check script enforces no new persona cognition TS and net-negative touched cognition | PR fails if verb-shaped TS cognition grows or introduces forbidden provider/fallback strings |
-| G. Canary PR hygiene | Codex PM lane | `docs/alpha-rust-workstreams` | This document plus issue/PR checklist cleanup | Every active PR has owner, blocker, validation command, and canary target |
+| Lane | State @ 2026-05-16 | Owner | Branch | First PR | Merge gate |
+|---|---|---|---|---|---|
+| A. Rust model registry and admission | In progress | RTX/Windows lane (catalog + admission); supervision rotated from Codex PM → this manager | `feature/rust-model-registry-admission` (merged-stack), follow-ups on canary | Typed Rust catalog, capability request, resolver/admission explanation | Rust resolver tests plus missing-Qwen fail-hard test |
+| B. Installer model seeding and GPU profiles | Phase 1 landed (#1297 Docker tier surface); GPU profile + tier-pool eviction still open (#1238/#1239) | RTX/Windows Docker lane; Lane A owns registry artifact contract | `feature/docker-gpu-profile-modular` | `model-init`/installer seeds required Qwen artifacts into the runtime model volume | Windows/RTX fresh install reaches model-ready state or fails loud |
+| C. VDD telemetry substrate | In progress; structured RuntimeMetric emitting from inference and persona but VDD report command not yet bound | RTX/Windows substrate; Mac/Metal adapter sub-task carried by Mac lane | `feature/rust-vdd-telemetry-substrate` | Structured timing/resource metrics flow into trace/event bus | VDD report shows first-token, tok/s, CPU, GPU, VRAM/RSS from structured data |
+| D. CBAR persona runtime frame | **Unstarted.** Critical Phase 0 gap. CBAR-SUBSTRATE-ARCHITECTURE.md spec exists but RuntimeFrame/CognitionTurnFrame are not built. Most other lanes are blocked-or-degraded on this | **Needs owner claim** — this is the alpha critical path | `feature/cbar-persona-runtime-frame` | Rust `PersonaTurnFrame` with lazy RAG/media/priority outputs and inbox coalescing | Multi-message smoke produces one consolidated turn, not per-event inference flood |
+| E. Pressure broker and paging gate | Bootstrap landed (#1307 PR-1 broker types/registry, #1308 PR-2 IPC, #1310 PR-3 status surface, #1313 runtime lease broker); paging (KV/LoRA residency) + pooled mtmd context still open | RTX/Mac runtime lanes | `feature/pressurebroker-admission-gate` (bootstrap stack merged); follow-ups branch per PR | Unified admission gate blocks unsafe backend/model/context loads | Concurrency test refuses unsafe second load and reports `Backpressured`/`Unavailable` |
+| F. TS cognition deletion ratchet | Manual deletion progressing (~2500 LOC TS deleted via 8 PRs this session) but mechanical CI gate not yet enforced | **Needs owner claim** — without the ratchet, new TS cognition can still mechanically slip back in | `feature/persona-ts-deletion-ratchet` | CI/check script enforces no new persona cognition TS and net-negative touched cognition | PR fails if verb-shaped TS cognition grows or introduces forbidden provider/fallback strings |
+| G. Canary PR hygiene | In progress; rotating from Codex PM → this manager. Doc refresh in flight on `joel/docs-alpha-refresh` | This manager | `docs/alpha-rust-workstreams` (current refresh: `joel/docs-alpha-refresh`) | This document plus issue/PR checklist cleanup | Every active PR has owner, blocker, validation command, and canary target |
 
-Claim updates from AIRC on 2026-05-11:
+Adjacent active workstream not in the lane table:
 
-- Lane A was claimed by the Codex/AIRC lane because it extends the existing
-  resolver/sensory-profile/host-probe work and directly answers the missing
-  Qwen artifact finding from Windows/RTX.
-- Lane B Docker profile/volume mechanics were claimed by the RTX/Windows lane.
-  Lane A still owns the Rust registry artifact contract that Lane B consumes.
-- Lane C was claimed by the RTX/Windows lane for substrate schema, adapter
-  wiring, and CUDA/process metrics. A Mac/Metal adapter sub-task was claimed to
-  feed the same schema from the existing Metal monitor path.
-- RAG source tracing and `SEAM_RAG_COMPOSE` must coordinate with Lane D even if
-  implemented as a smaller Lane C-compatible PR. The boundary is: Lane C owns
-  metric/event substrate; Lane D owns persona turn-frame, RAG-as-lazy-output,
-  and inbox coalescing.
-- Lane A's first audit found two concrete install defects to fix early:
-  `install.sh` used a `primary` tier name while model download metadata expects
-  `mba|mid|full`, and `model-init` guessed RAM from inside a 2GB-limited
-  container. The first canary fix should unify tier naming, pass an explicit
-  tier into `model-init`, and fail loud when a tier has no required artifacts.
-- Lanes D, E, and F remain open unless claimed in AIRC/issue comments.
+- **GRID-INFERENCE-ROUTING** — PR-1 (inference capability announcer + probe +
+  registry) in flight on `feat/grid-inference-routing-pr2-announcer`. This is
+  the grid-side counterpart of Lane A: Lane A says which model the request
+  needs, GRID-INFERENCE-ROUTING says which peer can serve it. Owner: airc-8a5e.
+  Tracked under § 7 (AIRC And Continuum Internal AI Collaboration) below.
+
+Lane claim updates as of 2026-05-16:
+
+- Lane A has shipped its first wave — `model_registry/` exists in
+  `src/workers/continuum-core/src/`, with curated catalog rows and an
+  admission resolver. Open follow-ups: missing-Qwen fail-hard end-to-end (must
+  surface in the chat UI, not just structured status) and `ts-rs` exports
+  shrink the duplicate TS model maps in Lane F's deletion targets.
+- Lane B Phase 1 landed (#1297 `system/docker-tier-stats` IPC + ts-rs
+  `DockerTierStats`). Capability-visible health and tier-pool eviction
+  (#1238/#1239) are the next Lane B PRs; both should consume the Lane A
+  registry artifact contract, not invent a parallel one.
+- Lane C structured `RuntimeMetric` events emit from inference paths, but the
+  `vdd-report-command` step (Lane C PR sequence step 3) is not yet bound. As a
+  result, "VDD" is still mostly read from logs rather than from a single
+  command's structured output. RAG source tracing and `SEAM_RAG_COMPOSE`
+  remain joint with Lane D.
+- **Lane D is the most expensive currently-unstarted lane.** PressureBroker
+  (Lane E) and the inbox coalescing CBAR pattern were both written in the
+  expectation that a `RuntimeFrame` / `CognitionTurnFrame` exists. Until it
+  does, every persona-side consumer still owns ad-hoc fan-out and the
+  inference-per-event flood the lane was created to remove. Claiming this lane
+  is the single highest leverage move on the board right now.
+- Lane E bootstrap landed (#1307 / #1308 / #1310 / #1313). The remaining lane
+  scope is paging (KV/LoRA residency, pooled mtmd context, eviction policy)
+  and **deletion of pre-broker concurrency hacks** that still bypass the
+  broker. Concrete example pinned for deletion:
+  `src/workers/inference-grpc/src/main.rs` — `get_num_workers()` reads
+  `INFERENCE_WORKERS` from `~/.continuum/config.env` and otherwise picks a
+  worker count from system memory at startup. Both branches are exactly the
+  "we do not hard code" / "they code in tokio not whatever their fee fees say"
+  anti-pattern. PressureBroker owns concurrency; this function should be
+  deleted and the worker count derived from broker leases.
+- Lane F has been progressing through manual deletion (rate_proposals adapter
+  zero-callers delete, generate_recipe shim collapse, #1306 cognition cap
+  lift, #1309 TS suppression rip — ~2500 LOC TS removed this session). The
+  mechanical ratchet itself (the CI gate that prevents *new* verb-shaped TS)
+  has not yet landed. Until it does, the deletion progress is reversible.
+- Lane G refresh in flight: this document, the supporting doc cross-links
+  (CBAR-SUBSTRATE precedence rule added), and the lane status table you are
+  reading.
 
 ### Lane A: Rust Model Registry And Admission
 
@@ -1006,15 +1034,72 @@ in a follow-up.
 
 ## Immediate Next Actions
 
-1. Merge or unblock current canary PRs:
-   - #1071 and #1085 are blocked on fresh Linux/amd64 `:pr-*` image publishes,
-     then Carl smoke reruns.
-   - #1110 is the Continuum `.airc/` pilot and should land after validation.
-   - #1026 is superseded by #1071 unless a reviewer finds unique salvageable
-     work.
-2. Keep AIRC current: AIRC canary contains #560 and #561; #562 owns the next
-   queue/nudge slice.
-3. Use AIRC to assign image publishing, CI triage, and pilot validation to
-   online agents instead of relying on chat history.
-4. Resume Rust persona/runtime work only after the canary lane has a clear
-   state: merged, image-blocked with owner, or closed as stale.
+Ordered by alpha leverage, not by who is online. If you are the agent picking
+this up, claim explicitly on AIRC before you start.
+
+1. **Claim Lane D (CBAR persona runtime frame).** This is the highest-leverage
+   unstarted lane on the board. PressureBroker (Lane E) and the inbox
+   coalescing pattern were both written expecting `RuntimeFrame` /
+   `CognitionTurnFrame` to exist; every day it does not, persona-side
+   consumers continue to own ad-hoc fan-out and produce the inference-per-event
+   flood. Spec: see [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
+   §"Six missing pieces", item 1 (RuntimeFrame) and item 3 (chat turn fanout
+   onto CognitionTurnFrame).
+
+2. **Land the universal-trait "for free" triplet** described in
+   CBAR-SUBSTRATE-ARCHITECTURE.md — the `RuntimeModule` base trait, the
+   `#[derive(RuntimeModule)]` macro, and the scaffold generator. Every new
+   module should inherit concurrency / memory-pressure / device-pressure /
+   telemetry from the base. Today, `src/workers/continuum-core/src/modules/`
+   has each module re-declaring its own concurrency and resource policy, which
+   is the friction this triplet exists to remove.
+
+3. **Delete `get_num_workers()` in `src/workers/inference-grpc/src/main.rs`**
+   and replace with PressureBroker leases. The current implementation reads
+   `INFERENCE_WORKERS` from `~/.continuum/config.env` and otherwise heuristics
+   from system memory at startup — both branches violate the "we do not hard
+   code" rule and the "dynamic, no static config-decided concurrency" rule.
+   This is a Lane E deletion target, not a new feature.
+
+4. **Claim Lane F mechanical ratchet PR.** The TS deletion progress from this
+   session (~2500 LOC across 8 cognition PRs) is reversible until the CI gate
+   exists. Lane F PR sequence step 1 (`persona-ts-ratchet-script`) is small
+   and unblocks step 2 (CI enforcement).
+
+5. **Bind Lane C `vdd-report-command`.** Structured `RuntimeMetric` events
+   already emit from inference paths, but VDD is still read from logs because
+   the report command was not bound. This is small and unblocks every PR's
+   "VDD: tokens/sec improved from X → Y" claim.
+
+6. **Widen the no-CPU-fallback contract test.** The current
+   `no_cpu_fallback_contract.rs` regression test covers three whitelisted
+   paths (llama.cpp / ORT). It does **not** cover the Candle-side device
+   selection where the orpheus + inference-grpc CPU fallbacks lived before
+   #1314. Until the test covers the whole workers tree, the gate that the
+   test was written to enforce ("no silent CPU fallback") is partially
+   honored only.
+
+7. **Lane B follow-ups: capability-visible health + tier-pool eviction.**
+   #1297 landed the Docker tier stats surface; #1238 / #1239 still open. Both
+   should consume the Lane A registry artifact contract — do not invent a
+   parallel one.
+
+8. **GRID-INFERENCE-ROUTING.** airc-8a5e is in flight on PR-1 (announcer +
+   probe + registry) on `feat/grid-inference-routing-pr2-announcer`. Review
+   when it lands. PR-2 is the routing decision; PR-3 is the eviction-on-grid
+   policy. Owner remains airc-8a5e unless they explicitly hand off on AIRC.
+
+9. **Doc refresh follow-ups (this manager).** After this batch lands on
+   canary, refine the supporting docs and cross-link each back into the
+   Document Map above:
+   - `CBAR-SUBSTRATE-ARCHITECTURE.md` — tighten trait sketch; add an
+     engram-analyzer worked example so "new module inherits concurrency,
+     scheduling, memory and pressure responses for free" is a concrete
+     reference and not a slogan.
+   - `CONTINUUM-ARCHITECTURE.md` — strip stale TS pseudocode; reflect that
+     cognition is migrating to continuum-core.
+   - `CONTINUUM-VISION.md` — audit TS-shaped interface types.
+   - `CLAUDE.md` — point at CBAR-SUBSTRATE as the canonical substrate spec.
+   - `UNIVERSAL-SENSORY-ARCHITECTURE.md`, `UNIVERSAL-LEARNING-ARCHITECTURE.md`,
+     `QUEUE-DRIVEN-COGNITION.md` — mark stale sections DEPRECATED with a
+     pointer to the canonical replacement rather than silently editing.
