@@ -369,7 +369,6 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@preact/signals-core": "^1.12.1",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/sqlite3": "^3.1.11",
     "@types/uuid": "^10.0.0",
     "better-sqlite3": "^12.4.1",
     "dotenv": "^17.2.3",
@@ -386,7 +385,6 @@
     "node-llama-cpp": "^3.14.0",
     "playwright": "^1.58.2",
     "sharp": "^0.34.5",
-    "sqlite3": "^5.1.7",
     "uuid": "^11.1.0",
     "zod": "^4.2.1"
   }
