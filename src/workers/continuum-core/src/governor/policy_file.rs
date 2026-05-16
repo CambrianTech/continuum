@@ -52,13 +52,13 @@
 //!
 //! Files live under `~/.continuum/policy/` and are named by the
 //! hardware-class fingerprint they apply to (e.g.
-//! `apple-m-thinandlight-16gb-uma.toml`). PR-3 wires the selection
-//! logic; PR-2 (this) just parses.
+//! `apple-m-thinandlight-16gb-uma.toml`). `policy_selector` owns the
+//! hardware matching logic; this module just parses.
 //!
 //! ## What this PR DOES NOT do
 //!
 //! - File system watch / hot reload (PR-3 wires `notify` crate).
-//! - Policy file SELECTION based on HardwareClass fingerprint (PR-3).
+//! - Directory scanning / filesystem policy discovery.
 //! - Cascade state machine + threshold logic (PR-3).
 //! - Merging `local.toml` overlay (PR-3 — overlay format spec'd
 //!   inline below for forward-compat).
