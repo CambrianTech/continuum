@@ -2,9 +2,18 @@
 // Source: generator/generate-rust-bindings.ts
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
+export type { AIDecisionContext } from './AIDecisionContext';
+export type { AIGatingDecision } from './AIGatingDecision';
+export type { AIGatingDecisionFactors } from './AIGatingDecisionFactors';
 export type { AdaptiveThroughputPlan } from './AdaptiveThroughputPlan';
 export type { AdaptiveThroughputRequest } from './AdaptiveThroughputRequest';
 export type { AnalysisError } from './AnalysisError';
+export type { GatingConversationMessage } from './GatingConversationMessage';
+export type { GatingMessageContent } from './GatingMessageContent';
+export type { GatingRagContext } from './GatingRagContext';
+export type { GatingRagMetadata } from './GatingRagMetadata';
+export type { GatingRecipeStrategy } from './GatingRecipeStrategy';
+export type { GatingTriggerMessage } from './GatingTriggerMessage';
 export type { HostCapability } from './HostCapability';
 export type { ProbeError } from './HostProbeError';
 export type { HwCapabilityTier } from './HwCapabilityTier';
@@ -38,6 +47,7 @@ export type { ResponderDecision } from './ResponderDecision';
 export type { SharedAnalysis } from './SharedAnalysis';
 export type { SharedAnalysisIntent } from './SharedAnalysisIntent';
 export type { SharedRagSourcePlan } from './SharedRagSourcePlan';
+export type { ShouldRespondRequest } from './ShouldRespondRequest';
 export type { SiliconResidencyRequirement } from './SiliconResidencyRequirement';
 export type { TargetSilicon } from './TargetSilicon';
 export type { ThroughputJob } from './ThroughputJob';

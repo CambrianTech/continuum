@@ -27,6 +27,8 @@ import type {
 	DomainClassification,
 	CoverageReport,
 	QualityScore,
+	AIDecisionContext,
+	AIGatingDecision,
 } from '../../../../shared/generated';
 import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
 import type { RecipeTurnBatchPlan } from '../../../../shared/generated/cognition/RecipeTurnBatchPlan';
@@ -116,6 +118,11 @@ export interface CognitionMixin {
 	cognitionCheckContentDedup(personaId: string, roomId: string, content: string): Promise<{ is_duplicate: boolean; check_time_us: number }>;
 	cognitionRecordContent(personaId: string, roomId: string, content: string): Promise<void>;
 	cognitionPlanTurnBatch(request: RecipeTurnBatchRequest): Promise<RecipeTurnBatchPlan>;
+	cognitionShouldRespond(params: {
+		context: AIDecisionContext;
+		model?: string;
+		temperature?: number;
+	}): Promise<AIGatingDecision>;
 
 	/**
 	 * Run the per-persona admission gate over a single InboxMessage.
@@ -821,6 +828,30 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as RecipeTurnBatchPlan;
+		}
+
+		/**
+		 * Rust-owned "should this persona respond?" gating. TypeScript keeps
+		 * platform slot coordination and logging; Rust owns the prompt, model
+		 * call, parser, and typed decision contract.
+		 */
+		async cognitionShouldRespond(params: {
+			context: AIDecisionContext;
+			model?: string;
+			temperature?: number;
+		}): Promise<AIGatingDecision> {
+			const response = await this.request({
+				command: 'cognition/should-respond',
+				context: params.context,
+				model: params.model,
+				temperature: params.temperature,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to evaluate should-respond gate');
+			}
+
+			return response.result as AIGatingDecision;
 		}
 
 		/**
