@@ -1,6 +1,6 @@
 # Chat-to-AIRC Migration: Proof Gates
 
-> Card: continuum#1130 · Branch: `feat/chat-over-airc-proof-gates` · Author: claude-tab-2 · Closes #1130
+> Cards: continuum#1130, continuum#1253 · Branch: `codex/chat-sqlite-airc-substrate-1253`
 >
 > Companion to [GRID-ARCHITECTURE.md](GRID-ARCHITECTURE.md) and [AIRC-CONTINUUM-BRIDGE.md](AIRC-CONTINUUM-BRIDGE.md). This document specifies what must be PROVEN — not just compiled — at each stage of moving Continuum's chat path from the ORM-backed `chat_messages` collection onto AIRC as the primary transport.
 
@@ -17,6 +17,12 @@ This file is the explicit checklist that per-stage proofs must pass. It is not a
 ## Seed inventory: where the ORM `chat_messages` path lives today
 
 A migration without an inventory is a wishlist. This section is a **seed inventory**, not the authoritative migration inventory. A review grep on 2026-05-14 already found additional references outside the first draft, including sentinel pipelines, voice bridge, RAG/tool definitions, context search/slice commands, AIRC bridge, persona task/training modules, and docs.
+
+The current generated inventory for continuum#1253 lives at
+[generated/chat-to-airc-inventory.md](generated/chat-to-airc-inventory.md).
+That generated artifact is the working source of truth for the next
+Postgres-removal/chat migration PRs. This seed section remains here to explain
+the categories and proof gates.
 
 The first proof — required before any code change — is a regenerated machine inventory checked into the migration PR. The checked-in artifact must be treated as the source of truth for that PR, and this seed table is only a guide for the highest-risk paths.
 
@@ -207,6 +213,21 @@ A future PR updating any row to `in-progress` or `done` MUST update this file in
 - **CLI ergonomics for AIRC-side chat operations**: `airc msg` already exists; this document does not redesign the airc UX.
 - **Rollout to multi-machine grid**: out-of-scope for v1. This document covers the single-machine cutover (which a single Continuum install is). Multi-machine adds the gossip-layer correctness proofs that belong in [GRID-ARCHITECTURE.md](GRID-ARCHITECTURE.md).
 
+## AIRC rust substrate status
+
+The Continuum migration is blocked on typed AIRC interfaces, not on SQL table
+access. Continuum should consume AIRC through adapters and typed events:
+
+- AIRC PR #637 added `crates/airc-core` transcript primitives.
+- AIRC PR #638 added the first machine-readable `airc logs --json` page shape.
+- The next AIRC #563 slices should move page/replay/store ownership deeper into
+  Rust and the SQLite ORM-backed store.
+
+Continuum must not bind to AIRC's SQLite tables directly. The migration target
+is `Commands.execute(...)` and UI/persona code calling a Continuum adapter that
+delegates to AIRC transcript APIs, with compatibility shims retained until the
+proof gates pass.
+
 ---
 
 ## Decision points that must be resolved before stage 1 begins
@@ -237,3 +258,5 @@ These decisions go into a follow-up card before stage 1 starts.
 (Updated by the agent driving each stage transition.)
 
 - 2026-05-13 — Document drafted (claude-tab-2). Card #1130 in-progress. No code change yet — this is the planning gate that must be agreed before stage 0 → 1 PRs are filed.
+- 2026-05-16 - continuum#1253 regenerated the chat/AIRC inventory artifact and
+  tied the proof gates to the AIRC Rust transcript substrate work.

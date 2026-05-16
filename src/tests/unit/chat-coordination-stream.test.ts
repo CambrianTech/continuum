@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatCoordinationStream, type ChatThought } from '../../system/coordination/server/ChatCoordinationStream';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
@@ -16,6 +16,10 @@ function thought(personaId: string, confidence: number, messageId: string = 'mes
 }
 
 describe('ChatCoordinationStream', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('grants only the configured responder count for a chat turn', async () => {
     const roomId = '00000000-0000-4000-8000-000000000001' as UUID;
     const coordinator = new ChatCoordinationStream({
@@ -54,5 +58,28 @@ describe('ChatCoordinationStream', () => {
       '00000000-0000-4000-8000-000000000023',
     ]);
     expect(decision?.denied).toEqual(['00000000-0000-4000-8000-000000000021']);
+  });
+
+  it('does not decay an active room by looking up roomId as a messageId', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const roomId = '00000000-0000-4000-8000-000000000001' as UUID;
+    const coordinator = new ChatCoordinationStream({
+      enableLogging: false,
+      cleanupIntervalMs: 60_000,
+    });
+
+    coordinator.initialize();
+    coordinator.onHumanMessage(roomId);
+    expect(coordinator.getTemperature(roomId)).toBeCloseTo(0.8);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(coordinator.getTemperature(roomId)).toBeCloseTo(0.8);
+
+    await vi.advanceTimersByTimeAsync(50_000);
+    expect(coordinator.getTemperature(roomId)).toBeCloseTo(0.76);
+
+    coordinator.shutdown();
   });
 });

@@ -18,9 +18,13 @@
     "generator/generate-command-schemas.ts",
     "widgets/**/*.ts",
     "tests/workers/**/*.ts",
+    "tests/unit/chat-to-airc-proof-gates-doc.spec.ts",
     "tests/unit/url-card-adapter-xss.spec.ts",
     "test-path-aliases.ts",
     "test-path-aliases-runtime.ts"
+  ],
+  "files": [
+    "tests/unit/chat-coordination-stream.test.ts"
   ],
   "exclude": [
     "node_modules",

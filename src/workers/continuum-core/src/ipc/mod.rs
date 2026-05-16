@@ -53,6 +53,22 @@ use std::sync::Arc;
 use ts_rs::TS;
 use uuid::Uuid;
 
+fn prepare_unix_socket_path(socket_path: &str) -> std::io::Result<()> {
+    let path = Path::new(socket_path);
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+
+    Ok(())
+}
+
 /// Stream abstraction that lets handle_client serve both Unix socket clients
 /// (native callers — continuum-core-server's primary IPC path) and TCP clients
 /// (container callers — node-server running inside Docker on Mac, where Unix
@@ -534,6 +550,31 @@ fn handle_client<S: IpcStream>(stream: S, state: Arc<ServerState>) -> std::io::R
 mod tests {
     use super::*;
 
+    #[test]
+    fn prepare_unix_socket_path_creates_parent_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir
+            .path()
+            .join("missing")
+            .join("sockets")
+            .join("continuum-core.sock");
+
+        prepare_unix_socket_path(socket_path.to_str().unwrap()).unwrap();
+
+        assert!(socket_path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn prepare_unix_socket_path_removes_stale_socket_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("continuum-core.sock");
+        std::fs::write(&socket_path, b"stale").unwrap();
+
+        prepare_unix_socket_path(socket_path.to_str().unwrap()).unwrap();
+
+        assert!(!socket_path.exists());
+    }
+
     // ========================================================================
     // Binary Framing Unit Tests
     // ========================================================================
@@ -792,10 +833,7 @@ pub fn start_server(
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
     pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,
 ) -> std::io::Result<()> {
-    // Remove socket file if it exists
-    if Path::new(socket_path).exists() {
-        std::fs::remove_file(socket_path)?;
-    }
+    prepare_unix_socket_path(socket_path)?;
 
     log_info!("ipc", "server", "Starting IPC server on {}", socket_path);
 
@@ -1080,7 +1118,12 @@ pub fn start_server(
                 let bind_addr = format!("{}:{}", bind_host, port);
                 match TcpListener::bind(&bind_addr) {
                     Ok(tcp_listener) => {
-                        log_info!("ipc", "server", "TCP listener ready on {} (for container callers via host.docker.internal)", bind_addr);
+                        log_info!(
+                            "ipc",
+                            "server",
+                            "TCP listener ready on {} (for container callers via host.docker.internal)",
+                            bind_addr
+                        );
                         let tcp_state = state.clone();
                         std::thread::spawn(move || {
                             for stream in tcp_listener.incoming() {

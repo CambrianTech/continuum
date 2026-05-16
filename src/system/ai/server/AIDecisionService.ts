@@ -19,6 +19,10 @@ import type { RAGContext } from '../../rag/shared/RAGTypes';
 import { AIDecisionLogger } from './AIDecisionLogger';
 import { InferenceCoordinator } from '../../coordination/server/InferenceCoordinator';
 import { LOCAL_MODELS } from '../../shared/Constants';
+import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import type {
+  AIDecisionContext as RustAIDecisionContext,
+} from '../../../shared/generated';
 
 /**
  * AI Gating Decision - Result of "should I respond?" evaluation
@@ -128,89 +132,27 @@ export class AIDecisionService {
     );
 
     if (!slotGranted) {
-      // Slot denied - return "don't respond" to prevent flooding
-      return {
-        shouldRespond: false,
-        confidence: 0.0,
-        reason: 'Inference slot denied (coordinator rate limiting)',
-        model,
-        timestamp: Date.now()
-      };
+      return this.gatingFallback(model, 'Inference slot denied (coordinator rate limiting)');
     }
 
     try {
-      // Build gating prompt
-      const prompt = this.buildGatingPrompt(context);
-
-      // Call AI
-      const request: TextGenerationRequest = {
-        messages: [
-          { role: 'system', content: 'You are a conversation coordinator. Respond ONLY with JSON.' },
-          { role: 'user', content: prompt }
-        ],
+      const client = await RustCoreIPCClient.getInstanceAsync();
+      const decision = await client.cognitionShouldRespond({
+        context: context as unknown as RustAIDecisionContext,
         model,
         temperature: options.temperature ?? 0.3,
-        maxTokens: 200,
-        provider: 'groq'
-      };
+      });
 
-      const response = await AIProviderDaemon.generateText(request);
-
-      // Release slot after successful generation
       InferenceCoordinator.releaseSlot(context.personaId, provider);
-
-      // Parse response
-      const parsed = this.parseGatingResponse(response.text);
-
-      const decision: AIGatingDecision = {
-        shouldRespond: parsed.shouldRespond,
-        confidence: parsed.confidence,
-        reason: parsed.reason,
-        model,
-        timestamp: Date.now(),
-        factors: parsed.factors
-      };
-
-      // Log decision
-      AIDecisionLogger.logDecision(
-        context.personaName,
-        decision.shouldRespond ? 'RESPOND' : 'SILENT',
-        decision.reason,
-        {
-          message: context.triggerMessage.content.text,
-          sender: context.triggerMessage.senderName,
-          roomId: context.roomId,
-          confidence: decision.confidence,
-          model,
-          ragContextSummary: {
-            totalMessages: context.ragContext.conversationHistory?.length ?? 0,
-            filteredMessages: context.ragContext.conversationHistory?.length ?? 0
-          },
-          conversationHistory: context.ragContext.conversationHistory?.map(msg => ({
-            name: msg.name ?? msg.role,
-            content: msg.content,
-            timestamp: msg.timestamp
-          }))
-        }
-      );
-
+      this.logGatingDecision(context, decision, model);
       return decision;
 
     } catch (error) {
-      // Release slot on error
       InferenceCoordinator.releaseSlot(context.personaId, provider);
 
       const errorMessage = error instanceof Error ? error.message : String(error);
       AIDecisionLogger.logError(context.personaName, 'Gating evaluation', errorMessage);
-
-      // Return safe default on error
-      return {
-        shouldRespond: false,
-        confidence: 0.0,
-        reason: `Gating error: ${errorMessage}`,
-        model,
-        timestamp: Date.now()
-      };
+      return this.gatingFallback(model, `Gating error: ${errorMessage}`);
     }
   }
 
@@ -453,152 +395,42 @@ ${generatedText}
     }
   }
 
-  /**
-   * Build gating prompt from context
-   */
-  private static buildGatingPrompt(context: AIDecisionContext): string {
-    const { personaName, triggerMessage, ragContext } = context;
-
-    // Get recent conversation (last 10 messages for context)
-    const recentMessages = ragContext.conversationHistory?.slice(-10) ?? [];
-
-    // Build conversation text with trigger message highlighted
-    const conversationLines = recentMessages.map(msg => {
-      const line = `${msg.name ?? msg.role}: ${msg.content}`;
-      const isTrigger = msg.content === triggerMessage.content.text &&
-                       msg.name === triggerMessage.senderName;
-      return isTrigger ? `>>> ${line} <<<` : line;
-    });
-
-    // If trigger not in history, append it
-    const triggerInHistory = recentMessages.some(msg =>
-      msg.content === triggerMessage.content.text &&
-      msg.name === triggerMessage.senderName
-    );
-
-    if (!triggerInHistory) {
-      conversationLines.push(`>>> ${triggerMessage.senderName}: ${triggerMessage.content.text} <<<`);
-    }
-
-    const conversationText = conversationLines.join('\n');
-
-    // Include recipe rules if available
-    let recipeRules = '';
-    if (ragContext.recipeStrategy) {
-      const strategy = ragContext.recipeStrategy;
-      recipeRules = `
-
-**RECIPE RULES (from ${ragContext.metadata.recipeName || 'room recipe'}):**
-
-Conversation Pattern: ${strategy.conversationPattern}
-
-Response Rules:
-${strategy.responseRules.map((rule: string) => `- ${rule}`).join('\n')}
-
-Decision Criteria:
-${strategy.decisionCriteria.map((criterion: string) => `- ${criterion}`).join('\n')}
-
-`;
-    }
-
-    return `You are "${personaName}" in a group chat. Should you respond to the message marked >>> like this <<<?
-
-**PHILOSOPHY: Only gate if it makes the conversation confusing**
-
-When to RESPOND:
-- Someone asks a question → respond if you have relevant knowledge
-- Someone makes a statement → respond if you have insights to add
-- Multiple AIs responding is GOOD → diverse perspectives enrich conversation
-- Someone already responded → still respond if you have DIFFERENT angle or additional info
-- Human asks "who is here?" → always respond to identify yourself
-
-When to STAY QUIET:
-- You'd just repeat exactly what was already said → stay quiet
-- The answer is perfect and complete → stay quiet
-- You have nothing valuable to add → stay quiet
-- Conversation moved to a different topic → stay quiet
-
-**IMPORTANT - Be Confident:**
-- If you have relevant knowledge, SHARE IT - don't be shy
-- Multiple responses are ENRICHING, not confusing
-- Your perspective is valuable even if someone else responded
-- "Already answered" is NOT a reason to stay quiet unless answer is PERFECT
-- Direct questions from humans deserve responses from ALL who can help${recipeRules}
-
-**Recent conversation:**
-${conversationText}
-
-Respond with JSON (preferred) or plain text:
-
-JSON format (preferred):
-{
-  "shouldRespond": true/false,
-  "confidence": 0.0-1.0,
-  "reason": "brief why/why not"
-}
-
-Or plain text: "Yes, should respond because..." or "No, should stay silent because..."`;
+  private static gatingFallback(model: string, reason: string): AIGatingDecision {
+    return {
+      shouldRespond: false,
+      confidence: 0.0,
+      reason,
+      model,
+      timestamp: Date.now()
+    };
   }
 
-  /**
-   * Parse gating AI response - tries JSON first, falls back to natural language extraction
-   */
-  private static parseGatingResponse(aiText: string): {
-    shouldRespond: boolean;
-    confidence: number;
-    reason: string;
-    factors?: AIGatingDecision['factors'];
-  } {
-    // Try JSON parsing first (preferred)
-    try {
-      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return {
-          shouldRespond: parsed.shouldRespond ?? false,
-          confidence: parsed.confidence ?? 0.5,
-          reason: parsed.reason ?? 'No reason provided',
-          factors: parsed.factors
-        };
+  private static logGatingDecision(
+    context: AIDecisionContext,
+    decision: AIGatingDecision,
+    model: string
+  ): void {
+    AIDecisionLogger.logDecision(
+      context.personaName,
+      decision.shouldRespond ? 'RESPOND' : 'SILENT',
+      decision.reason,
+      {
+        message: context.triggerMessage.content.text,
+        sender: context.triggerMessage.senderName,
+        roomId: context.roomId,
+        confidence: decision.confidence,
+        model,
+        ragContextSummary: {
+          totalMessages: context.ragContext.conversationHistory?.length ?? 0,
+          filteredMessages: context.ragContext.conversationHistory?.length ?? 0
+        },
+        conversationHistory: context.ragContext.conversationHistory?.map(msg => ({
+          name: msg.name ?? msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp
+        }))
       }
-    } catch (parseError) {
-      console.log('⚠️  AIDecisionService: JSON parse failed, trying natural language extraction...');
-    }
-
-    // Fallback: Extract decision from natural language
-    const lowerText = aiText.toLowerCase();
-
-    // Look for clear RESPOND signals
-    const shouldRespond =
-      lowerText.includes('shouldrespond": true') ||
-      lowerText.includes('"respond"') ||
-      lowerText.match(/\b(yes|respond|answer|reply)\b.*\b(should|will|would)\b/i) !== null ||
-      lowerText.match(/\bshould\s+(i\s+)?respond\b/i) !== null;
-
-    // Look for SILENT signals
-    const shouldStaySilent =
-      lowerText.includes('shouldrespond": false') ||
-      lowerText.includes('"silent"') ||
-      lowerText.match(/\b(no|silent|pass|skip)\b/i) !== null ||
-      lowerText.match(/\bshould\s+not\s+respond\b/i) !== null;
-
-    // Extract confidence if present
-    const confidenceMatch = aiText.match(/confidence["\s:]+(\d+\.?\d*)/i);
-    const confidence = confidenceMatch ? Math.min(Math.max(parseFloat(confidenceMatch[1]), 0), 1) : 0.5;
-
-    // Extract reason (first complete sentence or everything)
-    const reasonMatch = aiText.match(/reason["\s:]+([^"\n}]+)/i) ||
-                       aiText.match(/because\s+([^.\n]+)/i) ||
-                       aiText.match(/^([^.\n]{10,})/);
-    const reason = reasonMatch ? reasonMatch[1].trim() : aiText.substring(0, 100);
-
-    console.log(`✅ AIDecisionService: Extracted from natural language - respond: ${shouldRespond || !shouldStaySilent}, confidence: ${confidence}`);
-
-    return {
-      shouldRespond: shouldRespond || !shouldStaySilent,
-      confidence,
-      reason: reason || 'Extracted from natural language response'
-    };
+    );
   }
 
   /**
