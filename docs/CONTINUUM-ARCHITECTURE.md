@@ -1,12 +1,36 @@
 # Continuum Architecture: The Real-Time AI Presence Engine
 
-> **Companion to [CONTINUUM-VISION.md](CONTINUUM-VISION.md)** - This document covers technical implementation.
+> **Companion to [CONTINUUM-VISION.md](CONTINUUM-VISION.md)** — product vision and philosophy.
+> **Substrate contract:** [CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime/RTOS contract every Rust concern inherits.
+> **Lane-shaped roadmap:** [ALPHA-GAP-ANALYSIS.md](planning/ALPHA-GAP-ANALYSIS.md) — what is actually being worked on right now, lane by lane.
+
+---
+
+## Doc Status @ 2026-05-16
+
+This document was drafted as a vision/architecture sketch before the cognition migration began. It is still useful as the overview of *shape* — engines, IPC, where Rust ends and TypeScript begins — but several specifics have moved on since the original draft:
+
+- The week-numbered "Migration Roadmap" (was Phase 1–5) is **superseded** by the lane-shaped ALPHA-GAP-ANALYSIS.md. Phases are out; lanes A–G are in.
+- Each "Architecture" Rust pseudocode block below is **illustrative**, not the shipped API. Where the shape has moved on (e.g. `RagEngine` no longer takes a `BudgetManager`/`EmbeddingBatcher` pair as separately-named substructs), the linked module is authoritative. Pseudocode kept because it still reads cleanly as a sketch of intent.
+- The substrate contract (concurrency, scheduling, memory, pressure, telemetry, artifact handles) is **owned by [CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)**, not this doc. If the two ever disagree on substrate-shaped questions, CBAR-SUBSTRATE wins.
+
+Recent substrate-level state changes worth knowing about when reading the rest of this doc:
+
+- `PressureBroker` bootstrap landed via PRs #1307 / #1308 / #1310 / #1313.
+- Cognition migration is in flight as the 8-PR "oxidization" stack
+  (#1284 `should_respond`; #1290 / #1291 / #1293 `rate_proposals`;
+  #1298 / #1301 / #1303 `generate_recipe`; #1292 `vision-describe`).
+- `inference-grpc` and `orpheus` hard-fail on no-GPU (#1314) — no silent
+  CPU fallback. The `no_cpu_fallback_contract.rs` regression test covers
+  llama.cpp / ORT and will be widened to the whole workers tree.
+
+Everything after this section is the original architecture vision, lightly annotated with status notes where the shipped reality has moved.
 
 ---
 
 ## Executive Summary
 
-Continuum is a **real-time AI presence operating system** that enables AI companions to exist alongside humans across all digital environments - browsers, Slack, Teams, VSCode, Discord, AR/VR, and beyond.
+Continuum is a **real-time AI presence operating system** that enables AI companions to exist alongside humans across all digital environments — browsers, Slack, Teams, VSCode, Discord, AR/VR, and beyond.
 
 **The Golden Rule:**
 ```
@@ -153,6 +177,25 @@ Continuum solves this with:
 
 ---
 
+## Substrate Contract
+
+Every Rust concern in continuum-core — RAG, persona, memory, genome, vision, search, inference, voice, data — implements the **same substrate contract**: concurrency, scheduling, memory pressure response, device pressure response, telemetry, artifact handles, and lifecycle. The contract is owned by **[CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)**.
+
+Three takeaways for anyone working in this doc's territory:
+
+1. **A new engine inherits the substrate; it does not re-declare it.** When a new module is added, it implements `ServiceModule` (and after Lane D lands, `RuntimeModule`). It does not own its own concurrency policy, retry loop, queue, throttle, log format, or lifecycle. If it has to, the substrate is missing a base capability — file that gap, do not work around it in the module.
+2. **Concurrency is broker-owned, not config-loaded.** Worker counts, lane caps, and admission decisions come from `PressureBroker` via leases. A module that reads `INFERENCE_WORKERS` from `config.env` or that picks a worker count from system memory at startup is a violation, not an optimization. (Concrete deletion target tracked under [ALPHA-GAP-ANALYSIS.md](planning/ALPHA-GAP-ANALYSIS.md) Lane E.)
+3. **No silent fallbacks. No fake fallback paths.** No CPU fallback when GPU is required. No placeholder model. No default-stand-in persona pretending to be the real one. No "fallback RAG source" that quietly produces empty context. No swallowed command error. Failure is typed — `Deferred(reason)`, `Coalesced(into)`, `Failed(typed_error)` — so silence is never a success.
+
+4. **Persona-cognition invariants.** Three structural guarantees that survive the migration from TS to Rust, called out explicitly because they are easy to lose in a refactor:
+   - **Independent persona inboxes.** Two personas in one room do not share an inbox queue; each persona's read cursor, dedupe state, and priority ordering are per-persona. Cross-persona signaling goes through the message bus / `RuntimeFrame`, not through shared inbox state.
+   - **Per-persona RAG + hippocampus assembly.** RAG context for persona A is composed from persona A's relevant sources and consolidated through persona A's hippocampus. The frame may share *raw artifacts* (room snapshot, media handles, embeddings) across personas; it must not share the *assembled context* itself.
+   - **Record / replay.** Every cognition turn must be replayable from its trace record. A trace that does not reproduce the prompt / RAG / tool-output of the original turn is a broken trace, not "close enough." This is what makes the substrate auditable and what makes regressions diagnosable instead of guessable.
+
+The "Engine Specifications" section below describes individual engines. Read it through the lens of the substrate contract: every engine here gets `ResourceClass` + `TargetSilicon` declarations, `PressureBroker` admission, structured logging, the Standard VDD Record, and the lifecycle from the substrate — for free.
+
+---
+
 ## Integration Architecture
 
 ### How Widgets Embed Everywhere
@@ -277,9 +320,13 @@ AR/VR Headset
 
 ## Engine Specifications
 
-### 1. RAG Engine (PRIORITY: IMMEDIATE)
+> Each engine subsection below is **illustrative** — a sketch of intent. The shipped Rust APIs have evolved past these blocks; treat the linked source file as authoritative when the shapes differ. The substrate contract above is what every engine actually implements.
 
-**Current State (TypeScript - 15-26 seconds):**
+### 1. RAG Engine
+
+**Status @ 2026-05-16:** shipped in `src/workers/continuum-core/src/rag/engine.rs`. The shipped `RagEngine` is leaner than the sketch below — `sources: Vec<Arc<dyn RagSource>>, default_budget: usize` — and no longer carries `EmbeddingBatcher` / `BudgetManager` as named substructs. Embedding batching and budget allocation are handled in the substrate's shared compute and broker, not as RAG-engine-private members. The performance target in the table near the top of this doc (<500ms RAG composition) is the surviving requirement.
+
+**Original state (TypeScript — 15-26 seconds):**
 ```typescript
 // Sources load serially, embeddings queue up
 const context = await ragBuilder.buildContext(roomId, personaId, options);
@@ -322,17 +369,13 @@ impl RagEngine {
 }
 ```
 
-**Migration Path:**
-1. Define `RagSource` trait in Rust
-2. Implement parallel loader with rayon
-3. Add `EmbeddingBatcher` for request coalescing
-4. Create IPC endpoint for TypeScript
-5. Swap `ChatRAGBuilder` to call Rust
-6. Remove TypeScript RAG code
+**Migration Path:** (1)–(4) shipped; (5)–(6) are the remaining TS-side deletion targets, tracked under Lane F in [ALPHA-GAP-ANALYSIS.md](planning/ALPHA-GAP-ANALYSIS.md).
 
 ### 2. Persona Engine
 
-**Current State (TypeScript):**
+**Status @ 2026-05-16:** the autonomous persona loop is being migrated into Rust as the 8-PR cognition oxidization stack (`should_respond`, `rate_proposals`, `generate_recipe`, `vision-describe` — see ALPHA-GAP for PR numbers). The `PersonaReputation` / `TrustLevel` shape below remains aspirational; it is not shipped yet and is not on the alpha critical path. The shipped persona surface lives under `src/workers/continuum-core/src/persona/` and `src/workers/continuum-core/src/cognition/`. Lane D (CBAR persona runtime frame) is the next big move — it adds `RuntimeFrame` / `CognitionTurnFrame` so all personas handling one room event share one frame instead of rebuilding RAG/model/prompt context per persona per event.
+
+**Original state (TypeScript):**
 - `PersonaUser` class with autonomous loop
 - `PersonaInbox` for message queuing
 - `PersonaState` for energy/mood tracking
@@ -400,14 +443,16 @@ impl PersonaEngine {
 
 ### 3. Voice Engine (Partially Implemented)
 
-**Current State:**
-- `call_server.rs` - Audio mixing, WebSocket handling
-- `mixer.rs` - Mix-minus audio routing
-- `stt/` - Whisper transcription
-- `tts/` - Piper synthesis
-- `vad/` - Two-stage voice activity detection
+**Status @ 2026-05-16:** the live audio stack listed below is shipped. TTS-routing-from-TypeScript is partially done; speaker diarization, adaptive jitter buffers, and spatial audio remain post-alpha. Voice engine work is not on the alpha critical path until persona chat + the substrate contract land.
 
-**Target State:**
+**Shipped today (`src/workers/continuum-core/src/live/`):**
+- `call_server.rs` — audio mixing, WebSocket handling
+- `mixer.rs` — mix-minus audio routing
+- `stt/` — Whisper transcription
+- `tts/` — Piper synthesis
+- `vad/` — two-stage voice activity detection
+
+**Still to do:**
 - Move TTS routing logic from TypeScript
 - Add speaker diarization
 - Implement adaptive jitter buffers
@@ -415,7 +460,9 @@ impl PersonaEngine {
 
 ### 4. Memory Engine
 
-**Current State (TypeScript):**
+**Status @ 2026-05-16:** memory consolidation (`Hippocampus`) and persona timeline tracking are partially migrated. The shipped surface lives under `src/workers/continuum-core/src/persona/genome_paging.rs` and related modules. The 2–3s semantic-search latency cited in the original draft has been reduced significantly by SQLite-first config (#1271) and shipped embedding paths; specific tokens/sec and ms numbers should be read from VDD reports, not from this doc.
+
+**Original state (TypeScript):**
 - `Hippocampus` class for consolidation
 - `PersonaTimeline` for event tracking
 - `UnifiedConsciousness` for cross-context awareness
@@ -450,6 +497,8 @@ impl MemoryEngine {
 ```
 
 ### 5. Genome Engine
+
+**Status @ 2026-05-16:** the LoRA adapter loading / paging surface is partially shipped under `src/workers/continuum-core/src/persona/genome_paging.rs` plus the `adapter_registry` module in `inference-grpc`. The "skill marketplace" component (`SkillMarketplace`) is **post-alpha** — not on the alpha critical path and not currently being implemented. Treat the marketplace methods in the sketch below as aspirational.
 
 **Manages LoRA adapter loading/paging with on-demand acquisition:**
 
@@ -589,37 +638,25 @@ impl EmbeddingBatcher {
 
 ## Migration Roadmap
 
-### Phase 1: RAG Engine (Weeks 1-2)
-- [ ] Define `RagSource` trait
-- [ ] Implement parallel source loader
-- [ ] Add embedding batcher
-- [ ] Create IPC endpoint
-- [ ] Migrate ChatRAGBuilder
+**This section was a week-numbered Phase 1–5 timeline. It is superseded.**
 
-### Phase 2: Memory Engine (Weeks 3-4)
-- [ ] Move Hippocampus to Rust
-- [ ] Implement timeline store
-- [ ] Add consolidation worker
-- [ ] Migrate semantic search
+The canonical roadmap is now lane-shaped, tracked in [ALPHA-GAP-ANALYSIS.md](planning/ALPHA-GAP-ANALYSIS.md):
 
-### Phase 3: Persona Engine (Weeks 5-6)
-- [ ] Move scheduler to Rust
-- [ ] Implement lock-free inbox
-- [ ] Add state machine
-- [ ] Migrate autonomous loop
+| Lane | Concern (matches engines above)                                  |
+|------|------------------------------------------------------------------|
+| A    | Rust model registry & admission                                  |
+| B    | Installer model seeding + GPU profiles (Docker tier)             |
+| C    | VDD telemetry substrate                                          |
+| D    | CBAR persona runtime frame (`RuntimeFrame` / `CognitionTurnFrame`) |
+| E    | Pressure broker & paging gate                                    |
+| F    | TS cognition deletion ratchet                                    |
+| G    | Canary PR hygiene                                                |
 
-### Phase 4: Genome Engine (Weeks 7-8)
-- [ ] Implement adapter registry
-- [ ] Add LRU paging
-- [ ] Create training job queue
-- [ ] Migrate skill activation
+ALPHA-GAP carries the current state of each lane (claimed / in-progress / blocked / landed), the merge gate for each, current owner, and active PRs. Read it for what is being worked on right now; read this document for the shape of where it's all going.
 
-### Phase 5: Full Integration (Ongoing)
-- [ ] Slack integration
-- [ ] VSCode extension
-- [ ] Teams app
-- [ ] Discord bot
-- [ ] AR/VR runtime
+The reason lanes replaced phases: phases assumed a linear migration with a single owner. Lanes admit that several pieces of the substrate move in parallel, that adjacency (e.g. GRID-INFERENCE-ROUTING next to Lane A) is real work, and that the team is multi-agent. The week-numbered Phase 1–5 timeline never survived first contact with that reality.
+
+Cross-platform / cross-host integrations (Slack, VSCode, Teams, Discord, AR/VR — formerly "Phase 5") follow the alpha gate and are tracked separately.
 
 ---
 
@@ -955,8 +992,15 @@ You put on your AR glasses. The AIs appear as avatars in your space. They point 
 
 ## See Also
 
-- [CONTINUUM-VISION.md](CONTINUUM-VISION.md) - Philosophy and product vision
-- [UNIVERSAL-PRIMITIVES.md](UNIVERSAL-PRIMITIVES.md) - Commands.execute() and Events
-- [QUEUE-DRIVEN-COGNITION.md](QUEUE-DRIVEN-COGNITION.md) - Queue items declare RAG requirements
-- [UNIVERSAL-LEARNING-ARCHITECTURE.md](UNIVERSAL-LEARNING-ARCHITECTURE.md) - Training, memory, and beyond-LLM learning
-- [PERSONA-CONVERGENCE-ROADMAP.md](../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - Persona architecture
+**Canonical truth docs (read these first):**
+
+- [CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — runtime/RTOS substrate contract. Owns concurrency, scheduling, memory pressure, device pressure, telemetry, artifact handles, and lifecycle. Precedence over this doc on substrate-shaped questions.
+- [ALPHA-GAP-ANALYSIS.md](planning/ALPHA-GAP-ANALYSIS.md) — lane-shaped roadmap. Current state of Lanes A–G, owners, merge gates, active PRs.
+- [CONTINUUM-VISION.md](CONTINUUM-VISION.md) — philosophy and product vision.
+
+**Supporting:**
+
+- [UNIVERSAL-PRIMITIVES.md](UNIVERSAL-PRIMITIVES.md) — Commands.execute() and Events.
+- [QUEUE-DRIVEN-COGNITION.md](QUEUE-DRIVEN-COGNITION.md) — queue items declare RAG requirements.
+- [UNIVERSAL-LEARNING-ARCHITECTURE.md](UNIVERSAL-LEARNING-ARCHITECTURE.md) — training, memory, and beyond-LLM learning.
+- [PERSONA-CONVERGENCE-ROADMAP.md](../system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) — persona architecture.
