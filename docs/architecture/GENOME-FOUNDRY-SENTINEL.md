@@ -541,25 +541,41 @@ Trust is *learned*, not declared. This is what makes the federation safe at scal
 
 ## Part 11: The Substrate Governor
 
-The governor is the DVFS layer for the AI substrate. It reads hardware class at boot, writes the tier-size policy + cadence multipliers + concurrency caps + speculation aggressiveness + consolidation schedule, and adjusts at runtime per pressure signal.
+The governor is the DVFS layer for the AI substrate. It is the one Rust subsystem that makes "same code on MacBook Air and RTX 5090" real: detect the hardware at boot, write the policy file, expose a read-only `current_policy()` to every other subsystem, adjust at runtime under pressure, and reverse cleanly when pressure releases. Every other subsystem in this document — tier stores, recall, composer, speculator, foundry, sentinel, sharing protocol — reads the governor and never writes back. The governor *is* the single source of truth for sizing.
+
+### Trait Surface
 
 ```rust
 // PROPOSED — src/workers/continuum-core/src/governor/mod.rs
 pub trait SubstrateGovernor: Send + Sync {
-    /// Current policy. Read by every tier, broker, composer, speculator.
-    fn current_policy(&self) -> &GovernorPolicy;
+    /// Current policy. Cheap read: returns Arc to immutable snapshot, so
+    /// callers can hold without contention. Policy is rewritten under
+    /// pressure, never mutated in place.
+    fn current_policy(&self) -> Arc<GovernorPolicy>;
 
-    /// Called at boot or when hardware changes (e.g. eGPU plug).
-    fn on_hardware_detected(&self, hw: &HardwareClass);
+    /// Called once at boot, and any time hardware changes (eGPU plug,
+    /// power source change, thermal class change). The probe sequence
+    /// is in §"Hardware Detection" below.
+    fn on_hardware_detected(&self, hw: HardwareClass);
 
-    /// Called by PressureBroker on pressure signals (thermal, battery, OOM, etc.)
-    fn on_pressure_signal(&self, signal: &PressureSignal);
+    /// Called by PressureBroker (CBAR-SUBSTRATE) when a typed pressure
+    /// signal crosses a threshold. Governor decides whether to step the
+    /// cascade, hold, or reverse. See §"Adjustment Cascade" for thresholds.
+    fn on_pressure_signal(&self, signal: PressureSignal);
 
-    /// Snapshot for inspection / VDD reporting.
+    /// Snapshot for VDD report emission and human inspection. Includes
+    /// current policy + recent history + cascade-step counter.
     fn snapshot(&self) -> GovernorSnapshot;
+
+    /// Subscribe to policy changes. Each subscriber gets the new Arc as
+    /// soon as the cascade commits. Used by composer / speculator /
+    /// tier stores to react without polling.
+    fn subscribe(&self) -> PolicyWatch;
 }
 
 pub struct GovernorPolicy {
+    pub policy_version: u64,                          // monotonic; increments on every rewrite
+    pub hardware_class: HardwareClass,                // what produced this policy
     pub tier_sizes: TierSizes,
     pub cadence_multipliers: CadenceMultipliers,
     pub concurrency_caps: ConcurrencyCaps,
@@ -567,38 +583,250 @@ pub struct GovernorPolicy {
     pub consolidation_schedule: ConsolidationSchedule,
     pub federation_pull_cadence: FederationCadence,
     pub recall_score_weights: RecallScoreWeights,
+    pub cascade_step: u8,                             // 0 = normal; 1..5 = under pressure (see cascade)
+    pub committed_at: SystemTime,
 }
 
 pub struct HardwareClass {
-    pub silicon: TargetSilicon,                    // Apple M-series, NVIDIA, AMD, Intel, ...
+    pub silicon: TargetSilicon,                       // AppleM | NvidiaCuda | AmdRocm | IntelVulkan | None
+    pub silicon_model: String,                        // "M2", "RTX 5090", "Radeon RX 7900 XTX", ...
     pub vram_mb: usize,
     pub system_ram_mb: usize,
-    pub power_source: PowerSource,                 // Battery | Plugged
-    pub thermal_class: ThermalClass,               // ThinAndLight | Workstation | Server | Mobile
+    pub power_source: PowerSource,                    // Battery | Plugged
+    pub thermal_class: ThermalClass,                  // ThinAndLight | Workstation | Server | Mobile
+    pub battery_pct: Option<u8>,                      // None if no battery
+    pub thermal_headroom_pct: Option<u8>,             // None if not measurable
 }
 
 pub enum PressureSignal {
-    Thermal { severity: u8 },
-    BatteryLow { remaining_pct: u8 },
-    SystemMemoryHigh { used_pct: u8 },
-    VRAMHigh { used_pct: u8 },
-    UserActive { foreground: bool },
+    Thermal       { severity: ThermalSeverity },      // Cool | Warm | Hot | Critical
+    BatteryLow    { remaining_pct: u8 },
+    SystemMemHigh { used_pct: u8 },
+    VRAMHigh      { used_pct: u8 },
+    UserActive    { foreground: bool },               // foreground user input → favor responsiveness
+    InferenceQueueDepth { depth: usize },             // backed-up turns; signal to throttle speculation
+    SpeculationMissRate { rate: f32 },                // bad predictions → throttle aggressiveness
 }
 ```
 
-The governor is one Rust subsystem. It is consulted (read-only) by every other subsystem. It is updated by `PressureBroker` (which already exists per CBAR-SUBSTRATE) and by direct hardware-class detection.
+The governor never blocks. Reads (`current_policy()`) are wait-free `Arc` clones. Writes (cascade steps, policy rewrites) hold a small mutex for under a microsecond and publish via `arc_swap`. A composer reading the policy 1000 times per turn pays no contention cost.
 
-### Adjustment Cascade
+### Hardware Detection
 
-When the governor responds to a pressure signal, the cascade has a defined order:
+Boot-time detection runs once and produces a `HardwareClass`. The probe sequence is deterministic and small:
 
-1. **Speculation first.** Drop speculative pre-composition; release speculative pages. Cheapest reversal.
-2. **Concurrency next.** Reduce the cap on concurrent personas; defer non-realtime turns.
-3. **Working set size.** Shrink L1/L2 budgets per persona; trigger spill.
-4. **Federation pull cadence.** Push back to slower pull schedule.
-5. **Consolidation deferral.** If consolidation is running and pressure spikes, pause it and resume during the next idle window.
+```rust
+// PROPOSED — src/workers/continuum-core/src/governor/detect.rs
+pub fn detect_hardware() -> HardwareClass {
+    HardwareClass {
+        silicon:           probe_silicon(),           // platform-specific: Metal / CUDA / ROCm / Vulkan probes
+        silicon_model:     probe_silicon_model(),     // sysinfo / nvidia-smi / rocm-smi / IORegistry
+        vram_mb:           probe_vram_mb(),           // 0 for unified-memory targets (Air); use system_ram fraction
+        system_ram_mb:     sysinfo_total_memory_mb(),
+        power_source:      probe_power_source(),     // IOPSCopyPowerSourcesList / /sys/class/power_supply
+        thermal_class:     classify_thermal(...),    // derived from silicon + chassis hints + power
+        battery_pct:       probe_battery_pct(),
+        thermal_headroom_pct: probe_thermal_headroom_pct(),
+    }
+}
+```
 
-Pressure release reverses the cascade. Speculation aggressiveness is the *last* thing restored, because restoring it too eagerly produces oscillation.
+Each probe has a fallback. If `nvidia-smi` is missing, `silicon` falls back to `Vulkan` if Vulkan is available, else `None`. If `IOPSCopyPowerSourcesList` returns no source, `power_source` falls back to `Plugged` (favor performance when we can't tell). **All fallbacks are typed and logged** — silent guess-where-we-are is forbidden by the same `no_silent_fallback` rule that governs the rest of the substrate.
+
+Re-detection fires on three triggers: eGPU hot-plug (platform notification), power source change (charger plug/unplug), and a periodic sanity check (default 5 minutes) that catches missed events. A re-detected `HardwareClass` that materially differs from the current one triggers a policy rewrite.
+
+### Policy File Format
+
+The governor's policy is computed from a versioned policy file. Policy files are TOML, live under `~/.continuum/policy/`, and named by the hardware-class fingerprint they apply to. Engineers tune by editing these; the governor watches the file and reloads on change.
+
+```toml
+# ~/.continuum/policy/apple-m-thinandlight-16gb-uma.toml
+# Hardware fingerprint (matches HardwareClass): Apple M-series, ThinAndLight,
+# 16 GB unified memory. The governor selects this file at boot.
+
+policy_version = 3
+applies_to    = "apple-m,thinandlight,uma,vram_mb=0..0,ram_mb=14000..18000"
+
+[tier_sizes]
+l1_lora_layers       = 2
+l1_kv_tokens         = 2048
+l2_lora_layers       = 4
+l3_lora_layers       = 12
+l3_engrams           = 1024
+# l4 and l5 are SSD-bounded; no in-file limit.
+
+[cadence_multipliers]
+realtime             = 1.0
+delayed              = 1.5   # delay non-realtime by 50% on Air
+background           = 2.0
+
+[concurrency_caps]
+personas_concurrent  = 2
+inference_lanes      = 1
+foundry_lanes        = 0     # disabled on Air to preserve foreground responsiveness
+sentinel_lanes       = 1
+
+[speculation]
+level                = "conservative"   # "off" | "conservative" | "balanced" | "aggressive"
+max_branches         = 1
+min_idle_slack_pct   = 30
+miss_rate_throttle   = 0.5   # if hit rate < 50%, drop a level
+
+[consolidation]
+schedule             = "idle_plugged_in"  # "always" | "idle" | "idle_plugged_in" | "manual"
+min_idle_seconds     = 300
+preempt_on_pressure  = true
+
+[federation]
+pull_cadence_seconds = 600
+
+[recall_weights]
+semantic             = 0.4
+outcome_history      = 0.3
+recency              = 0.1
+tier_proximity       = 0.1
+provenance_trust     = 0.1
+```
+
+The 5090 anchor uses the same schema with larger numbers:
+
+```toml
+# ~/.continuum/policy/nvidia-cuda-workstation-32gb-vram.toml
+applies_to            = "nvidia,workstation,vram_mb=30000..36000,ram_mb=60000..80000"
+
+[tier_sizes]
+l1_lora_layers        = 8
+l1_kv_tokens          = 16384
+l2_lora_layers        = 16
+l3_lora_layers        = 40
+l3_engrams            = 10240
+
+[concurrency_caps]
+personas_concurrent   = 8
+inference_lanes       = 4
+foundry_lanes         = 1
+sentinel_lanes        = 2
+
+[speculation]
+level                 = "aggressive"
+max_branches          = 4
+min_idle_slack_pct    = 5
+
+[consolidation]
+schedule              = "idle"
+min_idle_seconds      = 60
+preempt_on_pressure   = true
+```
+
+**Same TOML schema, same Rust loader, same `GovernorPolicy` struct.** The numbers are the only thing that changes. Policy files for intermediate hardware (M-Pro/Max, mid-range NVIDIA, AMD ROCm, Vulkan-only Intel) ship as defaults; users can override any field via `~/.continuum/policy/local.toml` which overlays the auto-selected policy.
+
+### Adjustment Cascade — With Thresholds, Hysteresis, And Algorithm
+
+When `on_pressure_signal()` fires, the governor *may* step the cascade. The cascade has six steps (0 = normal, 5 = maximum throttle). Each step has an *enter* threshold and an *exit* threshold; the gap between them is the hysteresis that prevents oscillation.
+
+| Step | Action | Enter threshold (any signal triggers) | Exit threshold (all clear required) |
+|---|---|---|---|
+| 1 | Drop speculation level by one notch; halve `max_branches` | `SpeculationMissRate > 0.5` OR `InferenceQueueDepth > N` OR `VRAMHigh > 85` | rates back below 0.3 AND queue depth < N/2 AND VRAM < 70 |
+| 2 | `concurrency_caps.personas_concurrent -= 1`; defer non-realtime turns | step 1 still active for > 30s OR `SystemMemHigh > 85` OR `Thermal::Hot` | step 1 cleared AND mem < 70 AND `Thermal::Cool|Warm` |
+| 3 | Shrink working-set L1/L2 budgets by 25%; trigger spill | step 2 active for > 30s OR `BatteryLow < 15` OR `Thermal::Critical` | step 2 cleared AND battery > 25 AND `Thermal::Cool|Warm` |
+| 4 | Drop `federation.pull_cadence_seconds` to maximum value (slowest pull) | step 3 active for > 60s | step 3 cleared |
+| 5 | Suspend `consolidation` immediately; if a refinement pass is running, pause and persist its state | step 4 active OR explicit emergency signal | step 4 cleared AND idle slack > min_idle_slack_pct |
+
+Algorithm:
+
+```rust
+// PROPOSED — src/workers/continuum-core/src/governor/cascade.rs
+impl GovernorState {
+    pub fn on_pressure_signal(&self, signal: PressureSignal) {
+        let next_step = self.evaluate_step(&signal);
+        if next_step > self.cascade_step.load() && self.dwell_satisfied(next_step) {
+            self.step_up(next_step);
+        } else if next_step < self.cascade_step.load() && self.all_clear(next_step) {
+            self.step_down(next_step);
+        }
+        // otherwise: hold. Hysteresis keeps us here.
+    }
+
+    fn step_up(&self, to: u8) {
+        for s in (self.cascade_step.load() + 1)..=to {
+            self.apply_step(s, Direction::Throttle);
+            self.emit_event(GovernorEvent::CascadeUp { step: s });
+        }
+        self.commit_policy();   // arc_swap; subscribers wake
+    }
+
+    fn step_down(&self, to: u8) {
+        for s in (to..self.cascade_step.load()).rev() {
+            self.apply_step(s, Direction::Restore);
+            self.emit_event(GovernorEvent::CascadeDown { step: s });
+        }
+        // Speculation aggressiveness restored LAST — see "Restore Order" below.
+        self.commit_policy();
+    }
+}
+```
+
+**Restore order.** When pressure releases, the cascade steps down in reverse, with one twist: speculation aggressiveness is restored *one step later than it was throttled*. If speculation was throttled at step 1 and pressure clears through step 0, speculation stays at its throttled level for a "calibration window" (default 60s) so the hit-rate can stabilize before aggressiveness ramps back up. This is the single most-important anti-oscillation rule.
+
+### Runtime Adjustment Loop
+
+The governor's main loop is small and explicit:
+
+```rust
+// PROPOSED — src/workers/continuum-core/src/governor/runtime.rs
+async fn governor_loop(state: Arc<GovernorState>, mut rx: mpsc::Receiver<PressureSignal>) {
+    let mut periodic = tokio::time::interval(Duration::from_secs(5));
+    loop {
+        tokio::select! {
+            Some(signal) = rx.recv() => state.on_pressure_signal(signal),
+            _ = periodic.tick()       => state.reevaluate_periodic(),  // catches missed events
+            _ = state.hardware_change_notify() => state.on_hardware_detected(detect_hardware()),
+        }
+    }
+}
+```
+
+The loop is the only place that mutates `GovernorState`. Everything else reads `current_policy()` (wait-free Arc clone) and reacts to `subscribe()` notifications. No subsystem ever writes to the governor directly — pressure signals flow in through `PressureBroker` (CBAR-SUBSTRATE), policy flows out through Arc subscriptions.
+
+### Federation Policy Reconciliation
+
+In a federated hive (multiple instances coordinating), each instance runs its own governor against its own hardware. Federation policy reconciliation is **deliberately minimal**: instances do *not* synchronize policy. Each runs its hardware's policy independently. What federation *does* synchronize is the `RecallScoreWeights` — because two instances ranking the same artifact differently for `provenance_trust` produces drift in what gets adopted.
+
+Concretely: when an instance joins a federation, it pulls the federation's `RecallScoreWeights` and overlays them onto its local policy. All other fields (tier sizes, concurrency, speculation) stay hardware-local. This keeps a 5090 from being throttled because a fellow Air is under pressure, while ensuring the federation agrees on *what counts as trustworthy*.
+
+### Override Mechanism (Dev / Testing)
+
+Three escape hatches for engineers:
+
+1. **`CONTINUUM_POLICY_FILE` env var.** Overrides hardware-fingerprint selection. Useful for testing one hardware policy on a different machine (run the Air policy on a 5090 to verify the substrate degrades cleanly).
+2. **`~/.continuum/policy/local.toml`.** Overlay file; any field set here wins. Useful for tuning without editing the shipped policy.
+3. **`continuum governor pin --step N`.** Pin the cascade at a specific step for the next N minutes. Useful for VDD runs that need a known throttle level.
+
+All overrides emit a typed `GovernorOverride` event so the trace bus shows that VDD records aren't from the auto-policy.
+
+### Observability
+
+The governor emits to the trace bus on every state change:
+
+- `GovernorEvent::HardwareDetected { hw }` — at boot and on re-detection.
+- `GovernorEvent::PolicyCommitted { version, source: HardwareDetection | FileReload | Override }` — every policy rewrite.
+- `GovernorEvent::CascadeUp { step }` / `CascadeDown { step }` — every cascade transition.
+- `GovernorEvent::OverrideApplied { kind }` — when an escape hatch fires.
+- `GovernorEvent::PolicyDriftDetected { instance, field }` — when federation reconciliation flags a divergence.
+
+Every VDD record carries the active `policy_version` and `cascade_step`. A VDD run on the Air at step 0 vs step 3 should produce visibly different timings, and the records make those differences attributable to the governor, not to noise.
+
+### Performance Budget For The Governor Itself
+
+The governor's own resource use is bounded:
+
+- `current_policy()`: wait-free Arc clone, < 50 ns typical.
+- `subscribe()`: tokio watch channel; subscriber wake latency < 1 μs.
+- Cascade evaluation per signal: < 10 μs including event emission.
+- Policy rewrite: < 100 μs including arc_swap publish.
+- Periodic re-evaluation: < 1 ms every 5 seconds.
+
+The governor cannot become a contention point or a latency tax. Its own performance is part of its acceptance criteria (see Part 14).
 
 ## Part 12: Artifact Lifecycle
 
