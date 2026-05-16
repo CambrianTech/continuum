@@ -175,19 +175,27 @@ impl OrpheusTts {
         None
     }
 
-    /// Select the best compute device (Metal > CPU)
-    fn select_device() -> Device {
-        // Try Metal GPU first (Apple Silicon) — candle handles availability at runtime
-        match Device::new_metal(0) {
-            Ok(device) => {
-                clog_info!("Orpheus: Using Metal GPU");
-                device
-            }
-            Err(_) => {
-                clog_info!("Orpheus: Using CPU (with Accelerate BLAS)");
-                Device::Cpu
-            }
-        }
+    /// Acquire the Metal GPU device for Orpheus inference. Fail-closed:
+    /// no CPU fallback. Per CLAUDE.md off-main-thread rule + Joel's
+    /// 2026-05-16 audit (vhsm-d1f4 flagged this exact site), TTS is
+    /// GPU-only — any CPU path silently saturates the render loop and
+    /// produces the 900%-CPU pathology seen during chat.
+    ///
+    /// If Metal isn't available, surface the candle error up so the
+    /// caller can decide policy (refuse to load, surface to operator,
+    /// pick a CPU-acceptable TTS engine if one is registered). The
+    /// previous `Device::Cpu` fallback evaded the codified
+    /// no-CPU-fallback contract by being on the Candle side rather
+    /// than llamacpp/ort.
+    fn select_device() -> Result<Device, TTSError> {
+        let device = Device::new_metal(0).map_err(|e| {
+            TTSError::ModelNotLoaded(format!(
+                "Orpheus requires Metal GPU; no CPU fallback. \
+                 Device::new_metal(0) failed: {e}"
+            ))
+        })?;
+        clog_info!("Orpheus: Using Metal GPU");
+        Ok(device)
     }
 
     /// Build SNAC decoder ONNX session
@@ -546,8 +554,8 @@ impl TextToSpeech for OrpheusTts {
         let audio_end_token_id = Self::find_token_id(&tokenizer, "<|audio_end|>")?;
         clog_info!("Orpheus: audio_end token ID = {}", audio_end_token_id);
 
-        // Select compute device
-        let device = Self::select_device();
+        // Select compute device — fail-closed on no-Metal (no CPU fallback)
+        let device = Self::select_device()?;
 
         // Load GGUF model
         let gguf_path = Self::find_gguf_file(&model_dir).ok_or_else(|| {
