@@ -602,60 +602,24 @@ export class PersonaMessageEvaluator {
     // No centralized coordinator - each AI uses recipes to decide if they should contribute
     this.log(`✅ ${this.personaUser.displayName}: Autonomous decision to respond (RAG-based reasoning, conf=${gatingResult.confidence})`);
 
-    // 🔧 POST-INFERENCE VALIDATION: delegated to PersonaMessageGate
-    const postInferenceStart = Date.now();
-    const postInferenceResult = await this.messageGate.checkPostInferenceAdequacy(
-      messageEntity,
-      this.personaUser.rustCognition,
-    );
-
-    if (postInferenceResult.shouldSkip) {
-      this.log(`[GATE:POST_INFERENCE] ${this.personaUser.displayName}: BLOCK — ${postInferenceResult.reason}`);
-
-      if (this.personaUser.client) {
-        Events.emit<AIDecidedSilentEventData>(
-          DataDaemon.jtagContext!,
-          AI_DECISION_EVENTS.DECIDED_SILENT,
-          {
-            personaId: this.personaUser.id,
-            personaName: this.personaUser.displayName,
-            roomId: messageEntity.roomId,
-            messageId: messageEntity.id,
-            isHumanMessage: senderIsHuman,
-            timestamp: Date.now(),
-            reason: `Post-inference: ${postInferenceResult.reason}`,
-            confidence: 0.95,
-            gatingModel: 'post-inference'
-          },
-          { scope: EVENT_SCOPES.ROOM, scopeId: messageEntity.roomId }
-        ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-
-        getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
-        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
-          userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
-        }).catch(() => {});
-      }
-
-      this.personaUser.logAIDecision('SILENT', `Post-inference skip: ${postInferenceResult.reason}`, {
-        message: messageEntity.content.text,
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId
-      });
-
-      // PHASE 5C: Log post-inference SILENT with full RAG context (already built)
-      CoordinationDecisionLogger.logDecision({
-        ...decisionContext,
-        action: 'SILENT',
-        reasoning: `Post-inference: ${postInferenceResult.reason}`,
-        responseTime: Date.now() - postInferenceStart,
-        tags: [...(decisionContext.tags ?? []), 'post-inference-block']
-      }).catch(err => this.log(`⚠️ Failed to log post-inference SILENT decision: ${err}`));
-
-      return;
-    }
-
-
-    this.log(`⏱️ ${this.personaUser.displayName}: [INNER] post-inference validation=${Date.now() - postInferenceStart}ms`);
+    // REMOVED: TS-side post-inference adequacy gate (2026-05-16, Joel's
+    // architecture reset). This gate ran `messageGate.checkPostInferenceAdequacy`
+    // AFTER inference completed and suppressed later personas when an earlier
+    // one (typically Helper AI) already posted an "adequate" response — exactly
+    // the Helper-only-path / TS-cognition-policy anti-pattern Joel banned.
+    //
+    // Per the reset: "every persona must own ... decision ... runtime only
+    // schedules compute lanes based on resources." Each persona's pre-inference
+    // should-respond is in Rust (cognition/should-respond, #1284); admission +
+    // engram recall are in Rust (#1121 series); the resource-aware gate is
+    // moving to the central resources daemon (#1299 broker stack). A TS gate
+    // that runs AFTER inference is policy duplication — and the suppression
+    // semantics specifically reproduce the "Helper-only" path Joel called out.
+    //
+    // The original logic dispatched DECIDED_SILENT, set idle audio state,
+    // emitted typing-stop, logged via CoordinationDecisionLogger. None of that
+    // is needed when the persona just naturally proceeds to post — no
+    // suppression event, no silent-decision logging, just the response.
 
     // 🔧 PHASE: Update RAG context (fire-and-forget — bookkeeping, not needed before generation)
     // The pre-built RAG context from evaluateShouldRespond already has current messages.
