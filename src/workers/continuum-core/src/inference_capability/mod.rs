@@ -38,11 +38,13 @@
 //! - **No `unwrap_or` / silent defaults**: every field carries explicit
 //!   data; no "default to zero VRAM and pretend it works."
 
+pub mod gguf_loader;
 pub mod probe;
 pub mod registry;
 pub mod residency;
 pub mod types;
 
+pub use gguf_loader::read_qwen_model_metadata;
 pub use probe::probe_inference_capabilities;
 pub use registry::NodeCapabilityRegistry;
 pub use residency::{
