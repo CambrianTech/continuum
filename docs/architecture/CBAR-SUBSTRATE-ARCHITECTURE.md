@@ -594,10 +594,17 @@ an engine: predictable, concurrent, observable, fast, and small to extend.
 
 ## See Also
 
+- [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) — the
+  artifact-sharing economy layered on top of this substrate contract.
+  This document specifies what every cell inherits; that document
+  specifies what every cell *recalls*, *composes*, and *evolves*
+  through. The two are paired: the substrate is the floor, the genome
+  economy is what runs on it. Lane H in ALPHA-GAP converges on the
+  genome doc; Lanes C/D/E converge here.
 - [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — the planning
   document. The Substrate Gap Analysis table above is the authoritative
   mapping between the eight numbered missing pieces here and the lane
-  structure (A–G) there. If the two ever disagree on the substrate contract
+  structure (A–H) there. If the two ever disagree on the substrate contract
   (concurrency, scheduling, memory, pressure, telemetry, artifact handles),
   this document wins per the precedence rule in ALPHA-GAP.
 - `src/workers/continuum-core/src/runtime/` — shipped substrate primitives
