@@ -36,6 +36,12 @@ use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
 
+/// Single IPC command surface for the broker — returns a typed
+/// `BrokerSnapshot` (see `paging::broker::BrokerSnapshot`, ts-rs exported
+/// to `shared/generated/paging/BrokerSnapshot.ts`). PR-2 surface; the
+/// CLI / status row consumes this in PR-3.
+const SYSTEM_PRESSURE_BROKER_STATE: &str = "system/pressure-broker-state";
+
 pub struct PressureBrokerModule {
     broker: Arc<PressureBroker>,
     tick_interval: std::time::Duration,
@@ -84,11 +90,10 @@ impl ServiceModule for PressureBrokerModule {
         ModuleConfig {
             name: "pressure-broker",
             priority: ModulePriority::Normal,
-            // No commands in PR-1 — the typed `system/pressure-broker-state`
-            // IPC ships in the follow-up slice. Empty prefixes mean the
-            // runtime's command router never routes here, which is what
-            // we want for a pure observer module.
-            command_prefixes: &[],
+            // PR-2 of #1299: typed `system/pressure-broker-state` IPC.
+            // Only this one command routes here; the alert sink (PR-3)
+            // is a push surface, not a routed command.
+            command_prefixes: &[SYSTEM_PRESSURE_BROKER_STATE],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -100,10 +105,25 @@ impl ServiceModule for PressureBrokerModule {
         Ok(())
     }
 
+    /// Return a typed `BrokerSnapshot` describing global pressure, tier,
+    /// per-pool state, and lifetime eviction counters. Single probe per
+    /// call — cheap (pressure reads are atomic loads + a max over the
+    /// pool list; no eviction is fired). Same shape ts-rs exports to
+    /// `shared/generated/paging/BrokerSnapshot.ts`, so the TS mixin can
+    /// consume it without a manual remap layer.
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
-        Err(format!(
-            "pressure-broker: no commands routed to this module yet (PR-1 of #1299 is observer-only; PR-2 adds `system/pressure-broker-state`). Got: {command}"
-        ))
+        match command {
+            SYSTEM_PRESSURE_BROKER_STATE => {
+                let snapshot = self.broker.snapshot();
+                let json = serde_json::to_value(&snapshot).map_err(|e| {
+                    format!("pressure-broker: failed to serialize BrokerSnapshot: {e}")
+                })?;
+                Ok(CommandResult::Json(json))
+            }
+            other => Err(format!(
+                "pressure-broker: unknown command '{other}' (handled: {SYSTEM_PRESSURE_BROKER_STATE})"
+            )),
+        }
     }
 
     /// One relief pass per tick. The broker itself logs WARN-level alerts
@@ -199,12 +219,15 @@ mod tests {
     }
 
     #[test]
-    fn module_exposes_no_command_prefixes_in_pr1() {
-        // PR-1 is observer-only. The runtime command router must NOT
-        // dispatch anything to this module yet. Catches the regression
-        // where a future PR adds prefixes without also wiring handlers.
+    fn module_routes_only_pressure_broker_state_command() {
+        // PR-2 adds exactly ONE command prefix. Guard against a future
+        // change accidentally adding more (or removing this one) without
+        // updating handle_command's match arms — that combination would
+        // route commands here that we'd then return "unknown" for.
         let module = PressureBrokerModule::new();
-        assert!(module.config().command_prefixes.is_empty());
+        let prefixes = module.config().command_prefixes;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], SYSTEM_PRESSURE_BROKER_STATE);
     }
 
     #[tokio::test]
@@ -269,16 +292,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_command_returns_pr1_observer_only_error() {
+    async fn handle_command_returns_typed_snapshot_for_routed_command() {
+        // The IPC handler must return a `BrokerSnapshot` JSON payload
+        // with the expected camelCase keys ts-rs emitted — anything
+        // else means the wire contract drifted and the TS mixin would
+        // get stringly-typed garbage.
         let module = PressureBrokerModule::new();
         let result = module
-            .handle_command("system/pressure-broker-state", Value::Null)
+            .handle_command(SYSTEM_PRESSURE_BROKER_STATE, Value::Null)
             .await;
+        assert!(
+            result.is_ok(),
+            "broker-state should succeed; got: {:?}",
+            result
+        );
+        let CommandResult::Json(json) = result.unwrap() else {
+            panic!("expected Json result");
+        };
+        // Every BrokerSnapshot field, camelCase, must be present so
+        // the TS side can structurally match without optional-chain
+        // checks every key.
+        assert!(json["globalPressure"].is_number(), "globalPressure missing");
+        assert!(json["globalTier"].is_string(), "globalTier missing");
+        assert!(json["pools"].is_array(), "pools missing");
+        assert!(
+            json["evictionsFired"].is_number(),
+            "evictionsFired missing"
+        );
+        assert!(
+            json["bytesFreedTotal"].is_number(),
+            "bytesFreedTotal missing"
+        );
+        // globalTier is the PressureTier enum serialized lowercase —
+        // pin the contract so a future serde rename doesn't silently
+        // change the wire format.
+        let tier = json["globalTier"].as_str().unwrap();
+        assert!(
+            matches!(tier, "normal" | "warning" | "high" | "critical"),
+            "globalTier must be one of normal|warning|high|critical; got: {tier}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_command_rejects_unknown_command() {
+        let module = PressureBrokerModule::new();
+        let result = module.handle_command("system/no-such-thing", Value::Null).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("PR-1") || err.contains("observer-only"),
-            "error should explain the staging; got: {err}"
+            err.contains(SYSTEM_PRESSURE_BROKER_STATE),
+            "error should name the actually-handled command; got: {err}"
         );
     }
 }

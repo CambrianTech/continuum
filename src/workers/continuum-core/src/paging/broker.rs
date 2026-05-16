@@ -67,7 +67,17 @@ fn evict_amount_for(pool: &dyn ResourcePool) -> u64 {
 }
 
 /// Pressure tier — drives the broker's response.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serialized as lowercase (`"normal" | "warning" | "high" | "critical"`)
+/// to match the existing `label()` impl + every other tier string the
+/// system emits in logs and IPC. ts-rs export keeps the TS union honest
+/// — operators can pattern-match without stringly-typed comparisons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/paging/PressureTier.ts"
+)]
 pub enum PressureTier {
     /// All pools comfortably under their budgets.
     Normal,
@@ -119,7 +129,12 @@ impl Default for BrokerConfig {
 }
 
 /// Per-pool snapshot exposed to monitoring / IPC.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/paging/PoolView.ts"
+)]
 pub struct PoolView {
     pub name: String,
     pub pressure: f64,
@@ -127,14 +142,23 @@ pub struct PoolView {
     pub stats: PoolStats,
 }
 
-/// Full broker state snapshot — for the future PressureBroker IPC command
-/// + monitoring widget.
-#[derive(Debug, Clone)]
+/// Full broker state snapshot — wire type for `system/pressure-broker-state`
+/// IPC (continuum#1299 PR-2). camelCase serde + ts-rs export gives TS
+/// consumers a typed surface; counters cast to `number` so the JS side
+/// doesn't have to deal with bigint for tracking values that fit fine.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/paging/BrokerSnapshot.ts"
+)]
 pub struct BrokerSnapshot {
     pub global_pressure: f64,
     pub global_tier: PressureTier,
     pub pools: Vec<PoolView>,
+    #[ts(type = "number")]
     pub evictions_fired: u64,
+    #[ts(type = "number")]
     pub bytes_freed_total: u64,
 }
 
