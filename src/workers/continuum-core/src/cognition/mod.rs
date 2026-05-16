@@ -28,6 +28,7 @@
 //!                                  `ResponderDecision`)
 
 pub mod adaptive_throughput;
+pub mod generate_recipe;
 pub mod host_capability_probe;
 pub mod model_resolver;
 pub mod response_orchestrator;
