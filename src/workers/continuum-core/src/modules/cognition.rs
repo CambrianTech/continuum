@@ -140,10 +140,15 @@ impl ServiceModule for CognitionModule {
             command_prefixes: &["cognition/", "inbox/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
-            // Persona response can invoke RAG, embeddings, and generation.
-            // Keep a single cognition response in flight until the pressure
-            // broker can perform explicit multi-persona batching.
-            max_concurrency: 1,
+            // Persona response is event-fanout work: every active persona
+            // builds prompt/context/should-respond in parallel (cheap), then
+            // hits ai_provider (which serializes inference). Capping cognition
+            // itself was a belt-and-suspenders waiting for a real broker —
+            // codex's persona inbox fanout primitive (today) + the upcoming
+            // PressureBroker singleton (#1299) make event fanout the
+            // intended invariant. Inference is still gated downstream by
+            // ai_provider::max_concurrency. No hardcoded fixed cap here.
+            max_concurrency: usize::MAX,
             tick_interval: None,
         }
     }
@@ -386,9 +391,7 @@ impl ServiceModule for CognitionModule {
                             "chat" => crate::persona::EngramOriginKind::Chat,
                             "airc" => crate::persona::EngramOriginKind::Airc,
                             "tool" => crate::persona::EngramOriginKind::Tool,
-                            "self_reflection" => {
-                                crate::persona::EngramOriginKind::SelfReflection
-                            }
+                            "self_reflection" => crate::persona::EngramOriginKind::SelfReflection,
                             other => {
                                 return Err(format!(
                                     "unknown origin kind '{other}'; expected one of: \
@@ -1087,10 +1090,9 @@ impl ServiceModule for CognitionModule {
                         temperature: p.f32_opt("temperature"),
                     };
 
-                let response = crate::cognition::generate_recipe::generate_recipe_with_ai(
-                    orchestrator_params,
-                )
-                .await?;
+                let response =
+                    crate::cognition::generate_recipe::generate_recipe_with_ai(orchestrator_params)
+                        .await?;
 
                 Ok(CommandResult::Json(
                     serde_json::to_value(&response).map_err(|e| format!("Serialize error: {e}"))?,
@@ -1645,7 +1647,9 @@ mod inline_admission_tests {
             kind: SignalKind::ChatMessage,
             text: "hello world".to_string(),
             media: vec![],
-            originator: SignalOriginator::User { user_id: Uuid::new_v4() },
+            originator: SignalOriginator::User {
+                user_id: Uuid::new_v4(),
+            },
             timestamp_ms: 1_715_625_600_000,
             message_id: Some(Uuid::new_v4()),
         };
