@@ -1036,7 +1036,6 @@ impl ServiceModule for SentinelModule {
         // Scan for orphaned pipelines (were Running when process died)
         // Mark as Interrupted, emit events, and AUTO-RESUME.
         // Training runs for days/weeks — a restart should NOT kill it.
-        let self_clone = Arc::new(self.sentinels.clone());
         match checkpoint::recover_interrupted() {
             Ok(interrupted) => {
                 if !interrupted.is_empty() {
