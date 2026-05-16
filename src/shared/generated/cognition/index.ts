@@ -8,6 +8,8 @@ export type { AIGatingDecisionFactors } from './AIGatingDecisionFactors';
 export type { AdaptiveThroughputPlan } from './AdaptiveThroughputPlan';
 export type { AdaptiveThroughputRequest } from './AdaptiveThroughputRequest';
 export type { AnalysisError } from './AnalysisError';
+export type { AuditEntry } from './AuditEntry';
+export type { AuditEntryKind } from './AuditEntryKind';
 export type { GatingConversationMessage } from './GatingConversationMessage';
 export type { GatingMessageContent } from './GatingMessageContent';
 export type { GatingRagContext } from './GatingRagContext';
