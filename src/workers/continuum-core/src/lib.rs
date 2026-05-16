@@ -50,6 +50,7 @@ pub mod secrets;
 pub mod system_resources;
 pub mod tool_parsing;
 pub mod utils;
+pub mod vdd;
 
 pub use audio_constants::*;
 

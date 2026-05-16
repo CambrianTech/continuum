@@ -23,6 +23,10 @@ path = "src/bin/vrm_convert_textures.rs"
 name = "vrm-inspect"
 path = "src/bin/vrm_inspect.rs"
 
+[[bin]]
+name = "cargo-continuum-vdd"
+path = "src/bin/cargo-continuum-vdd.rs"
+
 [dependencies]
 tokio.workspace = true
 serde.workspace = true
