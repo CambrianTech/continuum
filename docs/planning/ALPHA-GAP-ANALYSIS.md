@@ -2,12 +2,13 @@
 
 <!-- markdownlint-disable MD013 MD060 -->
 
-**Updated**: 2026-05-13
+**Updated**: 2026-05-16
 **Branch policy**: every change lands as `PR -> canary -> validation -> PR -> main`
 **Status**: active planning document, shared by humans and agents
 **Operating rule**: Rust owns runtime logic. TypeScript is UI, schema, generated types, and thin command/transport glue.
 **Template-first rule**: new commands must start from `src/generator/specs/*.json` and Continuum's command generator. Manual command scaffolds are not acceptable; hand edits are for post-generation behavior only.
 **Architectural mandate**: Rust-first, GPU-first, replay-tested. No patchwork substitutes for the target architecture.
+**Runtime substrate spec**: [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime/RTOS contract every Rust concern inherits. ALPHA-GAP owns sequencing; CBAR-SUBSTRATE owns the substrate behavior the lanes converge on.
 **Sensory model plan**: [Sensory Model And Experiential Plasticity Plan](../architecture/SENSORY-MODEL-AND-EXPERIENTIAL-PLASTICITY-PLAN.md)
 
 This document is the alpha/gap source of truth. Work should not proceed as disconnected chat threads, private agent branches, or parallel "gap" documents. Each implementation PR must name the issue it advances, land in `canary`, publish validation evidence, and only then be considered for promotion to `main`.
@@ -137,15 +138,20 @@ Implementation consequences:
 
 ## Current Snapshot
 
-| Area | Current read | Alpha risk |
+Reflects canary as of 2026-05-16 (post the 8-PR cognition-oxidization batch +
+PressureBroker bootstrap PR-1/2/3 + Docker tier Phase 1 + inference-grpc
+fail-closed). For each area, the "current read" is what is provably in canary,
+not what is intended. "Alpha risk" calls out the gap to the alpha gates above.
+
+| Area | Current read (canary @ 2026-05-16) | Alpha risk |
 |---|---|---|
-| AIRC collaboration | AIRC canary has public `knock` plus forward-secret `approve`/`decrypt-approval` handoff; Continuum PR #1110 pilots repo-local `.airc/` collaboration rules | Queue/nudge work is tracked in CambrianTech/airc#562; Continuum personas and external agent providers are not yet first-class workers on the shared queue |
+| AIRC collaboration | AIRC canary has public `knock` plus forward-secret `approve`/`decrypt-approval` handoff; Continuum PR #1110 pilots repo-local `.airc/` collaboration rules; agent flywheel board #1272 active with codex-main heartbeats | Queue/nudge work tracked in CambrianTech/airc#562; Continuum personas and external agent providers are not yet first-class workers on the shared queue; manager-role transition in progress this session |
 | UI room state | PR #1047 merged to `canary` for stale duplicate General tab recovery | Needs live UI reload validation before `main` promotion |
-| Docker | Too much historical bulk and mixed responsibility; several open Docker issues remain | Docker can mask failures and slow iteration |
-| Rust core | Strong core exists, but GPU lifecycle, paging, and persona runtime boundaries are still incomplete | Core instability can make UI/Node fixes irrelevant |
-| Node/TS | Still owns too much cognition/command behavior | Adds latency, GC/IPC complexity, and harder cross-platform reuse |
+| Docker | Phase 1 of Docker tier surface merged (#1297 — `system/docker-tier-stats` IPC + ts-rs DockerTierStats); GPU profile + tier pool eviction (#1238, #1239) still open; historical bulk and mixed responsibility still in the runtime images | Docker can mask failures and slow iteration; tier pool eviction + capability-visible health are the remaining alpha lifts |
+| Rust core | Substantial gains this session: PressureBroker bootstrap landed (#1307 PR-1 + #1308 PR-2 IPC + #1310 PR-3 status surface); runtime lease broker added (#1313); cognition migrated for `should_respond` (#1284), `rate_proposals` (#1290/#1291/#1293), `generate_recipe` (#1298/#1301/#1303), `vision-describe` (#1292); dead Candle paths deleted (#1277/#1279/#1281/#1288); inference-grpc + orpheus hard-fail on no-GPU (#1314); InferenceCapability trait + probe + registry shipping on `feat/grid-inference-routing-pr2-announcer` (PR-1 of GRID-INFERENCE-ROUTING) | RuntimeFrame / CognitionTurnFrame still unbuilt (Lane D); per-module hardcoded concurrency declarations still present across `src/workers/continuum-core/src/modules/*.rs`; universal base trait + derive macro + scaffold generator (the "low-friction inheritance" triplet from CBAR-SUBSTRATE) not yet landed |
+| Node/TS | Net-negative trend this week: ~2500 LOC TS deleted via cognition oxidization stacks (rate_proposals adapter zero-callers deletion + generate_recipe shim collapse 371→140 LOC + post-inference adequacy gate rip #1309); SQLite default config landed (#1271) | Multiple TS daemons still own runtime logic that belongs in continuum-core; the F-lane ratchet (TS cognition deletion CI gate) is not yet active; new TS in cognition paths is still mechanically allowed |
 | Config/secrets | `$HOME/.continuum/config.env` is the local source of truth, but empty placeholders and per-process loading have caused false provider availability | Cloud providers can steal local turns and fail; grid nodes cannot yet receive encrypted config consistently |
-| Tests | Many tests exist, but the alpha loop still overuses `npm start`/browser/Docker as proof | Slow tests hide root causes and discourage TDD |
+| Tests | Many tests exist; the alpha loop still overuses `npm start`/browser/Docker as proof; `no_cpu_fallback_contract.rs` regression test exists for the llama.cpp/ORT paths only — does not cover the Candle-side device selection where the orpheus + inference-grpc CPU fallbacks lived before #1314 | Slow tests hide root causes and discourage TDD; the no-CPU-fallback contract test needs widening to the whole workers tree, not just three whitelisted files |
 
 ## Immediate Canary Work Packages
 
@@ -955,13 +961,36 @@ Main promotion requires:
 
 ## Document Map
 
-This document owns execution order and alpha gates. Detailed architecture remains in:
+This document owns execution order and alpha gates. Detailed architecture
+remains in the supporting docs below. ALPHA-GAP-ANALYSIS is the beacon; the
+supporting docs are the specifications its lanes converge on.
+
+**Runtime substrate (load-bearing, read before any runtime/cognition PR):**
+
+- [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
+  — the RTOS-style runtime contract every Rust module/adapter inherits.
+  Substrate provides bounded queues, dependency wakeups, cadence/pressure
+  gates, automatic VDD/TDD evidence hooks, and ts-rs exported contracts.
+  Module authors declare subscriptions/lane/cadence and write the small piece
+  of actual work — everything else is inherited "for free." Lanes C/D/E in
+  this document converge on this substrate.
+
+**Cognition / persona migration:**
 
 - [Persona-as-Rust-Library](../architecture/PERSONA-AS-RUST-LIBRARY-PLAN.md)
 - [Persona Cognition Rust Migration](../architecture/PERSONA-COGNITION-RUST-MIGRATION.md)
+
+**Memory / paging:**
+
 - [Unified Paging](../architecture/UNIFIED-PAGING.md)
 - [Persona Context Paging](../architecture/PERSONA-CONTEXT-PAGING.md)
+
+**Model registry (source-of-truth references, code-side):**
+
 - `src/shared/models.json` and `src/shared/ModelRegistry.ts`
+
+**Grid / Docker / AIRC:**
+
 - [Docker Node Architecture](../grid/DOCKER-NODE-ARCHITECTURE.md)
 - [Grid Architecture](../grid/GRID-ARCHITECTURE.md)
 - [AIRC Continuum Bridge](../grid/AIRC-CONTINUUM-BRIDGE.md)
@@ -969,7 +998,11 @@ This document owns execution order and alpha gates. Detailed architecture remain
 - CambrianTech/airc#559 and CambrianTech/airc#562 for public entry, approval,
   queue, and nudge behavior
 
-If those docs disagree with this one on sequence, update this one first or explicitly revise the sequence in the PR.
+If those docs disagree with this one on sequence, update this one first or
+explicitly revise the sequence in the PR. If they disagree with this one on
+the substrate contract (concurrency, scheduling, memory, pressure, telemetry,
+artifact handles), defer to CBAR-SUBSTRATE-ARCHITECTURE.md and reconcile
+in a follow-up.
 
 ## Immediate Next Actions
 
