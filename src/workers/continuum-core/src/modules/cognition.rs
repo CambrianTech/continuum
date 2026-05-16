@@ -1060,6 +1060,33 @@ impl ServiceModule for CognitionModule {
             }
 
             // =================================================================
+            // Peer-review proposal rating (continuum#1289 PR-2)
+            // =================================================================
+            // AI-driven rater for response proposals. Wires the prompt+parser
+            // shipped in #1289 PR-1 to AIProviderRegistry::generate_text. The
+            // TS shim in PR-3 collapses ProposalRatingAdapter.ts (252 LOC) to
+            // a thin Commands.execute('cognition/rate-proposals', ...) wrapper.
+            //
+            // Wire shape: caller sends a `RateProposalsRequest` (camelCase
+            // ts-rs export). Returns `RateProposalsResponse` with `ratings: []`.
+            // Errors propagate as typed Err(String) over IPC; the chat
+            // substrate handles "no rater responded" by skipping peer-review
+            // for that round, no degraded scoring (no fallback).
+            "cognition/rate-proposals" => {
+                let _timer = TimingGuard::new("module", "cognition_rate_proposals");
+                let request: crate::cognition::rate_proposals::RateProposalsRequest =
+                    serde_json::from_value(params.clone())
+                        .map_err(|e| format!("Invalid RateProposalsRequest: {e}"))?;
+
+                let response =
+                    crate::cognition::rate_proposals::rate_proposals_with_ai(request).await?;
+
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&response).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
+            }
+
+            // =================================================================
             // Recipe/RAG turn batching boundary
             // =================================================================
             // Pure planning command: no ORM, no inference, no file I/O. The host
