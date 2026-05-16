@@ -1,5 +1,15 @@
 # CLAUDE - ESSENTIAL DEVELOPMENT GUIDE
 
+## 📐 Canonical Substrate Docs (read first)
+
+If you're new to the substrate, or you're picking up runtime/cognition work, read these in order before anything else in this file. They are the precedence-winning truth on substrate-shaped questions:
+
+1. **[docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)** — the RTOS-style runtime contract every Rust module inherits. Concurrency, scheduling, memory + device pressure, telemetry, artifact handles, lifecycle. The "for free triplet" (base trait + derive macro + scaffold generator) is here, with the engram-analyzer worked example.
+2. **[docs/architecture/GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md)** — the artifact-sharing economy on top of the substrate. Tiered genome cache (L1–L5), foundry-as-JIT, sentinel-AI-as-PGO, demand-aligned recall, composer + speculator, `SubstrateGovernor` (DVFS — same Rust code on MacBook Air and RTX 5090, different governor policy).
+3. **[docs/planning/ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)** — the lane-shaped roadmap. Current state of Lanes A–H, owners, merge gates, active PRs.
+
+The rest of this file is project guidance — build commands, conventions, useful snippets. If it ever disagrees with the canonical substrate docs on substrate-shaped questions (concurrency, scheduling, memory, pressure, telemetry, artifact handles), defer to the canonical docs and reconcile this file in a follow-up.
+
 ## 🏭 FORGE TEMPLATE ARCHITECTURE (the next sprint)
 
 **Lesson from the qwen3-coder-30b-a3b-compacted-19b-256k v1 publish (alloy hash `aa61c4bdf463847c`):** authoring per-artifact alloy files by hand is anti-architectural. Every successful forge requires the same set of fields — `name`, `userSummary`, `description`, `tags`, `source`, `stages[]` with notes, `results.benchmarks[]` with `samplesPath` + `baseSamplesPath`, `priorMetricBaselines[]`, `limitations[]`, `methodologyPaperUrl` — and we wrote them by hand into a `.alloy.json` for the v1 publish. That's where they need to STOP being manually authored.
