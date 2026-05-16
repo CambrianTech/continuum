@@ -40,6 +40,7 @@ pub mod throughput_lease;
 pub mod tool_executor;
 pub mod turn_batch;
 pub mod types;
+pub mod vision_describe;
 
 pub use adaptive_throughput::*;
 pub use model_resolver::*;

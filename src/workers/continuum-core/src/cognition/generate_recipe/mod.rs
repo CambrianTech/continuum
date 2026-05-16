@@ -8,14 +8,14 @@
 //! ## What's in PR-1 (this slice)
 //!
 //! - `types.rs`     — RecipeTemplateInfo, RecipeGenerateHints, RecipeGenerationRequest,
-//!                    RecipeGenerationResponse (ts-rs camelCase exports)
+//!   RecipeGenerationResponse (ts-rs camelCase exports)
 //! - `prompt.rs`    — build_recipe_system_prompt + build_recipe_user_prompt mirror the
-//!                    TS buildSystemPrompt/buildUserPrompt byte-for-byte
+//!   TS buildSystemPrompt/buildUserPrompt byte-for-byte
 //! - `parser.rs`    — parse_recipe_from_ai_response extracts the JSON envelope
 //! - `validator.rs` — validate_recipe_structure does structural validation (uniqueId
-//!                    format, required fields, valid enums, role schema, in-request
-//!                    duplicate check). Does NOT do filesystem collision check; that
-//!                    stays TS-side because it's pure FS state.
+//!   format, required fields, valid enums, role schema, in-request duplicate check).
+//!   Does NOT do filesystem collision check; that stays TS-side because it's pure FS
+//!   state.
 //!
 //! ## What's coming (PR-2 / PR-3)
 //!

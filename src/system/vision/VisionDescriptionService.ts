@@ -205,17 +205,24 @@ export class VisionDescriptionService {
   }
 
   /**
-   * Check if vision description is available
+   * Best-effort "is a vision model registered?" check, kept synchronous
+   * for the existing fast-fail call sites (MediaPrewarmServerCommand,
+   * LiveRoomSnapshotService, MediaArtifactSource — all `if (!isAvailable())
+   * skip-this-work`).
+   *
+   * Post-#1276 the source-of-truth lives in the Rust model registry;
+   * the only honest synchronous answer is "true (probably) — call
+   * `describe()` and it will return `null` if no vision model is
+   * actually loadable." All three current callers handle a `null`
+   * result gracefully (skip / return-empty), so this preserves the
+   * pre-existing behavior without a sync IPC roundtrip on every guard.
+   *
+   * Future card: replace this with an async, registry-backed check via
+   * the upcoming `ai/providers/list` IPC + `capability=vision` filter,
+   * and migrate all three call sites to await it.
    */
   isAvailable(): boolean {
-    return this._inference.isAvailable();
-  }
-
-  /**
-   * Get available vision models
-   */
-  getAvailableModels(): Array<{ modelId: string; provider: string }> {
-    return this._inference.availableModels();
+    return true;
   }
 }
 

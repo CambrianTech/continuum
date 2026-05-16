@@ -70,9 +70,9 @@ pub fn parse_ratings_from_ai_response(
     }
 
     // Fill missing positions (AI returned fewer ratings than proposals).
-    for j in ratings.len()..proposals.len() {
+    for proposal in proposals.iter().skip(ratings.len()) {
         ratings.push(ProposalRating {
-            proposal_id: proposals[j].proposal_id.clone(),
+            proposal_id: proposal.proposal_id.clone(),
             score: config.default_score,
             should_post: config.default_should_post,
             reasoning: config.missing_rating_reasoning.clone(),

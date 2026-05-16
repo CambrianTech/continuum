@@ -239,14 +239,12 @@ pub fn validate_recipe_structure(
     if recipe.is_public.is_none() {
         errors.push(ValidationError::Missing("isPublic (must be boolean)"));
     }
-    if recipe.tags.is_empty() && recipe.tags.len() == 0 {
-        // Recipe without tags is allowed-but-warned in the TS path; mirror by
-        // not adding an error here. The `validateRecipe` TS check at line 338
-        // is `if (!recipe.tags || !Array.isArray(recipe.tags))` — it errors
-        // only when MISSING, not when empty. The serde default gives us [],
-        // which is "missing → empty"; we accept it. Catching tag-emptiness
-        // would be a stricter policy worth a separate card.
-    }
+    // Recipe without tags is allowed-but-warned in the TS path; mirror by not
+    // adding an error here. The `validateRecipe` TS check at line 338 is
+    // `if (!recipe.tags || !Array.isArray(recipe.tags))` — it errors only when
+    // MISSING, not when empty. The serde default gives us [], which is
+    // "missing → empty"; we accept it. Catching tag-emptiness would be a
+    // stricter policy worth a separate card.
 
     // ── In-request duplicate check (replaces FS collision check) ───
     // The filesystem collision check stays TS-side (RecipeLoader.getInstance().

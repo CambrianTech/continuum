@@ -27,6 +27,8 @@ import type {
 	DomainClassification,
 	CoverageReport,
 	QualityScore,
+	VisionDescribeOptions,
+	VisionDescription,
 	AIDecisionContext,
 	AIGatingDecision,
 } from '../../../../shared/generated';
@@ -163,6 +165,23 @@ export interface CognitionMixin {
 		keyword?: string;
 		origin?: 'chat' | 'airc' | 'tool' | 'self_reflection';
 	}): Promise<{ engrams: Engram[]; count: number }>;
+
+	/**
+	 * Describe an image via the best available vision-capable model.
+	 *
+	 * Wraps `cognition/vision-describe` (Rust IPC, #1276). The Rust side
+	 * picks a vision-capable model from the registry, builds the describe
+	 * prompt, dispatches `ai/generate` with multimodal content, and parses
+	 * the response. Returns null when no vision model is registered or
+	 * generation fails.
+	 *
+	 * Migrated from `system/vision/VisionInferenceProvider.ts`.
+	 */
+	cognitionVisionDescribe(params: {
+		base64Data: string;
+		mimeType: string;
+		options?: VisionDescribeOptions;
+	}): Promise<VisionDescription | null>;
 
 	/**
 	 * SHARED COGNITION — single external entry point for the per-persona
@@ -965,6 +984,37 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as { engrams: Engram[]; count: number };
+		}
+
+		/**
+		 * Describe an image via the best available vision-capable model.
+		 *
+		 * Wraps `cognition/vision-describe` (Rust IPC, #1276). Migrated
+		 * from TS-side `system/vision/VisionInferenceProvider.ts`. The
+		 * Rust side handles vision-model selection via the model registry,
+		 * builds the describe prompt from option flags, dispatches
+		 * `ai/generate` with multimodal content (text + base64 image),
+		 * and parses the response.
+		 */
+		async cognitionVisionDescribe(params: {
+			base64Data: string;
+			mimeType: string;
+			options?: VisionDescribeOptions;
+		}): Promise<VisionDescription | null> {
+			const wire: Record<string, unknown> = {
+				command: 'cognition/vision-describe',
+				base64Data: params.base64Data,
+				mimeType: params.mimeType,
+			};
+			if (params.options !== undefined) wire.options = params.options;
+
+			const response = await this.request(wire);
+
+			if (!response.success) {
+				throw new Error(response.error ?? 'Failed to describe image');
+			}
+
+			return response.result as VisionDescription | null;
 		}
 	};
 }
