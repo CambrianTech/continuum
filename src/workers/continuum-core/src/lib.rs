@@ -26,6 +26,7 @@ pub mod concurrency;
 pub mod concurrent;
 pub mod ffi;
 pub mod forge;
+pub mod governor;
 pub mod gpu;
 pub mod http;
 pub mod inference;
