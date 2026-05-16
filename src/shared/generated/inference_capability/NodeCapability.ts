@@ -6,21 +6,21 @@ import type { InferenceCapability } from "./InferenceCapability";
  * All inference capabilities one node advertises. Keyed in the registry
  * by `node_id` so PR-2/PR-3 can dedupe per-node updates.
  */
-export type NodeCapability = { 
+export type NodeCapability = {
 /**
  * Tailnet-stable node identifier (the same id the grid transport
  * uses for routing). For the local node, supervisor-assigned at boot.
  */
-nodeId: string, 
+nodeId: string,
 /**
  * Hardware profile the supervisor probed for this node.
  */
-hardware: HardwareProfile, 
+hardware: HardwareProfile,
 /**
  * What this node can take. Ordered for deterministic serialization,
  * not by priority — PR-3's router does its own scoring.
  */
-capabilities: Array<InferenceCapability>, 
+capabilities: Array<InferenceCapability>,
 /**
  * Unix-ms timestamp this profile was last refreshed. Stale entries
  * (older than the registry's TTL) get evicted in PR-2.

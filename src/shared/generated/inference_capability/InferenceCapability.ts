@@ -7,23 +7,23 @@ import type { LatencyClass } from "./LatencyClass";
  * `probe_inference_capabilities` from a `HardwareProfile`; advertised by
  * PR-2's grid announcer; scored by PR-3's router.
  */
-export type InferenceCapability = { 
+export type InferenceCapability = {
 /**
  * Backend kind (llamacpp / candle / ort-* / etc.).
  */
-kind: InferenceKind, 
+kind: InferenceKind,
 /**
  * Free VRAM bytes the supervisor reports as available for this
  * capability RIGHT NOW. Updated live by the probe; PR-2 announces
  * at broker-paced intervals; PR-3 uses this for capacity matching.
  */
-freeVramBytes: number, 
+freeVramBytes: number,
 /**
  * Number of inference leases currently held against this capability.
  * PR-3 uses (free_vram + current_lease_count) to estimate "can take
  * one more job" without overcommitting.
  */
-currentLeaseCount: number, 
+currentLeaseCount: number,
 /**
  * Latency class for a local invocation of this capability. Always
  * `LatencyClass::Local` when produced by the local probe; PR-3's

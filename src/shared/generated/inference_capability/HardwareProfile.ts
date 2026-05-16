@@ -6,39 +6,39 @@
  * capability list. Pure data — the runtime probe writes this; tests
  * synthesize it for the four hardware tiers vhsm-d1f4 named.
  */
-export type HardwareProfile = { 
+export type HardwareProfile = {
 /**
  * Human-readable platform identifier ("macos-arm64", "linux-x86_64-cuda",
  * "macos-arm64-m5pro", "linux-x86_64-blackwell"). Free-form; the
  * supervisor probe sets this from sysinfo + GPU vendor strings.
  */
-platform: string, 
+platform: string,
 /**
  * Metal device available (any Apple Silicon).
  */
-hasMetal: boolean, 
+hasMetal: boolean,
 /**
  * CUDA device available (NVIDIA).
  */
-hasCuda: boolean, 
+hasCuda: boolean,
 /**
  * Vulkan device available (AMD or non-CUDA NVIDIA on Linux/Windows).
  */
-hasVulkan: boolean, 
+hasVulkan: boolean,
 /**
  * Free VRAM in bytes. 0 when no discrete/unified GPU memory. Sourced
  * from the GPU memory manager's live probe (`GpuMemoryManager::stats`).
  */
-freeVramBytes: number, 
+freeVramBytes: number,
 /**
  * Total VRAM in bytes (for capacity scoring). 0 when not applicable.
  */
-totalVramBytes: number, 
+totalVramBytes: number,
 /**
  * CPU core count. Set even on GPU-equipped nodes; PR-3 uses it as a
  * tiebreaker when GPU capacity is similar.
  */
-cpuCores: number, 
+cpuCores: number,
 /**
  * System RAM in bytes (the resource pool the broker meters for
  * non-GPU work — embeddings, vision pre/postproc, TTS spectrogram).
