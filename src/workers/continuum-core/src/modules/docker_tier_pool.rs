@@ -28,8 +28,47 @@
 use crate::modules::docker_tier::DockerTierProbe;
 use crate::paging::{ResourcePool, ResourcePoolEntry};
 use crate::runtime;
+use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::time::SystemTime;
+use ts_rs::TS;
+
+/// Snapshot returned by the `system/docker-tier-stats` IPC.
+///
+/// Lifts the data the `ResourcePool` trait already exposes
+/// (`capacity_bytes`, `usage_bytes`, `pressure`) to the wire so the
+/// `bin/continuum status` shell + future widgets can render it.
+/// Phase 1 of #1239 — exposes the data without depending on the
+/// pressure-broker singleton (which doesn't exist in production yet —
+/// see #1239 audit comment).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/resources/DockerTierStats.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerTierStats {
+    /// Pre-allocated sparse-image size on macOS (`st_size`). 0 when
+    /// Docker isn't installed / Docker.raw isn't found / probe failed —
+    /// callers should treat 0 as "tier not under management" rather
+    /// than "no capacity."
+    #[ts(type = "number")]
+    pub capacity_bytes: u64,
+    /// Actual on-disk consumption (`st_blocks * 512`). The number that
+    /// counts against the host filesystem.
+    #[ts(type = "number")]
+    pub used_bytes: u64,
+    /// `used_bytes / capacity_bytes`. Always 0.0 when `capacity_bytes`
+    /// is 0 (tier not under management). May exceed 1.0 if Docker
+    /// somehow stored more than its sparse-image cap (shouldn't happen
+    /// post-probe-fix but the broker tolerates it).
+    pub pressure: f64,
+    /// `true` iff Docker.raw was located and the probe succeeded; `false`
+    /// when Docker isn't installed or the probe found nothing. Lets
+    /// callers distinguish "tier exists but is empty" from "tier
+    /// doesn't apply on this host."
+    pub detected: bool,
+}
 
 /// Docker storage tier as a `ResourcePool`. Stat-on-every-call because
 /// Docker.raw size changes whenever Docker writes to it (image pull,
@@ -52,6 +91,39 @@ impl DockerTierPool {
     pub fn new() -> Self {
         Self {
             loaded_at_ms: now_ms(),
+        }
+    }
+
+    /// Convenience: probe Docker once + return a `DockerTierStats`
+    /// snapshot suitable for the `system/docker-tier-stats` IPC.
+    /// Single probe per call (vs the two probes the per-method
+    /// `capacity_bytes`/`usage_bytes` accessors would do) so the wire
+    /// payload is internally consistent.
+    pub fn snapshot_stats() -> DockerTierStats {
+        match DockerTierProbe::probe() {
+            DockerTierProbe::Detected {
+                allocated_bytes,
+                used_bytes,
+                ..
+            } => {
+                let pressure = if allocated_bytes == 0 {
+                    0.0
+                } else {
+                    used_bytes as f64 / allocated_bytes as f64
+                };
+                DockerTierStats {
+                    capacity_bytes: allocated_bytes,
+                    used_bytes,
+                    pressure,
+                    detected: true,
+                }
+            }
+            _ => DockerTierStats {
+                capacity_bytes: 0,
+                used_bytes: 0,
+                pressure: 0.0,
+                detected: false,
+            },
         }
     }
 }

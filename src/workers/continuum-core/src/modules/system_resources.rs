@@ -126,6 +126,21 @@ impl ServiceModule for SystemResourceModule {
                 }
             }
 
+            "system/docker-tier-stats" => {
+                // Phase 1 of #1239 — surface Docker storage tier directly,
+                // bypassing the (not-yet-instantiated) PressureBroker
+                // singleton. `DockerTierPool::snapshot_stats()` does one
+                // probe and returns capacity_bytes / used_bytes / pressure
+                // / detected. Phase 2 will add the broker singleton + tick
+                // loop + alert sinks; Phase 3 will add typed
+                // `ResourceError::DiskCapacity` refusal at production hot
+                // paths (model pull, container start, image build).
+                let stats = crate::modules::docker_tier_pool::DockerTierPool::snapshot_stats();
+                let json = serde_json::to_value(&stats)
+                    .map_err(|e| format!("Failed to serialize docker-tier-stats: {e}"))?;
+                Ok(CommandResult::Json(json))
+            }
+
             _ => Err(format!("Unknown system command: {command}")),
         }
     }
@@ -221,5 +236,31 @@ mod tests {
         let module = test_module();
         let result = module.handle_command("system/unknown", Value::Null).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_docker_tier_stats_shape() {
+        // Phase 1 of #1239 — verify the IPC always returns the expected
+        // shape (capacityBytes, usedBytes, pressure, detected) regardless
+        // of whether Docker is installed on the test host. CI runs without
+        // Docker, so `detected: false` + zeros is the expected shape.
+        let module = test_module();
+        let result = module
+            .handle_command("system/docker-tier-stats", Value::Null)
+            .await;
+        assert!(result.is_ok(), "docker-tier-stats should always Ok");
+        if let Ok(CommandResult::Json(json)) = result {
+            // All four fields must be present so callers can structurally
+            // pattern-match on the shape — even when Docker isn't here.
+            assert!(json["capacityBytes"].is_number(), "capacityBytes missing");
+            assert!(json["usedBytes"].is_number(), "usedBytes missing");
+            assert!(json["pressure"].is_number(), "pressure missing");
+            assert!(json["detected"].is_boolean(), "detected missing");
+            // Pressure must be in [0.0, ∞) — never NaN even when capacity
+            // is 0 (the `if cap == 0` guard handles it).
+            let pressure = json["pressure"].as_f64().unwrap();
+            assert!(pressure.is_finite(), "pressure must not be NaN/Inf");
+            assert!(pressure >= 0.0, "pressure must be ≥ 0.0");
+        }
     }
 }
