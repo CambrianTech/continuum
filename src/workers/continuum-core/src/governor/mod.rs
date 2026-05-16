@@ -8,10 +8,14 @@
 //! `HardwareClass`.
 
 pub mod policy_file;
+pub mod policy_selector;
 pub mod types;
 
 pub use policy_file::{
     into_governor_policy, load_policy_file, parse_policy_text, PolicyFile, PolicyFileError,
+};
+pub use policy_selector::{
+    hardware_fingerprint, policy_matches_hardware, select_policy, PolicySelectionError,
 };
 pub use types::{
     classify_hardware, CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule,

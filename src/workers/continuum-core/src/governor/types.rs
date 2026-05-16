@@ -13,9 +13,8 @@
 //! ## PR-1 scope (this file)
 //!
 //! Pure typed surface. No impl, no TOML loader, no cascade state
-//! machine, no probe wiring. PR-2 ships tier-stores + working-set
-//! manager; PR-3 ships TOML policy loader + cascade; PR-4 ships
-//! pressure-signal subscriber wiring.
+//! machine, no probe wiring. Later slices ship policy parsing,
+//! selection, cascade, and pressure-signal subscriber wiring.
 //!
 //! This matches the rate_proposals / generate_recipe / PIECE-5 PR-1
 //! cadence — typed surface first, impl second, integration third.
