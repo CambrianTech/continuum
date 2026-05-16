@@ -119,56 +119,117 @@ If the substrate cannot answer "where did this LoRA layer come from and what pro
 
 ## Part 2: Cache Hierarchy
 
-Five tiers. Each is a real Rust storage backend with a real eviction policy. The policy *is* tunable per hardware class; the *code* is not.
+The cache is a sequence of **tier roles** parameterized by hardware class. Discrete-GPU hardware has five distinct tiers; unified-memory hardware collapses the top two into one. The Rust code is identical across hardware; only the `Vec<TierConfig>` per-policy differs.
+
+> **Crit incorporated** from `claude-tab-1` (vHSM-scope, 2026-05-16): the v1 sketch used a fixed `L1..L5` enum. That's wrong on UMA hardware (M-series Macs, M5 Pro, iOS, Vision Pro, embedded) where the "L1 accelerator-resident" and "L2 system RAM" bytes are the same physical pool. An L1→L2 eviction is a no-op. The substrate code stays uniform; the tier count varies. Vision Pro and iOS will be UMA-class — locking 5-as-universal now would force a refactor when those land. This section now uses **tier roles**, not ordinal positions.
+
+### Tier Roles
 
 ```rust
 // PROPOSED — src/workers/continuum-core/src/genome/tier.rs
-pub enum Tier {
-    L1,  // accelerator-resident, currently in inference (KV + active LoRA)
-    L2,  // accelerator-warm, recently used, not active
-    L3,  // system RAM, fast to promote to L1/L2
-    L4,  // SSD-resident genome pool (all adapted/refined artifacts)
-    L5,  // cold archive in longterm.db (compressed engrams, retired layers, audit)
+pub enum TierRole {
+    /// Bytes the accelerator can read at peak bandwidth.
+    /// Discrete GPU: VRAM. UMA: the hot portion of unified memory.
+    Fast,
+
+    /// Bytes the accelerator can reach with a copy or a tier-promotion.
+    /// Discrete GPU: host RAM (PCIe-attached, copy required to use).
+    /// UMA: same physical pool as Fast — this tier is omitted on UMA hardware.
+    Warm,
+
+    /// Bytes the host can read at memory speed; cold to the accelerator.
+    /// Discrete GPU + UMA: a designated portion of system RAM held for the
+    /// genome catalog + recently-used artifacts.
+    Bench,
+
+    /// Bytes on local SSD. The full genome pool lives here on every class
+    /// of hardware. Read latency is milliseconds; bandwidth is mmap-bound.
+    Cold,
+
+    /// Bytes on archive storage. Append-only with provenance preserved.
+    /// Reads are sub-second but never on the hot path. GC during sleep.
+    Frozen,
+}
+
+pub struct TierConfig {
+    pub role:        TierRole,
+    pub capacity:    TierCapacity,         // current_used, configured_limit
+    pub eviction:    EvictionPolicy,       // policy varies by role (see below)
+    pub backing:     TierBackingRef,       // implementation handle
 }
 
 pub trait TierStore: Send + Sync {
-    fn tier(&self) -> Tier;
+    fn role(&self) -> TierRole;
     async fn read(&self, page: PageRef) -> Result<PageHandle, TierError>;
     async fn write(&self, page: PageRef, blob: ArtifactBlob, prov: Provenance) -> Result<(), TierError>;
     async fn evict(&self, target_free_bytes: usize) -> Vec<EvictionRecord>;
-    fn capacity(&self) -> TierCapacity;            // current_used, configured_limit
-    fn observe_access(&self, page: PageRef);        // updates LRU/LFU state
+    fn capacity(&self) -> TierCapacity;
+    fn observe_access(&self, page: PageRef);
 }
 ```
 
-### Eviction Policy Per Tier
+The governor's policy file (Part 11) declares a `Vec<TierConfig>` — typically four entries on UMA hardware, five on discrete-GPU hardware. Subsystems index into the vec by `TierRole`, not by ordinal position. Page-fault reports name the source and destination by role:
 
-| Tier | Policy | When eviction fires |
+```rust
+pub struct PageFault {
+    pub page:          PageRef,
+    pub from_role:     Option<TierRole>,   // None = true cold miss (page does not exist yet)
+    pub to_role:       TierRole,
+    pub persona:       PersonaId,
+    pub elapsed_us:    u64,
+    pub eviction_cost: Option<EvictionRecord>,
+}
+```
+
+### Eviction Policy Per Role
+
+| Role | Policy | When eviction fires |
 |---|---|---|
-| L1 | LRU within current turn | sub-step needs a layer not resident |
-| L2 | LRU across last N turns (governor sets N; default 100) | L1 spill |
-| L3 | LFU + recency; broad-use layers get retention bonus | L2 spill |
-| L4 | Demand-aligned with sentinel-refined preference (refined wins ties over imported) | L3 spill |
-| L5 | Append-only with provenance preserved; GC only during sleep | never in hot path |
+| `Fast` | LRU within current turn | sub-step needs a page not resident |
+| `Warm` (discrete-GPU only) | LRU across last N turns (governor sets N; default 100) | `Fast` spill |
+| `Bench` | LFU + recency; broad-use pages get retention bonus | `Warm` spill (discrete) or `Fast` spill (UMA) |
+| `Cold` | Demand-aligned with sentinel-refined preference (refined wins ties over imported) | `Bench` spill |
+| `Frozen` | Append-only with provenance preserved; GC only during sleep | never in hot path |
 
 Eviction is *always* typed: every evicted page emits an `EvictionRecord` to the trace bus. Recurring evictions of the same page across turns are exactly the signal sentinel uses to upgrade the page's tier policy.
 
 ### Hardware Anchors
 
-Two anchor configurations; everything else interpolates. The substrate *detects* the hardware class at boot (silicon + VRAM + system RAM + power source + thermal class) and the governor writes the appropriate policy.
+Two anchor configurations; everything else interpolates. The substrate *detects* the hardware class at boot and the governor writes a `Vec<TierConfig>` of the right shape. **On UMA hardware, `Warm` is omitted** — the vec has four entries; an `Fast`→`Warm` eviction is structurally absent because there is no separate `Warm` tier to evict to.
 
-| | **MacBook Air, M-series, 16 GB unified** | **RTX 5090, 32 GB VRAM + 64 GB system RAM** |
+**MacBook Air, M-series, 16 GB unified memory** — UMA-class, four tiers:
+
+```
+[ Fast(2 LoRA layers + 2k KV tokens; LRU-within-turn)
+, Bench(12 layers + ~1k engrams; LFU + recency)
+, Cold(SSD genome pool; demand-aligned, sentinel-refined preferred)
+, Frozen(longterm.db; append-only, GC during sleep)
+]
+```
+
+**RTX 5090, 32 GB VRAM + 64 GB system RAM** — discrete-GPU, five tiers:
+
+```
+[ Fast(8 LoRA layers + 16k KV tokens; LRU-within-turn)
+, Warm(16 layers; LRU across last 100 turns)
+, Bench(40+ layers + ~10k engrams; LFU + recency)
+, Cold(SSD genome pool; demand-aligned, sentinel-refined preferred)
+, Frozen(longterm.db; append-only, GC during sleep)
+]
+```
+
+Other axes that vary per anchor:
+
+| | **Air (UMA, 4 tiers)** | **5090 (discrete, 5 tiers)** |
 |---|---|---|
-| L1 (accelerator-resident) | 1–2 LoRA layers; 1–2k KV tokens | 6–8 LoRA layers; 16k+ KV tokens |
-| L2 (accelerator-warm) | 2–4 layers | 12–16 layers |
-| L3 (system RAM) | 8–12 layers; ~1k engrams | 40+ layers; ~10k engrams |
-| L4 (SSD genome) | bounded by disk | bounded by disk |
 | Concurrent personas | 1–2 | 6–8 |
 | Speculative composition | conservative (only on idle slack) | aggressive (every turn) |
 | Sleep / consolidation cadence | nightly, opportunistic on idle/plugged-in | nightly + partial during day |
 | Cross-instance federation pull | manual / explicit | automatic on idle |
 
-M-Pro/Max interpolate to mid-range. Vulkan-only AMD/Intel match the Air shape with smaller L1 (less unified memory). Vision Pro and embedded targets get aggressive eviction + reduced concurrency + simpler composition. **The Rust code is identical across all of them.** This is the architectural beauty: the same primitives, parameterized.
+M-Pro/Max are UMA-class with larger pools (still four tiers, bigger numbers). Discrete AMD/Intel via Vulkan match the 5090 shape with smaller numbers. Vision Pro and iOS are UMA-class with aggressive eviction + reduced concurrency + simpler composition (still four tiers; the `Warm` role is structurally absent, not just configured to zero). Embedded targets may drop to three tiers (`Fast`, `Cold`, `Frozen`) if `Bench` would compete with foreground responsiveness.
+
+**The Rust code is identical across all of them.** The architectural beauty: subsystems address tiers by role, the governor writes a `Vec<TierConfig>` of the right length, and the type system makes "L1→L2 eviction on UMA" structurally impossible because there is no `Warm` tier to evict to.
 
 ## Part 3: Paging, Working Set, And Page Faults
 
@@ -185,7 +246,7 @@ pub struct WorkingSet {
 
 pub struct ResidentPage {
     pub page: PageRef,
-    pub tier: Tier,                                // L1 or L2
+    pub role: TierRole,                            // Fast (or Warm on discrete-GPU hardware)
     pub last_access: Instant,
     pub access_count_window: u32,
     pub pinned: bool,                              // composition-pinned pages cannot evict mid-turn
@@ -200,15 +261,15 @@ pub struct PageRef {
 }
 ```
 
-When the persona's composition needs a page not in its working set, that's a **page fault**:
+When the persona's composition needs a page not in its working set, that's a **page fault** (the typed struct is defined in Part 2 alongside `TierRole`):
 
 ```rust
 pub trait WorkingSetManager: Send + Sync {
     /// Promote a page into this persona's working set. May trigger eviction.
     async fn page_in(&self, persona: PersonaId, page: PageRef) -> Result<PageHandle, PageFault>;
 
-    /// Demote a page out of the working set toward the named tier.
-    async fn page_out(&self, persona: PersonaId, page: PageRef, to: Tier) -> Result<(), TierError>;
+    /// Demote a page out of the working set toward the named tier role.
+    async fn page_out(&self, persona: PersonaId, page: PageRef, to: TierRole) -> Result<(), TierError>;
 
     /// Current working set for read-only inspection.
     fn working_set(&self, persona: PersonaId) -> &WorkingSet;
@@ -216,15 +277,6 @@ pub trait WorkingSetManager: Send + Sync {
     /// Enforced MMU-style audit: persona is asking for a page.
     /// Returns AccessDenied if the page is private to another persona.
     fn audit_access(&self, persona: PersonaId, page: PageRef) -> Result<(), AccessDenied>;
-}
-
-pub struct PageFault {
-    pub page: PageRef,
-    pub from_tier: Option<Tier>,                   // None = true cold miss (page does not exist yet)
-    pub to_tier: Tier,
-    pub persona: PersonaId,
-    pub elapsed_us: u64,
-    pub eviction_cost: Option<EvictionRecord>,     // what got evicted to make room
 }
 ```
 
@@ -440,8 +492,8 @@ pub enum RecallScope {
 }
 
 pub enum ResidencyHint {
-    Hot { tier: Tier },                             // already L1/L2-resident
-    Local { tier: Tier },                           // L3-L5 on this machine; promotable
+    Hot { role: TierRole },                         // already Fast (or Warm on discrete-GPU)
+    Local { role: TierRole },                       // Bench / Cold / Frozen on this machine; promotable
     GridPeer { peer: PeerId, est_latency_ms: u32 }, // resident on a federated peer
     NotResident { acquirable_from: AcquireSource }, // foundry would have to import or sentinel refine
 }
@@ -465,10 +517,13 @@ pub fn score(
     let outcome_history  = outcome_window_score(artifact.id, ctx.recent_outcomes);
     let recency          = recency_decay(artifact.last_used, now(), HALF_LIFE);
     let tier_proximity   = match artifact.residency {
-        ResidencyHint::Hot { .. }        => 1.0,
-        ResidencyHint::Local { tier }    => 0.7 - 0.1 * (tier as f32),    // L3 ≈ 0.4, L4 ≈ 0.3, L5 ≈ 0.2
+        ResidencyHint::Hot   { .. }           => 1.0,
+        ResidencyHint::Local { role }         => local_role_score(role),
+        //                                       Bench  ≈ 0.6
+        //                                       Cold   ≈ 0.3
+        //                                       Frozen ≈ 0.1
         ResidencyHint::GridPeer { est_latency_ms, .. } => grid_penalty(est_latency_ms),
-        ResidencyHint::NotResident { .. } => 0.0,
+        ResidencyHint::NotResident { .. }     => 0.0,
     };
     let provenance_trust = trust_score(artifact.provenance, ctx.trust_overrides);
 
@@ -647,7 +702,7 @@ pub struct CompositionPlan {
 pub struct LoRAComposition {
     pub layer: LoRALayerRef,
     pub weight: f32,                               // composition weight
-    pub tier_at_plan: Tier,                        // where this layer sat when the plan was made
+    pub role_at_plan: TierRole,                    // which tier role this layer occupied when planned
 }
 
 pub trait Composer: Send + Sync {
