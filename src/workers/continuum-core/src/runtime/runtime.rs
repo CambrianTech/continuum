@@ -82,6 +82,62 @@ impl Runtime {
             self.bus.subscribe(pattern, config.name, false);
         }
 
+        // PIECE-2 PR-3: wire artifact_subscriptions onto the same bus.
+        // Each ArtifactSelector translates to a bus subscription:
+        //   Exact(k)  → bus.subscribe(k, name, true)
+        //   Prefix(p) → KNOWN GAP, no-op + warn (see below)
+        //
+        // Subscribed `synchronous: true` so MessageBus::publish dispatches
+        // inline through handle_event. The async tier (synchronous=false)
+        // sends to a broadcast channel that nothing in the runtime
+        // currently auto-routes back to handle_event — synchronous=false
+        // would silently drop. Sync is safe because on_artifact_available
+        // is contract-bound to cheap-and-return (see its docstring); if
+        // a subscriber needs heavy work, it can `tokio::spawn` inside
+        // the handler.
+        //
+        // Delivery: bus calls handle_event with event_name = key; the
+        // default handle_event impl in service_module.rs auto-dispatches
+        // to on_artifact_available when the incoming key matches one of
+        // this module's artifact_subscriptions. Modules that override
+        // handle_event keep full control and can call
+        // on_artifact_available themselves if they want.
+        //
+        // Cadence routing split (per airc design check w/ vhsm-scope
+        // airc-8a5e, 2026-05-16 19:58Z):
+        //   Cadence::EventDriven | OnArtifact → this bus path
+        //   Cadence::Periodic                 → existing tick_interval path
+        //   Cadence::Mixed                    → both
+        // We always wire bus subscriptions when artifact_subscriptions
+        // is non-empty; the tick_interval path is wired separately by
+        // start_tick_loops.
+        for selector in module.artifact_subscriptions() {
+            match selector {
+                super::ArtifactSelector::Exact(key) => {
+                    self.bus.subscribe(key.as_str(), config.name, true);
+                }
+                super::ArtifactSelector::Prefix(p) => {
+                    // KNOWN GAP: bus glob_matches (message_bus.rs:245)
+                    // splits on `:` not `/` — Prefix("cognition/") →
+                    // bus pattern matches nothing because the matcher
+                    // only sees one colon-segment on either side.
+                    // Resolving requires choosing one separator
+                    // convention for ArtifactKey + aligning bus events
+                    // to match. PR-3 ships Exact-only support; Prefix
+                    // is silently no-op'd until convention is unified
+                    // (separate slice). Pinned by a test that asserts
+                    // the no-op so the follow-up has a regression check
+                    // to flip.
+                    warn!(
+                        "Module '{}' uses ArtifactSelector::Prefix({:?}) but bus glob_matches \
+                         uses colon-segmented patterns — prefix delivery is not wired in PR-3. \
+                         Use Exact selectors until separator convention is unified.",
+                        config.name, p
+                    );
+                }
+            }
+        }
+
         if config.max_concurrency > 0 {
             self.concurrency_limits.insert(
                 config.name,
@@ -372,5 +428,279 @@ impl Runtime {
             EXPECTED_MODULES.len()
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod piece_2_pr3_dispatch_tests {
+    //! PIECE-2 PR-3 dispatch tests.
+    //!
+    //! Proves the registration → bus.subscribe → handle_event →
+    //! on_artifact_available chain wires correctly for
+    //! ArtifactSelector::Exact, that ArtifactSelector::Prefix is a
+    //! pinned no-op pending separator unification, and that modules
+    //! NOT opted-in see no artifact dispatch (backwards-compat
+    //! guarantee).
+    //!
+    //! Test fixture: a tracking module that records every
+    //! on_artifact_available call into a shared Vec the test asserts
+    //! against after publishing.
+    use super::*;
+    use crate::runtime::artifact_handle::{ArtifactKey, ArtifactSelector};
+    use crate::runtime::service_module::{
+        CommandResult, ModuleConfig, ModulePriority, ServiceModule,
+    };
+    use async_trait::async_trait;
+    use parking_lot::Mutex;
+    use std::any::Any;
+    use std::sync::Arc;
+
+    struct RecordingModule {
+        name: &'static str,
+        subscriptions: Vec<ArtifactSelector>,
+        received: Arc<Mutex<Vec<(ArtifactKey, serde_json::Value)>>>,
+    }
+
+    impl RecordingModule {
+        fn new(
+            name: &'static str,
+            subscriptions: Vec<ArtifactSelector>,
+        ) -> (Arc<Self>, Arc<Mutex<Vec<(ArtifactKey, serde_json::Value)>>>) {
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let module = Arc::new(Self {
+                name,
+                subscriptions,
+                received: received.clone(),
+            });
+            (module, received)
+        }
+    }
+
+    #[async_trait]
+    impl ServiceModule for RecordingModule {
+        fn config(&self) -> ModuleConfig {
+            ModuleConfig {
+                name: self.name,
+                priority: ModulePriority::Normal,
+                command_prefixes: &[],
+                event_subscriptions: &[],
+                needs_dedicated_thread: false,
+                max_concurrency: 0,
+                tick_interval: None,
+            }
+        }
+        async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+            Ok(())
+        }
+        async fn handle_command(
+            &self,
+            _command: &str,
+            _params: serde_json::Value,
+        ) -> Result<CommandResult, String> {
+            Err("not handled".to_string())
+        }
+        fn artifact_subscriptions(&self) -> Vec<ArtifactSelector> {
+            self.subscriptions.clone()
+        }
+        async fn on_artifact_available(
+            &self,
+            key: &ArtifactKey,
+            value: serde_json::Value,
+        ) -> Result<(), String> {
+            self.received.lock().push((key.clone(), value));
+            Ok(())
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// What this catches: ArtifactSelector::Exact translates to a
+    /// literal bus pattern. Publishing the matching key delivers via
+    /// the default handle_event → on_artifact_available chain;
+    /// publishing a non-matching key does not.
+    #[tokio::test]
+    async fn exact_selector_delivers_only_matching_key() {
+        let runtime = Runtime::new();
+        let (module, received) = RecordingModule::new(
+            "exact-recorder",
+            vec![ArtifactSelector::Exact(ArtifactKey::from(
+                "paging/broker.snapshot",
+            ))],
+        );
+        runtime.register(module);
+
+        runtime
+            .bus()
+            .publish(
+                "paging/broker.snapshot",
+                serde_json::json!({"pressure": 0.42}),
+                runtime.registry(),
+            )
+            .await;
+
+        // Different key — not delivered.
+        runtime
+            .bus()
+            .publish(
+                "cognition/rate_proposals.result",
+                serde_json::json!({"foo": "bar"}),
+                runtime.registry(),
+            )
+            .await;
+
+        // Prefix-shaped collision — not delivered (Exact must be
+        // string-equality, not prefix-equality).
+        runtime
+            .bus()
+            .publish(
+                "paging/broker.snapshot.delta",
+                serde_json::json!({"foo": "bar"}),
+                runtime.registry(),
+            )
+            .await;
+
+        let calls = received.lock().clone();
+        assert_eq!(
+            calls.len(),
+            1,
+            "exact selector should deliver only the literal match; got {:?}",
+            calls
+                .iter()
+                .map(|(k, _)| k.as_str().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(calls[0].0.as_str(), "paging/broker.snapshot");
+        assert_eq!(calls[0].1["pressure"], 0.42);
+    }
+
+    /// What this catches (PR-3 known gap): ArtifactSelector::Prefix
+    /// is wired but silently no-ops because bus glob_matches uses
+    /// colon-segmented patterns and ArtifactKey convention isn't
+    /// unified. This test pins the gap so a future PR that unifies
+    /// the separator must update this test to "Prefix actually
+    /// delivers." Don't delete the test — flipping it from
+    /// expect-zero to expect-N is the exact regression check the
+    /// follow-up needs.
+    #[tokio::test]
+    async fn prefix_selector_currently_no_ops_pending_separator_unification() {
+        let runtime = Runtime::new();
+        let (module, received) = RecordingModule::new(
+            "prefix-recorder",
+            vec![ArtifactSelector::Prefix("cognition/".to_string())],
+        );
+        runtime.register(module);
+
+        runtime
+            .bus()
+            .publish(
+                "cognition/rate_proposals.result",
+                serde_json::json!({}),
+                runtime.registry(),
+            )
+            .await;
+        runtime
+            .bus()
+            .publish(
+                "cognition/generate_recipe.result",
+                serde_json::json!({}),
+                runtime.registry(),
+            )
+            .await;
+
+        assert_eq!(
+            received.lock().len(),
+            0,
+            "PR-3 known gap: Prefix selectors silently no-op until \
+             separator convention is unified across ArtifactKey + bus \
+             matcher. When unified, this assertion should become \
+             assert_eq!(calls.len(), 2) and the test name updated."
+        );
+    }
+
+    /// What this catches: a module that declares NO artifact_subscriptions
+    /// receives NOTHING. Backwards-compat: every existing module
+    /// (HealthModule, PressureBrokerModule, …) keeps its current
+    /// behavior — the new default handle_event is a no-op for
+    /// non-opted-in modules.
+    #[tokio::test]
+    async fn module_without_artifact_subscriptions_receives_nothing() {
+        let runtime = Runtime::new();
+        let (module, received) = RecordingModule::new("non-opted-in", vec![]);
+        runtime.register(module);
+
+        runtime
+            .bus()
+            .publish(
+                "paging/broker.snapshot",
+                serde_json::json!({}),
+                runtime.registry(),
+            )
+            .await;
+        runtime
+            .bus()
+            .publish(
+                "anything/at/all",
+                serde_json::json!({}),
+                runtime.registry(),
+            )
+            .await;
+
+        assert!(
+            received.lock().is_empty(),
+            "module with empty subscriptions must receive nothing"
+        );
+    }
+
+    /// What this catches: two modules with different subscription
+    /// sets each receive ONLY their matching events. Multi-subscriber
+    /// isolation.
+    #[tokio::test]
+    async fn multi_module_isolation_each_gets_only_matching_artifacts() {
+        let runtime = Runtime::new();
+        let (a, received_a) = RecordingModule::new(
+            "module-a",
+            vec![ArtifactSelector::Exact(ArtifactKey::from(
+                "persona/inbox.frame_ready",
+            ))],
+        );
+        let (b, received_b) = RecordingModule::new(
+            "module-b",
+            vec![ArtifactSelector::Exact(ArtifactKey::from(
+                "paging/broker.snapshot",
+            ))],
+        );
+        runtime.register(a);
+        runtime.register(b);
+
+        runtime
+            .bus()
+            .publish(
+                "persona/inbox.frame_ready",
+                serde_json::json!({"id": "frame-1"}),
+                runtime.registry(),
+            )
+            .await;
+        runtime
+            .bus()
+            .publish(
+                "paging/broker.snapshot",
+                serde_json::json!({"pressure": 0.5}),
+                runtime.registry(),
+            )
+            .await;
+
+        let a_keys: Vec<String> = received_a
+            .lock()
+            .iter()
+            .map(|(k, _)| k.as_str().to_string())
+            .collect();
+        let b_keys: Vec<String> = received_b
+            .lock()
+            .iter()
+            .map(|(k, _)| k.as_str().to_string())
+            .collect();
+        assert_eq!(a_keys, vec!["persona/inbox.frame_ready".to_string()]);
+        assert_eq!(b_keys, vec!["paging/broker.snapshot".to_string()]);
     }
 }
