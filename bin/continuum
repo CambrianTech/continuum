@@ -329,6 +329,42 @@ cmd_status() {
     echo ""
   fi
 
+  # Resources (PressureBroker — continuum#1299).
+  # Surfaces cross-pool pressure tier + per-pool stats from the broker
+  # IPC shipped in #1308. Only renders when the native core is running
+  # (broker only exists in-process). Quiet failure on jtag absence or
+  # IPC error so this never blocks the rest of `continuum status`.
+  if [ -n "$native_pids" ] && command -v jtag &>/dev/null && command -v jq &>/dev/null; then
+    local broker_json
+    broker_json=$(jtag system/pressure-broker-state 2>/dev/null || echo "")
+    if [ -n "$broker_json" ]; then
+      local gp gt
+      gp=$(printf '%s' "$broker_json" | jq -r '.stats.globalPressure // .result.stats.globalPressure // .globalPressure // empty' 2>/dev/null)
+      gt=$(printf '%s' "$broker_json" | jq -r '.stats.globalTier // .result.stats.globalTier // .globalTier // empty' 2>/dev/null)
+      if [ -n "$gt" ]; then
+        local gicon="${GREEN}●${RESET}"
+        case "$gt" in
+          warning)  gicon="${YELLOW}●${RESET}" ;;
+          high)     gicon="${YELLOW}●${RESET}" ;;
+          critical) gicon="${RED}●${RESET}" ;;
+        esac
+        printf "  ${BLUE}Resources${RESET}  ${gicon} %s  ${DIM}global pressure %.2f${RESET}\n" "$gt" "${gp:-0}"
+        printf '%s' "$broker_json" | jq -r '(.stats.pools // .result.stats.pools // .pools // [])[]? | "\(.name)\t\(.tier)\t\(.pressure)"' 2>/dev/null \
+          | while IFS=$'\t' read -r p_name p_tier p_pressure; do
+            [ -n "$p_name" ] || continue
+            local picon="${GREEN}●${RESET}"
+            case "$p_tier" in
+              warning)  picon="${YELLOW}●${RESET}" ;;
+              high)     picon="${YELLOW}●${RESET}" ;;
+              critical) picon="${RED}●${RESET}" ;;
+            esac
+            printf "    ${picon}  %-20s tier=%-8s pressure=%.2f\n" "$p_name" "$p_tier" "${p_pressure:-0}"
+          done
+        echo ""
+      fi
+    fi
+  fi
+
   # Grid
   if command -v tailscale &>/dev/null; then
     local suffix; suffix=$(tailnet_suffix)
