@@ -2,13 +2,17 @@
 //! Part 11. The DVFS layer for the AI substrate. ONE Rust subsystem
 //! that makes "same code on MacBook Air and RTX 5090" real.
 //!
-//! See `types.rs` docstring for the full scope statement. PR-1 (this
-//! commit) ships the typed surface + a hardware-classification bridge
+//! See `types.rs` docstring for the full scope statement. PR-1 ships
+//! the typed surface + a hardware-classification bridge
 //! from `inference_capability::hw_probe` (PIECE-5 PR-3 #1335) to
 //! `HardwareClass`.
 
+pub mod policy_file;
 pub mod types;
 
+pub use policy_file::{
+    into_governor_policy, load_policy_file, parse_policy_text, PolicyFile, PolicyFileError,
+};
 pub use types::{
     classify_hardware, CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule,
     FederationCadence, GovernorPolicy, GovernorSnapshot, HardwareClass, PowerSource,
@@ -18,10 +22,9 @@ pub use types::{
 
 /// The trait every Substrate Governor implementation must satisfy.
 ///
-/// PR-1 (this commit) ships the trait signature only — no concrete
-/// implementation. PR-2 (tier-stores) doesn't need it. PR-3 (TOML
-/// policy loader + cascade) ships the reference `LocalSubstrateGovernor`
-/// impl that other modules depend on.
+/// PR-1 shipped the trait signature only — no concrete implementation.
+/// PR-2 ships policy parsing. The cascade slice ships the reference
+/// `LocalSubstrateGovernor` impl that other modules depend on.
 ///
 /// The governor never blocks reads. `current_policy()` is a wait-free
 /// `Arc` clone. Writes hold a small mutex (under a microsecond) and
