@@ -37,6 +37,7 @@ pub mod plasticity;
 pub mod pressure_broker_module;
 pub mod python_adapter;
 pub mod rag;
+pub mod resource_broker;
 pub mod runtime_control;
 pub mod search;
 pub mod sentinel;

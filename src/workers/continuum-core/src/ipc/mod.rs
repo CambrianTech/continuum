@@ -906,6 +906,12 @@ pub fn start_server(
         crate::modules::pressure_broker_module::PressureBrokerModule::new(),
     ));
 
+    // Runtime-owned lease ledger for CPU/GPU/memory/disk/network admission.
+    // Subsystems ask this broker for capacity instead of keeping private caps.
+    runtime.register(Arc::new(
+        crate::modules::resource_broker::ResourceBrokerModule::new(),
+    ));
+
     // Phase 1: InferenceModule — exposes inference/capacity so TS side
     // (InferenceCoordinator) reads a single Rust source of truth instead
     // of duplicating the RAM formula. See issue #887.
