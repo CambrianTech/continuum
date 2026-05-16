@@ -105,59 +105,84 @@ pub struct VisionDescription {
     pub response_time_ms: u64,
 }
 
-/// Pick the best vision-capable model.
+/// Vision-capable model candidate for selection. Pulled out as a struct
+/// (vs the prior `(String, String, bool)` tuple) so the priority logic
+/// can be unit-tested without standing up the global model registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisionCandidate {
+    model_id: String,
+    provider_id: String,
+    is_local: bool,
+}
+
+/// Pure priority-ordering core. Pick the best `VisionCandidate` for
+/// the given options, or `None` if `candidates` is empty.
 ///
 /// Priority (mirrors the TS `selectModel` semantics):
-///   1. `preferred_model` if set AND vision-capable
-///   2. `preferred_provider` if set AND has a vision-capable model
-///   3. First local provider's first vision-capable model
-///   4. First vision-capable model in the registry
+///   1. `preferred_model` if set AND in `candidates`
+///   2. `preferred_provider` if set AND has a candidate
+///   3. First local-provider candidate
+///   4. First candidate in the slice
 ///
-/// Returns `(model_id, provider_id)` or `None` if no vision-capable
-/// model is registered.
-fn select_vision_model(opts: &VisionDescribeOptions) -> Option<(String, String)> {
-    let registry = model_registry::try_global()?;
-
-    // Collect (model_id, provider_id, is_local) triples for vision-capable models.
-    let candidates: Vec<(String, String, bool)> = registry
-        .models()
-        .filter(|m| m.has(Capability::Vision))
-        .filter_map(|m| {
-            let provider = registry.provider(&m.provider)?;
-            Some((
-                m.id.clone(),
-                m.provider.clone(),
-                matches!(provider.kind, crate::model_registry::types::ProviderKind::Local),
-            ))
-        })
-        .collect();
-
+/// Pure function — fully unit-testable. The registry IO is in the
+/// caller (`select_vision_model`).
+fn pick_vision_candidate<'a>(
+    candidates: &'a [VisionCandidate],
+    opts: &VisionDescribeOptions,
+) -> Option<&'a VisionCandidate> {
     if candidates.is_empty() {
         return None;
     }
 
-    // 1. Exact preferred_model match (must be vision-capable).
+    // 1. Exact preferred_model match.
     if let Some(preferred) = opts.preferred_model.as_deref() {
-        if let Some((mid, pid, _)) = candidates.iter().find(|(mid, _, _)| mid == preferred) {
-            return Some((mid.clone(), pid.clone()));
+        if let Some(c) = candidates.iter().find(|c| c.model_id == preferred) {
+            return Some(c);
         }
     }
 
-    // 2. preferred_provider's first vision-capable model.
+    // 2. preferred_provider's first candidate.
     if let Some(preferred) = opts.preferred_provider.as_deref() {
-        if let Some((mid, pid, _)) = candidates.iter().find(|(_, pid, _)| pid == preferred) {
-            return Some((mid.clone(), pid.clone()));
+        if let Some(c) = candidates.iter().find(|c| c.provider_id == preferred) {
+            return Some(c);
         }
     }
 
     // 3. Prefer a local provider when no explicit preference (free + private).
-    if let Some((mid, pid, _)) = candidates.iter().find(|(_, _, local)| *local) {
-        return Some((mid.clone(), pid.clone()));
+    if let Some(c) = candidates.iter().find(|c| c.is_local) {
+        return Some(c);
     }
 
     // 4. Fall back to whatever's first.
-    let (mid, pid, _) = &candidates[0];
-    Some((mid.clone(), pid.clone()))
+    candidates.first()
+}
+
+/// Pick the best vision-capable model from the global model registry.
+///
+/// Returns `(model_id, provider_id)` or `None` if no vision-capable
+/// model is registered. Wraps `pick_vision_candidate` with the registry
+/// IO; the priority logic itself lives in the pure helper for tests.
+fn select_vision_model(opts: &VisionDescribeOptions) -> Option<(String, String)> {
+    let registry = model_registry::try_global()?;
+
+    let candidates: Vec<VisionCandidate> = registry
+        .models()
+        .filter(|m| m.has(Capability::Vision))
+        .filter_map(|m| {
+            let provider = registry.provider(&m.provider)?;
+            Some(VisionCandidate {
+                model_id: m.id.clone(),
+                provider_id: m.provider.clone(),
+                is_local: matches!(
+                    provider.kind,
+                    crate::model_registry::types::ProviderKind::Local
+                ),
+            })
+        })
+        .collect();
+
+    pick_vision_candidate(&candidates, opts)
+        .map(|c| (c.model_id.clone(), c.provider_id.clone()))
 }
 
 /// Build the describe prompt from option flags.
@@ -225,6 +250,18 @@ pub async fn describe_image(
         return Ok(None);
     };
 
+    // If the caller asked for a specific model and we couldn't honor it,
+    // log the substitution so the call site can audit which provider
+    // actually ran. Quiet on the no-preference path (the common case).
+    if let Some(requested) = req.options.preferred_model.as_deref() {
+        if requested != model_id {
+            runtime::logger("cognition").info(&format!(
+                "vision-describe: preferred_model {:?} unavailable, substituted {:?} (from provider {:?})",
+                requested, model_id, provider_id,
+            ));
+        }
+    }
+
     let prompt = req
         .options
         .prompt
@@ -234,10 +271,15 @@ pub async fn describe_image(
     // Build the multimodal `ai/generate` request payload. Shape mirrors
     // what the TS-side AIProviderDaemon.generateText expects + what the
     // Rust adapters (Anthropic / OpenAI / LlamaCpp) parse out.
+    //
+    // `div_ceil` so a max_length of e.g. 100 chars maps to ceil(100/4)
+    // = 25 tokens (vs the prior `(len + 3) / 4` which computed the same
+    // value but obscured intent). The 50-token floor keeps the request
+    // viable when callers pass small max_length hints.
     let max_tokens = req
         .options
         .max_length
-        .map(|len| u32::max(50, (len + 3) / 4))
+        .map(|len| u32::max(50, len.div_ceil(4)))
         .unwrap_or(500);
 
     let generate_params = serde_json::json!({
@@ -262,16 +304,23 @@ pub async fn describe_image(
 
     let response_value = runtime::execute_command_json("ai/generate", generate_params).await?;
 
-    let finish_reason = response_value
+    // ai/generate's wire format serializes FinishReason via Display
+    // (`modules/ai_provider.rs::response_to_json`); the sentinel string
+    // matches `crate::ai::types::FinishReason::Error`'s Display impl.
+    // Deserialize back to the typed enum so any future variant rename
+    // is caught at compile time on both sides of the wire.
+    let finish_reason: Option<crate::ai::types::FinishReason> = response_value
         .get("finishReason")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok());
     let response_text = response_value
         .get("text")
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    if finish_reason == "error" || response_text.is_empty() {
+    if matches!(finish_reason, Some(crate::ai::types::FinishReason::Error))
+        || response_text.is_empty()
+    {
         return Ok(None);
     }
 
@@ -333,5 +382,118 @@ mod tests {
         assert!(parsed.objects.is_none());
         assert!(parsed.colors.is_none());
         assert!(parsed.text.is_none());
+    }
+
+    // ─── select_vision_model 4-branch priority logic ──────────────────────
+    //
+    // pick_vision_candidate is the pure core; select_vision_model is the
+    // registry-IO wrapper. Tests target the pure core so each branch is
+    // exercised without standing up the global model registry.
+
+    fn cand(model: &str, provider: &str, is_local: bool) -> VisionCandidate {
+        VisionCandidate {
+            model_id: model.to_string(),
+            provider_id: provider.to_string(),
+            is_local,
+        }
+    }
+
+    #[test]
+    fn pick_vision_candidate_returns_none_when_empty() {
+        assert!(pick_vision_candidate(&[], &VisionDescribeOptions::default()).is_none());
+    }
+
+    #[test]
+    fn pick_vision_candidate_priority_1_preferred_model_wins_over_local() {
+        // preferred_model picks the named model EVEN when a local
+        // alternative exists. Caller intent beats local-cost preference.
+        let candidates = vec![
+            cand("local-llava", "llamacpp-local", true),
+            cand("claude-vision", "anthropic", false),
+        ];
+        let opts = VisionDescribeOptions {
+            preferred_model: Some("claude-vision".to_string()),
+            ..Default::default()
+        };
+        let picked = pick_vision_candidate(&candidates, &opts).unwrap();
+        assert_eq!(picked.model_id, "claude-vision");
+        assert_eq!(picked.provider_id, "anthropic");
+    }
+
+    #[test]
+    fn pick_vision_candidate_priority_2_preferred_provider_wins_over_local() {
+        // preferred_provider with no preferred_model picks the FIRST
+        // candidate from that provider, even when a local exists.
+        let candidates = vec![
+            cand("local-llava", "llamacpp-local", true),
+            cand("gpt-4o", "openai", false),
+            cand("gpt-4o-mini", "openai", false),
+        ];
+        let opts = VisionDescribeOptions {
+            preferred_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+        let picked = pick_vision_candidate(&candidates, &opts).unwrap();
+        assert_eq!(picked.provider_id, "openai");
+        // First openai candidate, not the second.
+        assert_eq!(picked.model_id, "gpt-4o");
+    }
+
+    #[test]
+    fn pick_vision_candidate_priority_3_prefers_local_when_no_preference() {
+        // No preference → local provider wins (free + private).
+        let candidates = vec![
+            cand("claude-vision", "anthropic", false),
+            cand("gpt-4o", "openai", false),
+            cand("local-llava", "llamacpp-local", true),
+        ];
+        let picked = pick_vision_candidate(&candidates, &VisionDescribeOptions::default()).unwrap();
+        assert!(picked.is_local);
+        assert_eq!(picked.model_id, "local-llava");
+    }
+
+    #[test]
+    fn pick_vision_candidate_priority_4_first_when_no_local_no_preference() {
+        // No local, no preference → first candidate.
+        let candidates = vec![
+            cand("claude-vision", "anthropic", false),
+            cand("gpt-4o", "openai", false),
+        ];
+        let picked = pick_vision_candidate(&candidates, &VisionDescribeOptions::default()).unwrap();
+        assert_eq!(picked.model_id, "claude-vision");
+    }
+
+    #[test]
+    fn pick_vision_candidate_unknown_preferred_model_falls_through_to_local() {
+        // preferred_model that doesn't match any candidate falls through
+        // to the next priority — local wins. (The describe_image caller
+        // logs the substitution for audit.)
+        let candidates = vec![
+            cand("claude-vision", "anthropic", false),
+            cand("local-llava", "llamacpp-local", true),
+        ];
+        let opts = VisionDescribeOptions {
+            preferred_model: Some("nonexistent-vision-model".to_string()),
+            ..Default::default()
+        };
+        let picked = pick_vision_candidate(&candidates, &opts).unwrap();
+        assert!(picked.is_local);
+        assert_eq!(picked.model_id, "local-llava");
+    }
+
+    #[test]
+    fn pick_vision_candidate_unknown_preferred_provider_falls_through_to_first() {
+        // preferred_provider that doesn't match falls through. With no
+        // local, picks first.
+        let candidates = vec![
+            cand("claude-vision", "anthropic", false),
+            cand("gpt-4o", "openai", false),
+        ];
+        let opts = VisionDescribeOptions {
+            preferred_provider: Some("groq".to_string()),
+            ..Default::default()
+        };
+        let picked = pick_vision_candidate(&candidates, &opts).unwrap();
+        assert_eq!(picked.model_id, "claude-vision");
     }
 }

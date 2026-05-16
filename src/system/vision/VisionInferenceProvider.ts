@@ -22,32 +22,13 @@ import type { VisionDescription, DescribeOptions } from './VisionDescriptionServ
 
 export class VisionInferenceProvider {
   /**
-   * Check if any vision model is available for inference.
-   *
-   * Pre-#1276 this called into `AICapabilityRegistry` directly. Today
-   * the source-of-truth is the Rust model registry. We avoid an extra
-   * IPC ping per `descriptionStatus()` call by always returning true —
-   * the actual `cognition/vision-describe` call returns `null` when no
-   * vision model is registered, which `describe()` already surfaces.
-   * `VisionDescriptionService` only uses this for a coarse "should I
-   * even try?" check; on no-vision-models it gets a `null` result
-   * back the first time and degrades the same way.
+   * Best-effort "vision available?" — kept for VisionDescriptionService's
+   * synchronous fast-fail call sites. Post-#1276 the real signal is
+   * `describe()` returning null. See VisionDescriptionService.isAvailable()
+   * docstring for the migration plan.
    */
   isAvailable(): boolean {
     return true;
-  }
-
-  /**
-   * Get available vision models with their providers.
-   *
-   * Returns an empty array — the legacy callers (UI diagnostics) used
-   * this for human-readable model lists; that surface is being moved
-   * to a dedicated Rust IPC (`ai/providers/list` already exists +
-   * filters by capability). See the parent #1276 follow-up for the
-   * full removal of this method.
-   */
-  availableModels(): Array<{ modelId: string; provider: string }> {
-    return [];
   }
 
   /**
