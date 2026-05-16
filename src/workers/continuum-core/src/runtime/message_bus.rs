@@ -6,6 +6,7 @@
 //!
 //! Modules subscribe via their config().event_subscriptions.
 
+use super::artifact_handle::{ArtifactKey, ArtifactSelector};
 use dashmap::DashMap;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -21,6 +22,25 @@ struct Subscription {
     module_name: &'static str,
     /// Whether delivery is synchronous (real-time tier) or async (deferred tier)
     synchronous: bool,
+}
+
+/// An artifact subscription record. Sibling to `Subscription` but uses
+/// `ArtifactSelector::matches` (Exact / Prefix on the full
+/// slash-convention key) instead of the colon-segmented `glob_matches`.
+///
+/// Why a separate path: `glob_matches` is built for the event-bus
+/// convention `<a>:<b>:<c>` with `*` matching one segment. ArtifactKey
+/// uses `<module>/<surface>.<event>` (slash + dot) and has its own
+/// matcher already (`ArtifactSelector::matches`) that the producer +
+/// consumer sides both agree on. Routing artifact events through
+/// glob_matches forces a separator translation that doesn't exist
+/// cleanly; routing them through their own matcher keeps both paths
+/// honest. Event subscriptions and artifact subscriptions coexist on
+/// the same MessageBus, share publish(), share record_recent — they
+/// just walk different subscriber lists with different matchers.
+struct ArtifactSubscription {
+    selector: ArtifactSelector,
+    module_name: &'static str,
 }
 
 /// Event payload sent through the bus.
@@ -48,6 +68,14 @@ const RECENT_EVENT_TTL_SECS: u64 = 300;
 pub struct MessageBus {
     /// Subscriptions grouped by module name
     subscriptions: DashMap<&'static str, Vec<Subscription>>,
+
+    /// Artifact subscriptions grouped by module name. Walked alongside
+    /// `subscriptions` on every publish, but matched via
+    /// `ArtifactSelector::matches` instead of `glob_matches`. PR-3 of
+    /// CBAR-PIECE-2 introduces this path so Prefix selectors actually
+    /// deliver — the prior approach of cramming ArtifactKeys through
+    /// the colon-segmented glob matcher only worked for Exact.
+    artifact_subscriptions: DashMap<&'static str, Vec<ArtifactSubscription>>,
 
     /// Broadcast channel for async (deferred) event delivery
     sender: broadcast::Sender<BusEvent>,
@@ -79,6 +107,7 @@ impl MessageBus {
         let (sender, _) = broadcast::channel(1024);
         Self {
             subscriptions: DashMap::new(),
+            artifact_subscriptions: DashMap::new(),
             sender,
             recent_events: Mutex::new(VecDeque::with_capacity(RECENT_EVENT_BUFFER_SIZE)),
             coalesce_tracker: DashMap::new(),
@@ -148,6 +177,31 @@ impl MessageBus {
         self.subscriptions.entry(module_name).or_default().push(sub);
     }
 
+    /// Subscribe to artifact events matching an ArtifactSelector.
+    ///
+    /// Sibling to `subscribe`, but routes via `ArtifactSelector::matches`
+    /// (Exact / Prefix on the full slash-convention key) instead of
+    /// colon-segmented glob_matches. Delivery is always synchronous —
+    /// `on_artifact_available` is contract-bound to cheap-and-return,
+    /// so inline dispatch from the publisher's task is safe and avoids
+    /// the broadcast-channel detour that would force the runtime to
+    /// route back to handle_event.
+    ///
+    /// Used by `Runtime::register` to wire `ServiceModule::
+    /// artifact_subscriptions()`. The default `handle_event` impl on
+    /// ServiceModule auto-forwards to `on_artifact_available` when
+    /// the incoming event_name matches one of this module's selectors.
+    pub fn subscribe_artifact(&self, selector: ArtifactSelector, module_name: &'static str) {
+        let sub = ArtifactSubscription {
+            selector,
+            module_name,
+        };
+        self.artifact_subscriptions
+            .entry(module_name)
+            .or_default()
+            .push(sub);
+    }
+
     /// Get a receiver for async event delivery.
     /// Modules that need async events call this during initialize().
     pub fn receiver(&self) -> broadcast::Receiver<BusEvent> {
@@ -164,7 +218,7 @@ impl MessageBus {
         payload: serde_json::Value,
         registry: &super::ModuleRegistry,
     ) {
-        // Synchronous tier: call matching handlers inline
+        // Synchronous tier (glob-matched event_subscriptions): call inline.
         for entry in self.subscriptions.iter() {
             for sub in entry.value().iter() {
                 if sub.synchronous && glob_matches(&sub.pattern, event_name) {
@@ -172,6 +226,30 @@ impl MessageBus {
                         if let Err(e) = module.handle_event(event_name, payload.clone()).await {
                             warn!(
                                 "Event handler error: module={}, event={}, error={}",
+                                sub.module_name, event_name, e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Artifact tier (ArtifactSelector-matched artifact_subscriptions):
+        // walk the dedicated artifact subscriber list using the selector's
+        // own matcher. Delivers via handle_event so the default impl on
+        // ServiceModule (which forwards to on_artifact_available when
+        // the key matches one of artifact_subscriptions()) closes the
+        // loop. A module that overrides handle_event keeps full control;
+        // it can call self.on_artifact_available(...).await from inside
+        // its override.
+        let key = ArtifactKey::from(event_name);
+        for entry in self.artifact_subscriptions.iter() {
+            for sub in entry.value().iter() {
+                if sub.selector.matches(&key) {
+                    if let Some(module) = registry.get_by_name(sub.module_name) {
+                        if let Err(e) = module.handle_event(event_name, payload.clone()).await {
+                            warn!(
+                                "Artifact handler error: module={}, key={}, error={}",
                                 sub.module_name, event_name, e
                             );
                         }
