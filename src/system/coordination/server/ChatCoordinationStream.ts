@@ -127,9 +127,8 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
   /**
    * Chat-specific: Log thought with room context
    */
-  protected onThoughtBroadcast(): void {
-    // Could add chat-specific validation, metrics, etc.
-    // For now, just rely on base class logging
+  protected onThoughtBroadcast(stream: ChatStream, thought: ChatThought): void {
+    this.recordRoomActivity(stream.roomId, thought.timestamp);
   }
 
   /**
@@ -239,6 +238,7 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
    * Called when user enters/leaves tab (affects temperature and presence)
    */
   onUserPresent(roomId: UUID, present: boolean): void {
+    this.recordRoomActivity(roomId);
     this.roomUserPresent.set(roomId, present);
 
     if (!present) {
@@ -322,6 +322,9 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
    */
   override shutdown(): void {
     this.stopTemperatureDecay();
+    this.roomTemperatures.clear();
+    this.roomUserPresent.clear();
+    this.roomLastActivityAt.clear();
     super.shutdown();
   }
 }

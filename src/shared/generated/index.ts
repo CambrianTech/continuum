@@ -52,6 +52,7 @@ export * from './persona';
 export * from './plasticity';
 export * from './rag';
 export * from './recipe';
+export * from './resources';
 export * from './runtime';
 export * from './search';
 export * from './sentinel';
