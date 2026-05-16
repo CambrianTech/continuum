@@ -119,21 +119,15 @@ pub fn enforce_residency(model_path: &Path) -> Result<ResidencyEvidence, Box<Res
             bytes_per_parameter_quantized: 0.0,
             layer_kinds_needing_check: vec![],
         };
-        let reasons = if !hw.has_metal && !hw.has_cuda && !hw.has_vulkan {
-            vec![BlockReason::NoGpuBackendOnNode { platform: hw.platform.clone() }]
-        } else {
-            // GGUF unreadable BUT there's a GPU — block on the GGUF
-            // problem itself. We don't have a dedicated BlockReason
-            // variant for "model not loadable" in PR-1; reuse
-            // PartialGpuSplit with sentinel values to signal the
-            // unhealthy state. PR-5 may add a dedicated variant
-            // `ModelMetadataUnreadable` if this case grows common.
-            vec![BlockReason::PartialGpuSplit {
-                backend: crate::inference_capability::residency::BackendChoice::Metal,
-                estimated_required_bytes: 0,
-                free_vram_bytes: hw.free_vram_bytes,
-            }]
-        };
+        let mut reasons = vec![BlockReason::ModelMetadataUnreadable {
+            model_path: model_path.display().to_string(),
+            error: gguf_err.to_string(),
+        }];
+        if !hw.has_metal && !hw.has_cuda && !hw.has_vulkan {
+            reasons.push(BlockReason::NoGpuBackendOnNode {
+                platform: hw.platform.clone(),
+            });
+        }
         Box::new(ResidencyBlock {
             reasons,
             attempted_model: placeholder_model,
@@ -251,7 +245,10 @@ mod tests {
     fn residency_block_display_includes_context() {
         let block = enforce_residency_with(qwen_7b_test(), cpu_only_test()).unwrap_err();
         let display = format!("{block}");
-        assert!(display.contains("Qwen2.5-7B-Test"), "model_name missing: {display}");
+        assert!(
+            display.contains("Qwen2.5-7B-Test"),
+            "model_name missing: {display}"
+        );
         assert!(display.contains("linux-x86_64-generic"), "platform missing");
         assert!(display.contains("NoGpuBackendOnNode"), "reason missing");
         assert!(display.contains("REFUSED"), "REFUSED keyword missing");
@@ -308,7 +305,10 @@ mod tests {
         let block = result.unwrap_err();
         // The model_name on this path encodes the GGUF read failure
         assert!(
-            block.attempted_model.model_name.contains("GGUF_READ_FAILED"),
+            block
+                .attempted_model
+                .model_name
+                .contains("GGUF_READ_FAILED"),
             "model_name should encode GGUF failure: {}",
             block.attempted_model.model_name
         );
@@ -324,10 +324,15 @@ mod tests {
             .ok()
             .map(|d| d.join("Cargo.toml"))
             .filter(|p| p.exists());
-        let Some(path) = path else { return; };
+        let Some(path) = path else {
+            return;
+        };
         let result = enforce_residency(&path);
         assert!(result.is_err());
         let block = result.unwrap_err();
-        assert!(block.attempted_model.model_name.contains("GGUF_READ_FAILED"));
+        assert!(block
+            .attempted_model
+            .model_name
+            .contains("GGUF_READ_FAILED"));
     }
 }

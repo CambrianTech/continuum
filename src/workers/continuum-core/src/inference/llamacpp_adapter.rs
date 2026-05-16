@@ -40,6 +40,7 @@ use crate::ai::types::{
 };
 use crate::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
+use crate::inference_capability::enforce_residency;
 use crate::runtime;
 use async_trait::async_trait;
 use llama::FlashAttn;
@@ -356,6 +357,13 @@ impl LlamaCppAdapter {
                 self.model_path, self.default_model,
             ));
         }
+
+        enforce_residency(&self.model_path).map_err(|block| {
+            format!(
+                "refusing to load local llama.cpp model `{}` because residency gate failed: {block}",
+                self.default_model
+            )
+        })?;
 
         // KV quant for the Active tier (the tier the backend is loaded
         // into). CpuResident and Idle quants apply later when the paging
