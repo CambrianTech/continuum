@@ -1,18 +1,22 @@
 /**
- * PersonaMessageGate - Echo chamber prevention and post-inference validation
+ * PersonaMessageGate — Feeds the Rust-side message cache.
  *
- * Echo chamber detection is now in Rust (Gate 6 of full_evaluate).
- * This module handles:
- * - Feeding the Rust message cache (via IPC on new messages)
- * - Post-inference adequacy checks (uses TS cache for ChatMessageEntity fields + Rust IPC for similarity)
- * - Recent message cache for post-inference validation
+ * Echo chamber detection is in Rust (Gate 6 of full_evaluate); this module
+ * just subscribes to chat-message events and pushes each new message into
+ * every registered persona's Rust cognition bridge.
+ *
+ * The post-inference adequacy gate that used to live here was the
+ * Helper-only-path / TS-cognition-policy double anti-pattern Joel banned
+ * in the 2026-05-16 architecture reset — deleted in #1309 (the call-site
+ * in PersonaMessageEvaluator) + this file (the method itself). Per-persona
+ * pre-inference should-respond (Rust #1284), admission (Rust #1121 PR-4),
+ * and the resource-aware broker (#1299) are the gates now.
  */
 
-import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { Events } from '../../../core/shared/Events';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
-import type { ProcessableMessage } from './QueueItemTypes';
+import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import { PersonaTimingConfig } from './PersonaTimingConfig';
 
@@ -94,63 +98,4 @@ export class PersonaMessageGate {
     });
   }
 
-  /**
-   * Get recent messages for a room from in-memory cache, filtered by timestamp.
-   */
-  getRecentMessagesSince(roomId: UUID, since: Date): ChatMessageEntity[] {
-    const messages = PersonaMessageGate._recentMessages.get(roomId);
-    if (!messages) return [];
-    const sinceTime = since.getTime();
-    return messages.filter(m => {
-      const ts = m.timestamp instanceof Date ? m.timestamp.getTime() : new Date(m.timestamp).getTime();
-      return ts > sinceTime;
-    });
-  }
-
-  /**
-   * Post-inference validation: check if context changed since evaluation started.
-   * Returns { shouldSkip, reason } if a human already answered or adequate AI responses exist.
-   */
-  async checkPostInferenceAdequacy(
-    messageEntity: ProcessableMessage,
-    rustCognition: RustCognitionBridge,
-  ): Promise<{ shouldSkip: boolean; reason?: string }> {
-    const messageTimestamp = new Date(messageEntity.timestamp);
-    const recentAfter = this.getRecentMessagesSince(messageEntity.roomId, messageTimestamp);
-
-    // Filter to messages from OTHER senders
-    const otherResponses = recentAfter.filter(m =>
-      m.senderId !== this.personaId && m.id !== messageEntity.id
-    );
-
-    if (otherResponses.length === 0) {
-      return { shouldSkip: false };
-    }
-
-    // Check if a human already answered substantively
-    const humanResponses = otherResponses.filter(m => m.senderType === 'human');
-    if (humanResponses.some(m => (m.content?.text?.length ?? 0) > 50)) {
-      return { shouldSkip: true, reason: 'Human already answered substantively' };
-    }
-
-    // Check if adequate AI responses exist (Rust IPC — batch similarity check)
-    const aiResponses = otherResponses.filter(m => m.senderType !== 'human');
-    if (aiResponses.length > 0) {
-      const originalText = messageEntity.content?.text || '';
-      const responses = aiResponses.map(r => ({
-        sender_name: r.senderName ?? 'Unknown',
-        text: r.content?.text || '',
-      }));
-
-      const result = await rustCognition.checkAdequacy(originalText, responses);
-      if (result.is_adequate) {
-        return {
-          shouldSkip: true,
-          reason: `Adequate AI response exists: ${result.reason} (confidence: ${(result.confidence * 100).toFixed(0)}%)`,
-        };
-      }
-    }
-
-    return { shouldSkip: false };
-  }
 }
