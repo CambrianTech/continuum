@@ -634,7 +634,6 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // override our defaults; if caller asked for JsonObject response
         // format, attach the JSON grammar so output is structurally valid.
         // Same value-object pattern Joel called for ('pass the struct').
-        use crate::ai::types::ResponseFormat;
         use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
         let mut sampling = SamplingConfig::chat();
         if let Some(t) = request.temperature {
