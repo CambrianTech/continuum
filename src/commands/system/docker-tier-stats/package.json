@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/system/docker-tier-stats",
+  "version": "1.0.0",
+  "description": "Snapshot of the Docker storage tier (capacity, used bytes, pressure ratio, detection state). Phase 1 of #1239 — exposes the data the existing `DockerTierPool` (`modules/docker_tier_pool.rs`) already computes, without depending on the not-yet-instantiated `PressureBroker` singleton. Wired so `bin/continuum status` can surface a `Docker disk: ...` row + warn at >90%, and so future scheduler hot paths can refuse before ENOSPC. Returns `detected: false` + zeros on hosts where Docker isn't installed.",
+  "main": "server/SystemDockerTierStatsServerCommand.ts",
+  "types": "shared/SystemDockerTierStatsTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/SystemDockerTierStatsIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "system/docker-tier-stats"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

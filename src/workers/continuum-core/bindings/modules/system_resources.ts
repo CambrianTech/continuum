@@ -15,6 +15,7 @@ import type {
 	PressureSnapshot as RustPressureSnapshot,
 	PressureLevel,
 } from '../../../../shared/generated/system';
+import type { DockerTierStats } from '../../../../shared/generated/resources';
 
 // ============================================================================
 // Types (camelCase for TypeScript consumers)
@@ -124,6 +125,16 @@ export interface SystemResourceMixin {
 	systemResources(options?: { includeProcesses?: boolean; topN?: number }): Promise<SystemResourceSnapshotInfo>;
 	memoryGateStatus(): Promise<MemoryGateStatus>;
 	pressureSnapshot(): Promise<PressureSnapshotInfo>;
+	/**
+	 * Phase 1 of #1239 — Docker storage tier snapshot. Returns the data
+	 * `DockerTierPool` already computes (capacity, used, pressure) without
+	 * requiring the not-yet-instantiated `PressureBroker` singleton.
+	 *
+	 * Returns `detected: false` + zeros on hosts where Docker isn't
+	 * installed; callers should pattern-match on `detected` rather than
+	 * comparing zeros to skip rendering.
+	 */
+	dockerTierStats(): Promise<DockerTierStats>;
 }
 
 export function SystemResourceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -202,6 +213,22 @@ export function SystemResourceMixin<T extends new (...args: any[]) => RustCoreIP
 				rssBytes: Number(r.rss_bytes),
 				consecutiveAtLevel: r.consecutive_at_level,
 			};
+		}
+
+		/**
+		 * Phase 1 of #1239 — Docker storage tier snapshot.
+		 *
+		 * Wraps `system/docker-tier-stats`. The Rust side calls
+		 * `DockerTierPool::snapshot_stats()` which probes Docker.raw and
+		 * returns capacity / used / pressure / detected. ts-rs gives us
+		 * the camelCase shape directly — no manual remap needed.
+		 */
+		async dockerTierStats(): Promise<DockerTierStats> {
+			const response = await this.request({ command: 'system/docker-tier-stats' });
+			if (!response.success) {
+				throw new Error(response.error ?? 'Failed to get docker tier stats');
+			}
+			return response.result as DockerTierStats;
 		}
 	};
 }
