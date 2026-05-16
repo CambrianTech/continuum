@@ -74,8 +74,8 @@
 //! ranked-pool scoring.
 
 use crate::governor::types::{
-    CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule, FederationCadence,
-    GovernorPolicy, HardwareClass, RecallScoreWeights, SpeculationLevel, TierSizes,
+    CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule, FederationCadence, GovernorPolicy,
+    HardwareClass, RecallScoreWeights, SpeculationLevel, TierSizes,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -161,8 +161,8 @@ pub struct ConsolidationFileSection {
 
 /// Errors the policy file loader can surface. All typed (no silent
 /// default-on-error); caller decides whether to abort startup,
-/// retry, or fall back to a built-in default policy (PR-3 ships the
-/// built-ins).
+/// retry after an operator fix, or use an explicitly configured
+/// built-in policy.
 #[derive(Debug)]
 pub enum PolicyFileError {
     Io(std::io::Error),
@@ -172,13 +172,22 @@ pub enum PolicyFileError {
     /// spec says the file's [recall_weights] should sum to 1.0; a
     /// large drift means someone edited a field and forgot to balance.
     /// Refuse rather than silently scale.
-    RecallWeightsImbalanced { sum: f32, tolerance: f32 },
+    RecallWeightsImbalanced {
+        sum: f32,
+        tolerance: f32,
+    },
     /// A tier size is zero where it shouldn't be (l1_lora_layers = 0
     /// means no LoRA caching at all — likely a typo, not intent).
-    InvalidTierSize { field: &'static str, value: u32 },
+    InvalidTierSize {
+        field: &'static str,
+        value: u32,
+    },
     /// Cadence multiplier under 1.0 — would speed UP a class rather
     /// than slow down. Almost certainly a typo.
-    InvalidCadenceMultiplier { field: &'static str, value: f32 },
+    InvalidCadenceMultiplier {
+        field: &'static str,
+        value: f32,
+    },
 }
 
 impl std::fmt::Display for PolicyFileError {
@@ -454,14 +463,17 @@ provenance_trust      = 0.1
     /// If this regresses, no Mac runs through the loader at all.
     #[test]
     fn air_policy_parses_and_validates() {
-        let file = parse_policy_text(VALID_AIR_POLICY).unwrap();
+        let file = parse_policy_text(VALID_AIR_POLICY).expect("valid Air policy should parse");
         assert_eq!(file.policy_version, 3);
         assert_eq!(file.tier_sizes.l1_lora_layers, 2);
         assert_eq!(file.tier_sizes.l1_kv_tokens, 2048);
         assert_eq!(file.cadence_multipliers.background, 2.0);
         assert_eq!(file.concurrency_caps.personas_concurrent, 2);
         assert_eq!(file.speculation.level, SpeculationLevel::Conservative);
-        assert_eq!(file.consolidation.schedule, ConsolidationSchedule::IdlePluggedIn);
+        assert_eq!(
+            file.consolidation.schedule,
+            ConsolidationSchedule::IdlePluggedIn
+        );
         assert_eq!(file.federation.pull_cadence_seconds, 600);
     }
 
@@ -470,7 +482,7 @@ provenance_trust      = 0.1
     /// scales across the hardware range without code changes.
     #[test]
     fn blackwell_policy_parses_and_validates() {
-        let file = parse_policy_text(VALID_5090_POLICY).unwrap();
+        let file = parse_policy_text(VALID_5090_POLICY).expect("valid 5090 policy should parse");
         assert_eq!(file.tier_sizes.l1_lora_layers, 8);
         assert_eq!(file.tier_sizes.l1_kv_tokens, 16384);
         assert_eq!(file.concurrency_caps.personas_concurrent, 8);
@@ -486,7 +498,8 @@ provenance_trust      = 0.1
     /// score with no signal to the user.
     #[test]
     fn imbalanced_recall_weights_rejected() {
-        let bad = VALID_AIR_POLICY.replace("semantic             = 0.4", "semantic             = 0.1");
+        let bad =
+            VALID_AIR_POLICY.replace("semantic             = 0.4", "semantic             = 0.1");
         let result = parse_policy_text(&bad);
         match result {
             Err(PolicyFileError::RecallWeightsImbalanced { sum, .. }) => {
@@ -500,9 +513,10 @@ provenance_trust      = 0.1
     /// Boundary check for the tolerance.
     #[test]
     fn recall_weights_sum_to_one_accepted() {
-        let file = parse_policy_text(VALID_AIR_POLICY).unwrap();
+        let file = parse_policy_text(VALID_AIR_POLICY).expect("valid Air policy should parse");
         let w = &file.recall_weights;
-        let sum = w.semantic + w.outcome_history + w.recency + w.tier_proximity + w.provenance_trust;
+        let sum =
+            w.semantic + w.outcome_history + w.recency + w.tier_proximity + w.provenance_trust;
         assert!((sum - 1.0).abs() < RECALL_WEIGHTS_TOLERANCE);
     }
 
@@ -549,7 +563,8 @@ provenance_trust      = 0.1
     /// than slow it down to 1/2.
     #[test]
     fn cadence_multiplier_under_one_rejected() {
-        let bad = VALID_AIR_POLICY.replace("delayed              = 1.5", "delayed              = 0.5");
+        let bad =
+            VALID_AIR_POLICY.replace("delayed              = 1.5", "delayed              = 0.5");
         match parse_policy_text(&bad) {
             Err(PolicyFileError::InvalidCadenceMultiplier { field, value }) => {
                 assert_eq!(field, "delayed");
@@ -563,7 +578,7 @@ provenance_trust      = 0.1
     /// (boundary). 1.0 = "unchanged from realtime"; valid.
     #[test]
     fn cadence_multiplier_exactly_one_accepted() {
-        let file = parse_policy_text(VALID_AIR_POLICY).unwrap();
+        let file = parse_policy_text(VALID_AIR_POLICY).expect("valid Air policy should parse");
         assert_eq!(file.cadence_multipliers.realtime, 1.0);
     }
 
@@ -574,7 +589,7 @@ provenance_trust      = 0.1
     /// GovernorPolicy. Smoke test for the assembly.
     #[test]
     fn into_governor_policy_composes_correctly() {
-        let file = parse_policy_text(VALID_AIR_POLICY).unwrap();
+        let file = parse_policy_text(VALID_AIR_POLICY).expect("valid Air policy should parse");
         let hw_profile = HardwareProfile {
             platform: "macos-arm64-air".into(),
             has_metal: true,
@@ -592,8 +607,14 @@ provenance_trust      = 0.1
         assert_eq!(policy.hardware_class, hw_class);
         assert_eq!(policy.tier_sizes.l1_lora_layers, 2);
         assert_eq!(policy.cadence_multipliers.background, 2.0);
-        assert_eq!(policy.speculation_aggressiveness, SpeculationLevel::Conservative);
-        assert_eq!(policy.consolidation_schedule, ConsolidationSchedule::IdlePluggedIn);
+        assert_eq!(
+            policy.speculation_aggressiveness,
+            SpeculationLevel::Conservative
+        );
+        assert_eq!(
+            policy.consolidation_schedule,
+            ConsolidationSchedule::IdlePluggedIn
+        );
         // cascade_step always starts at 0 (normal); PR-3 updates under pressure
         assert_eq!(policy.cascade_step, 0);
         assert_eq!(policy.committed_at_ms, 1_715_625_600_000);
@@ -605,15 +626,15 @@ provenance_trust      = 0.1
     /// works end-to-end. I/O smoke test for the wrapper.
     #[test]
     fn load_policy_file_reads_valid_file() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), VALID_AIR_POLICY).unwrap();
-        let file = load_policy_file(tmp.path()).unwrap();
+        let tmp = tempfile::NamedTempFile::new().expect("temp policy file should be creatable");
+        std::fs::write(tmp.path(), VALID_AIR_POLICY).expect("temp policy file should be writable");
+        let file = load_policy_file(tmp.path()).expect("valid policy file should load");
         assert_eq!(file.policy_version, 3);
     }
 
     /// What this catches: load_policy_file on a non-existent path
     /// returns PolicyFileError::Io. Defensive — caller decides whether
-    /// to fall back to a built-in default (PR-3) or abort.
+    /// to abort or require an explicitly configured built-in policy.
     #[test]
     fn load_policy_file_nonexistent_path_returns_io_err() {
         let result = load_policy_file(Path::new("/nonexistent/policy.toml"));
@@ -622,11 +643,12 @@ provenance_trust      = 0.1
 
     /// What this catches: load_policy_file on a syntactically broken
     /// TOML file returns PolicyFileError::Toml. Important — silent
-    /// fallback to a default would mask config bugs.
+    /// substituting a default would mask config bugs.
     #[test]
     fn load_policy_file_invalid_toml_returns_toml_err() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), "this is not valid toml [[[").unwrap();
+        let tmp = tempfile::NamedTempFile::new().expect("temp policy file should be creatable");
+        std::fs::write(tmp.path(), "this is not valid toml [[[")
+            .expect("temp policy file should be writable");
         let result = load_policy_file(tmp.path());
         assert!(matches!(result, Err(PolicyFileError::Toml(_))));
     }
@@ -659,7 +681,8 @@ provenance_trust      = 0.1
         let pf_err: PolicyFileError = io_err.into();
         assert!(matches!(pf_err, PolicyFileError::Io(_)));
 
-        let toml_err = toml::from_str::<PolicyFile>("not valid").unwrap_err();
+        let toml_err = toml::from_str::<PolicyFile>("not valid")
+            .expect_err("invalid TOML should produce a parser error");
         let pf_err: PolicyFileError = toml_err.into();
         assert!(matches!(pf_err, PolicyFileError::Toml(_)));
     }
@@ -677,7 +700,7 @@ provenance_trust      = 0.1
             ("off", SpeculationLevel::Off),
         ] {
             let text = VALID_AIR_POLICY.replace("\"conservative\"", &format!("\"{s}\""));
-            let file = parse_policy_text(&text).unwrap();
+            let file = parse_policy_text(&text).expect("speculation level should parse");
             assert_eq!(file.speculation.level, *expected, "level={s}");
         }
     }
@@ -694,7 +717,7 @@ provenance_trust      = 0.1
             ("manual", ConsolidationSchedule::Manual),
         ] {
             let text = VALID_AIR_POLICY.replace("\"idle-plugged-in\"", &format!("\"{s}\""));
-            let file = parse_policy_text(&text).unwrap();
+            let file = parse_policy_text(&text).expect("consolidation schedule should parse");
             assert_eq!(file.consolidation.schedule, *expected, "schedule={s}");
         }
     }
@@ -722,7 +745,7 @@ provenance_trust      = 0.1
         // 2. parse policy (in PR-3 the selection logic picks the
         //    right file based on hw_class; here we use the M-Air
         //    file as a stand-in)
-        let file = parse_policy_text(VALID_AIR_POLICY).unwrap();
+        let file = parse_policy_text(VALID_AIR_POLICY).expect("valid Air policy should parse");
         // 3. compose
         let policy = into_governor_policy(file, hw_class, 1_715_625_600_000);
         assert_eq!(policy.policy_version, 3);
