@@ -20,8 +20,8 @@
  *   → TrainingDataAccumulator → academy pipeline → improved LoRA → better coding
  */
 
-import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { ensureDaemonPath } from '@system/server/process/ProcessPathPolicy';
 import type {
   CodingAgentConfig,
   CodingAgentInteraction,
@@ -133,7 +133,7 @@ export class LocalClaudeCodeProvider implements CodingAgentProvider {
     const permissionMode: PermissionMode = permissionModeMap[config.permissionMode || ''] || 'default';
 
     // ─── Ensure PATH includes standard locations ─────────────────────
-    const ensuredPath = ensurePath(process.env.PATH || '');
+    const ensuredPath = ensureDaemonPath(process.env.PATH || '');
     process.env.PATH = ensuredPath;
 
     // ─── Build SDK options ───────────────────────────────────────────
@@ -348,26 +348,4 @@ export class LocalClaudeCodeProvider implements CodingAgentProvider {
       error: errorMessage,
     };
   }
-}
-
-/**
- * Ensure PATH includes standard binary locations for daemon contexts.
- */
-function ensurePath(currentPath: string): string {
-  const nodeDir = path.dirname(process.execPath);
-  const requiredDirs = [
-    nodeDir,
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    '/usr/bin',
-    `${process.env.HOME}/.local/bin`,
-    `${process.env.HOME}/.nvm/current/bin`,
-  ];
-  const pathDirs = new Set(currentPath.split(':'));
-  for (const dir of requiredDirs) {
-    if (dir && !pathDirs.has(dir)) {
-      pathDirs.add(dir);
-    }
-  }
-  return Array.from(pathDirs).join(':');
 }

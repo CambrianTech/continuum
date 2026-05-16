@@ -4,7 +4,7 @@
  * Pull latest code and rebuild on grid nodes via SSH over Tailscale.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GridDeployParams, GridDeployResult } from '../shared/GridDeployTypes';
@@ -19,6 +19,8 @@ interface NodeDeployResult {
   buildSuccess?: boolean;
   error?: string;
 }
+
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 export class GridDeployServerCommand extends CommandBase<GridDeployParams, GridDeployResult> {
 
@@ -75,9 +77,15 @@ export class GridDeployServerCommand extends CommandBase<GridDeployParams, GridD
     skipBuild?: boolean,
     restart?: boolean,
   ): Promise<NodeDeployResult> {
+    const sshUser = process.env.CONTINUUM_SSH_USER ?? process.env.USER ?? process.env.LOGNAME;
+    if (!sshUser) {
+      return { nodeId: ip, status: 'failed', error: 'CONTINUUM_SSH_USER or USER must be set' };
+    }
+
     const ssh = (cmd: string) =>
-      execSync(
-        `ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no joel@${ip} "${cmd.replace(/"/g, '\\"')}"`,
+      execFileSync(
+        'ssh',
+        ['-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=no', `${sshUser}@${ip}`, cmd],
         { encoding: 'utf-8', timeout: 180_000 },
       ).trim();
 
@@ -89,18 +97,18 @@ export class GridDeployServerCommand extends CommandBase<GridDeployParams, GridD
       }
 
       // Git pull
-      let gitCmd = `cd ${repoDir} && git fetch origin`;
-      if (branch) gitCmd += ` && git checkout ${branch}`;
+      let gitCmd = `cd ${shellQuote(repoDir)} && git fetch origin`;
+      if (branch) gitCmd += ` && git checkout ${shellQuote(branch)}`;
       gitCmd += ' && git pull';
       ssh(gitCmd);
 
-      const currentBranch = ssh(`cd ${repoDir} && git branch --show-current`);
+      const currentBranch = ssh(`cd ${shellQuote(repoDir)} && git branch --show-current`);
 
       // Build
       let buildSuccess = true;
       if (!skipBuild) {
         try {
-          ssh(`cd ${repoDir}/src && npm run build:ts 2>&1 | tail -1`);
+          ssh(`cd ${shellQuote(`${repoDir}/src`)} && npm run build:ts 2>&1 | tail -1`);
         } catch {
           buildSuccess = false;
         }
@@ -109,7 +117,7 @@ export class GridDeployServerCommand extends CommandBase<GridDeployParams, GridD
       // Restart
       if (restart) {
         try {
-          ssh(`cd ${repoDir}/src && npm stop 2>/dev/null; nohup npm start > /dev/null 2>&1 &`);
+          ssh(`cd ${shellQuote(`${repoDir}/src`)} && npm stop 2>/dev/null; nohup npm start > /dev/null 2>&1 &`);
         } catch { /* backgrounded process — timeout expected */ }
       }
 

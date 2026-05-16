@@ -124,7 +124,7 @@ impl<'a> From<&'a RespondInput> for RequestEcho<'a> {
             persona_id: input.persona.persona_id,
             persona_specialty: &input.persona.specialty,
             persona_display_name: &input.persona.display_name,
-            room_id: input.room_id,
+            room_id: input.turn_context.room_id,
             message_id: input.message_id,
             message_text: &input.message_text,
             system_prompt: &input.system_prompt,
@@ -132,6 +132,7 @@ impl<'a> From<&'a RespondInput> for RequestEcho<'a> {
             is_voice: input.is_voice,
             capabilities,
             recent_history: input
+                .turn_context
                 .recent_history
                 .iter()
                 .map(|m| RecentEcho {
@@ -172,7 +173,7 @@ pub fn record_turn(input: &RespondInput, response: &PersonaResponse, trace: &Cog
         "personaId": input.persona.persona_id,
         "personaName": input.persona.display_name,
         "messageId": input.message_id,
-        "roomId": input.room_id,
+        "roomId": input.turn_context.room_id,
         "model": input.model,
         "rustRequest": RequestEcho::from(input),
         "rustResponse": response,
@@ -202,7 +203,7 @@ pub fn record_failed_turn(
         "personaId": input.persona.persona_id,
         "personaName": input.persona.display_name,
         "messageId": input.message_id,
-        "roomId": input.room_id,
+        "roomId": input.turn_context.room_id,
         "model": input.model,
         "rustRequest": RequestEcho::from(input),
         "rustResponse": null,
@@ -221,7 +222,7 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
         None => return, // HOME unset; treat as opted-out, no warning spam
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        runtime::logger("recorder").warn(&format!(
+        runtime::logger("recorder").warn_fmt(format_args!(
             "couldn't create fixture dir {}: {e} — recording skipped",
             dir.display()
         ));
@@ -232,7 +233,8 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     let serialized = match serde_json::to_vec_pretty(&payload) {
         Ok(b) => b,
         Err(e) => {
-            runtime::logger("recorder").warn(&format!("turn capture serialize failed: {e}"));
+            runtime::logger("recorder")
+                .warn_fmt(format_args!("turn capture serialize failed: {e}"));
             return;
         }
     };
@@ -240,14 +242,14 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     // missing file rather than a half-written one that breaks parsers.
     let tmp_path = path.with_extension("json.tmp");
     if let Err(e) = std::fs::write(&tmp_path, &serialized) {
-        runtime::logger("recorder").warn(&format!(
+        runtime::logger("recorder").warn_fmt(format_args!(
             "turn capture write failed: {e} (target: {})",
             path.display()
         ));
         return;
     }
     if let Err(e) = std::fs::rename(&tmp_path, &path) {
-        runtime::logger("recorder").warn(&format!(
+        runtime::logger("recorder").warn_fmt(format_args!(
             "turn capture rename failed: {e} (target: {})",
             path.display()
         ));
@@ -340,23 +342,27 @@ mod tests {
     use tempfile::tempdir;
 
     fn fake_input() -> RespondInput {
+        use crate::persona::turn_context::TurnContext;
         RespondInput {
             persona: PersonaSlot {
                 persona_id: Uuid::nil(),
                 specialty: "general".to_string(),
                 display_name: "Test Persona".to_string(),
             },
-            room_id: Uuid::nil(),
+            turn_context: TurnContext::arc(
+                Uuid::nil(),
+                vec![],
+                vec!["general".to_string()],
+            ),
             message_id: Uuid::nil(),
             message_text: "hello".to_string(),
-            recent_history: vec![],
-            known_specialties: vec!["general".to_string()],
             other_persona_names: vec![],
             system_prompt: "you are helpful".to_string(),
             model: "test-model".to_string(),
             is_voice: false,
             message_media: vec![],
             capabilities: HashSet::new(),
+            recalled_engrams: vec![],
         }
     }
 
@@ -476,7 +482,7 @@ mod tests {
             "personaId": input.persona.persona_id,
             "personaName": input.persona.display_name,
             "messageId": input.message_id,
-            "roomId": input.room_id,
+            "roomId": input.turn_context.room_id,
             "model": input.model,
             "rustRequest": RequestEcho::from(&input),
             "rustResponse": &response,

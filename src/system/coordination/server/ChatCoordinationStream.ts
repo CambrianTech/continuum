@@ -64,7 +64,7 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
 
   private roomTemperatures = new Map<UUID, number>();
   private roomUserPresent = new Map<UUID, boolean>();
-  private roomLastActivityMs = new Map<UUID, number>();
+  private roomLastActivityAt = new Map<UUID, number>();
   private decayInterval: NodeJS.Timeout | null = null;
 
   // Temperature decay constants (exponential/natural decay)
@@ -128,7 +128,7 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
    * Chat-specific: Log thought with room context
    */
   protected onThoughtBroadcast(stream: ChatStream, thought: ChatThought): void {
-    this.markRoomActivity(stream.roomId, thought.timestamp);
+    this.recordRoomActivity(stream.roomId, thought.timestamp);
   }
 
   /**
@@ -164,6 +164,7 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
     // Ensure chat-specific fields are set
     thought.messageId = messageId;
     thought.roomId = roomId;
+    this.recordRoomActivity(roomId, thought.timestamp);
 
     // Delegate to base class (using generic eventId/contextId)
     await this.broadcastThought(messageId, roomId, thought);
@@ -205,7 +206,7 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
    * Called when a human sends a message (increases temperature)
    */
   onHumanMessage(roomId: UUID): void {
-    this.markRoomActivity(roomId);
+    this.recordRoomActivity(roomId);
     const current = this.roomTemperatures.get(roomId) ?? 0.5;  // Default to neutral
     const newTemp = Math.min(1.0, current + 0.3);
     this.roomTemperatures.set(roomId, newTemp);
@@ -221,7 +222,7 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
    * already prevents pile-ons. Temperature should reflect activity, not throttle it.
    */
   onMessageServiced(roomId: UUID, personaId?: UUID): void {
-    this.markRoomActivity(roomId);
+    this.recordRoomActivity(roomId);
     const current = this.roomTemperatures.get(roomId) ?? 0.5;
     const newTemp = Math.min(1.0, current + 0.05);
     this.roomTemperatures.set(roomId, newTemp);
@@ -229,11 +230,15 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
     this.log(`🌡️ Temperature +0.05 (AI active${who}): room=${roomId.slice(0, 8)} temp=${newTemp.toFixed(2)}`);
   }
 
+  private recordRoomActivity(roomId: UUID, timestamp: number = Date.now()): void {
+    this.roomLastActivityAt.set(roomId, timestamp);
+  }
+
   /**
    * Called when user enters/leaves tab (affects temperature and presence)
    */
   onUserPresent(roomId: UUID, present: boolean): void {
-    this.markRoomActivity(roomId);
+    this.recordRoomActivity(roomId);
     this.roomUserPresent.set(roomId, present);
 
     if (!present) {
@@ -266,15 +271,6 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
   }
 
   /**
-   * Record room-level activity. Streams are keyed by messageId, so room
-   * temperature cannot infer recent room activity by looking up roomId as a
-   * stream key.
-   */
-  private markRoomActivity(roomId: UUID, timestampMs: number = Date.now()): void {
-    this.roomLastActivityMs.set(roomId, timestampMs);
-  }
-
-  /**
    * Start exponential temperature decay loop (called on initialization)
    */
   private startTemperatureDecay(): void {
@@ -285,10 +281,12 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
     this.decayInterval = setInterval(() => {
       const now = Date.now();
       for (const [roomId, temp] of this.roomTemperatures) {
-        const lastActivityMs = this.roomLastActivityMs.get(roomId) ?? 0;
-        const hasRecentActivity = now - lastActivityMs < 60000;
+        // Only decay if no recent room activity. Streams are keyed by messageId,
+        // not roomId, so room activity must be tracked independently.
+        const lastActivityAt = this.roomLastActivityAt.get(roomId) ?? 0;
+        const isRecentlyActive = now - lastActivityAt < 60000;
 
-        if (!hasRecentActivity && temp > ChatCoordinationStream.TEMP_FLOOR) {
+        if (!isRecentlyActive && temp > ChatCoordinationStream.TEMP_FLOOR) {
           // Exponential decay: temp * DECAY_RATE (natural/ln decay)
           const newTemp = temp * ChatCoordinationStream.DECAY_RATE;
           const finalTemp = Math.max(ChatCoordinationStream.TEMP_FLOOR, newTemp);
@@ -326,7 +324,7 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
     this.stopTemperatureDecay();
     this.roomTemperatures.clear();
     this.roomUserPresent.clear();
-    this.roomLastActivityMs.clear();
+    this.roomLastActivityAt.clear();
     super.shutdown();
   }
 }

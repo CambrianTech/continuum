@@ -50,6 +50,25 @@ export class EmptyStateWidget extends LitElement {
       min-height: 200px;
     }
 
+    /* The HTML \`hidden\` attribute applies \`display: none\` via the
+     * user-agent stylesheet — but the \`:host { display: flex }\` above is
+     * a more-specific author rule that wins, so \`hidden\` would have no
+     * visual effect by default on a custom element with an explicit
+     * \`:host { display: ... }\`.
+     *
+     * Caller pattern (e.g., ChatWidget.updateEntityCount) toggles the
+     * \`hidden\` attribute to show/hide the empty state. Without this
+     * rule the toggle silently no-ops and the "Send your first message"
+     * panel keeps rendering even when there ARE messages — the
+     * Joel-reported bug where the placeholder never cleared after a
+     * room loaded with prior history. The HTML5 spec specifically
+     * calls this out for custom elements with explicit display:
+     * https://html.spec.whatwg.org/multipage/interaction.html#the-hidden-attribute
+     */
+    :host([hidden]) {
+      display: none;
+    }
+
     .empty-icon {
       font-size: 2.5em;
       line-height: 1;

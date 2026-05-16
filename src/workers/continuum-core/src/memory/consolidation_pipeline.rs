@@ -28,7 +28,6 @@
 //!   embedding-adapter lands it slots in transparently.
 
 use chrono::DateTime;
-use uuid::Uuid;
 
 use crate::memory::consolidation_adapter::{
     ConsolidatedMemory, ConsolidationAdapter, ConsolidationContext, ConsolidationResult,
@@ -126,6 +125,7 @@ mod tests {
     use crate::memory::raw_adapter::RawMemoryAdapter;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use uuid::Uuid;
 
     /// Minimal embedding provider for tests — returns zero vectors.
     /// The consolidation pipeline never asks for embeddings (the raw

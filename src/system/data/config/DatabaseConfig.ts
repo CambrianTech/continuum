@@ -13,18 +13,22 @@ import { PATHS } from '../../shared/Constants';
 /**
  * Database paths and connection strings - SERVER-ONLY configuration
  *
- * ROUTING: Main database is Postgres (getDatabasePath() → DATABASE_URL env or default).
+ * ROUTING: Main database is SQLite by default. DATABASE_URL is an explicit
+ * opt-in override for Postgres or a future remote adapter.
  * Per-persona data (memories, embeddings) uses SQLite longterm.db files.
  *
  * Override via config.env:
- *   DATABASE_URL     — Primary Postgres connection (postgres://user@host/db)
+ *   DATABASE_URL     — Optional remote/main DB connection (postgres://user@host/db)
  *   DATABASE_DIR     — Data directory ($HOME/.continuum/data)
  *
  * NOTE: These are COMPILE-TIME constants for fallback only.
  * Runtime paths come from ServerConfig which checks config.env first.
  */
 export const DATABASE_PATHS = {
-  /** Default Postgres connection (system Postgres, database 'continuum') */
+  /** Main local SQLite database used when DATABASE_URL is not set. */
+  MAIN_SQLITE: '$HOME/.continuum/database/main.db',
+
+  /** Legacy/example Postgres connection. Postgres must be explicit opt-in. */
   POSTGRES: `postgres://${process.env.USER || 'postgres'}@localhost:5432/continuum`,
 
   /** Main database directory (server-only) - SINGULAR DEFAULT */
@@ -48,9 +52,13 @@ export const DATABASE_PATHS = {
 
 /**
  * Database filenames - centralized naming
- * NOTE: Main database is Postgres. SQLite is ONLY used for per-persona longterm.db.
+ * NOTE: Main database is SQLite by default. Postgres is explicit opt-in via
+ * DATABASE_URL.
  */
 export const DATABASE_FILES = {
+  /** Main local SQLite database filename */
+  MAIN: 'main.db',
+
   /** Per-persona SQLite database filename (memories, embeddings) */
   PERSONA_LONGTERM: 'longterm.db',
 } as const;

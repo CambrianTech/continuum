@@ -15,8 +15,8 @@ use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use ndarray;
-use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
+use ort::session::builder::GraphOptimizationLevel;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -241,7 +241,9 @@ impl KokoroTTS {
 
     /// Call espeak-ng to phonemize text (same as Piper, but returns raw IPA string)
     fn phonemize(text: &str) -> Result<String, TTSError> {
-        let output = Command::new("/opt/homebrew/bin/espeak-ng")
+        let espeak_ng_bin =
+            std::env::var("ESPEAK_NG_BIN").unwrap_or_else(|_| "espeak-ng".to_string());
+        let output = Command::new(espeak_ng_bin)
             .args(["-v", "en-us", "-q", "--ipa=3"])
             .arg(text)
             .output()
@@ -470,7 +472,9 @@ impl TextToSpeech for KokoroTTS {
         // adds the right EP for the current build (CoreML on Mac,
         // CUDA on Linux+Nvidia) and hard-fails when neither is available.
         let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
-            .map_err(|e| TTSError::ModelNotLoaded(format!("ORT GPU EP setup failed (Kokoro TTS): {e}")))?;
+            .map_err(|e| {
+                TTSError::ModelNotLoaded(format!("ORT GPU EP setup failed (Kokoro TTS): {e}"))
+            })?;
         let session = Session::builder()?
             .with_execution_providers(providers)?
             .with_optimization_level(GraphOptimizationLevel::Level3)?

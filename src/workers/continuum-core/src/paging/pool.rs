@@ -35,6 +35,7 @@
 //! See: docs/architecture/UNIFIED-PAGING.md
 
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
@@ -43,6 +44,110 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
+use ts_rs::TS;
+
+/// Typed resource-pool failures exported through ts-rs so callers see a
+/// stable discriminant instead of parsing strings.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, thiserror::Error)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/paging/ResourceError.ts"
+)]
+pub enum ResourceError {
+    #[error(
+        "tier '{tier}' exhausted: requested {requested_bytes} bytes, \
+         available {available_bytes} bytes, eviction freed {evicted_bytes} bytes"
+    )]
+    TierExhausted {
+        tier: String,
+        #[serde(rename = "requestedBytes")]
+        requested_bytes: u64,
+        #[serde(rename = "availableBytes")]
+        available_bytes: u64,
+        #[serde(rename = "evictedBytes")]
+        evicted_bytes: u64,
+    },
+    #[error("tier '{tier}' is unavailable: {reason}")]
+    TierUnavailable { tier: String, reason: String },
+}
+
+/// Cross-tier entry snapshot for diagnostics, status output, and future
+/// scheduler decisions. Pool-specific values stay inside the pool; this is
+/// the uniform RTOS-facing shape.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/paging/ResourcePoolEntry.ts"
+)]
+pub struct ResourcePoolEntry {
+    pub key: String,
+    pub size_bytes: u64,
+    pub pinned_count: u32,
+    pub loaded_at: u64,
+    pub last_access_at: u64,
+    pub access_count: u64,
+}
+
+/// Shared control surface every memory/storage tier should expose.
+///
+/// This intentionally sits above the concrete [`PagedResourcePool`]
+/// implementation. VRAM, Docker, HF cache, KV cache, and future NVMe
+/// pools can all report pressure and take eviction commands through the
+/// same interface instead of reimplementing capacity math in each tier.
+///
+/// `PressureBroker` consumes `Arc<dyn ResourcePool>` directly for
+/// cross-tier orchestration — the formerly-parallel `PressureSource`
+/// trait was collapsed into this one (#1246) since both expressed
+/// "tier with capacity + eviction + snapshot." `pressure()` and
+/// `stats_snapshot()` carry default impls so existing tier implementors
+/// (e.g. `DockerTierPool`) get broker integration for free; tiers that
+/// already track richer telemetry (like `PagedResourcePool`) override
+/// `stats_snapshot()` to expose their internal hit/miss/eviction counts.
+pub trait ResourcePool: Send + Sync {
+    fn tier_name(&self) -> &str;
+    fn capacity_bytes(&self) -> u64;
+    fn usage_bytes(&self) -> u64;
+    fn evict_at_least(&self, want_bytes: u64) -> u64;
+    fn snapshot(&self) -> Vec<ResourcePoolEntry>;
+
+    /// Current pressure ratio in `0.0..1.0+` (over-budget ⇒ >1.0).
+    /// Default = `usage_bytes / capacity_bytes`. Returns 0 when capacity
+    /// is 0 (tier "not under management" — broker neither alerts nor
+    /// acts on it). Override only if your tier has a non-byte-driven
+    /// pressure metric (none currently do).
+    fn pressure(&self) -> f64 {
+        let cap = self.capacity_bytes();
+        if cap == 0 {
+            return 0.0;
+        }
+        self.usage_bytes() as f64 / cap as f64
+    }
+
+    /// `PoolStats` for monitoring / broker dashboards. Default derives
+    /// name/capacity/usage/pressure from the trait core. Tier impls that
+    /// track richer telemetry (`PagedResourcePool` knows hit/miss/
+    /// eviction counts internally) override to expose those counts.
+    fn stats_snapshot(&self) -> PoolStats {
+        let cap = self.capacity_bytes();
+        let used = self.usage_bytes();
+        let snap = self.snapshot();
+        let pressure = if cap == 0 { 0.0 } else { used as f64 / cap as f64 };
+        PoolStats {
+            name: self.tier_name().to_string(),
+            entry_count: snap.len(),
+            pinned_count: snap.iter().map(|e| e.pinned_count as usize).sum(),
+            total_bytes: used,
+            max_bytes: cap,
+            pressure,
+            hit_count: 0,
+            miss_count: 0,
+            eviction_count: 0,
+            inflight_count: 0,
+        }
+    }
+}
 
 /// Stats snapshot — for monitoring + PressureBroker decisions.
 #[derive(Debug, Clone)]
@@ -249,6 +354,15 @@ where
         &self.inner.config.name
     }
 
+    pub fn capacity_bytes(&self) -> u64 {
+        self.inner.config.max_bytes
+    }
+
+    pub fn usage_bytes(&self) -> u64 {
+        let entries = self.inner.entries.read();
+        entries.values().map(|e| e.size_bytes).sum()
+    }
+
     /// L1 hit — returns the value if cached, None on miss. Concurrent
     /// readers run in parallel under RwLock::read; per-entry atomics
     /// update last_access_at + access_count without serializing.
@@ -420,6 +534,57 @@ where
         initial_bytes.saturating_sub(total_bytes)
     }
 
+    /// Evict unpinned entries until at least `want_bytes` has been freed
+    /// or no evictable entries remain. Returns the actual freed bytes.
+    ///
+    /// Unlike `evict_under_pressure`, this is request-sized: schedulers and
+    /// tier managers can ask for a specific amount of relief without each
+    /// tier inventing its own eviction loop.
+    pub fn evict_at_least(&self, want_bytes: u64) -> u64 {
+        if want_bytes == 0 {
+            return 0;
+        }
+
+        let mut entries = self.inner.entries.write();
+        let mut candidates: Vec<(K, i64, u64)> = entries
+            .iter()
+            .filter(|(_, e)| e.pin_count.load(Ordering::Acquire) == 0)
+            .map(|(k, e)| {
+                let view = PoolEntryView {
+                    size_bytes: e.size_bytes,
+                    pin_count: e.pin_count.load(Ordering::Acquire),
+                    loaded_at: e.loaded_at,
+                    last_access_at: e.last_access_at.load(Ordering::Acquire),
+                    access_count: e.access_count.load(Ordering::Acquire),
+                };
+                (
+                    k.clone(),
+                    (self.inner.config.eviction_priority)(&view, &e.value),
+                    e.size_bytes,
+                )
+            })
+            .collect();
+        candidates.sort_by_key(|(_, prio, _)| *prio);
+
+        let mut freed_bytes = 0u64;
+        let mut evicted_count = 0u64;
+        for (key, _, size_bytes) in candidates {
+            if freed_bytes >= want_bytes {
+                break;
+            }
+            if entries.remove(&key).is_some() {
+                freed_bytes = freed_bytes.saturating_add(size_bytes);
+                evicted_count += 1;
+            }
+        }
+        if evicted_count > 0 {
+            self.inner
+                .evictions
+                .fetch_add(evicted_count, Ordering::Relaxed);
+        }
+        freed_bytes
+    }
+
     /// Synchronous version of `stats()` — needed by `PressureSource`
     /// implementors that can't .await (the broker's tick loop wants
     /// non-blocking pressure reads). Excludes inflight count (which
@@ -530,6 +695,61 @@ where
         if evicted > 0 {
             self.inner.evictions.fetch_add(evicted, Ordering::Relaxed);
         }
+    }
+}
+
+impl<K, V> PagedResourcePool<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + ToString + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    pub fn resource_snapshot(&self) -> Vec<ResourcePoolEntry> {
+        let entries = self.inner.entries.read();
+        entries
+            .iter()
+            .map(|(key, entry)| ResourcePoolEntry {
+                key: key.to_string(),
+                size_bytes: entry.size_bytes,
+                pinned_count: entry.pin_count.load(Ordering::Acquire),
+                loaded_at: entry.loaded_at,
+                last_access_at: entry.last_access_at.load(Ordering::Acquire),
+                access_count: entry.access_count.load(Ordering::Acquire),
+            })
+            .collect()
+    }
+}
+
+impl<K, V> ResourcePool for PagedResourcePool<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + ToString + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    fn tier_name(&self) -> &str {
+        self.config_name()
+    }
+
+    fn capacity_bytes(&self) -> u64 {
+        self.capacity_bytes()
+    }
+
+    fn usage_bytes(&self) -> u64 {
+        self.usage_bytes()
+    }
+
+    fn evict_at_least(&self, want_bytes: u64) -> u64 {
+        self.evict_at_least(want_bytes)
+    }
+
+    fn snapshot(&self) -> Vec<ResourcePoolEntry> {
+        self.resource_snapshot()
+    }
+
+    /// Override the trait default — `PagedResourcePool` tracks
+    /// hit/miss/eviction/inflight counts internally via `stats_blocking()`,
+    /// so we expose those directly instead of taking the trait's
+    /// zero-defaults. Same `PoolStats` shape either way.
+    fn stats_snapshot(&self) -> PoolStats {
+        self.stats_blocking()
     }
 }
 
@@ -735,5 +955,56 @@ mod tests {
         let stats = pool.stats().await;
         assert_eq!(stats.total_bytes, 25);
         assert!((stats.pressure - 0.25).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    async fn evict_at_least_frees_requested_amount_without_touching_pinned_entries() {
+        let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
+            name: "test".to_string(),
+            max_bytes: 1_000,
+            sizer: bytes_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        pool.insert("pinned".to_string(), vec![0; 100]);
+        let _pin = pool.pin(&"pinned".to_string()).unwrap();
+        pool.insert("a".to_string(), vec![0; 40]);
+        pool.insert("b".to_string(), vec![0; 50]);
+        pool.insert("c".to_string(), vec![0; 60]);
+
+        let freed = pool.evict_at_least(75);
+
+        assert!(
+            freed >= 75,
+            "expected to free at least 75 bytes, got {freed}"
+        );
+        assert!(pool.get(&"pinned".to_string()).is_some());
+        assert_eq!(pool.stats().await.eviction_count, 2);
+    }
+
+    #[test]
+    fn resource_pool_trait_exposes_uniform_control_surface() {
+        let pool: PagedResourcePool<String, Vec<u8>> = PagedResourcePool::new(PoolConfig {
+            name: "docker".to_string(),
+            max_bytes: 500,
+            sizer: bytes_sizer(),
+            eviction_priority: lru_priority(),
+        });
+        pool.insert("image:a".to_string(), vec![0; 25]);
+
+        let resource: &dyn ResourcePool = &pool;
+
+        assert_eq!(resource.tier_name(), "docker");
+        assert_eq!(resource.capacity_bytes(), 500);
+        assert_eq!(resource.usage_bytes(), 25);
+        let snapshot = resource.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].key, "image:a");
+        assert_eq!(snapshot[0].size_bytes, 25);
+    }
+
+    #[test]
+    fn resource_error_exports_ts_shape() {
+        ResourceError::export_all(&ts_rs::Config::default()).unwrap();
+        ResourcePoolEntry::export_all(&ts_rs::Config::default()).unwrap();
     }
 }

@@ -8,6 +8,11 @@
 
 A **Room** is any shared experience involving any mix of humans and AIs.
 
+In Continuum's data model, **room** and **activity** name the same core
+thing from different angles: a room is the social/place metaphor; an
+activity is the executable/workflow node. Both refer to an instantiated
+context with identity, participants, state, and events.
+
 Not just chat channels. Not just drawing canvases. **Any experience:**
 
 - A 3D landscape you walk through together
@@ -80,6 +85,29 @@ Project: "Home Renovation"
 - "Spawning a research session to look that up"
 - They navigate the tree like anyone else
 
+## Graph Invariant: Pointers, Not Nested Blobs
+
+Continuum should model room/activity hierarchy as a graph. A parent
+activity stores references to child activities; it does not embed the
+children's live room state. The same applies in reverse: a child points
+at its parent and can traverse up for context, permissions, memory, or
+breadcrumbs.
+
+This keeps the system cheap to page, cache, synchronize, and move across
+machines:
+
+- Parent activity -> child activity IDs
+- Child activity -> parent activity ID
+- Recipe -> default child recipe IDs when a template wants to suggest a
+  structure
+- Live activity state -> its own entity, never duplicated into a recipe
+  or parent payload
+
+The UI can render this as a tree of tabs, but storage stays graph-shaped.
+That lets the same room/activity node appear in different views, be
+referenced from AIRC, or be paged through Rust-owned resource controls
+without copying content around.
+
 ## UI Model: Rooms = Tabs
 
 In the interface, each room is literally a tab. This provides:
@@ -133,6 +161,11 @@ Recipes are:
 - Forkable (customize someone else's)
 - Versionable (improve over time)
 - Experimental (try new concepts)
+
+A recipe defines the reusable content/activity template. Instantiating
+that recipe creates a room/activity node. The node owns runtime state;
+the recipe owns the shape and defaults. Sub-rooms are spawned as child
+nodes linked by IDs.
 
 ## The Magic: No "Share" Buttons
 

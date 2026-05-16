@@ -15,6 +15,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import { Logger } from '../../core/logging/Logger';
+import { sandboxPath } from '../../server/process/ProcessPathPolicy';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 const log = Logger.create('ExecutionSandbox', 'code');
@@ -68,14 +69,6 @@ const KILL_GRACE_PERIOD_MS = 5_000;
 /** Restricted set of allowed commands */
 const ALLOWED_COMMANDS = new Set(['node', 'npx', 'tsc', 'npm']);
 
-/** Restricted PATH — only common binary locations (includes Homebrew for macOS) */
-const RESTRICTED_PATH = [
-  '/opt/homebrew/bin',   // macOS Apple Silicon Homebrew
-  '/usr/local/bin',      // macOS Intel Homebrew / standard
-  '/usr/bin',
-  '/bin',
-].join(path.delimiter);
-
 // ────────────────────────────────────────────────────────────
 // Sandbox
 // ────────────────────────────────────────────────────────────
@@ -119,7 +112,7 @@ export class ExecutionSandbox {
         child = spawn(config.command, [...config.args], {
           cwd: config.cwd,
           env: {
-            PATH: RESTRICTED_PATH,
+            PATH: sandboxPath(),
             NODE_ENV: 'sandbox',
             HOME: config.cwd,
             SANDBOX_EXECUTION: 'true',
