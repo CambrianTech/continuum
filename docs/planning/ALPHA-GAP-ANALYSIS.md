@@ -1051,86 +1051,135 @@ the substrate contract (concurrency, scheduling, memory, pressure, telemetry,
 artifact handles), defer to CBAR-SUBSTRATE-ARCHITECTURE.md and reconcile
 in a follow-up.
 
-## Immediate Next Actions
+## Immediate Next Actions (Refreshed 2026-05-16, second update)
 
-Ordered by alpha leverage, not by who is online. If you are the agent picking
-this up, claim explicitly on AIRC before you start.
+Ordered by alpha leverage. **Items 6, 8 (PR-1), and parts of 2/3/9 closed since
+the first refresh** — see the closeout summary at the end of this section.
+The implementing agent (claude-tab-1, continuum-scope) is **ready for the next
+slice** and explicitly read MODULE-CATALOG to pick what fits. See
+[MODULE-CATALOG.md](../architecture/MODULE-CATALOG.md) §"Next Modules To Build"
+for the ranked-by-buildability work queue.
 
-1. **Claim Lane D (CBAR persona runtime frame).** This is the highest-leverage
-   unstarted lane on the board. PressureBroker (Lane E) and the inbox
-   coalescing pattern were both written expecting `RuntimeFrame` /
-   `CognitionTurnFrame` to exist; every day it does not, persona-side
-   consumers continue to own ad-hoc fan-out and produce the inference-per-event
-   flood. Spec: see [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
-   §"Six missing pieces", item 1 (RuntimeFrame) and item 3 (chat turn fanout
-   onto CognitionTurnFrame).
+If you are picking this up, claim explicitly on AIRC before you start.
 
-2. **Land the universal-trait "for free" triplet** described in
-   CBAR-SUBSTRATE-ARCHITECTURE.md — the `RuntimeModule` base trait, the
-   `#[derive(RuntimeModule)]` macro, and the scaffold generator. Every new
-   module should inherit concurrency / memory-pressure / device-pressure /
-   telemetry from the base. Today, `src/workers/continuum-core/src/modules/`
-   has each module re-declaring its own concurrency and resource policy, which
-   is the friction this triplet exists to remove.
+1. **Claim Lane D (CBAR persona runtime frame).** Still the highest-leverage
+   unstarted lane. PressureBroker (Lane E) and the inbox coalescing pattern
+   both presupposed `RuntimeFrame` / `CognitionTurnFrame`. Lane H's governor
+   (alpha-floor) doesn't strictly depend on Lane D, but the persona-cognition
+   module catalog entry does — and that's the cognition core. Spec: see
+   [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
+   §"The Dataflow Contract" + §"Runtime Frame", plus
+   [PERSONA-COGNITION-CONTRACT.md](../architecture/PERSONA-COGNITION-CONTRACT.md)
+   §"Core Surfaces" for the full contract.
 
-3. **Delete `get_num_workers()` in `src/workers/inference-grpc/src/main.rs`**
-   and replace with PressureBroker leases. The current implementation reads
-   `INFERENCE_WORKERS` from `~/.continuum/config.env` and otherwise heuristics
-   from system memory at startup — both branches violate the "we do not hard
-   code" rule and the "dynamic, no static config-decided concurrency" rule.
-   This is a Lane E deletion target, not a new feature.
+2. **Land the universal-trait "for free" triplet.** Unchanged. Codex's
+   derive-macro acceptance gate (continuum#1324) added five hard gates the
+   macro must clear before landing: thin, contract-preserving, inspectable,
+   tested, no hidden behavior. Spec: CBAR-SUBSTRATE §"The 'For Free' Triplet"
+   + §"Acceptance Criteria For Substrate-Done".
 
-4. **Claim Lane F mechanical ratchet PR.** The TS deletion progress from this
-   session (~2500 LOC across 8 cognition PRs) is reversible until the CI gate
-   exists. Lane F PR sequence step 1 (`persona-ts-ratchet-script`) is small
-   and unblocks step 2 (CI enforcement).
+3. **Lane H groundwork: substrate-governor.** Continuum#1335 shipped the
+   hardware probe + `HardwareProfile`. Remaining is the policy TOML loader,
+   the cascade state machine (six steps with hysteresis), and the
+   pressure-signal subscriber. Spec:
+   [GENOME-FOUNDRY-SENTINEL.md](../architecture/GENOME-FOUNDRY-SENTINEL.md)
+   Part 11. About 400 LoC in 3 PRs per MODULE-CATALOG §"Next Modules To Build"
+   entry #5. **This is currently the #5 buildable module by leverage** —
+   the four ahead of it (audit-recorder, threat-detector,
+   working-set-manager, demand-aligned-recall) are smaller and unblock more.
 
-5. **Bind Lane C `vdd-report-command`.** Structured `RuntimeMetric` events
-   already emit from inference paths, but VDD is still read from logs because
-   the report command was not bound. This is small and unblocks every PR's
-   "VDD: tokens/sec improved from X → Y" claim.
+4. **Claim Lane F mechanical ratchet PR.** Still open. The TS deletion
+   progress from prior sessions (~2500 LOC across 8 cognition PRs)
+   is reversible until the CI gate exists. Lane F PR sequence step 1
+   (`persona-ts-ratchet-script`) is small and unblocks step 2 (CI
+   enforcement). claude-tab-1 (continuum-scope) signaled willingness to
+   take this in a prior airc broadcast.
 
-6. **Widen the no-CPU-fallback contract test.** The current
-   `no_cpu_fallback_contract.rs` regression test covers three whitelisted
-   paths (llama.cpp / ORT). It does **not** cover the Candle-side device
-   selection where the orpheus + inference-grpc CPU fallbacks lived before
-   #1314. Until the test covers the whole workers tree, the gate that the
-   test was written to enforce ("no silent CPU fallback") is partially
-   honored only.
+5. **Bind Lane C `vdd-report-command`.** Still open. Structured
+   `RuntimeMetric` events already emit from inference paths, but VDD is
+   still read from logs because the report command was not bound. Small;
+   unblocks every PR's "VDD: tokens/sec improved from X → Y" claim.
+
+6. ~~**Widen the no-CPU-fallback contract test.**~~ **DONE.** Continuum#1341
+   widened `no_cpu_fallback_contract.rs` to cover the Candle-side paths
+   (inference-grpc/model.rs, orpheus.rs, residency.rs, enforcement.rs,
+   llamacpp_adapter.rs, hw_probe.rs). 6 new assertions; 9 tests passing.
+   Locks in PIECE-5's whole stack at type-checking time.
 
 7. **Lane B follow-ups: capability-visible health + tier-pool eviction.**
-   #1297 landed the Docker tier stats surface; #1238 / #1239 still open. Both
-   should consume the Lane A registry artifact contract — do not invent a
-   parallel one.
+   Unchanged. #1297 landed the Docker tier stats surface; #1238 / #1239
+   still open. Both should consume the Lane A registry artifact contract.
 
-8. **GRID-INFERENCE-ROUTING.** airc-8a5e is in flight on PR-1 (announcer +
-   probe + registry) on `feat/grid-inference-routing-pr2-announcer`. Review
-   when it lands. PR-2 is the routing decision; PR-3 is the eviction-on-grid
-   policy. Owner remains airc-8a5e unless they explicitly hand off on AIRC.
+8. ~~**GRID-INFERENCE-ROUTING.**~~ **PR-1 SHIPPED.** Continuum#1315 merged
+   (inference capability announcer + probe + registry). PR-2 (routing
+   decision) and PR-3 (eviction-on-grid policy) remain. Owner: airc-8a5e
+   per prior claim.
 
-9. **Claim Lane H (Substrate governor + tiered genome cache).** Proposed via
-   continuum#1327 ([GENOME-FOUNDRY-SENTINEL.md](../architecture/GENOME-FOUNDRY-SENTINEL.md)).
-   7-PR implementation sequence is detailed in that doc's Part 13: governor
-   types → tier stores → recall API → composer + speculator → foundry
-   skeleton → sentinel skeleton → sharing-protocol local-first. Lane H is
-   sibling to Lane E: broker owns admission; governor owns sizing. The
-   alpha-floor pieces are governor + tier stores + recall API; the rest is
-   alpha-stretch but the sequence is fixed.
+9. **Lane H follow-on after substrate-governor (#3 above).** Per
+   MODULE-CATALOG §"Next Modules To Build", after the governor lands:
+   - `audit-recorder` (#1 in the catalog's queue) — small, no dependencies,
+     unblocks the trace-bus landing place for typed events.
+   - `threat-detector` (#2 in the queue) — depends on audit-recorder;
+     unlocks `PersonaDecision::Decline { AdversarialPattern }`.
+   - `working-set-manager` (#3 in the queue) — substrate's MMU; depends on
+     governor types + PressureBroker (shipped).
+   - `demand-aligned-recall` (#4 in the queue) — central API; mechanical
+     given working-set-manager.
 
-10. **Doc refresh follow-ups (this manager).** After this batch lands on
-    canary, refine the supporting docs and cross-link each back into the
-    Document Map above:
-    - `CBAR-SUBSTRATE-ARCHITECTURE.md` — landed via continuum#1324 with the
-      engram-analyzer worked example and codex's derive-macro acceptance gate.
-    - `GENOME-FOUNDRY-SENTINEL.md` — landed via continuum#1327; the
-      artifact-economy doc on top of CBAR substrate.
-    - `CONTINUUM-ARCHITECTURE.md` — landed via continuum#1317; stale TS
-      pseudocode framed correctly and codex's persona-cognition invariants
-      pinned in the Substrate Contract section.
-    - `CONTINUUM-VISION.md` — landed via continuum#1320; TS-shaped interface
-      types labelled illustrative with concept→Rust map.
-    - `CLAUDE.md` — point at CBAR-SUBSTRATE + GENOME-FOUNDRY-SENTINEL as the
-      canonical substrate specs. (Next.)
-    - `UNIVERSAL-SENSORY-ARCHITECTURE.md`, `UNIVERSAL-LEARNING-ARCHITECTURE.md`,
-      `QUEUE-DRIVEN-COGNITION.md` — mark stale sections DEPRECATED with a
-      pointer to the canonical replacement rather than silently editing.
+   The MODULE-CATALOG entries name dependency state, estimated PRs + LoC,
+   and concrete acceptance criteria. This is the substrate-side implementation
+   path; the cognition core lands on top once these stabilize.
+
+10. **CBAR-PIECE-5 + PIECE-8 closed end-to-end.** ✓
+    - PIECE-5 PR-1 gate types (#1331 MERGED)
+    - PIECE-5 PR-2 GGUF loader (#1333 MERGED)
+    - PIECE-5 PR-3 hardware probe (#1335 MERGED)
+    - PIECE-5 PR-4 adapter wiring (#1338 MERGED, codex co-authored)
+    - PIECE-8 inference-grpc hardcoded-clamps deletion (#1340 MERGED)
+    The `inference-grpc/main.rs::get_num_workers()` anti-pattern was
+    partially addressed via #1340 (hardcoded clamps removed); full
+    PressureBroker-lease integration remains as a Lane E follow-up tied
+    to the broker IPC design.
+
+11. **Doc refresh closed.** ✓ The whole architecture doc family is now in
+    open or merged PRs:
+    - `CBAR-SUBSTRATE-ARCHITECTURE.md` — continuum#1324, deepened with
+      dataflow contract, zero-overhead frame entry, spatiotemporal
+      reprojection toolkit.
+    - `GENOME-FOUNDRY-SENTINEL.md` — continuum#1327, all eleven substantive
+      parts at engineer-buildable depth (Parts 5, 6, 7, 8, 9, 10, 11 all
+      fully spec'd with Rust types, algorithms, acceptance criteria, and
+      per-anchor performance budgets).
+    - `PERSONA-COGNITION-CONTRACT.md` — continuum#1332, reactive cognition
+      contract with 14 substrate-enforced invariants.
+    - `PERSONA-THOUGHT-PROCESS.md` — continuum#1337, proactive thought
+      surface + concrete worked example (delphi persona, 7 reasoning steps,
+      ~23s LLM time spread across 9 wall-clock hours to crystallize a
+      substantive insight on Q4_K Qwen3-7B).
+    - `MODULE-CATALOG.md` — continuum#1336, every Continuum concern as a
+      focused module + "Next Modules To Build" ranked work queue.
+    - `CONTINUUM-ARCHITECTURE.md`, `CONTINUUM-VISION.md`, `CLAUDE.md` +
+      `UNIVERSAL-*.md` deprecation pointers — all merged via #1317, #1320,
+      #1329.
+
+### Closeout Summary
+
+What's done since the first refresh:
+- 6 closed: ALPHA-GAP refresh, CONTINUUM-ARCHITECTURE refresh,
+  CONTINUUM-VISION refresh, stale-section pointers, CBAR-PIECE-5
+  end-to-end (4 PRs), PIECE-8 inference-grpc clamps, no-CPU-fallback
+  contract widening.
+- 5 open architecture-doc PRs ready for review: #1324 CBAR-SUBSTRATE,
+  #1327 GENOME-FOUNDRY-SENTINEL, #1332 PERSONA-COGNITION-CONTRACT,
+  #1336 MODULE-CATALOG, #1337 PERSONA-THOUGHT-PROCESS.
+- 2 open coordination-substrate PRs on airc: #642 manager-role,
+  #643 lane-kanban-protocol.
+
+What's queued (in MODULE-CATALOG order): audit-recorder, threat-detector,
+working-set-manager, demand-aligned-recall, substrate-governor. After those,
+the cognition core (persona-cognition, inference-llm, composer, speculator,
+reprojection-service) becomes the next-tier work.
+
+The architectural roadmap is now substantially backed by code-shaped specs.
+Doc-driven development is working: doc spec → implementing agent picks up →
+ships PR → next spec referenced.
