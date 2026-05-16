@@ -169,6 +169,11 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
    * TextMessageAdapter.escapeHtml — the canonical pattern in this
    * codebase. Safe in both text-content and double-quoted-attribute
    * contexts because it escapes both `"` and `'`.
+   *
+   * KEPT after the #1158 base-default lift (#1189) because URLCardAdapter's
+   * `renderContent` still interpolates url/title/description/siteName as
+   * raw strings into HTML — the XSS hardening from #1159 (PR #1250) lives
+   * in those interpolations and depends on this method.
    */
   private escapeHtml(unsafe: string): string {
     return unsafe
@@ -211,39 +216,13 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
     return safeSchemes.has(scheme) ? trimmed : '#';
   }
 
-  /**
-   * DOM-returning render path (issue #1100). Same shape as
-   * `TextMessageAdapter.renderMessageElement` — builds the wrapper via
-   * DOM APIs, parses the rich content on a detached `<template>`, and
-   * adopts as a `DocumentFragment` so the live message-content slot
-   * never sees an `innerHTML` assignment. Reactive children inside the
-   * message bubble survive sibling updates.
-   *
-   * Sanitization model is unchanged from the string path. The string
-   * `renderContent` still has interpolation hot spots (originalText,
-   * title, description, siteName) — those are the URL-metadata-XSS
-   * surface and need a separate hardening PR. This PR closes the
-   * `innerHTML` Lit-reactivity hole; the metadata-string XSS hardening
-   * is tracked as a follow-up to #1100.
-   */
-  override renderMessageElement(message: ChatMessageEntity, currentUserId: string): HTMLElement | null {
-    try {
-      const data = this.parseContent(message);
-      if (!data) return null;
-      this.contentData = data;
-
-      const wrapper = this.createAdapterWrapper();
-      const contentHtml = this.renderContent(data, currentUserId);
-
-      const template = globalThis.document.createElement('template');
-      template.innerHTML = contentHtml;
-      wrapper.appendChild(template.content.cloneNode(true));
-      return wrapper;
-    } catch (error) {
-      console.error('URLCardAdapter.renderMessageElement failed:', error);
-      return null;
-    }
-  }
+  // renderMessageElement: inherits the DRY base default (#1158/#1189).
+  // The string `renderContent` already does the
+  // template.innerHTML → cloneNode(true) DocumentFragment trick that the
+  // base default expects, so the inherited path produces identical DOM
+  // output. The escapeHtml + safeHref methods above stay LOCAL because
+  // they're only used by this adapter's renderContent interpolation
+  // hardening (#1159 PR #1250), not by the base default.
 
   /**
    * Handle URL metadata fetching and card population

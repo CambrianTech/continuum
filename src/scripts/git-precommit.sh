@@ -94,7 +94,12 @@ else
     export ENABLE_TYPESCRIPT_CHECK=true
     export ENABLE_BROWSER_TEST=true
     export RESTART_STRATEGY="on_code_change"
-    export PRECOMMIT_TESTS="tests/precommit/browser-ping.test.ts"
+    # Browser ping = "server didn't crash + browser is reachable" (low bar).
+    # Chat roundtrip = "a persona actually replies to a chat probe" (#1186).
+    # Run BOTH on every commit until path-tier dispatcher lands (#1186 PR-2).
+    export PRECOMMIT_TESTS="tests/precommit/browser-ping.test.ts tests/precommit/chat-roundtrip.test.ts"
+    export PRECOMMIT_TEST_TIMEOUT_SECONDS=60
+    export PRECOMMIT_CHAT_ROUNDTRIP_TIMEOUT_SECONDS=120
 fi
 
 echo "🔒 GIT PRECOMMIT: Modular validation (config-driven)"
@@ -490,19 +495,28 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
     TEST_SUMMARY=""
 
     for TEST_FILE in $PRECOMMIT_TESTS; do
+        TEST_TIMEOUT_SECONDS="${PRECOMMIT_TEST_TIMEOUT_SECONDS:-60}"
+        case "$TEST_FILE" in
+            *chat-roundtrip.test.ts)
+                TEST_TIMEOUT_SECONDS="${PRECOMMIT_CHAT_ROUNDTRIP_TIMEOUT_SECONDS:-120}"
+                ;;
+        esac
+
         echo "=================================================="
-        echo "🧪 Running: $TEST_FILE  (60s timeout cap)"
+        echo "🧪 Running: $TEST_FILE  (${TEST_TIMEOUT_SECONDS}s timeout cap)"
         echo "=================================================="
 
-        # Wrap each test in a 60s timeout via perl fork+wait. perl's
+        # Wrap each test in a timeout via perl fork+wait. perl's
         # bare `alarm` doesn't survive `exec` (signal handler is lost
         # when the process image is replaced), so we fork: parent
-        # times out and kills the child after 60s. Some tests
+        # times out and kills the child after the configured cap. Some tests
         # (browser-ping) hang for 10 minutes when the browser is in
         # a non-responsive-but-not-crashed state — useless friction
         # on every commit.
         perl -e '
             use POSIX qw(setpgid);
+            my $timeout = shift @ARGV;
+            shift @ARGV if @ARGV && $ARGV[0] eq "--";
             my $pid = fork();
             die "fork: $!" unless defined $pid;
             if ($pid == 0) {
@@ -516,7 +530,7 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
                 die "exec: $!";
             }
             POSIX::setpgid($pid, $pid);  # parent races child; both safe
-            my $deadline = time() + 60;
+            my $deadline = time() + $timeout;
             while (1) {
                 my $w = waitpid($pid, 1);
                 last if $w == $pid;
@@ -529,7 +543,7 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
                 select(undef, undef, undef, 0.1);
             }
             exit ($? >> 8);
-        ' -- npx tsx "$TEST_FILE" 2>&1 \
+        ' "$TEST_TIMEOUT_SECONDS" -- npx tsx "$TEST_FILE" 2>&1 \
             | tee .continuum/sessions/validation/test-output.txt
         CURRENT_EXIT_CODE=${PIPESTATUS[0]}
 
@@ -539,7 +553,7 @@ if [ "$ENABLE_BROWSER_TEST" = true ]; then
             # Skip the gate; CI's verify-architectures + browser tests
             # in CI environments remain authoritative.
             echo ""
-            echo "⚠️  Test timed out after 60s: $TEST_FILE"
+            echo "⚠️  Test timed out after ${TEST_TIMEOUT_SECONDS}s: $TEST_FILE"
             echo "   The system isn't responsive enough for this test."
             echo "   Skipping the browser-test gate for this commit."
             echo "   To enable: ensure 'cd src && ./jtag interface/screenshot --querySelector=body' returns within 60s."

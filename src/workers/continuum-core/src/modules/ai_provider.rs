@@ -20,8 +20,8 @@
 
 use crate::ai::{
     adapter::{AIProviderAdapter, InferenceDevice},
-    AdapterRegistry, AnthropicAdapter, CandleAdapter, ChatMessage, MessageContent,
-    OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
+    AdapterRegistry, AnthropicAdapter, ChatMessage, MessageContent, OpenAICompatibleAdapter,
+    RoutingInfo, TextGenerationRequest, TextGenerationResponse,
 };
 use crate::logging::TimingGuard;
 use crate::runtime::{

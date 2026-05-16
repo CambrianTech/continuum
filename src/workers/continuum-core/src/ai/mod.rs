@@ -39,6 +39,3 @@ pub use types::{
     ModelInfo, NativeToolSpec, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
     ToolCall, ToolChoice, ToolInputSchema, ToolResult, UsageMetrics,
 };
-
-// Re-export CandleAdapter from inference module
-pub use crate::inference::CandleAdapter;

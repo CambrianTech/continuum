@@ -1,7 +1,8 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    AircQueueClient, AircQueueListRequest, AircQueueScanParams, CliAircQueueClient,
+    AircQueueClient, AircQueueListRequest, AircQueueScanParams, AircRealtimePublishParams,
+    AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient, InMemoryAircRealtimeStore,
     TokioAircCommandRunner,
 };
 use crate::runtime::{
@@ -15,17 +16,32 @@ use std::sync::Arc;
 
 pub struct AircModule {
     queue_client: Arc<dyn AircQueueClient>,
+    realtime_store: Arc<dyn AircRealtimeStore>,
 }
 
 impl AircModule {
     pub fn new() -> Self {
         Self {
             queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
+            realtime_store: Arc::new(InMemoryAircRealtimeStore::default()),
         }
     }
 
     pub fn with_queue_client(queue_client: Arc<dyn AircQueueClient>) -> Self {
-        Self { queue_client }
+        Self {
+            queue_client,
+            realtime_store: Arc::new(InMemoryAircRealtimeStore::default()),
+        }
+    }
+
+    pub fn with_clients(
+        queue_client: Arc<dyn AircQueueClient>,
+        realtime_store: Arc<dyn AircRealtimeStore>,
+    ) -> Self {
+        Self {
+            queue_client,
+            realtime_store,
+        }
     }
 }
 
@@ -62,53 +78,107 @@ impl ServiceModule for AircModule {
                 let result = self.queue_client.list_queue(request).await;
                 CommandResult::json(&result)
             }
+            "airc/realtime-publish" => {
+                let params: AircRealtimePublishParams = serde_json::from_value(params)
+                    .map_err(|e| format!("invalid airc/realtime-publish params: {e}"))?;
+                let result = self.realtime_store.publish(params)?;
+                CommandResult::json(&result)
+            }
+            "airc/realtime-replay" => {
+                let params: AircRealtimeReplayParams = serde_json::from_value(params)
+                    .map_err(|e| format!("invalid airc/realtime-replay params: {e}"))?;
+                let result = self.realtime_store.replay(params)?;
+                CommandResult::json(&result)
+            }
             _ => Err(format!("Unknown airc command: {command}")),
         }
     }
 
     fn command_schemas(&self) -> Vec<CommandSchema> {
-        vec![CommandSchema {
-            name: "airc/queue-scan",
-            description: "Rust-native AIRC queue scan for no-Node agent flywheel polling.",
-            params: vec![
-                ParamSchema {
-                    name: "repo",
-                    param_type: "string",
+        vec![
+            CommandSchema {
+                name: "airc/queue-scan",
+                description: "Rust-native AIRC queue scan for no-Node agent flywheel polling.",
+                params: vec![
+                    ParamSchema {
+                        name: "repo",
+                        param_type: "string",
+                        required: true,
+                        description: "GitHub repo in owner/name form, e.g. CambrianTech/continuum.",
+                    },
+                    ParamSchema {
+                        name: "limit",
+                        param_type: "number",
+                        required: false,
+                        description: "Maximum cards to return, 1..100.",
+                    },
+                    ParamSchema {
+                        name: "owner",
+                        param_type: "string",
+                        required: false,
+                        description: "Optional queue owner filter.",
+                    },
+                    ParamSchema {
+                        name: "status",
+                        param_type: "string",
+                        required: false,
+                        description: "Optional queue status filter.",
+                    },
+                    ParamSchema {
+                        name: "airc_bin",
+                        param_type: "string",
+                        required: false,
+                        description: "Optional AIRC binary path; defaults to PATH lookup.",
+                    },
+                    ParamSchema {
+                        name: "timeout_ms",
+                        param_type: "number",
+                        required: false,
+                        description: "Command timeout in milliseconds, 100..60000.",
+                    },
+                ],
+            },
+            CommandSchema {
+                name: "airc/realtime-publish",
+                description: "Publish a typed AIRC realtime envelope into the Rust replay/presence adapter.",
+                params: vec![ParamSchema {
+                    name: "envelope",
+                    param_type: "object",
                     required: true,
-                    description: "GitHub repo in owner/name form, e.g. CambrianTech/continuum.",
-                },
-                ParamSchema {
-                    name: "limit",
-                    param_type: "number",
-                    required: false,
-                    description: "Maximum cards to return, 1..100.",
-                },
-                ParamSchema {
-                    name: "owner",
-                    param_type: "string",
-                    required: false,
-                    description: "Optional queue owner filter.",
-                },
-                ParamSchema {
-                    name: "status",
-                    param_type: "string",
-                    required: false,
-                    description: "Optional queue status filter.",
-                },
-                ParamSchema {
-                    name: "airc_bin",
-                    param_type: "string",
-                    required: false,
-                    description: "Optional AIRC binary path; defaults to PATH lookup.",
-                },
-                ParamSchema {
-                    name: "timeout_ms",
-                    param_type: "number",
-                    required: false,
-                    description: "Command timeout in milliseconds, 100..60000.",
-                },
-            ],
-        }]
+                    description: "AircRealtimeEnvelope with delivery semantics matching its payload.",
+                }],
+            },
+            CommandSchema {
+                name: "airc/realtime-replay",
+                description: "Replay bounded AIRC realtime envelopes for a room, optionally including active coalesced presence.",
+                params: vec![
+                    ParamSchema {
+                        name: "room_id",
+                        param_type: "string",
+                        required: true,
+                        description: "Room id to replay.",
+                    },
+                    ParamSchema {
+                        name: "after_event_id",
+                        param_type: "string",
+                        required: false,
+                        description: "Optional cursor event id; replay starts after this event when present.",
+                    },
+                    ParamSchema {
+                        name: "limit",
+                        param_type: "number",
+                        required: false,
+                        description: "Replay limit, clamped by the Rust adapter.",
+                    },
+                    ParamSchema {
+                        name: "include_presence",
+                        param_type: "boolean",
+                        required: false,
+                        description: "Include active coalesced presence in the response.",
+                    },
+                ],
+            },
+        ]
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -119,7 +189,10 @@ impl ServiceModule for AircModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::airc::AircQueueScanResult;
+    use crate::airc::{
+        AircPresenceEvent, AircPresenceState, AircQueueScanResult, AircRealtimeEnvelope,
+        AircRealtimePayload,
+    };
     use serde_json::json;
 
     struct FakeQueueClient;
@@ -164,5 +237,54 @@ mod tests {
         assert_eq!(value["repo"], "CambrianTech/continuum");
         assert_eq!(value["command"][0], "queue");
         assert_eq!(value["command"][1], "list");
+    }
+
+    #[tokio::test]
+    async fn realtime_publish_and_replay_roundtrip_through_module() {
+        let module = AircModule::with_queue_client(Arc::new(FakeQueueClient));
+        let envelope = AircRealtimeEnvelope::new(
+            "typing-1".to_string(),
+            "general".to_string(),
+            "persona-1".to_string(),
+            100,
+            AircRealtimePayload::Presence {
+                event: AircPresenceEvent {
+                    room_id: "general".to_string(),
+                    subject_id: "persona-1".to_string(),
+                    display_name: None,
+                    state: AircPresenceState::Typing,
+                    started_at_ms: 100,
+                    expires_at_ms: Some(500),
+                    call_id: None,
+                },
+            },
+        );
+
+        let publish = module
+            .handle_command("airc/realtime-publish", json!({ "envelope": envelope }))
+            .await
+            .unwrap();
+        let CommandResult::Json(publish_value) = publish else {
+            panic!("expected JSON publish result");
+        };
+        assert_eq!(publish_value["storedForReplay"], false);
+        assert_eq!(publish_value["activePresenceCount"], 1);
+
+        let replay = module
+            .handle_command(
+                "airc/realtime-replay",
+                json!({
+                    "roomId": "general",
+                    "includePresence": true,
+                    "nowMs": 499
+                }),
+            )
+            .await
+            .unwrap();
+        let CommandResult::Json(replay_value) = replay else {
+            panic!("expected JSON replay result");
+        };
+        assert_eq!(replay_value["events"].as_array().unwrap().len(), 0);
+        assert_eq!(replay_value["activePresence"].as_array().unwrap().len(), 1);
     }
 }
