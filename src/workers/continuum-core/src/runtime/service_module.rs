@@ -9,6 +9,7 @@
 //! 2. runtime.register(Arc::new(MyModule::new()))
 //! 3. Done. Commands route automatically.
 
+use super::artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -183,7 +184,260 @@ pub trait ServiceModule: Send + Sync + Any {
         vec![]
     }
 
+    // ─── PIECE-2 PR-2: artifact subscription / cadence / dispatch ─────
+    //
+    // Three default-impl methods so existing modules don't change.
+    // Module authors opt in by overriding `artifact_subscriptions` to
+    // name what they want, `cadence` to declare their wake policy, and
+    // `on_artifact_available` to react. PR-3 of CBAR-PIECE-2 wires the
+    // runtime dispatch path that calls `on_artifact_available` when a
+    // producer publishes a matching key.
+    //
+    // Pattern matches the existing `handle_event` / `tick` defaults —
+    // no-op default keeps every existing implementor (HealthModule,
+    // PressureBrokerModule, CognitionModule, …) compiling without
+    // edits. Opt-in only.
+
+    /// Artifact subscriptions this module wants delivery for. Each
+    /// returned `ArtifactSelector` matches a stream of artifacts the
+    /// runtime will dispatch to `on_artifact_available`. Default: no
+    /// subscriptions (module is not artifact-driven).
+    ///
+    /// Same shape Lane D's `PersonaTurnFrame` will eventually subscribe
+    /// to its inbox-frame-ready artifact through; PR-3 wires the
+    /// dispatcher. For now this is the data layer + the seam.
+    fn artifact_subscriptions(&self) -> Vec<ArtifactSelector> {
+        Vec::new()
+    }
+
+    /// Wake policy override. Returning `None` means "use the cadence
+    /// implied by `ModuleConfig.tick_interval`" — `Some(Periodic)` if
+    /// `tick_interval` is set, `Some(EventDriven)` if not. Returning
+    /// `Some(...)` overrides, letting a module declare e.g.
+    /// `Cadence::OnArtifact` without needing a tick_interval.
+    ///
+    /// Default: `None` (preserve existing tick_interval semantics).
+    /// PR-3's `start_tick_loops` consults this when deciding whether
+    /// to spawn a periodic task vs. wire the module to artifact wakes.
+    fn cadence(&self) -> Option<Cadence> {
+        None
+    }
+
+    /// Called when an artifact this module subscribes to is published.
+    /// Default: no-op (matches the empty-subscriptions default).
+    ///
+    /// Implementations should be cheap-and-return — the runtime calls
+    /// this from the publisher's task; long work belongs in `tick` or
+    /// in a spawned task. Errors are logged by the dispatcher; the
+    /// publisher is not blocked by a slow subscriber.
+    async fn on_artifact_available(
+        &self,
+        _key: &ArtifactKey,
+        _value: Value,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Downcast support for typed discovery.
     /// Enables registry.module_as::<VoiceModule>() — like CBAR's getAnalyzerOfType<T>().
     fn as_any(&self) -> &dyn Any;
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the PIECE-2 PR-2 default-impl methods added to
+    //! ServiceModule (artifact_subscriptions / cadence /
+    //! on_artifact_available). Two test modules — one that takes the
+    //! defaults, one that overrides — prove the opt-in pattern works
+    //! through trait-object dispatch (the dispatch shape PR-3 will use).
+    use super::*;
+    use crate::runtime::artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
+    use std::sync::Arc;
+
+    /// Module that takes ALL defaults — represents every existing
+    /// implementor (HealthModule, PressureBrokerModule, etc.) that
+    /// hasn't opted in to artifact dispatch.
+    struct DefaultsModule;
+
+    #[async_trait]
+    impl ServiceModule for DefaultsModule {
+        fn config(&self) -> ModuleConfig {
+            ModuleConfig {
+                name: "defaults-test",
+                priority: ModulePriority::Normal,
+                command_prefixes: &[],
+                event_subscriptions: &[],
+                needs_dedicated_thread: false,
+                max_concurrency: 0,
+                tick_interval: None,
+            }
+        }
+        async fn initialize(&self, _ctx: &super::super::ModuleContext) -> Result<(), String> { Ok(()) }
+        async fn handle_command(&self, _: &str, _: Value) -> Result<CommandResult, String> {
+            Err("not handled".to_string())
+        }
+        fn as_any(&self) -> &dyn Any { self }
+    }
+
+    /// Module that opts in — represents what Lane D's persona modules
+    /// or any new artifact-driven module will look like.
+    struct OptedInModule;
+
+    #[async_trait]
+    impl ServiceModule for OptedInModule {
+        fn config(&self) -> ModuleConfig {
+            ModuleConfig {
+                name: "opted-in-test",
+                priority: ModulePriority::Normal,
+                command_prefixes: &[],
+                event_subscriptions: &[],
+                needs_dedicated_thread: false,
+                max_concurrency: 0,
+                tick_interval: None,
+            }
+        }
+        async fn initialize(&self, _ctx: &super::super::ModuleContext) -> Result<(), String> { Ok(()) }
+        async fn handle_command(&self, _: &str, _: Value) -> Result<CommandResult, String> {
+            Err("not handled".to_string())
+        }
+
+        fn artifact_subscriptions(&self) -> Vec<ArtifactSelector> {
+            vec![
+                ArtifactSelector::Prefix("persona/".to_string()),
+                ArtifactSelector::Exact(ArtifactKey::from("paging/broker.snapshot")),
+            ]
+        }
+
+        fn cadence(&self) -> Option<Cadence> {
+            Some(Cadence::OnArtifact)
+        }
+
+        async fn on_artifact_available(
+            &self,
+            key: &ArtifactKey,
+            value: Value,
+        ) -> Result<(), String> {
+            if key.as_str() == "trigger/fail" {
+                return Err("intentional test failure".to_string());
+            }
+            // Echo to prove the dispatcher passed the right payload.
+            // PR-3's runtime will record this kind of call for telemetry.
+            let _ = value;
+            Ok(())
+        }
+
+        fn as_any(&self) -> &dyn Any { self }
+    }
+
+    /// What this catches: default-impl methods return the "no
+    /// subscriptions / no cadence override / no-op handler" baseline,
+    /// so existing modules that haven't been touched compile + behave
+    /// as before. Guards against accidentally making the new methods
+    /// required.
+    #[tokio::test]
+    async fn defaults_module_uses_no_op_implementations() {
+        let m: Arc<dyn ServiceModule> = Arc::new(DefaultsModule);
+        assert!(m.artifact_subscriptions().is_empty());
+        assert_eq!(m.cadence(), None);
+        let result = m
+            .on_artifact_available(
+                &ArtifactKey::from("anything/at/all"),
+                Value::Null,
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "default on_artifact_available must be Ok for every key"
+        );
+    }
+
+    /// What this catches: an opted-in module's overrides are visible
+    /// through the trait-object dispatch path PR-3 will use. If the
+    /// runtime gets a `&dyn ServiceModule` and calls the new methods,
+    /// it sees the override, not the default.
+    #[tokio::test]
+    async fn opted_in_module_returns_overrides_via_dyn_dispatch() {
+        let m: Arc<dyn ServiceModule> = Arc::new(OptedInModule);
+        let subs = m.artifact_subscriptions();
+        assert_eq!(subs.len(), 2);
+        // Verify the subscription set covers the cases PR-3 will dispatch
+        // against — Prefix matches persona/* and Exact matches the broker.
+        assert!(
+            subs.iter()
+                .any(|s| s.matches(&ArtifactKey::from("persona/inbox.frame_ready"))),
+            "opted-in module should subscribe to persona/*"
+        );
+        assert!(
+            subs.iter()
+                .any(|s| s.matches(&ArtifactKey::from("paging/broker.snapshot"))),
+            "opted-in module should subscribe to broker snapshot"
+        );
+        assert!(
+            !subs.iter()
+                .any(|s| s.matches(&ArtifactKey::from("cognition/rate_proposals.result"))),
+            "subscription set is bounded — random unrelated keys don't match"
+        );
+        assert_eq!(m.cadence(), Some(Cadence::OnArtifact));
+    }
+
+    /// What this catches: error propagation through
+    /// on_artifact_available. PR-3's dispatcher will log + continue;
+    /// the subscriber error must NOT bubble up to the publisher (per
+    /// the docstring: "publisher is not blocked by a slow subscriber").
+    /// This test pins that the trait-method return shape is what the
+    /// dispatcher can handle.
+    #[tokio::test]
+    async fn on_artifact_available_error_path_returns_err_not_panic() {
+        let m: Arc<dyn ServiceModule> = Arc::new(OptedInModule);
+        let result = m
+            .on_artifact_available(&ArtifactKey::from("trigger/fail"), Value::Null)
+            .await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "intentional test failure");
+    }
+
+    /// What this catches: a heterogeneous Vec of trait objects — the
+    /// shape PR-3's dispatcher walks — handles modules with mixed
+    /// opt-in status without special-casing.
+    #[tokio::test]
+    async fn dispatcher_can_walk_heterogeneous_subscriber_list() {
+        let modules: Vec<Arc<dyn ServiceModule>> = vec![
+            Arc::new(DefaultsModule),
+            Arc::new(OptedInModule),
+            Arc::new(DefaultsModule),
+        ];
+
+        // Compute: who would receive an artifact published under this key?
+        // This is the exact filter PR-3's dispatcher applies.
+        let key = ArtifactKey::from("persona/inbox.frame_ready");
+        let interested: Vec<&Arc<dyn ServiceModule>> = modules
+            .iter()
+            .filter(|m| {
+                m.artifact_subscriptions()
+                    .iter()
+                    .any(|sel| sel.matches(&key))
+            })
+            .collect();
+        assert_eq!(
+            interested.len(),
+            1,
+            "only the OptedInModule subscribes to persona/*; the two DefaultsModules ignore"
+        );
+
+        // And the inverse: a key nobody subscribed to wakes nobody.
+        let unrelated = ArtifactKey::from("nothing/here");
+        let interested_unrelated: Vec<&Arc<dyn ServiceModule>> = modules
+            .iter()
+            .filter(|m| {
+                m.artifact_subscriptions()
+                    .iter()
+                    .any(|sel| sel.matches(&unrelated))
+            })
+            .collect();
+        assert_eq!(
+            interested_unrelated.len(),
+            0,
+            "no module subscribes to nothing/here — dispatcher walks zero"
+        );
+    }
 }
