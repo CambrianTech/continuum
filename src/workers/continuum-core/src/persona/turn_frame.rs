@@ -9,7 +9,10 @@ use super::types::InboxMessage;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub const PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ConsolidatedInboxMessage {
     pub id: Uuid,
     pub sender_id: Uuid,
@@ -31,6 +34,7 @@ impl From<&InboxMessage> for ConsolidatedInboxMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ConsolidatedInboxChunk {
     pub persona_id: Uuid,
     pub room_id: Uuid,
@@ -42,6 +46,7 @@ pub struct ConsolidatedInboxChunk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct RagAssemblySeed {
     pub persona_id: Uuid,
     pub room_id: Uuid,
@@ -50,6 +55,18 @@ pub struct RagAssemblySeed {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaTurnFrameReplayRecord {
+    pub schema_version: u32,
+    pub persona_id: Uuid,
+    pub room_id: Uuid,
+    pub inbox_frame: PersonaInboxFrame,
+    pub consolidated_inbox: ConsolidatedInboxChunk,
+    pub rag_seed: RagAssemblySeed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PersonaTurnFrame {
     inbox_frame: PersonaInboxFrame,
 }
@@ -113,6 +130,19 @@ impl PersonaTurnFrame {
                 .iter()
                 .map(|message| message.id)
                 .collect::<Vec<_>>(),
+        })
+    }
+
+    /// Capture the raw frame plus all derived lazy outputs needed for replay.
+    /// Empty frames return `None` instead of synthesizing placeholder context.
+    pub fn replay_record(&self) -> Option<PersonaTurnFrameReplayRecord> {
+        Some(PersonaTurnFrameReplayRecord {
+            schema_version: PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,
+            persona_id: self.persona_id(),
+            room_id: self.room_id(),
+            inbox_frame: self.inbox_frame.clone(),
+            consolidated_inbox: self.consolidated_inbox()?,
+            rag_seed: self.rag_seed()?,
         })
     }
 }
@@ -211,5 +241,77 @@ mod tests {
             "Joel: what changed?\nMira: the queue coalesced"
         );
         assert_eq!(seed.source_message_ids.len(), 2);
+    }
+
+    #[test]
+    fn replay_record_captures_raw_frame_and_derived_outputs() {
+        let persona_id = Uuid::new_v4();
+        let room_id = Uuid::new_v4();
+        let messages = vec![
+            message(room_id, "Joel", "first", 3_000, 0.8),
+            message(room_id, "Mira", "second", 3_040, 0.7),
+        ];
+        let source_ids = messages
+            .iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        let frame = PersonaInboxFrame {
+            persona_id,
+            room_id,
+            messages,
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: 2,
+                queue_depth_after: 0,
+                messages_drained: 2,
+                oldest_timestamp: 3_000,
+                newest_timestamp: 3_040,
+                frame_span_ms: 40,
+                drain_duration_us: 7,
+            },
+        };
+        let record = PersonaTurnFrame::from_inbox_frame(frame)
+            .replay_record()
+            .expect("non-empty frame records");
+
+        assert_eq!(
+            record.schema_version,
+            PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION
+        );
+        assert_eq!(record.persona_id, persona_id);
+        assert_eq!(record.room_id, room_id);
+        assert_eq!(record.inbox_frame.metrics.messages_drained, 2);
+        assert_eq!(
+            record.consolidated_inbox.transcript,
+            "Joel: first\nMira: second"
+        );
+        assert_eq!(record.rag_seed.source_message_ids, source_ids);
+
+        let json = serde_json::to_value(&record).expect("record serializes");
+        assert_eq!(json["schemaVersion"], 1);
+        assert!(json.get("inboxFrame").is_some());
+        assert!(json.get("consolidatedInbox").is_some());
+        assert!(json.get("ragSeed").is_some());
+    }
+
+    #[test]
+    fn empty_frame_does_not_synthesize_replay_record() {
+        let frame = PersonaInboxFrame {
+            persona_id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(),
+            messages: vec![],
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: 0,
+                queue_depth_after: 0,
+                messages_drained: 0,
+                oldest_timestamp: 0,
+                newest_timestamp: 0,
+                frame_span_ms: 0,
+                drain_duration_us: 0,
+            },
+        };
+
+        assert!(PersonaTurnFrame::from_inbox_frame(frame)
+            .replay_record()
+            .is_none());
     }
 }
