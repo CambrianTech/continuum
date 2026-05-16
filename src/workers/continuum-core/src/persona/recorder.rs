@@ -56,6 +56,7 @@
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::persona::response::{PersonaResponse, RespondInput};
 use crate::persona::trace::CognitionTrace;
+use crate::persona::PersonaTurnFrameReplayRecord;
 use crate::runtime;
 use serde::Serialize;
 use serde_json::json;
@@ -67,6 +68,8 @@ use uuid::Uuid;
 /// retention window for incident analysis, copy fixtures out before
 /// the cap rotates them.
 const FIXTURE_CAP_PER_DIR: usize = 200;
+const RESPOND_FIXTURE_DIR: &str = ".continuum/fixtures/persona-respond";
+const TURN_FRAME_FIXTURE_DIR: &str = ".continuum/fixtures/persona-turn-frame";
 
 /// Env var to fully disable recording. Set to `1` / `true` for hosts
 /// that don't want disk writes (perf benchmarks, ephemeral CLI runs).
@@ -213,23 +216,46 @@ pub fn record_failed_turn(
     persist_turn_payload(input, payload);
 }
 
+/// Persist the per-persona inbox/RAG seed frame that preceded cognition.
+///
+/// This captures the inspectable Rust boundary before retrieval or model
+/// inference runs: raw drained inbox frame, consolidated transcript, and the
+/// deterministic RAG seed. It is intentionally separate from the completed
+/// `respond()` capture so a stuck or skipped model turn still leaves replayable
+/// evidence of what the persona saw.
+pub fn record_turn_frame_replay(record: &PersonaTurnFrameReplayRecord) {
+    if disabled() {
+        return;
+    }
+    let dir = match fixture_dir(TURN_FRAME_FIXTURE_DIR) {
+        Some(d) => d,
+        None => return,
+    };
+    let fname = turn_frame_filename_for(record);
+    persist_json_payload(&dir, &fname, record);
+}
+
 fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
     if disabled() {
         return;
     }
-    let dir = match fixture_dir() {
+    let dir = match fixture_dir(RESPOND_FIXTURE_DIR) {
         Some(d) => d,
         None => return, // HOME unset; treat as opted-out, no warning spam
     };
-    if let Err(e) = std::fs::create_dir_all(&dir) {
+    let fname = filename_for(&input.persona.display_name, input.message_id);
+    persist_json_payload(&dir, &fname, &payload);
+}
+
+fn persist_json_payload<T: Serialize>(dir: &Path, fname: &str, payload: &T) {
+    if let Err(e) = std::fs::create_dir_all(dir) {
         runtime::logger("recorder").warn_fmt(format_args!(
             "couldn't create fixture dir {}: {e} — recording skipped",
             dir.display()
         ));
         return;
     }
-    let fname = filename_for(&input.persona.display_name, input.message_id);
-    let path = dir.join(&fname);
+    let path = dir.join(fname);
     let serialized = match serde_json::to_vec_pretty(&payload) {
         Ok(b) => b,
         Err(e) => {
@@ -256,7 +282,7 @@ fn persist_turn_payload(input: &RespondInput, payload: serde_json::Value) {
         let _ = std::fs::remove_file(&tmp_path); // best-effort cleanup
         return;
     }
-    trim_fifo(&dir);
+    trim_fifo(dir);
 }
 
 fn disabled() -> bool {
@@ -265,10 +291,10 @@ fn disabled() -> bool {
         .unwrap_or(false)
 }
 
-fn fixture_dir() -> Option<PathBuf> {
+fn fixture_dir(relative: &str) -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()
-        .map(|h| PathBuf::from(h).join(".continuum/fixtures/persona-respond"))
+        .map(|h| PathBuf::from(h).join(relative))
 }
 
 /// Filename: `<persona>-<msgid_prefix>-<ts>-rust.json`. The `-rust`
@@ -279,6 +305,22 @@ fn filename_for(persona_name: &str, message_id: Uuid) -> String {
     let id_prefix: String = message_id.to_string().chars().take(8).collect();
     let ts = chrono_like_ts(crate::persona::trace::now_ms());
     format!("{safe_name}-{id_prefix}-{ts}-rust.json")
+}
+
+/// Filename: `frame-<persona_prefix>-<trigger_msg_prefix>-<ts>-rust.json`.
+/// The trigger id ties the fixture to the consolidated frame without needing
+/// a persona display name at this layer.
+fn turn_frame_filename_for(record: &PersonaTurnFrameReplayRecord) -> String {
+    let persona_prefix: String = record.persona_id.to_string().chars().take(8).collect();
+    let trigger_prefix: String = record
+        .consolidated_inbox
+        .trigger_message_id
+        .to_string()
+        .chars()
+        .take(8)
+        .collect();
+    let ts = chrono_like_ts(crate::persona::trace::now_ms());
+    format!("frame-{persona_prefix}-{trigger_prefix}-{ts}-rust.json")
 }
 
 /// Build an ISO-8601-like compact timestamp from ms-since-epoch. We
@@ -336,7 +378,9 @@ fn trim_fifo(dir: &Path) {
 mod tests {
     use super::*;
     use crate::cognition::PersonaSlot;
+    use crate::persona::inbox::{PersonaInboxFrame, PersonaInboxFrameMetrics};
     use crate::persona::response::PersonaResponse;
+    use crate::persona::{InboxMessage, Modality, PersonaTurnFrame, SenderType};
     use std::collections::HashSet;
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
@@ -349,11 +393,7 @@ mod tests {
                 specialty: "general".to_string(),
                 display_name: "Test Persona".to_string(),
             },
-            turn_context: TurnContext::arc(
-                Uuid::nil(),
-                vec![],
-                vec!["general".to_string()],
-            ),
+            turn_context: TurnContext::arc(Uuid::nil(), vec![], vec!["general".to_string()]),
             message_id: Uuid::nil(),
             message_text: "hello".to_string(),
             other_persona_names: vec![],
@@ -375,6 +415,54 @@ mod tests {
             total_ms: 2,
             think_blocks_emitted: 0,
         }
+    }
+
+    fn fake_turn_frame_replay_record() -> PersonaTurnFrameReplayRecord {
+        let persona_id = Uuid::new_v4();
+        let room_id = Uuid::new_v4();
+        let messages = vec![
+            InboxMessage {
+                id: Uuid::new_v4(),
+                room_id,
+                sender_id: Uuid::new_v4(),
+                sender_name: "Joel".to_string(),
+                sender_type: SenderType::Human,
+                content: "what changed?".to_string(),
+                timestamp: 10_000,
+                priority: 0.9,
+                source_modality: Some(Modality::Chat),
+                voice_session_id: None,
+            },
+            InboxMessage {
+                id: Uuid::new_v4(),
+                room_id,
+                sender_id: Uuid::new_v4(),
+                sender_name: "Mira".to_string(),
+                sender_type: SenderType::Persona,
+                content: "the frame records replay state".to_string(),
+                timestamp: 10_040,
+                priority: 0.7,
+                source_modality: Some(Modality::Chat),
+                voice_session_id: None,
+            },
+        ];
+        let frame = PersonaInboxFrame {
+            persona_id,
+            room_id,
+            messages,
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: 2,
+                queue_depth_after: 0,
+                messages_drained: 2,
+                oldest_timestamp: 10_000,
+                newest_timestamp: 10_040,
+                frame_span_ms: 40,
+                drain_duration_us: 8,
+            },
+        };
+        PersonaTurnFrame::from_inbox_frame(frame)
+            .replay_record()
+            .expect("fixture frame is non-empty")
     }
 
     fn env_lock() -> MutexGuard<'static, ()> {
@@ -584,5 +672,58 @@ mod tests {
             parsed["cognitionTrace"]["seams"][0]["name"],
             json!(SEAM_ANALYZE)
         );
+    }
+
+    /// What this catches: the frame replay fixture is Rust-owned and captures
+    /// the pre-inference boundary: raw inbox frame, consolidated transcript,
+    /// and deterministic RAG seed in one parseable artifact.
+    #[test]
+    fn record_turn_frame_replay_writes_fixture_json_under_home() {
+        let _lock = env_lock();
+        let tmp = tempdir().expect("temp home");
+        let _restore = EnvRestore::install(tmp.path(), None);
+        let record = fake_turn_frame_replay_record();
+
+        record_turn_frame_replay(&record);
+
+        let dir = tmp.path().join(TURN_FRAME_FIXTURE_DIR);
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .expect("turn-frame fixture dir exists")
+            .map(|e| e.expect("fixture entry").path())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].to_string_lossy().contains("/frame-"));
+        assert!(entries[0].to_string_lossy().ends_with("-rust.json"));
+
+        let body = std::fs::read_to_string(&entries[0]).expect("fixture json readable");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("fixture json parses");
+        assert_eq!(
+            json["schemaVersion"],
+            crate::persona::PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION
+        );
+        assert_eq!(json["inboxFrame"]["metrics"]["messagesDrained"], 2);
+        assert_eq!(
+            json["consolidatedInbox"]["transcript"],
+            "Joel: what changed?\nMira: the frame records replay state"
+        );
+        assert_eq!(
+            json["ragSeed"]["queryText"],
+            "Joel: what changed?\nMira: the frame records replay state"
+        );
+    }
+
+    /// What this catches: the same recorder opt-out used by response fixtures
+    /// applies to turn-frame fixtures, so perf harnesses can disable disk I/O
+    /// without branching in the caller.
+    #[test]
+    fn record_turn_frame_replay_respects_disable_env() {
+        let _lock = env_lock();
+        let tmp = tempdir().expect("temp home");
+        let _restore = EnvRestore::install(tmp.path(), Some("true"));
+
+        record_turn_frame_replay(&fake_turn_frame_replay_record());
+
+        let dir = tmp.path().join(TURN_FRAME_FIXTURE_DIR);
+        assert!(!dir.exists());
     }
 }
