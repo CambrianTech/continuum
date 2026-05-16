@@ -37,6 +37,7 @@ pub mod response_orchestrator;
 pub mod response_validator;
 pub mod shared_analysis;
 pub mod should_respond;
+pub mod threat_detector;
 pub mod throughput_lease;
 pub mod tool_executor;
 pub mod turn_batch;
@@ -46,11 +47,12 @@ pub mod vision_describe;
 pub use adaptive_throughput::*;
 pub use model_resolver::*;
 pub use response_orchestrator::{
-    DEFAULT_RELEVANCE_THRESHOLD, PersonaSlot, orchestrate, score_persona,
+    orchestrate, score_persona, PersonaSlot, DEFAULT_RELEVANCE_THRESHOLD,
 };
-pub use response_validator::{ValidationOutcome, clean_and_validate, is_hard_failure};
-pub use shared_analysis::{AnalysisInput, RecentMessage, analyze};
+pub use response_validator::{clean_and_validate, is_hard_failure, ValidationOutcome};
+pub use shared_analysis::{analyze, AnalysisInput, RecentMessage};
 pub use should_respond::*;
+pub use threat_detector::*;
 pub use throughput_lease::*;
 pub use tool_executor::{
     MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite,
