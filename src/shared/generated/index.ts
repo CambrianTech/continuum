@@ -38,6 +38,7 @@ export * from './cognition';
 export * from './comms';
 export * from './dataset';
 export * from './forge';
+export * from './genome';
 export * from './gpu';
 export * from './grid';
 export * from './inference';
