@@ -40,10 +40,15 @@
 
 pub mod probe;
 pub mod registry;
+pub mod residency;
 pub mod types;
 
 pub use probe::probe_inference_capabilities;
 pub use registry::NodeCapabilityRegistry;
+pub use residency::{
+    check_residency_gate, select_backend, BackendChoice, BlockReason, QwenModelMetadata,
+    ResidencyEvidence, ResidencyGateResult,
+};
 pub use types::{
     kinds, HardwareProfile, InferenceCapability, InferenceKind, LatencyClass, NodeCapability,
 };
