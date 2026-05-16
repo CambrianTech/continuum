@@ -266,33 +266,43 @@ pub fn load_model_by_id(
     info!("📥 Loading {model_id}...");
     let start = Instant::now();
 
-    // Device selection: CUDA > Metal > CPU
-    let device = select_best_device();
+    // Device selection: CUDA > Metal, GPU-only. Hard-fail on no-GPU
+    // per CLAUDE.md GPU-required contract + supervisor audit pass 1
+    // (vhsm-d1f4 2026-05-16): "no CPU fallback" — the pre-this-fix
+    // `Device::Cpu` arm silently returned a CPU device with a friendly
+    // "no GPU acceleration" log, the same "code in fallbacks" pattern
+    // Joel flagged at 900% CPU. Same shape as the llama.cpp
+    // `n_gpu_layers: -1` GPU-only contract.
+    let device = select_best_device()?;
 
-    fn select_best_device() -> Device {
-        // Try CUDA first (RTX 5090, etc.)
+    fn select_best_device() -> Result<Device, Box<dyn std::error::Error + Send + Sync>> {
         #[cfg(feature = "cuda")]
         {
-            if let Ok(device) = Device::new_cuda(0) {
-                info!("  Using CUDA device");
-                return device;
+            match Device::new_cuda(0) {
+                Ok(device) => {
+                    info!("  Using CUDA device");
+                    return Ok(device);
+                }
+                Err(e) => info!("  CUDA not available: {e}"),
             }
-            info!("  CUDA not available");
         }
 
-        // Try Metal (macOS)
         #[cfg(feature = "metal")]
         {
-            if let Ok(device) = Device::new_metal(0) {
-                info!("  Using Metal device");
-                return device;
+            match Device::new_metal(0) {
+                Ok(device) => {
+                    info!("  Using Metal device");
+                    return Ok(device);
+                }
+                Err(e) => info!("  Metal not available: {e}"),
             }
-            info!("  Metal not available");
         }
 
-        // Fall back to CPU
-        info!("  Using CPU (no GPU acceleration)");
-        Device::Cpu
+        Err("inference-grpc: GPU required, no CPU fallback. \
+             Neither CUDA (when feature enabled) nor Metal (when feature enabled) \
+             could open a device. Build with --features cuda or --features metal on a host \
+             that actually has the corresponding GPU."
+            .into())
     }
 
     info!("  Device: {device:?}");
