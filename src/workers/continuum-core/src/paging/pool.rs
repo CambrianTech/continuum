@@ -150,18 +150,36 @@ pub trait ResourcePool: Send + Sync {
 }
 
 /// Stats snapshot — for monitoring + PressureBroker decisions.
-#[derive(Debug, Clone)]
+///
+/// ts-rs export drives the wire shape for `system/pressure-broker-state`
+/// (continuum#1299 PR-2). camelCase serde so TS consumers read the same
+/// shape they read for every other system snapshot type — no manual
+/// remap layer between Rust and TS for these counters.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/paging/PoolStats.ts"
+)]
 pub struct PoolStats {
     pub name: String,
+    #[ts(type = "number")]
     pub entry_count: usize,
+    #[ts(type = "number")]
     pub pinned_count: usize,
+    #[ts(type = "number")]
     pub total_bytes: u64,
+    #[ts(type = "number")]
     pub max_bytes: u64,
     /// 0.0..1.0 — ratio of used to capacity. >1.0 means over-budget.
     pub pressure: f64,
+    #[ts(type = "number")]
     pub hit_count: u64,
+    #[ts(type = "number")]
     pub miss_count: u64,
+    #[ts(type = "number")]
     pub eviction_count: u64,
+    #[ts(type = "number")]
     pub inflight_count: usize,
 }
 
