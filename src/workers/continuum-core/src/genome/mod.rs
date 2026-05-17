@@ -101,3 +101,5 @@ pub mod recall_impl;
 pub use recall_impl::{CandidateArtifact, CandidateSource, LocalDemandAlignedRecall};
 pub mod recall_source_working_set;
 pub use recall_source_working_set::{WorkingSetCandidateSource, NEUTRAL_FACTOR_STUB};
+pub mod recall_source_composite;
+pub use recall_source_composite::{CompositeCandidateSource, DedupPolicy};
