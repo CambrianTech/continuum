@@ -63,6 +63,7 @@ pub mod blob;
 pub mod bus;
 pub mod local_manager;
 pub mod manager;
+pub mod recall;
 pub mod store;
 pub mod tier;
 pub mod working_set;
@@ -74,6 +75,10 @@ pub use bus::{
     PAGE_FAULT_KEY,
 };
 pub use local_manager::LocalWorkingSetManager;
+pub use recall::{
+    AcquireSource, FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore,
+    ResidencyHint, TaskKind, TrustClass,
+};
 pub use manager::WorkingSetManager;
 pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
