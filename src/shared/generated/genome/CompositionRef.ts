@@ -3,6 +3,6 @@
 /**
  * Stub placeholder for "what composition is currently hot for this
  * persona." Full shape from the composer module (not built yet);
- * PR-2 ships a thin opaque struct so PersonaContext compiles.
+ * PR-2 ships a thin opaque struct so RecallContext compiles.
  */
 export type CompositionRef = string;

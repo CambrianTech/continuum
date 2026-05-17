@@ -2,8 +2,8 @@
 import type { ArtifactRef } from "./ArtifactRef";
 import type { DomainHint } from "./DomainHint";
 import type { FreshnessTarget } from "./FreshnessTarget";
+import type { RecallBudget } from "./RecallBudget";
 import type { RecallScope } from "./RecallScope";
-import type { ResourceBudget } from "./ResourceBudget";
 import type { TaskKind } from "./TaskKind";
 
 /**
@@ -15,7 +15,7 @@ export type CapabilityQuery = { taskKind: TaskKind,
 /**
  * Free-form tags from the persona's plan. May be empty.
  */
-domainHints: Array<DomainHint>, budget: ResourceBudget, 
+domainHints: Array<DomainHint>, budget: RecallBudget, 
 /**
  * Hard pins — recall MUST include these in the RankedPool even
  * if their score is low. Used for persona-private LoRA layers
