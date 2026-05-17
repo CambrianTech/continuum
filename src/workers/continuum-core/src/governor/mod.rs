@@ -12,6 +12,7 @@ pub mod local;
 pub mod policy_file;
 pub mod policy_selector;
 pub mod policy_watcher;
+pub mod pressure_bridge;
 pub mod types;
 
 pub use cascade::{
@@ -29,6 +30,7 @@ pub use policy_watcher::{
     PolicyDirectoryError, PolicyDirectoryWatcher, load_policy_directory, reload_policy_candidates,
     watch_policy_directory,
 };
+pub use pressure_bridge::{alert_to_signal, governor_alert_sink};
 pub use types::{
     CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule, FederationCadence, GovernorPolicy,
     GovernorSnapshot, HardwareClass, PowerSource, PressureSignal, RecallScoreWeights,
