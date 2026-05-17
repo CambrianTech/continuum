@@ -146,6 +146,7 @@ wgpu = "27"
 wgpu-hal = "27"
 
 arc-swap = "1.7"           # Wait-free policy publish for SubstrateGovernor (Lane H)
+notify = "8"               # Policy directory watch + hot reload for SubstrateGovernor
 crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
 image = "0.25"             # RGBA → PNG encoding for avatar snapshots
 
