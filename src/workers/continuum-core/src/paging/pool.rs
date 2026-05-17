@@ -40,11 +40,16 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use ts_rs::TS;
+
+/// Default refusal threshold for disk-backed tiers. 9500 basis points = 95%.
+/// Callers that can project post-operation usage must refuse before crossing
+/// this line instead of waiting for ENOSPC.
+pub const DISK_CAPACITY_REFUSAL_BASIS_POINTS: u64 = 9_500;
 
 /// Typed resource-pool failures exported through ts-rs so callers see a
 /// stable discriminant instead of parsing strings.
@@ -68,8 +73,83 @@ pub enum ResourceError {
         #[serde(rename = "evictedBytes")]
         evicted_bytes: u64,
     },
+    #[error(
+        "tier '{tier}' disk capacity refusal: used {used_bytes} bytes + projected \
+         {projected_bytes} bytes exceeds {max_pressure_basis_points}bp of \
+         {capacity_bytes} bytes"
+    )]
+    DiskCapacity {
+        tier: String,
+        #[serde(rename = "usedBytes")]
+        used_bytes: u64,
+        #[serde(rename = "capacityBytes")]
+        capacity_bytes: u64,
+        #[serde(rename = "projectedBytes")]
+        projected_bytes: u64,
+        #[serde(rename = "maxPressureBasisPoints")]
+        max_pressure_basis_points: u64,
+    },
     #[error("tier '{tier}' is unavailable: {reason}")]
     TierUnavailable { tier: String, reason: String },
+}
+
+/// Refuse a projected disk-tier allocation before it can push the tier past
+/// the configured pressure threshold.
+///
+/// Uses integer basis points instead of floats so hot paths (model pull,
+/// container start, image build) all enforce the same deterministic capacity
+/// contract. The check is strict `>`: exactly 95% is allowed, 95% + 1 byte is
+/// refused.
+pub fn ensure_projected_disk_capacity(
+    tier: impl Into<String>,
+    used_bytes: u64,
+    capacity_bytes: u64,
+    projected_bytes: u64,
+) -> Result<(), ResourceError> {
+    ensure_projected_disk_capacity_bps(
+        tier,
+        used_bytes,
+        capacity_bytes,
+        projected_bytes,
+        DISK_CAPACITY_REFUSAL_BASIS_POINTS,
+    )
+}
+
+pub fn ensure_projected_disk_capacity_bps(
+    tier: impl Into<String>,
+    used_bytes: u64,
+    capacity_bytes: u64,
+    projected_bytes: u64,
+    max_pressure_basis_points: u64,
+) -> Result<(), ResourceError> {
+    let tier = tier.into();
+    if capacity_bytes == 0 {
+        return Err(ResourceError::TierUnavailable {
+            tier,
+            reason: "disk tier capacity is unknown".to_string(),
+        });
+    }
+    if max_pressure_basis_points == 0 || max_pressure_basis_points > 10_000 {
+        return Err(ResourceError::TierUnavailable {
+            tier,
+            reason: format!(
+                "invalid disk capacity threshold: {max_pressure_basis_points} basis points"
+            ),
+        });
+    }
+
+    let projected_used = used_bytes.saturating_add(projected_bytes);
+    let max_allowed_bytes = capacity_bytes.saturating_mul(max_pressure_basis_points) / 10_000;
+    if projected_used > max_allowed_bytes {
+        return Err(ResourceError::DiskCapacity {
+            tier,
+            used_bytes,
+            capacity_bytes,
+            projected_bytes,
+            max_pressure_basis_points,
+        });
+    }
+    Ok(())
 }
 
 /// Cross-tier entry snapshot for diagnostics, status output, and future
@@ -133,7 +213,11 @@ pub trait ResourcePool: Send + Sync {
         let cap = self.capacity_bytes();
         let used = self.usage_bytes();
         let snap = self.snapshot();
-        let pressure = if cap == 0 { 0.0 } else { used as f64 / cap as f64 };
+        let pressure = if cap == 0 {
+            0.0
+        } else {
+            used as f64 / cap as f64
+        };
         PoolStats {
             name: self.tier_name().to_string(),
             entry_count: snap.len(),
@@ -157,10 +241,7 @@ pub trait ResourcePool: Send + Sync {
 /// remap layer between Rust and TS for these counters.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/paging/PoolStats.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/paging/PoolStats.ts")]
 pub struct PoolStats {
     pub name: String,
     #[ts(type = "number")]
@@ -1018,6 +1099,76 @@ mod tests {
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].key, "image:a");
         assert_eq!(snapshot[0].size_bytes, 25);
+    }
+
+    #[test]
+    fn projected_disk_capacity_allows_usage_at_threshold() {
+        let result = ensure_projected_disk_capacity("docker", 900, 1_000, 50);
+        assert!(
+            result.is_ok(),
+            "exactly 95% pressure should be allowed; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn projected_disk_capacity_refuses_usage_over_threshold() {
+        let result = ensure_projected_disk_capacity("docker", 900, 1_000, 51);
+        let Err(ResourceError::DiskCapacity {
+            tier,
+            used_bytes,
+            capacity_bytes,
+            projected_bytes,
+            max_pressure_basis_points,
+        }) = result
+        else {
+            panic!("expected DiskCapacity refusal, got {result:?}");
+        };
+
+        assert_eq!(tier, "docker");
+        assert_eq!(used_bytes, 900);
+        assert_eq!(capacity_bytes, 1_000);
+        assert_eq!(projected_bytes, 51);
+        assert_eq!(
+            max_pressure_basis_points,
+            DISK_CAPACITY_REFUSAL_BASIS_POINTS
+        );
+    }
+
+    #[test]
+    fn projected_disk_capacity_refuses_saturating_overflow() {
+        let result = ensure_projected_disk_capacity("docker", u64::MAX - 5, u64::MAX, 10);
+        assert!(
+            matches!(result, Err(ResourceError::DiskCapacity { .. })),
+            "saturating projected usage over threshold must refuse, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn projected_disk_capacity_rejects_unknown_capacity() {
+        let result = ensure_projected_disk_capacity("docker", 0, 0, 1);
+        let Err(ResourceError::TierUnavailable { tier, reason }) = result else {
+            panic!("expected TierUnavailable for unknown capacity, got {result:?}");
+        };
+
+        assert_eq!(tier, "docker");
+        assert!(
+            reason.contains("capacity is unknown"),
+            "reason should explain unknown capacity, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn projected_disk_capacity_rejects_invalid_threshold() {
+        let result = ensure_projected_disk_capacity_bps("docker", 0, 1_000, 1, 10_001);
+        let Err(ResourceError::TierUnavailable { tier, reason }) = result else {
+            panic!("expected TierUnavailable for invalid threshold, got {result:?}");
+        };
+
+        assert_eq!(tier, "docker");
+        assert!(
+            reason.contains("invalid disk capacity threshold"),
+            "reason should explain invalid threshold, got: {reason}"
+        );
     }
 
     #[test]
