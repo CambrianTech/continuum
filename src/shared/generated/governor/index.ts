@@ -3,6 +3,8 @@
 // Re-generate: cargo test --lib --features metal,accelerate governor::
 
 export type { CadenceMultipliers } from './CadenceMultipliers';
+export type { CascadeAction } from './CascadeAction';
+export type { CascadeThresholds } from './CascadeThresholds';
 export type { ConcurrencyCaps } from './ConcurrencyCaps';
 export type { ConsolidationSchedule } from './ConsolidationSchedule';
 export type { FederationCadence } from './FederationCadence';

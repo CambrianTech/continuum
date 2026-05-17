@@ -7,11 +7,16 @@
 //! from `inference_capability::hw_probe` (PIECE-5 PR-3 #1335) to
 //! `HardwareClass`.
 
+pub mod cascade;
 pub mod local;
 pub mod policy_file;
 pub mod policy_selector;
 pub mod types;
 
+pub use cascade::{
+    apply_action, evaluate_next_step, CascadeAction, CascadeThresholds, CASCADE_STEP_MAX,
+    CASCADE_STEP_MIN,
+};
 pub use local::LocalSubstrateGovernor;
 pub use policy_file::{
     into_governor_policy, load_policy_file, parse_policy_text, PolicyFile, PolicyFileError,
