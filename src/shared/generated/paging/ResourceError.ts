@@ -4,4 +4,4 @@
  * Typed resource-pool failures exported through ts-rs so callers see a
  * stable discriminant instead of parsing strings.
  */
-export type ResourceError = { "kind": "tierExhausted", tier: string, requestedBytes: bigint, availableBytes: bigint, evictedBytes: bigint, } | { "kind": "tierUnavailable", tier: string, reason: string, };
+export type ResourceError = { "kind": "tierExhausted", tier: string, requestedBytes: bigint, availableBytes: bigint, evictedBytes: bigint, } | { "kind": "diskCapacity", tier: string, usedBytes: bigint, capacityBytes: bigint, projectedBytes: bigint, maxPressureBasisPoints: bigint, } | { "kind": "tierUnavailable", tier: string, reason: string, };
