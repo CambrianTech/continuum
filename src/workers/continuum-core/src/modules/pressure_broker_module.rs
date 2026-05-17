@@ -18,9 +18,8 @@
 //! Deferred to follow-up slices on this same card:
 //!   - `system/pressure-broker-state` IPC + `bin/continuum status` row
 //!     (PR-2): exposes broker snapshot to TS/CLI
-//!   - Chat-substrate alert sink (PR-3): when threshold crosses, post a
-//!     `📢 PressureAlert ...` to the AIRC #cambriantech room via the
-//!     existing airc bridge
+//!   - Chat-substrate alert sink: when threshold crosses, post a
+//!     PressureAlert to the AIRC room via the existing airc bridge
 //!
 //! Why a wrapper module vs `OnceLock<Arc<PressureBroker>>` directly: every
 //! other singleton in this server (gpu_manager, system_monitor, etc.)
@@ -28,6 +27,7 @@
 //! pattern keeps the boot sequence in `ipc/mod.rs` uniform and gives the
 //! broker the same shutdown / metrics treatment as everything else.
 
+use crate::governor::{SubstrateGovernor, governor_alert_sink};
 use crate::modules::docker_tier_pool::DockerTierPool;
 use crate::paging::{BrokerConfig, PressureBroker, ResourcePool};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -60,9 +60,27 @@ impl PressureBrokerModule {
     /// to drive a faster tick or a different threshold without mutating
     /// the singleton in production code.
     pub fn with_config(config: BrokerConfig) -> Self {
+        Self::build(config, None)
+    }
+
+    /// Construct with an explicit governor. Boot code uses this when the
+    /// SubstrateGovernor is already available: the broker stays the owner
+    /// of pressure observation/eviction, while the governor receives High+
+    /// pressure signals for cascade sizing decisions.
+    pub fn with_config_and_governor(
+        config: BrokerConfig,
+        governor: Arc<dyn SubstrateGovernor>,
+    ) -> Self {
+        Self::build(config, Some(governor))
+    }
+
+    fn build(config: BrokerConfig, governor: Option<Arc<dyn SubstrateGovernor>>) -> Self {
         let tick_interval = config.tick_interval;
         let broker = Arc::new(PressureBroker::new(config));
         broker.register(Arc::new(DockerTierPool::new()) as Arc<dyn ResourcePool>);
+        if let Some(governor) = governor {
+            broker.add_alert_sink(governor_alert_sink(governor));
+        }
         Self {
             broker,
             tick_interval,
@@ -151,6 +169,11 @@ impl ServiceModule for PressureBrokerModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::governor::{
+        CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule, FederationCadence,
+        GovernorPolicy, HardwareClass, LocalSubstrateGovernor, PowerSource, PressureSignal,
+        RecallScoreWeights, SpeculationLevel, TargetSilicon, ThermalClass, TierSizes,
+    };
     use crate::paging::{ResourcePool, ResourcePoolEntry};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -189,6 +212,54 @@ mod tests {
         }
     }
 
+    fn test_policy() -> GovernorPolicy {
+        GovernorPolicy {
+            policy_version: 0,
+            hardware_class: HardwareClass {
+                silicon: TargetSilicon::None,
+                silicon_model: "test".to_string(),
+                vram_mb: 0,
+                system_ram_mb: 0,
+                power_source: PowerSource::Plugged,
+                thermal_class: ThermalClass::Workstation,
+                battery_pct: None,
+                thermal_headroom_pct: None,
+            },
+            tier_sizes: TierSizes {
+                l1_lora_layers: 1,
+                l1_kv_tokens: 256,
+                l2_lora_layers: 1,
+                l3_lora_layers: 1,
+                l3_engrams: 1,
+            },
+            cadence_multipliers: CadenceMultipliers {
+                realtime: 1.0,
+                delayed: 1.0,
+                background: 1.0,
+            },
+            concurrency_caps: ConcurrencyCaps {
+                personas_concurrent: 1,
+                inference_lanes: 1,
+                foundry_lanes: 0,
+                sentinel_lanes: 1,
+            },
+            speculation_aggressiveness: SpeculationLevel::Off,
+            consolidation_schedule: ConsolidationSchedule::Manual,
+            federation_pull_cadence: FederationCadence {
+                pull_cadence_seconds: 0,
+            },
+            recall_score_weights: RecallScoreWeights {
+                semantic: 0.4,
+                outcome_history: 0.3,
+                recency: 0.1,
+                tier_proximity: 0.1,
+                provenance_trust: 0.1,
+            },
+            cascade_step: 0,
+            committed_at_ms: 0,
+        }
+    }
+
     #[test]
     fn module_registers_docker_pool_at_construction() {
         let module = PressureBrokerModule::new();
@@ -215,6 +286,32 @@ mod tests {
             module.config().tick_interval,
             Some(std::time::Duration::from_secs(7)),
             "tick_interval in ModuleConfig must mirror BrokerConfig so runtime cadence matches broker policy"
+        );
+    }
+
+    #[test]
+    fn governor_constructor_preserves_broker_boot_contract() {
+        let config = BrokerConfig {
+            tick_interval: std::time::Duration::from_secs(11),
+            act_above: 0.75,
+        };
+        let governor = Arc::new(LocalSubstrateGovernor::new(test_policy()));
+        let module = PressureBrokerModule::with_config_and_governor(
+            config,
+            governor as Arc<dyn SubstrateGovernor>,
+        );
+
+        let snapshot = module.broker().snapshot();
+        assert_eq!(
+            snapshot.pools.len(),
+            1,
+            "governor wiring must not skip DockerTierPool registration"
+        );
+        assert_eq!(snapshot.pools[0].name, "docker");
+        assert_eq!(
+            module.config().tick_interval,
+            Some(std::time::Duration::from_secs(11)),
+            "governor constructor must preserve broker tick cadence"
         );
     }
 
@@ -268,6 +365,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tick_forwards_high_pressure_alerts_to_governor() {
+        let governor = Arc::new(LocalSubstrateGovernor::new(test_policy()));
+        let module = PressureBrokerModule::with_config_and_governor(
+            BrokerConfig::default(),
+            governor.clone() as Arc<dyn SubstrateGovernor>,
+        );
+        let fake = Arc::new(FakePool {
+            capacity: 1000,
+            usage: Arc::new(AtomicU64::new(850)),
+            evict_called_with: Arc::new(AtomicU64::new(0)),
+        });
+        module
+            .broker()
+            .register(fake.clone() as Arc<dyn ResourcePool>);
+
+        module.tick().await.expect("tick should not error");
+
+        assert_eq!(
+            governor.snapshot().recent_signals,
+            vec![PressureSignal::SystemMemHigh { used_pct: 85 }],
+            "High pressure broker alerts must reach the governor as typed pressure signals"
+        );
+    }
+
+    #[tokio::test]
     async fn tick_is_a_noop_when_all_pools_below_threshold() {
         // Mirror of the previous test but with the fake pool at ~30%
         // — broker should observe and decide NOT to evict.
@@ -315,10 +437,7 @@ mod tests {
         assert!(json["globalPressure"].is_number(), "globalPressure missing");
         assert!(json["globalTier"].is_string(), "globalTier missing");
         assert!(json["pools"].is_array(), "pools missing");
-        assert!(
-            json["evictionsFired"].is_number(),
-            "evictionsFired missing"
-        );
+        assert!(json["evictionsFired"].is_number(), "evictionsFired missing");
         assert!(
             json["bytesFreedTotal"].is_number(),
             "bytesFreedTotal missing"
@@ -336,7 +455,9 @@ mod tests {
     #[tokio::test]
     async fn handle_command_rejects_unknown_command() {
         let module = PressureBrokerModule::new();
-        let result = module.handle_command("system/no-such-thing", Value::Null).await;
+        let result = module
+            .handle_command("system/no-such-thing", Value::Null)
+            .await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
