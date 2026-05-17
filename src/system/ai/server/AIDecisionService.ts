@@ -22,6 +22,7 @@ import { LOCAL_MODELS } from '../../shared/Constants';
 import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import type {
   AIDecisionContext as RustAIDecisionContext,
+  RedundancyCheckRequest,
 } from '../../../shared/generated';
 
 /**
@@ -183,102 +184,20 @@ export class AIDecisionService {
     );
 
     if (!slotGranted) {
-      // Slot denied - return "not redundant" to allow response through
-      // (fail open to preserve autonomy)
-      return {
-        isRedundant: false,
-        reason: 'Inference slot denied (coordinator rate limiting)',
-        model,
-        timestamp: Date.now()
-      };
+      throw new Error('Redundancy check inference slot denied');
     }
 
     try {
-      // Get recent conversation (questions + answers)
-      const conversationHistory = context.ragContext?.conversationHistory ?? [];
-      const recentConversation = conversationHistory.slice(-10);
-
-      if (recentConversation.length === 0) {
-        // Release slot before early return
-        InferenceCoordinator.releaseSlot(context.personaId, provider);
-        return {
-          isRedundant: false,
-          reason: 'No conversation history',
-          model,
-          timestamp: Date.now()
-        };
-      }
-
-      // Build redundancy check prompt
-      const conversationText = recentConversation
-        .map(msg => {
-          let timePrefix = '';
-          if (msg.timestamp) {
-            const date = new Date(msg.timestamp);
-            const hours = date.getHours().toString().padStart(2, '0');
-            const minutes = date.getMinutes().toString().padStart(2, '0');
-            timePrefix = `[${hours}:${minutes}] `;
-          }
-          return `${timePrefix}${msg.name ?? msg.role}: ${msg.content}`;
-        })
-        .join('\n');
-
-      const prompt = `**Recent conversation (includes questions and answers):**
-${conversationText}
-
-**My draft response:**
-${generatedText}
-
-**Critical Question**: Has the ORIGINAL question/topic that I'm responding to been adequately answered already?
-
-**IMPORTANT Guidelines**:
-- **UNANSWERED question = NOT redundant** (even if other topics were discussed)
-- **PARTIALLY answered = NOT redundant** (can add more detail)
-- Same answer to SAME question = REDUNDANT
-- Correcting a wrong answer = NOT redundant
-- **NEW question after time gap = NOT redundant**
-- Different programming language/framework = NOT redundant
-
-**Respond with JSON only:**
-{
-  "isRedundant": true/false,
-  "reason": "brief explanation"
-}`;
-
-      const request: TextGenerationRequest = {
-        messages: [
-          { role: 'system', content: 'You are a redundancy detector. Respond ONLY with JSON.' },
-          { role: 'user', content: prompt }
-        ],
-        model,
-        temperature: 0.1,
-        maxTokens: 100,
-        provider: 'groq'
+      const client = await RustCoreIPCClient.getInstanceAsync();
+      const request: RedundancyCheckRequest = {
+        context: context as unknown as RustAIDecisionContext,
+        draftText: generatedText,
+        model
       };
-
-      const response = await AIProviderDaemon.generateText(request);
+      const result = await client.cognitionCheckRedundancy(request);
 
       // Release slot after successful generation
       InferenceCoordinator.releaseSlot(context.personaId, provider);
-
-      // Parse JSON response
-      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        return {
-          isRedundant: false,
-          reason: 'Failed to parse redundancy check',
-          model,
-          timestamp: Date.now()
-        };
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-      const result: AIRedundancyCheck = {
-        isRedundant: parsed.isRedundant ?? false,
-        reason: parsed.reason ?? 'No reason provided',
-        model,
-        timestamp: Date.now()
-      };
 
       // Log redundancy check
       AIDecisionLogger.logRedundancyCheck(
@@ -296,14 +215,7 @@ ${generatedText}
       InferenceCoordinator.releaseSlot(context.personaId, provider);
 
       AIDecisionLogger.logError(context.personaName, 'Redundancy check', error instanceof Error ? error.message : String(error));
-
-      // Fail open - allow response on error
-      return {
-        isRedundant: false,
-        reason: `Redundancy check error: ${error instanceof Error ? error.message : String(error)}`,
-        model,
-        timestamp: Date.now()
-      };
+      throw error;
     }
   }
 

@@ -31,6 +31,8 @@ import type {
 	VisionDescription,
 	AIDecisionContext,
 	AIGatingDecision,
+	RedundancyCheckRequest,
+	RedundancyDecision,
 } from '../../../../shared/generated';
 import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
 import type { RecipeTurnBatchPlan } from '../../../../shared/generated/cognition/RecipeTurnBatchPlan';
@@ -125,6 +127,7 @@ export interface CognitionMixin {
 		model?: string;
 		temperature?: number;
 	}): Promise<AIGatingDecision>;
+	cognitionCheckRedundancy(params: RedundancyCheckRequest): Promise<RedundancyDecision>;
 
 	/**
 	 * Run the per-persona admission gate over a single InboxMessage.
@@ -871,6 +874,26 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as AIGatingDecision;
+		}
+
+		/**
+		 * Rust-owned "is this draft redundant?" check. TypeScript keeps
+		 * platform slot coordination and logging; Rust owns the prompt, model
+		 * call, parser, and typed decision contract.
+		 */
+		async cognitionCheckRedundancy(params: RedundancyCheckRequest): Promise<RedundancyDecision> {
+			const response = await this.request({
+				command: 'cognition/check-redundancy',
+				context: params.context,
+				draftText: params.draftText,
+				model: params.model,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error ?? 'Failed to evaluate redundancy check');
+			}
+
+			return response.result as RedundancyDecision;
 		}
 
 		/**
