@@ -11,24 +11,28 @@ pub mod cascade;
 pub mod local;
 pub mod policy_file;
 pub mod policy_selector;
+pub mod policy_watcher;
 pub mod types;
 
 pub use cascade::{
-    apply_action, evaluate_next_step, CascadeAction, CascadeThresholds, CASCADE_STEP_MAX,
-    CASCADE_STEP_MIN,
+    CASCADE_STEP_MAX, CASCADE_STEP_MIN, CascadeAction, CascadeThresholds, apply_action,
+    evaluate_next_step,
 };
 pub use local::LocalSubstrateGovernor;
 pub use policy_file::{
-    into_governor_policy, load_policy_file, parse_policy_text, PolicyFile, PolicyFileError,
+    PolicyFile, PolicyFileError, into_governor_policy, load_policy_file, parse_policy_text,
 };
 pub use policy_selector::{
-    hardware_fingerprint, policy_matches_hardware, select_policy, PolicySelectionError,
+    PolicySelectionError, hardware_fingerprint, policy_matches_hardware, select_policy,
+};
+pub use policy_watcher::{
+    PolicyDirectoryError, PolicyDirectoryWatcher, load_policy_directory, reload_policy_candidates,
+    watch_policy_directory,
 };
 pub use types::{
-    classify_hardware, CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule,
-    FederationCadence, GovernorPolicy, GovernorSnapshot, HardwareClass, PowerSource,
-    PressureSignal, RecallScoreWeights, SpeculationLevel, TargetSilicon, ThermalClass,
-    ThermalSeverity, TierSizes,
+    CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule, FederationCadence, GovernorPolicy,
+    GovernorSnapshot, HardwareClass, PowerSource, PressureSignal, RecallScoreWeights,
+    SpeculationLevel, TargetSilicon, ThermalClass, ThermalSeverity, TierSizes, classify_hardware,
 };
 
 /// The trait every Substrate Governor implementation must satisfy.
