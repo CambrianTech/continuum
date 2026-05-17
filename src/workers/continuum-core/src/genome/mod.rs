@@ -64,6 +64,7 @@ pub mod bus;
 pub mod local_manager;
 pub mod manager;
 pub mod recall;
+pub mod recall_trait;
 pub mod store;
 pub mod tier;
 pub mod working_set;
@@ -78,6 +79,12 @@ pub use local_manager::LocalWorkingSetManager;
 pub use recall::{
     AcquireSource, FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore,
     ResidencyHint, TaskKind, TrustClass,
+};
+pub use recall_trait::{
+    ArtifactRef, CapabilityQuery, CompositionHint, CompositionRef, DemandAlignedRecall,
+    DomainHint, EngramRef, LoRALayerRef, MoEExpertRef, OutcomeWindow, PersonaContext,
+    RankedPool, RecallScoreWeights, RecallTrace, ResourceBudget, TrajectoryHint,
+    WeightSumOutOfBounds,
 };
 pub use manager::WorkingSetManager;
 pub use store::TierStore;
