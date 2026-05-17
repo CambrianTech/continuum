@@ -60,6 +60,7 @@
 //!    coordination substrate.
 
 pub mod blob;
+pub mod bus;
 pub mod local_manager;
 pub mod manager;
 pub mod store;
@@ -67,6 +68,11 @@ pub mod tier;
 pub mod working_set;
 
 pub use blob::{ArtifactBlob, Provenance};
+pub use bus::{
+    all_genome_artifact_selectors, publish_access_denied, publish_eviction_record,
+    publish_page_fault, subscribe_to_genome_events, ACCESS_DENIED_KEY, EVICTION_RECORD_KEY,
+    PAGE_FAULT_KEY,
+};
 pub use local_manager::LocalWorkingSetManager;
 pub use manager::WorkingSetManager;
 pub use store::TierStore;
