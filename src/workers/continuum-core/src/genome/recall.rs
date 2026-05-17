@@ -39,9 +39,9 @@
 //! ## What PR-1 does NOT ship (PR-2 / PR-3)
 //!
 //! - `DemandAlignedRecall` trait — PR-2
-//! - `CapabilityQuery`, `PersonaContext`, `RankedPool`,
+//! - `CapabilityQuery`, `RecallContext`, `RankedPool`,
 //!   `RecallScoreWeights` full shapes — PR-2 (they reference PR-1's
-//!   types but depend on PersonaContext + composition types that
+//!   types but depend on RecallContext + composition types that
 //!   benefit from being grouped with the trait)
 //! - Scoring function + grid_penalty + recency_decay — PR-3
 //! - `LocalDemandAlignedRecall` impl + working-set integration — PR-3
@@ -267,7 +267,7 @@ pub enum TaskKind {
 
 /// How much the persona trusts a peer's artifacts. Adjusted at
 /// scoring time via the persona's `trust_overrides` field
-/// (PersonaContext, PR-2). PR-1 names the variants the override list
+/// (RecallContext, PR-2). PR-1 names the variants the override list
 /// can map a peer to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

@@ -76,17 +76,16 @@ pub use bus::{
     PAGE_FAULT_KEY,
 };
 pub use local_manager::LocalWorkingSetManager;
+pub use manager::WorkingSetManager;
 pub use recall::{
-    AcquireSource, FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore,
-    ResidencyHint, TaskKind, TrustClass,
+    AcquireSource, FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore, ResidencyHint,
+    TaskKind, TrustClass,
 };
 pub use recall_trait::{
-    ArtifactRef, CapabilityQuery, CompositionHint, CompositionRef, DemandAlignedRecall,
-    DomainHint, EngramRef, LoRALayerRef, MoEExpertRef, OutcomeWindow, PersonaContext,
-    RankedPool, RecallScoreWeights, RecallTrace, ResourceBudget, TrajectoryHint,
-    WeightSumOutOfBounds,
+    ArtifactRef, CapabilityQuery, CompositionHint, CompositionRef, DemandAlignedRecall, DomainHint,
+    EngramRef, LoRALayerRef, MoEExpertRef, OutcomeWindow, RankedPool, RecallBudget, RecallContext,
+    RecallScoreWeights, RecallTrace, TrajectoryHint, WeightSumOutOfBounds,
 };
-pub use manager::WorkingSetManager;
 pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
 pub use working_set::{

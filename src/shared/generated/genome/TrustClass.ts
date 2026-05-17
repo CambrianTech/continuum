@@ -3,7 +3,7 @@
 /**
  * How much the persona trusts a peer's artifacts. Adjusted at
  * scoring time via the persona's `trust_overrides` field
- * (PersonaContext, PR-2). PR-1 names the variants the override list
+ * (RecallContext, PR-2). PR-1 names the variants the override list
  * can map a peer to.
  */
 export type TrustClass = "local" | "trustedPeer" | "knownPeer" | "anonymous";

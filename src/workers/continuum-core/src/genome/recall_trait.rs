@@ -9,14 +9,14 @@
 //! - The trait itself — `recall` + `replay` method signatures
 //! - `CapabilityQuery` — the input to `recall`: what kind of task,
 //!   resource budget, scope, freshness target, hard pins
-//! - `PersonaContext` — who's asking and what they already have hot
+//! - `RecallContext` — who's asking and what they already have hot
 //! - `RankedPool` — the output: ranked layers + experts + engrams
 //!   with per-artifact `ResidencyHint` (from PR-1)
 //! - `RecallScoreWeights` — governor-tunable weights with a sum-to-1
 //!   invariant + a constructor that enforces it
 //! - `ArtifactRef` + `LoRALayerRef` / `MoEExpertRef` / `EngramRef`
 //!   typed wrappers around `ArtifactId`
-//! - `ResourceBudget` — the memory + time budget the persona allocates
+//! - `RecallBudget` — the memory + time budget the persona allocates
 //! - Stub placeholders for `OutcomeWindow` / `TrajectoryHint` /
 //!   `CompositionRef` / `CompositionHint` / `RecallTrace` —
 //!   GENOME-FOUNDRY-SENTINEL names these but their full shapes
@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::recall::{
-    FreshnessTarget, PeerId, RecallError, RecallScore, RecallScope, ResidencyHint, TaskKind,
+    FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore, ResidencyHint, TaskKind,
     TrustClass,
 };
 use super::working_set::{ArtifactId, PersonaId};
@@ -92,10 +92,7 @@ pub struct EngramRef(pub ArtifactId);
 /// consumers narrow by `kind` and read `ref` for the artifact id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "ref", rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/ArtifactRef.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/ArtifactRef.ts")]
 pub enum ArtifactRef {
     LoRALayer(LoRALayerRef),
     MoEExpert(MoEExpertRef),
@@ -127,11 +124,8 @@ impl DomainHint {
 /// (e.g. don't include a 4GB layer if budget is 1GB).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/ResourceBudget.ts"
-)]
-pub struct ResourceBudget {
+#[ts(export, export_to = "../../../shared/generated/genome/RecallBudget.ts")]
+pub struct RecallBudget {
     /// Maximum bytes the composition is allowed to consume.
     #[ts(type = "number")]
     pub max_bytes: u64,
@@ -184,7 +178,7 @@ pub struct TrajectoryHint {
 
 /// Stub placeholder for "what composition is currently hot for this
 /// persona." Full shape from the composer module (not built yet);
-/// PR-2 ships a thin opaque struct so PersonaContext compiles.
+/// PR-2 ships a thin opaque struct so RecallContext compiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 #[ts(
@@ -203,9 +197,9 @@ pub struct CompositionRef(pub ArtifactId);
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
-    export_to = "../../../shared/generated/genome/PersonaContext.ts"
+    export_to = "../../../shared/generated/genome/RecallContext.ts"
 )]
-pub struct PersonaContext {
+pub struct RecallContext {
     pub persona: PersonaId,
     /// What composition is already hot for this persona. `None`
     /// means the persona is starting fresh (cold composition).
@@ -219,8 +213,8 @@ pub struct PersonaContext {
     pub trust_overrides: Vec<(PeerId, TrustClass)>,
 }
 
-impl PersonaContext {
-    /// Cold-start PersonaContext: no current composition, no
+impl RecallContext {
+    /// Cold-start RecallContext: no current composition, no
     /// outcome window, no trajectory, no trust overrides. Used by
     /// tests + first-turn recall calls.
     pub fn cold_start(persona: PersonaId) -> Self {
@@ -249,7 +243,7 @@ pub struct CapabilityQuery {
     pub task_kind: TaskKind,
     /// Free-form tags from the persona's plan. May be empty.
     pub domain_hints: Vec<DomainHint>,
-    pub budget: ResourceBudget,
+    pub budget: RecallBudget,
     /// Hard pins — recall MUST include these in the RankedPool even
     /// if their score is low. Used for persona-private LoRA layers
     /// and sticky engrams.
@@ -299,10 +293,7 @@ pub struct RecallTrace(pub ArtifactId);
 /// so the persona can make the cost trade-off explicit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/RankedPool.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/RankedPool.ts")]
 pub struct RankedPool {
     pub layers: Vec<(LoRALayerRef, RecallScore, ResidencyHint)>,
     pub experts: Vec<(MoEExpertRef, RecallScore, ResidencyHint)>,
@@ -373,8 +364,7 @@ impl RecallScoreWeights {
         tier_proximity: f32,
         provenance_trust: f32,
     ) -> Result<Self, WeightSumOutOfBounds> {
-        let sum =
-            semantic + outcome_history + recency + tier_proximity + provenance_trust;
+        let sum = semantic + outcome_history + recency + tier_proximity + provenance_trust;
         if (sum - 1.0).abs() > Self::SUM_EPSILON {
             return Err(WeightSumOutOfBounds { actual_sum: sum });
         }
@@ -432,7 +422,7 @@ pub trait DemandAlignedRecall: Send + Sync {
     async fn recall(
         &self,
         query: &CapabilityQuery,
-        context: &PersonaContext,
+        context: &RecallContext,
     ) -> Result<RankedPool, RecallError>;
 
     /// Replay a previous recall deterministically from its trace.
@@ -440,10 +430,7 @@ pub trait DemandAlignedRecall: Send + Sync {
     /// regression testing. Replay produces the same RankedPool the
     /// live recall did, using snapshotted scoring weights + artifact
     /// set at that time.
-    async fn replay(
-        &self,
-        trace: &RecallTrace,
-    ) -> Result<RankedPool, RecallError>;
+    async fn replay(&self, trace: &RecallTrace) -> Result<RankedPool, RecallError>;
 }
 
 #[cfg(test)]
@@ -476,7 +463,7 @@ mod tests {
         async fn recall(
             &self,
             _query: &CapabilityQuery,
-            _context: &PersonaContext,
+            _context: &RecallContext,
         ) -> Result<RankedPool, RecallError> {
             Ok(RankedPool {
                 layers: Vec::new(),
@@ -487,10 +474,7 @@ mod tests {
             })
         }
 
-        async fn replay(
-            &self,
-            _trace: &RecallTrace,
-        ) -> Result<RankedPool, RecallError> {
+        async fn replay(&self, _trace: &RecallTrace) -> Result<RankedPool, RecallError> {
             Err(RecallError::ScopeUnreachable {
                 reason: "stub does not implement replay".to_string(),
             })
@@ -501,7 +485,7 @@ mod tests {
         CapabilityQuery {
             task_kind: TaskKind::Chat,
             domain_hints: vec![DomainHint::new("math")],
-            budget: ResourceBudget {
+            budget: RecallBudget {
                 max_bytes: 1_000_000,
                 max_duration_ms: 100,
             },
@@ -520,7 +504,7 @@ mod tests {
     #[tokio::test]
     async fn trait_is_object_safe() {
         let recall: Arc<dyn DemandAlignedRecall> = Arc::new(StubRecall);
-        let ctx = PersonaContext::cold_start(sample_persona());
+        let ctx = RecallContext::cold_start(sample_persona());
         let pool = recall.recall(&sample_query(), &ctx).await.unwrap();
         assert!(pool.layers.is_empty());
         assert!(pool.experts.is_empty());
@@ -543,12 +527,12 @@ mod tests {
         }
     }
 
-    /// What this catches: cold_start PersonaContext produces a
+    /// What this catches: cold_start RecallContext produces a
     /// valid context with sensible defaults. Used by first-turn
     /// recall calls + tests; needs to be cheap and deterministic.
     #[test]
-    fn persona_context_cold_start_has_sensible_defaults() {
-        let ctx = PersonaContext::cold_start(sample_persona());
+    fn recall_context_cold_start_has_sensible_defaults() {
+        let ctx = RecallContext::cold_start(sample_persona());
         assert_eq!(ctx.persona, sample_persona());
         assert!(ctx.current_composition.is_none());
         assert_eq!(ctx.recent_outcomes.turn_count, 0);
@@ -590,7 +574,10 @@ mod tests {
     fn artifact_ref_serializes_with_adjacent_kind_tag() {
         let layer = ArtifactRef::LoRALayer(LoRALayerRef(sample_artifact()));
         let j = serde_json::to_string(&layer).unwrap();
-        assert!(j.contains("\"kind\":\"loRALayer\"") || j.contains("\"kind\":\"loraLayer\""), "got {j}");
+        assert!(
+            j.contains("\"kind\":\"loRALayer\"") || j.contains("\"kind\":\"loraLayer\""),
+            "got {j}"
+        );
         assert!(j.contains("\"ref\":\""), "got {j}");
 
         let expert = ArtifactRef::MoEExpert(MoEExpertRef(sample_artifact()));
@@ -604,7 +591,8 @@ mod tests {
         assert!(j.contains("\"ref\":\""), "got {j}");
 
         // Round-trip
-        let back: ArtifactRef = serde_json::from_str(&serde_json::to_string(&layer).unwrap()).unwrap();
+        let back: ArtifactRef =
+            serde_json::from_str(&serde_json::to_string(&layer).unwrap()).unwrap();
         assert_eq!(layer, back);
     }
 
@@ -625,11 +613,11 @@ mod tests {
         assert_eq!(expert.0.as_uuid(), engram.0.as_uuid());
     }
 
-    /// What this catches: ResourceBudget serializes with camelCase
+    /// What this catches: RecallBudget serializes with camelCase
     /// fields. Wire stability.
     #[test]
-    fn resource_budget_serializes_camel_case() {
-        let b = ResourceBudget {
+    fn recall_budget_serializes_camel_case() {
+        let b = RecallBudget {
             max_bytes: 1_000_000,
             max_duration_ms: 250,
         };
@@ -645,7 +633,8 @@ mod tests {
     #[test]
     fn default_recall_score_weights_sum_to_one() {
         let w = RecallScoreWeights::default();
-        let sum = w.semantic + w.outcome_history + w.recency + w.tier_proximity + w.provenance_trust;
+        let sum =
+            w.semantic + w.outcome_history + w.recency + w.tier_proximity + w.provenance_trust;
         assert!(
             (sum - 1.0).abs() < RecallScoreWeights::SUM_EPSILON,
             "default weights must sum to 1.0; got {sum}"
@@ -704,7 +693,9 @@ mod tests {
             layers: vec![(
                 LoRALayerRef(sample_artifact()),
                 score,
-                ResidencyHint::Hot { role: super::super::tier::TierRole::Fast },
+                ResidencyHint::Hot {
+                    role: super::super::tier::TierRole::Fast,
+                },
             )],
             experts: vec![],
             engrams: vec![(
@@ -722,13 +713,13 @@ mod tests {
         assert_eq!(pool, back);
     }
 
-    /// What this catches: PersonaContext serializes with camelCase
+    /// What this catches: RecallContext serializes with camelCase
     /// + current_composition is optional (None → null on wire OR
     /// omitted, depending on ts(optional) + skip_serializing_if).
     /// This pins the contract.
     #[test]
-    fn persona_context_serializes_camel_case() {
-        let ctx = PersonaContext::cold_start(sample_persona());
+    fn recall_context_serializes_camel_case() {
+        let ctx = RecallContext::cold_start(sample_persona());
         let j = serde_json::to_string(&ctx).unwrap();
         assert!(j.contains("\"currentComposition\":") || !j.contains("currentComposition"));
         assert!(j.contains("\"recentOutcomes\":"), "got {j}");
