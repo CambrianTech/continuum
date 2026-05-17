@@ -97,3 +97,5 @@ pub use recall_scoring::{
     grid_penalty, local_role_score, recency_decay, score as recall_score, tier_proximity_for,
     DEFAULT_RECENCY_HALF_LIFE_MS,
 };
+pub mod recall_impl;
+pub use recall_impl::{CandidateArtifact, LocalDemandAlignedRecall};
