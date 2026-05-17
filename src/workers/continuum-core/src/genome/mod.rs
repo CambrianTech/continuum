@@ -92,3 +92,8 @@ pub use working_set::{
     AccessDenied, ArtifactId, PageFault, PageHandle, PageKind, PageOffset, PageRef, PersonaId,
     ResidentPage, WorkingSet, WorkingSetCapacity,
 };
+pub mod recall_scoring;
+pub use recall_scoring::{
+    grid_penalty, local_role_score, recency_decay, score as recall_score, tier_proximity_for,
+    DEFAULT_RECENCY_HALF_LIFE_MS,
+};
