@@ -212,24 +212,44 @@ impl MessageBus {
     /// Async handlers receive via the broadcast channel.
     ///
     /// registry is needed to look up module instances for synchronous delivery.
+    ///
+    /// Implementation note: both subscriber walks collect a
+    /// `Vec<&'static str>` of matching module names BEFORE entering
+    /// the async dispatch loop. This drops the DashMap borrow before
+    /// any `.await`, which lets the publish future remain `Send` even
+    /// when called from spawn contexts (e.g. genome PR-5's
+    /// `tokio::spawn` of `publish_page_fault`). Without this, the
+    /// DashMap iter borrow lives across the await and trips
+    /// "implementation of `dashmap::Map` is not general enough"
+    /// when the future is shipped to a Send-bounded task.
     pub async fn publish(
         &self,
         event_name: &str,
         payload: serde_json::Value,
         registry: &super::ModuleRegistry,
     ) {
-        // Synchronous tier (glob-matched event_subscriptions): call inline.
-        for entry in self.subscriptions.iter() {
-            for sub in entry.value().iter() {
-                if sub.synchronous && glob_matches(&sub.pattern, event_name) {
-                    if let Some(module) = registry.get_by_name(sub.module_name) {
-                        if let Err(e) = module.handle_event(event_name, payload.clone()).await {
-                            warn!(
-                                "Event handler error: module={}, event={}, error={}",
-                                sub.module_name, event_name, e
-                            );
-                        }
-                    }
+        // Synchronous tier (glob-matched event_subscriptions): collect
+        // matching module names, release the DashMap borrow, then
+        // dispatch.
+        let glob_matched: Vec<&'static str> = self
+            .subscriptions
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .filter(|sub| sub.synchronous && glob_matches(&sub.pattern, event_name))
+                    .map(|sub| sub.module_name)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for module_name in glob_matched {
+            if let Some(module) = registry.get_by_name(module_name) {
+                if let Err(e) = module.handle_event(event_name, payload.clone()).await {
+                    warn!(
+                        "Event handler error: module={}, event={}, error={}",
+                        module_name, event_name, e
+                    );
                 }
             }
         }
@@ -243,17 +263,25 @@ impl MessageBus {
         // it can call self.on_artifact_available(...).await from inside
         // its override.
         let key = ArtifactKey::from(event_name);
-        for entry in self.artifact_subscriptions.iter() {
-            for sub in entry.value().iter() {
-                if sub.selector.matches(&key) {
-                    if let Some(module) = registry.get_by_name(sub.module_name) {
-                        if let Err(e) = module.handle_event(event_name, payload.clone()).await {
-                            warn!(
-                                "Artifact handler error: module={}, key={}, error={}",
-                                sub.module_name, event_name, e
-                            );
-                        }
-                    }
+        let artifact_matched: Vec<&'static str> = self
+            .artifact_subscriptions
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .filter(|sub| sub.selector.matches(&key))
+                    .map(|sub| sub.module_name)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for module_name in artifact_matched {
+            if let Some(module) = registry.get_by_name(module_name) {
+                if let Err(e) = module.handle_event(event_name, payload.clone()).await {
+                    warn!(
+                        "Artifact handler error: module={}, key={}, error={}",
+                        module_name, event_name, e
+                    );
                 }
             }
         }

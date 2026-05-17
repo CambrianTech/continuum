@@ -334,6 +334,15 @@ impl Runtime {
         &self.bus
     }
 
+    /// Get the Arc<MessageBus> for sharing across threads.
+    /// Used by long-lived publishers (e.g. LocalWorkingSetManager
+    /// constructed via `with_bus` per genome PR-5) that hold their
+    /// own Arc and call `bus.publish` without going through the
+    /// Runtime each time.
+    pub fn bus_arc(&self) -> Arc<MessageBus> {
+        self.bus.clone()
+    }
+
     /// Get a reference to the shared compute cache.
     pub fn compute(&self) -> &SharedCompute {
         &self.compute
