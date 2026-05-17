@@ -74,7 +74,8 @@ if ! docker info &>/dev/null; then
 fi
 
 # Variant-specific docker run flags.
-RUN_FLAGS=(--rm -d --name "continuum-slice-$VARIANT-$$")
+CONTAINER_NAME="continuum-slice-$VARIANT-$$"
+RUN_FLAGS=(-d --name "$CONTAINER_NAME")
 case "$VARIANT" in
   cuda)
     # Requires NVIDIA Container Toolkit on the host. If absent, cuda slice
@@ -108,7 +109,9 @@ fail() {
 
 cleanup() {
   if [[ -n "${CID:-}" ]]; then
-    docker kill "$CID" >/dev/null 2>&1 || true
+    docker rm -f "$CID" >/dev/null 2>&1 || true
+  elif docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -134,7 +137,10 @@ BOOT_OK=false
 CID="$(docker run "${RUN_FLAGS[@]}" "$IMAGE_TAG" 2>/dev/null || true)"
 if [[ -z "$CID" ]]; then
   fail "boot" "docker run exited immediately"
-  echo "  docker logs: $(docker logs "continuum-slice-$VARIANT-$$" 2>&1 | tail -10)" >&2
+  if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    echo "  docker logs:" >&2
+    docker logs "$CONTAINER_NAME" 2>&1 | tail -20 | sed 's/^/    /' >&2
+  fi
   exit 2
 fi
 
