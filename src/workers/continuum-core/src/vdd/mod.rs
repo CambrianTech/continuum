@@ -6,6 +6,7 @@
 pub mod artifacts;
 pub mod chat_roundtrip;
 pub mod record;
+pub mod registry;
 
 pub use artifacts::{ArtifactBundle, ArtifactWriter};
 pub use chat_roundtrip::{
@@ -13,3 +14,4 @@ pub use chat_roundtrip::{
     LiveChatProbe,
 };
 pub use record::{HarnessStatus, StandardVddRecord, VddError};
+pub use registry::{HARNESS_SPECS, HarnessCadence, HarnessId, HarnessSpec, harness_spec};
