@@ -11,6 +11,8 @@ export type { AdmissionConfig } from './AdmissionConfig';
 export type { AdmissionDecision } from './AdmissionDecision';
 export type { AdmissionDropReason } from './AdmissionDropReason';
 export type { AdmissionError } from './AdmissionError';
+export type { AircAdmissionConversionError } from './AircAdmissionConversionError';
+export type { AircAdmissionEnvelope } from './AircAdmissionEnvelope';
 export type { AircMessageRef } from './AircMessageRef';
 export type { AllocationResult } from './AllocationResult';
 export type { ChannelEnqueueRequest } from './ChannelEnqueueRequest';

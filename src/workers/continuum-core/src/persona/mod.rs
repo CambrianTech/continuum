@@ -13,6 +13,7 @@
 
 pub mod admission;
 pub mod admission_state;
+pub mod airc_admission;
 pub mod allocator;
 pub mod channel_items;
 pub mod channel_queue;
@@ -46,6 +47,10 @@ pub use admission::{
     AdmissionGate, HeuristicIsMemorable, IsMemorable, SeenContentLookup, SeenEventLookup,
 };
 pub use admission_state::{AdmissionState, EngramOriginKind};
+pub use airc_admission::{
+    airc_envelope_to_candidate, airc_envelope_to_ref, AircAdmissionConversionError,
+    AircAdmissionEnvelope,
+};
 pub use allocator::{
     allocate as allocate_personas, load_catalog, select_local_model, AllocationResult,
     PersonaAllocation, PersonaCatalogEntry,
