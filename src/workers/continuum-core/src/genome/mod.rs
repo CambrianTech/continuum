@@ -103,3 +103,5 @@ pub mod recall_source_working_set;
 pub use recall_source_working_set::{WorkingSetCandidateSource, NEUTRAL_FACTOR_STUB};
 pub mod recall_source_composite;
 pub use recall_source_composite::{CompositeCandidateSource, DedupPolicy};
+pub mod recall_source_must_include;
+pub use recall_source_must_include::MustIncludeCandidateSource;
