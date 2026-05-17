@@ -46,15 +46,24 @@
 //! drift surface). The current TS file uses the legacy template; this
 //! Rust version is byte-for-byte the same modulo a `format!` call.
 
+use crate::ai::types::ResponseFormat;
+use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::should_respond::{AIDecisionContext, GatingConversationMessage};
+use crate::modules::ai_provider::{generate_text, global_registry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
 /// Maximum number of recent conversation messages included in the
 /// redundancy-check prompt. Matches the TS implementation's
 /// `slice(-10)` behavior.
 pub const REDUNDANCY_CONVERSATION_WINDOW: usize = 10;
+
+const REDUNDANCY_PROVIDER: &str = "groq";
+const DEFAULT_REDUNDANCY_MODEL: &str = "llama-3.1-8b-instant";
+const DEFAULT_REDUNDANCY_TEMPERATURE: f32 = 0.2;
+const REDUNDANCY_MAX_TOKENS: u32 = 200;
 
 // ─── IPC request + response shapes ────────────────────────────────────
 
@@ -105,6 +114,14 @@ pub struct ParsedRedundancyResponse {
     pub reason: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RedundancyEvaluateError {
+    #[error("generation failed: {0}")]
+    Generation(String),
+    #[error("parse failed: {0}")]
+    Parse(#[from] RedundancyParseError),
+}
+
 /// Typed parser errors. The caller (PR-2's `evaluate_redundancy`)
 /// decides the fail-open / fail-closed policy — this module never
 /// invents a default; the parser only reports what went wrong.
@@ -124,6 +141,86 @@ pub enum RedundancyParseError {
     /// caller must decide fail-open vs fail-closed explicitly.
     #[error("missing or non-boolean isRedundant field")]
     MissingIsRedundant,
+}
+
+/// Run the redundancy check against the registered AI provider.
+///
+/// No fallback path: provider failures and malformed model output return
+/// typed errors so the caller chooses its policy explicitly.
+pub async fn evaluate_redundancy(
+    request: RedundancyCheckRequest,
+) -> Result<RedundancyDecision, RedundancyEvaluateError> {
+    let model = request
+        .model
+        .clone()
+        .unwrap_or_else(|| DEFAULT_REDUNDANCY_MODEL.to_string());
+    let inference_request = build_redundancy_generation_request(&request, model.clone());
+
+    let registry = global_registry();
+    let registry_guard = registry.read().await;
+    let response = generate_text(&registry_guard, inference_request)
+        .await
+        .map_err(RedundancyEvaluateError::Generation)?;
+
+    let parsed = parse_redundancy_response(&response.text)?;
+    Ok(decision_from_parsed(parsed, model, now_ms()))
+}
+
+fn build_redundancy_generation_request(
+    request: &RedundancyCheckRequest,
+    model: String,
+) -> TextGenerationRequest {
+    TextGenerationRequest {
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: MessageContent::Text(
+                    "You decide whether a draft response repeats an answer already present. Respond ONLY with JSON."
+                        .to_string(),
+                ),
+                name: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text(build_redundancy_prompt(
+                    &request.context,
+                    &request.draft_text,
+                )),
+                name: None,
+            },
+        ],
+        system_prompt: None,
+        model: Some(model),
+        provider: Some(REDUNDANCY_PROVIDER.to_string()),
+        temperature: Some(DEFAULT_REDUNDANCY_TEMPERATURE),
+        max_tokens: Some(REDUNDANCY_MAX_TOKENS),
+        top_p: None,
+        top_k: None,
+        repeat_penalty: None,
+        stop_sequences: None,
+        tools: None,
+        tool_choice: None,
+        response_format: Some(ResponseFormat::JsonObject),
+        active_adapters: None,
+        request_id: None,
+        user_id: None,
+        room_id: Some(request.context.room_id.clone()),
+        purpose: Some("cognition/check-redundancy".to_string()),
+        persona_id: Some(request.context.persona_id.clone()),
+    }
+}
+
+fn decision_from_parsed(
+    parsed: ParsedRedundancyResponse,
+    model: String,
+    timestamp: u64,
+) -> RedundancyDecision {
+    RedundancyDecision {
+        is_redundant: parsed.is_redundant,
+        reason: parsed.reason,
+        model,
+        timestamp,
+    }
 }
 
 // ─── Pure prompt builder ──────────────────────────────────────────────
@@ -204,8 +301,8 @@ pub fn parse_redundancy_response(
 ) -> Result<ParsedRedundancyResponse, RedundancyParseError> {
     let json = extract_json_object(ai_text)
         .ok_or_else(|| RedundancyParseError::NoJsonObject(snippet(ai_text)))?;
-    let value: Value =
-        serde_json::from_str(json).map_err(|_| RedundancyParseError::NoJsonObject(snippet(json)))?;
+    let value: Value = serde_json::from_str(json)
+        .map_err(|_| RedundancyParseError::NoJsonObject(snippet(json)))?;
     let obj = value.as_object().ok_or(RedundancyParseError::NotAnObject)?;
     let is_redundant = obj
         .get("isRedundant")
@@ -256,6 +353,13 @@ fn snippet(s: &str) -> String {
     }
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,7 +370,12 @@ mod tests {
 
     // ─── Fixtures ─────────────────────────────────────────────────────
 
-    fn msg(role: &str, name: Option<&str>, content: &str, ts: Option<u64>) -> GatingConversationMessage {
+    fn msg(
+        role: &str,
+        name: Option<&str>,
+        content: &str,
+        ts: Option<u64>,
+    ) -> GatingConversationMessage {
         GatingConversationMessage {
             role: role.to_string(),
             content: content.to_string(),
@@ -305,7 +414,12 @@ mod tests {
     #[test]
     fn prompt_embeds_draft_and_conversation_lines() {
         let ctx = ctx_with_history(vec![
-            msg("user", Some("alice"), "what is 2+2?", Some(1_700_000_000_000)),
+            msg(
+                "user",
+                Some("alice"),
+                "what is 2+2?",
+                Some(1_700_000_000_000),
+            ),
             msg("assistant", Some("bob"), "4", Some(1_700_000_060_000)),
         ]);
         let prompt = build_redundancy_prompt(&ctx, "Actually it's 4.");
@@ -337,10 +451,7 @@ mod tests {
     fn prompt_omits_time_prefix_when_timestamp_missing() {
         let ctx = ctx_with_history(vec![msg("user", Some("alice"), "hi", None)]);
         let prompt = build_redundancy_prompt(&ctx, "draft");
-        assert!(
-            prompt.contains("alice: hi"),
-            "should still render the line"
-        );
+        assert!(prompt.contains("alice: hi"), "should still render the line");
         assert!(
             !prompt.contains("[00:00]"),
             "no time prefix expected when timestamp is None"
@@ -369,7 +480,8 @@ mod tests {
         // Messages 0..4 should NOT appear (older than window of 10)
         for i in 0..5 {
             assert!(
-                !prompt.contains(&format!("msg-{i}\n")) && !prompt.contains(&format!("msg-{i}\n\n")),
+                !prompt.contains(&format!("msg-{i}\n"))
+                    && !prompt.contains(&format!("msg-{i}\n\n")),
                 "msg-{i} should be dropped (older than window)"
             );
         }
@@ -415,6 +527,109 @@ mod tests {
             prompt.contains("\"reason\": \"brief explanation\""),
             "JSON reason field example missing"
         );
+    }
+
+    // ─── evaluate_redundancy orchestration seams ─────────────────────
+
+    /// What this catches: the async evaluator's provider request stays
+    /// constrained to JSON, attributed to the persona + room, and routed
+    /// through the intended fast Groq model. This is the no-network proof
+    /// for the IPC orchestration shape; the provider registry itself is
+    /// covered by ai_provider tests.
+    #[test]
+    fn generation_request_uses_json_mode_and_persona_metadata() {
+        let ctx = ctx_with_history(vec![msg("user", Some("alice"), "answered already", None)]);
+        let request = RedundancyCheckRequest {
+            context: ctx,
+            draft_text: "same answer".to_string(),
+            model: None,
+        };
+
+        let inference =
+            build_redundancy_generation_request(&request, DEFAULT_REDUNDANCY_MODEL.to_string());
+
+        assert_eq!(inference.provider.as_deref(), Some(REDUNDANCY_PROVIDER));
+        assert_eq!(inference.model.as_deref(), Some(DEFAULT_REDUNDANCY_MODEL));
+        assert_eq!(inference.temperature, Some(DEFAULT_REDUNDANCY_TEMPERATURE));
+        assert_eq!(inference.max_tokens, Some(REDUNDANCY_MAX_TOKENS));
+        assert_eq!(
+            inference.response_format,
+            Some(crate::ai::types::ResponseFormat::JsonObject)
+        );
+        assert_eq!(inference.room_id.as_deref(), Some("r-001"));
+        assert_eq!(inference.persona_id.as_deref(), Some("p-001"));
+        assert_eq!(
+            inference.purpose.as_deref(),
+            Some("cognition/check-redundancy")
+        );
+        assert_eq!(inference.messages.len(), 2);
+
+        match &inference.messages[1].content {
+            MessageContent::Text(prompt) => {
+                assert!(prompt.contains("answered already"));
+                assert!(prompt.contains("same answer"));
+            }
+            other => panic!("expected text prompt, got {other:?}"),
+        }
+    }
+
+    /// What this catches: per-call model override is honored without
+    /// changing provider, JSON mode, or attribution. This keeps the
+    /// command flexible for hardware-specific routing without allowing
+    /// TS to own the prompt/parser contract.
+    #[test]
+    fn generation_request_honors_model_override() {
+        let request = RedundancyCheckRequest {
+            context: ctx_with_history(vec![]),
+            draft_text: "draft".to_string(),
+            model: Some("llama-3.3-70b-versatile".to_string()),
+        };
+
+        let inference =
+            build_redundancy_generation_request(&request, request.model.clone().expect("override"));
+
+        assert_eq!(inference.model.as_deref(), Some("llama-3.3-70b-versatile"));
+        assert_eq!(inference.provider.as_deref(), Some(REDUNDANCY_PROVIDER));
+    }
+
+    /// What this catches: parser output is stamped into the wire response
+    /// with the exact model + timestamp supplied by the evaluator. No
+    /// hidden clock or provider read happens in the pure conversion seam.
+    #[test]
+    fn decision_from_parsed_stamps_model_and_timestamp() {
+        let parsed = ParsedRedundancyResponse {
+            is_redundant: false,
+            reason: "new angle".to_string(),
+        };
+
+        let decision = decision_from_parsed(parsed, "model-x".to_string(), 42);
+
+        assert_eq!(
+            decision,
+            RedundancyDecision {
+                is_redundant: false,
+                reason: "new angle".to_string(),
+                model: "model-x".to_string(),
+                timestamp: 42,
+            }
+        );
+    }
+
+    /// What this catches: the IPC request wire is camelCase and accepts
+    /// the optional model field generated for TS callers.
+    #[test]
+    fn redundancy_check_request_serde_camelcase() {
+        let request = RedundancyCheckRequest {
+            context: ctx_with_history(vec![]),
+            draft_text: "draft".to_string(),
+            model: Some("model-x".to_string()),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize");
+
+        assert!(json.contains("\"draftText\":\"draft\""));
+        assert!(json.contains("\"model\":\"model-x\""));
+        assert!(json.contains("\"personaId\":\"p-001\""));
     }
 
     // ─── parse_redundancy_response ────────────────────────────────────
@@ -483,10 +698,7 @@ mod tests {
     #[test]
     fn parse_unbalanced_braces_returns_typed_err() {
         let result = parse_redundancy_response("{\"isRedundant\": true ");
-        assert!(matches!(
-            result,
-            Err(RedundancyParseError::NoJsonObject(_))
-        ));
+        assert!(matches!(result, Err(RedundancyParseError::NoJsonObject(_))));
     }
 
     /// What this catches: JSON parsed to a non-object (array, number,
@@ -503,10 +715,7 @@ mod tests {
         // exists for future hardening (e.g., if the extractor changes
         // to accept top-level arrays).
         let result = parse_redundancy_response("[\"isRedundant\", true]");
-        assert!(matches!(
-            result,
-            Err(RedundancyParseError::NoJsonObject(_))
-        ));
+        assert!(matches!(result, Err(RedundancyParseError::NoJsonObject(_))));
     }
 
     /// What this catches: missing the required `isRedundant` field

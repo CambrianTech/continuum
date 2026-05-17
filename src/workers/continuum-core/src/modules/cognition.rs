@@ -17,6 +17,7 @@
 //! - `cognition/admit-inbox-message`: Run admission gate on an InboxMessage (#1121 PR-4)
 //! - `cognition/recall-engrams`: Query the persona's admitted engram store (#1121 PR-5)
 //! - `cognition/should-respond`: Rust-owned AI gating decision
+//! - `cognition/check-redundancy`: Rust-owned draft redundancy decision
 //! - `cognition/full-evaluate`: Unified 6-gate evaluation (replaces 5 TS gates)
 //! - `cognition/track-response`: Track response for rate limiting
 //! - `cognition/set-sleep-mode`: Set voluntary sleep mode
@@ -451,6 +452,23 @@ impl ServiceModule for CognitionModule {
                 let decision = crate::cognition::evaluate_gating(request)
                     .await
                     .map_err(|e| format!("should-respond error: {e}"))?;
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&decision).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
+            }
+
+            // ================================================================
+            // Draft Redundancy Check (continuum#1375 PR-2)
+            // ================================================================
+            "cognition/check-redundancy" => {
+                let _timer = TimingGuard::new("module", "cognition_check_redundancy");
+                let request = serde_json::from_value::<
+                    crate::cognition::check_redundancy::RedundancyCheckRequest,
+                >(params.clone())
+                .map_err(|e| format!("Invalid check-redundancy request: {e}"))?;
+                let decision = crate::cognition::check_redundancy::evaluate_redundancy(request)
+                    .await
+                    .map_err(|e| format!("check-redundancy error: {e}"))?;
                 Ok(CommandResult::Json(
                     serde_json::to_value(&decision).map_err(|e| format!("Serialize error: {e}"))?,
                 ))
