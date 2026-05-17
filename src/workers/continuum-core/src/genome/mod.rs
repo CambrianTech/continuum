@@ -98,4 +98,4 @@ pub use recall_scoring::{
     DEFAULT_RECENCY_HALF_LIFE_MS,
 };
 pub mod recall_impl;
-pub use recall_impl::{CandidateArtifact, LocalDemandAlignedRecall};
+pub use recall_impl::{CandidateArtifact, CandidateSource, LocalDemandAlignedRecall};
