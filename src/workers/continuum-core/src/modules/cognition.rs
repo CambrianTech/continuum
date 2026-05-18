@@ -141,7 +141,7 @@ impl ServiceModule for CognitionModule {
         ModuleConfig {
             name: "cognition",
             priority: ModulePriority::High,
-            command_prefixes: &["cognition/", "inbox/"],
+            command_prefixes: &["cognition/", "inbox/", "persona/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             // Persona response is event-fanout work: every active persona
@@ -302,6 +302,66 @@ impl ServiceModule for CognitionModule {
 
                 Ok(CommandResult::Json(
                     serde_json::to_value(&frame).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
+            }
+
+            // ─── Lane D: PersonaTurnFrame wrap-in-Rust ──────────────
+            //
+            // Wraps the inbox/drain-frame output in a PersonaTurnFrame
+            // and returns the full PersonaTurnFrameReplayRecord (raw
+            // inbox + consolidated_inbox + rag_seed) in ONE Rust hop.
+            //
+            // Why this command exists: per Joel's "no TS wrapping
+            // Rust outputs" rule + ALPHA-GAP Lane D, the substrate
+            // shouldn't return a raw PersonaInboxFrame and rely on
+            // TS to wrap it as a turn frame. The Rust core owns the
+            // turn-frame contract end-to-end.
+            //
+            // Replay: returns None when the frame is empty (no
+            // messages) — caller treats empty drain as no-op, not a
+            // failure. When non-empty, the returned record IS the
+            // replay-stable input contract for inference / RAG /
+            // sentinel attribution downstream.
+            "persona/drain-turn-frame" => {
+                let _timer = TimingGuard::new("module", "persona_drain_turn_frame");
+                let persona_uuid = p.uuid("persona_id")?;
+                let window_ms = p.u64_or("window_ms", 80);
+                let max_items_u64 = p.u64_or("max_items", 16);
+                let max_items = usize::try_from(max_items_u64)
+                    .map_err(|_| format!("max_items too large: {max_items_u64}"))?;
+
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
+
+                // Drain the inbox into a raw frame.
+                let raw_frame = persona.inbox.drain_frame(window_ms, max_items);
+                record_drained_turn_frame(&raw_frame);
+
+                // Wrap + populate derived outputs. None = empty
+                // drain; returned as JSON null.
+                let record = match raw_frame {
+                    Some(inbox_frame) => {
+                        let turn_frame =
+                            crate::persona::turn_frame::PersonaTurnFrame::from_inbox_frame(
+                                inbox_frame,
+                            );
+                        turn_frame.replay_record()
+                    }
+                    None => None,
+                };
+
+                // Persist the record to ~/.continuum/replay/ for
+                // prod-replay (Joel's "FROM PROD not POC" rule).
+                if let Some(ref rec) = record {
+                    crate::persona::recorder::record_turn_frame_replay(rec);
+                }
+
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&record)
+                        .map_err(|e| format!("Serialize error: {e}"))?,
                 ))
             }
 
