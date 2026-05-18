@@ -7,7 +7,7 @@
 
 use crate::log_info;
 use crate::logging::TimingGuard;
-use crate::models::{ProviderConfig, discover_all};
+use crate::model_registry::discovery::{discover_all, ProviderConfig};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::utils::params::Params;
 use async_trait::async_trait;
