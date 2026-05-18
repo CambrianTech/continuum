@@ -16,7 +16,6 @@ import type { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import type { RAGContext } from '../../rag/shared/RAGTypes';
 import { AIDecisionLogger } from './AIDecisionLogger';
 import { InferenceCoordinator } from '../../coordination/server/InferenceCoordinator';
-import { LOCAL_MODELS } from '../../shared/Constants';
 import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import type {
   AIDecisionContext as RustAIDecisionContext,
@@ -219,10 +218,13 @@ export class AIDecisionService {
   }
 
   /**
-   * Generate AI response text
+   * Generate AI response text.
    *
-   * COORDINATION: Requests inference slot before calling AI to prevent flooding
-   * the serial gRPC server with simultaneous requests from all personas.
+   * Rust owns admission for this path via `ResourceAdmissionGate` (added
+   * in commit a89c8ab47 `admit generate-response through Rust resource
+   * gate`). Per directive: hosts should not coordinate slots outside
+   * Rust. This shim is the IPC seam plus error logging only — no
+   * TS-side rate limiting.
    */
   static async generateResponse(
     context: AIDecisionContext,
@@ -231,40 +233,18 @@ export class AIDecisionService {
       temperature?: number;
       maxTokens?: number;
       timeoutMs?: number;
-      isMentioned?: boolean;  // @mentioned personas bypass slot limits
-      messageId?: string;     // For slot tracking
     } = {}
   ): Promise<AIGenerationResult> {
-    const model = options.model ?? LOCAL_MODELS.DEFAULT;
-    const provider = 'local';
-
-    // Request inference slot to prevent thundering herd
-    const messageId = options.messageId ?? context.triggerMessage?.id ?? 'generate-' + Date.now();
-    const slotGranted = await InferenceCoordinator.requestSlot(
-      context.personaId,
-      messageId,
-      provider,
-      { isMentioned: options.isMentioned }
-    );
-
-    if (!slotGranted) {
-      // Slot denied - throw error to let caller handle
-      throw new Error('Inference slot denied (coordinator rate limiting)');
-    }
-
     try {
       const client = await RustCoreIPCClient.getInstanceAsync();
       const request: GenerateResponseRequest = {
         context: context as unknown as RustAIDecisionContext,
-        model,
+        model: options.model,
         temperature: options.temperature,
         maxTokens: options.maxTokens,
         timeoutMs: options.timeoutMs
       };
       const result = await client.cognitionGenerateResponse(request);
-
-      // Release slot after successful generation
-      InferenceCoordinator.releaseSlot(context.personaId, provider);
 
       return {
         text: result.text,
@@ -275,9 +255,6 @@ export class AIDecisionService {
       };
 
     } catch (error) {
-      // Release slot on error
-      InferenceCoordinator.releaseSlot(context.personaId, provider);
-
       const errorMessage = error instanceof Error ? error.message : String(error);
       AIDecisionLogger.logError(context.personaName, 'Response generation', errorMessage);
       throw error;
