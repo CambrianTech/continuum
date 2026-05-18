@@ -27,6 +27,36 @@ pub struct Registry {
 }
 
 impl Registry {
+    pub fn from_catalog(
+        raw_models: Vec<Model>,
+        raw_providers: Vec<Provider>,
+    ) -> Result<Self, RegistryError> {
+        let mut providers: HashMap<String, Provider> = HashMap::with_capacity(raw_providers.len());
+        for p in raw_providers {
+            if providers.contains_key(&p.id) {
+                return Err(RegistryError::DuplicateProvider { id: p.id });
+            }
+            providers.insert(p.id.clone(), p);
+        }
+
+        let mut models: HashMap<String, Model> = HashMap::with_capacity(raw_models.len());
+        for mut m in raw_models {
+            if models.contains_key(&m.id) {
+                return Err(RegistryError::DuplicateModel { id: m.id });
+            }
+            if !providers.contains_key(&m.provider) {
+                return Err(RegistryError::UnknownProvider {
+                    model_id: m.id,
+                    provider_id: m.provider,
+                });
+            }
+            resolve_model_artifacts(&mut m);
+            models.insert(m.id.clone(), m);
+        }
+
+        Ok(Self { models, providers })
+    }
+
     pub fn model(&self, id: &str) -> Option<&Model> {
         self.models.get(id)
     }
@@ -138,31 +168,7 @@ pub fn load_registry(
 ) -> Result<Registry, RegistryError> {
     let raw_models = load_models(models_path)?;
     let raw_providers = load_providers(providers_path)?;
-
-    let mut providers: HashMap<String, Provider> = HashMap::with_capacity(raw_providers.len());
-    for p in raw_providers {
-        if providers.contains_key(&p.id) {
-            return Err(RegistryError::DuplicateProvider { id: p.id });
-        }
-        providers.insert(p.id.clone(), p);
-    }
-
-    let mut models: HashMap<String, Model> = HashMap::with_capacity(raw_models.len());
-    for mut m in raw_models {
-        if models.contains_key(&m.id) {
-            return Err(RegistryError::DuplicateModel { id: m.id });
-        }
-        if !providers.contains_key(&m.provider) {
-            return Err(RegistryError::UnknownProvider {
-                model_id: m.id,
-                provider_id: m.provider,
-            });
-        }
-        resolve_model_artifacts(&mut m);
-        models.insert(m.id.clone(), m);
-    }
-
-    Ok(Registry { models, providers })
+    Registry::from_catalog(raw_models, raw_providers)
 }
 
 #[cfg(test)]
@@ -428,6 +434,11 @@ auth = "none"
         assert!(
             omni.mmproj_local_path.is_some(),
             "local sensory-input admission requires an mmproj path"
+        );
+
+        assert!(
+            reg.model("qwen2-vl-7b-instruct").is_some(),
+            "Rust catalog must own the vetted local vision model"
         );
     }
 

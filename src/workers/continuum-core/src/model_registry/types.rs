@@ -178,7 +178,7 @@ pub enum MultiPartyChatStrategy {
     ProperChatMlSingleParty,
 }
 
-/// A single model's metadata. Loaded from TOML; never constructed in code.
+/// A single model's metadata. Constructed by the Rust model catalog.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model {
     /// Canonical id — matches the provider's API request body.
