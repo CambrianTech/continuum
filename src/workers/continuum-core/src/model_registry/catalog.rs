@@ -1,0 +1,561 @@
+//! Curated Rust model catalog.
+//!
+//! Runtime model truth lives here, not in TypeScript maps or editable TOML.
+//! Discovery may propose candidates elsewhere; admission only chooses from
+//! this vetted catalog.
+
+use super::loader::{Registry, RegistryError};
+use super::types::{
+    Arch, AuthKind, Capability, Model, MultiPartyChatStrategy, Provider, ProviderKind,
+};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+const QWEN35_CHAT_TEMPLATE: &str = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}";
+
+pub fn registry() -> Result<Registry, RegistryError> {
+    Registry::from_catalog(models(), providers())
+}
+
+pub fn models() -> Vec<Model> {
+    vec![
+        model(ModelSpec {
+            id: "claude-sonnet-4-5-20250929",
+            name: "Claude Sonnet 4.5",
+            provider: "anthropic",
+            arch: Arch::Claude,
+            context_window: 200_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.003,
+            cost_output_per_1k: 0.015,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "claude-opus-4-20250514",
+            name: "Claude Opus 4",
+            provider: "anthropic",
+            arch: Arch::Claude,
+            context_window: 200_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.015,
+            cost_output_per_1k: 0.075,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "claude-3-5-haiku-20250107",
+            name: "Claude 3.5 Haiku",
+            provider: "anthropic",
+            arch: Arch::Claude,
+            context_window: 200_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00025,
+            cost_output_per_1k: 0.00125,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "gpt-4-turbo-preview",
+            name: "GPT-4 Turbo",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 128_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.01,
+            cost_output_per_1k: 0.03,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "gpt-4o",
+            name: "GPT-4o",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 128_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::AudioOutput,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.005,
+            cost_output_per_1k: 0.015,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "deepseek-chat",
+            name: "DeepSeek Chat",
+            provider: "deepseek",
+            arch: Arch::Deepseek,
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00014,
+            cost_output_per_1k: 0.00028,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "deepseek-reasoner",
+            name: "DeepSeek Reasoner",
+            provider: "deepseek",
+            arch: Arch::Deepseek,
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00055,
+            cost_output_per_1k: 0.00219,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+            name: "Llama 3.1 70B (Together)",
+            provider: "together",
+            arch: Arch::Llama,
+            context_window: 131_072,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00088,
+            cost_output_per_1k: 0.00088,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "llama-3.1-8b-instant",
+            name: "Llama 3.1 8B Instant (Groq)",
+            provider: "groq",
+            arch: Arch::Llama,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00005,
+            cost_output_per_1k: 0.00008,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            name: "Llama 3.3 70B (Fireworks)",
+            provider: "fireworks",
+            arch: Arch::Llama,
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.0009,
+            cost_output_per_1k: 0.0009,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "grok-3",
+            name: "Grok 3",
+            provider: "xai",
+            arch: Arch::Grok,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.003,
+            cost_output_per_1k: 0.015,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "gemini-2.0-flash",
+            name: "Gemini 2.0 Flash",
+            provider: "google",
+            arch: Arch::Gemini,
+            context_window: 1_000_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.000075,
+            cost_output_per_1k: 0.0003,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "docker.io/ai/qwen2.5:7B-Q4_K_M",
+            name: "Qwen2.5 7B Q4_K_M (DMR)",
+            provider: "docker-model-runner",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("docker.io/ai/qwen2.5:7B-Q4_K_M"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit:latest",
+            name: "Qwen2.5 7B MLX 4-bit (DMR)",
+            provider: "docker-model-runner",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest",
+            name: "Qwen3.5 4B Code-Forged (DMR)",
+            provider: "docker-model-runner",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            name: "Qwen3.5 4B Code-Forged (in-process)",
+            provider: "llamacpp-local",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+            tokens_per_second: 33.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "qwen2-vl-7b-instruct",
+            name: "Qwen2-VL-7B-Instruct (in-process)",
+            provider: "llamacpp-local",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 16.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF"),
+            gguf_local_path: Some("~/models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"),
+            mmproj_local_path: Some("~/models/qwen2-vl-7b/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "qwen2.5-omni-7b-instruct",
+            name: "Qwen2.5-Omni-7B-Instruct (in-process)",
+            provider: "llamacpp-local",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 220.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ggml-org/Qwen2.5-Omni-7B-GGUF"),
+            gguf_local_path: Some("~/models/qwen2.5-omni-7b/Qwen2.5-Omni-7B-Q4_K_M.gguf"),
+            mmproj_local_path: Some("~/models/qwen2.5-omni-7b/mmproj-Qwen2.5-Omni-7B-f16.gguf"),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            ..ModelSpec::default()
+        }),
+    ]
+}
+
+pub fn providers() -> Vec<Provider> {
+    vec![
+        provider(ProviderSpec {
+            id: "anthropic",
+            name: "Anthropic",
+            base_url: "https://api.anthropic.com",
+            api_key_env: Some("ANTHROPIC_API_KEY"),
+            default_model: Some("claude-sonnet-4-5-20250929"),
+            auth: AuthKind::ApiKey,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["claude"],
+        }),
+        provider(ProviderSpec {
+            id: "openai",
+            name: "OpenAI",
+            base_url: "https://api.openai.com",
+            api_key_env: Some("OPENAI_API_KEY"),
+            default_model: Some("gpt-4-turbo-preview"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["gpt", "o1", "o3"],
+        }),
+        provider(ProviderSpec {
+            id: "deepseek",
+            name: "DeepSeek",
+            base_url: "https://api.deepseek.com",
+            api_key_env: Some("DEEPSEEK_API_KEY"),
+            default_model: Some("deepseek-chat"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["deepseek"],
+        }),
+        provider(ProviderSpec {
+            id: "together",
+            name: "Together AI",
+            base_url: "https://api.together.xyz",
+            api_key_env: Some("TOGETHER_API_KEY"),
+            default_model: Some("meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["togethercomputer/", "meta-llama/"],
+        }),
+        provider(ProviderSpec {
+            id: "groq",
+            name: "Groq",
+            base_url: "https://api.groq.com/openai",
+            api_key_env: Some("GROQ_API_KEY"),
+            default_model: Some("llama-3.1-8b-instant"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["llama-3", "mixtral", "gemma2"],
+        }),
+        provider(ProviderSpec {
+            id: "fireworks",
+            name: "Fireworks AI",
+            base_url: "https://api.fireworks.ai/inference",
+            api_key_env: Some("FIREWORKS_API_KEY"),
+            default_model: Some("accounts/fireworks/models/llama-v3p3-70b-instruct"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["accounts/fireworks/"],
+        }),
+        provider(ProviderSpec {
+            id: "xai",
+            name: "xAI",
+            base_url: "https://api.x.ai",
+            api_key_env: Some("XAI_API_KEY"),
+            default_model: Some("grok-3"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["grok"],
+        }),
+        provider(ProviderSpec {
+            id: "google",
+            name: "Google",
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+            api_key_env: Some("GOOGLE_API_KEY"),
+            default_model: Some("gemini-2.0-flash"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["gemini"],
+        }),
+        provider(ProviderSpec {
+            id: "docker-model-runner",
+            name: "Docker Model Runner (local Metal/CUDA)",
+            base_url: "http://127.0.0.1:12434/engines/llama.cpp",
+            api_key_env: None,
+            default_model: Some("huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest"),
+            auth: AuthKind::None,
+            kind: ProviderKind::Local,
+            model_prefixes: &[],
+        }),
+        provider(ProviderSpec {
+            id: "llamacpp-local",
+            name: "Llama.cpp (in-process Metal/CUDA)",
+            base_url: "in-process",
+            api_key_env: None,
+            default_model: Some("continuum-ai/qwen3.5-4b-code-forged-GGUF"),
+            auth: AuthKind::None,
+            kind: ProviderKind::Local,
+            model_prefixes: &[],
+        }),
+    ]
+}
+
+#[derive(Clone)]
+struct ModelSpec {
+    id: &'static str,
+    name: &'static str,
+    provider: &'static str,
+    arch: Arch,
+    context_window: u32,
+    max_output_tokens: u32,
+    tokens_per_second: f32,
+    capabilities: &'static [Capability],
+    cost_input_per_1k: f32,
+    cost_output_per_1k: f32,
+    gguf_hint: Option<&'static str>,
+    gguf_local_path: Option<&'static str>,
+    mmproj_local_path: Option<&'static str>,
+    chat_template: Option<&'static str>,
+    multi_party_strategy: MultiPartyChatStrategy,
+    stop_sequences: &'static [&'static str],
+}
+
+impl Default for ModelSpec {
+    fn default() -> Self {
+        Self {
+            id: "",
+            name: "",
+            provider: "",
+            arch: Arch::Unknown,
+            context_window: 0,
+            max_output_tokens: 0,
+            tokens_per_second: 0.0,
+            capabilities: &[],
+            cost_input_per_1k: 0.0,
+            cost_output_per_1k: 0.0,
+            gguf_hint: None,
+            gguf_local_path: None,
+            mmproj_local_path: None,
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::NamePrefixedUserTurns,
+            stop_sequences: &[],
+        }
+    }
+}
+
+fn model(spec: ModelSpec) -> Model {
+    Model {
+        id: spec.id.to_string(),
+        name: Some(spec.name.to_string()),
+        provider: spec.provider.to_string(),
+        arch: spec.arch,
+        context_window: spec.context_window,
+        max_output_tokens: spec.max_output_tokens,
+        tokens_per_second: spec.tokens_per_second,
+        capabilities: caps(spec.capabilities),
+        cost_input_per_1k: spec.cost_input_per_1k,
+        cost_output_per_1k: spec.cost_output_per_1k,
+        gguf_hint: spec.gguf_hint.map(str::to_string),
+        gguf_local_path: spec.gguf_local_path.map(PathBuf::from),
+        mmproj_local_path: spec.mmproj_local_path.map(PathBuf::from),
+        chat_template: spec.chat_template.map(str::to_string),
+        multi_party_strategy: spec.multi_party_strategy,
+        stop_sequences: spec.stop_sequences.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+struct ProviderSpec {
+    id: &'static str,
+    name: &'static str,
+    base_url: &'static str,
+    api_key_env: Option<&'static str>,
+    default_model: Option<&'static str>,
+    auth: AuthKind,
+    kind: ProviderKind,
+    model_prefixes: &'static [&'static str],
+}
+
+fn provider(spec: ProviderSpec) -> Provider {
+    Provider {
+        id: spec.id.to_string(),
+        name: Some(spec.name.to_string()),
+        base_url: spec.base_url.to_string(),
+        api_key_env: spec.api_key_env.map(str::to_string),
+        default_model: spec.default_model.map(str::to_string),
+        auth: spec.auth,
+        model_prefixes: spec
+            .model_prefixes
+            .iter()
+            .map(|prefix| prefix.to_string())
+            .collect(),
+        kind: spec.kind,
+    }
+}
+
+fn caps(capabilities: &[Capability]) -> BTreeSet<Capability> {
+    capabilities.iter().copied().collect()
+}

@@ -1,25 +1,19 @@
 //! Model registry — single source of truth for model + provider metadata.
 //!
-//! Replaces the dozens of hardcoded `ModelInfo` entries, per-model
-//! HashMap literals, and `match arch { "qwen35" => ... }` branches
-//! scattered across `ai/` and `inference/`. Adding a new model is a
-//! TOML row. Code consumes *capabilities*, not identity.
+//! Replaces scattered `ModelInfo` entries, per-model HashMap literals,
+//! TypeScript registries, and `match arch { "qwen35" => ... }` branches.
+//! Runtime code consumes capabilities and requirements, not provider strings.
 //!
-//! Joel's rule (2026-04-20): "code should NEVER (other than ONE place)
-//! be allowed to know the model. config gives it."
-//!
-//! This module IS the ONE place.
+//! This module is the one place allowed to know curated model facts.
 //!
 //! Invariants:
-//! - Nothing outside this module knows any specific model ID or arch
-//!   string. Callers ask for a `Model` by id (opaque string from config)
-//!   and check capabilities.
+//! - Nothing outside this module should own specific model facts.
 //! - Enum variants (`Arch`, `Capability`, `AuthKind`) are the closed
 //!   vocabulary. Adding a model with a new arch means adding an `Arch::`
-//!   variant AND a TOML row — but the TOML rows for existing arches
-//!   remain unaffected.
+//!   variant and one catalog row.
 
 pub mod artifacts;
+pub mod catalog;
 pub mod loader;
 pub mod singleton;
 pub mod types;
@@ -28,6 +22,7 @@ pub use artifacts::{
     find_first_local_gguf, resolve_gguf_for_model, resolve_gguf_for_model_id,
     resolve_local_model_dir_for_model_id,
 };
-pub use loader::{load_models, load_providers, load_registry, Registry, RegistryError};
+pub use catalog::{models as catalog_models, providers as catalog_providers};
+pub use loader::{Registry, RegistryError, load_models, load_providers, load_registry};
 pub use singleton::{global, init_global, try_global};
 pub use types::{Arch, AuthKind, Capability, Model, Provider};

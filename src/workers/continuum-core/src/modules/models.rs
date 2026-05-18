@@ -7,7 +7,7 @@
 
 use crate::log_info;
 use crate::logging::TimingGuard;
-use crate::models::{discover_all, ProviderConfig};
+use crate::models::{ProviderConfig, discover_all};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::utils::params::Params;
 use async_trait::async_trait;
@@ -74,36 +74,22 @@ impl ServiceModule for ModelsModule {
                 })))
             }
 
-            // Lookup the canonical capability vocabulary for a model from
-            // models.toml. Returns kebab-case strings matching the serde
-            // rename on `model_registry::types::Capability` ("vision",
-            // "audio-input", "tool-use", "streaming", etc.).
+            // Return the canonical capability vocabulary for a Rust catalog
+            // model id.
             //
-            // Why this exists: callers (TS PRG) need to declare a model's
-            // capabilities WITH the request when invoking
-            // `cognition/respond`, so Rust never has to do a global
-            // registry lookup mid-inference (which silently returned
-            // empty caps when keys drifted, demoting image bytes to
-            // text markers — vision encoder never fired). PRG calls
-            // this once per persona at construction and caches.
-            //
-            // Hard error when the model id isn't in the registry — that
-            // means models.toml doesn't know about it and the persona's
-            // configuration is broken. No silent empty-list fallback;
-            // the contract is "if you ask, you get answers or you get
-            // an error you can debug."
+            // This is intentionally strict: callers that only know desired
+            // capabilities must use the allocator/resolver boundary, not send
+            // raw HuggingFace or provider strings to this lookup command.
             "models/capabilities" => {
                 let _timer = TimingGuard::new("module", "models_capabilities");
                 let p = Params::new(&params);
                 let model_id = p.str("model_id")?;
 
-                let registry = crate::model_registry::try_global().ok_or(
-                    "model_registry not initialized — models.toml never loaded".to_string(),
-                )?;
+                let registry = crate::model_registry::try_global()
+                    .ok_or("model registry is not initialized".to_string())?;
                 let model = registry.model(model_id).ok_or_else(|| {
                     format!(
-                        "model id '{}' not in registry — add it to models.toml",
-                        model_id
+                        "unknown Rust catalog model id '{model_id}' — call the Rust model allocator instead of naming provider artifacts"
                     )
                 })?;
 
