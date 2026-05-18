@@ -267,6 +267,47 @@ impl PersonaTurnFrame {
     }
 }
 
+impl ResponsePrompt {
+    /// Flatten the chat-style prompt into a single plain-text
+    /// prompt suitable for adapter-based inference engines that
+    /// tokenize internally (LlamaCppAdapter + cloud adapters via
+    /// `InferenceRequest.prompt_text`).
+    ///
+    /// Format: `system_prompt` on its own paragraph (if present),
+    /// then each `PromptMessage` on its own line as
+    /// `Role: content`. Role is lowercased to match the on-the-wire
+    /// PromptRole serde format ("system", "user", "assistant").
+    ///
+    /// This is a deliberate "flatten now, structure later" decision:
+    /// adapter-based engines re-structure into their native format
+    /// internally; raw-token engines don't use prompt_text at all
+    /// (they take prompt_tokens). The substrate's job is to give
+    /// adapters a single deterministic text input that round-trips.
+    pub fn to_prompt_text(&self) -> String {
+        let mut out = String::new();
+        if let Some(system) = self.system_prompt.as_deref() {
+            if !system.is_empty() {
+                out.push_str(system);
+                out.push_str("\n\n");
+            }
+        }
+        for (i, msg) in self.messages.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let role = match msg.role {
+                PromptRole::System => "system",
+                PromptRole::User => "user",
+                PromptRole::Assistant => "assistant",
+            };
+            out.push_str(role);
+            out.push_str(": ");
+            out.push_str(&msg.content);
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,7 +694,10 @@ mod tests {
         let prompt = PersonaTurnFrame::from_inbox_frame(frame)
             .response_prompt()
             .unwrap();
-        assert!(prompt.system_prompt.is_none(), "PR-1 leaves system_prompt for caller");
+        assert!(
+            prompt.system_prompt.is_none(),
+            "PR-1 leaves system_prompt for caller"
+        );
     }
 
     #[test]
@@ -712,5 +756,89 @@ mod tests {
         assert!(json.contains("\"systemPrompt\":"), "got {json}");
         assert!(json.contains("\"triggerMessageId\":"), "got {json}");
         assert!(json.contains("\"role\":\"user\""), "got {json}");
+    }
+
+    // ─── ResponsePrompt::to_prompt_text (Lane D turn-execute) ──
+
+    fn prompt_with(system: Option<&str>, messages: Vec<(PromptRole, &str)>) -> ResponsePrompt {
+        ResponsePrompt {
+            persona_id: Uuid::nil(),
+            room_id: Uuid::nil(),
+            system_prompt: system.map(String::from),
+            messages: messages
+                .into_iter()
+                .map(|(role, content)| PromptMessage {
+                    role,
+                    content: content.to_string(),
+                })
+                .collect(),
+            trigger_message_id: Uuid::nil(),
+        }
+    }
+
+    #[test]
+    fn to_prompt_text_renders_each_message_as_role_colon_content() {
+        let prompt = prompt_with(
+            None,
+            vec![
+                (PromptRole::User, "Joel: hi"),
+                (PromptRole::User, "Joel: how are you"),
+            ],
+        );
+        let text = prompt.to_prompt_text();
+        assert_eq!(text, "user: Joel: hi\nuser: Joel: how are you");
+    }
+
+    #[test]
+    fn to_prompt_text_prepends_system_prompt_when_present() {
+        let prompt = prompt_with(
+            Some("You are Helper, a calm assistant."),
+            vec![(PromptRole::User, "Joel: ping")],
+        );
+        let text = prompt.to_prompt_text();
+        assert_eq!(
+            text,
+            "You are Helper, a calm assistant.\n\nuser: Joel: ping"
+        );
+    }
+
+    #[test]
+    fn to_prompt_text_skips_empty_system_prompt() {
+        // Empty string is treated as "no system prompt" — no
+        // double-newline noise on the wire.
+        let prompt = prompt_with(Some(""), vec![(PromptRole::User, "hi")]);
+        let text = prompt.to_prompt_text();
+        assert_eq!(text, "user: hi");
+    }
+
+    #[test]
+    fn to_prompt_text_handles_mixed_roles_in_order() {
+        let prompt = prompt_with(
+            None,
+            vec![
+                (PromptRole::System, "Be brief."),
+                (PromptRole::User, "Joel: hi"),
+                (PromptRole::Assistant, "Helper: hello"),
+                (PromptRole::User, "Joel: thanks"),
+            ],
+        );
+        let text = prompt.to_prompt_text();
+        assert_eq!(
+            text,
+            "system: Be brief.\nuser: Joel: hi\nassistant: Helper: hello\nuser: Joel: thanks"
+        );
+    }
+
+    #[test]
+    fn to_prompt_text_handles_no_messages() {
+        let prompt = prompt_with(Some("Solo system instruction."), vec![]);
+        let text = prompt.to_prompt_text();
+        assert_eq!(text, "Solo system instruction.\n\n");
+    }
+
+    #[test]
+    fn to_prompt_text_empty_prompt_returns_empty_string() {
+        let prompt = prompt_with(None, vec![]);
+        assert_eq!(prompt.to_prompt_text(), "");
     }
 }
