@@ -50,10 +50,14 @@
 //!     string when the regex misses — matches TS behavior exactly so
 //!     no template regression.
 
-use crate::ai::{ChatMessage, MessageContent};
+use crate::ai::adapter::InferenceDevice;
+use crate::ai::types::ResponseFormat;
+use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::cognition::should_respond::AIDecisionContext;
+use crate::modules::ai_provider::global_registry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
 /// Default fallback string returned by `extract_room_members` when the
@@ -64,6 +68,28 @@ pub const UNKNOWN_MEMBERS: &str = "unknown members";
 /// Minimum hour-gap (in milliseconds) that triggers a "⏱️ N hour passed"
 /// marker in the conversation history. Matches TS `gapMinutes > 60`.
 const HOUR_GAP_THRESHOLD_MS: u64 = 60 * 60 * 1000;
+
+/// Routing sentinel for the best available local Qwen/llama.cpp runtime.
+/// Matches the TS `provider: 'local'` value the adapter registry routes
+/// against.
+const DEFAULT_GENERATE_PROVIDER: &str = "local";
+
+/// Default model when caller doesn't override. Matches TS
+/// `LOCAL_MODELS.DEFAULT` exactly.
+const DEFAULT_GENERATE_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
+
+/// Default sampling temperature. Matches TS default 0.7 — moderate
+/// creativity for natural-language responses.
+const DEFAULT_GENERATE_TEMPERATURE: f32 = 0.7;
+
+/// Default max tokens. Matches TS default 150 — short conversational
+/// responses; caller can raise for long-form.
+const DEFAULT_GENERATE_MAX_TOKENS: u32 = 150;
+
+/// Default timeout. Matches TS default 180_000ms (3 minutes) — Qwen
+/// local can be slow under load; this is the hard ceiling before
+/// `tokio::time::timeout` returns Err.
+const DEFAULT_GENERATE_TIMEOUT_MS: u64 = 180_000;
 
 // ─── IPC request + response shapes ────────────────────────────────────
 
@@ -137,6 +163,162 @@ pub struct TokenUsage {
     pub input: u32,
     pub output: u32,
     pub total: u32,
+}
+
+/// Typed errors from `evaluate_response`. No silent default-on-error;
+/// the caller (TS shim or other Rust client) decides policy explicitly.
+#[derive(Debug, thiserror::Error)]
+pub enum GenerateResponseError {
+    /// The provider registry had no adapter capable of serving this
+    /// model + provider tuple. PR-3's TS shim translates this back into
+    /// an `Error` for the persona scheduler.
+    #[error("no AI adapter available for provider={provider:?} model={model:?}")]
+    NoAdapter {
+        provider: String,
+        model: Option<String>,
+    },
+    /// Provider returned an error during generation (network, model
+    /// refused, etc.). The string is the raw provider message — caller
+    /// should log + surface, never silently default.
+    #[error("generation failed: {0}")]
+    Generation(String),
+    /// `tokio::time::timeout` fired before the provider returned.
+    /// Mirrors the TS `Promise.race` timeout branch (TS default
+    /// 180_000ms). The persona scheduler should treat this as a
+    /// transient failure and back off, not a permanent decision.
+    #[error("generation timed out after {timeout_ms} ms")]
+    Timeout {
+        #[allow(dead_code)] // surfaced via Display
+        timeout_ms: u64,
+    },
+}
+
+/// Run the response-generation against the registered AI provider.
+///
+/// Composes:
+///   1. `build_response_messages(&request.context, now)` for the
+///      message array (system prompt + history + identity reminder).
+///   2. `TextGenerationRequest` with provider="local" + model +
+///      temperature + max_tokens defaults from `DEFAULT_GENERATE_*`
+///      constants (each overridable per-request).
+///   3. `tokio::time::timeout` wraps the provider call (TS Promise.race
+///      equivalent).
+///   4. Stamps `GenerateResponseResult` with model + response_time_ms +
+///      timestamp + optional token usage (when the provider reports it).
+///
+/// No fallback path: provider failures, timeouts, and missing adapters
+/// all surface as typed errors. Caller decides policy explicitly.
+pub async fn evaluate_response(
+    request: GenerateResponseRequest,
+) -> Result<GenerateResponseResult, GenerateResponseError> {
+    let start_ms = now_ms();
+    let model = request
+        .model
+        .clone()
+        .unwrap_or_else(|| DEFAULT_GENERATE_MODEL.to_string());
+    let timeout_ms = request.timeout_ms.unwrap_or(DEFAULT_GENERATE_TIMEOUT_MS);
+
+    let inference_request = build_response_generation_request(&request, model.clone(), start_ms);
+
+    let registry_arc = global_registry();
+    let registry = registry_arc.read().await;
+    let (_provider_id, adapter) = registry
+        .select(
+            Some(DEFAULT_GENERATE_PROVIDER),
+            Some(&model),
+            InferenceDevice::default(),
+        )
+        .ok_or_else(|| GenerateResponseError::NoAdapter {
+            provider: DEFAULT_GENERATE_PROVIDER.to_string(),
+            model: Some(model.clone()),
+        })?;
+
+    let response: TextGenerationResponse =
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), adapter.generate_text(inference_request))
+            .await
+        {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => return Err(GenerateResponseError::Generation(e)),
+            Err(_) => return Err(GenerateResponseError::Timeout { timeout_ms }),
+        };
+
+    let end_ms = now_ms();
+    Ok(result_from_response(response, model, start_ms, end_ms))
+}
+
+/// Build the `TextGenerationRequest` the adapter consumes.
+/// Pure: caller passes `request`, `model`, and the start-timestamp so
+/// tests can assert the request shape without time interference.
+pub fn build_response_generation_request(
+    request: &GenerateResponseRequest,
+    model: String,
+    start_ms: u64,
+) -> TextGenerationRequest {
+    TextGenerationRequest {
+        messages: build_response_messages(&request.context, start_ms),
+        system_prompt: None,
+        model: Some(model),
+        provider: Some(DEFAULT_GENERATE_PROVIDER.to_string()),
+        temperature: Some(
+            request
+                .temperature
+                .unwrap_or(DEFAULT_GENERATE_TEMPERATURE),
+        ),
+        max_tokens: Some(request.max_tokens.unwrap_or(DEFAULT_GENERATE_MAX_TOKENS)),
+        top_p: None,
+        top_k: None,
+        repeat_penalty: None,
+        stop_sequences: None,
+        tools: None,
+        tool_choice: None,
+        // Local Qwen takes plain text; no JSON-mode constraint here.
+        response_format: Some(ResponseFormat::Text),
+        active_adapters: None,
+        request_id: None,
+        user_id: None,
+        room_id: Some(request.context.room_id.clone()),
+        purpose: Some("cognition/generate-response".to_string()),
+        persona_id: Some(request.context.persona_id.clone()),
+    }
+}
+
+/// Pure: compose the IPC response from the provider's text + timing.
+/// Trims the response text to match TS `response.text.trim()`.
+///
+/// `tokens_used` is `None` when the provider reported `total_tokens == 0`
+/// — mirrors TS truthiness check on the optional usage object, avoids
+/// emitting `{input:0,output:0,total:0}` as if the provider had measured
+/// (it usually means the provider doesn't instrument usage at all).
+pub fn result_from_response(
+    response: TextGenerationResponse,
+    model: String,
+    start_ms: u64,
+    end_ms: u64,
+) -> GenerateResponseResult {
+    let tokens_used = if response.usage.total_tokens > 0 {
+        Some(TokenUsage {
+            input: response.usage.input_tokens,
+            output: response.usage.output_tokens,
+            total: response.usage.total_tokens,
+        })
+    } else {
+        None
+    };
+    GenerateResponseResult {
+        text: response.text.trim().to_string(),
+        model,
+        response_time_ms: end_ms.saturating_sub(start_ms),
+        timestamp: end_ms,
+        tokens_used,
+    }
+}
+
+/// Current unix-ms timestamp. Private helper — internal use only.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 // ─── Pure prompt builder ──────────────────────────────────────────────
@@ -726,5 +908,189 @@ mod tests {
         assert_eq!(messages[0].role, "system");
         assert_eq!(text_of(&messages[0]), "sys");
         assert!(text_of(&messages[1]).starts_with("IDENTITY REMINDER:"));
+    }
+
+    // ─── build_response_generation_request ────────────────────────────
+
+    fn request_with_overrides(
+        model: Option<&str>,
+        temp: Option<f32>,
+        max: Option<u32>,
+        timeout: Option<u64>,
+    ) -> GenerateResponseRequest {
+        GenerateResponseRequest {
+            context: ctx(Some("You are Alice."), vec![]),
+            model: model.map(str::to_string),
+            temperature: temp,
+            max_tokens: max,
+            timeout_ms: timeout,
+        }
+    }
+
+    /// What this catches: defaults — no overrides — produces a
+    /// TextGenerationRequest with provider="local", model=Qwen-default,
+    /// temperature=0.7, max_tokens=150, response_format=Text,
+    /// purpose="cognition/generate-response", and persona/room
+    /// attribution carried from the context. Pins the wire shape so
+    /// downstream provider routing doesn't drift silently.
+    #[test]
+    fn generation_request_uses_documented_defaults() {
+        let request = request_with_overrides(None, None, None, None);
+        let inference = build_response_generation_request(
+            &request,
+            DEFAULT_GENERATE_MODEL.to_string(),
+            0,
+        );
+        assert_eq!(inference.provider.as_deref(), Some(DEFAULT_GENERATE_PROVIDER));
+        assert_eq!(inference.model.as_deref(), Some(DEFAULT_GENERATE_MODEL));
+        assert_eq!(inference.temperature, Some(DEFAULT_GENERATE_TEMPERATURE));
+        assert_eq!(inference.max_tokens, Some(DEFAULT_GENERATE_MAX_TOKENS));
+        assert_eq!(inference.purpose.as_deref(), Some("cognition/generate-response"));
+        assert_eq!(inference.persona_id.as_deref(), Some("p-001"));
+        assert_eq!(inference.room_id.as_deref(), Some("r-001"));
+        assert!(matches!(inference.response_format, Some(ResponseFormat::Text)));
+        // messages list = system prompt + identity reminder for an empty history
+        assert_eq!(inference.messages.len(), 2);
+    }
+
+    /// What this catches: per-request overrides actually override
+    /// (temperature, max_tokens, model). Without this, a caller passing
+    /// `temperature=0.1` would silently get the default 0.7.
+    #[test]
+    fn generation_request_honors_overrides() {
+        let request = request_with_overrides(Some("custom-model"), Some(0.1), Some(500), None);
+        let inference = build_response_generation_request(
+            &request,
+            "custom-model".to_string(),
+            0,
+        );
+        assert_eq!(inference.model.as_deref(), Some("custom-model"));
+        assert_eq!(inference.temperature, Some(0.1));
+        assert_eq!(inference.max_tokens, Some(500));
+    }
+
+    /// What this catches: build_response_generation_request embeds the
+    /// timestamp it's given into the identity reminder via
+    /// build_response_messages. Pins the time-flow through the layers.
+    #[test]
+    fn generation_request_embeds_caller_timestamp() {
+        let request = request_with_overrides(None, None, None, None);
+        let inference = build_response_generation_request(
+            &request,
+            DEFAULT_GENERATE_MODEL.to_string(),
+            1_700_000_000_000,
+        );
+        let identity = match &inference.messages.last().expect("identity present").content {
+            MessageContent::Text(s) => s.clone(),
+            _ => panic!("non-text identity"),
+        };
+        assert!(identity.contains("CURRENT TIME: 11/14/2023 22:13"));
+    }
+
+    // ─── result_from_response ─────────────────────────────────────────
+
+    fn fake_response(text: &str, total_tokens: u32, input: u32, output: u32) -> TextGenerationResponse {
+        TextGenerationResponse {
+            text: text.to_string(),
+            finish_reason: crate::ai::types::FinishReason::Stop,
+            model: "ignored".to_string(),
+            provider: "local".to_string(),
+            usage: crate::ai::types::UsageMetrics {
+                input_tokens: input,
+                output_tokens: output,
+                total_tokens,
+                estimated_cost: None,
+            },
+            response_time_ms: 0,
+            request_id: "test".to_string(),
+            content: None,
+            tool_calls: None,
+            routing: None,
+            error: None,
+        }
+    }
+
+    /// What this catches: result trims surrounding whitespace from the
+    /// provider's text — TS does `response.text.trim()`. Models often
+    /// emit leading/trailing newlines; without trim the chat surface
+    /// gets extra blank lines.
+    #[test]
+    fn result_trims_response_text() {
+        let r = fake_response("  hello world\n\n", 0, 0, 0);
+        let result = result_from_response(r, "m".to_string(), 0, 1000);
+        assert_eq!(result.text, "hello world");
+    }
+
+    /// What this catches: model + timestamps stamped correctly on the
+    /// returned struct. response_time_ms = end - start, timestamp = end.
+    #[test]
+    fn result_stamps_model_and_timing() {
+        let r = fake_response("body", 0, 0, 0);
+        let result = result_from_response(r, "qwen3.5".to_string(), 1_000, 1_250);
+        assert_eq!(result.model, "qwen3.5");
+        assert_eq!(result.response_time_ms, 250);
+        assert_eq!(result.timestamp, 1_250);
+    }
+
+    /// What this catches: total_tokens > 0 -> Some(TokenUsage) with all
+    /// three counts. The provider-reported case.
+    #[test]
+    fn result_populates_tokens_when_provider_reports() {
+        let r = fake_response("body", 100, 40, 60);
+        let result = result_from_response(r, "m".to_string(), 0, 0);
+        assert_eq!(
+            result.tokens_used,
+            Some(TokenUsage {
+                input: 40,
+                output: 60,
+                total: 100,
+            })
+        );
+    }
+
+    /// What this catches: total_tokens == 0 -> None. Mirrors TS
+    /// truthiness check on usage object; avoids emitting
+    /// `{input:0, output:0, total:0}` as if the provider had measured
+    /// (usually means the provider didn't instrument usage at all).
+    #[test]
+    fn result_tokens_none_when_provider_reports_zero() {
+        let r = fake_response("body", 0, 0, 0);
+        let result = result_from_response(r, "m".to_string(), 0, 0);
+        assert_eq!(result.tokens_used, None);
+    }
+
+    /// What this catches: response_time_ms uses saturating subtraction
+    /// — if end_ms < start_ms (clock-backwards artifact, e.g. NTP
+    /// adjustment mid-call), result_time is 0, not a wrapped huge u64.
+    #[test]
+    fn result_response_time_saturates_when_clock_goes_backward() {
+        let r = fake_response("body", 0, 0, 0);
+        let result = result_from_response(r, "m".to_string(), 2_000, 1_000);
+        assert_eq!(result.response_time_ms, 0);
+    }
+
+    // ─── GenerateResponseError ────────────────────────────────────────
+
+    /// What this catches: Display impl carries the provider + model
+    /// values in NoAdapter so debug logs surface what went unrouted.
+    #[test]
+    fn error_no_adapter_displays_provider_and_model() {
+        let err = GenerateResponseError::NoAdapter {
+            provider: "local".to_string(),
+            model: Some("qwen3.5".to_string()),
+        };
+        let s = format!("{err}");
+        assert!(s.contains("local"));
+        assert!(s.contains("qwen3.5"));
+    }
+
+    /// What this catches: Display impl for Timeout includes the
+    /// configured timeout — diagnostic value for operators tuning
+    /// the value.
+    #[test]
+    fn error_timeout_displays_duration() {
+        let err = GenerateResponseError::Timeout { timeout_ms: 180_000 };
+        let s = format!("{err}");
+        assert!(s.contains("180000"));
     }
 }
