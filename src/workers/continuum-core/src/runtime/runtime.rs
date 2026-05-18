@@ -41,6 +41,7 @@ pub const EXPECTED_MODULES: &[&str] = &[
     "avatar",            // Avatar snapshots: Bevy 3D renders → PNG
     "dataset",           // Dataset import/management for Academy training
     "persona_allocator", // Hardware-aware persona allocation decisions
+    "inference-llm",     // Phase 5: local LLM generation (MODULE-CATALOG §II)
 ];
 
 pub struct Runtime {

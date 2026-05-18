@@ -917,6 +917,25 @@ pub fn start_server(
     // of duplicating the RAM formula. See issue #887.
     runtime.register(Arc::new(InferenceModule::new()));
 
+    // Phase 5: InferenceLlmModule (MODULE-CATALOG §II `inference-llm`)
+    // — the substrate's local-LLM generation surface. Subscribes to
+    // inference/llm/request commands, returns InferenceComplete +
+    // FirstTokenEmitted bundles. Stub-backed in PR-2; adapter-routed
+    // in PR-4 (#1395) when constructed via with_adapter. PR-5 (this
+    // registration) wires the module into the runtime so it's
+    // callable from the cognition path — no Runtime adapter wiring
+    // yet (caller construction option lands when persona-cognition
+    // composes via with_bus_and_adapter).
+    //
+    // Shipped via the .new() constructor (bus-less, stub-backed)
+    // so this PR doesn't bind us to a specific LlamaCppAdapter
+    // initialization story; downstream PRs swap construction when
+    // the LlamaCppAdapter init lifecycle is integrated with the
+    // Runtime startup phase.
+    runtime.register(Arc::new(
+        crate::inference::llm_module_service::InferenceLlmModule::new(),
+    ));
+
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());
     let cognition_state =
