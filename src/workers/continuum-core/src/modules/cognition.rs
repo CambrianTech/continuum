@@ -165,8 +165,10 @@ impl ServiceModule for CognitionModule {
             // codex's persona inbox fanout primitive (today) + the upcoming
             // PressureBroker singleton (#1299) make event fanout the
             // intended invariant. Inference is still gated downstream by
-            // ai_provider::max_concurrency. No hardcoded fixed cap here.
-            max_concurrency: usize::MAX,
+            // ai_provider::max_concurrency. 0 is the runtime contract for
+            // "unlimited / module-managed"; usize::MAX overflows Tokio's
+            // semaphore permit ceiling during registration.
+            max_concurrency: 0,
             tick_interval: None,
         }
     }
