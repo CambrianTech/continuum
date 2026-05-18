@@ -193,7 +193,7 @@ mod tests {
     use super::*;
     use crate::genome::working_set::{ArtifactId, PersonaId};
     use crate::inference::llm_module::{
-        CompositionPlan, GenerationBudget, SamplingParams,
+        CompositionPlan, GenerationBudget, InferenceRequestId, SamplingParams,
     };
     use uuid::Uuid;
 
