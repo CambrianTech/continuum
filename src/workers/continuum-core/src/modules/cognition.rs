@@ -728,6 +728,27 @@ impl ServiceModule for CognitionModule {
             }
 
             // ================================================================
+            // Validate Response Decision (one-PR oxidizer — replaces TS AIValidateResponseServerCommand).
+            // Distinct from cognition/validate-response (which is persona-level
+            // response validation defined later in this match).
+            // ================================================================
+            "cognition/validate-response-decision" => {
+                let _timer = TimingGuard::new("module", "cognition_validate_response_decision");
+                let request = serde_json::from_value::<
+                    crate::cognition::validate_response::ValidateResponseRequest,
+                >(params.clone())
+                .map_err(|e| format!("Invalid validate-response-decision request: {e}"))?;
+                let decision =
+                    crate::cognition::validate_response::evaluate_validate_response(request)
+                        .await
+                        .map_err(|e| format!("validate-response-decision error: {e}"))?;
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&decision)
+                        .map_err(|e| format!("Serialize error: {e}"))?,
+                ))
+            }
+
+            // ================================================================
             // Message Deduplication (single source of truth in Rust)
             // ================================================================
             "cognition/has-evaluated" => {

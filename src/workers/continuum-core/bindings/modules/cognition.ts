@@ -39,6 +39,8 @@ import type {
 	EmbedToolsResponse,
 	SemanticSearchToolsRequest,
 	SemanticSearchResult,
+	ValidateResponseRequest,
+	ValidateResponseDecision,
 } from '../../../../shared/generated';
 import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
 import type { RecipeTurnBatchPlan } from '../../../../shared/generated/cognition/RecipeTurnBatchPlan';
@@ -137,6 +139,7 @@ export interface CognitionMixin {
 	cognitionGenerateResponse(params: GenerateResponseRequest): Promise<GenerateResponseResult>;
 	cognitionEmbedTools(params: EmbedToolsRequest): Promise<EmbedToolsResponse>;
 	cognitionSemanticSearchTools(params: SemanticSearchToolsRequest): Promise<SemanticSearchResult[]>;
+	cognitionValidateResponseDecision(params: ValidateResponseRequest): Promise<ValidateResponseDecision>;
 
 	/**
 	 * Run the per-persona admission gate over a single InboxMessage.
@@ -972,6 +975,28 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as SemanticSearchResult[];
+		}
+
+		/**
+		 * Rust-owned response validation. TypeScript keeps no validation
+		 * logic; Rust owns prompt assembly, Groq call, single-word
+		 * decision parser (SUBMIT/CLARIFY/SILENT). Replaces the legacy
+		 * TS-side AIValidateResponseServerCommand reimpl.
+		 */
+		async cognitionValidateResponseDecision(params: ValidateResponseRequest): Promise<ValidateResponseDecision> {
+			const response = await this.request({
+				command: 'cognition/validate-response-decision',
+				generatedResponse: params.generatedResponse,
+				originalQuestion: params.originalQuestion,
+				questionSender: params.questionSender,
+				model: params.model,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error ?? 'Failed to validate response');
+			}
+
+			return response.result as ValidateResponseDecision;
 		}
 
 		/**

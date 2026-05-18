@@ -1,17 +1,23 @@
 /**
  * AI Validate-Response Server Command
  *
- * After generating response, AI validates if it actually answers the question.
- * Uses AIProviderDaemon for LLM-based evaluation.
+ * Thin TS shim — delegates to the Rust cognition/validate-response IPC.
+ * Rust owns the prompt, model call, and one-word decision parser
+ * (cognition/validate_response.rs). This command maps the public params
+ * shape into the IPC request and forwards the typed decision back.
+ *
+ * Replaces the previous parallel reimplementation (which carried its
+ * own prompt template + decision parser inline). Per Joel directive
+ * 2026-05-18 19:44Z: zero-users full-blown-Rust-dev mode — single PR
+ * adds the Rust path AND deletes the TS predecessor, no migration
+ * cadence.
  */
 
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
-import type { AIValidateResponseParams, AIValidateResponseResult, ResponseDecision } from '../shared/AIValidateResponseTypes';
-import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
-import { LOCAL_MODELS } from '../../../../system/shared/Constants';
+import type { AIValidateResponseParams, AIValidateResponseResult } from '../shared/AIValidateResponseTypes';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class AIValidateResponseServerCommand extends CommandBase<AIValidateResponseParams, AIValidateResponseResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -19,81 +25,35 @@ export class AIValidateResponseServerCommand extends CommandBase<AIValidateRespo
   }
 
   async execute(params: AIValidateResponseParams): Promise<AIValidateResponseResult> {
-    // Build validation prompt
-    const validationPrompt = this.buildValidationPrompt(params);
+    try {
+      const client = await RustCoreIPCClient.getInstanceAsync();
+      const decision = await client.cognitionValidateResponseDecision({
+        generatedResponse: params.generatedResponse,
+        originalQuestion: params.originalQuestion,
+        questionSender: params.questionSender,
+        model: params.model,
+      });
 
-    // Simple LLM call for validation
-    const request: TextGenerationRequest = {
-      messages: [
-        { role: 'system', content: 'You are a response validator. Reply ONLY with one word: SUBMIT, CLARIFY, or SILENT.' },
-        { role: 'user', content: validationPrompt }
-      ],
-      model: params.model ?? LOCAL_MODELS.GATING,
-      temperature: 0.1,  // Low temp for consistent decisions
-      maxTokens: 10,     // Just need one word
-      provider: 'local'
-    };
-
-    const response = await AIProviderDaemon.generateText(request);
-
-    if (!response.text) {
-      throw new Error(response.error ?? 'AI validation failed');
-    }
-
-    // Parse decision
-    const decision = this.parseDecision(response.text);
-    const reason = this.getReasonForDecision(decision, params);
-
-    return {
-      context: params.context,
-      sessionId: params.sessionId,
-      decision,
-      confidence: 0.9,  // High confidence for simple yes/no decisions
-      reason,
-      debug: params.verbose ? {
-        promptSent: validationPrompt,
-        aiResponse: response.text
-      } : undefined
-    };
-  }
-
-  private buildValidationPrompt(params: AIValidateResponseParams): string {
-    return `You generated this response:
-"${params.generatedResponse}"
-
-Original question from ${params.questionSender}:
-"${params.originalQuestion}"
-
-Does your response actually answer their question?
-
-Reply with ONLY ONE WORD:
-- SUBMIT (your response clearly answers the question)
-- CLARIFY (you're unsure, should ask for clarification)
-- SILENT (your response is off-topic, stay silent)`;
-  }
-
-  private parseDecision(aiResponse: string): ResponseDecision {
-    const text = aiResponse.trim().toUpperCase();
-
-    if (text.includes('CLARIFY')) {
-      return 'CLARIFY';
-    } else if (text.includes('SILENT')) {
-      return 'SILENT';
-    }
-
-    return 'SUBMIT';  // Default to submitting
-  }
-
-  private getReasonForDecision(decision: ResponseDecision, _params: AIValidateResponseParams): string {
-    switch (decision) {
-      case 'SUBMIT':
-        return 'Response appears relevant to the question';
-      case 'CLARIFY':
-        return 'Uncertain if response answers question, should ask for clarification';
-      case 'SILENT':
-        return 'Response is off-topic or does not address the question';
-      default:
-        return 'Unknown decision';
+      return {
+        context: params.context,
+        sessionId: params.sessionId,
+        decision: decision.decision,
+        confidence: decision.confidence,
+        reason: decision.reason,
+        debug: params.verbose ? {
+          promptSent: '(Rust-owned — see cognition::validate_response logs)',
+          aiResponse: '(Rust-owned — see cognition::validate_response logs)',
+        } : undefined,
+      };
+    } catch (error) {
+      return {
+        context: params.context,
+        sessionId: params.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+        decision: 'SUBMIT',  // Fail-open: ship the draft when validator fails
+        confidence: 0.0,
+        reason: `Validation error: ${error instanceof Error ? error.message : String(error)}`,
+      };
     }
   }
 }
