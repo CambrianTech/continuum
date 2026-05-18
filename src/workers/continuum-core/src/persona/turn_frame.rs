@@ -694,7 +694,10 @@ mod tests {
         let prompt = PersonaTurnFrame::from_inbox_frame(frame)
             .response_prompt()
             .unwrap();
-        assert!(prompt.system_prompt.is_none(), "PR-1 leaves system_prompt for caller");
+        assert!(
+            prompt.system_prompt.is_none(),
+            "PR-1 leaves system_prompt for caller"
+        );
     }
 
     #[test]
@@ -757,10 +760,7 @@ mod tests {
 
     // ─── ResponsePrompt::to_prompt_text (Lane D turn-execute) ──
 
-    fn prompt_with(
-        system: Option<&str>,
-        messages: Vec<(PromptRole, &str)>,
-    ) -> ResponsePrompt {
+    fn prompt_with(system: Option<&str>, messages: Vec<(PromptRole, &str)>) -> ResponsePrompt {
         ResponsePrompt {
             persona_id: Uuid::nil(),
             room_id: Uuid::nil(),
