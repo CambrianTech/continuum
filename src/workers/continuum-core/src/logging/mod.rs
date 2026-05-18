@@ -205,8 +205,8 @@ pub fn module_path_to_category(module_path: &str) -> &'static str {
         "modules/code"
     } else if path.starts_with("ipc::") {
         "system/ipc"
-    } else if path.starts_with("concurrent::") {
-        "system/concurrent"
+    } else if path.starts_with("concurrency::") {
+        "system/concurrency"
     } else if path.starts_with("ffi::") {
         "system/ffi"
     } else if path.starts_with("runtime::") {
