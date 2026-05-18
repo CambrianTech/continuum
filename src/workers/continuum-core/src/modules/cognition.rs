@@ -552,6 +552,39 @@ impl ServiceModule for CognitionModule {
             }
 
             // ================================================================
+            // Tool Embedding Cache + Semantic Search (continuum#1411 PR-2)
+            // ================================================================
+            "cognition/embed-tools" => {
+                let _timer = TimingGuard::new("module", "cognition_embed_tools");
+                let request = serde_json::from_value::<
+                    crate::cognition::tool_embedding::EmbedToolsRequest,
+                >(params.clone())
+                .map_err(|e| format!("Invalid embed-tools request: {e}"))?;
+                let result = crate::cognition::tool_embedding::embed_tools(request)
+                    .await
+                    .map_err(|e| format!("embed-tools error: {e}"))?;
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
+                ))
+            }
+
+            "cognition/semantic-search-tools" => {
+                let _timer = TimingGuard::new("module", "cognition_semantic_search_tools");
+                let request = serde_json::from_value::<
+                    crate::cognition::tool_embedding::SemanticSearchToolsRequest,
+                >(params.clone())
+                .map_err(|e| format!("Invalid semantic-search-tools request: {e}"))?;
+                let results =
+                    crate::cognition::tool_embedding::semantic_search_tools(request)
+                        .await
+                        .map_err(|e| format!("semantic-search-tools error: {e}"))?;
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&results)
+                        .map_err(|e| format!("Serialize error: {e}"))?,
+                ))
+            }
+
+            // ================================================================
             // Message Deduplication (single source of truth in Rust)
             // ================================================================
             "cognition/has-evaluated" => {
