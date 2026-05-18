@@ -1,0 +1,35 @@
+# Lane F persona-ts ratchet — allowlist of permitted new .ts paths
+#
+# Format: one path-glob per line; bash extglob matching against repo-relative paths.
+# Comments (#) and blank lines ignored.
+#
+# This file lists the categories of TypeScript that ARE allowed to land
+# under the watched persona-cognition directories. Anything new outside
+# this allowlist OR outside the committed baseline fails the ratchet.
+#
+# What belongs here:
+#   - generated schemas / ts-rs output
+#   - ORM noun classes (data model objects, not verbs/cognition)
+#   - UI-only types
+#   - thin transport shims (≤30 lines, just IPC glue, no runtime logic)
+#
+# What does NOT belong here:
+#   - any new cognition module
+#   - any new "controller" / "service" / "manager" / "executor" / "engine"
+#     class living in persona dirs
+#   - anything that calls inference, scheduling, or other Rust-owned concerns
+#     from TypeScript
+#
+# When in doubt: move it to Rust. That's the lane.
+
+# Generated artifacts
+**/*.generated.ts
+**/*.gen.ts
+**/generated/**/*.ts
+
+# Type-only files (.d.ts is already excluded by the script's find filter)
+**/*.types.ts
+
+# Schemas (ts-rs / zod / json-schema typings)
+**/*.schema.ts
+**/schemas/**/*.ts
