@@ -279,6 +279,7 @@ mod tests {
             persona: sample_persona(),
             composition: CompositionPlan(ArtifactId::new(Uuid::from_u128(100))),
             prompt_tokens: vec![1, 2, 3],
+            prompt_text: None,
             budget: GenerationBudget {
                 max_tokens: 100,
                 max_duration_ms: 5000,
@@ -292,6 +293,7 @@ mod tests {
             request_id: sample_request_id(),
             persona: sample_persona(),
             completion_tokens: vec![10, 11],
+            completion_text: None,
             finish_reason: FinishReason::Stop,
             elapsed_ms: 100,
             tokens_generated: 2,

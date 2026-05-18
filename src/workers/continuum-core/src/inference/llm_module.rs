@@ -205,12 +205,22 @@ pub struct InferenceRequest {
     pub request_id: InferenceRequestId,
     pub persona: PersonaId,
     pub composition: CompositionPlan,
-    /// Tokenized prompt. PR-1 carries the token ids; PR-3's
-    /// inference engine consumes them directly. The tokenizer
-    /// lives in persona-cognition or a separate tokenizer module
-    /// (PR-3 decides).
+    /// Tokenized prompt for raw-token engines. PR-1 ships this as
+    /// the canonical input; PR-4 adds `prompt_text` for adapter-
+    /// based engines (LlamaCppAdapter) that tokenize internally.
+    /// At least one of (prompt_tokens, prompt_text) must be
+    /// non-empty; the engine chooses based on its capability.
     #[ts(type = "Array<number>")]
     pub prompt_tokens: Vec<u32>,
+    /// PR-4 addition: plain-text prompt for engines that tokenize
+    /// internally (AIProviderAdapter-backed paths like
+    /// LlamaCppAdapter). `None` = caller is using the
+    /// prompt_tokens path. When set, adapter-based engines wrap
+    /// it as a single user-role `ChatMessage` before calling
+    /// `generate_text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub prompt_text: Option<String>,
     pub budget: GenerationBudget,
     pub sampling: SamplingParams,
     /// Optional caller-provided stop sequences. Generation halts
@@ -231,17 +241,25 @@ pub struct InferenceRequest {
 pub struct InferenceComplete {
     pub request_id: InferenceRequestId,
     pub persona: PersonaId,
-    /// Tokens emitted by the model. Caller (persona-cognition)
-    /// detokenizes if it needs the string form.
+    /// Tokens emitted by the model. Raw-token engines populate
+    /// directly; adapter-based engines (PR-4) populate empty Vec
+    /// + the actual output goes in `completion_text` because the
+    /// adapter doesn't expose token-level output.
     #[ts(type = "Array<number>")]
     pub completion_tokens: Vec<u32>,
+    /// PR-4 addition: plain-text completion from adapter-based
+    /// engines (LlamaCppAdapter). `None` = raw-token path; the
+    /// caller decodes `completion_tokens` if it needs text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub completion_text: Option<String>,
     pub finish_reason: FinishReason,
     /// Wall-clock duration from request receipt to last token.
     #[ts(type = "number")]
     pub elapsed_ms: u64,
     /// Number of tokens generated. Equals `completion_tokens.len()`
-    /// but stored as a field so consumers don't have to deserialize
-    /// the full Vec to know the count.
+    /// for raw-token engines; adapter-based engines populate from
+    /// the adapter's UsageMetrics.completion_tokens count.
     #[ts(type = "number")]
     pub tokens_generated: u32,
 }
@@ -430,6 +448,7 @@ mod tests {
             persona: sample_persona(),
             composition: sample_composition(),
             prompt_tokens: vec![1, 2, 3, 4, 5],
+            prompt_text: None,
             budget: GenerationBudget {
                 max_tokens: 100,
                 max_duration_ms: 5000,
@@ -451,6 +470,7 @@ mod tests {
             persona: sample_persona(),
             composition: sample_composition(),
             prompt_tokens: vec![1],
+            prompt_text: None,
             budget: GenerationBudget {
                 max_tokens: 10,
                 max_duration_ms: 100,
@@ -473,6 +493,7 @@ mod tests {
             request_id: sample_request_id(),
             persona: sample_persona(),
             completion_tokens: vec![10, 11, 12],
+            completion_text: None,
             finish_reason: FinishReason::MaxTokens,
             elapsed_ms: 1234,
             tokens_generated: 3,
@@ -528,6 +549,7 @@ mod tests {
             persona: sample_persona(),
             composition: sample_composition(),
             prompt_tokens: vec![],
+            prompt_text: None,
             budget: GenerationBudget {
                 max_tokens: 0,
                 max_duration_ms: 0,
@@ -553,6 +575,7 @@ mod tests {
             persona,
             composition: sample_composition(),
             prompt_tokens: vec![],
+            prompt_text: None,
             budget: GenerationBudget {
                 max_tokens: 0,
                 max_duration_ms: 0,
@@ -564,6 +587,7 @@ mod tests {
             request_id: id,
             persona,
             completion_tokens: vec![],
+            completion_text: None,
             finish_reason: FinishReason::Stop,
             elapsed_ms: 0,
             tokens_generated: 0,
