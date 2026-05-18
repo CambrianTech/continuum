@@ -93,12 +93,6 @@ is_true() {
   esac
 }
 
-receipt_value() {
-  local file="$1"
-  local key="$2"
-  sed -n "s/.*\"$key\": \"\\([^\"]*\\)\".*/\\1/p" "$file" | head -1
-}
-
 check_receipts() {
   local missing=()
   local role receipt_status
@@ -114,15 +108,19 @@ check_receipts() {
     echo "✗ receipt directory missing: $RECEIPT_DIR" >&2
     exit 2
   fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "✗ jq is required for receipt aggregation; refusing brittle JSON parsing" >&2
+    exit 1
+  fi
 
   for role in "${REQUIRED_RECEIPTS[@]}"; do
     matched=0
-    while IFS= read -r receipt; do
+    while IFS= read -r -d '' receipt; do
       [ -f "$receipt" ] || continue
-      if [ "$(receipt_value "$receipt" role)" = "$role" ] \
-        && [ "$(receipt_value "$receipt" expected_sha)" = "$EXPECTED_SHA" ]; then
+      if jq -e --arg role "$role" --arg sha "$EXPECTED_SHA" \
+        '.role == $role and .expected_sha == $sha' "$receipt" >/dev/null 2>&1; then
         matched=1
-        receipt_status="$(receipt_value "$receipt" status)"
+        receipt_status="$(jq -r '.status // "missing"' "$receipt")"
         if [ "$receipt_status" = "pass" ]; then
           echo "  ✓ $role: $receipt"
         else
@@ -131,7 +129,7 @@ check_receipts() {
         fi
         break
       fi
-    done < <(find "$RECEIPT_DIR" -type f -name '*.json' 2>/dev/null | sort)
+    done < <(find "$RECEIPT_DIR" -type f -name '*.json' -print0 2>/dev/null | sort -z)
 
     if [ "$matched" -eq 0 ]; then
       echo "  ✗ missing receipt: $role" >&2
