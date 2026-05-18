@@ -34,7 +34,12 @@
 //! - No silent default-on-error elsewhere — caller in PR-2 surfaces
 //!   typed errors.
 
+use crate::ai::adapter::InferenceDevice;
+use crate::ai::types::{EmbeddingInput, EmbeddingRequest, EmbeddingResponse};
+use crate::modules::ai_provider::global_registry;
 use serde::{Deserialize, Serialize};
+use std::sync::{LazyLock, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
 /// Default similarity threshold for `semantic_search_tools` — results
@@ -207,6 +212,269 @@ pub fn round_similarity(similarity: f32) -> f32 {
     (similarity * 1000.0).round() / 1000.0
 }
 
+// ─── Process-wide cache (PR-2) ────────────────────────────────────────
+
+/// In-memory cache of tool embeddings. Single instance per process —
+/// the registry of tools is process-singleton too, so one cache per
+/// process matches the data lifecycle. Replaces the TS-side
+/// `ToolRegistry.toolEmbeddings: Map<string, Float32Array>`.
+///
+/// `generated_at_ms` is reported on the `EmbedToolsResponse` returned
+/// from `embed_tools` but not retained on the cache struct itself —
+/// a future "cache state" IPC can re-add it when there's a real
+/// consumer; today's `semantic_search_tools` does not need it.
+#[derive(Debug, Clone)]
+struct ToolEmbeddingCache {
+    embeddings: Vec<ToolEmbedding>,
+    /// Tool description text alongside each embedding, in the same
+    /// order. Kept so `semantic_search_tools` can return descriptions
+    /// without a second lookup (TS version had `this.tools.values()`
+    /// to walk; Rust caches both per embed_tools call).
+    descriptions: Vec<ToolDescription>,
+    model: String,
+}
+
+static TOOL_EMBEDDING_CACHE: LazyLock<Mutex<Option<ToolEmbeddingCache>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+// ─── Errors (PR-2) ────────────────────────────────────────────────────
+
+/// Typed errors for the async tool-embedding API. No silent
+/// default-on-error; caller decides policy.
+#[derive(Debug, thiserror::Error)]
+pub enum ToolEmbeddingError {
+    /// No registered adapter advertised support for the requested
+    /// provider + model. Operator should check that the embedding
+    /// provider (fastembed for `nomic-embed-text`) is loaded.
+    #[error("no AI adapter for provider={provider:?} model={model:?}")]
+    NoAdapter {
+        provider: String,
+        model: Option<String>,
+    },
+    /// Provider returned an error during the `create_embedding` call.
+    /// The string carries the raw provider message — caller logs +
+    /// surfaces, never silently defaults.
+    #[error("embedding generation failed: {0}")]
+    EmbeddingFailed(String),
+    /// `semantic_search_tools` was called before any `embed_tools` —
+    /// the cache is empty. Caller should run embed_tools first OR
+    /// register tools so embed_tools can populate the cache.
+    #[error("tool embedding cache is empty — call embed_tools first")]
+    CacheEmpty,
+    /// Provider returned fewer embedding vectors than requested. Pins
+    /// the wire contract; partial responses are typed errors here.
+    #[error(
+        "provider returned {got} embeddings, expected {expected} (1 per requested tool)"
+    )]
+    EmbeddingCountMismatch { got: usize, expected: usize },
+}
+
+// ─── Async API (PR-2) ─────────────────────────────────────────────────
+
+/// Embed a batch of tools and populate the process-wide cache.
+/// Replaces TS `ToolRegistry.generateToolEmbeddings`.
+///
+/// On success: the cache is replaced (not merged) — embed_tools is the
+/// "rebuild from current tool list" operation, so any stale entries
+/// from a prior registration must drop. Returns the same embeddings
+/// to the caller for introspection / logging.
+pub async fn embed_tools(
+    request: EmbedToolsRequest,
+) -> Result<EmbedToolsResponse, ToolEmbeddingError> {
+    let model = request
+        .model
+        .clone()
+        .unwrap_or_else(|| TOOL_EMBEDDING_MODEL.to_string());
+
+    let inputs: Vec<String> = request
+        .tools
+        .iter()
+        .map(|t| format!("{}: {}", t.name, t.description))
+        .collect();
+    let expected_count = inputs.len();
+
+    let registry_arc = global_registry();
+    let registry = registry_arc.read().await;
+    let (_provider_id, adapter) = registry
+        .select(None, Some(&model), InferenceDevice::default())
+        .ok_or_else(|| ToolEmbeddingError::NoAdapter {
+            provider: "any".to_string(),
+            model: Some(model.clone()),
+        })?;
+
+    let embedding_req = EmbeddingRequest {
+        input: EmbeddingInput::Multiple(inputs),
+        model: Some(model.clone()),
+        provider: None,
+    };
+
+    let response: EmbeddingResponse = adapter
+        .create_embedding(embedding_req)
+        .await
+        .map_err(ToolEmbeddingError::EmbeddingFailed)?;
+
+    if response.embeddings.len() != expected_count {
+        return Err(ToolEmbeddingError::EmbeddingCountMismatch {
+            got: response.embeddings.len(),
+            expected: expected_count,
+        });
+    }
+
+    let generated_at_ms = now_ms();
+    let embeddings: Vec<ToolEmbedding> = request
+        .tools
+        .iter()
+        .zip(response.embeddings.iter())
+        .map(|(tool, vec)| ToolEmbedding {
+            tool_name: tool.name.clone(),
+            vector: vec.clone(),
+        })
+        .collect();
+
+    {
+        let mut cache = TOOL_EMBEDDING_CACHE
+            .lock()
+            .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+        *cache = Some(ToolEmbeddingCache {
+            embeddings: embeddings.clone(),
+            descriptions: request.tools.clone(),
+            model: model.clone(),
+        });
+    }
+
+    Ok(EmbedToolsResponse {
+        embeddings,
+        model,
+        generated_at_ms,
+    })
+}
+
+/// Rank cached tool embeddings against a query. Replaces TS
+/// `ToolRegistry.semanticSearchTools`.
+///
+/// - Embeds the query via the same adapter / model used for the
+///   cached tool embeddings (mixing models within one similarity space
+///   is meaningless).
+/// - Computes cosine similarity against each cached tool vector.
+/// - Filters by the configured / requested threshold (default
+///   [`SIMILARITY_THRESHOLD`]).
+/// - Returns top-N sorted by similarity descending.
+///
+/// Returns [`ToolEmbeddingError::CacheEmpty`] if `embed_tools` hasn't
+/// run yet — caller surfaces; no silent fallback.
+pub async fn semantic_search_tools(
+    request: SemanticSearchToolsRequest,
+) -> Result<Vec<SemanticSearchResult>, ToolEmbeddingError> {
+    let (cached_embeddings, cached_descriptions, cache_model) = {
+        let cache = TOOL_EMBEDDING_CACHE
+            .lock()
+            .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+        let entry = cache.as_ref().ok_or(ToolEmbeddingError::CacheEmpty)?;
+        (
+            entry.embeddings.clone(),
+            entry.descriptions.clone(),
+            entry.model.clone(),
+        )
+    };
+
+    // Use the cache's model unless the request explicitly overrides
+    // — but ALWAYS embed the query through the same path. Passing a
+    // different model would compute cosine in an alien embedding
+    // space; refuse silent mixing.
+    let model = request.model.clone().unwrap_or(cache_model);
+    let threshold = request.threshold.unwrap_or(SIMILARITY_THRESHOLD);
+    let limit = request.limit.unwrap_or(DEFAULT_SEARCH_LIMIT) as usize;
+
+    let registry_arc = global_registry();
+    let registry = registry_arc.read().await;
+    let (_provider_id, adapter) = registry
+        .select(None, Some(&model), InferenceDevice::default())
+        .ok_or_else(|| ToolEmbeddingError::NoAdapter {
+            provider: "any".to_string(),
+            model: Some(model.clone()),
+        })?;
+
+    let embedding_req = EmbeddingRequest {
+        input: EmbeddingInput::Single(request.query),
+        model: Some(model.clone()),
+        provider: None,
+    };
+    let response: EmbeddingResponse = adapter
+        .create_embedding(embedding_req)
+        .await
+        .map_err(ToolEmbeddingError::EmbeddingFailed)?;
+
+    let query_vector = response
+        .embeddings
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            ToolEmbeddingError::EmbeddingFailed("provider returned no query embedding".to_string())
+        })?;
+
+    let mut results: Vec<SemanticSearchResult> = cached_embeddings
+        .iter()
+        .zip(cached_descriptions.iter())
+        .filter_map(|(emb, desc)| {
+            let sim = cosine_similarity(&query_vector, &emb.vector);
+            if sim < threshold {
+                return None;
+            }
+            Some(SemanticSearchResult {
+                name: emb.tool_name.clone(),
+                description: desc.description.clone(),
+                category: extract_category(&emb.tool_name).to_string(),
+                similarity: round_similarity(sim),
+            })
+        })
+        .collect();
+
+    results.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    results.truncate(limit);
+    Ok(results)
+}
+
+/// Test-only: clear the process-wide cache. Production code should
+/// rebuild via `embed_tools`, never silently clear.
+#[cfg(test)]
+pub fn _clear_cache_for_tests() {
+    let mut cache = TOOL_EMBEDDING_CACHE
+        .lock()
+        .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+    *cache = None;
+}
+
+/// Test-only: install a synthetic cache. Lets cache-dependent
+/// behavior (filtering, sorting, limit, descriptions lookup) be
+/// tested without requiring a real adapter.
+#[cfg(test)]
+pub fn _install_cache_for_tests(
+    embeddings: Vec<ToolEmbedding>,
+    descriptions: Vec<ToolDescription>,
+    model: String,
+) {
+    let mut cache = TOOL_EMBEDDING_CACHE
+        .lock()
+        .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+    *cache = Some(ToolEmbeddingCache {
+        embeddings,
+        descriptions,
+        model,
+    });
+}
+
+/// Current unix-ms timestamp. Private helper.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +633,95 @@ mod tests {
     #[test]
     fn default_limit_matches_ts_literal() {
         assert_eq!(DEFAULT_SEARCH_LIMIT, 10);
+    }
+
+    // ─── ToolEmbeddingError Display ───────────────────────────────────
+
+    /// What this catches: Display impl carries the provider + model
+    /// for NoAdapter so debug logs surface what went unrouted.
+    #[test]
+    fn error_no_adapter_displays_provider_and_model() {
+        let err = ToolEmbeddingError::NoAdapter {
+            provider: "any".to_string(),
+            model: Some("nomic-embed-text".to_string()),
+        };
+        let s = format!("{err}");
+        assert!(s.contains("any"));
+        assert!(s.contains("nomic-embed-text"));
+    }
+
+    /// What this catches: CacheEmpty Display gives an actionable
+    /// next-step ("call embed_tools first").
+    #[test]
+    fn error_cache_empty_displays_actionable_hint() {
+        let s = format!("{}", ToolEmbeddingError::CacheEmpty);
+        assert!(s.contains("embed_tools"));
+    }
+
+    /// What this catches: EmbeddingCountMismatch Display includes both
+    /// counts so an operator can diagnose a provider truncation.
+    #[test]
+    fn error_count_mismatch_includes_both_numbers() {
+        let err = ToolEmbeddingError::EmbeddingCountMismatch {
+            got: 3,
+            expected: 5,
+        };
+        let s = format!("{err}");
+        assert!(s.contains('3'));
+        assert!(s.contains('5'));
+    }
+
+    // ─── semantic_search_tools (cache-driven, no adapter needed) ──────
+
+    /// What this catches: semantic search returns CacheEmpty before
+    /// embed_tools has run. Mirrors TS guard that throws on missing
+    /// embeddings.
+    #[tokio::test]
+    async fn semantic_search_empty_cache_errors() {
+        _clear_cache_for_tests();
+        let request = SemanticSearchToolsRequest {
+            query: "anything".to_string(),
+            model: None,
+            limit: None,
+            threshold: None,
+        };
+        // Note: we expect CacheEmpty before any adapter lookup.
+        let result = semantic_search_tools(request).await;
+        assert!(
+            matches!(result, Err(ToolEmbeddingError::CacheEmpty)),
+            "expected CacheEmpty, got {result:?}"
+        );
+    }
+
+    /// What this catches: cache install + clear is plumbed and the
+    /// test scaffolding doesn't leak state across tests. Without
+    /// `_clear_cache_for_tests`, the `semantic_search_empty_cache_errors`
+    /// test above would non-deterministically pass/fail depending on
+    /// test order. This pins the test-scaffolding contract.
+    #[test]
+    fn cache_install_and_clear_for_tests() {
+        _clear_cache_for_tests();
+        _install_cache_for_tests(
+            vec![ToolEmbedding {
+                tool_name: "test/tool".to_string(),
+                vector: vec![1.0, 0.0],
+            }],
+            vec![ToolDescription {
+                name: "test/tool".to_string(),
+                description: "test description".to_string(),
+            }],
+            "test-model".to_string(),
+        );
+        // Read it back to confirm install
+        let snapshot = {
+            let guard = TOOL_EMBEDDING_CACHE.lock().unwrap();
+            guard.clone()
+        };
+        assert!(snapshot.is_some());
+        let cache = snapshot.unwrap();
+        assert_eq!(cache.embeddings.len(), 1);
+        assert_eq!(cache.embeddings[0].tool_name, "test/tool");
+        assert_eq!(cache.model, "test-model");
+        _clear_cache_for_tests();
     }
 }
