@@ -143,13 +143,13 @@ PressureBroker bootstrap PR-1/2/3 + Docker tier Phase 1 + inference-grpc
 fail-closed). For each area, the "current read" is what is provably in canary,
 not what is intended. "Alpha risk" calls out the gap to the alpha gates above.
 
-| Area | Current read (canary @ 2026-05-16) | Alpha risk |
+| Area | Current read (canary @ 2026-05-18) | Alpha risk |
 |---|---|---|
 | AIRC collaboration | AIRC canary has public `knock` plus forward-secret `approve`/`decrypt-approval` handoff; Continuum PR #1110 pilots repo-local `.airc/` collaboration rules; agent flywheel board #1272 active with codex-main heartbeats | Queue/nudge work tracked in CambrianTech/airc#562; Continuum personas and external agent providers are not yet first-class workers on the shared queue; manager-role transition in progress this session |
 | UI room state | PR #1047 merged to `canary` for stale duplicate General tab recovery | Needs live UI reload validation before `main` promotion |
-| Docker | Phase 1 of Docker tier surface merged (#1297 — `system/docker-tier-stats` IPC + ts-rs DockerTierStats); GPU profile + tier pool eviction (#1238, #1239) still open; historical bulk and mixed responsibility still in the runtime images | Docker can mask failures and slow iteration; tier pool eviction + capability-visible health are the remaining alpha lifts |
-| Rust core | Substantial gains this session: PressureBroker bootstrap landed (#1307 PR-1 + #1308 PR-2 IPC + #1310 PR-3 status surface); runtime lease broker added (#1313); cognition migrated for `should_respond` (#1284), `rate_proposals` (#1290/#1291/#1293), `generate_recipe` (#1298/#1301/#1303), `vision-describe` (#1292); dead Candle paths deleted (#1277/#1279/#1281/#1288); inference-grpc + orpheus hard-fail on no-GPU (#1314); InferenceCapability trait + probe + registry shipping on `feat/grid-inference-routing-pr2-announcer` (PR-1 of GRID-INFERENCE-ROUTING) | RuntimeFrame / CognitionTurnFrame still unbuilt (Lane D); per-module hardcoded concurrency declarations still present across `src/workers/continuum-core/src/modules/*.rs`; universal base trait + derive macro + scaffold generator (the "low-friction inheritance" triplet from CBAR-SUBSTRATE) not yet landed |
-| Node/TS | Net-negative trend this week: ~2500 LOC TS deleted via cognition oxidization stacks (rate_proposals adapter zero-callers deletion + generate_recipe shim collapse 371→140 LOC + post-inference adequacy gate rip #1309); SQLite default config landed (#1271) | Multiple TS daemons still own runtime logic that belongs in continuum-core; the F-lane ratchet (TS cognition deletion CI gate) is not yet active; new TS in cognition paths is still mechanically allowed |
+| Docker | Phase 1 of Docker tier surface merged (#1297 — `system/docker-tier-stats` IPC + ts-rs DockerTierStats); `scripts/main-promotion-gate.sh` landed (#1399) as the canary->main per-host receipt gate; GPU profile + tier pool eviction (#1238, #1239) still open; historical bulk and mixed responsibility still in the runtime images | Docker can mask failures and slow iteration; tier pool eviction + capability-visible health are the remaining alpha lifts; main promotion still needs linux/amd64 CUDA (#1410) and linux/amd64 Vulkan receipts for the same SHA |
+| Rust core | Substantial gains this session: PressureBroker bootstrap landed (#1307 PR-1 + #1308 PR-2 IPC + #1310 PR-3 status surface); runtime lease broker added (#1313); cognition migrated for `should_respond` (#1284), `rate_proposals` (#1290/#1291/#1293), `generate_recipe` (#1298/#1301/#1303), `vision-describe` (#1292), and `generate_response` (#1398/#1400/#1402/#1407); inference-llm runtime registration landed (#1404); `PersonaTurnFrame` now carries consolidated inbox, RAG seed, response prompt, and replay schema v2 with captured prompt (#1412); ToolRegistry semantic-search oxidizer PR-1 landed (#1413) | Lane D is no longer unstarted, but the alpha-critical `persona/turn-execute` command (#1409) is still in flight; per-module hardcoded concurrency declarations still present across `src/workers/continuum-core/src/modules/*.rs`; universal base trait + derive macro + scaffold generator (the "low-friction inheritance" triplet from CBAR-SUBSTRATE) not yet landed |
+| Node/TS | Net-negative trend this week: TS cognition deleted through oxidization stacks; `AIDecisionService.generateResponse` is now a thin Rust IPC shim and no longer owns TS slot coordination (#1402/#1407); Lane F ratchet landed for persona cognition dirs (#1401) and expanded to `src/system/ai/server` (#1406); SQLite default config landed (#1271) | Multiple TS daemons still own runtime logic that belongs in continuum-core; Lane F PR-2 still needs CI/pre-push enforcement beyond the local ratchet, and PR-3 still needs forbidden-provider/fallback scans |
 | Config/secrets | `$HOME/.continuum/config.env` is the local source of truth, but empty placeholders and per-process loading have caused false provider availability | Cloud providers can steal local turns and fail; grid nodes cannot yet receive encrypted config consistently |
 | Tests | Many tests exist; the alpha loop still overuses `npm start`/browser/Docker as proof; `no_cpu_fallback_contract.rs` regression test exists for the llama.cpp/ORT paths only — does not cover the Candle-side device selection where the orpheus + inference-grpc CPU fallbacks lived before #1314 | Slow tests hide root causes and discourage TDD; the no-CPU-fallback contract test needs widening to the whole workers tree, not just three whitelisted files |
 
@@ -161,15 +161,15 @@ on each other. Each lane starts from `canary`, opens a focused PR back to
 `canary`, and posts validation evidence before merge. Assignment is explicit:
 if an agent cannot work a lane, it says so on AIRC and the lane is reassigned.
 
-| Lane | State @ 2026-05-16 | Owner | Branch | First PR | Merge gate |
+| Lane | State @ 2026-05-18 | Owner | Branch | First PR | Merge gate |
 |---|---|---|---|---|---|
 | A. Rust model registry and admission | In progress | RTX/Windows lane (catalog + admission); supervision rotated from Codex PM → this manager | `feature/rust-model-registry-admission` (merged-stack), follow-ups on canary | Typed Rust catalog, capability request, resolver/admission explanation | Rust resolver tests plus missing-Qwen fail-hard test |
-| B. Installer model seeding and GPU profiles | Phase 1 landed (#1297 Docker tier surface); GPU profile + tier-pool eviction still open (#1238/#1239) | RTX/Windows Docker lane; Lane A owns registry artifact contract | `feature/docker-gpu-profile-modular` | `model-init`/installer seeds required Qwen artifacts into the runtime model volume | Windows/RTX fresh install reaches model-ready state or fails loud |
+| B. Installer model seeding and GPU profiles | Phase 1 landed (#1297 Docker tier surface); main-promotion release receipt script landed (#1399); GPU profile + tier-pool eviction still open (#1238/#1239); linux/amd64 CUDA receipt is tracked as #1410 | RTX/Windows Docker lane; Lane A owns registry artifact contract; Windows/WSL Claude expected to own #1410 when online | `feature/docker-gpu-profile-modular` plus receipt work per host | `model-init`/installer seeds required Qwen artifacts into the runtime model volume; per-host receipts prove Docker/GPU paths | Windows/RTX fresh install reaches model-ready state or fails loud; `scripts/main-promotion-gate.sh --check-receipts` passes only when Mac/Metal, linux/amd64 CUDA, and linux/amd64 Vulkan receipts share the promoted SHA |
 | C. VDD telemetry substrate | In progress; structured RuntimeMetric emitting from inference and persona but VDD report command not yet bound | RTX/Windows substrate; Mac/Metal adapter sub-task carried by Mac lane | `feature/rust-vdd-telemetry-substrate` | Structured timing/resource metrics flow into trace/event bus | VDD report shows first-token, tok/s, CPU, GPU, VRAM/RSS from structured data |
-| D. CBAR persona runtime frame | **Unstarted.** Critical Phase 0 gap. CBAR-SUBSTRATE-ARCHITECTURE.md spec exists but RuntimeFrame/CognitionTurnFrame are not built. Most other lanes are blocked-or-degraded on this | **Needs owner claim** — this is the alpha critical path | `feature/cbar-persona-runtime-frame` | Rust `PersonaTurnFrame` with lazy RAG/media/priority outputs and inbox coalescing | Multi-message smoke produces one consolidated turn, not per-event inference flood |
+| D. CBAR persona runtime frame | In progress. `PersonaTurnFrame` landed with drain-frame wrap (#1398), lazy `response_prompt` (#1400), `generate_response` Rust IPC path (#1402/#1407), inference-llm runtime registration (#1404), and replay schema v2 carrying the exact response prompt (#1412) | Lane D owner on AIRC; #1409 claimed on `feat/lane-d-persona-turn-execute` | `feature/cbar-persona-runtime-frame` / `feat/lane-d-persona-turn-execute` | Rust `PersonaTurnFrame` with lazy RAG/media/priority outputs and inbox coalescing | #1409 must produce a Rust `persona/turn-execute` command that chains drain -> frame -> response_prompt -> inference/llm/request -> prod replay record; multi-message smoke produces one consolidated turn, not per-event inference flood |
 | E. Pressure broker and paging gate | Bootstrap landed (#1307 PR-1 broker types/registry, #1308 PR-2 IPC, #1310 PR-3 status surface, #1313 runtime lease broker); paging (KV/LoRA residency) + pooled mtmd context still open | RTX/Mac runtime lanes | `feature/pressurebroker-admission-gate` (bootstrap stack merged); follow-ups branch per PR | Unified admission gate blocks unsafe backend/model/context loads | Concurrency test refuses unsafe second load and reports `Backpressured`/`Unavailable` |
-| F. TS cognition deletion ratchet | Manual deletion progressing (~2500 LOC TS deleted via 8 PRs this session) but mechanical CI gate not yet enforced | **Needs owner claim** — without the ratchet, new TS cognition can still mechanically slip back in | `feature/persona-ts-deletion-ratchet` | CI/check script enforces no new persona cognition TS and net-negative touched cognition | PR fails if verb-shaped TS cognition grows or introduces forbidden provider/fallback strings |
-| G. Canary PR hygiene | In progress; rotating from Codex PM → this manager. Doc refresh in flight on `joel/docs-alpha-refresh` | This manager | `docs/alpha-rust-workstreams` (current refresh: `joel/docs-alpha-refresh`) | This document plus issue/PR checklist cleanup | Every active PR has owner, blocker, validation command, and canary target |
+| F. TS cognition deletion ratchet | PR-1 local ratchet landed (#1401); AI server cognition shim coverage landed (#1406). Current baseline covers seven watched dirs including `src/system/ai/server` | Lane F split: ratchet owner for CI wiring + deprecated-provider scan; deletion owners refresh baseline in deletion PRs when watched LOC drops | `feature/persona-ts-deletion-ratchet` follow-ups | CI/check script enforces no new persona cognition TS and net-negative touched cognition | PR fails if verb-shaped TS cognition grows or introduces forbidden provider/fallback strings; PR-2 must wire ratchet into pre-push/CI, PR-3 adds deprecated-provider/fallback scan |
+| G. Canary PR hygiene | Active. #1408 refresh captures the 2026-05-18 canary stack and current delegation state | Codex currently claimed #1408; manager/architect reviews over AIRC | `docs/alpha-gap-refresh-1408` | This document plus issue/PR checklist cleanup | Every active PR has owner, blocker, validation command, and canary target; stale canary PRs (#1085/#1071/#1026) are triaged instead of left as failed-smoke sediment |
 | H. Substrate governor + tiered genome cache | **Proposed** — design landed via continuum#1327. 7-PR implementation sequence: governor types → tier stores → recall API → composer+speculator → foundry skeleton → sentinel skeleton → sharing-protocol local-first | **Needs owner claim** | `feature/substrate-governor-genome-cache` | `SubstrateGovernor` + `HardwareClass` + hardware detection at boot | Same Rust binary writes different policy on MacBook Air vs RTX 5090; VDD records prove different tier sizes / concurrency / speculation aggressiveness |
 
 Adjacent active workstream not in the lane table:
@@ -179,8 +179,12 @@ Adjacent active workstream not in the lane table:
   the grid-side counterpart of Lane A: Lane A says which model the request
   needs, GRID-INFERENCE-ROUTING says which peer can serve it. Owner: airc-8a5e.
   Tracked under § 7 (AIRC And Continuum Internal AI Collaboration) below.
+- **ToolRegistry semantic search oxidizer (#1411)** — PR-1 landed as #1413
+  (pure types, cosine similarity, threshold). Follow-ups should mirror the
+  Rust oxidizer cadence used by `check_redundancy` and `generate_response`:
+  Rust cache + IPC handler, TS shim, then dead-TS deletion.
 
-Lane claim updates as of 2026-05-16:
+Lane claim updates as of 2026-05-18:
 
 - Lane A has shipped its first wave — `model_registry/` exists in
   `src/workers/continuum-core/src/`, with curated catalog rows and an
@@ -196,12 +200,13 @@ Lane claim updates as of 2026-05-16:
   result, "VDD" is still mostly read from logs rather than from a single
   command's structured output. RAG source tracing and `SEAM_RAG_COMPOSE`
   remain joint with Lane D.
-- **Lane D is the most expensive currently-unstarted lane.** PressureBroker
-  (Lane E) and the inbox coalescing CBAR pattern were both written in the
-  expectation that a `RuntimeFrame` / `CognitionTurnFrame` exists. Until it
-  does, every persona-side consumer still owns ad-hoc fan-out and the
-  inference-per-event flood the lane was created to remove. Claiming this lane
-  is the single highest leverage move on the board right now.
+- **Lane D is now the active critical path rather than an unstarted lane.**
+  `PersonaTurnFrame` can wrap drained inboxes, expose a response prompt, and
+  emit replay records whose v2 schema carries the exact prompt that fed
+  inference (#1398/#1400/#1412). `generate_response` now admits and executes
+  through Rust (#1402/#1407), and `inference-llm` is registered at runtime
+  (#1404). The next blocker is #1409: a Rust `persona/turn-execute` command
+  that chains the pieces in one Rust call and writes the prod replay record.
 - Lane E bootstrap landed (#1307 / #1308 / #1310 / #1313). The remaining lane
   scope is paging (KV/LoRA residency, pooled mtmd context, eviction policy)
   and **deletion of pre-broker concurrency hacks** that still bypass the
@@ -550,7 +555,8 @@ that prevents new verb-shaped TS cognition and forces deletion as Rust lands.
 | PR #1046 | AIRC bridge harness for Continuum testing | Merge/rebase/close deliberately; use it to reduce manual `jtag chat/send` and paste relay |
 | PR #1068 | Rust persona recorder as single fixture source | Merged to canary; sets the SSoT pattern for replay/capture |
 | PR #1069 | Rust response cleanup, TS sanitizer removed | Merged to canary; sets the "move behavior Rust-side, delete TS duplicate" pattern |
-| stale canary PRs (#941, #972, #973, #1026, #912) | PR debt | Rebase and validate within one work session or close with issue notes |
+| stale canary PRs (#1085, #1071, #1026) | PR debt | All are currently blocked by failing `carl-install-smoke (linux/amd64)`. Rebase and validate within one work session, convert durable findings to issues, or close stale; do not let them remain failed-smoke sediment |
+| older stale canary PRs (#941, #972, #973, #912) | Historical PR debt | Re-check whether still open/relevant; close with issue notes if superseded |
 | #967 | personas as AIRC peers | Treat as the collaboration unlock: Continuum personas should participate without manual CLI glue |
 | CambrianTech/airc#559 | public knock, approved room handoff, shared sprint queue | AIRC canary has knock and encrypted approve handoff; Continuum must consume the workflow through `.airc/` and persona/agent integration |
 | CambrianTech/airc#562 | peer-to-peer work queue/nudges | Use as the always-on flywheel: any approved peer can nudge idle agents, discover stale/unowned work, and keep the queue moving |
@@ -1015,6 +1021,13 @@ Main promotion requires:
 - canary has been tested by at least one other agent/human where practical
 - failures are linked to issues, not buried in chat
 - the promotion PR lists included canary commits and validation evidence
+- `scripts/main-promotion-gate.sh --check-receipts` passes for the promoted
+  SHA. Required receipts today are `darwin-arm64-metal`, `linux-amd64-cuda`,
+  and `linux-amd64-vulkan`; a single Mac receipt is not enough for main.
+- Windows/WSL Nvidia ownership is tracked in #1410. When the host joins AIRC,
+  it should run:
+  `CONTINUUM_RELEASE_PUSH_IMAGES=1 CONTINUUM_GATE_RUN_HEARTBEAT=1 scripts/main-promotion-gate.sh`
+  from a clean `origin/canary` checkout and post the receipt path/output.
 
 ## Document Map
 
