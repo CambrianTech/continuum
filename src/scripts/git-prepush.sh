@@ -207,9 +207,17 @@ echo "---------------------------------------------------------------"
 
 DOCKER_PUSH_START=$(date +%s)
 DOCKER_RELEVANT="$RUST_RELEVANT"
+DOCKER_PUSH_MODE="${CONTINUUM_PREPUSH_DOCKER:-manual}"
 
 if [ "$DOCKER_RELEVANT" -eq 0 ]; then
     echo "⏭️  No Rust/docker changes in this push — skipping native-arch build."
+elif [ "$DOCKER_PUSH_MODE" != "1" ] && [ "$DOCKER_PUSH_MODE" != "true" ]; then
+    echo "⏭️  Native-arch Docker publish skipped for pre-push."
+    echo "   Canary iteration is gated by local TS/Rust proof above."
+    echo "   Run explicitly for canary→main promotion:"
+    echo "     CONTINUUM_PREPUSH_DOCKER=1 scripts/git-prepush.sh"
+    echo "   Or run:"
+    echo "     scripts/push-current-arch.sh"
 elif [ ! -x "$REPO_ROOT/scripts/push-current-arch.sh" ]; then
     echo "⚠️  scripts/push-current-arch.sh not found or not executable — skipping."
     echo "   CI will still gate via verify-architectures, but this machine's native"

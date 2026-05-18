@@ -192,16 +192,24 @@ Carl shouldn't have to read the script source to understand what broke.
 
 ## Per-platform validation
 
+`scripts/main-promotion-gate.sh` is the single entry point for canary→main
+release receipts. Canary PRs should keep using focused Rust/TS proof; promotion
+to `main` requires receipts from the machines that can actually prove each
+hardware path.
+
 | Platform | Validator | Notes |
 |---|---|---|
 | linux/amd64 | GHA runner (`ubuntu-latest`) | Always-on. Carl's dominant platform per HF data. |
-| linux/amd64 + GPU | bigmama-wsl box, eventually self-hosted runner | Real Carl path; covers vision/persona functionality |
-| darwin/arm64 | anvil mac (manual probe), eventually puppeteer-on-mac in CI | Dev's dominant platform |
-| windows + WSL2 | green-022a (manual probe), bigmama-wsl secondary | Carl's secondary platform |
+| linux/amd64 + CUDA | bigmama-wsl box, eventually self-hosted runner | Real Nvidia Carl path; run `CONTINUUM_RELEASE_PUSH_IMAGES=1 CONTINUUM_GATE_RUN_HEARTBEAT=1 scripts/main-promotion-gate.sh`. |
+| linux/amd64 + Vulkan | Linux AMD/Intel GPU host | Real Vulkan Carl path; run `CONTINUUM_RELEASE_PUSH_IMAGES=1 CONTINUUM_GATE_RUN_HEARTBEAT=1 scripts/main-promotion-gate.sh`. |
+| darwin/arm64 + Metal | anvil mac (manual probe), eventually puppeteer-on-mac in CI | Dev's dominant platform; run `scripts/main-promotion-gate.sh` for local receipt and add `CONTINUUM_RELEASE_PUSH_IMAGES=1` when publishing arm64 slices. |
+| windows + WSL2 + CUDA | green-022a (manual probe), bigmama-wsl secondary | Carl's secondary platform; WSL2 uses the same linux/amd64 CUDA receipt script. |
 | windows native (powershell) | green-022a (manual probe via install.ps1) | New platform — rely on green's dogfood |
 
-Each push to canary should have at least the linux/amd64 smoke green before
-promotion. The other tiers are progressively-tightening.
+Each push to canary should have focused local evidence. Canary→main promotion
+must collect the Mac/Metal, linux/amd64 CUDA, and linux/amd64 Vulkan receipts
+or link a typed issue explaining the missing host. Missing hardware is not a
+reason to weaken the runtime into CPU fallback.
 
 ## Success criteria
 
