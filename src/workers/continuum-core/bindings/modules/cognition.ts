@@ -35,6 +35,10 @@ import type {
 	RedundancyDecision,
 	GenerateResponseRequest,
 	GenerateResponseResult,
+	EmbedToolsRequest,
+	EmbedToolsResponse,
+	SemanticSearchToolsRequest,
+	SemanticSearchResult,
 } from '../../../../shared/generated';
 import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
 import type { RecipeTurnBatchPlan } from '../../../../shared/generated/cognition/RecipeTurnBatchPlan';
@@ -131,6 +135,8 @@ export interface CognitionMixin {
 	}): Promise<AIGatingDecision>;
 	cognitionCheckRedundancy(params: RedundancyCheckRequest): Promise<RedundancyDecision>;
 	cognitionGenerateResponse(params: GenerateResponseRequest): Promise<GenerateResponseResult>;
+	cognitionEmbedTools(params: EmbedToolsRequest): Promise<EmbedToolsResponse>;
+	cognitionSemanticSearchTools(params: SemanticSearchToolsRequest): Promise<SemanticSearchResult[]>;
 
 	/**
 	 * Run the per-persona admission gate over a single InboxMessage.
@@ -921,6 +927,51 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as GenerateResponseResult;
+		}
+
+		/**
+		 * Rust-owned tool-embedding batch generation. Replaces the
+		 * TS-side `ToolRegistry.generateToolEmbeddings` call to
+		 * `AIProviderDaemon.createEmbedding`. Populates the process-wide
+		 * cache; `cognitionSemanticSearchTools` reads from it.
+		 */
+		async cognitionEmbedTools(params: EmbedToolsRequest): Promise<EmbedToolsResponse> {
+			const response = await this.request({
+				command: 'cognition/embed-tools',
+				tools: params.tools,
+				model: params.model,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error ?? 'Failed to embed tools');
+			}
+
+			return response.result as EmbedToolsResponse;
+		}
+
+		/**
+		 * Rust-owned semantic search over the tool-embedding cache.
+		 * Replaces the TS-side `ToolRegistry.semanticSearchTools` flow
+		 * (inline `cosineSimilarity` + manual sort + slice). Caller
+		 * must have run `cognitionEmbedTools` first (returns typed
+		 * `CacheEmpty` error otherwise).
+		 */
+		async cognitionSemanticSearchTools(
+			params: SemanticSearchToolsRequest
+		): Promise<SemanticSearchResult[]> {
+			const response = await this.request({
+				command: 'cognition/semantic-search-tools',
+				query: params.query,
+				model: params.model,
+				limit: params.limit,
+				threshold: params.threshold,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error ?? 'Failed to search tools');
+			}
+
+			return response.result as SemanticSearchResult[];
 		}
 
 		/**
