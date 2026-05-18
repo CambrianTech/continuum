@@ -68,6 +68,7 @@ export type { ThreatEvidence } from './ThreatEvidence';
 export type { ThreatFrame } from './ThreatFrame';
 export type { ThreatFrameKind } from './ThreatFrameKind';
 export type { ThreatPatternKind } from './ThreatPatternKind';
+export type { ThreatRefusalAuditPayload } from './ThreatRefusalAuditPayload';
 export type { ThreatSeverity } from './ThreatSeverity';
 export type { ThreatSignal } from './ThreatSignal';
 export type { ThroughputJob } from './ThroughputJob';

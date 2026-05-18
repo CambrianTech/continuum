@@ -6,6 +6,7 @@ export type { AccessDenied } from './AccessDenied';
 export type { AcquireSource } from './AcquireSource';
 export type { ArtifactId } from './ArtifactId';
 export type { ArtifactRef } from './ArtifactRef';
+export type { CandidateArtifact } from './CandidateArtifact';
 export type { CapabilityQuery } from './CapabilityQuery';
 export type { CompositionHint } from './CompositionHint';
 export type { CompositionRef } from './CompositionRef';
