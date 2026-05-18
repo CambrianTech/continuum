@@ -34,6 +34,7 @@ pub mod footprint_registry;
 pub mod kv_quant;
 pub mod llamacpp_adapter;
 pub mod llm_module;
+pub mod llm_module_service;
 pub mod lora;
 pub mod model;
 pub mod ort_providers;
