@@ -54,6 +54,56 @@ pub struct RagAssemblySeed {
     pub source_message_ids: Vec<Uuid>,
 }
 
+/// Role of one prompt turn in the chat-style ResponsePrompt.
+/// Matches the de-facto chat-completion role taxonomy (System /
+/// User / Assistant). The persona module emits only User role
+/// today (inbox messages); System comes from the persona's
+/// IdentityState (filled in by the caller); Assistant comes from
+/// the persona's prior outputs when self-reflection is wired
+/// (future PR).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptRole {
+    System,
+    User,
+    Assistant,
+}
+
+/// One turn in the chat-style ResponsePrompt. Pairs a `PromptRole`
+/// with a content string. Multimodal content (images, audio) lands
+/// in a follow-up PR per the CBAR-SUBSTRATE multimodal contract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptMessage {
+    pub role: PromptRole,
+    pub content: String,
+}
+
+/// Lazy output of `PersonaTurnFrame::response_prompt()`: the chat-
+/// style prompt ready for inference. Inference adapters (PR-4
+/// inference-llm + LlamaCppAdapter + cloud adapters) translate
+/// this into their native request format.
+///
+/// The substrate owns this shape so prompt-building stays
+/// replayable + deterministic — no per-adapter TS prompt-build
+/// hacks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponsePrompt {
+    pub persona_id: Uuid,
+    pub room_id: Uuid,
+    /// Persona identity / role instruction. PR-1 returns `None`;
+    /// callers fill in from the persona's IdentityState (loaded
+    /// separately from the turn frame). Future PR may load it
+    /// lazily into the frame.
+    pub system_prompt: Option<String>,
+    pub messages: Vec<PromptMessage>,
+    /// The inbox message that triggered this turn — used by
+    /// sentinel attribution + replay to correlate the prompt back
+    /// to the originating event.
+    pub trigger_message_id: Uuid,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonaTurnFrameReplayRecord {
@@ -130,6 +180,51 @@ impl PersonaTurnFrame {
                 .iter()
                 .map(|message| message.id)
                 .collect::<Vec<_>>(),
+        })
+    }
+
+    /// Build the chat-style prompt ready for inference. Each
+    /// inbox message becomes one `PromptMessage` in chronological
+    /// order; the persona's identity / system instruction is left
+    /// as `None` for the caller to fill in from the persona's
+    /// IdentityState (a separate concern not loaded into the turn
+    /// frame).
+    ///
+    /// This is the deterministic chat-shape input the inference
+    /// engine (PR-4 inference-llm) consumes via its
+    /// `InferenceRequest.prompt_text` field. The substrate owns
+    /// the prompt-build path; no TS PRG wraps a raw transcript
+    /// into a model-specific prompt format. Per Joel's "Rust owns
+    /// behavior" + "no TS shimming Rust outputs" rules.
+    ///
+    /// Returns `None` for empty frames (matches the
+    /// consolidated_inbox + rag_seed contract — empty inbox = no
+    /// turn to plan, not a placeholder synthesis).
+    pub fn response_prompt(&self) -> Option<ResponsePrompt> {
+        let chunk = self.consolidated_inbox()?;
+        let messages: Vec<PromptMessage> = chunk
+            .messages
+            .iter()
+            .map(|m| PromptMessage {
+                // Every inbox message maps to a User-role prompt
+                // turn from the persona's perspective. The
+                // persona may have its own outgoing messages
+                // in the room, but those would not be in this
+                // persona's inbox — the inbox is what the
+                // persona is asked to react to. PR-follow-up
+                // may add Assistant/System role disambiguation
+                // when the inbox carries the persona's own
+                // prior outputs for self-reflection.
+                role: PromptRole::User,
+                content: format!("{}: {}", m.sender_name, m.content),
+            })
+            .collect();
+        Some(ResponsePrompt {
+            persona_id: chunk.persona_id,
+            room_id: chunk.room_id,
+            system_prompt: None,
+            messages,
+            trigger_message_id: chunk.trigger_message_id,
         })
     }
 
@@ -313,5 +408,145 @@ mod tests {
         assert!(PersonaTurnFrame::from_inbox_frame(frame)
             .replay_record()
             .is_none());
+    }
+
+    // ─── ResponsePrompt lazy output tests ──────────────────────
+
+    #[test]
+    fn response_prompt_returns_none_for_empty_frame() {
+        let persona_id = Uuid::new_v4();
+        let room_id = Uuid::new_v4();
+        let frame = PersonaInboxFrame {
+            persona_id,
+            room_id,
+            messages: vec![],
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: 0,
+                queue_depth_after: 0,
+                messages_drained: 0,
+                oldest_timestamp: 0,
+                newest_timestamp: 0,
+                frame_span_ms: 0,
+                drain_duration_us: 0,
+            },
+        };
+        assert!(PersonaTurnFrame::from_inbox_frame(frame)
+            .response_prompt()
+            .is_none());
+    }
+
+    #[test]
+    fn response_prompt_carries_one_user_message_per_inbox_message() {
+        let room_id = Uuid::new_v4();
+        let frame = PersonaInboxFrame {
+            persona_id: Uuid::new_v4(),
+            room_id,
+            messages: vec![
+                message(room_id, "Joel", "first line", 1_000, 0.9),
+                message(room_id, "Mira", "second line", 1_010, 0.8),
+            ],
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: 2,
+                queue_depth_after: 0,
+                messages_drained: 2,
+                oldest_timestamp: 1_000,
+                newest_timestamp: 1_010,
+                frame_span_ms: 10,
+                drain_duration_us: 2,
+            },
+        };
+        let prompt = PersonaTurnFrame::from_inbox_frame(frame)
+            .response_prompt()
+            .expect("non-empty frame produces ResponsePrompt");
+
+        assert_eq!(prompt.messages.len(), 2);
+        assert!(matches!(prompt.messages[0].role, PromptRole::User));
+        assert!(matches!(prompt.messages[1].role, PromptRole::User));
+        assert_eq!(prompt.messages[0].content, "Joel: first line");
+        assert_eq!(prompt.messages[1].content, "Mira: second line");
+    }
+
+    #[test]
+    fn response_prompt_system_prompt_is_none_pr1() {
+        // Per the docstring: PR-1 returns None; callers fill in
+        // from IdentityState. Pin so a future PR that auto-loads
+        // it is a deliberate flip of this test.
+        let room_id = Uuid::new_v4();
+        let frame = PersonaInboxFrame {
+            persona_id: Uuid::new_v4(),
+            room_id,
+            messages: vec![message(room_id, "Joel", "hi", 1, 0.5)],
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: 1,
+                queue_depth_after: 0,
+                messages_drained: 1,
+                oldest_timestamp: 1,
+                newest_timestamp: 1,
+                frame_span_ms: 0,
+                drain_duration_us: 1,
+            },
+        };
+        let prompt = PersonaTurnFrame::from_inbox_frame(frame)
+            .response_prompt()
+            .unwrap();
+        assert!(prompt.system_prompt.is_none(), "PR-1 leaves system_prompt for caller");
+    }
+
+    #[test]
+    fn response_prompt_trigger_matches_latest_message_id() {
+        let room_id = Uuid::new_v4();
+        let m1 = message(room_id, "Joel", "earlier", 1, 0.5);
+        let m2 = message(room_id, "Mira", "trigger", 2, 0.5);
+        let trigger_id = m2.id;
+        let frame = PersonaInboxFrame {
+            persona_id: Uuid::new_v4(),
+            room_id,
+            messages: vec![m1, m2],
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: 2,
+                queue_depth_after: 0,
+                messages_drained: 2,
+                oldest_timestamp: 1,
+                newest_timestamp: 2,
+                frame_span_ms: 1,
+                drain_duration_us: 1,
+            },
+        };
+        let prompt = PersonaTurnFrame::from_inbox_frame(frame)
+            .response_prompt()
+            .unwrap();
+        // trigger_message_id is the latest message (matches
+        // consolidated_inbox semantics).
+        assert_eq!(prompt.trigger_message_id, trigger_id);
+    }
+
+    #[test]
+    fn response_prompt_round_trips_through_serde() {
+        let room_id = Uuid::new_v4();
+        let frame = PersonaInboxFrame {
+            persona_id: Uuid::new_v4(),
+            room_id,
+            messages: vec![message(room_id, "Joel", "hi", 1, 0.5)],
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: 1,
+                queue_depth_after: 0,
+                messages_drained: 1,
+                oldest_timestamp: 1,
+                newest_timestamp: 1,
+                frame_span_ms: 0,
+                drain_duration_us: 1,
+            },
+        };
+        let prompt = PersonaTurnFrame::from_inbox_frame(frame)
+            .response_prompt()
+            .unwrap();
+        let json = serde_json::to_string(&prompt).unwrap();
+        let back: ResponsePrompt = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, prompt);
+
+        // Wire shape: camelCase fields + lowercase role.
+        assert!(json.contains("\"systemPrompt\":"), "got {json}");
+        assert!(json.contains("\"triggerMessageId\":"), "got {json}");
+        assert!(json.contains("\"role\":\"user\""), "got {json}");
     }
 }
