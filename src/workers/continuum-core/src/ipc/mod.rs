@@ -936,6 +936,15 @@ pub fn start_server(
         crate::inference::llm_module_service::InferenceLlmModule::new(),
     ));
 
+    // Lane C PR-3: VddModule — `vdd/report` reads structured
+    // VDD records from `~/.continuum/vdd/<sha>/<scenario>/record.jsonl`
+    // (written by the harness via `ArtifactWriter`) and emits a
+    // machine-readable report. Replaces "tail the log and grep
+    // for first-token-ms" with a single command return. PR-body
+    // VDD claims become `./jtag vdd/report --git_sha=<sha>`,
+    // not pasted terminal text.
+    runtime.register(Arc::new(crate::modules::vdd::VddModule::new()));
+
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());
     let cognition_state = Arc::new(

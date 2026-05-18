@@ -42,6 +42,7 @@ pub const EXPECTED_MODULES: &[&str] = &[
     "dataset",           // Dataset import/management for Academy training
     "persona_allocator", // Hardware-aware persona allocation decisions
     "inference-llm",     // Phase 5: local LLM generation (MODULE-CATALOG §II)
+    "vdd",               // Lane C PR-3: VDD report from structured artifacts
 ];
 
 pub struct Runtime {
