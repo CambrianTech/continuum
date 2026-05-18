@@ -31,6 +31,7 @@ new_fixture_root() {
     mkdir -p "$root/src/system/user/server/modules/being"
     mkdir -p "$root/src/system/user/server/modules/central-nervous-system"
     mkdir -p "$root/src/system/user/server/attention"
+    mkdir -p "$root/src/system/ai/server"
     echo "$root"
 }
 
@@ -202,6 +203,20 @@ case_missing_baseline_returns_2() {
     rm -rf "$root" "$allowlist"
 }
 
+case_ai_server_shim_growth_fails() {
+    local root; root="$(new_fixture_root)"
+    write_ts "$root/src/system/ai/server/AIDecisionService.ts" 10
+    local baseline; baseline="$(mktemp)"
+    local allowlist; allowlist="$(mktemp)"
+    : > "$allowlist"
+    gen_baseline "$root" "$baseline" "$allowlist"
+    write_ts "$root/src/system/ai/server/AIDecisionService.ts" 25
+    assert "ai_server_shim_growth_fails" assert_exit 1 \
+        env PERSONA_RATCHET_BASELINE="$baseline" PERSONA_RATCHET_ALLOWLIST="$allowlist" \
+        "$RATCHET" --root "$root" check
+    rm -rf "$root" "$baseline" "$allowlist"
+}
+
 case_refresh_writes_baseline_idempotently() {
     local root; root="$(new_fixture_root)"
     write_ts "$root/src/system/user/server/modules/cognition/A.ts" 12
@@ -230,6 +245,7 @@ else
     case_new_types_file_passes
     case_deletion_after_refresh_passes
     case_missing_baseline_returns_2
+    case_ai_server_shim_growth_fails
     case_refresh_writes_baseline_idempotently
 fi
 
