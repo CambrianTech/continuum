@@ -14,6 +14,7 @@
 
 pub mod artifacts;
 pub mod catalog;
+pub mod discovery;
 pub mod loader;
 pub mod singleton;
 pub mod types;

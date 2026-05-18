@@ -36,7 +36,6 @@ pub mod live;
 pub mod logging;
 pub mod memory;
 pub mod model_registry;
-pub mod models;
 pub mod modules;
 pub mod orm;
 pub mod paging;
