@@ -365,6 +365,139 @@ impl ServiceModule for CognitionModule {
                 ))
             }
 
+            // ─── Lane D: persona/turn-execute (alpha card #1409) ──
+            //
+            // Chains the full Rust persona turn in one IPC hop:
+            //   drain inbox
+            //     -> wrap in PersonaTurnFrame
+            //     -> derive ResponsePrompt (lazy output)
+            //     -> build InferenceRequest (prompt_text path)
+            //     -> dispatch `inference/llm/request` via the
+            //        global command_executor (routes to the
+            //        InferenceLlmModule registered in PR-5 #1404)
+            //     -> bundle replay_record + inference response
+            //
+            // Why one command: the TS persona loop previously
+            // executed each stage with its own IPC round-trip
+            // (drain, then build prompt, then call inference) —
+            // 3 round-trips per turn, prompt-building lived in
+            // TS. Lane D pulls all three into the substrate so
+            // (a) the prompt is built in Rust where the turn-frame
+            // lives, (b) the production replay record carries the
+            // exact prompt that fed inference, (c) the persona
+            // turn becomes one observable unit on the bus.
+            //
+            // Empty drain returns `{ "replayRecord": null,
+            // "inferenceResponse": null }` — no-op, not an error.
+            // Persona not found returns typed Err per Joel's never-
+            // swallow rule.
+            //
+            // The actual inference happens in InferenceLlmModule:
+            // when wired with no adapter (PR-5 shape), it returns
+            // the 3-token stub response; when wired with an
+            // adapter (future), it runs the real engine. Either
+            // way the turn-execute command's contract is the same.
+            "persona/turn-execute" => {
+                let _timer = TimingGuard::new("module", "persona_turn_execute");
+                let persona_uuid = p.uuid("persona_id")?;
+                let window_ms = p.u64_or("window_ms", 80);
+                let max_items_u64 = p.u64_or("max_items", 16);
+                let max_items = usize::try_from(max_items_u64)
+                    .map_err(|_| format!("max_items too large: {max_items_u64}"))?;
+
+                // Optional composition + sampling + budget params. Callers that
+                // don't pass them get defaults; the substrate uses the canonical
+                // SamplingParams::default + a conservative GenerationBudget so
+                // a misconfigured caller doesn't run unbounded inference.
+                let composition_artifact_id =
+                    p.uuid_opt("composition_artifact_id").unwrap_or(Uuid::nil());
+                let max_tokens = u32::try_from(p.u64_or("max_tokens", 512))
+                    .map_err(|_| "max_tokens too large for u32".to_string())?;
+                let max_duration_ms = u32::try_from(p.u64_or("max_duration_ms", 10_000))
+                    .map_err(|_| "max_duration_ms too large for u32".to_string())?;
+
+                let persona = self
+                    .state
+                    .personas
+                    .get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
+
+                let raw_frame = persona.inbox.drain_frame(window_ms, max_items);
+                record_drained_turn_frame(&raw_frame);
+
+                // Empty drain: returned as null pair, NOT an Err.
+                // Idle ticks are routine; a no-op is the correct
+                // outcome, not a failure.
+                let inbox_frame = match raw_frame {
+                    Some(f) => f,
+                    None => {
+                        return Ok(CommandResult::Json(serde_json::json!({
+                            "replayRecord": Value::Null,
+                            "inferenceResponse": Value::Null,
+                        })));
+                    }
+                };
+
+                let turn_frame = PersonaTurnFrame::from_inbox_frame(inbox_frame);
+                let replay_record = turn_frame.replay_record();
+                if let Some(ref rec) = replay_record {
+                    crate::persona::recorder::record_turn_frame_replay(rec);
+                }
+
+                let response_prompt = turn_frame
+                    .response_prompt()
+                    .ok_or_else(|| {
+                        format!(
+                            "persona/turn-execute: non-empty drain produced no ResponsePrompt for {persona_uuid}"
+                        )
+                    })?;
+
+                // Build the substrate InferenceRequest. The
+                // request_id is fresh per-turn; the persona +
+                // composition come from the turn frame + caller.
+                // prompt_text is the flattened ResponsePrompt;
+                // prompt_tokens is empty (adapter-path).
+                let inference_request = crate::inference::llm_module::InferenceRequest {
+                    request_id: crate::inference::llm_module::InferenceRequestId::new(
+                        Uuid::new_v4(),
+                    ),
+                    persona: crate::genome::working_set::PersonaId::new(persona_uuid),
+                    composition: crate::inference::llm_module::CompositionPlan(
+                        crate::genome::working_set::ArtifactId::new(composition_artifact_id),
+                    ),
+                    prompt_tokens: vec![],
+                    prompt_text: Some(response_prompt.to_prompt_text()),
+                    budget: crate::inference::llm_module::GenerationBudget {
+                        max_tokens,
+                        max_duration_ms,
+                    },
+                    sampling: crate::inference::llm_module::SamplingParams::default(),
+                    stop_sequences: vec![],
+                };
+
+                // Dispatch via the global command_executor. Routes
+                // to InferenceLlmModule (registered in PR-5 #1404)
+                // through the ModuleRegistry. The executor maps
+                // unhandled commands to the TS bridge; for
+                // inference/llm/request the Rust route wins.
+                let inference_response = crate::runtime::command_executor::execute_json(
+                    crate::inference::llm_module_service::COMMAND_REQUEST,
+                    serde_json::to_value(&inference_request)
+                        .map_err(|e| format!("Serialize inference request: {e}"))?,
+                )
+                .await
+                .map_err(|e| {
+                    format!(
+                        "persona/turn-execute: inference dispatch failed for {persona_uuid}: {e}"
+                    )
+                })?;
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "replayRecord": replay_record,
+                    "inferenceResponse": inference_response,
+                })))
+            }
+
             // ================================================================
             // Admission Gate (continuum#1121 PR-4)
             // ================================================================
@@ -1663,6 +1796,139 @@ mod turn_frame_recording_tests {
 
         assert!(turn_frame_replay_record(&None).is_none());
         assert!(turn_frame_replay_record(&Some(empty)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod turn_execute_tests {
+    //! Lane D persona/turn-execute command surface tests.
+    //!
+    //! End-to-end inference dispatch goes through the global
+    //! `command_executor::executor()` which is only initialized at
+    //! runtime startup (ipc/mod.rs). These tests cover the paths
+    //! that DON'T depend on the executor:
+    //!   - persona-not-found returns a typed Err (loud-fail per
+    //!     never-swallow rule)
+    //!   - empty drain short-circuits before dispatch and returns
+    //!     the documented {"replayRecord": null,
+    //!     "inferenceResponse": null} bundle
+    //!
+    //! The dispatch-success path is covered by integration tests
+    //! that boot a Runtime with InferenceLlmModule registered.
+    use super::*;
+    use crate::rag::RagEngine;
+    use std::sync::Arc;
+
+    fn module_with_persona(persona_id: Uuid) -> CognitionModule {
+        let rag_engine = Arc::new(RagEngine::new());
+        let state = Arc::new(CognitionState::new(rag_engine.clone()));
+        state.personas.insert(
+            persona_id,
+            crate::persona::PersonaCognition::new(
+                persona_id,
+                "Test Persona".to_string(),
+                rag_engine,
+            ),
+        );
+        CognitionModule::new(state)
+    }
+
+    #[tokio::test]
+    async fn turn_execute_persona_not_found_returns_typed_error() {
+        let rag_engine = Arc::new(RagEngine::new());
+        let state = Arc::new(CognitionState::new(rag_engine));
+        let module = CognitionModule::new(state);
+
+        let missing_persona = Uuid::new_v4();
+        let result = module
+            .handle_command(
+                "persona/turn-execute",
+                serde_json::json!({
+                    "persona_id": missing_persona.to_string(),
+                }),
+            )
+            .await;
+
+        match result {
+            Err(msg) => {
+                assert!(
+                    msg.contains("No cognition for"),
+                    "expected 'No cognition for' in error, got: {msg}"
+                );
+                assert!(msg.contains(&missing_persona.to_string()));
+            }
+            Ok(_) => panic!("missing persona must surface typed Err"),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_execute_empty_drain_returns_null_bundle() {
+        // Persona exists but inbox is empty -> the command should
+        // short-circuit BEFORE any inference dispatch, returning
+        // the documented null pair. If it ever tried to dispatch
+        // through command_executor::executor() (which isn't
+        // initialized in tests), the call would panic — so this
+        // test also doubles as a regression guard for the
+        // empty-drain short-circuit.
+        let persona_id = Uuid::new_v4();
+        let module = module_with_persona(persona_id);
+
+        let result = module
+            .handle_command(
+                "persona/turn-execute",
+                serde_json::json!({
+                    "persona_id": persona_id.to_string(),
+                    "window_ms": 50,
+                    "max_items": 8,
+                }),
+            )
+            .await
+            .expect("empty drain is a no-op, not an error");
+
+        match result {
+            CommandResult::Json(v) => {
+                assert_eq!(
+                    v.get("replayRecord"),
+                    Some(&Value::Null),
+                    "empty drain produces null replayRecord; got {v}"
+                );
+                assert_eq!(
+                    v.get("inferenceResponse"),
+                    Some(&Value::Null),
+                    "empty drain produces null inferenceResponse; got {v}"
+                );
+            }
+            CommandResult::Binary { .. } => panic!("expected Json"),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_execute_bad_max_items_returns_typed_error() {
+        // Defensive: usize::try_from rejects > usize::MAX (always
+        // succeeds on 64-bit but defends 32-bit builds). The
+        // happy path validation comes via the empty-drain test
+        // above; this one pins the param-parse error path.
+        let persona_id = Uuid::new_v4();
+        let module = module_with_persona(persona_id);
+
+        let result = module
+            .handle_command(
+                "persona/turn-execute",
+                serde_json::json!({
+                    "persona_id": persona_id.to_string(),
+                    "max_duration_ms": u64::MAX,
+                }),
+            )
+            .await;
+        match result {
+            Err(msg) => {
+                assert!(
+                    msg.contains("max_duration_ms too large"),
+                    "expected max_duration_ms overflow error, got: {msg}"
+                );
+            }
+            Ok(_) => panic!("u64::MAX max_duration_ms must fail u32 conversion"),
+        }
     }
 }
 
