@@ -186,11 +186,19 @@ Adjacent active workstream not in the lane table:
 
 Lane claim updates as of 2026-05-18:
 
-- Lane A has shipped its first wave — `model_registry/` exists in
+- Lane A has shipped a Rust crate skeleton — `model_registry/` exists in
   `src/workers/continuum-core/src/`, with curated catalog rows and an
-  admission resolver. Open follow-ups: missing-Qwen fail-hard end-to-end (must
-  surface in the chat UI, not just structured status) and `ts-rs` exports
-  shrink the duplicate TS model maps in Lane F's deletion targets.
+  admission resolver — but it is **NOT shipped** in the sense of "alpha
+  contract met." Live UI QA on 2026-05-18 19:18Z surfaced the failure
+  mode: `Vision AI error: model id 'Qwen/Qwen2-VL-7B-Instruct-GGUF' not
+  in registry — add it to models.toml`. 20 personas, 0 responses. The
+  Rust crate's "canonical" status is contradicted by 5 other sources of
+  truth (see "Multi-source-of-truth merge gate" in the Lane A section
+  below for the full inventory + hard gate). Open Lane A blockers:
+  delete `models.toml`, delete or auto-generate `src/shared/models.json`
+  and the `ModelRegistry.ts` variants, surface missing-model as a typed
+  UI failure (never silence), and prove vision works against an
+  initialized 20-persona room.
 - Lane B Phase 1 landed (#1297 `system/docker-tier-stats` IPC + ts-rs
   `DockerTierStats`). Capability-visible health and tier-pool eviction
   (#1238/#1239) are the next Lane B PRs; both should consume the Lane A
@@ -294,6 +302,71 @@ while no local Qwen model exists and personas silently produce zero replies.
 - duplicate TS model maps/context windows
 - free-form provider/model strings in persona seed/runtime paths
 - stale local-model fallback branches and any forbidden provider tombstones
+
+**Multi-source-of-truth merge gate (added 2026-05-18 from live UI QA)**:
+
+Lane A is NOT shipped — and any claim it is "first wave done" is contradicted
+by the live UI failure mode observed at 2026-05-18 19:18Z: `Vision AI error:
+model id 'Qwen/Qwen2-VL-7B-Instruct-GGUF' not in registry — add it to
+models.toml`. That error message admits the architecture violation: a
+`models.toml` separate from the Rust `model_registry/` crate is a parallel
+source of truth, and 20 personas produced zero responses because the TS side
+asked for a model that the Rust side's TOML config didn't have.
+
+Inventoried sources of model-definition truth as of 2026-05-18:
+
+1. `src/workers/continuum-core/src/model_registry/` — Rust crate (THE canonical owner)
+2. `src/workers/continuum-core/config/models.toml` — Rust-side config file (DELETE)
+3. `src/shared/models.json` — TS source (DELETE or auto-generate from #1)
+4. `src/shared/ModelRegistry.ts` — TS source (DELETE or auto-generate from #1)
+5. `src/system/shared/ModelRegistry.ts` — TS variant in some worktrees (DELETE)
+6. `src/shared/generated/inference/ModelRegistry.ts` — generated (regen from #1 only)
+
+The .d.ts files at `src/dist/shared/generated/cognition/ResolvedModel.d.ts`
+and `src/dist/system/user/server/modules/PersonaResponseGenerator.d.ts`
+explicitly call `models.toml` "the canonical source" — that comment is the
+documentation of the bug. The Rust crate `model_registry/` is supposed to
+own the truth; the TOML and TS variants must be either deleted or generated
+from the crate, never hand-edited.
+
+Lane A merge gate (hard):
+
+- `src/workers/continuum-core/config/models.toml` is DELETED. Model catalog
+  rows live in Rust code under `model_registry/`, not in a config file.
+  Model definitions are CODE (a curated catalog the engineer commits to),
+  not CONFIG (something an operator edits at runtime).
+- `src/shared/models.json` and any hand-edited `ModelRegistry.ts` files are
+  either DELETED or regenerated from the Rust crate via `ts-rs`. Editing
+  them by hand is forbidden — the generator overwrites edits.
+- The Rust resolver MUST resolve `Qwen/Qwen2-VL-7B-Instruct-GGUF` (and all
+  other models any persona references) from the curated catalog with NO
+  config-file fallback. If a persona requests a model the catalog doesn't
+  vet, the resolver returns `Unavailable(NotInCatalog)` with an actionable
+  remedy directing the engineer to add a curated row to the Rust catalog
+  — never "add it to models.toml" because the TOML must not exist.
+- "Add it to models.toml" as an error suggestion is ALSO a regression — any
+  error message that recommends editing a config file outside `model_registry/`
+  fails the gate.
+- Capability-driven admission, not exact-string match. Personas request
+  capabilities (vision-capable Qwen-class) and the registry picks the best
+  vetted candidate. Persona seed should not hardcode `Qwen/Qwen2-VL-7B-Instruct-GGUF`
+  as a string — that's another flavor of multi-source-of-truth (the persona
+  seed becomes source #7).
+
+Test for "Lane A is done":
+
+- Grep proves only `src/workers/continuum-core/src/model_registry/` defines
+  model rows in source. No TOML/JSON/YAML/.ts file declares a model.
+- 20 personas, vision call: every one of them gets either a typed response
+  or `Unavailable(specific reason)` in the UI — none silently produce zero
+  output.
+- Browser smoke at `http://localhost:9000/chat/general`: invoke vision on a
+  Qwen2-VL persona, observe the response or a structured failure in the
+  UI, not silence.
+
+Until ALL of the above hold, Lane A is open and any other PR that touches
+model selection, inference admission, or model resolution is patching
+around the real bug.
 
 ### Lane B: Installer Model Seeding And GPU Profiles
 
