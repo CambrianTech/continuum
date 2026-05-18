@@ -72,6 +72,7 @@ WATCHED_DIRS=(
     "src/system/user/server/modules/being"
     "src/system/user/server/modules/central-nervous-system"
     "src/system/user/server/attention"
+    "src/system/ai/server"
 )
 
 # Returns LOC count (non-zero) for all .ts files under $1, excluding .d.ts

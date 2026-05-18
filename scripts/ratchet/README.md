@@ -30,6 +30,7 @@ the baseline (next section) so future PRs can't silently regrow.
 - `src/system/user/server/modules/being`
 - `src/system/user/server/modules/central-nervous-system`
 - `src/system/user/server/attention`
+- `src/system/ai/server`
 
 ## Usage
 
