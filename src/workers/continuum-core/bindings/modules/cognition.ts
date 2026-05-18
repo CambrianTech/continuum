@@ -33,6 +33,8 @@ import type {
 	AIGatingDecision,
 	RedundancyCheckRequest,
 	RedundancyDecision,
+	GenerateResponseRequest,
+	GenerateResponseResult,
 } from '../../../../shared/generated';
 import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
 import type { RecipeTurnBatchPlan } from '../../../../shared/generated/cognition/RecipeTurnBatchPlan';
@@ -128,6 +130,7 @@ export interface CognitionMixin {
 		temperature?: number;
 	}): Promise<AIGatingDecision>;
 	cognitionCheckRedundancy(params: RedundancyCheckRequest): Promise<RedundancyDecision>;
+	cognitionGenerateResponse(params: GenerateResponseRequest): Promise<GenerateResponseResult>;
 
 	/**
 	 * Run the per-persona admission gate over a single InboxMessage.
@@ -894,6 +897,30 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as RedundancyDecision;
+		}
+
+		/**
+		 * Rust-owned response generation. TypeScript keeps platform slot
+		 * coordination and logging; Rust owns the prompt assembly (system +
+		 * history with hour-gap markers + identity-reminder template),
+		 * provider call (existing local Qwen router), `tokio::time::timeout`
+		 * (replaces TS Promise.race), and typed result with timing + tokens.
+		 */
+		async cognitionGenerateResponse(params: GenerateResponseRequest): Promise<GenerateResponseResult> {
+			const response = await this.request({
+				command: 'cognition/generate-response',
+				context: params.context,
+				model: params.model,
+				temperature: params.temperature,
+				maxTokens: params.maxTokens,
+				timeoutMs: params.timeoutMs,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error ?? 'Failed to generate response');
+			}
+
+			return response.result as GenerateResponseResult;
 		}
 
 		/**
