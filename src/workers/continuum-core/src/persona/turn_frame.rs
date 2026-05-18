@@ -9,7 +9,13 @@ use super::types::InboxMessage;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION: u32 = 1;
+/// v1 = original schema (consolidated_inbox + rag_seed only).
+/// v2 = adds response_prompt as an Optional field. Forward-compat:
+/// v1 records deserialize cleanly into v2 with response_prompt =
+/// None. Backwards-compat: v2 records still load on v1 readers
+/// because old readers ignore unknown fields by default (serde
+/// behavior).
+pub const PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +119,20 @@ pub struct PersonaTurnFrameReplayRecord {
     pub inbox_frame: PersonaInboxFrame,
     pub consolidated_inbox: ConsolidatedInboxChunk,
     pub rag_seed: RagAssemblySeed,
+    /// v2 schema (PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION = 2):
+    /// the inference-ready prompt captured at record time. v1
+    /// records deserialize with None via `serde(default)`; v2
+    /// records always populate via `PersonaTurnFrame::replay_record()`.
+    ///
+    /// Why on the replay record: prod replay needs to reproduce
+    /// the exact prompt that fed inference. Building it lazily at
+    /// replay time would depend on the inbox-message → prompt
+    /// mapping logic remaining bit-identical across substrate
+    /// versions, which isn't a contract anyone wants to maintain.
+    /// Capturing the prompt at record time pins the input to
+    /// inference for downstream attribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_prompt: Option<ResponsePrompt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,6 +250,10 @@ impl PersonaTurnFrame {
 
     /// Capture the raw frame plus all derived lazy outputs needed for replay.
     /// Empty frames return `None` instead of synthesizing placeholder context.
+    ///
+    /// v2 schema captures the response_prompt at record time so
+    /// prod replay reproduces the exact inference input — see
+    /// `PersonaTurnFrameReplayRecord.response_prompt` docstring.
     pub fn replay_record(&self) -> Option<PersonaTurnFrameReplayRecord> {
         Some(PersonaTurnFrameReplayRecord {
             schema_version: PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,
@@ -238,6 +262,7 @@ impl PersonaTurnFrame {
             inbox_frame: self.inbox_frame.clone(),
             consolidated_inbox: self.consolidated_inbox()?,
             rag_seed: self.rag_seed()?,
+            response_prompt: self.response_prompt(),
         })
     }
 }
@@ -382,10 +407,149 @@ mod tests {
         assert_eq!(record.rag_seed.source_message_ids, source_ids);
 
         let json = serde_json::to_value(&record).expect("record serializes");
-        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(
+            json["schemaVersion"], 2,
+            "schema bumped to 2 with response_prompt addition"
+        );
         assert!(json.get("inboxFrame").is_some());
         assert!(json.get("consolidatedInbox").is_some());
         assert!(json.get("ragSeed").is_some());
+        // v2: response_prompt populated for non-empty frames.
+        assert!(
+            json.get("responsePrompt").is_some(),
+            "v2 schema populates response_prompt for non-empty frames"
+        );
+    }
+
+    // ─── v2 schema response_prompt on replay_record tests ──────
+
+    #[test]
+    fn v1_replay_record_without_response_prompt_deserializes_cleanly() {
+        // Simulates an old v1 record on disk: omits the
+        // response_prompt field entirely. Should deserialize with
+        // response_prompt = None (backwards-compat).
+        let json = r#"{
+            "schemaVersion": 1,
+            "personaId": "00000000-0000-0000-0000-000000000001",
+            "roomId": "00000000-0000-0000-0000-000000000002",
+            "inboxFrame": {
+                "personaId": "00000000-0000-0000-0000-000000000001",
+                "roomId": "00000000-0000-0000-0000-000000000002",
+                "metrics": {
+                    "queueDepthBefore": 1,
+                    "queueDepthAfter": 0,
+                    "messagesDrained": 1,
+                    "oldestTimestamp": 1,
+                    "newestTimestamp": 1,
+                    "frameSpanMs": 0,
+                    "drainDurationUs": 1
+                },
+                "messages": []
+            },
+            "consolidatedInbox": {
+                "personaId": "00000000-0000-0000-0000-000000000001",
+                "roomId": "00000000-0000-0000-0000-000000000002",
+                "triggerMessageId": "00000000-0000-0000-0000-000000000003",
+                "messages": [],
+                "transcript": "",
+                "sourceCount": 0,
+                "spanMs": 0
+            },
+            "ragSeed": {
+                "personaId": "00000000-0000-0000-0000-000000000001",
+                "roomId": "00000000-0000-0000-0000-000000000002",
+                "queryText": "",
+                "sourceMessageIds": []
+            }
+        }"#;
+        let record: PersonaTurnFrameReplayRecord =
+            serde_json::from_str(json).expect("v1 record deserializes");
+        assert_eq!(record.schema_version, 1);
+        assert!(
+            record.response_prompt.is_none(),
+            "v1 records have no response_prompt"
+        );
+    }
+
+    #[test]
+    fn v2_replay_record_populates_response_prompt_for_non_empty_frame() {
+        let room_id = Uuid::new_v4();
+        let frame = PersonaInboxFrame {
+            persona_id: Uuid::new_v4(),
+            room_id,
+            messages: vec![message(room_id, "Joel", "hello", 1, 0.5)],
+            metrics: PersonaInboxFrameMetrics {
+                queue_depth_before: 1,
+                queue_depth_after: 0,
+                messages_drained: 1,
+                oldest_timestamp: 1,
+                newest_timestamp: 1,
+                frame_span_ms: 0,
+                drain_duration_us: 1,
+            },
+        };
+        let record = PersonaTurnFrame::from_inbox_frame(frame)
+            .replay_record()
+            .expect("non-empty frame produces record");
+
+        // v2 schema bump.
+        assert_eq!(record.schema_version, 2);
+
+        // response_prompt populated alongside the other lazy outputs.
+        let prompt = record
+            .response_prompt
+            .as_ref()
+            .expect("v2 record has response_prompt for non-empty frame");
+        assert_eq!(prompt.messages.len(), 1);
+        assert_eq!(prompt.messages[0].content, "Joel: hello");
+    }
+
+    #[test]
+    fn v2_serialization_omits_response_prompt_when_none() {
+        // Construct a record with response_prompt=None manually (the
+        // empty-frame path doesn't produce records, so we construct
+        // by hand to test the wire shape).
+        let record = PersonaTurnFrameReplayRecord {
+            schema_version: PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,
+            persona_id: Uuid::nil(),
+            room_id: Uuid::nil(),
+            inbox_frame: PersonaInboxFrame {
+                persona_id: Uuid::nil(),
+                room_id: Uuid::nil(),
+                messages: vec![],
+                metrics: PersonaInboxFrameMetrics {
+                    queue_depth_before: 0,
+                    queue_depth_after: 0,
+                    messages_drained: 0,
+                    oldest_timestamp: 0,
+                    newest_timestamp: 0,
+                    frame_span_ms: 0,
+                    drain_duration_us: 0,
+                },
+            },
+            consolidated_inbox: ConsolidatedInboxChunk {
+                persona_id: Uuid::nil(),
+                room_id: Uuid::nil(),
+                trigger_message_id: Uuid::nil(),
+                messages: vec![],
+                transcript: String::new(),
+                source_count: 0,
+                span_ms: 0,
+            },
+            rag_seed: RagAssemblySeed {
+                persona_id: Uuid::nil(),
+                room_id: Uuid::nil(),
+                query_text: String::new(),
+                source_message_ids: vec![],
+            },
+            response_prompt: None,
+        };
+        let json = serde_json::to_value(&record).unwrap();
+        // skip_serializing_if = "Option::is_none" → field absent on wire.
+        assert!(
+            json.get("responsePrompt").is_none(),
+            "None response_prompt omits the field (skip_serializing_if)"
+        );
     }
 
     #[test]
