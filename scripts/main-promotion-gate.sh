@@ -7,6 +7,7 @@
 #
 # Usage:
 #   scripts/main-promotion-gate.sh
+#   scripts/main-promotion-gate.sh --check-receipts
 #   CONTINUUM_RELEASE_PUSH_IMAGES=1 scripts/main-promotion-gate.sh
 #
 # Important env:
@@ -22,6 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+MODE="${1:-run}"
 EXPECTED_SHA="${EXPECTED_SHA:-$(git rev-parse HEAD)}"
 SHORT_SHA="${EXPECTED_SHA:0:7}"
 IMAGE_TAG="${CONTINUUM_IMAGE_TAG:-$SHORT_SHA}"
@@ -91,6 +93,63 @@ is_true() {
   esac
 }
 
+receipt_value() {
+  local file="$1"
+  local key="$2"
+  sed -n "s/.*\"$key\": \"\\([^\"]*\\)\".*/\\1/p" "$file" | head -1
+}
+
+check_receipts() {
+  local missing=()
+  local role receipt_status
+  local matched
+
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  main-promotion-gate receipt check"
+  echo "  sha:      $EXPECTED_SHA"
+  echo "  receipts: $RECEIPT_DIR"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  if [ ! -d "$RECEIPT_DIR" ]; then
+    echo "✗ receipt directory missing: $RECEIPT_DIR" >&2
+    exit 2
+  fi
+
+  for role in "${REQUIRED_RECEIPTS[@]}"; do
+    matched=0
+    while IFS= read -r receipt; do
+      [ -f "$receipt" ] || continue
+      if [ "$(receipt_value "$receipt" role)" = "$role" ] \
+        && [ "$(receipt_value "$receipt" expected_sha)" = "$EXPECTED_SHA" ]; then
+        matched=1
+        receipt_status="$(receipt_value "$receipt" status)"
+        if [ "$receipt_status" = "pass" ]; then
+          echo "  ✓ $role: $receipt"
+        else
+          echo "  ✗ $role receipt failed: $receipt" >&2
+          missing+=("$role failed")
+        fi
+        break
+      fi
+    done < <(find "$RECEIPT_DIR" -type f -name '*.json' 2>/dev/null | sort)
+
+    if [ "$matched" -eq 0 ]; then
+      echo "  ✗ missing receipt: $role" >&2
+      missing+=("$role missing")
+    fi
+  done
+
+  if [ "${#missing[@]}" -eq 0 ]; then
+    echo "✓ all required main-promotion receipts present for $EXPECTED_SHA"
+    exit 0
+  fi
+
+  echo "" >&2
+  echo "Missing or failed required receipts:" >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+  exit 2
+}
+
 GPU_CLASS="none"
 HOST_ROLE="unsupported"
 REQUIRED_RECEIPTS=(
@@ -99,14 +158,22 @@ REQUIRED_RECEIPTS=(
   "linux-amd64-vulkan"
 )
 
+case "$MODE" in
+  run) ;;
+  --check-receipts|check-receipts) check_receipts ;;
+  *)
+    echo "Usage: $0 [--check-receipts]" >&2
+    exit 1
+    ;;
+esac
+
 if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
   HOST_ROLE="darwin-arm64-metal"
   GPU_CLASS="metal"
 elif [ "$OS" = "Linux" ] && [ "$ARCH" = "x86_64" ]; then
+  HOST_ROLE="linux-amd64"
   if grep -qi microsoft /proc/version 2>/dev/null; then
-    HOST_ROLE="wsl2-linux-amd64"
-  else
-    HOST_ROLE="linux-amd64"
+    note "WSL2 host detected; receipt still counts as linux/amd64 for the release matrix."
   fi
 
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
