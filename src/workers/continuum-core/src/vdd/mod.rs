@@ -8,6 +8,7 @@ pub mod chat_roundtrip;
 pub mod reader;
 pub mod record;
 pub mod registry;
+pub mod turn_replay;
 
 pub use artifacts::{ArtifactBundle, ArtifactWriter};
 pub use chat_roundtrip::{
@@ -17,3 +18,7 @@ pub use chat_roundtrip::{
 pub use reader::{latest_per_scenario, read_records, VddReadOptions, VddRecordEntry};
 pub use record::{HarnessStatus, StandardVddRecord, VddError};
 pub use registry::{HARNESS_SPECS, HarnessCadence, HarnessId, HarnessSpec, harness_spec};
+pub use turn_replay::{
+    read_fixture, LiveTurnReplayFixture, LiveTurnReplayWriter,
+    LIVE_TURN_REPLAY_FIXTURE_SCHEMA_VERSION,
+};
