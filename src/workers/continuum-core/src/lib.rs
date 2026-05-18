@@ -23,7 +23,6 @@ pub mod code;
 pub mod comms;
 pub mod cognition;
 pub mod concurrency;
-pub mod concurrent;
 pub mod ffi;
 pub mod forge;
 pub mod governor;
@@ -54,7 +53,7 @@ pub mod vdd;
 
 pub use audio_constants::*;
 
-pub use concurrent::*;
+pub use concurrency::*;
 pub use live::VoiceOrchestrator;
 pub use persona::{
     CognitionDecision, InboxMessage, InboxTask, Modality, Mood, PersonaCognitionEngine,
