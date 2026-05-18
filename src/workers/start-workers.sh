@@ -196,13 +196,21 @@ fi
 
 # Build Rust workers — let cargo handle incremental compilation (it's smart enough)
 SCRIPT_DIR="$(dirname "$0")"
+FEATURES_SCRIPT="$PROJECT_DIR/scripts/shared/cargo-features.sh"
+
+if [ -f "$FEATURES_SCRIPT" ]; then
+  # shellcheck source=../scripts/shared/cargo-features.sh
+  source "$FEATURES_SCRIPT"
+else
+  CARGO_GPU_FEATURES=""
+fi
 
 # Skip build if --skip-build flag passed (caller already built)
 if [[ " $* " == *" --skip-build "* ]]; then
   echo -e "${GREEN}✅ Rust build skipped (--skip-build)${NC}"
 else
-  echo -e "${YELLOW}🔨 Building Rust workers (cargo incremental)...${NC}"
-  (cd "$SCRIPT_DIR" && cargo build --release --quiet)
+  echo -e "${YELLOW}🔨 Building Rust workers (cargo incremental) ${CARGO_GPU_FEATURES:-[cpu-only]}...${NC}"
+  (cd "$SCRIPT_DIR" && cargo build --release --quiet $CARGO_GPU_FEATURES)
   echo -e "${GREEN}✅ Rust build complete${NC}"
 fi
 
