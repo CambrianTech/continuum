@@ -35,6 +35,7 @@ pub mod generate_response;
 pub mod host_capability_probe;
 pub mod model_resolver;
 pub mod rate_proposals;
+pub mod resource_admission;
 pub mod response_orchestrator;
 pub mod response_validator;
 pub mod shared_analysis;
@@ -48,6 +49,7 @@ pub mod vision_describe;
 
 pub use adaptive_throughput::*;
 pub use model_resolver::*;
+pub use resource_admission::*;
 pub use response_orchestrator::{
     orchestrate, score_persona, PersonaSlot, DEFAULT_RELEVANCE_THRESHOLD,
 };

@@ -399,6 +399,13 @@ immutable input, lazy derived outputs, coalesced work, and independent nodes.
 - Nodes pull what they need and pay only for what they request.
 - Inbox consolidation is FIFO-preserving but chunked: many room events can
   produce one planned turn instead of one inference per event.
+- The frame is the Rust-owned e2e cognition boundary: chat, live, coding,
+  game/VR, and AIRC hosts all submit generic inbox/activity items and receive
+  typed turn outputs without Node owning truth-layer cognition state.
+- Production turns must emit replayable records containing inbox inputs, frame
+  decisions, RAG source hashes, memory/hippocampus selections, prompt assembly,
+  resource leases, model/backend choice, and output metadata. Tests may use
+  fixtures, but the fixture format must come from real prod records.
 
 **Owned files/modules**:
 
@@ -420,11 +427,15 @@ immutable input, lazy derived outputs, coalesced work, and independent nodes.
 - Rust tests for lazy output computes once across multiple consumers.
 - Inbox test: N events within window -> one consolidated turn plan.
 - Replay test: fixture reproduces prompt/RAG/media from frame outputs.
+- Prod-record replay test loads a captured `PersonaTurnFrame` record without
+  booting the full app and proves the same RAG/prompt/admission decisions.
 
 **VDD**:
 
 - Chat smoke records fewer inference calls than incoming events.
 - First response improves or stays flat while CPU/RSS do not climb.
+- Live/prod capture from at least one real chat turn can be replayed offline and
+  inspected step-by-step before the lane is considered complete.
 
 **Deletion targets**:
 
@@ -462,6 +473,12 @@ all resource types under one policy.
 2. `backend-admission-gate`: model/mmproj init checks broker before allocate.
 3. `pooled-mtmd-context`: reuse multimodal context under broker ownership.
 4. `kv-lora-paging`: extend to KV and LoRA residency.
+5. `resource-admission-bridge`: route existing hot paths such as
+   `cognition/generate-response` through a shared Rust admission gate while
+   the gate is promoted into the process-wide broker. This is a bridge only:
+   final ownership belongs to `PressureBroker`, and rendering, audio, TTS,
+   STT, classifiers, inference, training, RAG, and background work must all
+   ask the same substrate contract instead of inventing local schedulers.
 
 **TDD**:
 

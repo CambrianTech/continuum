@@ -1,13 +1,12 @@
-//! Rust-owned response-generation prompt assembly.
+//! Rust-owned response-generation prompt assembly and admission.
 //!
-//! Oxidizer for `AIDecisionService.generateResponse` (TS, see
-//! `src/system/ai/server/AIDecisionService.ts:316-452`). Sibling to
-//! `check_redundancy.rs` (#1375) + `should_respond.rs` (already
-//! oxidized). TypeScript continues to own slot coordination + logging;
-//! Rust owns the response-generation contract, prompt assembly, and
-//! identity-reminder template.
+//! Rust owns response admission, the response-generation contract,
+//! prompt assembly, and the identity-reminder template. Host runtimes
+//! may be native Rust, game/live loops, AIRC daemons, or wrappers around
+//! those hosts; none of them own cognition slot coordination for this
+//! path.
 //!
-//! ## Scope of this PR (PR-1 — pure types + prompt builder)
+//! ## Scope
 //!
 //! - `GenerateResponseRequest` — IPC request (ts-rs)
 //! - `GenerateResponseResult` — IPC response (ts-rs)
@@ -27,69 +26,80 @@
 //! - `format_time_prefix(Option<ms>) -> String` — pure. UTC `[HH:MM] `.
 //! - `hour_gap_marker(gap_ms) -> Option<String>` — pure.
 //!
-//! ## NOT in this PR
-//!
-//! - **PR-2**: `cognition/generate-response` IPC handler — async
-//!   composer that calls `build_response_messages` → AI provider call
-//!   (existing local Qwen router) → `GenerateResponseResult` with
-//!   `tokio::time::timeout` replacing the TS Promise.race.
-//! - **PR-3**: TS shim — `AIDecisionService.generateResponse` delegates
-//!   to `RustCoreIPCClient.cognitionGenerateResponse`.
-//! - **PR-4**: Delete dead TS — `buildResponseMessages` + the inline
-//!   identity-reminder template (~250 LOC removed).
-//!
 //! ## Failure-mode discipline
 //!
 //! Same posture as `check_redundancy.rs` + `should_respond.rs`:
 //!   - All errors typed (`GenerateResponseError` — PR-2 surfaces it).
-//!   - Pure prompt builder uses UTC (removes hidden TZ dependency the
-//!     TS version's `toLocaleDateString` had — server timezone was
-//!     bleeding into model prompts depending on host).
+//!   - Pure prompt builder uses UTC so server timezone cannot bleed into
+//!     model prompts depending on host.
 //!   - No silent default-on-error in the parser layer (PR-2).
-//!   - Members extraction falls back to the literal `"unknown members"`
-//!     string when the regex misses — matches TS behavior exactly so
-//!     no template regression.
+//!   - Members extraction uses the literal `"unknown members"` string
+//!     when the prompt does not declare room members.
 
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
+use crate::cognition::adaptive_throughput::{ResourceClass, TargetSilicon};
+use crate::cognition::resource_admission::{
+    ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy,
+    ResourceAdmissionRequest,
+};
 use crate::cognition::should_respond::AIDecisionContext;
+use crate::cognition::throughput_lease::ThroughputLeaseRevocationPolicy;
 use crate::modules::ai_provider::global_registry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
-/// Default fallback string returned by `extract_room_members` when the
+/// Default unknown-members string returned by `extract_room_members` when the
 /// system prompt doesn't contain a `Current room members:` line.
-/// Matches the TS literal exactly so prompts don't regress.
 pub const UNKNOWN_MEMBERS: &str = "unknown members";
 
 /// Minimum hour-gap (in milliseconds) that triggers a "⏱️ N hour passed"
-/// marker in the conversation history. Matches TS `gapMinutes > 60`.
+/// marker in the conversation history.
 const HOUR_GAP_THRESHOLD_MS: u64 = 60 * 60 * 1000;
 
 /// Routing sentinel for the best available local Qwen/llama.cpp runtime.
-/// Matches the TS `provider: 'local'` value the adapter registry routes
-/// against.
 const DEFAULT_GENERATE_PROVIDER: &str = "local";
 
-/// Default model when caller doesn't override. Matches TS
-/// `LOCAL_MODELS.DEFAULT` exactly.
+/// Default model when caller doesn't override.
 const DEFAULT_GENERATE_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
 
-/// Default sampling temperature. Matches TS default 0.7 — moderate
+/// Default sampling temperature: moderate
 /// creativity for natural-language responses.
 const DEFAULT_GENERATE_TEMPERATURE: f32 = 0.7;
 
-/// Default max tokens. Matches TS default 150 — short conversational
-/// responses; caller can raise for long-form.
+/// Default max tokens for short conversational responses; caller can
+/// raise for long-form.
 const DEFAULT_GENERATE_MAX_TOKENS: u32 = 150;
 
-/// Default timeout. Matches TS default 180_000ms (3 minutes) — Qwen
-/// local can be slow under load; this is the hard ceiling before
-/// `tokio::time::timeout` returns Err.
+/// Default timeout. Qwen local can be slow under load; this is the hard
+/// ceiling before `tokio::time::timeout` returns Err.
 const DEFAULT_GENERATE_TIMEOUT_MS: u64 = 180_000;
+
+/// Conservative default for local response generation while the
+/// substrate-governor bridge becomes the source of these numbers.
+const DEFAULT_GENERATE_MAX_CONCURRENCY: usize = 4;
+
+/// Cost-unit budget paired with [`DEFAULT_GENERATE_MAX_CONCURRENCY`].
+const DEFAULT_GENERATE_MAX_COST_UNITS: u32 = 4;
+
+/// One response generation claims one local-generation cost unit unless
+/// the caller provides a stricter policy.
+const DEFAULT_GENERATE_COST_UNITS: u32 = 1;
+
+/// Lease TTL must outlive the generation timeout so slow-but-valid work
+/// is not marked reclaimable before `tokio::time::timeout` fires.
+const DEFAULT_GENERATE_LEASE_TTL_PAD_MS: u64 = 5_000;
+
+static GENERATE_RESPONSE_ADMISSION: LazyLock<ResourceAdmissionGate> =
+    LazyLock::new(ResourceAdmissionGate::new);
+
+#[cfg(test)]
+static GENERATE_RESPONSE_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
+    LazyLock::new(|| std::sync::Mutex::new(()));
 
 // ─── IPC request + response shapes ────────────────────────────────────
 
@@ -102,33 +112,77 @@ const DEFAULT_GENERATE_TIMEOUT_MS: u64 = 180_000;
     export_to = "../../../shared/generated/cognition/GenerateResponseRequest.ts"
 )]
 pub struct GenerateResponseRequest {
-    /// Reuses the gating context. The TS shim resolves
-    /// `ragContext.identity.systemPrompt` (the persona's identity
-    /// system prompt with `Current room members: ...`) into
-    /// `context.system_prompt` before sending — keeps Rust independent
-    /// of `RAGContext.identity` shape.
+    /// Reuses the gating context. Host callers provide the persona's
+    /// identity system prompt with `Current room members: ...` in
+    /// `context.system_prompt`.
     pub context: AIDecisionContext,
-    /// Optional model override. PR-2 defaults to the local-Qwen routing
-    /// sentinel when unset (matches TS `LOCAL_MODELS.DEFAULT`).
+    /// Optional model override. Defaults to the local-Qwen routing
+    /// sentinel when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
-    /// Sampling temperature. TS default is 0.7; PR-2 carries the same
-    /// default.
+    /// Sampling temperature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub temperature: Option<f32>,
-    /// Max tokens to generate. TS default is 150; PR-2 carries the
-    /// same default.
+    /// Max tokens to generate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub max_tokens: Option<u32>,
     /// Hard cap on how long PR-2's async composer waits before
-    /// returning timeout. TS default is 180_000ms (Qwen local can
-    /// be slow under load).
+    /// returning timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub timeout_ms: Option<u64>,
+    /// Rust-owned admission policy for this generation. When omitted,
+    /// `evaluate_response` applies the local-generation defaults above.
+    /// Hosts that know tighter resource limits should pass them here;
+    /// they should not coordinate slots outside Rust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub admission: Option<GenerateResponseAdmissionPolicy>,
+}
+
+/// Per-call local-generation admission policy. This is the contract a
+/// host uses to ask Rust for response-generation capacity instead of
+/// owning slots itself.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/cognition/GenerateResponseAdmissionPolicy.ts"
+)]
+pub struct GenerateResponseAdmissionPolicy {
+    pub target_silicon: TargetSilicon,
+    pub max_concurrency: usize,
+    pub max_cost_units: u32,
+    pub cost_units: u32,
+    #[ts(type = "number")]
+    pub lease_ttl_ms: u64,
+}
+
+impl GenerateResponseAdmissionPolicy {
+    fn with_timeout(timeout_ms: u64) -> Self {
+        Self {
+            target_silicon: TargetSilicon::UnifiedMemory,
+            max_concurrency: DEFAULT_GENERATE_MAX_CONCURRENCY,
+            max_cost_units: DEFAULT_GENERATE_MAX_COST_UNITS,
+            cost_units: DEFAULT_GENERATE_COST_UNITS,
+            lease_ttl_ms: timeout_ms.saturating_add(DEFAULT_GENERATE_LEASE_TTL_PAD_MS),
+        }
+    }
+
+    fn into_resource_policy(self) -> ResourceAdmissionPolicy {
+        ResourceAdmissionPolicy {
+            resource_class: ResourceClass::LocalGeneration,
+            target_silicon: self.target_silicon,
+            max_concurrency: self.max_concurrency,
+            max_cost_units: self.max_cost_units,
+            cost_units: self.cost_units,
+            lease_ttl_ms: self.lease_ttl_ms,
+            revocation_policy: ThroughputLeaseRevocationPolicy::Graceful,
+        }
+    }
 }
 
 /// IPC response: generated text plus timing + token telemetry.
@@ -166,12 +220,21 @@ pub struct TokenUsage {
 }
 
 /// Typed errors from `evaluate_response`. No silent default-on-error;
-/// the caller (TS shim or other Rust client) decides policy explicitly.
+/// the Rust caller decides policy explicitly.
 #[derive(Debug, thiserror::Error)]
 pub enum GenerateResponseError {
+    /// Rust admission denied this response before inference began.
+    /// Hosts ask Rust, receive a typed denial, and retry/replan explicitly.
+    #[error(
+        "response generation admission denied for persona={persona_id:?} room={room_id:?}: {reason}"
+    )]
+    AdmissionDenied {
+        persona_id: String,
+        room_id: String,
+        reason: String,
+    },
     /// The provider registry had no adapter capable of serving this
-    /// model + provider tuple. PR-3's TS shim translates this back into
-    /// an `Error` for the persona scheduler.
+    /// model + provider tuple. No alternate runtime is attempted.
     #[error("no AI adapter available for provider={provider:?} model={model:?}")]
     NoAdapter {
         provider: String,
@@ -183,9 +246,8 @@ pub enum GenerateResponseError {
     #[error("generation failed: {0}")]
     Generation(String),
     /// `tokio::time::timeout` fired before the provider returned.
-    /// Mirrors the TS `Promise.race` timeout branch (TS default
-    /// 180_000ms). The persona scheduler should treat this as a
-    /// transient failure and back off, not a permanent decision.
+    /// The persona scheduler should treat this as a transient failure
+    /// and back off, not a permanent decision.
     #[error("generation timed out after {timeout_ms} ms")]
     Timeout {
         #[allow(dead_code)] // surfaced via Display
@@ -201,12 +263,11 @@ pub enum GenerateResponseError {
 ///   2. `TextGenerationRequest` with provider="local" + model +
 ///      temperature + max_tokens defaults from `DEFAULT_GENERATE_*`
 ///      constants (each overridable per-request).
-///   3. `tokio::time::timeout` wraps the provider call (TS Promise.race
-///      equivalent).
+///   3. `tokio::time::timeout` wraps the provider call.
 ///   4. Stamps `GenerateResponseResult` with model + response_time_ms +
 ///      timestamp + optional token usage (when the provider reports it).
 ///
-/// No fallback path: provider failures, timeouts, and missing adapters
+/// No alternate runtime path: provider failures, timeouts, and missing adapters
 /// all surface as typed errors. Caller decides policy explicitly.
 pub async fn evaluate_response(
     request: GenerateResponseRequest,
@@ -217,6 +278,7 @@ pub async fn evaluate_response(
         .clone()
         .unwrap_or_else(|| DEFAULT_GENERATE_MODEL.to_string());
     let timeout_ms = request.timeout_ms.unwrap_or(DEFAULT_GENERATE_TIMEOUT_MS);
+    let _lease = acquire_generate_response_lease(&request, start_ms, timeout_ms)?;
 
     let inference_request = build_response_generation_request(&request, model.clone(), start_ms);
 
@@ -233,17 +295,66 @@ pub async fn evaluate_response(
             model: Some(model.clone()),
         })?;
 
-    let response: TextGenerationResponse =
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), adapter.generate_text(inference_request))
-            .await
-        {
-            Ok(Ok(resp)) => resp,
-            Ok(Err(e)) => return Err(GenerateResponseError::Generation(e)),
-            Err(_) => return Err(GenerateResponseError::Timeout { timeout_ms }),
-        };
+    let response: TextGenerationResponse = match tokio::time::timeout(
+        Duration::from_millis(timeout_ms),
+        adapter.generate_text(inference_request),
+    )
+    .await
+    {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => return Err(GenerateResponseError::Generation(e)),
+        Err(_) => return Err(GenerateResponseError::Timeout { timeout_ms }),
+    };
 
     let end_ms = now_ms();
     Ok(result_from_response(response, model, start_ms, end_ms))
+}
+
+fn acquire_generate_response_lease(
+    request: &GenerateResponseRequest,
+    now_ms: u64,
+    timeout_ms: u64,
+) -> Result<ResourceAdmissionGuard, GenerateResponseError> {
+    let policy = request
+        .admission
+        .clone()
+        .unwrap_or_else(|| GenerateResponseAdmissionPolicy::with_timeout(timeout_ms));
+
+    GENERATE_RESPONSE_ADMISSION
+        .acquire(ResourceAdmissionRequest {
+            lease_id: generate_response_lease_id(&request.context, now_ms),
+            artifact_key: generate_response_artifact_key(&request.context),
+            holder_id: request.context.persona_id.clone(),
+            policy: policy.into_resource_policy(),
+            now_ms,
+        })
+        .map_err(|err| GenerateResponseError::AdmissionDenied {
+            persona_id: request.context.persona_id.clone(),
+            room_id: request.context.room_id.clone(),
+            reason: format_resource_admission_error(err),
+        })
+}
+
+fn generate_response_lease_id(context: &AIDecisionContext, now_ms: u64) -> String {
+    format!(
+        "cognition/generate-response:{}:{}:{}",
+        context.room_id, context.persona_id, now_ms
+    )
+}
+
+fn generate_response_artifact_key(context: &AIDecisionContext) -> String {
+    format!(
+        "cognition/generate-response:{}:{}:{}",
+        context.room_id, context.persona_id, context.trigger_message.id
+    )
+}
+
+fn format_resource_admission_error(err: ResourceAdmissionError) -> String {
+    match err {
+        ResourceAdmissionError::InvalidPolicy { reason }
+        | ResourceAdmissionError::Denied { reason }
+        | ResourceAdmissionError::Lease { reason } => reason,
+    }
 }
 
 /// Build the `TextGenerationRequest` the adapter consumes.
@@ -259,11 +370,7 @@ pub fn build_response_generation_request(
         system_prompt: None,
         model: Some(model),
         provider: Some(DEFAULT_GENERATE_PROVIDER.to_string()),
-        temperature: Some(
-            request
-                .temperature
-                .unwrap_or(DEFAULT_GENERATE_TEMPERATURE),
-        ),
+        temperature: Some(request.temperature.unwrap_or(DEFAULT_GENERATE_TEMPERATURE)),
         max_tokens: Some(request.max_tokens.unwrap_or(DEFAULT_GENERATE_MAX_TOKENS)),
         top_p: None,
         top_k: None,
@@ -283,12 +390,10 @@ pub fn build_response_generation_request(
 }
 
 /// Pure: compose the IPC response from the provider's text + timing.
-/// Trims the response text to match TS `response.text.trim()`.
+/// Trims the response text at the Rust boundary.
 ///
-/// `tokens_used` is `None` when the provider reported `total_tokens == 0`
-/// — mirrors TS truthiness check on the optional usage object, avoids
-/// emitting `{input:0,output:0,total:0}` as if the provider had measured
-/// (it usually means the provider doesn't instrument usage at all).
+/// `tokens_used` is `None` when the provider reported `total_tokens == 0`.
+/// A zero total means the provider did not emit measured token usage.
 pub fn result_from_response(
     response: TextGenerationResponse,
     model: String,
@@ -325,10 +430,10 @@ fn now_ms() -> u64 {
 
 /// Build the full message array sent to the local inference provider.
 ///
-/// Pure — no I/O, no clock. Caller (PR-2's `generate_response`) passes
+/// Pure — no I/O, no clock. Caller passes
 /// the current time so this function stays deterministic in tests.
 ///
-/// Composition order matches the TS implementation:
+/// Composition order:
 ///   1. System prompt (if `context.system_prompt` is set)
 ///   2. Conversation history with `[HH:MM] {name}: {content}` rows,
 ///      interspersed with `⏱️ N hours passed` markers for gaps > 1h
@@ -398,10 +503,7 @@ pub fn build_response_messages(
     messages
 }
 
-/// Format the canonical identity-reminder system message. Mirrors the
-/// TS template byte-for-byte modulo substitutions. Public so PR-2's
-/// observability can log a snippet without re-building the whole
-/// message list.
+/// Format the canonical identity-reminder system message.
 pub fn build_identity_reminder(persona_name: &str, members: &str, current_time: &str) -> String {
     format!(
         "IDENTITY REMINDER: You are {persona_name}. Respond naturally with JUST your message - NO name prefix, NO \"A:\" or \"H:\" labels, NO fake conversations. The room has ONLY these people: {members}.\n\
@@ -422,7 +524,7 @@ Step 2: Extract HARD CONSTRAINTS from the most recent message\n\
 \n\
 Step 3: Compare SUBJECT of most recent message to previous 2-3 messages\n\
 - Previous: \"Worker Threads\" → Recent: \"Webview authentication\" = DIFFERENT SUBJECTS\n\
-- Previous: \"TypeScript code\" → Recent: \"What's 2+2?\" = TEST QUESTION\n\
+- Previous: \"implementation detail\" → Recent: \"What's 2+2?\" = TEST QUESTION\n\
 - Previous: \"Worker pools\" → Recent: \"Should I use 5 or 10 workers?\" = SAME SUBJECT\n\
 \n\
 Step 4: Determine response strategy\n\
@@ -450,7 +552,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
 /// Extract the `Current room members: ...` line from a system prompt
 /// body. Returns the captured contents up to the next newline.
-/// Returns `UNKNOWN_MEMBERS` if no match — same fallback as TS.
+/// Returns `UNKNOWN_MEMBERS` if no match.
 pub fn extract_room_members(system_prompt: &str) -> &str {
     const PREFIX: &str = "Current room members: ";
     let Some(start) = system_prompt.find(PREFIX) else {
@@ -466,19 +568,15 @@ pub fn extract_room_members(system_prompt: &str) -> &str {
     }
 }
 
-/// Format a unix-ms timestamp as UTC `MM/DD/YYYY HH:MM` — the format
-/// the TS implementation used (via `toLocaleDateString` /
-/// `toLocaleTimeString`). UTC instead of local timezone removes the
-/// host-TZ dependency that the TS version had.
+/// Format a unix-ms timestamp as UTC `MM/DD/YYYY HH:MM`.
 pub fn format_current_time(time_ms: u64) -> String {
-    let dt = DateTime::<Utc>::from_timestamp_millis(time_ms as i64)
-        .unwrap_or_else(Utc::now);
+    let dt = DateTime::<Utc>::from_timestamp_millis(time_ms as i64).unwrap_or_else(Utc::now);
     dt.format("%m/%d/%Y %H:%M").to_string()
 }
 
 /// Format a unix-ms timestamp as `[HH:MM] ` UTC for inline prefixing
 /// of conversation messages. Returns empty string when timestamp is
-/// missing — same as TS `if (msg.timestamp)` guard.
+/// missing.
 fn format_time_prefix(timestamp_ms: Option<u64>) -> String {
     let Some(ms) = timestamp_ms else {
         return String::new();
@@ -490,8 +588,7 @@ fn format_time_prefix(timestamp_ms: Option<u64>) -> String {
 }
 
 /// Return a `⏱️ N hour passed` marker if `gap_ms` exceeds the
-/// threshold. Returns `None` for gaps under 1 hour. Matches TS
-/// `Math.floor(gapMinutes / 60)` semantics.
+/// threshold. Returns `None` for gaps under 1 hour.
 fn hour_gap_marker(gap_ms: u64) -> Option<String> {
     if gap_ms < HOUR_GAP_THRESHOLD_MS {
         return None;
@@ -527,7 +624,10 @@ mod tests {
         }
     }
 
-    fn ctx(system_prompt: Option<&str>, history: Vec<GatingConversationMessage>) -> AIDecisionContext {
+    fn ctx(
+        system_prompt: Option<&str>,
+        history: Vec<GatingConversationMessage>,
+    ) -> AIDecisionContext {
         AIDecisionContext {
             persona_id: "p-001".to_string(),
             persona_name: "Alice".to_string(),
@@ -581,7 +681,8 @@ mod tests {
     /// — pulls out exactly the comma-separated list, trimmed.
     #[test]
     fn extract_members_pulls_line_after_prefix() {
-        let prompt = "You are a helpful AI.\nCurrent room members: alice, bob, carol\nMore text below.";
+        let prompt =
+            "You are a helpful AI.\nCurrent room members: alice, bob, carol\nMore text below.";
         assert_eq!(extract_room_members(prompt), "alice, bob, carol");
     }
 
@@ -594,8 +695,8 @@ mod tests {
     }
 
     /// What this catches: missing prefix returns the canonical
-    /// `UNKNOWN_MEMBERS` fallback. Same string the TS version uses —
-    /// downstream prompt machinery may depend on the literal value.
+    /// `UNKNOWN_MEMBERS` string. Downstream prompt machinery may depend
+    /// on the literal value.
     #[test]
     fn extract_members_missing_returns_unknown() {
         let prompt = "Generic system prompt with no members line.";
@@ -606,7 +707,7 @@ mod tests {
     /// What this catches: empty members list (just whitespace after the
     /// prefix) falls back to `UNKNOWN_MEMBERS` — avoids emitting a
     /// prompt that says "the room has ONLY these people: ." which is
-    /// worse than the honest fallback.
+    /// worse than the explicit unknown-members value.
     #[test]
     fn extract_members_empty_after_prefix_returns_unknown() {
         let prompt = "Current room members: \nSomething else.";
@@ -724,8 +825,7 @@ mod tests {
     }
 
     /// What this catches: missing system prompt skips the first message
-    /// but still emits the identity reminder. Mirrors TS guard `if
-    /// (context.systemPrompt ?? ...)`.
+    /// but still emits the identity reminder.
     #[test]
     fn build_response_messages_omits_system_when_missing() {
         let context = ctx(None, vec![]);
@@ -741,7 +841,11 @@ mod tests {
     fn build_response_messages_omits_system_when_empty_string() {
         let context = ctx(Some(""), vec![]);
         let messages = build_response_messages(&context, 0);
-        assert_eq!(messages.len(), 1, "only identity reminder; no empty system row");
+        assert_eq!(
+            messages.len(),
+            1,
+            "only identity reminder; no empty system row"
+        );
         assert!(text_of(&messages[0]).starts_with("IDENTITY REMINDER:"));
     }
 
@@ -797,7 +901,6 @@ mod tests {
     /// What this catches: gap tracking only updates when a timestamp
     /// is present — a clockless message in the middle doesn't reset
     /// the gap-from-previous-timestamped-message counter incorrectly.
-    /// (TS: `if (msg.timestamp) { ... lastTimestamp = msg.timestamp; }`)
     #[test]
     fn build_response_messages_gap_tracking_ignores_clockless_messages() {
         let context = ctx(
@@ -821,8 +924,7 @@ mod tests {
     }
 
     /// What this catches: messages without a name use the bare time
-    /// prefix + content (no `name: ` chunk). Mirrors TS ternary on
-    /// `msg.name`.
+    /// prefix + content (no `name: ` chunk).
     #[test]
     fn build_response_messages_falls_back_when_name_missing() {
         let context = ctx(
@@ -854,8 +956,7 @@ mod tests {
 
     /// What this catches: missing members in the system prompt still
     /// renders the identity reminder with the `UNKNOWN_MEMBERS`
-    /// fallback string. Same TS behavior — no panic on a recipe-less
-    /// room.
+    /// unknown-members string. No panic on a recipe-less room.
     #[test]
     fn build_response_messages_unknown_members_when_prompt_missing_line() {
         let context = ctx(Some("Generic system prompt."), vec![]);
@@ -863,7 +964,7 @@ mod tests {
         let reminder = text_of(messages.last().expect("identity reminder present"));
         assert!(
             reminder.contains(&format!("ONLY these people: {UNKNOWN_MEMBERS}.")),
-            "missing members line must render fallback; got: {reminder}"
+            "missing members line must render unknown-members value; got: {reminder}"
         );
     }
 
@@ -879,10 +980,9 @@ mod tests {
     }
 
     /// What this catches: assistant + user roles round-trip in their
-    /// original case + spelling. The TS version casts `msg.role as
-    /// 'user' | 'assistant'` blindly — Rust preserves whatever string
-    /// the message carried, which is the correct conservative choice
-    /// (provider routing depends on these exact strings).
+    /// original case + spelling. Rust preserves whatever string the
+    /// message carried, which is the correct conservative choice
+    /// because provider routing depends on these exact strings.
     #[test]
     fn build_response_messages_preserves_role_strings() {
         let context = ctx(
@@ -924,7 +1024,130 @@ mod tests {
             temperature: temp,
             max_tokens: max,
             timeout_ms: timeout,
+            admission: None,
         }
+    }
+
+    fn request_with_admission(
+        context: AIDecisionContext,
+        admission: GenerateResponseAdmissionPolicy,
+    ) -> GenerateResponseRequest {
+        GenerateResponseRequest {
+            context,
+            model: None,
+            temperature: None,
+            max_tokens: None,
+            timeout_ms: Some(100),
+            admission: Some(admission),
+        }
+    }
+
+    fn admission(
+        max_concurrency: usize,
+        max_cost_units: u32,
+        cost_units: u32,
+    ) -> GenerateResponseAdmissionPolicy {
+        GenerateResponseAdmissionPolicy {
+            target_silicon: TargetSilicon::UnifiedMemory,
+            max_concurrency,
+            max_cost_units,
+            cost_units,
+            lease_ttl_ms: 1_000,
+        }
+    }
+
+    fn reset_generate_response_leases_for_test() {
+        GENERATE_RESPONSE_ADMISSION.reset_for_test();
+    }
+
+    fn lock_generate_response_tests() -> std::sync::MutexGuard<'static, ()> {
+        GENERATE_RESPONSE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn active_generate_response_leases_for_test(now_ms: u64) -> usize {
+        GENERATE_RESPONSE_ADMISSION.active_count_for_test(now_ms)
+    }
+
+    /// What this catches: response admission is Rust-owned. A successful
+    /// acquire claims a local-generation lease, and dropping the RAII
+    /// guard releases it. The same drop path is what runs when
+    /// `evaluate_response` exits via success, provider error, missing
+    /// adapter, or timeout.
+    #[test]
+    fn rust_admission_guard_releases_local_generation_lease_on_exit() {
+        let _test_lock = lock_generate_response_tests();
+        reset_generate_response_leases_for_test();
+        let request =
+            request_with_admission(ctx(Some("You are Alice."), vec![]), admission(4, 4, 1));
+
+        {
+            let _guard = acquire_generate_response_lease(&request, 1_000, 100)
+                .expect("valid request should acquire a Rust lease");
+            assert_eq!(active_generate_response_leases_for_test(1_001), 1);
+        }
+
+        assert_eq!(
+            active_generate_response_leases_for_test(1_002),
+            0,
+            "dropping the guard must release the local-generation lease"
+        );
+    }
+
+    /// What this catches: Rust denies over-capacity response generation
+    /// before any provider call. This is the hard boundary that keeps
+    /// host wrappers from owning cognition slots.
+    #[test]
+    fn rust_admission_denies_concurrency_and_cost_pressure() {
+        let _test_lock = lock_generate_response_tests();
+        reset_generate_response_leases_for_test();
+        let first = request_with_admission(ctx(Some("You are Alice."), vec![]), admission(1, 4, 1));
+        let second =
+            request_with_admission(ctx(Some("You are Alice."), vec![]), admission(1, 4, 1));
+        let _held = acquire_generate_response_lease(&first, 2_000, 100)
+            .expect("first request should fit the policy");
+
+        let err = acquire_generate_response_lease(&second, 2_001, 100)
+            .expect_err("second request must be denied by Rust concurrency policy");
+        assert!(matches!(
+            err,
+            GenerateResponseError::AdmissionDenied { reason, .. }
+                if reason.contains("max_concurrency=1")
+        ));
+
+        reset_generate_response_leases_for_test();
+        let expensive =
+            request_with_admission(ctx(Some("You are Alice."), vec![]), admission(4, 2, 3));
+        let err = acquire_generate_response_lease(&expensive, 3_000, 100)
+            .expect_err("request whose cost exceeds policy must be denied");
+        assert!(matches!(
+            err,
+            GenerateResponseError::AdmissionDenied { reason, .. }
+                if reason.contains("cost_units=3 exceeds max_cost_units=2")
+        ));
+    }
+
+    /// What this catches: expired leases are reaped during Rust
+    /// admission, so a dead holder does not permanently block the
+    /// local-generation lane.
+    #[test]
+    fn rust_admission_reaps_expired_generation_leases() {
+        let _test_lock = lock_generate_response_tests();
+        reset_generate_response_leases_for_test();
+        let request =
+            request_with_admission(ctx(Some("You are Alice."), vec![]), admission(1, 1, 1));
+        let guard = acquire_generate_response_lease(&request, 4_000, 100)
+            .expect("first request should fit the policy");
+        std::mem::forget(guard);
+
+        assert_eq!(active_generate_response_leases_for_test(4_001), 1);
+        let replacement = acquire_generate_response_lease(&request, 5_001, 100)
+            .expect("expired forgotten lease should be reaped before admission");
+        replacement
+            .release()
+            .expect("explicit release should return the replacement lease");
+        assert_eq!(active_generate_response_leases_for_test(5_002), 0);
     }
 
     /// What this catches: defaults — no overrides — produces a
@@ -936,19 +1159,25 @@ mod tests {
     #[test]
     fn generation_request_uses_documented_defaults() {
         let request = request_with_overrides(None, None, None, None);
-        let inference = build_response_generation_request(
-            &request,
-            DEFAULT_GENERATE_MODEL.to_string(),
-            0,
+        let inference =
+            build_response_generation_request(&request, DEFAULT_GENERATE_MODEL.to_string(), 0);
+        assert_eq!(
+            inference.provider.as_deref(),
+            Some(DEFAULT_GENERATE_PROVIDER)
         );
-        assert_eq!(inference.provider.as_deref(), Some(DEFAULT_GENERATE_PROVIDER));
         assert_eq!(inference.model.as_deref(), Some(DEFAULT_GENERATE_MODEL));
         assert_eq!(inference.temperature, Some(DEFAULT_GENERATE_TEMPERATURE));
         assert_eq!(inference.max_tokens, Some(DEFAULT_GENERATE_MAX_TOKENS));
-        assert_eq!(inference.purpose.as_deref(), Some("cognition/generate-response"));
+        assert_eq!(
+            inference.purpose.as_deref(),
+            Some("cognition/generate-response")
+        );
         assert_eq!(inference.persona_id.as_deref(), Some("p-001"));
         assert_eq!(inference.room_id.as_deref(), Some("r-001"));
-        assert!(matches!(inference.response_format, Some(ResponseFormat::Text)));
+        assert!(matches!(
+            inference.response_format,
+            Some(ResponseFormat::Text)
+        ));
         // messages list = system prompt + identity reminder for an empty history
         assert_eq!(inference.messages.len(), 2);
     }
@@ -959,11 +1188,7 @@ mod tests {
     #[test]
     fn generation_request_honors_overrides() {
         let request = request_with_overrides(Some("custom-model"), Some(0.1), Some(500), None);
-        let inference = build_response_generation_request(
-            &request,
-            "custom-model".to_string(),
-            0,
-        );
+        let inference = build_response_generation_request(&request, "custom-model".to_string(), 0);
         assert_eq!(inference.model.as_deref(), Some("custom-model"));
         assert_eq!(inference.temperature, Some(0.1));
         assert_eq!(inference.max_tokens, Some(500));
@@ -989,7 +1214,12 @@ mod tests {
 
     // ─── result_from_response ─────────────────────────────────────────
 
-    fn fake_response(text: &str, total_tokens: u32, input: u32, output: u32) -> TextGenerationResponse {
+    fn fake_response(
+        text: &str,
+        total_tokens: u32,
+        input: u32,
+        output: u32,
+    ) -> TextGenerationResponse {
         TextGenerationResponse {
             text: text.to_string(),
             finish_reason: crate::ai::types::FinishReason::Stop,
@@ -1011,9 +1241,8 @@ mod tests {
     }
 
     /// What this catches: result trims surrounding whitespace from the
-    /// provider's text — TS does `response.text.trim()`. Models often
-    /// emit leading/trailing newlines; without trim the chat surface
-    /// gets extra blank lines.
+    /// provider's text. Models often emit leading/trailing newlines;
+    /// without trim the chat surface gets extra blank lines.
     #[test]
     fn result_trims_response_text() {
         let r = fake_response("  hello world\n\n", 0, 0, 0);
@@ -1048,10 +1277,9 @@ mod tests {
         );
     }
 
-    /// What this catches: total_tokens == 0 -> None. Mirrors TS
-    /// truthiness check on usage object; avoids emitting
+    /// What this catches: total_tokens == 0 -> None. Avoids emitting
     /// `{input:0, output:0, total:0}` as if the provider had measured
-    /// (usually means the provider didn't instrument usage at all).
+    /// usage.
     #[test]
     fn result_tokens_none_when_provider_reports_zero() {
         let r = fake_response("body", 0, 0, 0);
@@ -1089,7 +1317,9 @@ mod tests {
     /// the value.
     #[test]
     fn error_timeout_displays_duration() {
-        let err = GenerateResponseError::Timeout { timeout_ms: 180_000 };
+        let err = GenerateResponseError::Timeout {
+            timeout_ms: 180_000,
+        };
         let s = format!("{err}");
         assert!(s.contains("180000"));
     }
