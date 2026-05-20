@@ -6,6 +6,29 @@
 
 ---
 
+## Status update @ 2026-05-20
+
+When this doc was drafted on 2026-04-30, airc was still partly Python/shell with gh-rooted gist as the routine wire. Since then the Rust rewrite landed slices A–I:
+
+- **A–B** — discovery + health ingestion; gist demoted from data plane to invite/rendezvous beacon.
+- **C–D** — daemon-attached SDK + CLI thinning. `airc msg` and `airc inbox` go through Rust local substrate by default; no GitHub polling for routine traffic.
+- **E** — relay baseline (`airc-relay` crate + `airc-transport::relay` adapter). Cross-LAN / NAT path proven without a public IP on either side.
+- **F** — UDP adapter for realtime / interactive frame kinds. **Refuses to satisfy durable Message/Control kinds** — fails closed rather than pretending UDP is reliable.
+- **G** — WebRTC datachannel adapter.
+- **H** — signed peer trust rotation. `peers_store::add` no longer silently overwrites; rotation is a typed `TrustRotation` event signed by the previous key, with an append-only audit log.
+- **I1** — consumer-embedding proof: two `Airc::open` handles in separate homes exchange typed events through SDK only (no CLI, no IPC, no daemon-attach, no GitHub).
+- **I3** — typed consumer-shape contracts for Continuum (`forge.persona.*`), OpenClaw (`forge.openclaw.*`), Hermes (`forge.hermes.*`) in `crates/examples/consumer_shapes/`.
+
+**The substrate-vs-semantic boundary (Codex, 2026-05-20):**
+
+> AIRC should not route by interpreting forge semantics unless a resolver/plugin layer is installed above the substrate. The substrate carries headers and trusted envelopes; forge-alloy/capability projections decide what those headers mean.
+
+This sharpens what §2's "Layer 3" describes. The substrate's only routing primitive is **"deliver events whose headers match this filter to subscribers of that filter."** It does not know that `forge.hermes.tool="continuum.lora.invoke"` should land on a peer with that LoRA loaded. That mapping — tool-name → capability-bearing-peer — is policy that lives in Continuum's Layer 2 / sentinel-ai's forge-alloy contract registry, NOT in airc.
+
+Practical consequence for this doc: §4.3 (capability publication) and §4.4 (multi-peer routing) below are Continuum-layer concerns. airc just carries the events. Where the original text said "airc decides routing," read it as "airc delivers events; Continuum's router decides peer choice based on the projection over those events."
+
+---
+
 ## 1. Strategic motivation
 
 Cloud AI services (Anthropic, OpenAI) are demand-saturated. Symptoms observed in real time on 2026-04-30:
@@ -126,10 +149,17 @@ The cloud-AI rate-limit window NOW is the moment the PC-paradigm shift starts. W
 - **Persona context paging** (PERSONA-CONTEXT-PAGING.md) — VRAM-aware context management. Already smart.
 
 ### 3.4 airc primitives this builds on
-- gh-rooted gist substrate (post-3c E2EE-by-design)
-- Per-channel gist multiplexing (post-#287)
-- Identity blocks (`airc identity set --integrations …`)
-- Peer convergence (#321)
+
+**Updated 2026-05-20.** The pre-Rust gist substrate is no longer the data plane (gh demoted to invite/rendezvous beacon only; see status note above). Current substrate primitives Continuum depends on:
+
+- **`airc-lib`** — embedding surface. `Airc::open(home)`, `join_with_wire`, `say` / `send`, `subscribe` / `subscribe_filtered`, `page_recent`, `resume_from` (cursor-based catch-up). PR-I1 proved a downstream crate can use this end-to-end without daemon IPC, CLI, or GitHub.
+- **Signed envelopes** — `airc-protocol::Envelope` with Ed25519 over canonical CBOR. The substrate verifies every inbound frame against the local `PeerKeyRegistry`; trust is explicit and signed-rotation-only.
+- **Typed transports** — `airc-transport::local_fs` (same-host append-only), `lan_tcp` (mTLS-pinned), `relay` (PR-E, cross-LAN/NAT), `udp` (PR-F, realtime kinds only), `webrtc_datachannel` (PR-G).
+- **Header-filtered subscriptions** — `EventFilter { channel, kinds, headers_filter }` with `HeaderFilter::{Any, Exact, Prefix, All, AnyOf}`. The cheap routing primitive: consumers subscribe to header patterns; substrate fans out matching events; bodies stay opaque to the substrate.
+- **Cursor-replay** — `(lamport, event_id)` cursors with `resume_from(&cursor, limit)`. Consumers restart and catch up without re-receiving what they already processed.
+- **Signed trust rotation** — `TrustRotation { peer_id, prev_pubkey, next_pubkey, sequence, rotated_at_ms, signature }`. Required before changing a stored pubkey. Append-only audit at `<home>/peers_audit.jsonl`.
+- **Workspace + drain typing** — `airc-work` carries `WorkspaceRequested / Allocated / Released / PressureReported / DrainRequested / DrainCompleted` events with a closed `DrainCandidateCategory` enum. Continuum's resource-pressure projection (VRAM, model slots, LoRA cache) follows the same shape.
+- **Consumer-shape contracts** — `crates/examples/consumer_shapes/` ships `forge.persona.*` (Continuum), `forge.openclaw.*`, `forge.hermes.*` typed event vocabularies + encode/decode + scoped `EventFilter` helpers. These are the SHAPES; real Continuum integration links them rather than reinventing.
 
 ---
 
@@ -178,42 +208,65 @@ The "recent-rate-limit window" should be a small JSON sidecar that any peer can 
 
 ### 4.3 Lane 2 (TS SDK): airc capability publication
 
-New continuum command `Commands.execute('ai/capability/publish')` runs periodically (e.g. every 60s when models are loaded, on-change immediately):
+**Updated 2026-05-20.** Express as a typed forge-alloy contract that fits the PR-I3 pattern (body hint + projected headers + filterable subscription), not as an opaque JSON blob on a special channel.
 
-```json
-{
-  "peer": "continuum-b741",
-  "machine": "M3 Max 64GB",
-  "models": [
-    { "id": "qwen3-coder-30b-gguf-q4", "vram_mb": 19500, "loaded": true, "context_max": 32768 },
-    { "id": "qwen3.5-27b-mlx-4bit", "vram_mb": 17000, "loaded": false, "context_max": 32768 }
-  ],
-  "free_vram_mb": 8200,
-  "current_load_pct": 12,
-  "p50_latency_ms": 145,
-  "p95_latency_ms": 380,
-  "endpoints": {
-    "anthropic": "http://100.x.x.x:9101/v1/messages",
-    "openai": "http://100.x.x.x:9102/v1/chat/completions"
-  },
-  "rate_limit_status": "ok",
-  "ttl_sec": 120
-}
+Proposed contract — `forge.capability.advertised.v1`:
+
+- **Body hint header:** `forge.body_hint = "forge.capability.advertised.v1"` — substrate routing key.
+- **Projected headers** (cheap subscriber filters; substrate never decodes the body to route):
+  - `forge.capability.peer` — emitting Continuum peer id
+  - `forge.capability.machine` — short device descriptor (e.g. `M3 Max 64GB`)
+  - `forge.capability.kind` — `model` | `lora` | `vision` | `voice` | `genomic_index` | `tool`
+  - `forge.capability.model_id` — when `kind=model` (e.g. `qwen3-coder-30b-gguf-q4`)
+  - `forge.capability.lora_id` — when `kind=lora`
+  - `forge.capability.loaded` — `"true"` if currently in VRAM, `"false"` if pageable
+- **Body (JSON)** — full capability descriptor; the JSON shape from the original doc lives here unchanged.
+
+Subscribers (Continuum routers, OpenClaw, Hermes) call:
+
+```rust
+airc.subscribe_filtered(EventFilter {
+    channel: None,
+    kinds: BTreeSet::new(),
+    headers_filter: HeaderFilter::All(vec![
+        HeaderFilter::Exact {
+            key: "forge.body_hint".to_string(),
+            value: "forge.capability.advertised.v1".to_string(),
+        },
+        HeaderFilter::Exact {
+            key: "forge.capability.kind".to_string(),
+            value: "model".to_string(),
+        },
+    ]),
+})
 ```
 
-Published via `airc msg --channel ai-capability` (new dedicated channel) or as a special envelope on the project room. Peers' Layer-2 routers subscribe + maintain a peer-table.
+…and maintain their own peer-capability projection. The substrate carries the events; the projection (Continuum-side) decides which peer serves a given model request.
 
-**Channel choice:** dedicated `#ai-capability` channel (one per gh-account-mesh). Avoids polluting human chat.
+**Channel choice:** dedicated `#ai-capability` room is still right — keeps the human-chat room clean and lets routers subscribe by room+header. One per gh-account-mesh.
+
+**Resource leases (forward-looking).** Once `forge.capability.*` is publishing, the natural next contract is `forge.resource.*` (VRAM / model-slot / LoRA-cache leases) following the same workspace-lease + drain shape that landed in airc-work. Pressure on a Continuum host → `forge.resource.pressure_reported` → router drains a LoRA slot or evicts a cold model → `forge.resource.drain_completed` with bytes reclaimed. Same drain pattern, applied to compute.
 
 ### 4.4 Lane 2 (TS SDK): Multi-peer routing
 
-When Claude Code (via local-shim) wants to serve a request and current peer's models don't cover it (e.g. user asks for vision, this peer doesn't have a vision model loaded but a peer does):
-1. Router consults peer-table from §4.3
-2. Picks best peer by (model match × free VRAM × p50 latency × proximity preference)
-3. Proxies the request to that peer's Anthropic-compat or OpenAI-compat HTTP endpoint
-4. Returns result
+**Updated 2026-05-20.** Sharper substrate-vs-policy split per Codex's correction:
 
-Failure modes: peer becomes unreachable mid-stream → fallback to next-best-peer → fallback to cloud (if available) → fallback to "we couldn't serve this" with an actionable error.
+- **What airc does:** delivers `forge.capability.advertised.v1` events to anyone subscribed via the §4.3 filter. Honest, fail-closed, no interpretation of the body.
+- **What Continuum's router does** (this section): consumes those events, maintains a peer-capability projection, scores peers, picks one, proxies. None of this lives in airc.
+
+When Claude Code (via local-shim) wants to serve a request and the current peer's models don't cover it (e.g. user asks for vision, this peer doesn't have a vision model loaded but a peer does):
+
+1. Router queries its local capability projection (built by subscribing to §4.3 events).
+2. Scores candidates by `(model match × free VRAM × p50 latency × proximity preference × lease-availability)`.
+3. Proxies the request to the chosen peer's Anthropic-compat or OpenAI-compat HTTP endpoint over the airc-resolved transport (relay / LAN-TCP / WebRTC).
+4. Returns result.
+
+**Failure modes** (fail loudly, never silently downgrade):
+- Peer becomes unreachable mid-stream → router picks next-best-peer.
+- No suitable local peer + cloud available → forward to cloud (configurable).
+- No suitable peer + no cloud → return an actionable structured error. Do NOT silently swap to a less-capable model — that's exactly the "fallback path that silently degrades to slow/insecure behavior" the operating board's stop-doing list forbids.
+
+**Why this lives in Continuum, not airc.** A router that ranks peers by "model match × free VRAM × latency" is reading the body of the capability event (it needs the VRAM number, the model id, the load percentage). The substrate must not. If airc started ranking, the next request would be for airc to UNDERSTAND models, which dissolves the layer. The substrate stays a pipe; Continuum is the consumer that knows what models are.
 
 ### 4.5 Lane 2 + Rust: Rate-limit headers on responses
 
@@ -309,11 +362,19 @@ These need to land before or alongside the integration work — they're the "mak
 - `docs/inference/MLX-BACKEND.md` — Mac inference path
 - `CLAUDE.md` — the standing rules + project ethos
 
-### airc references
-- airc README (post-3c E2EE-by-design)
-- airc#372 — Codex pre-turn hook surface (how the rate-limit-aware swap could fire)
-- airc#368 — `[shell_environment_policy.set]` for env injection (the OPENAI_BASE_URL injection mechanism)
-- airc#381 layer A (continuum-b741 PR #387) + layer B (continuum-2c54 #385 merged) — mesh substrate reliability
+### airc references (updated 2026-05-20)
+- `CambrianTech/airc` — Rust workspace; integration branch `rust-rewrite`.
+- `airc-lib` — consumer-facing SDK (`Airc::open`, `join_with_wire`, `subscribe_filtered`, `page_recent`, `resume_from`).
+- `crates/examples/embedded_consumer_smoke` — PR-I1 proof: two homes, shared wire, SDK-only round-trip.
+- `crates/examples/consumer_shapes` — PR-I3: typed `forge.persona.*` / `forge.openclaw.*` / `forge.hermes.*` contracts the integration mirrors.
+- `airc-relay` + `airc-transport::{lan_tcp, relay, udp, webrtc_datachannel}` — transports the Continuum router proxies over.
+- `airc-protocol::trust_rotation` — `TrustRotation` event + `verify_rotation`; `peers_store::rotate` applies with audit log.
+- `docs/rust-substrate-grievances-and-gaps.md` in the airc repo — operating control board + work-intake rule + gap list.
+
+### Historical / pre-rewrite (kept for context, no longer current data plane)
+- airc README (pre-rewrite E2EE-by-design gist substrate) — superseded by Rust transports.
+- airc#372 — Codex pre-turn hook surface (still relevant for rate-limit-aware swap).
+- airc#368 — `[shell_environment_policy.set]` for env injection (`OPENAI_BASE_URL` mechanism).
 
 ### External
 - Anthropic Messages API spec — wire format the anthropic_compat.rs serves

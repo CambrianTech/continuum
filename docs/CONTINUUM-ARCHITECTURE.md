@@ -198,6 +198,8 @@ The "Engine Specifications" section below describes individual engines. Read it 
 
 ## Integration Architecture
 
+> **For the airc / external-agent integration story** (Continuum as the local-inference backbone for Claude Code / Codex / OpenClaw / Hermes via the airc grid substrate) see [AGENT-BACKBONE-INTEGRATION.md](architecture/AGENT-BACKBONE-INTEGRATION.md). That doc owns the airc-side layering, typed contracts (`forge.persona.*` / `forge.openclaw.*` / `forge.hermes.*` / `forge.capability.*`), and the substrate-vs-policy boundary. The section below describes widget portability + browser/Slack/Teams embedding paths.
+
 ### How Widgets Embed Everywhere
 
 ```

@@ -9,6 +9,8 @@
 > - **[GENOME-FOUNDRY-SENTINEL.md](architecture/GENOME-FOUNDRY-SENTINEL.md)** — `DemandAlignedRecall` is the typed Rust API the persona reaches for; `CapabilityQuery → RankedPool` replaces the TS pattern of consolidating sources manually.
 >
 > If the queue-item-carries-its-RAG-contract sentence ever conflicts with what the canonical docs say about `RuntimeFrame` + `DemandAlignedRecall`, defer to the canonical docs.
+>
+> **Cross-grid extension (added 2026-05-20).** The same principle — *every routable artifact carries its own typed contract; the substrate stays domain-agnostic* — is what `airc-protocol::Envelope` + header projections do at the grid layer. Forge-alloy contracts (`forge.persona.*`, `forge.capability.*`, …) are the cross-machine analog of `RuntimeFrame` / `ArtifactSelector`: typed body + projected headers a subscriber filters on without parsing the body. See [AGENT-BACKBONE-INTEGRATION.md](architecture/AGENT-BACKBONE-INTEGRATION.md) §3.4 + §4.3.
 
 ## The Core Principle
 
