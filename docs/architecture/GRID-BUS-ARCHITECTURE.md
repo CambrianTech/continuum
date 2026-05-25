@@ -496,3 +496,23 @@ Reply on `#cambriantech` with substantive critique before any of §5.2's compone
 - **Concrete schema for `presence:peer-manifest` signatures.** Sketched in §4 with `<ed25519 over the canonical encoding>`; the exact canonical encoding, signature verification path, and key-rotation story belong in a sibling spec or an implementation PR description.
 
 These are deferrable. Don't block this doc's review on them.
+
+---
+
+## Appendix: Honest finding on alloy generalization (added 2026-05-25 post-publish)
+
+§4.2 frames forge alloy as the universal contract substrate. Verifying against the actual Rust types reveals a gap: the existing alloy schema is **model-bound** in its current form. Field evidence:
+
+- `AlloySource`: `base_model`, `architecture` ("qwen3" / "llama" / "mistral"), `is_moe`, `total_experts` — all model-specific.
+- `BenchmarkDef`: ML-evals only (`humaneval`, `mmlu`, `n_shot`).
+- `ForgeArtifact`: `forged_params_b`, `active_params_b`, `quant_tiers`, `tokens_per_sec`, `memory_usage_gb` — all model-shape.
+
+The vision Joel articulated ("alloy is a contract for anything, with proof") requires generalizing the schema. Two viable paths:
+
+**Path A — In-place generalization.** Add `artifact_kind: 'model' | 'inference-run' | 'sentinel-scan' | 'code-gen' | 'audit-attestation' | <future>` and make model-specific fields optional, gated on `artifact_kind === 'model'`. Cost: schema churn touches every existing alloy site. Benefit: single artifact type, single audit surface.
+
+**Path B — Layered abstraction.** Introduce parent `ContractArtifact` with the universal fields (hash, recipe lineage, benchmarks, falsifiability, hardware_verified, signed terms). `ForgeAlloy` becomes one subtype (`kind: 'model'`). New computation kinds are sibling subtypes (`kind: 'inference-run'`, etc.) with their own per-kind fields. Cost: indirection on the read side. Benefit: non-destructive — existing alloy code untouched; new kinds add by composition.
+
+**Open question 11 (added):** A vs B vs something else. Joel's call. The grid-bus architecture in this doc works either way — the contract chain (§4.4) references `alloy_hash` regardless of the underlying schema shape. But §4.2's claim that forge alloy is *currently* the universal substrate is only true under one of these paths landing.
+
+Reviewers — please weigh in on this when assessing §4.
