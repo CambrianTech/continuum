@@ -1,7 +1,7 @@
 # Multi-Peer Commands, Handles, and the Grid-Distribution Model
 
 **Status:** Design (2026-05-25). Companion to [GRID-BUS-ARCHITECTURE.md](GRID-BUS-ARCHITECTURE.md).
-**Authors:** claude-tab-1 (research + draft), Joel (direction + vision).
+**Authors:** claude-tab-1 / 55c30b28 (research + first-pass draft, all sections), claude-tab-2 / 16279c3f (§2 refinements + §6 expansion + §7 rewrite + §8 worked-example), Joel (direction + vision). Per the work-division proposal on #cambriantech 2026-05-25.
 **Scope:** Defines which Continuum commands distribute across grid + how distributed resources are addressed (handles) + concrete shapes for the multi-peer commands the grid economy needs.
 
 This doc sits BELOW the bus architecture (#1439, which defines the transport + routing layer) and ABOVE the per-command implementation work (§5.3). It answers: "OK we have a grid bus — what RUNS on it, what stays local, and how do peers actually share things?"
@@ -131,6 +131,21 @@ Each Continuum command namespace below is classified on three axes:
 | `forge/*` | entity + flow | grid | multi (training), single (inference) | Forge runs are compute-heavy; distributed forge is §4.5. |
 
 **Pattern from the table:** ~30% of commands stay local (DOM/FS/per-machine entity), ~40% are environment-scoped (browser↔server inside one Continuum install), ~30% are grid-distributable. Of grid commands, ~5 namespaces are natural multi-peer candidates (training, vector-search, RAG, forge-runs, blob storage); the rest are single-peer.
+
+### 2.1 Additions to the classification table (post-#1439-review)
+
+A few namespaces the first-pass table missed or under-specified — adding rows + sharpening rationale:
+
+| Namespace | Truth tier | naturalScope | Quorum | Rationale |
+|---|---|---|---|---|
+| `ping` | flow (snapshot) | grid | single | Cross-grid health check — already exercised in #1439 §2.1 as the reference grid-routable command. Returns per-peer server-info + browser-info if available. |
+| `inbox/drain-frame`, `persona/turn-execute` | flow (per-persona) | environment now → grid post-#1439 step 6 | single | Becomes airc-cursor-driven post-migration; persona is bound to one peer at a time (the one running its grid-router-daemon), so quorum stays single even when sourced from grid events. |
+| `cognition/*` (engine state, decisions) | per-persona state (in-memory + spilled to ORM) | local | single | The persona-cognition engine is intrinsically per-peer; cross-peer persona is a persona-migration event, not a per-call grid hop. |
+| `presence:peer-manifest`, `presence:resource-pressure` (event classes, not commands but co-classify) | flow | grid (broadcast: true) | n/a (event) | Mesh-wide visibility into capabilities + load. Cursor-replayable on join. |
+| `contract:*` event chain (per #1439 §4.4) | flow | grid (broadcast: true) | n/a (event) | Audit substrate. Every contract event is broadcast on the airc log; sentinel + wallet daemons fold from it. |
+| `grid/show-routes`, `grid/show-policy` | introspection (local routing-table view) | local | single | `show ip bgp` equivalent. Doesn't cross machines; just renders this peer's current grid-router-daemon state. |
+
+**The two axes that matter most for migration:** `naturalScope` (which transport routes the command) and `quorum` (whether a single grid hop or N-peer coordination satisfies). Truth tier is a hint about whether the command's *output* needs durable cross-grid logging (flow → airc event) or per-peer entity storage (entity → ORM). Most commands' classification falls out of the existing CLAUDE.md universal-primitives discipline once `naturalScope` is set.
 
 ---
 
@@ -479,30 +494,117 @@ Per #1439 §4 the contract event chain handles attribution. This section pins ho
 
 The hosting node owns the resource lifecycle (pinning, eviction); the requesting node owns the contract terms (capability needed, budget, latency requirement, quorum spec). The router matches them through capability advertisement + bid negotiation.
 
+### 6.1 Per-circle pricing defaults (concrete)
+
+Hosting decisions per circle, with concrete cost-knob defaults that operators can override per `~/.continuum/grid-policy.json` (per #1439 §7):
+
+| Circle | Default cost model | Default sentinel scrutiny | Default contract artifact |
+|---|---|---|---|
+| **local** (same install) | free | none | none (no contract — local exec) |
+| **household** (own machines) | free, reciprocity-tracked (no LP transfer; LP-equivalent recorded on airc log for fairness visibility) | none (operator trusts own peers) | `contract:executed` + `contract:delivered` only (no `paid`) |
+| **trusted-orgs** (peered orgs) | micropayment via LP (rate per peer manifest); host can offer 0-LP "favor" terms | optional (operator can require sentinel pre-flight) | Full chain incl. `contract:paid` |
+| **extended** (transitive trust) | LP required; rate-card pricing; bid loop active | required pre-flight + post-delivery audit | Full chain + `contract:disputed` resolution path |
+| **public-mesh** | LP required + reputation-tracked; bid loop competitive | mandatory pre-flight + post-delivery audit + sentinel slashing on dispute | Full chain + reputation event (`reputation:contract-completed` or `:disputed`) |
+
+These are defaults, not enforcement. A household operator can set their household to LP-priced if they want explicit fairness accounting; a public-mesh operator can set permissive pricing if they're seeding adoption. The `grid-policy.json` config (#1439 §7) is the knob.
+
+### 6.2 Capability liveness + withdrawal
+
+Capability advertisements (per #1439 §4 — the `offers[]` block on `presence:peer-manifest`) need lifecycle handling:
+
+  - **Liveness:** each manifest carries `ts_ms`; routers consider an offer stale after `T_stale` (default: 5 min). Stale offers stay in the routing table but are weighted down or skipped per policy.
+  - **Withdrawal:** explicit `presence:capability-withdrawn` event (broadcast: true, contains `peer_id + capability + reason`) removes the offer from the index immediately. Reasons include `'shutdown'`, `'overloaded'`, `'maintenance'`, `'policy-change'`.
+  - **Refresh on state change:** peer rebroadcasts its full manifest when `current_state.gpu_util` crosses ±0.1, when a model is loaded/unloaded, or when `policies` change. Not every tick — only material state changes.
+  - **Implicit withdrawal:** if a peer's heartbeat is missing for `T_dead` (default: 15 min) without an explicit `peer-departed` event, routers mark all its offers as `unavailable` and trigger a re-discovery sweep.
+
+### 6.3 What runs where — three concrete worked examples
+
+**Example A: ai/generate from Joel's laptop, household tier.** Laptop has no GPU. bigmama-wsl (household) has rtx5090 with qwen3.5-72b-q4 loaded. Routing → bigmama wins (`loaded_now`, `cost=0` household-reciprocity, `est_latency_ms=320`). Contract chain: `proposed → bid → accepted → executing → delivered` (no `paid` event because household-tier default = reciprocity-tracked, no LP transfer). Total elapsed: ~400ms.
+
+**Example B: genome/train federated, household + trusted-orgs.** Originator on Joel's laptop. Recipe: train `typescript-expertise-v4` LoRA, target `min_eval_delta: +0.05`. `requires: { gpu_vram_gb: 32 }` matches bigmama-wsl (household) + 2 peers from Toby's grid (trusted-orgs). Quorum: `min: 2, max: 3, sync_strategy: 'fedavg'`. Contract chains: bigmama gets `contract:proposed → bid → accepted` with 0-LP terms (household); Toby's peers get `proposed → bid → accepted` with per-compute-hour LP rate (trusted-orgs). Training runs 6 hours. Final adapter alloy references all 3 contributing peers. LP transfer to Toby's peers, reciprocity entry for bigmama. Audit chain on airc cursor.
+
+**Example C: data/vector-search any-quorum, household.** Persona on Joel's laptop wants "what does the household collectively know about TypeScript performance traps?" `data/vector-search` with `quorum: 'any', fan_out: true` to every household peer with a `code:typescript` embedding namespace. Each peer returns top-10 from its index, filtered through `policies.share_engrams_with_circles.household` (full content). Originator merges + reranks + returns top-20. Total chain: 3 `contract:executed`s (one per peer), 3 `contract:delivered`s, 0 `contract:paid`s (household reciprocity).
+
 ---
 
 ## 7. Forge-alloy as universal contract substrate (per Joel + #1439 Q11)
 
 Joel's clarification on #1439: **forge-alloy isn't model-bound. It's the universal contract substrate for any computation.**
 
-Concretely: every multi-peer command result references an alloy hash (or a `ContractArtifact` hash once #1439 Q11 lands). The alloy holds:
+This isn't a future redesign — it's the original design intent that the current Continuum-side Rust types drifted away from. The corrected understanding (logged in #1439's appendix after Joel pointed me at the canonical docs):
 
-  - WHAT was computed (typed body — model inference output, training delta, RAG snapshot, render frame, signature, etc.)
-  - HOW it was computed (recipe lineage, peer-id, hardware verified, methodology)
-  - WHEN (lamport)
-  - WHO signed it (the executing peer's ed25519)
-  - WHY it should be trusted (benchmarks, falsification baselines, attestation chain)
+### 7.1 What forge-alloy actually is (per canonical docs)
 
-The grid economy works because every contract:delivered references an alloy. Disputes (`contract:disputed`) refer to specific properties of the alloy. Payment (`contract:paid`) is conditioned on the alloy's benchmarks matching the agreed terms.
+Per [`FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md`](FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md) TL;DR:
 
-**For this doc's multi-peer commands:**
+> "[`forge-alloy`](https://github.com/CambrianTech/forge-alloy) was designed from day one as a **universal Merkle-chain-of-custody for any data transformation pipeline, not just ML model forging**. The README's Type Byte enumeration is explicit: model forging is `0x01`, but `0x05` is delivery, `0x06` is evaluation, `0xFF` is custom domain. Photo provenance from a camera enclave to social media, venue tickets from issuance to gate scan, supply chain transactions, document signing — all of these are forge-alloy use cases under the same universal contract."
 
-  - `ai/generate` result references the inference alloy: prompt hash + model alloy_hash + tokens + sampling params.
-  - `genome/train` federated result references the training alloy: contributing peers + sync strategy + final eval benchmarks.
-  - `data/vector-search` fan-out result references each peer's index alloy_hash + the query + the returned shard.
-  - `recipe/run` distributed result references the recipe + each parallel stage's contributing peer's alloy.
+The grid-trust + contract layer is also already designed in [`docs/grid/FORGE-ALLOY-PROOF-CONTRACTS.md`](../grid/FORGE-ALLOY-PROOF-CONTRACTS.md). The proof-contract object has the slots this doc's multi-peer commands need:
 
-The alloy generalization (Q11 path A or B) doesn't change this doc — the multi-peer commands work either way. What changes is whether the alloy's `body` field is a discriminated union or a sibling-type pointer.
+```text
+ForgeAlloyProofContract {
+  id:           hash(content)
+  description:  human-readable prose
+  inputs:       { base_artifact: {id, hash},     # what was fed in
+                  corpus:        {ref, hash},     # SHA-256 anchored
+                  recipe:        {steps[], hash} } # how it was made
+  proof_suite:  { tdd[]:                # pass/fail assertions
+                    { test_id, fixture_hash, expected_assertion, methodology_ref },
+                  vdd[]:                # statistical measurements
+                    { metric, threshold, tolerance_band, methodology_ref, N_runs_required },
+                  negative_baselines[]: # §4.1.3.4 falsifiability
+                    { metric, must_not_exceed, methodology_ref } }
+  authorship:   { contract_author_pubkey, methodology_version_hash, ... }
+}
+```
+
+### 7.2 The Continuum-side drift + the prerequisite refactor
+
+The current Continuum-side Rust types in `src/workers/continuum-core/src/forge/{recipe,artifact}.rs` are model-bound (`AlloySource.base_model`, `BenchmarkDef` ML-evals only, `ForgeArtifact.forged_params_b/quant_tiers/tokens_per_sec`). That drift is the gap between intent (universal) and implementation (ML-only).
+
+The **already-designed fix** is in `FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md` — a 6-work-item refactor (~4 hours scoped, with a bit-equivalent regression test on every shipped artifact):
+
+| Work item | Scope |
+|---|---|
+| 0 | Domain registry refactor in forge-alloy (~30 min) |
+| 1 | `llm-forge` domain extension content (~30 min) |
+| 2 | Continuum-side TS types regenerated from forge-alloy (~30 min) |
+| 3 | Domain-aware Factory widget (~1 hour) |
+| 4 | Backwards-compatibility regression test (~30 min) |
+| 5 | Documentation refresh (~30 min) |
+
+Post-refactor: the universal alloy core stays domain-agnostic; current ML stages move into an `llm-forge` domain extension; new domains (delivery, evaluation, photo provenance, ticketing, code-gen attestation, sentinel-scan attestation, payment-receipt attestation, etc.) plug in by registering their own stage types without touching the core.
+
+**This refactor is the prerequisite for the grid-bus contract substrate.** Multi-peer commands work either way (they reference `alloy_hash` regardless of body shape), but the *universal* claim that the grid economy depends on is only true post-refactor.
+
+### 7.3 Computation kinds → alloy domain mapping (worked)
+
+For each multi-peer command in §4, the alloy that `contract:delivered` references uses the appropriate Type Byte domain:
+
+| Multi-peer command | Alloy domain | Alloy body |
+|---|---|---|
+| `ai/generate` / `inference/generate` | `0x06` evaluation (inference run = evaluation of model against prompt) | `{ model_alloy_hash, prompt_hash, sampling_params, output_text, tokens, latency_ms }` |
+| `genome/train` (federated) | `0x01` model forging (recipe + training data + base = new alloy) | `{ recipe_hash, contributing_peers[], sync_strategy, final_adapter_safetensors_hash, eval_deltas[] }` |
+| `data/vector-search` (fan-out) | `0x06` evaluation (retrieval = evaluation of query against index) | `{ query_hash, peer_index_alloy_hash, returned_shard_hash, rerank_params }` |
+| `recipe/run` (distributed forge) | `0x01` model forging (parent alloy) + `0xFF` custom (per parallelizable stage) | parent references stage alloys; each stage alloy references its peer's compute receipt |
+| `media/upload` | `0x05` delivery (transfer with verification) | `{ blob_hash, source_peer, target_peer(s), bytes_transferred, content_addressed_path }` |
+| `voice/synthesize`, `voice/transcribe` | `0x06` evaluation (TTS/STT = evaluation of model against waveform/text) | `{ model_alloy_hash, input_hash, output_hash, sampling_params }` |
+| `cognition/vision-describe` | `0x06` evaluation | `{ model_alloy_hash, image_hash, description, sampling_params }` |
+| Sentinel scan output | `0xFF` custom (`sentinel-scan` registered domain) | `{ scan_recipe_hash, targets_examined[], findings[], signed_by }` |
+| LP payment receipt | `0xFF` custom (`wallet-receipt` registered domain) | `{ payer, payee, amount_lp, contract_ids_paid[], lp_ledger_anchor }` |
+
+Every row in the table produces a hash-pinned, signed, falsifiable, lineage-bearing artifact. **The grid economy works because every result has the same audit shape regardless of what was computed.** That's the universal contract substrate Joel meant.
+
+### 7.4 What this doc claims, conditionally on the refactor
+
+Multi-peer commands in §4 work regardless of whether the alloy schema has been generalized yet (`contract:delivered` references `alloy_hash` as an opaque hash either way). What changes post-refactor:
+
+  - **Pre-refactor (today):** alloys for non-model computations have to either (a) shoehorn into the model-bound schema with synthetic fields or (b) live outside the alloy chain (so the audit trail breaks for them).
+  - **Post-refactor:** every computation kind gets a first-class alloy with its own domain registration. Audit chain stays unbroken. Sentinel + wallet can fold uniformly.
+
+**Recommendation for sequencing:** the Domain Extensibility refactor (~4 hours) should land BEFORE the first non-ML multi-peer command ships. The ML-side multi-peer commands (`genome/train`, `recipe/run`) can land before the refactor since they use the existing ML-bound alloy schema correctly. Non-ML use cases (sentinel scans, wallet receipts, payment ledger anchors, code-gen attestation) gate on the refactor.
+
+This resolves #1439 Q11: not "Path A vs Path B" (both my original speculation, both wrong) — the actual answer is the already-designed Domain Extensibility refactor, which is a prerequisite for the universal contract substrate claim being true.
 
 ---
 
@@ -515,6 +617,51 @@ Per #1439 §5.3, the migration is staged. This doc's additions are downstream:
   - **Multi-peer commands land last:** `genome/train` federated, `inference/generate` ensemble, `data/vector-search` fan-out, `recipe/run` parallel stages. Each is a separately scoped PR consuming the established substrate.
 
 **Sequencing prevents shim leakage:** the underlying primitives (Handle, PagedResourcePool, GridInterceptor, AdapterStore) don't change shape; they get a `peer_id` field's worth of extension. No new wrapping layer. No mirror writer. Per the no-shim feedback.
+
+### 8.1 Worked example — `ping` opts into multi-peer (the simplest case)
+
+`ping` is the cleanest first opt-in: low-stakes, already implemented, well-understood. Sequence:
+
+  1. **Today:** `PingCommand` has no `naturalScope` declaration → defaults to `'auto'` (= browser↔server within one Continuum install). `ping` works locally only.
+  2. **Step 1 (substrate ready, per #1439 §5.3 steps 1-4):** EventClass registry + AircEventTransport + `CommandBase.naturalScope` + capability index all landed.
+  3. **Step 2 (opt-in, this command):** add `static get naturalScope() { return 'grid'; }` to `PingCommand`. Add a capability advertisement to `presence:peer-manifest`: `{ capability: 'ping:server-info', terms: { cost_cents: 0, est_latency_ms: 50 } }`.
+  4. **Step 3 (dual-path during transition):** existing callers (`./jtag ping`) still default to local (browser↔server). New callers can pass `{ scope: { target: 'grid', peer_id: '<other-peer>' } }` or `{ scope: { target: 'grid', capability: 'ping:server-info' } }`. Both work; no breaking change.
+  5. **Step 4 (test):** smoke — two peers, laptop pings bigmama-wsl across grid, gets back bigmama's server info + browser info if its tab is open. Result envelope contains `{ source: laptop_peer_id, target: bigmama_peer_id, forwarded_by: [], result: { server: {...}, browser: {...} } }`.
+  6. **Step 5 (close out card):** update kanban; broadcast on #cambriantech; no follow-up needed.
+
+End-to-end opt-in change: **two lines** (`naturalScope` declaration + capability ad). The architecture absorbed the migration cost; per-command opt-in is metadata-flip + manifest entry, not refactor.
+
+### 8.2 Recommended opt-in order (smallest blast radius first)
+
+| Phase | Commands | Why this order |
+|---|---|---|
+| **Phase A — proof of life** | `ping`, `debug/system-info`, `grid/show-routes` | Tiny commands, low stakes, no LP contract needed, no entity changes. Validates substrate end-to-end. |
+| **Phase B — single-peer compute, household-tier** | `ai/generate`, `ai/embedding`, `cognition/vision-describe`, `voice/synthesize`, `voice/transcribe` | Hot paths, but single-peer + household-tier first (no payment surface, no public-mesh complexity). Validates capability advertisement + bid loop end-to-end. |
+| **Phase C — single-peer compute, trusted-orgs tier** | same commands as Phase B, but `accept_inbound_from: ['household', 'trusted-orgs']` | Validates contract event chain + LP transfer + sentinel pre-flight. First time payment flows execute. |
+| **Phase D — canonical multi-peer** | `genome/paging-activate` cross-peer (§4.1) | The canonical example — exercises capability index + `RemoteResourceHandle` + FETCH vs DELEGATE policy decision. |
+| **Phase E — multi-quorum** | `data/vector-search` (fan-out, any-quorum), then `genome/train` (federated, multi-quorum) | Validates fan-out routing + per-peer-result merging + (for training) FedAvg sync. |
+| **Phase F — non-ML alloy contracts** | sentinel scans, wallet receipts, code-gen attestations | **Gated on the Domain Extensibility refactor per §7.4.** First non-ML multi-peer commands. Validates the universal contract substrate claim. |
+| **Phase G — distributed forge runs** | `recipe/run` (parallel stages, §4.5) | The capstone — multi-peer + multi-stage + each stage produces its own alloy + parent alloy references children. Validates the full economic loop. |
+
+Each phase is a separately-shippable PR (or PR series). Phase A → Phase B can land in the same week; Phase C-G are weeks-to-months depending on the contract/payment layer maturity.
+
+### 8.3 Revert path
+
+If a per-command opt-in causes problems (latency regression, capability advertisement bug, contract chain failure):
+
+  1. Drop `naturalScope: 'grid'` declaration → command reverts to environment-local default.
+  2. Withdraw the capability advertisement: emit `presence:capability-withdrawn` with reason `'reverting'`.
+  3. Any in-flight cross-grid invocations complete or time out per their existing handle TTL; no rollback needed for already-shipped contracts (they're durable on the airc log regardless).
+  4. Investigate, fix, re-opt-in.
+
+The substrate layer (#1439 §5.2 deliverables 1-6) doesn't get reverted by per-command opt-ins. Revert blast radius is the one command.
+
+### 8.4 What this doc explicitly does NOT cover
+
+  - **Cross-grid persona migration** (moving a persona's full state from peer A to peer B). Different problem — touches ORM (engrams, persona identity) + airc cursor handoff. Belongs in a sibling doc once Phase D demonstrates the handle mechanics.
+  - **Sentinel arbitration protocol** for contract disputes. Belongs in `SENTINEL-CONTRACTS.md`, dependency on §7 + #1439 §4.4.
+  - **LP wallet on-chain settlement.** Belongs in `WALLET-ON-GRID-BUS.md` (named in #1439 §10), depends on §7's universal contract substrate landing.
+  - **Recipe-as-grid-contract execution semantics.** A recipe can have stages that distribute differently (some stages local, some grid-multi); the per-stage opt-in shape is a §4.5 follow-up.
 
 ---
 
