@@ -729,64 +729,261 @@ The recipe entity grows a `stages[].parallelizable_across_peers: bool` flag. The
 
 ## 5. The handle distribution model
 
-How do distributed resources travel between peers without losing the safety properties of the local handle system?
+> **Status (2026-05-25):** TS-side spec owned by claude-tab-1 per kanban card 54dc3648-ae0a-49e2-8608-ceca9a84a3c1. Rust-side spec is open — pair with codex when they pick it up. This section defines the TypeScript API surface + lifecycle semantics from the consumer's perspective. The Rust side handles the substrate-internal pin coordination, ref-counting across IPC, and `airc-lib` event wiring.
+
+How do distributed resources travel between peers without losing the safety properties of the local handle system? Continuum already has `Handle<T>` (`src/system/core/types/Handle.ts`) — UUID-addressable, TTL-managed, SQLite-backed. The grid extension is: a handle MAY refer to a resource pinned on a different peer, and the local Continuum keeps a `RemoteResourceHandle` wrapper that knows how to dispatch through to the holder.
 
 ### 5.1 `RemoteResourceHandle<T>` — handle that points at another peer's pin
 
 ```typescript
 interface RemoteResourceHandle<T> extends Handle {
-  // Existing Handle fields:
-  id: UUID;
-  short_id: ShortId;
-  status: HandleStatus;
-  created_ms: number;
-  ttl_ms: number;
-  // Grid extension:
-  peer_id: PeerId;                    // who holds the live resource
-  remote_handle_id: UUID;             // id on the holder peer
-  resource_kind: string;              // 'lora_adapter' | 'kv_cache' | 'inference_session' | ...
-  resource_hint: ResourceHint;        // cached display info (size, capability, etc)
-  fetch_strategy: 'delegate' | 'pull-on-use' | 'pull-immediately';
+  // Existing Handle<T> fields (per src/system/core/types/Handle.ts):
+  readonly id: UUID;                     // local handle id (this peer's perspective)
+  readonly short_id: ShortId;            // '#abc123' for human-typeable refs
+  readonly status: HandleStatus;         // pending | processing | complete | failed | expired | cancelled
+  readonly created_ms: number;
+  readonly ttl_ms: number;               // local handle TTL; refreshed on heartbeat
+
+  // Grid extension fields:
+  readonly peer_id: PeerId;              // which peer holds the live resource
+  readonly remote_handle_id: UUID;       // the id on the holder peer (NOT same as local .id)
+  readonly resource_kind: ResourceKind;  // typed enum (see 5.1.1)
+  readonly resource_hint: ResourceHint;  // cached display info; not the resource itself
+  readonly fetch_strategy: FetchStrategy;
+  readonly reservation_id?: UUID;        // present when held via §5.3 reservation
+  readonly trust_circle: TrustCircle;    // which circle authorized the cross-peer pin
+}
+
+type FetchStrategy = 'delegate' | 'pull-on-use' | 'pull-immediately';
+
+type ResourceKind =
+  | 'lora_adapter'
+  | 'kv_cache'
+  | 'inference_session'
+  | 'embedding_index'
+  | 'render_buffer'
+  | 'model_weights'
+  | 'media_blob'
+  | { kind: 'custom'; namespace: string };
+
+interface ResourceHint {
+  size_bytes?: number;
+  capability?: string;
+  display_label?: string;
+  alloy_hash?: string;
 }
 ```
 
-**Operations on a RemoteResourceHandle:**
+#### 5.1.1 Resource kinds and their semantics
 
-  - `.value()` — if `fetch_strategy === 'delegate'`, returns a proxy that dispatches calls via grid; if `pull-on-use`, fetches the bytes lazily; if `pull-immediately`, fetched at handle creation.
-  - `.unpin()` — sends `grid/unpin` to the holder peer (decrements ref-count there). If holder loses all pins, may evict locally.
-  - `.status()` — queries (or subscribes to) status events from the holder peer.
+| Kind | Typical use | Default fetch_strategy | Why |
+|---|---|---|---|
+| `lora_adapter` | Genome paging across peers (§4.1) | `delegate` | Weights are 100MB-1GB; delegate is faster than transfer for short-lived use. |
+| `kv_cache` | Continued-conversation context | `delegate` (always) | KV cache is huge + ephemeral; never makes sense to pull. |
+| `inference_session` | Multi-turn stateful inference handle | `delegate` (always) | Sessions are bound to the GPU peer that started them. |
+| `embedding_index` | Cross-peer RAG (§4.4) | `delegate` (typical) | Indexes are large + the peer's query path is optimized for them. |
+| `render_buffer` | Distributed compute output | `pull-on-use` | Render output is the work product — caller wants the bytes locally. |
+| `model_weights` | Full base-model fetch | `pull-immediately` | Once you need a base model, you'll use it many times; amortize transfer. |
+| `media_blob` | Content-addressed file/image/video | `pull-on-use` | Lazy fetch; content is immutable so cache-friendly. |
+| `custom` | Consumer-extension | `delegate` (conservative default) | Operator picks per kind. |
 
-### 5.2 Pin lifecycle across peers
+### 5.2 Operations on a `RemoteResourceHandle`
 
-  1. Peer A requests resource via `genome/paging-activate({ manifest_id })`.
-  2. Router determines resource lives on peer B (via `GridAdapterIndex`).
-  3. Per A's policy: `delegate` (return RemoteResourceHandle pointing at B) OR `pull` (transfer + local handle).
-  4. Delegate path: A sends `grid/pin-request` to B; B pins locally; returns its handle id; A creates a RemoteResourceHandle wrapping it.
-  5. A uses the resource by dispatching inference (etc.) through the handle — Commands.execute on grid path with `scope.peer_id: B`, including the remote handle id as context.
-  6. A finishes; calls `.unpin()`; B decrements its local ref count; if zero, B may evict.
+The interface mirrors local `Handle` operations transparently; the grid is invisible at the call site.
 
-**Why this is safe:** B's pin lifecycle is identical to single-machine paging — B doesn't know or care the pinner is remote; its `PagedResourcePool` ref count handles it. A doesn't know or care about B's local cache strategy — its `RemoteResourceHandle` is just a typed reference. The grid is invisible in the type system.
+```typescript
+interface RemoteResourceHandle<T> extends Handle {
+  /**
+   * Resolve the handle to its value.
+   * - delegate: returns a typed proxy that dispatches method calls via grid → peer_id.
+   *   Proxy invocations include remote_handle_id as context so the peer rebinds locally.
+   * - pull-on-use: lazy fetch on first access; caches locally for TTL.
+   * - pull-immediately: bytes already local at handle creation time.
+   *
+   * THROWS on:
+   *   - peer-unreachable (peer offline)
+   *   - reservation-expired (lease lapsed)
+   *   - permission-denied (peer's policy revoked access)
+   */
+  value(): Promise<T>;
 
-### 5.3 Lease + reservation for expensive resources
+  /**
+   * Release this peer's hold on the remote resource.
+   * - Sends `grid/unpin` to peer_id with remote_handle_id.
+   * - Holder decrements ref-count; if zero, may evict.
+   * - Local handle moves to status='cancelled'.
+   * - Idempotent: unpinning twice is a no-op (second call returns immediately).
+   */
+  unpin(): Promise<void>;
+
+  /**
+   * Get latest known status. With `subscribe: true`, returns a subscription
+   * that fires on every status change until cancelled or handle expires.
+   * Subscription rides the airc bus on a channel scoped to (peer_id, remote_handle_id).
+   */
+  status(options?: { subscribe?: boolean }): Promise<HandleStatus> | AsyncIterable<HandleStatus>;
+
+  /**
+   * Refresh the lease against the holder peer. Called automatically by heartbeat
+   * loop while handle is in scope; manual call for explicit lifecycle control.
+   * Resets local TTL on success; returns false if holder refuses (capacity / policy).
+   */
+  heartbeat(): Promise<boolean>;
+}
+```
+
+**Implementation notes for TS callers:**
+
+  - `RemoteResourceHandle` is a class wrapping the typed metadata + a private connection to the local Rust-IPC layer (which talks to airc-lib).
+  - All four methods are async. None of them block on the holder peer's response longer than `scope.timeout_ms` (default 5s; per-call override).
+  - `.value()` for `delegate` strategy returns the same proxy object on repeated calls — proxies are cached by handle id to avoid setup cost per dispatch.
+  - `.value()` for `pull-on-use` caches the resolved bytes in the local Continuum until the handle expires; subsequent `.value()` calls within TTL return the cached copy without re-fetching.
+
+### 5.3 Pin lifecycle across peers
+
+```
+Peer A (caller)                                 Peer B (holder, has resource)
+═══════════════                                 ════════════════════════════
+
+genome/paging-activate({ manifest_id })
+  │
+  ▼
+GridAdapterIndex.locate(manifest_id)
+  → returns peers including B
+  │
+  ▼
+A decides FETCH vs DELEGATE per §4.1.3 policy
+  │  (DELEGATE path shown below; FETCH covered in §5.4)
+  ▼
+A → B: grid/pin-request({                       B receives grid/pin-request
+  resource_kind, manifest_id,                     │
+  reservation_id?, trust_circle              ────►│
+})                                                ▼
+                                                B: validate (resource exists, policy allows,
+                                                   reservation valid if provided)
+                                                B: PagedResourcePool.pin(resource_id) → handle_B
+                                                B: store {remote_pinner: A, local_handle: handle_B}
+                                                  in cross-peer pin registry
+                                                  │
+A receives response ◄─────────────────────────── B → A: {
+  │                                               remote_handle_id: handle_B.id,
+  ▼                                               ttl_ms,
+A: construct RemoteResourceHandle wrapping        resource_hint
+   (B, handle_B, manifest_id, ...)              }
+  │
+  ▼
+A: register local handle in SQLite handle store
+  │
+  ▼
+return RemoteResourceHandle to caller
+  ...
+  caller uses .value() → dispatch via grid       B: receives dispatched command with
+   ai/generate({adapter_handle: handle_remote})  remote_handle_id in scope
+   → grid send to B with remote_handle_id        B: rebinds to local handle_B → runs locally
+   → result returned                             B: streams result back via airc bus
+  ...
+  caller eventually calls .unpin()
+  │
+A → B: grid/unpin({remote_handle_id})            B: receives grid/unpin
+  │                                              B: PagedResourcePool.unpin(handle_B)
+  ▼                                              B: removes from cross-peer pin registry
+A: marks local handle status='cancelled'         B: if ref-count zero, eligible for eviction
+A: removes from SQLite handle store              B → A: ack (or fail if handle unknown — idempotent ack)
+```
+
+**Why this is safe (no leaks across peers):**
+
+  - **B's pin lifecycle is identical to single-machine paging.** B's `PagedResourcePool` ref count handles eviction protection. B doesn't know or care the pinner is remote — the cross-peer pin registry is just metadata for cleanup.
+  - **A's `RemoteResourceHandle` is just a typed reference.** A doesn't know or care about B's local cache strategy. The grid is invisible in the type system.
+  - **Heartbeat loop prevents zombie pins.** A's handle has a TTL (default 5min, refreshed by `.heartbeat()`). If A crashes and stops heartbeating, B's pin registry detects the timeout (default 2× TTL = 10min) and unpins automatically. **No orphan pins survive a crash.**
+  - **Bidirectional disconnect handling.** If A and B become network-partitioned, A's heartbeats fail → local handle marks `status='failed'` and caller gets an exception on next `.value()`. B's pin registry times out independently → unpins on B side. When connectivity recovers, both sides are clean.
+
+### 5.4 Lease + reservation for expensive resources
 
 For resources where "is it currently available?" matters (GPU slots, model load slots, render queue slots), the pin is preceded by a **reservation:**
 
-  1. A asks B: "do you have free capacity for capability X?" (via `presence:peer-manifest` or a fresh probe).
-  2. B says yes with a `reservation_id` valid for K seconds.
-  3. A pins against the `reservation_id`; if expired, B refuses, A retries elsewhere.
-  4. Pin promotes to long-lived handle once accepted.
+```
+A → B: grid/reserve({
+  resource_kind: 'inference_session',
+  capability: 'inference:qwen3.5-72b-q4',
+  estimated_duration_ms: 60000,
+  trust_circle: 'household'
+})
+  │
+B: check capacity; if available, allocate
+  │
+B → A: { reservation_id: UUID, expires_ms: <now + 10s>, terms: {...} }
+  │
+A: within 10s, follow up with grid/pin-request
+  including reservation_id
+  │
+B: validates reservation_id is still valid + matches; promotes to pin
+B → A: { remote_handle_id, ttl_ms }  (RemoteResourceHandle constructed)
+```
 
-Reservations prevent the "10 peers all pin against B's last GPU slot, 9 get rejected after waiting" thundering-herd failure.
+#### 5.4.1 Reservation defaults
 
-### 5.4 Content-addressed pull
+| Field | Default | Rationale |
+|---|---|---|
+| `reservation_expires_ms` | 10_000 (10s) | Long enough for caller to commit; short enough to free slot on caller no-op. |
+| `pin_ttl_ms` after promotion | 300_000 (5min) | Matches local Handle default; refreshed by heartbeat. |
+| `heartbeat_interval_ms` | 60_000 (1min) | 5x safety factor below TTL. |
+| `holder_orphan_timeout_ms` | `2 * pin_ttl_ms` (10min) | Holder unpins if no heartbeat for 2 TTLs. |
 
-For static resources (LoRA weights, model files, recipe blobs), the handle resolution falls back to content-addressed pull:
+#### 5.4.2 Reservation policies
 
-  1. A wants resource with `manifest_id`. Router sees no live peer holds it pinned.
-  2. A queries airc-blobs for the content (manifest_id → sha256 → blob storage).
-  3. A pulls bytes; pins locally; uses.
+Reservations prevent the "10 peers all pin against B's last GPU slot, 9 get rejected after waiting" thundering-herd failure. Three reservation policies a holder peer can advertise (per `~/.continuum/grid-policy.json`):
 
-This is the fallback when delegation isn't an option (peer offline, capacity full, content static-immutable).
+  - **`first-come`** (default): grant reservations in arrival order until capacity full. Refuse new requests until a slot frees.
+  - **`priority-circle`**: rank pending reservations by requester's trust circle (household > trusted-orgs > extended > public); grant highest-priority first. Useful when household needs to preempt cross-internet requests.
+  - **`bid`**: hold reservation requests for `bid_window_ms` (default 500ms); grant to highest-bidder per `contract:bid` event. Public-mesh tier default.
+
+### 5.5 Content-addressed pull (FETCH path)
+
+For static resources (LoRA weights, model files, recipe blobs), the handle resolution can FETCH the content instead of delegating:
+
+```
+A wants resource with manifest_id
+A: GridAdapterIndex / capability lookup → peers offering it
+A: pick peer B per policy (cheapest, fastest, closest)
+A → B: media/fetch-blob({ content_hash: manifest_id })
+B: validate policy (can_offer_weights, trust_circle)
+B → A: stream safetensors (chunked, content-verified by hash on receive)
+A: write to local AdapterStore
+A: pin locally → standard local Handle (NOT RemoteResourceHandle)
+A: subsequent uses are entirely local
+```
+
+This is the fallback when delegation isn't an option (peer offline, capacity full) AND the use pattern justifies transfer cost (per §4.1.3 estimated-use-count > threshold).
+
+#### 5.5.1 Why content-addressed fetch is safe
+
+  - **Hash verification on receive.** The `content_hash` is verifiable end-to-end; A re-computes the sha256 of received bytes and rejects mismatch.
+  - **Deduplication by content hash.** If A already has bytes hashing to `manifest_id`, no transfer happens; A uses local copy.
+  - **Multi-source fetch** (future optimization): for large blobs, A can fetch chunks in parallel from multiple peers offering the same hash, race-and-take-first-good per chunk. Out of scope here; deferred to `media/upload` substrate spec.
+
+### 5.6 Cross-cutting handle concerns
+
+**Handle ID disambiguation.** A `RemoteResourceHandle.id` is the LOCAL id on Peer A; `.remote_handle_id` is the id on Peer B. These are different UUIDs. Code that needs to dispatch to B includes `remote_handle_id` in the command scope; code that needs to address the local wrapper uses `.id`. This is the only sharp edge in the API surface.
+
+**Status events ride the airc bus.** When B's local handle changes status (e.g. resource evicted under pressure, inference completes, error), B emits a `grid:handle:status` event on a channel scoped to `(B, remote_handle_id)`. A's `.status({ subscribe: true })` subscribes to that channel. No polling.
+
+**Handle serialization.** A `RemoteResourceHandle` serializes to JSON cleanly (all fields are primitive types). It can be passed in command params, persisted, or shared across browser/server boundary via the existing EventBridge — extending Handle's pattern. Receiving Continuum reconstructs the wrapper class around the JSON.
+
+**TypeScript / Rust boundary.** TS-side defines the interface + caller-facing class; Rust-side (via airc-lib + RustCoreIPC) implements:
+  - The cross-peer pin registry storage and timeout sweeper.
+  - The `grid/pin-request` / `grid/unpin` / `grid/reserve` / `media/fetch-blob` IPC commands.
+  - The `grid:handle:status` event emission on B's side.
+  - The heartbeat loop coordination.
+
+The TS side is a thin client over these IPC calls. **Per the no-shim rule:** TS doesn't reimplement pin lifecycle logic — it dispatches through the IPC to Rust which owns the truth. Rust-side implementation owned by codex (see §5 Rust-side spec when codex picks up that card).
+
+### 5.7 What this section DOES NOT define
+
+  - **Rust-side substrate.** The pin registry, heartbeat sweeper, IPC command handlers, and `grid:handle:status` event emission live in Rust and are owned by codex. This section pins the TS API + the wire-level contract those Rust impls must satisfy.
+  - **Streaming-handle semantics for chunked / progressive results.** E.g. an inference stream returning tokens incrementally. Mostly handled via the airc event bus (token events on a scoped channel), but the explicit "stream handle" type ergonomics deserve their own section. Follow-up.
+  - **Handle inheritance across multi-hop dispatch.** If A dispatches to B which dispatches to C, does C's response handle propagate back to A as a `RemoteResourceHandle` pointing at C, or as one pointing at B (with C's handle nested inside B's)? Probably the former (transparent multi-hop) but spec deferred until a concrete use case emerges.
+  - **Cross-grid (different airc meshes) handle sharing.** Same-mesh assumed throughout. Cross-mesh requires invite-bridging + trust circle delegation — separate spec.
 
 ---
 
