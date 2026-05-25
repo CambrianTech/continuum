@@ -545,13 +545,168 @@ await GenomeTrainCommand.execute({
 
 ### 4.4 Multi-peer RAG / vector search
 
-**Today:** `data/vector-search` queries the local embedding index for a namespace. Returns top-K matches by cosine similarity.
+> **Status (2026-05-25):** Owned + revised by claude-tab-1 per kanban card fc1e3262-7ad4-4f92-9f4b-f322e004f387. Refines strawman with the privacy-filter-at-source contract, re-ranking math, dedup semantics, and the engram-vs-published-knowledge distinction.
 
-**Grid extension:** `data/vector-search` with `quorum: 'any'` and `scope.fan_out: true`. The router fan-outs the same query to every peer that has an embedding index for the requested namespace; each peer returns top-K; originator merges + re-ranks + returns merged top-K.
+This is the canonical `quorum: 'any'` case. The grid extension is small in code (one new `scope.fan_out` flag, one reducer) but big in implication: it lets a persona on Peer A ask "what does the collective grid know about X" without centralizing engrams or violating the privacy filter at any contributing peer.
 
-**Why this matters:** persona engram stores are per-peer (each persona builds its own context). Cross-peer RAG = "what does the household collectively know about X?" without centralizing the engrams.
+#### 4.4.1 What exists today (single-machine)
 
-**Privacy implication:** each peer's reply is filtered through that peer's `policies.share_engrams_with_circles` — household-tier might share full content, public-tier might share only the embedding signal + reference. Per-peer policy enforces.
+  - **`data/vector-search`** (`src/commands/data/vector-search/`): queries the local embedding index for a namespace + collection. Returns top-K matches by cosine similarity. Single-machine, single namespace.
+  - **Engram store** (`src/system/cognition/engrams/`): per-persona memory store with embeddings. Each persona's engrams are isolated by `personaId` — already the right granularity for "whose memory am I querying."
+  - **`cognition/recall-engrams`**: queries one persona's engram store for memory relevant to a stimulus. Uses `data/vector-search` under the hood.
+
+Flow today: persona P on Peer A calls `cognition/recall-engrams({ persona_id: P, stimulus })` → builds query vector → `data/vector-search({ namespace: 'engrams:P', query: vec, k: 10 })` → cosine top-K from local index → return.
+
+#### 4.4.2 What grid extension adds
+
+  - **`scope.fan_out`** (new flag on `naturalScope: 'grid'` commands): when set, the router dispatches to multiple peers per §3.4 `'any'` quorum rules. Default false (no fan-out — single-peer).
+  - **`reducer: 'merge-top-k'`** (already defined in §3.4): receives per-peer top-K shards + the original query; produces global top-K.
+  - **`grid:rag:request`** event class (`broadcast: false`, dispatched as a Command, not a fire-and-forget Event — but using EventClass machinery for the typed shape). Body:
+
+    ```typescript
+    interface GridRagRequest {
+      request_id: HandleId;            // for cancellation + result correlation
+      namespace: string;               // 'engrams:<persona_id>' | 'published:<topic>' | custom
+      query_vector: number[];          // the original query embedding
+      k: number;                       // top-K per peer
+      filter_predicate?: string;       // optional metadata filter (e.g. 'tag=cooking')
+      max_wait_ms: number;             // hard ceiling for this peer's contribution
+      requester_trust_circle: TrustCircle;  // for the receiver's policy filter (§4.4.5)
+    }
+    ```
+
+  - **`grid:rag:response`** event class (`broadcast: false`, scoped to `request_id`). Body:
+
+    ```typescript
+    interface GridRagResponse {
+      request_id: HandleId;
+      peer_id: PeerId;
+      namespace: string;
+      results: Array<{
+        embedding_id: string;          // opaque, peer-local stable id
+        score: number;                 // cosine similarity (0..1)
+        content?: string;              // may be omitted by privacy filter (§4.4.5)
+        metadata: Record<string, unknown>;
+        provenance: {
+          peer_id: PeerId;
+          alloy_hash?: string;         // index alloy hash if this content was indexed via a known recipe
+          ts_ms: number;
+        };
+      }>;
+      truncated: boolean;              // true if filter dropped some matches
+      ts_ms: number;
+    }
+    ```
+
+#### 4.4.3 Cross-peer fan-out flow
+
+```
+Peer A: cognition/recall-engrams or data/vector-search                   Peers B, C, D
+        with scope.fan_out=true, quorum.kind='any',                      (have the namespace)
+        reducer='merge-top-k', max_wait_ms=2000
+        │
+        ▼
+Router consults capability index for peers with this namespace
+        │
+        ▼
+Router dispatches GridRagRequest to B, C, D in parallel
+        │                                                                 │
+        │                                                                 ▼
+        │                                              each peer: local data/vector-search
+        │                                              each peer: apply privacy filter (§4.4.5)
+        │                                              each peer: emit GridRagResponse on
+        │                                                          channel scoped to request_id
+        │                                                                 │
+        ◄────────────────────────────────────────────────────────────────┘
+        │
+collect responses up to max_wait_ms or all-peers-responded
+        │
+        ▼
+merge-top-k reducer (§4.4.4): rerank globally, return top-K
+        │
+        ▼
+return to caller as standard data/vector-search result shape
+```
+
+The caller signature doesn't change — adding `scope.fan_out: true` is the entire API delta. Internal flow is the new piece.
+
+#### 4.4.4 Re-ranking math (the merge-top-k reducer)
+
+Each peer returns its top-K by local cosine similarity to the query. The reducer combines them. Naive concat-and-sort works only if scores are commensurable across peers — they should be, because cosine similarity over the same embedding model is intrinsically normalized (all values in [-1, 1]). But there are edge cases:
+
+  - **Different embedding models per peer:** if peer B uses `text-embedding-3-large` and peer C uses `nomic-embed-text-v1.5`, their cosine scores aren't directly comparable (different vector spaces). Mitigation: the namespace contract pins an embedding model + dimension (e.g. `engrams:personaP@text-embedding-3-large/1536`); peers that don't have a matching index don't claim the namespace in their capability advertisement; cross-model fan-out doesn't happen. Per-peer scoring is then commensurable by construction.
+  - **Different index recall quality:** B might have a more recent/comprehensive index than C. The reducer can't detect this from scores alone. Heuristic: include `provenance.alloy_hash` for the index — if the originator wants tighter control, they can declare a min-alloy filter (`scope.fan_out_filter: { index_recipe: '<recipe_id>' }`) to constrain to peers using a specific indexing methodology.
+  - **Duplicate content across peers:** the same engram might be indexed on multiple peers (Joel's iMac and laptop both indexed the same RSS feed). Dedup at the reducer: hash the embedding vector (first 16 bytes of the vector as a rough fingerprint) or hash the content text if shared. Default: dedup by `(content[:200] hash)` if content present; else by `embedding_id` if scopes overlap (rare).
+  - **Score-zero matches:** some peers may return no matches above threshold. Reducer ignores empty results; no penalty in the merged top-K.
+
+**Default merge-top-k algorithm:**
+
+  1. Concatenate all `GridRagResponse.results`.
+  2. Dedup by content-hash (or embedding-fingerprint if no content).
+  3. Sort by `score` descending.
+  4. Take top-K (the caller-requested K).
+  5. Annotate each result with `provenance` (which peer contributed it) so downstream consumers can route follow-up queries appropriately.
+
+#### 4.4.5 Privacy filter at SOURCE (not reducer)
+
+The hard rule: **each receiving peer decides what to return based on its OWN policy.** The reducer at the originator just merges what came back; it never re-asks the source peer for content it withheld.
+
+Per-peer policy lives in `~/.continuum/grid-policy.json` under `engram_sharing` (extending the policy block from #1439 §7):
+
+```json
+{
+  "engram_sharing": {
+    "by_circle": {
+      "household": { "share": "full", "include_content": true },
+      "trusted-orgs": { "share": "signal-only", "include_content": false },
+      "extended": { "share": "denied" },
+      "public": { "share": "denied" }
+    },
+    "by_namespace_override": {
+      "engrams:helper-ai": { "household": "denied" }  // some engrams are off-limits even to household
+    }
+  }
+}
+```
+
+Three sharing levels:
+
+  - **`full`** — return the result with content + metadata.
+  - **`signal-only`** — return the result with embedding_id + score + provenance, but NO content (other peer can use the result to bias their own search OR follow up with a separate trust-elevation request, but can't read the engram body).
+  - **`denied`** — don't appear in the response at all. Set `truncated: true` so the requester knows results were filtered.
+
+**Concrete worked example:** Joel's household is querying "what do I know about my friend Toby?" The persona running on Joel's laptop fan-outs to:
+
+  - Joel's iMac: returns `share: 'full'` per household policy. 5 engrams about Toby (chat history, shared docs).
+  - Joel's RTX desktop: same. 2 engrams (image-tagged photos).
+  - Toby's grid (trusted-orgs tier): returns `share: 'signal-only'`. 3 engrams matching the query, but content is withheld. The persona sees "there are 3 things Toby's grid knows that match your query — you don't have permission to read them" and can decide whether to ask Toby for elevation.
+
+The privacy filter is applied PER ENGRAM, not per request — a result might be `full` for one engram and `denied` for another within the same response, based on per-engram metadata flags (e.g. `private: true` on a journal entry).
+
+#### 4.4.6 The engram-vs-published-knowledge distinction
+
+Two namespaces this section enables:
+
+  - **`engrams:<persona_id>`** — per-persona memory. Always privacy-filtered. Cross-peer fan-out lets one persona on Peer A query another persona on Peer B's engrams (subject to policy). Useful for: collaborative agents sharing context, household assistants learning from each other's interactions.
+  - **`published:<topic>`** — explicitly shared knowledge a peer wants discoverable. No privacy filter (the act of publishing implies sharing). Useful for: forge-alloy index ("which alloys does the grid know about for this capability?"), peer expertise advertisement ("which peers have the most engrams about astronomy?").
+
+The `published:*` namespace requires a peer to opt in per-content (mark an engram `published: true` to expose it via this namespace). Default for new engrams is private.
+
+**Open design question** (deferred to follow-up): should `published:*` content be content-addressed (sha256) so multiple peers publishing the same artifact dedup naturally? Probably yes — same content + same alloy hash → same `embedding_id` in the merged response. Out of scope for this section; follow-up card.
+
+#### 4.4.7 Hot path performance considerations
+
+  - **Embedding generation latency:** the query vector must be computed before fan-out. If the local peer can't run the embedding model, this becomes a grid command itself (§4.2 federated inference) — embed locally OR delegate to a peer with the model. Typical embedding latency: 10-50ms on local, 100-300ms on grid.
+  - **Wait deadline tuning:** default `max_wait_ms: 2000` is sized for household-tier grids (LAN, ~10ms RTT + ~100ms query). For trusted-orgs (cross-internet), 5000ms is safer. The adaptive default from §3.4 (`p95(recent_latencies) * 1.5`) converges to the right value within a few queries.
+  - **Result volume:** each peer returns up to K results; with N peers, the reducer sees N*K results. For K=10, N=8, that's 80 results to dedup + sort + truncate — trivial. Doesn't need streaming or paging at typical scales.
+  - **Privacy filter cost:** applying per-engram policy at the source is a fast attribute check; not a bottleneck. The trust-circle check uses the request envelope's signed sender peer-id (per #1439 §4.4 trust chain).
+
+#### 4.4.8 What this section DOES NOT define
+
+  - **Cross-model embedding alignment.** If peers use different embedding models, this section says they don't fan-out together (namespace contract pins the model). A future spec could add cross-model alignment via a linear projection or shared anchor set, but that's its own research project — not in scope.
+  - **Persistent cross-peer engram subscription** ("notify me when Toby's grid indexes new content matching this query"). Different shape (subscribe vs query). Could ride the same event classes with a `subscribe: true` flag + cursor, but defer to a follow-up card.
+  - **Cross-peer engram WRITE** (one persona contributing engrams to another's store). Strictly read-side fan-out here. Cross-peer write requires explicit consent + audit + probably a contract chain (per #1439 §4.4). Separate spec.
+  - **Federated learning OVER cross-peer engrams** (train a new adapter using everyone's engrams). Hybrid of §4.3 and §4.4 — covered there, not here.
 
 ### 4.5 Multi-peer forge runs (distributed synthesis)
 
