@@ -136,47 +136,162 @@ Each Continuum command namespace below is classified on three axes:
 
 ## 3. Quorum: the third axis
 
-`naturalScope` (per #1439 §2.1) answers "where does this command run." But for grid-distributed commands, a second question matters: "how many peers does it take to satisfy?"
+> **Status (2026-05-25):** Owned + revised by claude-tab-1 (55c30b28) per kanban card fbf8912e-eb3a-4bf9-9f75-53b07f59f110. This section pins concrete defaults so per-call `scope.quorum` declarations are decisive, not under-specified.
 
-### 3.1 `quorum: 'single'` — one peer satisfies
+`naturalScope` (per #1439 §2.1) answers "where does this command run." But for grid-distributed commands, a second question matters: "how many peers does it take to satisfy, and what happens when the answer doesn't match the request?" That's the **quorum axis**. The axis is binding on `naturalScope: 'grid'` commands (local + environment never have multi-peer quorum) and lives on the per-call `scope` override defined in #1439 §2.1.
 
-Most grid commands. The router picks ONE peer per the operator's policy (cheapest / fastest / closest / etc.), dispatches, awaits result. Example: `ai/generate` — one inference completion is the answer.
+### 3.1 Quorum types
 
-Existing primitive: GridInterceptor already does this (single-peer routing via Rust kernel).
+Three values cover the multi-peer behavior space:
 
-### 3.2 `quorum: 'multi'` — N peers contribute, results combine
+  - **`single`** — one peer satisfies. The router picks ONE peer per operator policy and awaits its result.
+  - **`multi`** — N peers contribute. The router dispatches the same logical work to multiple peers; the requesting peer's reducer combines partial results into the final answer.
+  - **`any`** — any reachable peer can satisfy; race them and take the first-good-enough OR merge.
 
-Federated commands. The router dispatches the SAME logical work to multiple peers, each producing a partial result; a reducer at the originating peer combines them into the final answer.
+Default for a `naturalScope: 'grid'` command without an explicit `scope.quorum` override is **`single`** (lowest-cost, matches single-peer GridInterceptor behavior today). `multi` and `any` are explicit opt-ins per call site.
 
-Examples:
+### 3.2 `quorum: 'single'` — one peer satisfies (default)
 
-  - **Federated training** (`genome/train`): each peer trains on its local data; gradients/checkpoints sync periodically; final adapter is the combined model. Quorum: `min: 2, max: <N>, sync_strategy: 'fedavg' | 'async-sgd'`.
-  - **Distributed inference** (future `inference/generate-ensemble`): N peers run inference in parallel on the same prompt; the requester does majority-vote / weighted-average / best-of-N. Quorum: `min: 3, reducer: 'majority-vote'`.
-  - **Multi-peer vote** (sentinel arbitration): N peers from a trust circle each evaluate a contract violation claim; the requester takes consensus. Quorum: `min: 3, agree_threshold: 0.67`.
+The router picks ONE peer per operator policy (cheapest / fastest / closest / trust-preferred), dispatches, awaits result. Example: `ai/generate` — one inference completion is the answer.
 
-The quorum specification belongs in the `scope` per-call override (per #1439 §2.1):
+```typescript
+await InferenceGenerateCommand.execute({ model: 'qwen3.5-72b', prompt: '...' }, {
+  scope: {
+    target: 'grid',
+    quorum: 'single',  // (default; can omit)
+    policy: 'cheapest-fast-enough',
+    requires: { capability: 'inference:qwen3.5-72b-q4' },
+  },
+});
+```
+
+**Failure modes the router must handle:**
+
+  - **No peer matches `requires`** → return `{ error: 'no-matching-peer', requires, considered_peers: N }`. Don't degrade silently. Per #1439 §3.2.
+  - **Selected peer becomes unreachable mid-dispatch** → return `{ error: 'peer-unreachable', peer_id, suggest_retry: true, suggested_alternates: [...] }`. Router updates its capability index from the failure signal.
+  - **Selected peer rejects (capacity, policy)** → router re-runs selection excluding the rejecting peer, up to a fixed retry budget (default: 3 retries with exponential backoff capped at 5s). After budget exhausted, return `{ error: 'no-accepting-peer', tried: [...] }`.
+
+**No-retry semantics:** mutating commands (e.g. `model/publish`, `contract:accepted`) MUST NOT auto-retry — the requester decides whether retry is safe given the operation's idempotency. Read-only commands (e.g. `ai/generate` with `temperature: 0`) MAY auto-retry. Heuristic: command class declares `idempotent: true` in registry; router consults before retry.
+
+Existing primitive: GridInterceptor already does single-peer routing via the Rust kernel. The above adds retry + explicit failure shapes.
+
+### 3.3 `quorum: 'multi'` — N peers contribute, results combine
+
+Federated commands. The router dispatches the SAME logical work to multiple peers, each producing a partial result; a reducer at the originating peer combines them.
 
 ```typescript
 await GenomeTrainCommand.execute({ ... }, {
   scope: {
     target: 'grid',
-    quorum: { min: 2, max: 8, sync_strategy: 'fedavg' },
+    quorum: {
+      kind: 'multi',
+      min: 2,
+      max: 8,
+      reducer: 'fedavg',
+      if_under_min: 'wait-up-to-30s',  // 'fail' | 'proceed-degraded' | 'wait-up-to-Ns'
+      slow_peer_timeout_ms: 60_000,    // any peer slower than this is dropped from this round
+    },
     requires: { gpu_vram_gb: 32, capability: 'training:lora:typescript-expertise' },
   },
 });
 ```
 
-### 3.3 `quorum: 'any'` — any reachable peer, doesn't matter which
+**Concrete defaults for `multi` quorum:**
 
-Read-mostly commands where any peer can satisfy and the requester takes the first-good-enough answer (often racing several peers and taking whichever responds first).
+| Field | Default | Rationale |
+|---|---|---|
+| `min` | 2 | Multi-peer is meaningless with 1. |
+| `max` | 8 | Coordination overhead grows with peers; 8 is enough for FedAvg without quadratic gossip. |
+| `if_under_min` | `'fail'` for training/contracts, `'proceed-degraded'` for inference-ensemble | Training under-quorum produces a bad adapter; inference ensemble under-quorum just produces a lower-quality answer. |
+| `slow_peer_timeout_ms` | depends on `reducer` (see below) | Fast reducers (vote) tolerate less slack than slow reducers (fedavg). |
+| `result_freshness_ms` | 30_000 | After dispatch + this window, originator gives up gathering more partials. |
+| `peer_replacement` | `true` if `if_under_min === 'fail'`, else `false` | If we hard-need N peers, replace dropouts; if we accept degraded, don't churn the router. |
 
-Examples:
+**Reducer types** (the function that combines partial results):
 
-  - **`data/vector-search`** against the grid: query goes to every peer with an embedding index for the namespace; merge results client-side.
-  - **`adapter/search`**: search the union of every peer's published adapter manifests; return aggregated matches.
-  - **`media/upload` fetch path** (when reading a blob hash that lives on multiple peers): race the fetch against all known holders; take the first response.
+  - **`fedavg`** — federated averaging for model weights / gradients. Each contributing peer returns a delta; reducer averages weighted by sample count. Sync points: every `sync_every_steps` (default 100) or on convergence. Default `slow_peer_timeout_ms: 60_000` (training is slow; tolerate slack).
+  - **`majority-vote`** — discrete categorical decisions (e.g. "should we accept this contract?"). Each peer returns a vote; reducer takes mode + reports confidence (= mode-fraction). Default `slow_peer_timeout_ms: 5_000` (decisions should be fast).
+  - **`weighted-average`** — continuous scalar results (e.g. ensemble logits). Each peer returns a value + a confidence weight; reducer = sum(value*weight) / sum(weight). Default `slow_peer_timeout_ms: 10_000`.
+  - **`best-of-N`** — quality-scored variants (e.g. multiple inference completions). Each peer returns a result + self-score (perplexity, alignment score, etc.); reducer picks the best. Default `slow_peer_timeout_ms: 20_000`.
+  - **`union`** — set-shaped results (e.g. distributed search). Reducer = set union with provenance tags. Default `slow_peer_timeout_ms: 5_000`.
+  - **`custom`** — reducer name resolved via a registry; consumer provides the function. Validated against a typed reducer interface (`reduce(partials: Partial[]) -> Final`).
 
-The reducer for `any`-quorum commands is usually "first-N-results-merged" or "first-good-enough."
+**Examples:**
+
+  - **Federated training** (`genome/train`): `reducer: 'fedavg', min: 2, max: 8`. Each peer trains on local data; periodic gradient sync; final adapter is the combined model.
+  - **Distributed inference ensemble** (future `inference/generate-ensemble`): `reducer: 'majority-vote' | 'best-of-N', min: 3`. N peers run inference in parallel on the same prompt; reducer combines.
+  - **Multi-peer sentinel arbitration**: `reducer: 'majority-vote', min: 3, agree_threshold: 0.67`. Trust-circle peers evaluate a contract dispute; consensus or escalate.
+  - **Parallel forge stages** (per §4.5): `reducer: 'union', min: <N stages>`. Each peer handles one stage; reducer just joins the artifacts.
+
+**Failure shapes:**
+
+  - `if_under_min: 'fail'` and we got fewer than `min` peers within `result_freshness_ms` → return `{ error: 'under-quorum', got: K, needed: min, timed_out: [...] }`. Originator decides whether to retry, lower the min, or give up.
+  - `if_under_min: 'proceed-degraded'` and we got K < min → return `{ ok: true, result: <reduced from K>, degraded: true, got: K, needed: min, missing: [...] }`. The result is annotated `degraded` so downstream consumers can react.
+  - `if_under_min: 'wait-up-to-Ns'` → keep collecting up to the wait deadline, then apply `fail` or `proceed-degraded` based on whether `min` reached. Use case: training where you can spare a minute to wait for one more peer.
+
+**Contract attribution for `multi` quorum:** each contributing peer has its own `contract:proposed → bid → executed → delivered → paid` chain (per #1439 §4.4). Failed/timed-out contributors don't get paid (their `contract:delivered` never fires); successful contributors do. The final reduced result references all successful contributors in its alloy attestation (per #1439 §4.2 + Joel's vision: alloy as universal contract substrate).
+
+### 3.4 `quorum: 'any'` — any reachable peer, fan-out + first-good-enough
+
+Read-mostly commands where any peer can satisfy and the requester takes the first-good-enough answer (often racing several peers and taking whichever responds first, or merging top-K).
+
+```typescript
+await DataVectorSearchCommand.execute({ namespace: 'engrams', query: vec, k: 10 }, {
+  scope: {
+    target: 'grid',
+    quorum: {
+      kind: 'any',
+      fan_out_to: 'all-matching',       // 'all-matching' | 'first-N' (N=3) | 'first-fastest-N'
+      reducer: 'merge-top-k',           // 'first-good-enough' | 'merge-top-k' | 'union'
+      max_wait_ms: 2_000,
+      early_return_on_first: false,
+    },
+  },
+});
+```
+
+**Concrete defaults for `any` quorum:**
+
+| Field | Default | Rationale |
+|---|---|---|
+| `fan_out_to` | `'all-matching'` | Default to broadest reach; operator can narrow. |
+| `reducer` | `'first-good-enough'` for single-answer cases; `'merge-top-k'` for retrieval; `'union'` for sets | The shape of the result determines the reducer. |
+| `max_wait_ms` | `p95(recent_latencies_for_capability) * 1.5`, capped at 5000 | Adaptive: faster peers raise the bar; cap prevents pathological waits. Initial bootstrap default = 2000ms before history exists. |
+| `early_return_on_first` | `false` (default) | Most `any` commands benefit from at least one merge; `true` only for truly-equivalent peers (e.g. fetch a content-addressed blob — first one wins). |
+
+**Reducer types** (subset of §3.3's, focused on merge-rather-than-combine):
+
+  - **`first-good-enough`** — first response satisfying a quality predicate (or first response, period). Use when peers are equivalent: blob fetch, capability advertisement.
+  - **`merge-top-k`** — each peer returns top-K shard; merge + re-rank globally, return top-K. Use when peers index disjoint partitions: cross-peer vector search, distributed full-text.
+  - **`union`** — each peer returns a set; reducer = set union with origin tags. Use when peers may have overlapping content: adapter-search union of published manifests.
+
+**Examples:**
+
+  - **`data/vector-search`** against the grid: query goes to every peer with an embedding index for the namespace; merge top-K from each peer's shard.
+  - **`adapter/search`**: union of every peer's published adapter manifests; return aggregated matches, deduplicated by manifest hash.
+  - **`media/upload` fetch path**: when reading a blob hash that lives on multiple peers, race the fetch against all known holders; first response wins (`early_return_on_first: true`).
+  - **Cross-peer presence query**: "who in the household is reachable right now?" — fan out a ping, collect responses up to `max_wait_ms`, return the set.
+
+**Privacy filter on `any` fan-out:** each receiving peer applies its OWN policy on what to return (per #1439 §3.3 / §7's trust-circle config). Household-tier peers might share full content; trusted-orgs might share signal-only (embedding without source text); public-mesh might refuse entirely. The reducer at the originator merges what came back without re-asking — the privacy decision lives at the source peer. Worked example: a household peer's engrams of a private journal entry contribute the embedding signal but not the text body on a cross-peer RAG `any`-fan-out from a trusted-orgs requester.
+
+### 3.5 Cross-cutting concerns
+
+**Ordering guarantees across quorum types.** For `single`, ordering is irrelevant. For `multi`, the reducer is responsible for any ordering it cares about (FedAvg doesn't care; majority-vote doesn't care; best-of-N might tiebreak by lamport for determinism). For `any`, results may arrive out of dispatch order; reducer specifies whether ordering is preserved (`merge-top-k` re-sorts; `union` doesn't).
+
+**Idempotency contract.** Per §3.2's no-auto-retry rule, mutating commands must be idempotent or explicitly opt out of retry. For `multi`/`any` quorums, the contract is stronger: a command issued to N peers must produce the same observable result if any subset of those peers re-executes it. Reducer authors should assume duplicate partials are possible and dedupe (e.g. by `(peer_id, request_id)` tuple).
+
+**Backpressure feedback.** Per #1439 §3 / §4 the `presence:resource-pressure` event is broadcast by peers under load. The router consumes it to bias selection away from pressured peers automatically. The per-call `scope` does NOT need to encode this — it's a router-side concern. Per-call `scope.policy` (e.g. `'cheapest-fast-enough'`) gives operator hints about tradeoffs; the router applies them with pressure data factored in.
+
+**Observability.** Every quorum dispatch emits a `grid:quorum:dispatched` event with `(command_class, quorum_spec, peer_count, dispatch_time)`, and `grid:quorum:resolved` on completion with `(result_shape, contributing_peers, latency_p99, degraded: bool)`. Both are class-`broadcast: true` so dashboards + sentinel can observe without instrumenting per-command. Idle observers can subscribe across the whole mesh.
+
+### 3.6 What's NOT a quorum question
+
+  - **Routing target hints** (`scope.peer_id`, `scope.capability`) — these constrain WHICH peers are eligible; quorum constrains HOW MANY satisfy.
+  - **Authentication / trust circle** (`scope.min_trust_circle`) — per-circle filtering happens before quorum selection.
+  - **Backpressure** (handled router-side; see §3.5).
+  - **Reservation TTL** (handled at the §5 handle layer; see §9 open question 1).
+
+These belong on `scope` but not under `scope.quorum`.
 
 ---
 
