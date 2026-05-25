@@ -6,7 +6,7 @@
 
 use crate::airc::realtime::{
     AircPresenceEvent, AircRealtimeDelivery, AircRealtimeEnvelope, AircRealtimePayload,
-    AircReplayCursor,
+    AircReplayCursor, AircSubscriptionAction, AircSubscriptionEvent,
 };
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,7 @@ pub struct AircRealtimePublishResult {
     pub coalesced_presence_key: Option<String>,
     pub replay_depth: usize,
     pub active_presence_count: usize,
+    pub active_subscription_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -60,6 +61,8 @@ pub struct AircRealtimeReplayParams {
     #[ts(optional)]
     pub include_presence: Option<bool>,
     #[ts(optional)]
+    pub include_subscriptions: Option<bool>,
+    #[ts(optional)]
     pub now_ms: Option<u64>,
 }
 
@@ -75,6 +78,7 @@ pub struct AircRealtimeReplayResult {
     #[ts(optional)]
     pub cursor: Option<AircReplayCursor>,
     pub active_presence: Vec<AircPresenceEvent>,
+    pub active_subscriptions: Vec<AircSubscriptionEvent>,
 }
 
 pub trait AircRealtimeStore: Send + Sync {
@@ -95,6 +99,7 @@ pub struct InMemoryAircRealtimeStore {
 struct AircRealtimeState {
     rooms: HashMap<String, VecDeque<AircRealtimeEnvelope>>,
     presence: HashMap<String, AircRealtimeEnvelope>,
+    subscriptions: HashMap<String, AircSubscriptionEvent>,
 }
 
 impl Default for InMemoryAircRealtimeStore {
@@ -118,6 +123,7 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
         params: AircRealtimePublishParams,
     ) -> Result<AircRealtimePublishResult, String> {
         let envelope = params.envelope;
+        validate_room_id(&envelope.room_id)?;
         envelope.validate_delivery()?;
 
         let mut state = self.inner.lock();
@@ -135,9 +141,12 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
                 coalesced_presence_key = Some(key);
                 !matches!(delivery, AircRealtimeDelivery::EphemeralCoalesced)
             }
+            AircRealtimePayload::Subscription { event } => {
+                state.apply_subscription(event);
+                true
+            }
             AircRealtimePayload::Receipt { .. } => false,
             AircRealtimePayload::ExistingSchema { .. }
-            | AircRealtimePayload::Subscription { .. }
             | AircRealtimePayload::MediaControl { .. } => true,
         };
 
@@ -151,6 +160,7 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
             .map(VecDeque::len)
             .unwrap_or_default();
         let active_presence_count = state.active_presence_for_room(&room_id).len();
+        let active_subscription_count = state.active_subscriptions_for_room(&room_id).len();
 
         Ok(AircRealtimePublishResult {
             ok: true,
@@ -161,6 +171,7 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
             coalesced_presence_key,
             replay_depth,
             active_presence_count,
+            active_subscription_count,
         })
     }
 
@@ -190,12 +201,18 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
         } else {
             Vec::new()
         };
+        let active_subscriptions = if params.include_subscriptions.unwrap_or(false) {
+            state.active_subscriptions_for_room(&params.room_id)
+        } else {
+            Vec::new()
+        };
 
         Ok(AircRealtimeReplayResult {
             room_id: params.room_id,
             events,
             cursor,
             active_presence,
+            active_subscriptions,
         })
     }
 }
@@ -234,6 +251,34 @@ impl AircRealtimeState {
                 _ => None,
             })
             .collect()
+    }
+
+    fn apply_subscription(&mut self, event: &AircSubscriptionEvent) {
+        let key = event.coalesce_key();
+        match event.action {
+            AircSubscriptionAction::Subscribe | AircSubscriptionAction::Replay => {
+                self.subscriptions.insert(key, event.clone());
+            }
+            AircSubscriptionAction::Unsubscribe => {
+                self.subscriptions.remove(&key);
+            }
+            AircSubscriptionAction::Ack => {}
+        }
+    }
+
+    fn active_subscriptions_for_room(&self, room_id: &str) -> Vec<AircSubscriptionEvent> {
+        let mut subscriptions = self
+            .subscriptions
+            .values()
+            .filter(|event| event.room_id == room_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        subscriptions.sort_by(|a, b| {
+            a.subscriber_id
+                .cmp(&b.subscriber_id)
+                .then_with(|| a.topic.cmp(&b.topic))
+        });
+        subscriptions
     }
 
     fn prune_expired_presence(&mut self, now_ms: u64) {
@@ -313,6 +358,7 @@ mod tests {
                 after_event_id: Some("evt-1".to_string()),
                 limit: Some(10),
                 include_presence: None,
+                include_subscriptions: None,
                 now_ms: None,
             })
             .unwrap();
@@ -355,6 +401,7 @@ mod tests {
                 after_event_id: None,
                 limit: None,
                 include_presence: Some(true),
+                include_subscriptions: None,
                 now_ms: Some(239),
             })
             .unwrap();
@@ -368,6 +415,7 @@ mod tests {
                 after_event_id: None,
                 limit: None,
                 include_presence: Some(true),
+                include_subscriptions: None,
                 now_ms: Some(240),
             })
             .unwrap();
@@ -404,6 +452,7 @@ mod tests {
                 after_event_id: None,
                 limit: None,
                 include_presence: None,
+                include_subscriptions: None,
                 now_ms: None,
             })
             .unwrap();
@@ -434,5 +483,128 @@ mod tests {
             .unwrap();
         assert_eq!(publish.delivery, AircRealtimeDelivery::Control);
         assert!(publish.stored_for_replay);
+    }
+
+    #[test]
+    fn subscription_events_project_active_room_subscribers() {
+        let store = InMemoryAircRealtimeStore::new(10);
+        for (id, room, subscriber, topic) in [
+            ("sub-1", "general", "browser-1", "presence"),
+            ("sub-2", "general", "persona-1", "media"),
+            ("sub-3", "other", "browser-2", "presence"),
+        ] {
+            store
+                .publish(AircRealtimePublishParams {
+                    envelope: subscription_event(
+                        id,
+                        room,
+                        subscriber,
+                        topic,
+                        AircSubscriptionAction::Subscribe,
+                    ),
+                })
+                .unwrap();
+        }
+
+        let result = store
+            .replay(AircRealtimeReplayParams {
+                room_id: "general".to_string(),
+                after_event_id: None,
+                limit: None,
+                include_presence: None,
+                include_subscriptions: Some(true),
+                now_ms: None,
+            })
+            .unwrap();
+
+        assert_eq!(result.active_subscriptions.len(), 2);
+        assert_eq!(result.active_subscriptions[0].subscriber_id, "browser-1");
+        assert_eq!(result.active_subscriptions[1].subscriber_id, "persona-1");
+    }
+
+    #[test]
+    fn unsubscribe_removes_active_subscription_but_remains_replayable() {
+        let store = InMemoryAircRealtimeStore::new(10);
+        store
+            .publish(AircRealtimePublishParams {
+                envelope: subscription_event(
+                    "sub-1",
+                    "general",
+                    "browser-1",
+                    "presence",
+                    AircSubscriptionAction::Subscribe,
+                ),
+            })
+            .unwrap();
+        let unsubscribe = store
+            .publish(AircRealtimePublishParams {
+                envelope: subscription_event(
+                    "unsub-1",
+                    "general",
+                    "browser-1",
+                    "presence",
+                    AircSubscriptionAction::Unsubscribe,
+                ),
+            })
+            .unwrap();
+
+        assert_eq!(unsubscribe.active_subscription_count, 0);
+
+        let result = store
+            .replay(AircRealtimeReplayParams {
+                room_id: "general".to_string(),
+                after_event_id: None,
+                limit: None,
+                include_presence: None,
+                include_subscriptions: Some(true),
+                now_ms: None,
+            })
+            .unwrap();
+
+        assert!(result.active_subscriptions.is_empty());
+        assert_eq!(
+            result
+                .events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            ["sub-1", "unsub-1"]
+        );
+    }
+
+    #[test]
+    fn publish_rejects_empty_room_id() {
+        let store = InMemoryAircRealtimeStore::new(10);
+        let error = store
+            .publish(AircRealtimePublishParams {
+                envelope: durable_event("evt-1", " ", 1),
+            })
+            .unwrap_err();
+
+        assert_eq!(error, "room_id must not be empty");
+    }
+
+    fn subscription_event(
+        id: &str,
+        room: &str,
+        subscriber: &str,
+        topic: &str,
+        action: AircSubscriptionAction,
+    ) -> AircRealtimeEnvelope {
+        AircRealtimeEnvelope::new(
+            id.to_string(),
+            room.to_string(),
+            subscriber.to_string(),
+            10,
+            AircRealtimePayload::Subscription {
+                event: AircSubscriptionEvent {
+                    action,
+                    room_id: room.to_string(),
+                    subscriber_id: subscriber.to_string(),
+                    topic: topic.to_string(),
+                    cursor: None,
+                },
+            },
+        )
     }
 }
