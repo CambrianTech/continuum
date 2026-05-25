@@ -8,6 +8,13 @@ import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ChatMessageEntity, MediaItem } from '@system/data/entities/ChatMessageEntity';
 
+export interface ChatSendAircResult {
+  ok: boolean;
+  eventId?: string;
+  roomId?: UUID;
+  error?: string;
+}
+
 export interface ChatSendParams extends CommandParams {
   /** Message text to send */
   message: string;
@@ -46,6 +53,9 @@ export interface ChatSendResult extends CommandResult {
 
   /** Room ID message was sent to */
   roomId: UUID;
+
+  /** Stage-1 AIRC dual-write handoff for the same chat message. */
+  airc?: ChatSendAircResult;
 }
 
 /**

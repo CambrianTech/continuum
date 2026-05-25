@@ -95,8 +95,8 @@ Four discrete states. Each transition has its own proof gates (next section). No
 
 | Stage | Writes to | Reads from | Removal-safe? |
 |---|---|---|---|
-| 0 (today) | ORM `chat_messages` | ORM `chat_messages` | n/a — baseline |
-| 1 | ORM **and** AIRC room | ORM `chat_messages` | revert dual-write |
+| 0 (baseline) | ORM `chat_messages` | ORM `chat_messages` | n/a — baseline |
+| 1 (in progress) | ORM **and** AIRC room | ORM `chat_messages` | revert dual-write |
 | 2 | AIRC room (primary) → mirrored to ORM read-only | AIRC OR ORM mirror (transparent) | re-enable ORM writes |
 | 3 | AIRC room | AIRC | irreversible (modulo git revert + DB restore) |
 
@@ -114,7 +114,7 @@ Each gate is a CHECKBOX someone (human or peer agent) must explicitly satisfy, w
 
 **Functional**:
 - [ ] Send a message via `<chat-widget>`. Screenshot shows it appearing within 1s.
-- [ ] Same message appears in `airc logs --since 30s` for the corresponding room.
+- [ ] Same message appears in the AIRC event stream for the corresponding room.
 - [ ] Same message present as a row in `chat_messages` collection.
 
 **Persona path**:
@@ -128,6 +128,12 @@ Each gate is a CHECKBOX someone (human or peer agent) must explicitly satisfy, w
 **Smoke**:
 - [ ] `bash scripts/ci/canary-smoke-airc-queue.sh` passes (validates AIRC primitives still work).
 - [ ] New `bash scripts/ci/canary-smoke-chat-dual-write.sh` (added in this PR) passes — sends a message, asserts both stores received it within 1s.
+
+**Stage-1 slice status (2026-05-24)**:
+- [x] Chat send builds a generated `AircRealtimeEnvelope` with `chat_transcript` payload, ORM message id as `traceId`, durable delivery, blob/media references only, and no inline base64.
+- [x] Chat send publishes through a single `AircChatPublisher` seam after ORM persistence and surfaces AIRC failure in `ChatSendResult.airc` instead of silently swallowing it.
+- [ ] Replace the current CLI-backed publisher with the Rust SDK/daemon API once AIRC exposes the structured publish call Continuum needs.
+- [ ] Add the smoke script that asserts ORM row + AIRC event presence from a running Continuum instance.
 
 ### Stage 1 → 2: AIRC primary, ORM read-only mirror
 
