@@ -132,7 +132,7 @@ Each gate is a CHECKBOX someone (human or peer agent) must explicitly satisfy, w
 **Stage-1 slice status (2026-05-24)**:
 - [x] Chat send builds a generated `AircRealtimeEnvelope` with `chat_transcript` payload, ORM message id as `traceId`, durable delivery, blob/media references only, and no inline base64.
 - [x] Chat send publishes through a single `AircChatPublisher` seam after ORM persistence and surfaces AIRC failure in `ChatSendResult.airc` instead of silently swallowing it.
-- [ ] Replace the current CLI-backed publisher with the Rust SDK/daemon API once AIRC exposes the structured publish call Continuum needs.
+- [x] Replace the original `airc msg` publisher with AIRC's structured publish surface (`airc publish --body-json -`) and parse only the JSON receipt returned by the Rust daemon/API path.
 - [ ] Add the smoke script that asserts ORM row + AIRC event presence from a running Continuum instance.
 
 ### Stage 1 → 2: AIRC primary, ORM read-only mirror

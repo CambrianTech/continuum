@@ -19,7 +19,10 @@ class RecordingPublisher implements AircChatPublisher {
       ok: true,
       eventId: request.envelope.eventId,
       roomId: request.envelope.roomId,
-      publisher: 'airc-cli',
+      publisher: 'airc-publish',
+      lamport: 7,
+      occurredAtMs: 1779645600000,
+      channelName: request.roomName,
     };
   }
 }
