@@ -24,9 +24,18 @@ import { FileMimeType } from '../../../../file/mime-type/shared/FileMimeTypeType
 import { FileLoad } from '../../../../file/load/shared/FileLoadTypes';
 import { MediaPrewarm } from '../../../../media/prewarm/shared/MediaPrewarmTypes';
 import { MediaBlobService } from '@system/storage/MediaBlobService';
+import {
+  AircChatDualWriteService,
+  type AircChatDualWriteResult,
+} from '@system/airc-chat/server/AircChatDualWriteService';
 export class ChatSendServerCommand extends ChatSendCommand {
 
-  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+  constructor(
+    context: JTAGContext,
+    subpath: string,
+    commander: ICommandDaemon,
+    private readonly aircDualWrite: AircChatDualWriteService = new AircChatDualWriteService(),
+  ) {
     super(context, subpath, commander);
   }
 
@@ -172,6 +181,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
     }
 
     const storedEntity = createResult.data;
+    const airc = await this.publishToAirc(resolved.displayName, storedEntity);
 
     // 5. Pre-warm vision description cache for image media (fire-and-forget).
     // LLaVA takes 60-70s. Starting inference NOW means the description is cached
@@ -205,16 +215,35 @@ export class ChatSendServerCommand extends ChatSendCommand {
       sessionId: params.sessionId,
     });
     const hasListener = personaCheck.success && (personaCheck.items?.length ?? 0) > 0;
-    const successMessage = hasListener
+    const baseMessage = hasListener
       ? `Message sent to ${resolved.displayName} (#${shortId})`
       : `Message sent to ${resolved.displayName} (#${shortId}) ⚠️ No AI personas in system — message stored but won't get a reply. Check: ./jtag data/list --collection=users --filter='{"type":"persona"}'  (likely cascade from a failed seed; re-run: npm run data:seed)`;
+    const successMessage = airc.ok
+      ? baseMessage
+      : `${baseMessage} ⚠️ AIRC dual-write failed: ${airc.publish.ok ? 'unknown error' : airc.publish.error}`;
 
     return transformPayload(params, {
       success: true,
       message: successMessage,
       messageEntity: storedEntity,
       shortId: shortId,
-      roomId: resolved.id
+      roomId: resolved.id,
+      airc: {
+        ok: airc.ok,
+        eventId: airc.envelope.eventId,
+        roomId: airc.envelope.roomId as UUID,
+        error: airc.publish.ok ? undefined : airc.publish.error,
+      },
+    });
+  }
+
+  private async publishToAirc(
+    roomName: string,
+    storedEntity: ChatMessageEntity,
+  ): Promise<AircChatDualWriteResult> {
+    return this.aircDualWrite.publishStoredChatMessage({
+      roomName,
+      storedMessage: storedEntity,
     });
   }
 
