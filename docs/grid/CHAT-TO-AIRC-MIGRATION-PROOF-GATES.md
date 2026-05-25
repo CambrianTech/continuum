@@ -133,7 +133,7 @@ Each gate is a CHECKBOX someone (human or peer agent) must explicitly satisfy, w
 - [x] Chat send builds a generated `AircRealtimeEnvelope` with `chat_transcript` payload, ORM message id as `traceId`, durable delivery, blob/media references only, and no inline base64.
 - [x] Chat send publishes through a single `AircChatPublisher` seam after ORM persistence and surfaces AIRC failure in `ChatSendResult.airc` instead of silently swallowing it.
 - [x] Replace the original `airc msg` publisher with AIRC's structured publish surface (`airc publish --body-json -`) and parse only the JSON receipt returned by the Rust daemon/API path.
-- [ ] Add the smoke script that asserts ORM row + AIRC event presence from a running Continuum instance.
+- [x] Add the smoke script that asserts ORM row + AIRC event presence from a running Continuum instance: `bash scripts/ci/canary-smoke-chat-dual-write.sh`.
 
 ### Stage 1 → 2: AIRC primary, ORM read-only mirror
 
