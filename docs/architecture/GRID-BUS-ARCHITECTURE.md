@@ -499,20 +499,54 @@ These are deferrable. Don't block this doc's review on them.
 
 ---
 
-## Appendix: Honest finding on alloy generalization (added 2026-05-25 post-publish)
+## Appendix: Correction on alloy generalization (added + corrected 2026-05-25 post-publish)
 
-§4.2 frames forge alloy as the universal contract substrate. Verifying against the actual Rust types reveals a gap: the existing alloy schema is **model-bound** in its current form. Field evidence:
+**My first appendix proposed Path A/B for "generalizing" the alloy schema. That was wrong** — I read the drifted Continuum-side Rust types and proposed a fix that ignores the already-designed answer that lives in the canonical docs. Joel pointed this out. The actual picture:
 
-- `AlloySource`: `base_model`, `architecture` ("qwen3" / "llama" / "mistral"), `is_moe`, `total_experts` — all model-specific.
-- `BenchmarkDef`: ML-evals only (`humaneval`, `mmlu`, `n_shot`).
-- `ForgeArtifact`: `forged_params_b`, `active_params_b`, `quant_tiers`, `tokens_per_sec`, `memory_usage_gb` — all model-shape.
+### What forge-alloy is, per the canonical docs
 
-The vision Joel articulated ("alloy is a contract for anything, with proof") requires generalizing the schema. Two viable paths:
+forge-alloy is a **universal attestation primitive** — a Merkle-chain-of-custody for any data transformation pipeline. Per [`FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md`](FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md) TL;DR:
 
-**Path A — In-place generalization.** Add `artifact_kind: 'model' | 'inference-run' | 'sentinel-scan' | 'code-gen' | 'audit-attestation' | <future>` and make model-specific fields optional, gated on `artifact_kind === 'model'`. Cost: schema churn touches every existing alloy site. Benefit: single artifact type, single audit surface.
+> "[`forge-alloy`](https://github.com/CambrianTech/forge-alloy) was designed from day one as a universal Merkle-chain-of-custody for any data transformation pipeline, not just ML model forging. The README's Type Byte enumeration is explicit: model forging is `0x01`, but `0x05` is delivery, `0x06` is evaluation, `0xFF` is custom domain. Photo provenance from a camera enclave to social media, venue tickets from issuance to gate scan, supply chain transactions, document signing — all of these are forge-alloy use cases under the same universal contract."
 
-**Path B — Layered abstraction.** Introduce parent `ContractArtifact` with the universal fields (hash, recipe lineage, benchmarks, falsifiability, hardware_verified, signed terms). `ForgeAlloy` becomes one subtype (`kind: 'model'`). New computation kinds are sibling subtypes (`kind: 'inference-run'`, etc.) with their own per-kind fields. Cost: indirection on the read side. Benefit: non-destructive — existing alloy code untouched; new kinds add by composition.
+The trust+contract layer is also already designed in [`docs/grid/FORGE-ALLOY-PROOF-CONTRACTS.md`](../grid/FORGE-ALLOY-PROOF-CONTRACTS.md):
 
-**Open question 11 (added):** A vs B vs something else. Joel's call. The grid-bus architecture in this doc works either way — the contract chain (§4.4) references `alloy_hash` regardless of the underlying schema shape. But §4.2's claim that forge alloy is *currently* the universal substrate is only true under one of these paths landing.
+> "This document captures the proof-contract layer that turns forge-alloy work from 'I did training and it works' into 'anyone can mechanically verify the artifact meets a falsifiable contract.'"
 
-Reviewers — please weigh in on this when assessing §4.
+The proof-contract object has the slots the grid-bus architecture needs: `inputs`, `proof_suite` (TDD assertions + VDD measurements + negative_baselines), `authorship` (signed pubkey + methodology_version_hash), all hash-pinned.
+
+### What's actually drifted (and what fixes it)
+
+The current Continuum-side Rust types in `src/workers/continuum-core/src/forge/{recipe,artifact}.rs` are model-bound:
+- `AlloySource`: `base_model`, `architecture` ("qwen3"/"llama"), `is_moe`, `total_experts`
+- `BenchmarkDef`: ML-evals only (`humaneval`, `mmlu`, `n_shot`)
+- `ForgeArtifact`: `forged_params_b`, `active_params_b`, `quant_tiers`, `tokens_per_sec`, `memory_usage_gb`
+
+This is the drift. The **already-designed fix** is in `FORGE-ALLOY-DOMAIN-EXTENSIBILITY.md` — a 6-work-item refactor (~4 hours scoped, with a bit-equivalent regression test on every shipped artifact):
+
+| Work item | Scope |
+|---|---|
+| 0 | Domain registry refactor in forge-alloy (~30 min) |
+| 1 | `llm-forge` domain extension content (~30 min) |
+| 2 | Continuum-side TS types regenerated from forge-alloy (~30 min) |
+| 3 | Domain-aware Factory widget (~1 hour) |
+| 4 | Backwards-compatibility regression test (~30 min) |
+| 5 | Documentation refresh (~30 min) |
+
+Post-refactor: the universal alloy core stays domain-agnostic; current ML stages move into an `llm-forge` domain extension; new domains (delivery, evaluation, photo provenance, ticketing, code-gen attestation, sentinel-scan attestation, payment-receipt attestation, etc.) plug in by registering their own stage types without touching the core.
+
+### Corrected open question 11
+
+**Not Path A vs Path B** (both wrong — they re-invent what's already designed).
+
+**The actual prerequisite:** GRID-BUS-ARCHITECTURE.md §4's "alloy IS universal contract" claim is true under the existing forge-alloy universal core + after the Continuum-side Domain Extensibility refactor lands per the 6-work-item plan. That refactor is the prerequisite for the grid-bus contract substrate.
+
+**Sequence:** Domain Extensibility refactor (~4 hours) → contract substrate ready for grid bus → §5.2 deliverable 6 (Contract event chain) becomes wiring on top of the universal alloy primitive + the proof-contract object shape already designed in `FORGE-ALLOY-PROOF-CONTRACTS.md`.
+
+### Reviewers: please weigh in on
+
+- Confirm the sequence above (Domain Extensibility refactor must land before §5.2 deliverable 6)
+- Confirm the proof-contract object from `FORGE-ALLOY-PROOF-CONTRACTS.md` is the right wire shape for the contract event chain in §4.4
+- Flag any other "I designed this fresh" mistakes I might have made by not reading the canonical docs first
+
+**Lesson logged:** read the canonical intent docs before designing on top of the drifted implementation. The `docs/architecture/` directory and `docs/grid/` directory are the source of truth; the Rust types are downstream and may drift.
