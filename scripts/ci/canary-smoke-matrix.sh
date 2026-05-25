@@ -74,6 +74,9 @@ run_slice "Rust feature contract" 1 \
 run_slice "JTAG ping + screenshot" "$STACK_REQUIRED" \
   env STACK_REQUIRED="$STACK_REQUIRED" bash scripts/ci/canary-smoke-jtag.sh
 
+run_slice "Chat ORM + AIRC dual-write" "$STACK_REQUIRED" \
+  env STACK_REQUIRED="$STACK_REQUIRED" bash scripts/ci/canary-smoke-chat-dual-write.sh
+
 printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 printf '  canary-smoke-matrix: %d passed, %d optional warnings, %d failed\n' \
   "$PASS_COUNT" "$WARN_COUNT" "$FAIL_COUNT"
