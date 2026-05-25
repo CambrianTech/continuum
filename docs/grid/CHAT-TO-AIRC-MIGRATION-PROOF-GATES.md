@@ -266,3 +266,84 @@ These decisions go into a follow-up card before stage 1 starts.
 - 2026-05-13 — Document drafted (claude-tab-2). Card #1130 in-progress. No code change yet — this is the planning gate that must be agreed before stage 0 → 1 PRs are filed.
 - 2026-05-16 - continuum#1253 regenerated the chat/AIRC inventory artifact and
   tied the proof gates to the AIRC Rust transcript substrate work.
+- 2026-05-25 — **Stage 1 complete.** continuum#1432 added `AircChatPublisher` + dual-write via CLI bridge; #1433 swapped CLI bridge to `airc publish` structured JSON receipt path; #1435 added `scripts/ci/canary-smoke-chat-dual-write.sh` proving ORM row + AIRC event correlation by receipt id. All four "Stage-1 slice status" boxes verified merged on canary. Card 6b564a9a-ba4f-4bc4-8ba8-c0fe88dd0eaa drives the Stage 1 → 2 transition (this slice resolves the open decisions blocking it).
+
+---
+
+## Stage 1 → 2 design (2026-05-25)
+
+Resolves the four open decisions and lays the Stage 2 mirror-writer architecture so the Stage 1 → 2 PR can open without re-litigating shape questions.
+
+### Decision resolutions
+
+  1. **Dual-write atomicity (Stage 2 upgrade).** Stage 1 ships option (c): best-effort with explicit error surface in `ChatSendResult.airc`. **Stage 2 ships option (b): append-only with reconciler.** Concretely: AIRC becomes the primary writer (`AircChatPublisher.publish()` → AIRC event); a new `AircToORMMirrorWriter` daemon subscribes to the room's AIRC event stream and writes the mirror row idempotently keyed by `event_id`. The reconciler runs on writer startup + every 60s: it scans the last N AIRC events that have no corresponding ORM mirror row and back-fills. No two-phase commit; AIRC stays the source of truth, mirror is a projection that may lag.
+
+  2. **Message ID convention.** Stage 1 keeps ORM `chat_messages.id` canonical (the `AircChatEnvelope.traceId` carries it as metadata). **Stage 2 inverts: `AIRC event_id` becomes canonical;** the mirror writer composes the ORM row with `id = event_id` (UUID-shaped already, no schema change) and stores the original ORM id (if any) under `metadata.legacyOrmId` for Stage 1 history rows. New rows after Stage 2 cutover share one id space; the special-case mapping in `DataReadServerCommand.ts:62` operates on whichever id is canonical at the time of the read.
+
+  3. **Backfill of pre-migration history.** **No backfill at Stage 2.** AIRC starts at the Stage 1 cutover date; pre-Stage-1 history is read from the ORM directly via the mirror reader path (mirror serves BOTH historical ORM-native rows and Stage-2 AIRC-derived rows transparently). Backfill remains its own card if ever needed (likely never — the gap is a known migration boundary, not a regression).
+
+  4. **Tombstone semantics.** Stage 2 keeps deletion ORM-local (soft-delete on the mirror row, ORM `deletedAt` field unchanged). The `chat_messages` mirror retains its current soft-delete fields; the corresponding AIRC event is NOT redacted/edited (AIRC events stay immutable at Stage 2). The mirror writer treats post-delete UI as "read the mirror, filter `deletedAt`". Stage 3 (out of scope for this slice) introduces a `chat.redact` AIRC event type that consumers honor server-side.
+
+### Stage 2 architecture
+
+```
+Producer (chat-widget, persona, sentinel, etc.)
+    │
+    ▼
+ChatSendServerCommand
+    │
+    ▼
+AircChatPublisher.publish(envelope)  ──►  airc publish (JSON receipt)
+                                              │
+                                              ▼
+                                       AIRC event store
+                                              │
+                                              ▼  subscription stream
+                                       AircToORMMirrorWriter (new daemon)
+                                              │
+                                              ▼  ORM.insert(chat_messages)
+                                       ORM `chat_messages` (mirror, read-only to producers)
+                                              ▲
+                                              │  ORM.query/list (legacy readers)
+                                       DataLoaders / chat/export / chat/poll / etc.
+```
+
+**Producer side changes:**
+
+  - `ChatSendServerCommand` removes its direct `DataCreate('chat_messages', ...)` call. It still constructs `ChatMessageEntity` for validation + envelope assembly but does NOT write to ORM directly.
+  - The command's success path now requires the AIRC receipt; `ChatSendResult.airc.success` becomes the only success signal. ORM mirror write happens asynchronously via the mirror writer subscription.
+  - Persona reply paths (`PersonaUser.ts:1270`, `:1302`) similarly switch to the publisher seam; no direct ORM writes from persona paths after Stage 2.
+
+**Mirror writer (new):**
+
+  - New daemon `AircToORMMirrorWriter` in `src/daemons/airc-mirror-daemon/` (separate from `data-daemon` to keep responsibilities crisp).
+  - Subscribes to the chat event stream via `LibAircSubstrate.subscribe("chat_transcript")` (gated on continuum#1434 C2 design landing first — Stage 2 cannot ship without the typed subscribe primitive).
+  - Maintains a cursor (`(lamport, event_id)`) per room in a small projection table; restart resumes from cursor.
+  - Write path: `ORM.insert('chat_messages', {id: event.event_id, ...mapped fields, metadata: {airc_lamport, traceId: event.envelope.traceId, ...}})`.
+  - **Idempotency rule:** insert is `INSERT ... ON CONFLICT(id) DO NOTHING`. Replay never duplicates.
+  - **Reconciler:** every 60s, query `ORM.list('chat_messages')` for rows where `metadata.airc_lamport > cursor - safety_window` AND no event seen → emit `WARN` log + re-fetch from AIRC + re-insert. Catches the rare case where the subscription stream missed an event.
+
+**Reader side changes:**
+
+  - `DataLoaders.CHAT_MESSAGES` and consumers (`chat/export`, `chat/poll`, `chat/analyze`, `ai/report`, `ThoughtStream`) **stay unchanged in Stage 2.** They read from the ORM mirror, which is now updated by the mirror writer instead of `ChatSendServerCommand`. This is the "transparent to user" property: readers see the same shape, lag is bounded by mirror-write SLO.
+  - `PersonaUser.ts` event subscription (`data:chat_messages:created`) continues to fire — the mirror writer's ORM insert triggers it. Persona inbox semantics preserved.
+
+**SLO measurement (from existing Stage 1 → 2 gates):**
+
+  - Mirror lag p99 < 100ms, max < 5s over 1-hour soak: measured by sending message via AIRC, polling ORM mirror for the row, recording delta. The mirror writer should comfortably hit p99 < 100ms on local-host (sub-ms IPC + sub-ms SQLite insert).
+
+### Stage 1 → 2 PR sequence
+
+  1. **PR-A: mirror writer skeleton.** Adds `airc-mirror-daemon` with the writer, cursor, and reconciler. Subscribes via `LibAircSubstrate` (gated on continuum#1434 wiring slice landing). Includes unit tests + a smoke that runs the mirror writer against a fixture AIRC stream and asserts ORM rows appear.
+  2. **PR-B: producer cutover.** Removes direct `DataCreate('chat_messages')` from `ChatSendServerCommand` and the two `PersonaUser` persona-reply paths. Updates `ChatSendResult.airc.success` to be the sole success signal. Updates the smoke script `canary-smoke-chat-airc-primary.sh` (new) to assert mirror catches up < 100ms.
+  3. **PR-C: reader audit.** Spot-checks each consumer from the inventory still works against the mirror (no behavior change expected). Updates the inventory's "Status" column from `not-started` → `verified-against-mirror` for each.
+  4. **PR-D: Stage 1 → 2 soak.** 1-hour soak run with mirror-lag metrics recorded. Updates Status log here when soak passes.
+
+PR-A is the gating PR — depends on continuum#1434's `LibAircSubstrate` wiring being implementable (today the doc is the design; the implementation slice follows after reviewer pass). PR-B/C/D can land in parallel once PR-A is in.
+
+### What this slice does NOT do
+
+  - Does not delete any ORM-side code. Stage 1 → 2 keeps the ORM intact as the read mirror. Removal is Stage 3 (irreversible, much higher bar).
+  - Does not change the AIRC wire format. Continues to use `AircChatEnvelope` / `chat_transcript` payload shape from continuum#1432.
+  - Does not touch persona memory / engram admission. Orthogonal per the original out-of-scope section.
+  - Does not change the `airc publish` CLI bridge. Stage 1's structured CLI continues to carry sends until the C2 `LibAircSubstrate` wiring slice replaces it with typed Rust IPC.
