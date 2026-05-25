@@ -219,6 +219,15 @@ pub struct AircSubscriptionEvent {
     pub cursor: Option<AircReplayCursor>,
 }
 
+impl AircSubscriptionEvent {
+    pub fn coalesce_key(&self) -> String {
+        format!(
+            "subscription:{}:{}:{}",
+            self.room_id, self.subscriber_id, self.topic
+        )
+    }
+}
+
 /// WebRTC/LiveKit control-plane metadata. Binary audio/video never rides here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -270,21 +279,11 @@ pub struct AircReceipt {
     export_to = "../../../shared/generated/airc/AircRealtimePayload.ts"
 )]
 pub enum AircRealtimePayload {
-    ExistingSchema {
-        payload: AircRealtimePayloadRef,
-    },
-    Presence {
-        event: AircPresenceEvent,
-    },
-    Subscription {
-        event: AircSubscriptionEvent,
-    },
-    MediaControl {
-        event: AircMediaControlEvent,
-    },
-    Receipt {
-        receipt: AircReceipt,
-    },
+    ExistingSchema { payload: AircRealtimePayloadRef },
+    Presence { event: AircPresenceEvent },
+    Subscription { event: AircSubscriptionEvent },
+    MediaControl { event: AircMediaControlEvent },
+    Receipt { receipt: AircReceipt },
 }
 
 impl AircRealtimePayload {

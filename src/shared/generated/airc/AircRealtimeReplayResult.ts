@@ -2,5 +2,6 @@
 import type { AircPresenceEvent } from "./AircPresenceEvent";
 import type { AircRealtimeEnvelope } from "./AircRealtimeEnvelope";
 import type { AircReplayCursor } from "./AircReplayCursor";
+import type { AircSubscriptionEvent } from "./AircSubscriptionEvent";
 
-export type AircRealtimeReplayResult = { roomId: string, events: Array<AircRealtimeEnvelope>, cursor?: AircReplayCursor, activePresence: Array<AircPresenceEvent>, };
+export type AircRealtimeReplayResult = { roomId: string, events: Array<AircRealtimeEnvelope>, cursor?: AircReplayCursor, activePresence: Array<AircPresenceEvent>, activeSubscriptions: Array<AircSubscriptionEvent>, };
