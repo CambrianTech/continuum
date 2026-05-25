@@ -314,23 +314,177 @@ These belong on `scope` but not under `scope.quorum`.
 
 ### 4.1 Genome paging across peers — the canonical example
 
-**Today (single-machine):** `GenomeDaemon` + `PagedResourcePool` + `AdapterStore` work together: persona requests an adapter via `genome/paging-activate`, pool checks if loaded, loads via `LayerLoader` if not, pins, returns handle. Pressure-driven eviction.
+> **Status (2026-05-25):** Owned + revised by claude-tab-1 per kanban card cdc37197-dc18-4030-81ce-5655004abc2e. Refines strawman with concrete event schemas, the FETCH-vs-DELEGATE decision tree, hot-path inference flow through a remote adapter, and the multi-peer paging pressure model.
 
-**Grid extension (zero new daemons, two new event classes, one extension to AdapterStore):**
+This is the canonical example because it composes existing primitives (`AdapterStore`, `PagedResourcePool`, `LayerLoader`, `GenomeRegistry`, `GenomeDaemon`) with two new event classes — no new daemons, no new wrapper traits. The grid extension emerges from broadcasting manifests + applying the §6 hosting policy.
 
-  - **New event class** `presence:adapter-available` (broadcast: true, channel: 'global'): each peer broadcasts its full adapter manifest list on join + on adapter add/remove. Body: `{ peer_id, adapters: [{ manifest_id, manifest_json, last_used_ms, currently_pinned_count }] }`.
-  - **New event class** `presence:adapter-pressure` (broadcast: true, channel: 'global'): peers broadcast adapter-eviction-candidates under memory pressure. Body: `{ peer_id, evictable: [{ manifest_id, last_used_ms, can_offer_to_other_peers: bool }] }`.
-  - **AdapterStore extension:** alongside the local manifest index, maintain a `GridAdapterIndex` (folder of `presence:adapter-available` events). Lookup: "find this adapter" returns `{ local: bool, peers: [peer_id] }`.
+#### 4.1.1 What exists today (single-machine)
 
-**Cross-peer paging-activate flow:**
+  - **`AdapterStore`** (`src/system/genome/server/AdapterStore.ts`) scans `SystemPaths.genome.adapters`. Each adapter dir has `manifest.json` + `adapter_config.json` + `adapter_model.safetensors`. Indexed by `manifest.id` (content-stable across machines if the manifest content is identical) and by `(personaId, domain)` for latest-version lookup.
+  - **`LayerLoader`** + **`LayerCache`** async-load adapter weights with in-flight dedup and LRU+TTL caching.
+  - **`GenomeRegistry`** ref-counts active loads — `.pin()` keeps adapter resident, `.unpin()` allows eviction.
+  - **`PagedResourcePool<AdapterId, LoadedAdapter>`** under that, generic — adapter is just one of several pressure-managed resources.
+  - **`GenomeDaemon`** orchestrates the lifecycle, consumes pressure events, exposes `genome/paging-activate` + `genome/paging-deactivate` commands.
 
-  1. `genome/paging-activate({ manifest_id })` called locally.
-  2. AdapterStore check: is it on this peer? If yes → existing path.
-  3. If no → query `GridAdapterIndex` → list of peers holding it.
-  4. Per operator policy: either FETCH (pull the safetensors from a peer, store locally, then paging-activate locally) OR DELEGATE (the peer that has it loaded executes inference there; this peer holds a `RemoteResourceHandle`).
-  5. The DELEGATE path is the LoRA-paging-across-grid story: cheap household-LAN means "load on the GPU peer, route inferences through it" is faster than copying 100MB-1GB of weights.
+Flow today: `genome/paging-activate({ manifest_id })` → AdapterStore lookup → if loaded in pool, return handle; else LayerLoader fetches weights, pool pins, returns ResourceHandle. Pressure-driven eviction happens orthogonally via the PagedResourcePool's policy. **All of this stays exactly as-is for grid extension.**
 
-**Why this is the canonical example:** every existing primitive composes; the multi-peer behavior emerges from broadcasting manifests + the routing policy choice. No new wrapper layer. The `RemoteResourceHandle` is just `Handle` with a `peer_id` field.
+#### 4.1.2 What grid extension adds
+
+  - **New event class** `presence:adapter-available` (`broadcast: true`, `channel: 'global'`): each peer broadcasts its current adapter inventory on join + on adapter add/remove + on a 5-minute heartbeat (idempotent — same content gets deduped at the projection layer).
+
+    ```typescript
+    interface AdapterAvailableEvent {
+      peer_id: PeerId;
+      sequence: number;                  // monotonic per-peer; older events deduped
+      adapters: AdapterAvailability[];
+      ts_ms: number;
+    }
+    interface AdapterAvailability {
+      manifest_id: string;               // sha256-stable; same content → same id across peers
+      manifest: AdapterManifestSummary;  // {persona_id, persona_name, domain, base_model, version, size_bytes}
+      load_state: 'on-disk' | 'cached' | 'pinned';
+      currently_pinned_count: number;    // 0 = evictable; >0 = held
+      last_used_ms: number;
+      can_delegate_inference: boolean;   // true if peer has GPU + accepts inbound inference
+      can_offer_weights: boolean;        // true if peer permits other peers to pull the safetensors
+    }
+    ```
+
+  - **New event class** `presence:adapter-pressure` (`broadcast: true`, `channel: 'global'`): broadcast at threshold-crossings (when VRAM crosses 70%, 85%, 95% per #1439-style hysteresis), not on every change. Body lists eviction candidates so other peers can pre-fetch before this peer evicts:
+
+    ```typescript
+    interface AdapterPressureEvent {
+      peer_id: PeerId;
+      pressure_level: 'normal' | 'elevated' | 'high' | 'critical';
+      vram_used_gb: number;
+      vram_total_gb: number;
+      eviction_candidates: Array<{
+        manifest_id: string;
+        last_used_ms: number;
+        size_bytes: number;
+        can_offer_weights: boolean;
+      }>;
+      ts_ms: number;
+    }
+    ```
+
+  - **`GridAdapterIndex`** (new, `src/system/genome/server/GridAdapterIndex.ts`): subscribes to `presence:adapter-available` + `:adapter-pressure`, maintains a per-peer latest-availability projection. Lookup API:
+
+    ```typescript
+    class GridAdapterIndex {
+      /** Locate an adapter across the grid. Returns local first, then peers sorted by suitability. */
+      locate(manifest_id: string): {
+        local: boolean;
+        peers: Array<{
+          peer_id: PeerId;
+          load_state: 'on-disk' | 'cached' | 'pinned';
+          can_delegate_inference: boolean;
+          can_offer_weights: boolean;
+          estimated_latency_ms?: number;  // from #1439 §3 capacity hints
+        }>;
+      };
+
+      /** All adapters reachable on the grid for a (persona, domain). Includes local. */
+      list_for(persona_id: PersonaId, domain: string): GridAdapterCandidate[];
+    }
+    ```
+
+The `GridAdapterIndex` is the only new component. `AdapterStore` keeps its local index unchanged. The grid index is fed by airc subscriptions, lives entirely in memory, no persistence (the projection rebuilds from airc cursor on restart).
+
+#### 4.1.3 The FETCH-vs-DELEGATE decision (per-operator policy)
+
+When `genome/paging-activate({ manifest_id })` finds the adapter is NOT local but IS on peers, two strategies satisfy the request:
+
+  - **FETCH** — pull the safetensors from a peer, store locally, then paging-activate locally. Subsequent uses are local-only. Good when: this peer has spare GPU + the adapter will be used many times.
+  - **DELEGATE** — keep the adapter remote; route every inference call through the peer that holds it. This peer holds a `RemoteResourceHandle` (§5). Good when: this peer doesn't have the GPU to run inference even if it had the weights, OR the adapter will be used a few times and weight-transfer cost (100MB-1GB) isn't worth it.
+
+Decision logic (in `GenomeDaemon`, configurable per operator policy in `~/.continuum/grid-policy.json` from #1439 §7):
+
+```
+local_gpu_can_run_inference?           # do we have the hardware?
+  no  → DELEGATE (no choice)
+  yes → estimated_use_count > threshold (default: 3)?
+          yes → check vram budget for adding this adapter
+                  fits      → FETCH (amortizes over many uses)
+                  doesn't   → DELEGATE (no room here)
+          no  → DELEGATE (not worth transferring weights)
+```
+
+Operator policy can override per-circle: `household` peers might default FETCH (LAN is cheap, mutual trust); `trusted-orgs` might default DELEGATE (cross-internet weight transfer is slow, payment-per-inference makes more sense than payment-per-MB). See §6.
+
+#### 4.1.4 Cross-peer paging-activate flow
+
+```
+                                                  Peer A                          Peer B (has the adapter)
+                                                  ──────                          ────────────────────────
+genome/paging-activate({ manifest_id }) ──► A: AdapterStore.locate(id)
+                                            │  not local
+                                            ▼
+                                          A: GridAdapterIndex.locate(id)
+                                            │  found on B
+                                            ▼
+                                          A: decide FETCH vs DELEGATE (§4.1.3)
+                                            │
+                          ┌─────────────────┴──────────────────┐
+                          ▼                                    ▼
+                       FETCH                                DELEGATE
+                          │                                    │
+        A → B: media/fetch-blob(id)                 A → B: grid/pin-request(id, ttl)
+                          │                                    │
+        B → A: stream safetensors                  B: PagedResourcePool.pin(id) → handle_B
+                          │                                    │
+        A: write to AdapterStore                   B → A: { remote_handle_id, ttl }
+                          │                                    │
+        A: paging-activate locally                  A: create RemoteResourceHandle wrapping (B, handle_B)
+                          │                                    │
+        return ResourceHandle (local)               return RemoteResourceHandle
+                          │                                    │
+                          ▼                                    ▼
+                     [done]                           subsequent inference dispatches via grid
+                                                     (see §4.1.5)
+```
+
+#### 4.1.5 Hot path: inference through a remote adapter (DELEGATE)
+
+Once Peer A holds a `RemoteResourceHandle` pointing at Peer B's pinned adapter:
+
+```
+ai/generate({ prompt, adapter_handle: handle_remote_B }) on Peer A
+  → handle_remote_B.fetch_strategy === 'delegate'
+  → dispatch ai/generate via grid router, scope.peer_id = B
+  → B receives ai/generate({ prompt, adapter_handle: handle_B_local }) — locally rewritten
+  → B: standard local inference path with adapter pinned at handle_B
+  → B streams tokens back via the airc event bus, channel scoped to the inference handle id
+  → A receives token stream events, returns to caller
+```
+
+The TS-side caller doesn't know or care the adapter lives on B. The inference handle (a fresh one for this call) is a normal `Handle` on A; the streaming events on the bus are typed `inference:tokens` per #1439 §2.2 (broadcast: true, channel: scoped to handle id).
+
+**Why DELEGATE works for slow models on weak hardware:** if a household has a MacBook Air (8GB unified memory, no discrete GPU) and a desktop with an RTX 5090, the MacBook's persona can use the desktop's loaded LoRAs without copying weights. The personas effectively share GPU + adapter pool transparently. This is the "personas are citizens of the grid" practical implementation.
+
+#### 4.1.6 Multi-peer paging pressure
+
+The pressure model extends naturally — peers under VRAM pressure broadcast `presence:adapter-pressure`. Other peers consuming the event can:
+
+  - **Pre-fetch** an evictable adapter they want, before B evicts (so they have it locally if B drops it).
+  - **Voluntarily release** their own pins on B's adapters (`grid/unpin`) if they were holding them speculatively, freeing B's capacity.
+  - **Hint dispatch elsewhere** — A's local policy stops biasing toward B for new requests until B's pressure level drops.
+
+This produces a self-regulating mesh: pressure broadcasts let peers cooperate without a central scheduler. No new mechanism — just AdapterPressureEvent fan-out + per-peer policy reaction.
+
+#### 4.1.7 The version-pinning sharp edge
+
+Adapter manifests are content-addressed by `manifest_id` (sha256 over the manifest). If two peers have the SAME adapter content, they get the same `manifest_id` — DELEGATE works transparently. If two peers have DIFFERENT versions of "the same" adapter (different training data, different seed), they have different `manifest_id`s — DELEGATE doesn't accidentally cross versions; each `manifest_id` is a separate locate lookup.
+
+**Sharp edge:** a persona that does `genome/paging-activate({ persona_id, domain })` (without a specific manifest_id) needs the GridAdapterIndex to pick which version. Policy choice: prefer-local-version if any, else prefer-newest-on-grid (by manifest `version` field, falling back to `last_used_ms`). Make this an explicit `scope.adapter_version_policy: 'local-first' | 'newest' | 'pinned-to-version=<v>'` so call sites can be deterministic.
+
+**Implication for federated training (§4.3):** when N peers contribute to a training run, the resulting adapter has a single new `manifest_id`. Each contributing peer's `presence:adapter-available` broadcast lists it as `load_state: 'on-disk'` once writing finishes. The originator's policy decides: distribute the safetensors back to all contributors (eager fan-out via `media/upload` blob distribution) OR let each contributor pull on first need (lazy DELEGATE). Default: eager fan-out within the contributing peer set, lazy for everyone else.
+
+#### 4.1.8 What this section DOES NOT define
+
+  - **Sharded adapter loading** (one peer holds adapter layers 0-15, another holds 16-31). That's model-parallelism, out of scope per #1439 §10.
+  - **Adapter merging at request time** (load adapter X + Y simultaneously and combine LoRA deltas). Single-adapter activation only; PEFT-side composition is a separate concern.
+  - **Trust verification of adapter weights.** A peer claiming `manifest_id: X` could lie about content. The `manifest_id` is content-addressed (sha256 over the manifest JSON), but the weights themselves need separate hash-verification on the receiver. **TODO:** add `weights_sha256` to the manifest schema + verify on FETCH receive. Cards as follow-up — not blocking.
 
 ### 4.2 Federated inference (single-peer dispatch, but interesting cases)
 
