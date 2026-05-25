@@ -230,8 +230,8 @@ export class ChatSendServerCommand extends ChatSendCommand {
       roomId: resolved.id,
       airc: {
         ok: airc.ok,
-        eventId: airc.envelope.eventId,
-        roomId: airc.envelope.roomId as UUID,
+        eventId: airc.publish.eventId,
+        roomId: airc.publish.roomId as UUID,
         error: airc.publish.ok ? undefined : airc.publish.error,
       },
     });
