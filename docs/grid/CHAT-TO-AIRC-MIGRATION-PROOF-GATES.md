@@ -334,12 +334,12 @@ AircChatPublisher.publish(envelope)  ──►  airc publish (JSON receipt)
 
 ### Stage 1 → 2 PR sequence
 
-  1. **PR-A: mirror writer skeleton.** Adds `airc-mirror-daemon` with the writer, cursor, and reconciler. Subscribes via `LibAircSubstrate` (gated on continuum#1434 wiring slice landing). Includes unit tests + a smoke that runs the mirror writer against a fixture AIRC stream and asserts ORM rows appear.
+  1. **PR-A: mirror writer skeleton.** Adds `AircToORMMirrorWriter` with typed source/store ports, cursor advancement, idempotent inserts, and fixture tests. Subscribes via `LibAircSubstrate` once that port is wired to the live AIRC SDK. Includes unit tests + a smoke that runs the mirror writer against a fixture AIRC stream and asserts ORM rows appear.
   2. **PR-B: producer cutover.** Removes direct `DataCreate('chat_messages')` from `ChatSendServerCommand` and the two `PersonaUser` persona-reply paths. Updates `ChatSendResult.airc.success` to be the sole success signal. Updates the smoke script `canary-smoke-chat-airc-primary.sh` (new) to assert mirror catches up < 100ms.
   3. **PR-C: reader audit.** Spot-checks each consumer from the inventory still works against the mirror (no behavior change expected). Updates the inventory's "Status" column from `not-started` → `verified-against-mirror` for each.
   4. **PR-D: Stage 1 → 2 soak.** 1-hour soak run with mirror-lag metrics recorded. Updates Status log here when soak passes.
 
-PR-A is the gating PR — depends on continuum#1434's `LibAircSubstrate` wiring being implementable (today the doc is the design; the implementation slice follows after reviewer pass). PR-B/C/D can land in parallel once PR-A is in.
+PR-A is the gating PR. The first implementation slice keeps the live AIRC reader behind an `AircChatEventSource` port so the writer and ORM projection can be proven before binding to a specific runtime subscription API. PR-B/C/D can land in parallel once PR-A is in.
 
 ### What this slice does NOT do
 
