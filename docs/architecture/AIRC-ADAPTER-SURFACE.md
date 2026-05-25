@@ -19,13 +19,13 @@ continuum-core already has a Rust-native AIRC boundary at `src/workers/continuum
 | `realtime_store.rs` | `AircRealtimeStore` trait + `InMemoryAircRealtimeStore` impl | tokio `RwLock` over `Vec` per channel |
 | `types.rs` | queue card / scan envelopes (`AircQueueCardEnvelope`, `AircQueueScanResult`) | data types only |
 
-ts-rs already exports every wire type to `src/shared/generated/airc/` (23 `.ts` files). The TS side has the bindings; nothing on the TS side consumes them yet — they're scaffolded for the migration the other claude-tab named (chat → events → room-membership → signaling → media).
+ts-rs already exports every wire type to `src/shared/generated/airc/` (23 `.ts` files). The TS side has the bindings; the chat consumer landed in continuum#1432 / #1433 (`AircChatPublisher` → shell-out to `airc msg` then `airc publish` JSON-CLI). The in-process `Vec` in `realtime_store.rs` is reachable from the `airc/realtime-publish` IPC command but is not on the live chat path — chat goes pure-TS shell-out today, not through the Rust adapter. The other typed envelopes (events, lifecycle, signaling) have no TS consumer yet.
 
 The ServiceModule at `src/workers/continuum-core/src/modules/airc.rs` exposes three IPC commands:
 
   - `airc/queue-scan` → `AircQueueClient::list_queue` → today: shells out.
-  - `airc/realtime-publish` → `AircRealtimeStore::publish` → today: writes to an **in-process** `Vec`. Other Continuum scopes do not see it; airc peers do not see it.
-  - `airc/realtime-replay` → `AircRealtimeStore::replay` → today: reads from the same in-process `Vec`.
+  - `airc/realtime-publish` → `AircRealtimeStore::publish` → today: writes to an **in-process** `Vec`. Other Continuum scopes do not see it; airc peers do not see it. **Not on the live chat path.**
+  - `airc/realtime-replay` → `AircRealtimeStore::replay` → today: reads from the same in-process `Vec`. **Not on the live chat path.**
 
 The two "today" notes above are the C2 gap. The trait shape is right; the implementations are stubs that fake the substrate.
 
@@ -64,14 +64,34 @@ pub trait AircSubstrate: Send + Sync {
     /// Opaque peer id; matches `airc_lib::PeerId` when lib-backed.
     fn peer_id(&self) -> PeerId;
 
-    /// Subscribe to a channel; returns a stream of typed envelopes.
-    async fn subscribe(&self, channel: &str) -> Result<BoxStream<AircRealtimeEnvelope>, AdapterError>;
+    /// Subscribe to a channel; returns a stream of verified envelopes.
+    /// Implementations MUST populate `VerifiedEnvelope::verification` on every
+    /// item emitted from this stream; consumers MUST NOT bypass it.
+    async fn subscribe(&self, channel: &str) -> Result<BoxStream<VerifiedEnvelope>, AdapterError>;
 
     /// Publish a typed envelope. Crosses the substrate; other peers see it.
     async fn publish(&self, envelope: AircRealtimeEnvelope) -> Result<AircReceipt, AdapterError>;
 
     /// Replay durable events from a cursor (for catch-up and persona admission).
-    async fn replay(&self, channel: &str, since: AircReplayCursor) -> Result<Vec<AircRealtimeEnvelope>, AdapterError>;
+    /// Like `subscribe`, items carry the verification result.
+    async fn replay(&self, channel: &str, since: AircReplayCursor) -> Result<Vec<VerifiedEnvelope>, AdapterError>;
+}
+
+/// Receive-side envelope wrapper that pairs the typed body with the substrate's
+/// signature-verification outcome. This is the type-system enforcement of the
+/// trust-on-receive contract: `subscribe` and `replay` always return verified
+/// envelopes, so consumers cannot accidentally process an unverified one.
+pub struct VerifiedEnvelope {
+    pub envelope: AircRealtimeEnvelope,
+    pub verification: VerificationResult,
+}
+
+pub enum VerificationResult {
+    /// Signature verified against a known peer in the trust registry.
+    Verified { signer: PeerId },
+    /// Signature missing or signer unknown. `persona::airc_admission` must
+    /// reject these unless explicitly running under a dev policy.
+    Unverified { reason: VerificationFailure },
 }
 ```
 
@@ -85,6 +105,14 @@ The existing `AircRealtimeStore` trait stays, but its only future impl is the li
 ```rust
 #[async_trait]
 pub trait AircWorkSource: Send + Sync {
+    /// Returns the canonical typed envelope today's `airc/queue-scan` IPC
+    /// command emits. `AircQueueScanResult` carries `ok: bool` + a structured
+    /// `error: Option<AircQueueScanError>` — failures stay inside the success
+    /// type so the IPC contract surface to TS callers does not change. The
+    /// other methods on this trait return `Result<_, AdapterError>` because
+    /// they map 1:1 to airc-lib calls that already use `Result`; the adapter
+    /// converts those into the `AircQueueScanResult`-shaped envelope at the
+    /// ServiceModule boundary when forwarding to TS.
     async fn list_queue(&self, req: AircQueueListRequest) -> AircQueueScanResult;
     async fn observe_pull_requests<S: PullRequestSource>(&self, src: S) -> Result<PrObservation, AdapterError>;
     async fn create_work_card(&self, ...) -> Result<WorkCardId, AdapterError>;
@@ -109,13 +137,15 @@ The wire types (`AircPresenceEvent`, `AircSubscriptionEvent`) already exist in `
 
 ### 3.4 IPC surface additions
 
-The ServiceModule keeps its three current commands, adds three more once `LibAircSubstrate` lands:
+The ServiceModule keeps its three current commands, adds three more once `LibAircSubstrate` lands. Naming reflects the actual semantics — these are not synchronous request/response commands, they hand back a stream handle and the underlying envelopes arrive on the event bus:
 
-  - `airc/subscribe-channel` — start a streaming subscription; emits events through the existing event bus.
-  - `airc/work-observe-prs` — wraps `LibAircWorkSource::observe_pull_requests`.
-  - `airc/lifecycle-watch` — start the presence + subscription event stream.
+  - `airc/channel-stream-start` — start a streaming subscription against a channel; events fan out via the existing event bus; returns a stream handle.
+  - `airc/work-observe-prs` — wraps `LibAircWorkSource::observe_pull_requests`. Same start-stream-return-handle shape.
+  - `airc/lifecycle-stream-start` — start the presence + subscription event stream. Same shape.
 
 All three return the same typed envelopes already in `realtime.rs`; the TS side already has bindings under `src/shared/generated/airc/`.
+
+**Event-bus semantics (resolved):** the bus is bounded-channel-per-subscriber, not broadcast-all-or-nothing. A slow TS subscriber back-pressures its own channel and may drop ordered events past the high-water mark, but cannot head-of-line block other subscribers. The drop behavior is observable (the dropped count surfaces on the stream handle) so the consumer learns it fell behind rather than silently losing data.
 
 ---
 
@@ -133,20 +163,30 @@ The other claude-tab's recommended order maps cleanly onto this shape:
 
 Steps 1–4 are pure C2 land. Step 5 is C3's, but the handle plumbing in Step 1 is the prerequisite — C3 receives the substrate handle, not raw airc-lib.
 
+**Parallelism note:** Steps 1 (chat) and 3 (room membership) both build on `LibAircSubstrate` + `LibAircLifecycleSource`, which are independent traits. Two tabs can land them in parallel. Step 4 (signaling) and Step 5 (live/media) both gate on Step 1's substrate handle, so they wait. Two-tab pattern works best when Step 1 and Step 3 split between agents.
+
 ---
 
 ## 5. What this PR does and does not do
 
 **Does (this slice):** ships the proposal as a design doc that codex, the other claude-tabs, and Joel can review and call holes in. Zero code changes; the trait names and IPC command names above are claims, not commits.
 
-**Does not (this slice):** add an `airc-lib` Cargo dependency to continuum-core. The SDK is still moving (PRs #944–963 in the last few days); pinning a path/git dep now risks weekly version bumps for non-content reasons. The wiring lands in a follow-up PR once: (a) airc-lib publishes a versioned crate or stabilizes a path import contract; (b) this design has at least one reviewer pass that doesn't reveal a missing seam.
+**Does not (this slice):** add an `airc-lib` Cargo dependency to continuum-core. The wiring lands in a follow-up PR. Both gates are now met or have a concrete plan:
 
-**Open questions to resolve before Step 1 (chat):**
+  - **(a) airc-lib import contract:** workspace path dep pinned to a specific commit SHA, rebased weekly, never auto-updated. Concretely, `Cargo.toml` adds `airc_lib = { path = "../../../../airc/crates/airc-lib", rev = "<SHA>" }` (path during local dev, git SHA in CI). Bump cadence: deliberate, never on every airc PR. This is the smallest contract that lets the wiring PR open without dragging an unsolved versioning debate.
+  - **(b) reviewer pass:** satisfied (this revision incorporates Joel's review of the v1 doc).
 
-  1. **Lifecycle of the `Airc` handle.** Single process-wide `Arc<airc_lib::Airc>` owned by the ServiceModule, or per-room handle? The SDK's `Airc::join` returns a `Room`; that suggests per-channel handle inside a shared `Airc`.
-  2. **TS↔Rust event delivery.** The current ServiceModule answers one IPC request per call. For `subscribe-channel` we need either: a long-lived IPC stream, or a fan-out where events publish onto Continuum's existing event bus and TS subscribes there. The latter is closer to today's architecture.
-  3. **Trust on receive.** `persona::airc_admission` already validates `AircAdmissionEnvelope` signatures via `airc_lib::mesh_identity`'s rotation log. The substrate-side `LibAircSubstrate::subscribe` must surface the same verification result on every envelope; the adapter must not strip it.
-  4. **Errors.** `AircQueueScanResult` returns a typed failure today (no `Result`). The new traits use `Result<_, AdapterError>` because airc-lib already does — but the IPC envelopes need to keep the structured-failure shape to avoid breaking TS callers. The mapping is local to the ServiceModule.
+**Resolved (post-review):**
+
+  1. **Lifecycle of the `Airc` handle.** Single process-wide `Arc<airc_lib::Airc>` owned by the ServiceModule. `Airc::join(name)` returns a `Room` that the substrate keeps in a per-channel `HashMap<ChannelId, Room>`. Avoids handle-construction cost per call.
+  2. **TS↔Rust event delivery.** Event-bus fan-out, not long-lived IPC streams. Bounded channel per subscriber (see §3.4 event-bus semantics).
+  3. **Trust on receive.** Lifted from open question to trait constraint — `subscribe` and `replay` return `VerifiedEnvelope` not `AircRealtimeEnvelope`, so verification cannot be bypassed by accident. See §3.1.
+  4. **Errors.** Resolved: `list_queue` keeps the structured-failure shape (`AircQueueScanResult`) as the IPC contract to TS; other methods use `Result<_, AdapterError>` because they map 1:1 to airc-lib's `Result` form. The adapter converts at the ServiceModule boundary. See §3.2 doc comment on `list_queue`.
+
+**Tracked as follow-up (not in this doc):**
+
+  - Parallelism opportunity: split Step 1 (chat) and Step 3 (room membership) across two tabs (see §4 parallelism note).
+  - Cargo-dep concrete bump cadence policy needs a one-line commit in continuum-core's `Cargo.toml` when the wiring PR opens.
 
 ---
 
