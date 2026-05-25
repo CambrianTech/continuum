@@ -62,6 +62,9 @@ function run(): void {
   assert.equal(envelope.roomId, '22222222-2222-4222-8222-222222222222');
   assert.equal(envelope.sourceId, '33333333-3333-4333-8333-333333333333');
   assert.equal(envelope.traceId, '11111111-1111-4111-8111-111111111111');
+  if (envelope.payload.kind !== 'existing_schema') {
+    throw new Error(`unexpected payload kind: ${envelope.payload.kind}`);
+  }
   assert.equal(envelope.payload.payload.schema, 'chat_transcript');
   assert.equal(envelope.payload.payload.schemaVersion, AIRC_CHAT_SCHEMA_VERSION);
 

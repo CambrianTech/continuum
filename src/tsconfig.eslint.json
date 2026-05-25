@@ -12,6 +12,8 @@
     "browser/**/*.ts",
     "server/**/*.ts",
     "shared/**/*.ts",
+    "system/airc-chat/server/**/*.ts",
+    "system/airc-chat/shared/**/*.ts",
     "daemons/**/*.ts",
     "commands/**/*.ts",
     "generator/generate-command-constants.ts",
