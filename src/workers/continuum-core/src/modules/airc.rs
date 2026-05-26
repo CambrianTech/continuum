@@ -1,9 +1,9 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    AircQueueClient, AircQueueListRequest, AircQueueScanParams, AircRealtimePublishParams,
-    AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient, InMemoryAircRealtimeStore,
-    TokioAircCommandRunner,
+    AircEventTransport, AircQueueClient, AircQueueListRequest, AircQueueScanParams,
+    AircRealtimePublishParams, AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient,
+    InMemoryAircRealtimeStore, StoreAircEventTransport, TokioAircCommandRunner,
 };
 use crate::runtime::{
     CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ParamSchema,
@@ -16,21 +16,25 @@ use std::sync::Arc;
 
 pub struct AircModule {
     queue_client: Arc<dyn AircQueueClient>,
-    realtime_store: Arc<dyn AircRealtimeStore>,
+    event_transport: Arc<dyn AircEventTransport>,
 }
 
 impl AircModule {
     pub fn new() -> Self {
         Self {
             queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
-            realtime_store: Arc::new(InMemoryAircRealtimeStore::default()),
+            event_transport: Arc::new(StoreAircEventTransport::new(Arc::new(
+                InMemoryAircRealtimeStore::default(),
+            ))),
         }
     }
 
     pub fn with_queue_client(queue_client: Arc<dyn AircQueueClient>) -> Self {
         Self {
             queue_client,
-            realtime_store: Arc::new(InMemoryAircRealtimeStore::default()),
+            event_transport: Arc::new(StoreAircEventTransport::new(Arc::new(
+                InMemoryAircRealtimeStore::default(),
+            ))),
         }
     }
 
@@ -40,7 +44,17 @@ impl AircModule {
     ) -> Self {
         Self {
             queue_client,
-            realtime_store,
+            event_transport: Arc::new(StoreAircEventTransport::new(realtime_store)),
+        }
+    }
+
+    pub fn with_event_transport(
+        queue_client: Arc<dyn AircQueueClient>,
+        event_transport: Arc<dyn AircEventTransport>,
+    ) -> Self {
+        Self {
+            queue_client,
+            event_transport,
         }
     }
 }
@@ -81,13 +95,13 @@ impl ServiceModule for AircModule {
             "airc/realtime-publish" => {
                 let params: AircRealtimePublishParams = serde_json::from_value(params)
                     .map_err(|e| format!("invalid airc/realtime-publish params: {e}"))?;
-                let result = self.realtime_store.publish(params)?;
+                let result = self.event_transport.publish(params)?;
                 CommandResult::json(&result)
             }
             "airc/realtime-replay" => {
                 let params: AircRealtimeReplayParams = serde_json::from_value(params)
                     .map_err(|e| format!("invalid airc/realtime-replay params: {e}"))?;
-                let result = self.realtime_store.replay(params)?;
+                let result = self.event_transport.replay(params)?;
                 CommandResult::json(&result)
             }
             _ => Err(format!("Unknown airc command: {command}")),
@@ -190,9 +204,11 @@ impl ServiceModule for AircModule {
 mod tests {
     use super::*;
     use crate::airc::{
-        AircPresenceEvent, AircPresenceState, AircQueueScanResult, AircRealtimeEnvelope,
-        AircRealtimePayload,
+        AircPresenceEvent, AircPresenceState, AircQueueScanResult, AircRealtimeDelivery,
+        AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePublishResult,
+        AircRealtimeReplayResult,
     };
+    use parking_lot::Mutex;
     use serde_json::json;
 
     struct FakeQueueClient;
@@ -213,6 +229,51 @@ mod tests {
                 queue: None,
                 error: None,
             }
+        }
+    }
+
+    struct FakeEventTransport {
+        published: Mutex<Vec<String>>,
+    }
+
+    impl FakeEventTransport {
+        fn new() -> Self {
+            Self {
+                published: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl AircEventTransport for FakeEventTransport {
+        fn publish(
+            &self,
+            params: AircRealtimePublishParams,
+        ) -> Result<AircRealtimePublishResult, String> {
+            self.published.lock().push(params.envelope.event_id.clone());
+            Ok(AircRealtimePublishResult {
+                ok: true,
+                event_id: params.envelope.event_id,
+                room_id: params.envelope.room_id,
+                delivery: AircRealtimeDelivery::Durable,
+                stored_for_replay: true,
+                coalesced_presence_key: None,
+                replay_depth: 1,
+                active_presence_count: 0,
+                active_subscription_count: 0,
+            })
+        }
+
+        fn replay(
+            &self,
+            params: AircRealtimeReplayParams,
+        ) -> Result<AircRealtimeReplayResult, String> {
+            Ok(AircRealtimeReplayResult {
+                room_id: params.room_id,
+                events: Vec::new(),
+                cursor: None,
+                active_presence: Vec::new(),
+                active_subscriptions: Vec::new(),
+            })
         }
     }
 
@@ -286,5 +347,39 @@ mod tests {
         };
         assert_eq!(replay_value["events"].as_array().unwrap().len(), 0);
         assert_eq!(replay_value["activePresence"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn realtime_publish_uses_event_transport_seam() {
+        let transport = Arc::new(FakeEventTransport::new());
+        let module = AircModule::with_event_transport(Arc::new(FakeQueueClient), transport.clone());
+        let envelope = AircRealtimeEnvelope::new(
+            "evt-through-transport".to_string(),
+            "general".to_string(),
+            "persona-1".to_string(),
+            100,
+            AircRealtimePayload::Presence {
+                event: AircPresenceEvent {
+                    room_id: "general".to_string(),
+                    subject_id: "persona-1".to_string(),
+                    display_name: None,
+                    state: AircPresenceState::Online,
+                    started_at_ms: 100,
+                    expires_at_ms: None,
+                    call_id: None,
+                },
+            },
+        );
+
+        let result = module
+            .handle_command("airc/realtime-publish", json!({ "envelope": envelope }))
+            .await
+            .unwrap();
+
+        let CommandResult::Json(value) = result else {
+            panic!("expected JSON result");
+        };
+        assert_eq!(value["eventId"], "evt-through-transport");
+        assert_eq!(transport.published.lock()[0], "evt-through-transport");
     }
 }
