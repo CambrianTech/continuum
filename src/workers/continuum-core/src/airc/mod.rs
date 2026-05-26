@@ -5,12 +5,14 @@
 //! ServiceModule wrappers stay thin and future AIRC commands reuse one path.
 
 pub mod client;
+pub mod event_transport;
 pub mod process;
 pub mod realtime;
 pub mod realtime_store;
 pub mod types;
 
 pub use client::{AircQueueClient, CliAircQueueClient};
+pub use event_transport::{AircEventTransport, StoreAircEventTransport};
 pub use process::{AircCommandRunner, AircInvocation, TokioAircCommandRunner};
 pub use realtime::{
     AircMediaControlEvent, AircPresenceEvent, AircPresenceState, AircRealtimeDelivery,
