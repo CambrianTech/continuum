@@ -54,14 +54,16 @@ mod tests {
         InMemoryAircRealtimeStore,
     };
     use serde_json::json;
+    use uuid::Uuid;
 
     #[test]
     fn store_transport_round_trips_without_cli_output_parsing() {
         let transport =
             StoreAircEventTransport::new(Arc::new(InMemoryAircRealtimeStore::default()));
+        let room_id = Uuid::from_u128(0xA1);
         let envelope = AircRealtimeEnvelope::new(
             "evt-1".to_string(),
-            "general".to_string(),
+            room_id,
             "continuum".to_string(),
             100,
             AircRealtimePayload::ExistingSchema {
@@ -79,7 +81,7 @@ mod tests {
 
         let replay = transport
             .replay(AircRealtimeReplayParams {
-                room_id: "general".to_string(),
+                room_id,
                 after_event_id: None,
                 limit: Some(10),
                 include_presence: None,

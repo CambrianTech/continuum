@@ -228,6 +228,9 @@ mod tests {
     };
     use parking_lot::Mutex;
     use serde_json::json;
+    use uuid::Uuid;
+
+    const TEST_ROOM_ID: Uuid = Uuid::from_u128(0xA1);
 
     struct FakeQueueClient;
 
@@ -326,12 +329,12 @@ mod tests {
         let module = AircModule::with_queue_client(Arc::new(FakeQueueClient));
         let envelope = AircRealtimeEnvelope::new(
             "typing-1".to_string(),
-            "general".to_string(),
+            TEST_ROOM_ID,
             "persona-1".to_string(),
             100,
             AircRealtimePayload::Presence {
                 event: AircPresenceEvent {
-                    room_id: "general".to_string(),
+                    room_id: TEST_ROOM_ID,
                     subject_id: "persona-1".to_string(),
                     display_name: None,
                     state: AircPresenceState::Typing,
@@ -356,7 +359,7 @@ mod tests {
             .handle_command(
                 "airc/realtime-replay",
                 json!({
-                    "roomId": "general",
+                    "roomId": TEST_ROOM_ID.to_string(),
                     "includePresence": true,
                     "nowMs": 499
                 }),
@@ -376,12 +379,12 @@ mod tests {
         let module = AircModule::with_event_transport(Arc::new(FakeQueueClient), transport.clone());
         let envelope = AircRealtimeEnvelope::new(
             "evt-through-transport".to_string(),
-            "general".to_string(),
+            TEST_ROOM_ID,
             "persona-1".to_string(),
             100,
             AircRealtimePayload::Presence {
                 event: AircPresenceEvent {
-                    room_id: "general".to_string(),
+                    room_id: TEST_ROOM_ID,
                     subject_id: "persona-1".to_string(),
                     display_name: None,
                     state: AircPresenceState::Online,
