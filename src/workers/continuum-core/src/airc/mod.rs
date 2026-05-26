@@ -8,15 +8,18 @@ pub mod client;
 pub mod daemon_endpoint;
 pub mod daemon_transport;
 pub mod event_transport;
+pub mod inbound_attach;
 pub mod process;
 pub mod realtime;
 pub mod realtime_store;
+pub mod realtime_wire;
 pub mod types;
 
 pub use client::{AircQueueClient, CliAircQueueClient};
 pub use daemon_endpoint::default_socket_path_in;
 pub use daemon_transport::{AircDaemonClient, DaemonAircEventTransport};
 pub use event_transport::{AircEventTransport, StoreAircEventTransport};
+pub use inbound_attach::spawn_daemon_attach;
 pub use process::{AircCommandRunner, AircInvocation, TokioAircCommandRunner};
 pub use realtime::{
     AircMediaControlEvent, AircPeerCapability, AircPeerManifest, AircPresenceEvent,

@@ -4,7 +4,7 @@ use crate::airc::{
     AircEventTransport, AircQueueClient, AircQueueListRequest, AircQueueScanParams,
     AircRealtimePublishParams, AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient,
     DaemonAircEventTransport, InMemoryAircRealtimeStore, StoreAircEventTransport,
-    TokioAircCommandRunner, default_socket_path_in,
+    TokioAircCommandRunner, default_socket_path_in, spawn_daemon_attach,
 };
 use crate::runtime::{
     CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ParamSchema,
@@ -18,6 +18,7 @@ use std::sync::Arc;
 pub struct AircModule {
     queue_client: Arc<dyn AircQueueClient>,
     event_transport: Arc<dyn AircEventTransport>,
+    attach_socket_path: Option<std::path::PathBuf>,
 }
 
 impl AircModule {
@@ -30,11 +31,11 @@ impl AircModule {
 
     pub fn with_daemon_home(airc_home: impl Into<std::path::PathBuf>) -> Self {
         let airc_home = airc_home.into();
+        let socket_path = default_socket_path_in(&airc_home);
         Self {
             queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
-            event_transport: Arc::new(DaemonAircEventTransport::new(default_socket_path_in(
-                &airc_home,
-            ))),
+            event_transport: Arc::new(DaemonAircEventTransport::new(socket_path.clone())),
+            attach_socket_path: Some(socket_path),
         }
     }
 
@@ -44,6 +45,7 @@ impl AircModule {
             event_transport: Arc::new(StoreAircEventTransport::new(Arc::new(
                 InMemoryAircRealtimeStore::default(),
             ))),
+            attach_socket_path: None,
         }
     }
 
@@ -54,6 +56,7 @@ impl AircModule {
         Self {
             queue_client,
             event_transport: Arc::new(StoreAircEventTransport::new(realtime_store)),
+            attach_socket_path: None,
         }
     }
 
@@ -64,6 +67,7 @@ impl AircModule {
         Self {
             queue_client,
             event_transport,
+            attach_socket_path: None,
         }
     }
 }
@@ -88,7 +92,10 @@ impl ServiceModule for AircModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        if let Some(socket_path) = self.attach_socket_path.clone() {
+            spawn_daemon_attach(socket_path, ctx.bus.clone(), &ctx.runtime);
+        }
         Ok(())
     }
 
