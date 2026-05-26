@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use ts_rs::TS;
+use uuid::Uuid;
 
 pub const DEFAULT_ROOM_REPLAY_LIMIT: usize = 100;
 pub const MAX_ROOM_REPLAY_LIMIT: usize = 500;
@@ -36,7 +37,8 @@ pub struct AircRealtimePublishParams {
 pub struct AircRealtimePublishResult {
     pub ok: bool,
     pub event_id: String,
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: Uuid,
     pub delivery: AircRealtimeDelivery,
     pub stored_for_replay: bool,
     #[ts(optional)]
@@ -54,7 +56,8 @@ pub struct AircRealtimePublishResult {
     export_to = "../../../shared/generated/airc/AircRealtimeReplayParams.ts"
 )]
 pub struct AircRealtimeReplayParams {
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: Uuid,
     #[ts(optional)]
     pub after_event_id: Option<String>,
     #[ts(optional)]
@@ -89,7 +92,8 @@ pub struct AircCapabilityIndexEntry {
     export_to = "../../../shared/generated/airc/AircRealtimeReplayResult.ts"
 )]
 pub struct AircRealtimeReplayResult {
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: Uuid,
     pub events: Vec<AircRealtimeEnvelope>,
     #[ts(optional)]
     pub cursor: Option<AircReplayCursor>,
@@ -115,7 +119,7 @@ pub struct InMemoryAircRealtimeStore {
 
 #[derive(Debug, Default)]
 struct AircRealtimeState {
-    rooms: HashMap<String, VecDeque<AircRealtimeEnvelope>>,
+    rooms: HashMap<Uuid, VecDeque<AircRealtimeEnvelope>>,
     presence: HashMap<String, AircRealtimeEnvelope>,
     peer_manifests: HashMap<String, AircRealtimeEnvelope>,
     subscriptions: HashMap<String, AircSubscriptionEvent>,
@@ -142,13 +146,13 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
         params: AircRealtimePublishParams,
     ) -> Result<AircRealtimePublishResult, String> {
         let envelope = params.envelope;
-        validate_room_id(&envelope.room_id)?;
+        validate_room_id(envelope.room_id)?;
         envelope.validate_delivery()?;
 
         let mut state = self.inner.lock();
         state.prune_expired_presence(envelope.created_at_ms);
 
-        let room_id = envelope.room_id.clone();
+        let room_id = envelope.room_id;
         let event_id = envelope.event_id.clone();
         let delivery = envelope.delivery;
         let mut coalesced_presence_key = None;
@@ -184,9 +188,9 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
             .get(&room_id)
             .map(VecDeque::len)
             .unwrap_or_default();
-        let active_presence_count = state.active_presence_for_room(&room_id).len();
-        let active_subscription_count = state.active_subscriptions_for_room(&room_id).len();
-        let active_peer_manifest_count = state.active_peer_manifests_for_room(&room_id).len();
+        let active_presence_count = state.active_presence_for_room(room_id).len();
+        let active_subscription_count = state.active_subscriptions_for_room(room_id).len();
+        let active_peer_manifest_count = state.active_peer_manifests_for_room(room_id).len();
 
         Ok(AircRealtimePublishResult {
             ok: true,
@@ -203,7 +207,7 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
     }
 
     fn replay(&self, params: AircRealtimeReplayParams) -> Result<AircRealtimeReplayResult, String> {
-        validate_room_id(&params.room_id)?;
+        validate_room_id(params.room_id)?;
 
         let limit = params
             .limit
@@ -214,27 +218,27 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
             state.prune_expired_presence(now_ms);
         }
 
-        let events = state.replay_room(&params.room_id, params.after_event_id.as_deref(), limit);
+        let events = state.replay_room(params.room_id, params.after_event_id.as_deref(), limit);
         let cursor = events.last().map(|event| AircReplayCursor {
-            room_id: params.room_id.clone(),
+            room_id: params.room_id,
             last_seen_event_id: event.event_id.clone(),
             last_seen_at_ms: Some(event.created_at_ms),
         });
         let active_presence = if params.include_presence.unwrap_or(false) {
             state
-                .active_presence_for_room(&params.room_id)
+                .active_presence_for_room(params.room_id)
                 .into_iter()
                 .collect()
         } else {
             Vec::new()
         };
         let active_subscriptions = if params.include_subscriptions.unwrap_or(false) {
-            state.active_subscriptions_for_room(&params.room_id)
+            state.active_subscriptions_for_room(params.room_id)
         } else {
             Vec::new()
         };
         let active_peer_manifests = if params.include_peer_manifests.unwrap_or(false) {
-            state.active_peer_manifests_for_room(&params.room_id)
+            state.active_peer_manifests_for_room(params.room_id)
         } else {
             Vec::new()
         };
@@ -258,7 +262,7 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
 
 impl AircRealtimeState {
     fn push_replay(&mut self, envelope: AircRealtimeEnvelope, max_events_per_room: usize) {
-        let room = self.rooms.entry(envelope.room_id.clone()).or_default();
+        let room = self.rooms.entry(envelope.room_id).or_default();
         room.push_back(envelope);
         while room.len() > max_events_per_room {
             room.pop_front();
@@ -267,11 +271,11 @@ impl AircRealtimeState {
 
     fn replay_room(
         &self,
-        room_id: &str,
+        room_id: Uuid,
         after_event_id: Option<&str>,
         limit: usize,
     ) -> Vec<AircRealtimeEnvelope> {
-        let Some(room) = self.rooms.get(room_id) else {
+        let Some(room) = self.rooms.get(&room_id) else {
             return Vec::new();
         };
         let start = after_event_id
@@ -281,7 +285,7 @@ impl AircRealtimeState {
         room.iter().skip(start).take(limit).cloned().collect()
     }
 
-    fn active_presence_for_room(&self, room_id: &str) -> Vec<AircPresenceEvent> {
+    fn active_presence_for_room(&self, room_id: Uuid) -> Vec<AircPresenceEvent> {
         self.presence
             .values()
             .filter(|envelope| envelope.room_id == room_id)
@@ -305,7 +309,7 @@ impl AircRealtimeState {
         }
     }
 
-    fn active_subscriptions_for_room(&self, room_id: &str) -> Vec<AircSubscriptionEvent> {
+    fn active_subscriptions_for_room(&self, room_id: Uuid) -> Vec<AircSubscriptionEvent> {
         let mut subscriptions = self
             .subscriptions
             .values()
@@ -320,7 +324,7 @@ impl AircRealtimeState {
         subscriptions
     }
 
-    fn active_peer_manifests_for_room(&self, room_id: &str) -> Vec<AircPeerManifest> {
+    fn active_peer_manifests_for_room(&self, room_id: Uuid) -> Vec<AircPeerManifest> {
         let mut manifests = self
             .peer_manifests
             .values()
@@ -373,9 +377,9 @@ fn capability_index_for_manifests(manifests: &[AircPeerManifest]) -> Vec<AircCap
     entries
 }
 
-fn validate_room_id(room_id: &str) -> Result<(), String> {
-    if room_id.trim().is_empty() {
-        Err("room_id must not be empty".to_string())
+fn validate_room_id(room_id: Uuid) -> Result<(), String> {
+    if room_id.is_nil() {
+        Err("room_id must not be the nil UUID".to_string())
     } else {
         Ok(())
     }
@@ -390,10 +394,14 @@ mod tests {
     };
     use serde_json::json;
 
-    fn durable_event(id: &str, room: &str, created_at_ms: u64) -> AircRealtimeEnvelope {
+    const GENERAL: Uuid = Uuid::from_u128(0xA1);
+    const CAMBRIANTECH: Uuid = Uuid::from_u128(0xA2);
+    const OTHER: Uuid = Uuid::from_u128(0xA3);
+
+    fn durable_event(id: &str, room: Uuid, created_at_ms: u64) -> AircRealtimeEnvelope {
         AircRealtimeEnvelope::new(
             id.to_string(),
-            room.to_string(),
+            room,
             "node-a".to_string(),
             created_at_ms,
             AircRealtimePayload::ExistingSchema {
@@ -408,12 +416,12 @@ mod tests {
     fn typing_event(id: &str, started_at_ms: u64, expires_at_ms: u64) -> AircRealtimeEnvelope {
         AircRealtimeEnvelope::new(
             id.to_string(),
-            "general".to_string(),
+            GENERAL,
             "persona-1".to_string(),
             started_at_ms,
             AircRealtimePayload::Presence {
                 event: AircPresenceEvent {
-                    room_id: "general".to_string(),
+                    room_id: GENERAL,
                     subject_id: "persona-1".to_string(),
                     display_name: None,
                     state: AircPresenceState::Typing,
@@ -428,21 +436,21 @@ mod tests {
     fn peer_manifest_event(
         id: &str,
         peer_id: &str,
-        rooms: &[&str],
+        rooms: &[Uuid],
         capabilities: &[&str],
         advertised_at_ms: u64,
         expires_at_ms: Option<u64>,
     ) -> AircRealtimeEnvelope {
         AircRealtimeEnvelope::new(
             id.to_string(),
-            "general".to_string(),
+            GENERAL,
             peer_id.to_string(),
             advertised_at_ms,
             AircRealtimePayload::PeerManifest {
                 manifest: AircPeerManifest {
                     peer_id: peer_id.to_string(),
                     display_name: Some(peer_id.to_string()),
-                    room_ids: rooms.iter().map(|room| (*room).to_string()).collect(),
+                    room_ids: rooms.to_vec(),
                     capabilities: capabilities
                         .iter()
                         .map(|id| AircPeerCapability {
@@ -464,14 +472,14 @@ mod tests {
         for idx in 1..=3 {
             store
                 .publish(AircRealtimePublishParams {
-                    envelope: durable_event(&format!("evt-{idx}"), "general", idx),
+                    envelope: durable_event(&format!("evt-{idx}"), GENERAL, idx),
                 })
                 .unwrap();
         }
 
         let result = store
             .replay(AircRealtimeReplayParams {
-                room_id: "general".to_string(),
+                room_id: GENERAL,
                 after_event_id: Some("evt-1".to_string()),
                 limit: Some(10),
                 include_presence: None,
@@ -516,7 +524,7 @@ mod tests {
 
         let live = store
             .replay(AircRealtimeReplayParams {
-                room_id: "general".to_string(),
+                room_id: GENERAL,
                 after_event_id: None,
                 limit: None,
                 include_presence: Some(true),
@@ -532,7 +540,7 @@ mod tests {
 
         let expired = store
             .replay(AircRealtimeReplayParams {
-                room_id: "general".to_string(),
+                room_id: GENERAL,
                 after_event_id: None,
                 limit: None,
                 include_presence: Some(true),
@@ -553,7 +561,7 @@ mod tests {
                 envelope: peer_manifest_event(
                     "manifest-1",
                     "peer-a",
-                    &["general"],
+                    &[GENERAL],
                     &["continuum.lora.invoke"],
                     100,
                     Some(500),
@@ -565,7 +573,7 @@ mod tests {
                 envelope: peer_manifest_event(
                     "manifest-2",
                     "peer-a",
-                    &["general", "cambriantech"],
+                    &[GENERAL, CAMBRIANTECH],
                     &["continuum.lora.invoke", "continuum.chat.turn"],
                     150,
                     Some(600),
@@ -577,7 +585,7 @@ mod tests {
                 envelope: peer_manifest_event(
                     "manifest-3",
                     "peer-b",
-                    &["general"],
+                    &[GENERAL],
                     &["continuum.lora.invoke"],
                     160,
                     Some(600),
@@ -595,7 +603,7 @@ mod tests {
 
         let result = store
             .replay(AircRealtimeReplayParams {
-                room_id: "general".to_string(),
+                room_id: GENERAL,
                 after_event_id: None,
                 limit: None,
                 include_presence: None,
@@ -635,7 +643,7 @@ mod tests {
 
         let expired = store
             .replay(AircRealtimeReplayParams {
-                room_id: "general".to_string(),
+                room_id: GENERAL,
                 after_event_id: None,
                 limit: None,
                 include_presence: None,
@@ -654,7 +662,7 @@ mod tests {
         let store = InMemoryAircRealtimeStore::new(10);
         let mut receipt = AircRealtimeEnvelope::new(
             "receipt-1".to_string(),
-            "general".to_string(),
+            GENERAL,
             "peer-1".to_string(),
             10,
             AircRealtimePayload::Receipt {
@@ -675,7 +683,7 @@ mod tests {
 
         let replay = store
             .replay(AircRealtimeReplayParams {
-                room_id: "general".to_string(),
+                room_id: GENERAL,
                 after_event_id: None,
                 limit: None,
                 include_presence: None,
@@ -693,13 +701,13 @@ mod tests {
         let store = InMemoryAircRealtimeStore::new(10);
         let envelope = AircRealtimeEnvelope::new(
             "sub-1".to_string(),
-            "general".to_string(),
+            GENERAL,
             "browser-1".to_string(),
             10,
             AircRealtimePayload::Subscription {
                 event: AircSubscriptionEvent {
                     action: AircSubscriptionAction::Subscribe,
-                    room_id: "general".to_string(),
+                    room_id: GENERAL,
                     subscriber_id: "browser-1".to_string(),
                     topic: "presence".to_string(),
                     cursor: None,
@@ -718,9 +726,9 @@ mod tests {
     fn subscription_events_project_active_room_subscribers() {
         let store = InMemoryAircRealtimeStore::new(10);
         for (id, room, subscriber, topic) in [
-            ("sub-1", "general", "browser-1", "presence"),
-            ("sub-2", "general", "persona-1", "media"),
-            ("sub-3", "other", "browser-2", "presence"),
+            ("sub-1", GENERAL, "browser-1", "presence"),
+            ("sub-2", GENERAL, "persona-1", "media"),
+            ("sub-3", OTHER, "browser-2", "presence"),
         ] {
             store
                 .publish(AircRealtimePublishParams {
@@ -737,7 +745,7 @@ mod tests {
 
         let result = store
             .replay(AircRealtimeReplayParams {
-                room_id: "general".to_string(),
+                room_id: GENERAL,
                 after_event_id: None,
                 limit: None,
                 include_presence: None,
@@ -760,7 +768,7 @@ mod tests {
             .publish(AircRealtimePublishParams {
                 envelope: subscription_event(
                     "sub-1",
-                    "general",
+                    GENERAL,
                     "browser-1",
                     "presence",
                     AircSubscriptionAction::Subscribe,
@@ -771,7 +779,7 @@ mod tests {
             .publish(AircRealtimePublishParams {
                 envelope: subscription_event(
                     "unsub-1",
-                    "general",
+                    GENERAL,
                     "browser-1",
                     "presence",
                     AircSubscriptionAction::Unsubscribe,
@@ -783,7 +791,7 @@ mod tests {
 
         let result = store
             .replay(AircRealtimeReplayParams {
-                room_id: "general".to_string(),
+                room_id: GENERAL,
                 after_event_id: None,
                 limit: None,
                 include_presence: None,
@@ -806,33 +814,33 @@ mod tests {
     }
 
     #[test]
-    fn publish_rejects_empty_room_id() {
+    fn publish_rejects_nil_room_id() {
         let store = InMemoryAircRealtimeStore::new(10);
         let error = store
             .publish(AircRealtimePublishParams {
-                envelope: durable_event("evt-1", " ", 1),
+                envelope: durable_event("evt-1", Uuid::nil(), 1),
             })
             .unwrap_err();
 
-        assert_eq!(error, "room_id must not be empty");
+        assert_eq!(error, "room_id must not be the nil UUID");
     }
 
     fn subscription_event(
         id: &str,
-        room: &str,
+        room: Uuid,
         subscriber: &str,
         topic: &str,
         action: AircSubscriptionAction,
     ) -> AircRealtimeEnvelope {
         AircRealtimeEnvelope::new(
             id.to_string(),
-            room.to_string(),
+            room,
             subscriber.to_string(),
             10,
             AircRealtimePayload::Subscription {
                 event: AircSubscriptionEvent {
                     action,
-                    room_id: room.to_string(),
+                    room_id: room,
                     subscriber_id: subscriber.to_string(),
                     topic: topic.to_string(),
                     cursor: None,

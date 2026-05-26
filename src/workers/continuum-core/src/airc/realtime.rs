@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
+use uuid::Uuid;
 
 /// Delivery handling requested from the AIRC substrate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -138,7 +139,8 @@ impl AircPresenceState {
     export_to = "../../../shared/generated/airc/AircPresenceEvent.ts"
 )]
 pub struct AircPresenceEvent {
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: Uuid,
     pub subject_id: String,
     #[ts(optional)]
     pub display_name: Option<String>,
@@ -197,7 +199,8 @@ pub enum AircSubscriptionAction {
     export_to = "../../../shared/generated/airc/AircReplayCursor.ts"
 )]
 pub struct AircReplayCursor {
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: Uuid,
     pub last_seen_event_id: String,
     #[ts(optional)]
     pub last_seen_at_ms: Option<u64>,
@@ -212,7 +215,8 @@ pub struct AircReplayCursor {
 )]
 pub struct AircSubscriptionEvent {
     pub action: AircSubscriptionAction,
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: Uuid,
     pub subscriber_id: String,
     pub topic: String,
     #[ts(optional)]
@@ -285,7 +289,8 @@ pub struct AircPeerManifest {
     pub peer_id: String,
     #[ts(optional)]
     pub display_name: Option<String>,
-    pub room_ids: Vec<String>,
+    #[ts(type = "Array<string>")]
+    pub room_ids: Vec<Uuid>,
     pub capabilities: Vec<AircPeerCapability>,
     pub advertised_at_ms: u64,
     #[ts(optional)]
@@ -303,8 +308,8 @@ impl AircPeerManifest {
             .unwrap_or(false)
     }
 
-    pub fn advertises_room(&self, room_id: &str) -> bool {
-        self.room_ids.iter().any(|candidate| candidate == room_id)
+    pub fn advertises_room(&self, room_id: Uuid) -> bool {
+        self.room_ids.contains(&room_id)
     }
 }
 
@@ -361,7 +366,8 @@ impl AircRealtimePayload {
 )]
 pub struct AircRealtimeEnvelope {
     pub event_id: String,
-    pub room_id: String,
+    #[ts(type = "string")]
+    pub room_id: Uuid,
     pub source_id: String,
     #[ts(optional)]
     pub target_id: Option<String>,
@@ -375,7 +381,7 @@ pub struct AircRealtimeEnvelope {
 impl AircRealtimeEnvelope {
     pub fn new(
         event_id: String,
-        room_id: String,
+        room_id: Uuid,
         source_id: String,
         created_at_ms: u64,
         payload: AircRealtimePayload,
@@ -413,8 +419,9 @@ mod tests {
 
     #[test]
     fn typing_presence_is_ephemeral_and_expirable() {
+        let room_id = Uuid::from_u128(0xA1);
         let event = AircPresenceEvent {
-            room_id: "general".to_string(),
+            room_id,
             subject_id: "persona-1".to_string(),
             display_name: None,
             state: AircPresenceState::Typing,
@@ -426,7 +433,10 @@ mod tests {
         assert_eq!(event.delivery(), AircRealtimeDelivery::EphemeralCoalesced);
         assert!(!event.is_expired_at(3999));
         assert!(event.is_expired_at(4000));
-        assert_eq!(event.coalesce_key(), "presence:general:persona-1:typing");
+        assert_eq!(
+            event.coalesce_key(),
+            format!("presence:{room_id}:persona-1:typing")
+        );
     }
 
     #[test]
@@ -464,10 +474,13 @@ mod tests {
 
     #[test]
     fn peer_manifest_is_ephemeral_room_scoped_capability_advertisement() {
+        let general = Uuid::from_u128(0xA1);
+        let cambriantech = Uuid::from_u128(0xA2);
+        let useideem = Uuid::from_u128(0xA3);
         let manifest = AircPeerManifest {
             peer_id: "peer-continuum-1".to_string(),
             display_name: Some("Continuum GPU Host".to_string()),
-            room_ids: vec!["general".to_string(), "cambriantech".to_string()],
+            room_ids: vec![general, cambriantech],
             capabilities: vec![AircPeerCapability {
                 id: "continuum.lora.invoke".to_string(),
                 label: Some("LoRA invocation".to_string()),
@@ -478,8 +491,8 @@ mod tests {
         };
 
         assert_eq!(manifest.coalesce_key(), "peer_manifest:peer-continuum-1");
-        assert!(manifest.advertises_room("general"));
-        assert!(!manifest.advertises_room("useideem"));
+        assert!(manifest.advertises_room(general));
+        assert!(!manifest.advertises_room(useideem));
         assert!(!manifest.is_expired_at(9_999));
         assert!(manifest.is_expired_at(10_000));
 
@@ -500,7 +513,7 @@ mod tests {
 
         let mut envelope = AircRealtimeEnvelope::new(
             "receipt-1".to_string(),
-            "general".to_string(),
+            Uuid::from_u128(0xA1),
             "peer-1".to_string(),
             11,
             payload,
