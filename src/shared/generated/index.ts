@@ -129,6 +129,7 @@ export type { VisionDescribeOptions } from './cognition';
 export type { VisionDescribeRequest } from './cognition';
 export type { VisionDescription } from './cognition';
 export * from './comms';
+export * from './contracts';
 export * from './dataset';
 export * from './events';
 // forge: explicit exports (has duplicate types)
