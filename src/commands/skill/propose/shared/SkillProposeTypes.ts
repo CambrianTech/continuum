@@ -26,7 +26,7 @@ export interface SkillProposeParams extends CommandParams {
   // Natural language description of the implementation logic
   implementation: string;
   // Who can use it: 'personal' (default) or 'team' (requires approval)
-  scope?: string;
+  skillScope?: string;
   // Usage examples array [{description, command, expectedResult?}]
   examples?: Record<string, unknown>[];
   // AI persona proposing this skill
@@ -51,7 +51,7 @@ export const createSkillProposeParams = (
     // Natural language description of the implementation logic
     implementation: string;
     // Who can use it: 'personal' (default) or 'team' (requires approval)
-    scope?: string;
+    skillScope?: string;
     // Usage examples array [{description, command, expectedResult?}]
     examples?: Record<string, unknown>[];
     // AI persona proposing this skill
@@ -59,7 +59,7 @@ export const createSkillProposeParams = (
   }
 ): SkillProposeParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
-  scope: data.scope ?? '',
+  skillScope: data.skillScope ?? '',
   examples: data.examples ?? undefined,
   ...data
 });

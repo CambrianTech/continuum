@@ -17,8 +17,8 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 export interface SkillListParams extends CommandParams {
   // Filter by lifecycle status (proposed, approved, generated, validated, active, failed, deprecated)
   status?: string;
-  // Filter by scope (personal, team)
-  scope?: string;
+  // Filter by skill visibility scope (personal, team)
+  skillScope?: string;
   // Filter by creator persona ID
   createdById?: string;
   // Maximum results to return (default: 20)
@@ -34,8 +34,8 @@ export const createSkillListParams = (
   data: {
     // Filter by lifecycle status (proposed, approved, generated, validated, active, failed, deprecated)
     status?: string;
-    // Filter by scope (personal, team)
-    scope?: string;
+    // Filter by skill visibility scope (personal, team)
+    skillScope?: string;
     // Filter by creator persona ID
     createdById?: string;
     // Maximum results to return (default: 20)
@@ -44,7 +44,7 @@ export const createSkillListParams = (
 ): SkillListParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
   status: data.status ?? '',
-  scope: data.scope ?? '',
+  skillScope: data.skillScope ?? '',
   createdById: data.createdById ?? '',
   limit: data.limit ?? 0,
   ...data
