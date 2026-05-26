@@ -25,7 +25,7 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
 
   async execute(params: SkillProposeParams): Promise<SkillProposeResult> {
     const { name, description, implementation, personaId } = params;
-    const scope: SkillScope = (params.scope === 'team' ? 'team' : 'personal');
+    const scope: SkillScope = (params.skillScope === 'team' ? 'team' : 'personal');
 
     if (!name?.trim()) {
       throw new ValidationError('name', "Missing required parameter 'name'. Provide the command name (e.g., 'analysis/complexity').");
@@ -99,7 +99,7 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
             { label: 'Request Changes', description: 'Suggest modifications before approval' },
             { label: 'Reject', description: 'Decline this skill proposal' },
           ],
-          scope: 'all',
+          proposalScope: 'all',
           significanceLevel: 'medium',
           context: proposeContext,
         });

@@ -185,6 +185,35 @@ export interface JTAGPayload {
 }
 
 /**
+ * Command execution scope.
+ *
+ * Scope is the typed routing/audit boundary for commands. It lets callers and
+ * command infrastructure describe where work belongs without parsing command
+ * names, stdout, or ad-hoc params. Recipe rooms, project workspaces, persona
+ * turns, and grid nodes can all map to this shape.
+ */
+export type CommandScopeType =
+  | 'system'
+  | 'user'
+  | 'session'
+  | 'room'
+  | 'project'
+  | 'persona'
+  | 'grid'
+  | 'resource';
+
+export interface CommandScope {
+  /** Scope class used by routers/projections for partitioning. */
+  readonly type: CommandScopeType;
+
+  /** Stable scope identifier, such as room id, repo slug, persona id, or node id. */
+  readonly id?: string;
+
+  /** Human-readable label for diagnostics and UI projections. */
+  readonly label?: string;
+}
+
+/**
  * Functional factory for creating payloads - eliminates constructor complexity
  * Rust-like inheritance: creates payload from source + differences
  */
@@ -547,6 +576,13 @@ export interface CommandParams extends JTAGPayload {
    * Optional in type only because callers rely on infrastructure injection.
    */
   readonly userId: UUID;
+
+  /**
+   * Typed execution scope for routing, event projection, audit, and work
+   * alignment. CommandBase injects the command's natural scope when callers
+   * don't provide one; explicit caller scope wins.
+   */
+  readonly scope?: CommandScope;
 
   /**
    * Optional execution timeout in milliseconds.

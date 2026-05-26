@@ -33,12 +33,15 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandScope, JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { AircSendParams, AircSendResult } from '../shared/AircSendTypes';
 import { createAircSendResultFromParams } from '../shared/AircSendTypes';
 
 export class AircSendServerCommand extends CommandBase<AircSendParams, AircSendResult> {
+  protected static override get naturalScope(): CommandScope {
+    return { type: 'room' };
+  }
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('airc/send', context, subpath, commander);

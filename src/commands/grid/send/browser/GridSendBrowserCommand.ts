@@ -5,10 +5,14 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandScope, JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GridSendParams, GridSendResult } from '../shared/GridSendTypes';
 
 export class GridSendBrowserCommand extends CommandBase<GridSendParams, GridSendResult> {
+	protected static override get naturalScope(): CommandScope {
+		return { type: 'grid' };
+	}
+
 	constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
 		super('grid/send', context, subpath, commander);
 	}
