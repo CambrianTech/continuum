@@ -57,7 +57,7 @@ dependencies = [
 [[package]]
 name = "airc-core"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=ef6eced1667a0a98d8b40c32bba6f60c2d249b2c#ef6eced1667a0a98d8b40c32bba6f60c2d249b2c"
+source = "git+https://github.com/CambrianTech/airc?rev=428f9281e029072c0b7c39eca1781c94136fe697#428f9281e029072c0b7c39eca1781c94136fe697"
 dependencies = [
  "serde",
  "serde_json",
@@ -67,7 +67,7 @@ dependencies = [
 [[package]]
 name = "airc-ipc"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=ef6eced1667a0a98d8b40c32bba6f60c2d249b2c#ef6eced1667a0a98d8b40c32bba6f60c2d249b2c"
+source = "git+https://github.com/CambrianTech/airc?rev=428f9281e029072c0b7c39eca1781c94136fe697#428f9281e029072c0b7c39eca1781c94136fe697"
 dependencies = [
  "airc-core",
  "airc-protocol",
@@ -81,7 +81,7 @@ dependencies = [
 [[package]]
 name = "airc-protocol"
 version = "0.1.0"
-source = "git+https://github.com/CambrianTech/airc?rev=ef6eced1667a0a98d8b40c32bba6f60c2d249b2c#ef6eced1667a0a98d8b40c32bba6f60c2d249b2c"
+source = "git+https://github.com/CambrianTech/airc?rev=428f9281e029072c0b7c39eca1781c94136fe697#428f9281e029072c0b7c39eca1781c94136fe697"
 dependencies = [
  "airc-core",
  "ciborium",
@@ -2201,6 +2201,7 @@ dependencies = [
 name = "continuum-core"
 version = "0.1.0"
 dependencies = [
+ "airc-core",
  "airc-ipc",
  "airc-protocol",
  "arc-swap",

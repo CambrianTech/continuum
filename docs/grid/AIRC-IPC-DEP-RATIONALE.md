@@ -1,6 +1,6 @@
 # Continuum → airc-ipc: direct IPC dep (no subprocess, no JSON transcode)
 
-**Status:** dep landed; consumer impl pending follow-up PRs.
+**Status:** direct IPC dep landed; daemon-backed publish/replay bridge in progress.
 **Pairs with:** [`AIRC-CONTINUUM-BRIDGE.md`](AIRC-CONTINUUM-BRIDGE.md) — long-term architecture.
 **Roadmap:** kanban card `156770cf-95f9-4945-88da-5dcce795ceb7`.
 
@@ -16,27 +16,27 @@ The grid-event hot path moves typed envelopes (chat:posted, presence:peer-manife
 
 The IPC ABI version (`airc_ipc::IPC_PROTOCOL_VERSION`) pinning is what makes shape 2 safe across redeploys: Continuum and the daemon negotiate the same version or refuse to connect.
 
-## What this PR lands
+## What the dependency PR landed
 
 Workspace-level git deps in `src/workers/Cargo.toml`:
 
 ```toml
-airc-core    = { git = "https://github.com/CambrianTech/airc", rev = "ef6eced…" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "ef6eced…" }
-airc-ipc      = { git = "https://github.com/CambrianTech/airc", rev = "ef6eced…" }
+airc-core     = { git = "https://github.com/CambrianTech/airc", rev = "428f928…" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "428f928…" }
+airc-ipc      = { git = "https://github.com/CambrianTech/airc", rev = "428f928…" }
 ```
 
-`continuum-core/Cargo.toml` picks up `airc-ipc.workspace = true` + `airc-protocol.workspace = true`. (`airc-core` is pulled transitively; not redeclared.)
+`continuum-core/Cargo.toml` picks up `airc-ipc.workspace = true`, `airc-protocol.workspace = true`, and `airc-core.workspace = true`.
 
-**Zero new code, zero behavior change.** The existing `InMemoryAircRealtimeStore` stays the default. The dep addition is purely the architectural commitment — every follow-up PR consumes types from `airc_ipc::` / `airc_protocol::` directly instead of subprocess + parse.
+The first dependency-only PR had zero behavior change. The current bridge PR consumes the typed ABI directly: `AircModule::new()` publishes through the daemon-backed event transport for the current project `.airc` scope, while the in-memory store remains an explicit test fixture path.
 
 ## Why no consumer impl in this PR
 
-Two design questions block writing the `DaemonAircRealtimeStore` cleanly today:
+Two design questions blocked writing the daemon-backed transport cleanly; both are resolved:
 
 ### Q1 — room-id boundary
 
-Continuum's `AircRealtimeEnvelope` carries `room_id: String`. airc's `PublishRequest` carries `channel: Uuid` + `wire: PathBuf`. The deterministic mapping (`airc room <name>` derives both from the name) lives in `airc-lib::room::Room::from_name` + `airc-lib::subscriptions::derive_room_id`.
+Continuum's `AircRealtimeEnvelope` carries `room_id: Uuid`. airc's `PublishRequest` carries `channel: Uuid` + `wire: PathBuf`.
 
 Three options:
 
@@ -46,7 +46,7 @@ Three options:
 | B | Continuum keeps string room-ids; daemon translates at the IPC boundary | Requires adding a translation hop to airc-ipc's `PublishRequest` shape (accept name string OR uuid) |
 | C | Continuum maintains its own room-id↔channel-uuid map, populated at room-join time | Cleanest dep boundary; one-time setup cost per room |
 
-Recommend C.
+Decision: C, now implemented at the type boundary. Continuum carries the channel UUID it received from room/join context; it does not ask the daemon to translate room names on every publish.
 
 ### Q2 — wire path
 
@@ -59,11 +59,11 @@ Two options:
 | α | Add a `wire-by-channel-uuid` lookup to `airc-ipc` (daemon resolves) | Tiny airc PR; clean shape on continuum side |
 | β | Continuum tracks wire paths per room (subscribe step) | More state on continuum side; requires `airc subscribe` round-trip per room-join |
 
-Recommend α — `airc-ipc` exposing the lookup is consistent with its role as "the typed ABI for talking to the daemon."
+Decision: α. airc exposes `ResolveWireRequest { channel: Uuid }` over `airc-ipc`; Continuum resolves the daemon-owned wire path immediately before publish and fails loud when the channel is not joined.
 
 ## Follow-up PRs
 
-1. **continuum**: `DaemonAircRealtimeStore` impl (this PR's deps + Q1=C decision). Replaces `InMemoryAircRealtimeStore` as default. Feature-gated fallback to in-memory for unit-test paths.
-2. **airc**: `airc-ipc::ResolveWireRequest` + corresponding daemon handler (Q2=α decision).
-3. **continuum**: airc-side inbound stream — long-lived `Request::Attach` poller that drains `Response::Event` frames + dispatches as local `Events.subscribe` callbacks. The reverse direction.
-4. **continuum**: L1-6 Phase B — peer-pubkey lookup via L1-4's `presence:peer-manifest` (needs card `290f64b7-5837-42ff-9844-570088fbb01a` resolved first — `signing_pubkey_hex` field on `AircPeerManifest`).
+1. **continuum**: daemon-backed `AircEventTransport` publish/replay bridge. Replaces `InMemoryAircRealtimeStore` as the default runtime path; in-memory remains explicit for tests.
+2. **continuum**: airc-side inbound stream — long-lived `Request::Attach` poller that drains `Response::Event` frames + dispatches as local `Events.subscribe` callbacks. The reverse direction.
+3. **continuum**: L1-6 Phase B — peer-pubkey lookup via L1-4's `presence:peer-manifest` and `signing_pubkey_hex`.
+4. **continuum/airc**: cursor contract upgrade. `airc-ipc::InboxRequest` is lamport-cursor-native; Continuum's public replay API is still event-id-cursor-shaped. The bridge handles current bounded replay, but the cross-system contract should move to `(lamport, event_id)` cursors before high-rate Continuum event streams depend on it.

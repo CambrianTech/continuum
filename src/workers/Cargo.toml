@@ -23,9 +23,9 @@ members = [
 # when adopting an airc change; both crates resolve from the same
 # checkout so the IPC ABI version (IPC_PROTOCOL_VERSION) stays
 # consistent across the dependency graph.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "ef6eced1667a0a98d8b40c32bba6f60c2d249b2c" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "ef6eced1667a0a98d8b40c32bba6f60c2d249b2c" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "ef6eced1667a0a98d8b40c32bba6f60c2d249b2c" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "428f9281e029072c0b7c39eca1781c94136fe697" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "428f9281e029072c0b7c39eca1781c94136fe697" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "428f9281e029072c0b7c39eca1781c94136fe697" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
