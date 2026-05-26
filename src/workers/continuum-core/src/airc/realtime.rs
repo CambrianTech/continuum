@@ -615,7 +615,7 @@ mod tests {
         AircPeerManifest {
             peer_id: "peer-1".to_string(),
             display_name: None,
-            room_ids: vec!["general".to_string()],
+            room_ids: vec![Uuid::from_u128(0xA1)],
             capabilities: vec![],
             signing_pubkey_hex: pubkey_hex.to_string(),
             advertised_at_ms: 1_000,
@@ -643,7 +643,10 @@ mod tests {
         let err = manifest_with_pubkey(too_short).validate().unwrap_err();
         assert!(matches!(
             err,
-            AircPeerManifestError::PubkeyWrongLength { expected: 64, got: 62 }
+            AircPeerManifestError::PubkeyWrongLength {
+                expected: 64,
+                got: 62
+            }
         ));
     }
 
@@ -655,7 +658,10 @@ mod tests {
         let err = manifest_with_pubkey(&bad).validate().unwrap_err();
         assert!(matches!(
             err,
-            AircPeerManifestError::PubkeyNonHexChar { char: 'z', index: 10 }
+            AircPeerManifestError::PubkeyNonHexChar {
+                char: 'z',
+                index: 10
+            }
         ));
     }
 
