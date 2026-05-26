@@ -11,6 +11,7 @@ use crate::modules::cognition::{CognitionModule, CognitionState};
 use crate::modules::data::DataModule;
 use crate::modules::dataset::DatasetModule;
 use crate::modules::embedding::EmbeddingModule;
+use crate::modules::events::EventsModule;
 use crate::modules::forge::ForgeModule;
 use crate::modules::gpu::GpuModule;
 use crate::modules::grid::GridModule;
@@ -729,6 +730,14 @@ pub fn start_server(
     // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
     // real foundry executor.
     runtime.register(Arc::new(ForgeModule::new()));
+
+    // EventsModule (L1-1 — event-class declaration registry).
+    // Spec: GRID-BUS-ARCHITECTURE §2.2 (continuum#1439).
+    // Exposes events/declare-class, events/get-class, events/list-classes,
+    // events/resolve-channel. The TS thin shim at src/system/events/shared/
+    // EventClass.ts reads through this; the L1-2 AircEventTransport will
+    // consult resolve-channel at emit time.
+    runtime.register(Arc::new(EventsModule::new()));
 
     // Phase 1: PersonaAllocatorModule (hardware-aware persona allocation)
     runtime.register(Arc::new(PersonaAllocatorModule::new(gpu_manager.clone())));

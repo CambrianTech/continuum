@@ -52,6 +52,9 @@ export type { VisionCacheMixin as VisionCacheMixinInterface, VisionCacheEntry, V
 export { PlasticityMixin } from './plasticity';
 export type { PlasticityMixin as PlasticityMixinInterface, PlasticityAnalyzeParams, PlasticityCompactParams, PlasticityTopologyParams } from './plasticity';
 
+export { EventsMixin } from './events';
+export type { EventsMixin as EventsMixinInterface, EventsDeclareClassParams, EventsResolveChannelResult } from './events';
+
 /**
  * Compose all mixins into a single client class.
  * Usage: const Client = composeClient(RustCoreIPCClientBase);

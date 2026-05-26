@@ -26,7 +26,8 @@
     "test-path-aliases-runtime.ts"
   ],
   "files": [
-    "tests/unit/chat-coordination-stream.test.ts"
+    "tests/unit/chat-coordination-stream.test.ts",
+    "tests/unit/core/event-class-registry.test.ts"
   ],
   "exclude": [
     "node_modules",

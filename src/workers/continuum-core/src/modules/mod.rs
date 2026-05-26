@@ -22,6 +22,7 @@ pub mod docker_tier;
 pub mod docker_tier_pool;
 pub mod embedding;
 pub mod entity_schemas;
+pub mod events;
 pub mod forge;
 pub mod gpu;
 pub mod grid;

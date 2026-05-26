@@ -21,6 +21,10 @@ import { RouterRegistry } from './RouterRegistry';
 import { BaseEntity } from '../../data/entities/BaseEntity';
 import { ElegantSubscriptionParser, type SubscriptionFilter } from '../../events/shared/ElegantSubscriptionParser';
 import { jtagWindow, jtagGlobal } from '../types/GlobalAugmentations';
+// L1-1: event-class registry — hot-path sync peek for transport hints.
+// Async warm-up is delegated so the first emit on an undeclared class
+// doesn't block the emit; the next emit benefits from the warm cache.
+import { peekEventClassCache, getEventClass } from '../../events/shared/EventClass';
 
 // Verbose logging helper (works in both browser and server)
 const verbose = () => {
@@ -168,6 +172,26 @@ export class Events {
         }
       }
 
+      // L1-1: consult the event-class registry. Sync peek only — the hot
+      // emit path can't afford an IPC round-trip per call. If the class
+      // is declared and cached, attach the hints to the payload so
+      // downstream transports (L1-2 AircEventTransport) can route it.
+      // If the cache is cold, kick off a fire-and-forget warm-up; the
+      // NEXT emit benefits. If the class is undeclared, no hints attached
+      // and behavior is identical to pre-L1-1 (local + WebSocket only).
+      const cachedClass = peekEventClassCache(eventName);
+      if (cachedClass === undefined) {
+        // Fire-and-forget warm-up. We deliberately do NOT await — the
+        // current emit goes through with no hints; subsequent emits hit
+        // the warm cache. Errors are surfaced (NOT swallowed) so a broken
+        // IPC manifests as a visible warning rather than mysteriously-missing
+        // routing hints.
+        getEventClass(eventName).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[Events] EventClass lookup failed for '${eventName}': ${msg}`);
+        });
+      }
+
       // Router found - use full EventBridge routing
       // Create event payload
       const eventPayload: EventBridgePayload = {
@@ -183,7 +207,19 @@ export class Events {
         data: eventData as Record<string, unknown>,
         originSessionId: options.sessionId ?? context.uuid,
         originContextUUID: context.uuid,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        ...(cachedClass
+          ? {
+              eventClass: {
+                name: cachedClass.name,
+                broadcast: cachedClass.broadcast,
+                channel: cachedClass.channel,
+                schemaVersion: cachedClass.schemaVersion,
+                onUnknownSchema: cachedClass.onUnknownSchema,
+                description: cachedClass.description,
+              },
+            }
+          : {}),
       };
 
       // Create event message

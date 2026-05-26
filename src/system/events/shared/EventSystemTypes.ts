@@ -49,6 +49,24 @@ export interface EventBridgePayload extends JTAGPayload {
   originSessionId: UUID;
   originContextUUID: UUID; // Required - no optional context
   timestamp: string;
+  /**
+   * Optional event-class hints from the L1-1 registry. Present when the
+   * eventName has been declared via `declareEventClass()` and the local
+   * cache was warm at emit time. Downstream transports (L1-2 AircEventTransport)
+   * read this to decide which channel/transport the event should land on.
+   * When absent, transports fall back to default behavior (local + WebSocket).
+   * Shape mirrors `ResolvedEventClassConfig` from `@shared/generated/events`
+   * but typed here loosely to keep this types-only module free of the
+   * generated-types dependency cycle.
+   */
+  eventClass?: {
+    name: string;
+    broadcast: boolean;
+    channel: string;
+    schemaVersion: string;
+    onUnknownSchema: string;
+    description: string;
+  };
 }
 
 /**
