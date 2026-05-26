@@ -190,6 +190,24 @@ impl ServiceModule for AircModule {
                         required: false,
                         description: "Include active coalesced presence in the response.",
                     },
+                    ParamSchema {
+                        name: "include_subscriptions",
+                        param_type: "boolean",
+                        required: false,
+                        description: "Include active subscriber projections in the response.",
+                    },
+                    ParamSchema {
+                        name: "include_peer_manifests",
+                        param_type: "boolean",
+                        required: false,
+                        description: "Include active peer manifests for the room.",
+                    },
+                    ParamSchema {
+                        name: "include_capability_index",
+                        param_type: "boolean",
+                        required: false,
+                        description: "Include a capability-to-peer index derived from active peer manifests.",
+                    },
                 ],
             },
         ]
@@ -260,6 +278,7 @@ mod tests {
                 replay_depth: 1,
                 active_presence_count: 0,
                 active_subscription_count: 0,
+                active_peer_manifest_count: 0,
             })
         }
 
@@ -273,6 +292,8 @@ mod tests {
                 cursor: None,
                 active_presence: Vec::new(),
                 active_subscriptions: Vec::new(),
+                active_peer_manifests: Vec::new(),
+                capability_index: Vec::new(),
             })
         }
     }

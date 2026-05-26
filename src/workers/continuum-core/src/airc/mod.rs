@@ -15,13 +15,15 @@ pub use client::{AircQueueClient, CliAircQueueClient};
 pub use event_transport::{AircEventTransport, StoreAircEventTransport};
 pub use process::{AircCommandRunner, AircInvocation, TokioAircCommandRunner};
 pub use realtime::{
-    AircMediaControlEvent, AircPresenceEvent, AircPresenceState, AircRealtimeDelivery,
-    AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema,
-    AircReceipt, AircReplayCursor, AircSubscriptionAction, AircSubscriptionEvent,
+    AircMediaControlEvent, AircPeerCapability, AircPeerManifest, AircPresenceEvent,
+    AircPresenceState, AircRealtimeDelivery, AircRealtimeEnvelope, AircRealtimePayload,
+    AircRealtimePayloadRef, AircRealtimeSchema, AircReceipt, AircReplayCursor,
+    AircSubscriptionAction, AircSubscriptionEvent,
 };
 pub use realtime_store::{
-    AircRealtimePublishParams, AircRealtimePublishResult, AircRealtimeReplayParams,
-    AircRealtimeReplayResult, AircRealtimeStore, InMemoryAircRealtimeStore,
+    AircCapabilityIndexEntry, AircRealtimePublishParams, AircRealtimePublishResult,
+    AircRealtimeReplayParams, AircRealtimeReplayResult, AircRealtimeStore,
+    InMemoryAircRealtimeStore,
 };
 pub use types::{
     AircQueueCardEnvelope, AircQueueIssue, AircQueueListEnvelope, AircQueueListRequest,

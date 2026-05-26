@@ -5,8 +5,8 @@
 //! bounded replay, receipt suppression, and coalesced ephemeral presence.
 
 use crate::airc::realtime::{
-    AircPresenceEvent, AircRealtimeDelivery, AircRealtimeEnvelope, AircRealtimePayload,
-    AircReplayCursor, AircSubscriptionAction, AircSubscriptionEvent,
+    AircPeerManifest, AircPresenceEvent, AircRealtimeDelivery, AircRealtimeEnvelope,
+    AircRealtimePayload, AircReplayCursor, AircSubscriptionAction, AircSubscriptionEvent,
 };
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,7 @@ pub struct AircRealtimePublishResult {
     pub replay_depth: usize,
     pub active_presence_count: usize,
     pub active_subscription_count: usize,
+    pub active_peer_manifest_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -63,7 +64,22 @@ pub struct AircRealtimeReplayParams {
     #[ts(optional)]
     pub include_subscriptions: Option<bool>,
     #[ts(optional)]
+    pub include_peer_manifests: Option<bool>,
+    #[ts(optional)]
+    pub include_capability_index: Option<bool>,
+    #[ts(optional)]
     pub now_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/airc/AircCapabilityIndexEntry.ts"
+)]
+pub struct AircCapabilityIndexEntry {
+    pub capability_id: String,
+    pub peer_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -79,6 +95,8 @@ pub struct AircRealtimeReplayResult {
     pub cursor: Option<AircReplayCursor>,
     pub active_presence: Vec<AircPresenceEvent>,
     pub active_subscriptions: Vec<AircSubscriptionEvent>,
+    pub active_peer_manifests: Vec<AircPeerManifest>,
+    pub capability_index: Vec<AircCapabilityIndexEntry>,
 }
 
 pub trait AircRealtimeStore: Send + Sync {
@@ -99,6 +117,7 @@ pub struct InMemoryAircRealtimeStore {
 struct AircRealtimeState {
     rooms: HashMap<String, VecDeque<AircRealtimeEnvelope>>,
     presence: HashMap<String, AircRealtimeEnvelope>,
+    peer_manifests: HashMap<String, AircRealtimeEnvelope>,
     subscriptions: HashMap<String, AircSubscriptionEvent>,
 }
 
@@ -141,6 +160,12 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
                 coalesced_presence_key = Some(key);
                 !matches!(delivery, AircRealtimeDelivery::EphemeralCoalesced)
             }
+            AircRealtimePayload::PeerManifest { manifest } => {
+                let key = manifest.coalesce_key();
+                state.peer_manifests.insert(key.clone(), envelope.clone());
+                coalesced_presence_key = Some(key);
+                false
+            }
             AircRealtimePayload::Subscription { event } => {
                 state.apply_subscription(event);
                 true
@@ -161,6 +186,7 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
             .unwrap_or_default();
         let active_presence_count = state.active_presence_for_room(&room_id).len();
         let active_subscription_count = state.active_subscriptions_for_room(&room_id).len();
+        let active_peer_manifest_count = state.active_peer_manifests_for_room(&room_id).len();
 
         Ok(AircRealtimePublishResult {
             ok: true,
@@ -172,6 +198,7 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
             replay_depth,
             active_presence_count,
             active_subscription_count,
+            active_peer_manifest_count,
         })
     }
 
@@ -206,6 +233,16 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
         } else {
             Vec::new()
         };
+        let active_peer_manifests = if params.include_peer_manifests.unwrap_or(false) {
+            state.active_peer_manifests_for_room(&params.room_id)
+        } else {
+            Vec::new()
+        };
+        let capability_index = if params.include_capability_index.unwrap_or(false) {
+            capability_index_for_manifests(&active_peer_manifests)
+        } else {
+            Vec::new()
+        };
 
         Ok(AircRealtimeReplayResult {
             room_id: params.room_id,
@@ -213,6 +250,8 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
             cursor,
             active_presence,
             active_subscriptions,
+            active_peer_manifests,
+            capability_index,
         })
     }
 }
@@ -281,12 +320,57 @@ impl AircRealtimeState {
         subscriptions
     }
 
+    fn active_peer_manifests_for_room(&self, room_id: &str) -> Vec<AircPeerManifest> {
+        let mut manifests = self
+            .peer_manifests
+            .values()
+            .filter_map(|envelope| match &envelope.payload {
+                AircRealtimePayload::PeerManifest { manifest } => Some(manifest.clone()),
+                _ => None,
+            })
+            .filter(|manifest| manifest.advertises_room(room_id))
+            .collect::<Vec<_>>();
+        manifests.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+        manifests
+    }
+
     fn prune_expired_presence(&mut self, now_ms: u64) {
         self.presence.retain(|_, envelope| match &envelope.payload {
             AircRealtimePayload::Presence { event } => !event.is_expired_at(now_ms),
             _ => true,
         });
+        self.peer_manifests
+            .retain(|_, envelope| match &envelope.payload {
+                AircRealtimePayload::PeerManifest { manifest } => !manifest.is_expired_at(now_ms),
+                _ => true,
+            });
     }
+}
+
+fn capability_index_for_manifests(manifests: &[AircPeerManifest]) -> Vec<AircCapabilityIndexEntry> {
+    let mut index: HashMap<String, Vec<String>> = HashMap::new();
+    for manifest in manifests {
+        for capability in &manifest.capabilities {
+            index
+                .entry(capability.id.clone())
+                .or_default()
+                .push(manifest.peer_id.clone());
+        }
+    }
+
+    let mut entries = index
+        .into_iter()
+        .map(|(capability_id, mut peer_ids)| {
+            peer_ids.sort();
+            peer_ids.dedup();
+            AircCapabilityIndexEntry {
+                capability_id,
+                peer_ids,
+            }
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.capability_id.cmp(&b.capability_id));
+    entries
 }
 
 fn validate_room_id(room_id: &str) -> Result<(), String> {
@@ -301,8 +385,8 @@ fn validate_room_id(room_id: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::airc::realtime::{
-        AircPresenceState, AircRealtimePayloadRef, AircRealtimeSchema, AircSubscriptionAction,
-        AircSubscriptionEvent,
+        AircPeerCapability, AircPresenceState, AircRealtimePayloadRef, AircRealtimeSchema,
+        AircSubscriptionAction, AircSubscriptionEvent,
     };
     use serde_json::json;
 
@@ -341,6 +425,39 @@ mod tests {
         )
     }
 
+    fn peer_manifest_event(
+        id: &str,
+        peer_id: &str,
+        rooms: &[&str],
+        capabilities: &[&str],
+        advertised_at_ms: u64,
+        expires_at_ms: Option<u64>,
+    ) -> AircRealtimeEnvelope {
+        AircRealtimeEnvelope::new(
+            id.to_string(),
+            "general".to_string(),
+            peer_id.to_string(),
+            advertised_at_ms,
+            AircRealtimePayload::PeerManifest {
+                manifest: AircPeerManifest {
+                    peer_id: peer_id.to_string(),
+                    display_name: Some(peer_id.to_string()),
+                    room_ids: rooms.iter().map(|room| (*room).to_string()).collect(),
+                    capabilities: capabilities
+                        .iter()
+                        .map(|id| AircPeerCapability {
+                            id: (*id).to_string(),
+                            label: None,
+                            version: None,
+                        })
+                        .collect(),
+                    advertised_at_ms,
+                    expires_at_ms,
+                },
+            },
+        )
+    }
+
     #[test]
     fn durable_events_replay_from_cursor() {
         let store = InMemoryAircRealtimeStore::new(10);
@@ -359,6 +476,8 @@ mod tests {
                 limit: Some(10),
                 include_presence: None,
                 include_subscriptions: None,
+                include_peer_manifests: None,
+                include_capability_index: None,
                 now_ms: None,
             })
             .unwrap();
@@ -402,6 +521,8 @@ mod tests {
                 limit: None,
                 include_presence: Some(true),
                 include_subscriptions: None,
+                include_peer_manifests: None,
+                include_capability_index: None,
                 now_ms: Some(239),
             })
             .unwrap();
@@ -416,10 +537,116 @@ mod tests {
                 limit: None,
                 include_presence: Some(true),
                 include_subscriptions: None,
+                include_peer_manifests: None,
+                include_capability_index: None,
                 now_ms: Some(240),
             })
             .unwrap();
         assert!(expired.active_presence.is_empty());
+    }
+
+    #[test]
+    fn peer_manifest_coalesces_indexes_capabilities_and_stays_out_of_replay() {
+        let store = InMemoryAircRealtimeStore::new(10);
+        let first = store
+            .publish(AircRealtimePublishParams {
+                envelope: peer_manifest_event(
+                    "manifest-1",
+                    "peer-a",
+                    &["general"],
+                    &["continuum.lora.invoke"],
+                    100,
+                    Some(500),
+                ),
+            })
+            .unwrap();
+        let second = store
+            .publish(AircRealtimePublishParams {
+                envelope: peer_manifest_event(
+                    "manifest-2",
+                    "peer-a",
+                    &["general", "cambriantech"],
+                    &["continuum.lora.invoke", "continuum.chat.turn"],
+                    150,
+                    Some(600),
+                ),
+            })
+            .unwrap();
+        store
+            .publish(AircRealtimePublishParams {
+                envelope: peer_manifest_event(
+                    "manifest-3",
+                    "peer-b",
+                    &["general"],
+                    &["continuum.lora.invoke"],
+                    160,
+                    Some(600),
+                ),
+            })
+            .unwrap();
+
+        assert!(!first.stored_for_replay);
+        assert!(!second.stored_for_replay);
+        assert_eq!(
+            second.coalesced_presence_key.as_deref(),
+            Some("peer_manifest:peer-a")
+        );
+        assert_eq!(second.active_peer_manifest_count, 1);
+
+        let result = store
+            .replay(AircRealtimeReplayParams {
+                room_id: "general".to_string(),
+                after_event_id: None,
+                limit: None,
+                include_presence: None,
+                include_subscriptions: None,
+                include_peer_manifests: Some(true),
+                include_capability_index: Some(true),
+                now_ms: Some(599),
+            })
+            .unwrap();
+
+        assert!(result.events.is_empty());
+        assert_eq!(
+            result
+                .active_peer_manifests
+                .iter()
+                .map(|manifest| manifest.peer_id.as_str())
+                .collect::<Vec<_>>(),
+            ["peer-a", "peer-b"]
+        );
+        assert_eq!(result.capability_index.len(), 2);
+        assert_eq!(
+            result.capability_index[0].capability_id,
+            "continuum.chat.turn"
+        );
+        assert_eq!(
+            result.capability_index[0].peer_ids,
+            vec!["peer-a".to_string()]
+        );
+        assert_eq!(
+            result.capability_index[1].capability_id,
+            "continuum.lora.invoke"
+        );
+        assert_eq!(
+            result.capability_index[1].peer_ids,
+            vec!["peer-a".to_string(), "peer-b".to_string()]
+        );
+
+        let expired = store
+            .replay(AircRealtimeReplayParams {
+                room_id: "general".to_string(),
+                after_event_id: None,
+                limit: None,
+                include_presence: None,
+                include_subscriptions: None,
+                include_peer_manifests: Some(true),
+                include_capability_index: Some(true),
+                now_ms: Some(600),
+            })
+            .unwrap();
+        assert!(expired.active_peer_manifests.is_empty());
+        assert!(expired.capability_index.is_empty());
     }
 
     #[test]
@@ -453,6 +680,8 @@ mod tests {
                 limit: None,
                 include_presence: None,
                 include_subscriptions: None,
+                include_peer_manifests: None,
+                include_capability_index: None,
                 now_ms: None,
             })
             .unwrap();
@@ -513,6 +742,8 @@ mod tests {
                 limit: None,
                 include_presence: None,
                 include_subscriptions: Some(true),
+                include_peer_manifests: None,
+                include_capability_index: None,
                 now_ms: None,
             })
             .unwrap();
@@ -557,6 +788,8 @@ mod tests {
                 limit: None,
                 include_presence: None,
                 include_subscriptions: Some(true),
+                include_peer_manifests: None,
+                include_capability_index: None,
                 now_ms: None,
             })
             .unwrap();
