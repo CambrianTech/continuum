@@ -279,6 +279,15 @@ pub struct AircPeerCapability {
 }
 
 /// Room-scoped peer manifest used for discovery and capability routing.
+///
+/// `signing_pubkey_hex` advertises the peer's ed25519 signing key so the
+/// L1-6 contract event chain (and any other signed-envelope event class)
+/// can do `peer_id → pubkey` lookups at verify time. The substrate-level
+/// trust answer is "the manifest IS the directory" — no separate keyring,
+/// no out-of-band cert exchange. A peer that mutates its own pubkey
+/// publishes a fresh manifest; receivers that already have one for that
+/// peer_id reject the mismatch loud (key rotation has to go through the
+/// proper trust-rotation event class, not silent overwrite).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(
@@ -292,6 +301,14 @@ pub struct AircPeerManifest {
     #[ts(type = "Array<string>")]
     pub room_ids: Vec<Uuid>,
     pub capabilities: Vec<AircPeerCapability>,
+    /// 32-byte ed25519 public key, hex-encoded (64 lowercase chars,
+    /// no `0x` prefix). Same encoding as
+    /// `crate::contracts::SignedContractEvent::signer_pubkey_hex`,
+    /// so the two interoperate without re-encoding. Required field —
+    /// the manifest is the substrate trust directory; a manifest
+    /// without a pubkey can't be used to verify anything the peer
+    /// signs.
+    pub signing_pubkey_hex: String,
     pub advertised_at_ms: u64,
     #[ts(optional)]
     pub expires_at_ms: Option<u64>,
@@ -311,6 +328,67 @@ impl AircPeerManifest {
     pub fn advertises_room(&self, room_id: Uuid) -> bool {
         self.room_ids.contains(&room_id)
     }
+
+    /// Validate the basic invariants of a manifest at construction /
+    /// receipt time. Returns Err with a specific reason rather than
+    /// silently accepting malformed data — per the never-swallow-evidence
+    /// rule, a bad manifest must fail loud so the peer that sent it can
+    /// be told why.
+    pub fn validate(&self) -> Result<(), AircPeerManifestError> {
+        if self.peer_id.trim().is_empty() {
+            return Err(AircPeerManifestError::EmptyPeerId);
+        }
+        validate_signing_pubkey_hex(&self.signing_pubkey_hex)?;
+        Ok(())
+    }
+}
+
+/// Validation errors for an `AircPeerManifest`. Specific variants so
+/// the L1-2 inbound subscriber can log + reject with actionable
+/// diagnostics rather than a generic "bad manifest".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AircPeerManifestError {
+    EmptyPeerId,
+    PubkeyWrongLength { expected: usize, got: usize },
+    PubkeyNonHexChar { char: char, index: usize },
+}
+
+impl std::fmt::Display for AircPeerManifestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyPeerId => f.write_str("peer_id must not be empty"),
+            Self::PubkeyWrongLength { expected, got } => write!(
+                f,
+                "signing_pubkey_hex wrong length: expected {expected} hex chars (32 bytes), got {got}",
+            ),
+            Self::PubkeyNonHexChar { char, index } => write!(
+                f,
+                "signing_pubkey_hex contains non-hex character '{char}' at index {index}",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AircPeerManifestError {}
+
+/// `signing_pubkey_hex` must be exactly 64 lowercase-or-uppercase hex
+/// characters (no `0x` prefix). The byte parse itself + curve-membership
+/// validation is delegated to ed25519_dalek when a consumer parses; this
+/// check is the cheap structural gate at substrate ingress.
+fn validate_signing_pubkey_hex(hex: &str) -> Result<(), AircPeerManifestError> {
+    const EXPECTED_LEN: usize = 64; // 32 bytes * 2 hex chars
+    if hex.len() != EXPECTED_LEN {
+        return Err(AircPeerManifestError::PubkeyWrongLength {
+            expected: EXPECTED_LEN,
+            got: hex.len(),
+        });
+    }
+    for (i, c) in hex.chars().enumerate() {
+        if !c.is_ascii_hexdigit() {
+            return Err(AircPeerManifestError::PubkeyNonHexChar { char: c, index: i });
+        }
+    }
+    Ok(())
 }
 
 /// Acknowledgement and receipt state for durable delivery.
@@ -417,6 +495,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Sample ed25519 pubkey hex for test fixtures. 32 bytes (64 hex
+    /// chars). Not a real key — purely structural so test manifests pass
+    /// `validate_signing_pubkey_hex`. Use distinct values across peers
+    /// in multi-peer tests so equality checks are meaningful.
+    const TEST_PUBKEY_HEX: &str =
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+
     #[test]
     fn typing_presence_is_ephemeral_and_expirable() {
         let room_id = Uuid::from_u128(0xA1);
@@ -486,6 +571,7 @@ mod tests {
                 label: Some("LoRA invocation".to_string()),
                 version: Some("1".to_string()),
             }],
+            signing_pubkey_hex: TEST_PUBKEY_HEX.to_string(),
             advertised_at_ms: 1_000,
             expires_at_ms: Some(10_000),
         };
@@ -523,5 +609,82 @@ mod tests {
 
         envelope.delivery = AircRealtimeDelivery::Durable;
         assert!(envelope.validate_delivery().is_err());
+    }
+
+    fn manifest_with_pubkey(pubkey_hex: &str) -> AircPeerManifest {
+        AircPeerManifest {
+            peer_id: "peer-1".to_string(),
+            display_name: None,
+            room_ids: vec![Uuid::from_u128(0xA1)],
+            capabilities: vec![],
+            signing_pubkey_hex: pubkey_hex.to_string(),
+            advertised_at_ms: 1_000,
+            expires_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn manifest_validates_well_formed_pubkey() {
+        manifest_with_pubkey(TEST_PUBKEY_HEX).validate().unwrap();
+    }
+
+    #[test]
+    fn manifest_accepts_uppercase_hex() {
+        // ASCII hex parsing allows both cases; the canonical form is
+        // lowercase but the substrate must NOT reject an otherwise
+        // valid uppercase pubkey just for case.
+        let upper = TEST_PUBKEY_HEX.to_uppercase();
+        manifest_with_pubkey(&upper).validate().unwrap();
+    }
+
+    #[test]
+    fn manifest_rejects_wrong_length_pubkey() {
+        let too_short = &TEST_PUBKEY_HEX[..62]; // 31 bytes' worth
+        let err = manifest_with_pubkey(too_short).validate().unwrap_err();
+        assert!(matches!(
+            err,
+            AircPeerManifestError::PubkeyWrongLength {
+                expected: 64,
+                got: 62
+            }
+        ));
+    }
+
+    #[test]
+    fn manifest_rejects_non_hex_pubkey() {
+        // Replace one char with 'z' (length stays 64).
+        let mut bad: String = TEST_PUBKEY_HEX.to_string();
+        bad.replace_range(10..11, "z");
+        let err = manifest_with_pubkey(&bad).validate().unwrap_err();
+        assert!(matches!(
+            err,
+            AircPeerManifestError::PubkeyNonHexChar {
+                char: 'z',
+                index: 10
+            }
+        ));
+    }
+
+    #[test]
+    fn manifest_rejects_empty_peer_id() {
+        let mut m = manifest_with_pubkey(TEST_PUBKEY_HEX);
+        m.peer_id = String::new();
+        let err = m.validate().unwrap_err();
+        assert!(matches!(err, AircPeerManifestError::EmptyPeerId));
+    }
+
+    #[test]
+    fn manifest_round_trips_through_json_with_pubkey() {
+        // The pubkey field MUST appear on the wire in camelCase
+        // (`signingPubkeyHex`) per the serde rename_all on
+        // AircPeerManifest. Verify both the field name + the round-trip.
+        let manifest = manifest_with_pubkey(TEST_PUBKEY_HEX);
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert!(
+            json.contains(r#""signingPubkeyHex":"#),
+            "wire JSON must use camelCase field name; got: {json}",
+        );
+        let restored: AircPeerManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, manifest);
     }
 }
