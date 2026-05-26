@@ -7,12 +7,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use airc_core::{Body, Headers, MentionTarget, RoomId};
+use airc_core::{MentionTarget, RoomId};
 use airc_ipc::{
     DaemonClient, InboxRequest, PublishRequest, PublishResponse, ResolveWireRequest,
     ResolveWireResponse,
 };
-use airc_protocol::{FrameKind, HEADER_FORGE_BODY_HINT};
 use async_trait::async_trait;
 
 use crate::airc::event_transport::AircEventTransport;
@@ -21,12 +20,9 @@ use crate::airc::realtime_store::{
     AircRealtimePublishParams, AircRealtimePublishResult, AircRealtimeReplayParams,
     AircRealtimeReplayResult, AircRealtimeStore, InMemoryAircRealtimeStore, MAX_ROOM_REPLAY_LIMIT,
 };
-
-const CONTINUUM_BODY_HINT: &str = "continuum.airc.realtime.envelope.v1";
-const HEADER_CONTINUUM_EVENT_ID: &str = "continuum.event_id";
-const HEADER_CONTINUUM_SOURCE_ID: &str = "continuum.source_id";
-const HEADER_CONTINUUM_DELIVERY: &str = "continuum.delivery";
-const HEADER_CONTINUUM_TRACE_ID: &str = "continuum.trace_id";
+use crate::airc::realtime_wire::{
+    body_for_envelope, envelope_from_event, frame_kind_for_delivery, headers_for_envelope,
+};
 
 #[async_trait]
 pub trait AircDaemonClient: Send + Sync {
@@ -96,9 +92,7 @@ impl AircEventTransport for DaemonAircEventTransport {
                 channel: envelope.room_id,
                 kind: frame_kind_for_delivery(envelope.delivery),
                 target: MentionTarget::All,
-                body: Body::Json(serde_json::to_value(&envelope).map_err(|error| {
-                    format!("failed to encode continuum airc envelope: {error}")
-                })?),
+                body: body_for_envelope(&envelope)?,
                 headers: headers_for_envelope(&envelope),
             })
             .await?;
@@ -135,22 +129,9 @@ impl AircEventTransport for DaemonAircEventTransport {
 
         let projection = InMemoryAircRealtimeStore::new(MAX_ROOM_REPLAY_LIMIT);
         for event in response.events {
-            let Some(body) = event.body else {
+            let Some(envelope) = envelope_from_event(&event)? else {
                 continue;
             };
-            if event
-                .headers
-                .get(HEADER_FORGE_BODY_HINT)
-                .map(String::as_str)
-                != Some(CONTINUUM_BODY_HINT)
-            {
-                continue;
-            }
-            let Body::Json(value) = body else {
-                continue;
-            };
-            let envelope = serde_json::from_value(value)
-                .map_err(|error| format!("failed to decode continuum airc envelope: {error}"))?;
             projection.publish(AircRealtimePublishParams { envelope })?;
         }
 
@@ -172,45 +153,15 @@ impl DaemonAircEventTransport {
     }
 }
 
-fn frame_kind_for_delivery(delivery: AircRealtimeDelivery) -> FrameKind {
-    match delivery {
-        AircRealtimeDelivery::Durable => FrameKind::Message,
-        AircRealtimeDelivery::EphemeralCoalesced => FrameKind::Event,
-        AircRealtimeDelivery::Control | AircRealtimeDelivery::ReceiptOnly => FrameKind::Control,
-    }
-}
-
-fn headers_for_envelope(envelope: &crate::airc::realtime::AircRealtimeEnvelope) -> Headers {
-    let mut headers = Headers::new();
-    headers.insert(
-        HEADER_FORGE_BODY_HINT.to_string(),
-        CONTINUUM_BODY_HINT.to_string(),
-    );
-    headers.insert(
-        HEADER_CONTINUUM_EVENT_ID.to_string(),
-        envelope.event_id.clone(),
-    );
-    headers.insert(
-        HEADER_CONTINUUM_SOURCE_ID.to_string(),
-        envelope.source_id.clone(),
-    );
-    headers.insert(
-        HEADER_CONTINUUM_DELIVERY.to_string(),
-        format!("{:?}", envelope.delivery),
-    );
-    if let Some(trace_id) = &envelope.trace_id {
-        headers.insert(HEADER_CONTINUUM_TRACE_ID.to_string(), trace_id.clone());
-    }
-    headers
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::airc::realtime::{
         AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema,
     };
-    use airc_core::{ClientId, EventId, PeerId, TranscriptEvent, TranscriptKind};
+    use crate::airc::realtime_wire::CONTINUUM_BODY_HINT;
+    use airc_core::{Body, ClientId, EventId, PeerId, TranscriptEvent, TranscriptKind};
+    use airc_protocol::{FrameKind, HEADER_FORGE_BODY_HINT};
     use parking_lot::Mutex;
     use serde_json::json;
     use uuid::Uuid;

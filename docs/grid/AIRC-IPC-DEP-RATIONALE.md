@@ -1,6 +1,6 @@
 # Continuum → airc-ipc: direct IPC dep (no subprocess, no JSON transcode)
 
-**Status:** direct IPC dep landed; daemon-backed publish/replay bridge in progress.
+**Status:** direct IPC dep landed; daemon-backed publish/replay bridge landed; inbound attach stream in progress.
 **Pairs with:** [`AIRC-CONTINUUM-BRIDGE.md`](AIRC-CONTINUUM-BRIDGE.md) — long-term architecture.
 **Roadmap:** kanban card `156770cf-95f9-4945-88da-5dcce795ceb7`.
 
@@ -28,7 +28,9 @@ airc-ipc      = { git = "https://github.com/CambrianTech/airc", rev = "428f928�
 
 `continuum-core/Cargo.toml` picks up `airc-ipc.workspace = true`, `airc-protocol.workspace = true`, and `airc-core.workspace = true`.
 
-The first dependency-only PR had zero behavior change. The current bridge PR consumes the typed ABI directly: `AircModule::new()` publishes through the daemon-backed event transport for the current project `.airc` scope, while the in-memory store remains an explicit test fixture path.
+The first dependency-only PR had zero behavior change. The bridge now consumes the typed ABI directly: `AircModule::new()` publishes through the daemon-backed event transport for the current project `.airc` scope, while the in-memory store remains an explicit test fixture path.
+
+The inbound half is the same direct-IPC rule in reverse: `AircModule::initialize()` attaches to the daemon's `Response::Event` stream, accepts only `forge.body_hint = continuum.airc.realtime.envelope.v1`, decodes the shared envelope contract, and republishes valid `EventBridgePayload` events into Continuum's `MessageBus`. No subprocess, no stdout contract, no separate JSON command surface.
 
 ## Why no consumer impl in this PR
 
@@ -63,7 +65,6 @@ Decision: α. airc exposes `ResolveWireRequest { channel: Uuid }` over `airc-ipc
 
 ## Follow-up PRs
 
-1. **continuum**: daemon-backed `AircEventTransport` publish/replay bridge. Replaces `InMemoryAircRealtimeStore` as the default runtime path; in-memory remains explicit for tests.
-2. **continuum**: airc-side inbound stream — long-lived `Request::Attach` poller that drains `Response::Event` frames + dispatches as local `Events.subscribe` callbacks. The reverse direction.
-3. **continuum**: L1-6 Phase B — peer-pubkey lookup via L1-4's `presence:peer-manifest` and `signing_pubkey_hex`.
-4. **continuum/airc**: cursor contract upgrade. `airc-ipc::InboxRequest` is lamport-cursor-native; Continuum's public replay API is still event-id-cursor-shaped. The bridge handles current bounded replay, but the cross-system contract should move to `(lamport, event_id)` cursors before high-rate Continuum event streams depend on it.
+1. **continuum**: L1-6 Phase B — peer-pubkey lookup via L1-4's `presence:peer-manifest` and `signing_pubkey_hex`.
+2. **continuum/airc**: cursor contract upgrade. `airc-ipc::InboxRequest` is lamport-cursor-native; Continuum's public replay API is still event-id-cursor-shaped. The bridge handles current bounded replay, but the cross-system contract should move to `(lamport, event_id)` cursors before high-rate Continuum event streams depend on it.
+3. **continuum**: runtime e2e proof. Start a daemon for a temp project `.airc`, publish a Continuum realtime envelope through `AircModule::new()`, observe the attach stream republish it into `MessageBus`, and prove no CLI/stdout path participates.
