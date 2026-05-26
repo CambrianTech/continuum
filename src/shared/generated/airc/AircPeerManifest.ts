@@ -3,5 +3,24 @@ import type { AircPeerCapability } from "./AircPeerCapability";
 
 /**
  * Room-scoped peer manifest used for discovery and capability routing.
+ *
+ * `signing_pubkey_hex` advertises the peer's ed25519 signing key so the
+ * L1-6 contract event chain (and any other signed-envelope event class)
+ * can do `peer_id → pubkey` lookups at verify time. The substrate-level
+ * trust answer is "the manifest IS the directory" — no separate keyring,
+ * no out-of-band cert exchange. A peer that mutates its own pubkey
+ * publishes a fresh manifest; receivers that already have one for that
+ * peer_id reject the mismatch loud (key rotation has to go through the
+ * proper trust-rotation event class, not silent overwrite).
  */
-export type AircPeerManifest = { peerId: string, displayName?: string, roomIds: Array<string>, capabilities: Array<AircPeerCapability>, advertisedAtMs: bigint, expiresAtMs?: bigint, };
+export type AircPeerManifest = { peerId: string, displayName?: string, roomIds: Array<string>, capabilities: Array<AircPeerCapability>, 
+/**
+ * 32-byte ed25519 public key, hex-encoded (64 lowercase chars,
+ * no `0x` prefix). Same encoding as
+ * `crate::contracts::SignedContractEvent::signer_pubkey_hex`,
+ * so the two interoperate without re-encoding. Required field —
+ * the manifest is the substrate trust directory; a manifest
+ * without a pubkey can't be used to verify anything the peer
+ * signs.
+ */
+signingPubkeyHex: string, advertisedAtMs: bigint, expiresAtMs?: bigint, };

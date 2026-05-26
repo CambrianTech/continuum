@@ -2,7 +2,10 @@
 // Source: generator/generate-rust-bindings.ts
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
+export type { AircCapabilityIndexEntry } from './AircCapabilityIndexEntry';
 export type { AircMediaControlEvent } from './AircMediaControlEvent';
+export type { AircPeerCapability } from './AircPeerCapability';
+export type { AircPeerManifest } from './AircPeerManifest';
 export type { AircPresenceEvent } from './AircPresenceEvent';
 export type { AircPresenceState } from './AircPresenceState';
 export type { AircQueueCardEnvelope } from './AircQueueCardEnvelope';

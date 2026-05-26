@@ -459,6 +459,12 @@ mod tests {
                             version: None,
                         })
                         .collect(),
+                    // Structural-only sample pubkey (passes hex/length
+                    // checks; not a real key). Multi-peer tests should
+                    // pass per-peer overrides if equality matters.
+                    signing_pubkey_hex:
+                        "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30"
+                            .to_string(),
                     advertised_at_ms,
                     expires_at_ms,
                 },
