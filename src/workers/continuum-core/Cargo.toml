@@ -41,6 +41,14 @@ toml = "0.8"     # Avatar model manifest parsing
 base64 = "0.22"  # Base64 encoding for audio data
 sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }  # L1-6 contract event signatures (matches airc-protocol's pinned version)
+
+# Direct dep on the airc daemon's local IPC contract. No subprocess; no
+# JSON re-encoding in the hot path. CBOR over length-prefixed frames
+# (Unix domain socket / Windows named pipe). Pulls airc-protocol +
+# airc-core transitively. SHA pinned at the workspace level.
+airc-ipc.workspace = true
+airc-protocol.workspace = true
+
 async-trait.workspace = true
 chrono.workspace = true
 
