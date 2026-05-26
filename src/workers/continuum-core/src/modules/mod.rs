@@ -11,6 +11,8 @@
 pub mod agent;
 pub mod ai_provider;
 pub mod airc;
+#[cfg(test)]
+mod airc_runtime_e2e_tests;
 pub mod auth;
 pub mod avatar;
 pub mod channel;
