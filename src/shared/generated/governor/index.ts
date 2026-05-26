@@ -1,6 +1,6 @@
 // Auto-generated barrel export — do not edit manually
-// Source: workers/continuum-core/src/governor/types.rs (ts-rs)
-// Re-generate: cargo test --lib --features metal,accelerate governor::
+// Source: generator/generate-rust-bindings.ts
+// Re-generate: npx tsx generator/generate-rust-bindings.ts
 
 export type { CadenceMultipliers } from './CadenceMultipliers';
 export type { CascadeAction } from './CascadeAction';

@@ -1,6 +1,6 @@
 // Auto-generated barrel export — do not edit manually
-// Source: workers/continuum-core/src/inference_capability/types.rs (ts-rs)
-// Re-generate: cargo test --lib --features metal,accelerate inference_capability::
+// Source: generator/generate-rust-bindings.ts
+// Re-generate: npx tsx generator/generate-rust-bindings.ts
 
 export type { BackendChoice } from './BackendChoice';
 export type { BlockReason } from './BlockReason';

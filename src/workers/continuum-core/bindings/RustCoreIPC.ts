@@ -55,6 +55,7 @@ import { AIMixin } from './modules/ai';
 import { EmbeddingMixin } from './modules/embedding';
 import { RuntimeMixin } from './modules/runtime';
 import { GpuMixin } from './modules/gpu';
+import { EventsMixin } from './modules/events';
 import { SentinelMixin } from './modules/sentinel';
 import { ToolParsingMixin } from './modules/tool_parsing';
 import { SystemResourceMixin } from './modules/system_resources';
@@ -122,8 +123,9 @@ const ComposedClient = GridMixin(PlasticityMixin(VisionCacheMixin(DatasetMixin(
 			SentinelMixin(
 				InferenceMixin(
 					SystemResourceMixin(
-						GpuMixin(
-							RuntimeMixin(
+						EventsMixin(
+							GpuMixin(
+								RuntimeMixin(
 								EmbeddingMixin(
 									AIMixin(
 										ModelsMixin(
@@ -150,7 +152,7 @@ const ComposedClient = GridMixin(PlasticityMixin(VisionCacheMixin(DatasetMixin(
 			)
 		)
 	)
-))));
+)))));
 
 /**
  * Full RustCoreIPCClient with all domain methods.

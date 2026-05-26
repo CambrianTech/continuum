@@ -23,6 +23,7 @@ pub mod code;
 pub mod comms;
 pub mod cognition;
 pub mod concurrency;
+pub mod events;
 pub mod ffi;
 pub mod forge;
 pub mod governor;
