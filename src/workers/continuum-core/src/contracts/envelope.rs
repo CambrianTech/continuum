@@ -218,7 +218,6 @@ mod tests {
 
     #[test]
     fn sign_then_verify_roundtrips() {
-          
         let sk = ContractSigningKey::generate();
 
         let envelope = SignedContractEvent::sign(
@@ -237,16 +236,12 @@ mod tests {
     fn relabeling_attack_fails() {
         // Sign a payload as `contract:bid`, then relabel the envelope
         // to `contract:proposed` and try to verify — must fail.
-          
+
         let sk = ContractSigningKey::generate();
 
-        let envelope = SignedContractEvent::sign(
-            EVENT_CONTRACT_BID,
-            sample_bid(),
-            &sk,
-            1_779_800_000_000,
-        )
-        .unwrap();
+        let envelope =
+            SignedContractEvent::sign(EVENT_CONTRACT_BID, sample_bid(), &sk, 1_779_800_000_000)
+                .unwrap();
 
         let mut tampered = envelope.clone();
         tampered.event_name = EVENT_CONTRACT_PROPOSED.into();
@@ -257,7 +252,6 @@ mod tests {
 
     #[test]
     fn payload_mutation_fails_verify() {
-          
         let sk = ContractSigningKey::generate();
 
         let envelope = SignedContractEvent::sign(
@@ -277,7 +271,6 @@ mod tests {
 
     #[test]
     fn signature_mutation_fails_verify() {
-          
         let sk = ContractSigningKey::generate();
 
         let envelope = SignedContractEvent::sign(
@@ -300,7 +293,6 @@ mod tests {
 
     #[test]
     fn pubkey_swap_fails_verify() {
-          
         let sk_a = ContractSigningKey::generate();
         let sk_b = ContractSigningKey::generate();
 
@@ -321,7 +313,6 @@ mod tests {
 
     #[test]
     fn envelope_round_trips_through_json() {
-          
         let sk = ContractSigningKey::generate();
 
         let envelope = SignedContractEvent::sign(

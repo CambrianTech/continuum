@@ -143,8 +143,7 @@ impl std::fmt::Debug for ContractVerifyingKey {
         write!(
             f,
             "ContractVerifyingKey({:02x}{:02x}{:02x}{:02x}..{:02x}{:02x}{:02x}{:02x})",
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[28], bytes[29], bytes[30], bytes[31],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[28], bytes[29], bytes[30], bytes[31],
         )
     }
 }
@@ -189,11 +188,11 @@ impl ContractVerifyingKey {
         let mut arr = [0u8; SIGNATURE_LEN];
         arr.copy_from_slice(signature_bytes);
         let sig = Signature::from_bytes(&arr);
-        self.inner.verify(canonical_bytes, &sig).map_err(|_| {
-            SigningError::VerificationFailed {
+        self.inner
+            .verify(canonical_bytes, &sig)
+            .map_err(|_| SigningError::VerificationFailed {
                 bytes_signed: canonical_bytes.len(),
-            }
-        })
+            })
     }
 }
 
@@ -212,8 +211,8 @@ impl ContractVerifyingKey {
 /// Returns the 32-byte SHA-256 of the canonical bytes.
 pub fn canonical_hash<T: Serialize>(payload: &T) -> Result<[u8; CANONICAL_HASH_LEN], SigningError> {
     // 1. Serialize to JSON value (handles any T: Serialize).
-    let value =
-        serde_json::to_value(payload).map_err(|e| SigningError::PayloadSerialization(e.to_string()))?;
+    let value = serde_json::to_value(payload)
+        .map_err(|e| SigningError::PayloadSerialization(e.to_string()))?;
     // 2. Reserialize through BTreeMap-backed Value to get key-sorted output.
     //    serde_json's Value uses BTreeMap when the `preserve_order`
     //    feature is OFF (default). So `to_vec(&value)` yields keys in
@@ -251,7 +250,6 @@ mod tests {
 
     #[test]
     fn keygen_then_sign_then_verify_roundtrips() {
-          
         let sk = ContractSigningKey::generate();
         let vk = sk.verifying_key();
 
@@ -263,7 +261,6 @@ mod tests {
 
     #[test]
     fn pubkey_round_trips_through_bytes() {
-          
         let sk = ContractSigningKey::generate();
         let vk = sk.verifying_key();
 
@@ -279,7 +276,6 @@ mod tests {
 
     #[test]
     fn bad_signature_bytes_fail_loud() {
-          
         let sk = ContractSigningKey::generate();
         let vk = sk.verifying_key();
 
@@ -294,7 +290,6 @@ mod tests {
 
     #[test]
     fn wrong_payload_fails_loud() {
-          
         let sk = ContractSigningKey::generate();
         let vk = sk.verifying_key();
 
@@ -315,7 +310,6 @@ mod tests {
 
     #[test]
     fn cross_key_verify_fails_loud() {
-          
         let sk_a = ContractSigningKey::generate();
         let sk_b = ContractSigningKey::generate();
 
@@ -329,13 +323,15 @@ mod tests {
 
     #[test]
     fn signature_is_deterministic() {
-          
         let sk = ContractSigningKey::generate();
 
         let hash = canonical_hash(&dummy()).unwrap();
         let sig1 = sk.sign(&hash);
         let sig2 = sk.sign(&hash);
-        assert_eq!(sig1, sig2, "ed25519 must be deterministic for replay-equivalence");
+        assert_eq!(
+            sig1, sig2,
+            "ed25519 must be deterministic for replay-equivalence"
+        );
     }
 
     #[test]
@@ -360,16 +356,27 @@ mod tests {
 
     #[test]
     fn signature_length_validation() {
-          
         let vk = ContractSigningKey::generate().verifying_key();
         let err = vk.verify(b"anything", &[0u8; 63]).unwrap_err();
-        assert!(matches!(err, SigningError::SignatureLength { expected: 64, got: 63 }));
+        assert!(matches!(
+            err,
+            SigningError::SignatureLength {
+                expected: 64,
+                got: 63
+            }
+        ));
     }
 
     #[test]
     fn pubkey_length_validation() {
         let err = ContractVerifyingKey::from_bytes(&[0u8; 31]).unwrap_err();
-        assert!(matches!(err, SigningError::PublicKeyLength { expected: 32, got: 31 }));
+        assert!(matches!(
+            err,
+            SigningError::PublicKeyLength {
+                expected: 32,
+                got: 31
+            }
+        ));
     }
 
     // NOTE: Point-validation (rejecting 32 bytes that decompress off-curve)

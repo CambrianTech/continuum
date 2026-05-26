@@ -91,7 +91,10 @@ pub const CONTRACT_SCHEMA_VERSION: &str = "v1";
 /// a synthetic "ping contract" alloy with no proof suite.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/contracts/ContractProposedPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/contracts/ContractProposedPayload.ts"
+)]
 pub struct ContractProposedPayload {
     pub contract_id: String,
     pub proposer_id: String,
@@ -113,7 +116,10 @@ pub struct ContractProposedPayload {
 /// `contract:bid` — an executor's offer to take on a proposed contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/contracts/ContractBidPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/contracts/ContractBidPayload.ts"
+)]
 pub struct ContractBidPayload {
     pub contract_id: String,
     pub bidder_id: String,
@@ -129,7 +135,10 @@ pub struct ContractBidPayload {
 /// `contract:accepted` — proposer's signed selection of one bidder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/contracts/ContractAcceptedPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/contracts/ContractAcceptedPayload.ts"
+)]
 pub struct ContractAcceptedPayload {
     pub contract_id: String,
     pub proposer_id: String,
@@ -145,7 +154,10 @@ pub struct ContractAcceptedPayload {
 /// router daemon to mark a routing slot as in-use.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/contracts/ContractExecutingPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/contracts/ContractExecutingPayload.ts"
+)]
 pub struct ContractExecutingPayload {
     pub contract_id: String,
     pub executor_id: String,
@@ -158,7 +170,10 @@ pub struct ContractExecutingPayload {
 /// detect bait-and-switch).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/contracts/ContractDeliveredPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/contracts/ContractDeliveredPayload.ts"
+)]
 pub struct ContractDeliveredPayload {
     pub contract_id: String,
     pub executor_id: String,
@@ -179,7 +194,10 @@ pub struct ContractDeliveredPayload {
 /// against the delivered artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/contracts/ContractVerifiedPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/contracts/ContractVerifiedPayload.ts"
+)]
 pub struct ContractVerifiedPayload {
     pub contract_id: String,
     pub verifier_id: String,
@@ -198,7 +216,10 @@ pub struct ContractVerifiedPayload {
 /// with `amount: 0`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/contracts/ContractPaidPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/contracts/ContractPaidPayload.ts"
+)]
 pub struct ContractPaidPayload {
     pub contract_id: String,
     pub payer_id: String,
@@ -216,7 +237,10 @@ pub struct ContractPaidPayload {
 /// disputed contract for auditor review.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/contracts/ContractDisputedPayload.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/contracts/ContractDisputedPayload.ts"
+)]
 pub struct ContractDisputedPayload {
     pub contract_id: String,
     pub disputer_id: String,
@@ -254,9 +278,8 @@ pub fn declare_contract_event_classes() -> Result<usize, String> {
             on_unknown_schema: None, // defaults to Fail
             description: Some(format!("L1-6 contract event chain — {name}")),
         };
-        declare_event_class(name, &cfg).map_err(|e| {
-            format!("L1-6: failed to declare event class '{name}': {e}")
-        })?;
+        declare_event_class(name, &cfg)
+            .map_err(|e| format!("L1-6: failed to declare event class '{name}': {e}"))?;
         declared += 1;
     }
     Ok(declared)
@@ -292,9 +315,8 @@ mod tests {
         assert_eq!(count, 8);
 
         for name in ALL_CONTRACT_EVENT_NAMES {
-            let cfg = lookup_event_class(name).unwrap_or_else(|| {
-                panic!("class '{name}' was declared but lookup returned None")
-            });
+            let cfg = lookup_event_class(name)
+                .unwrap_or_else(|| panic!("class '{name}' was declared but lookup returned None"));
             assert!(cfg.broadcast, "{name} must be broadcast");
             assert_eq!(cfg.schema_version, CONTRACT_SCHEMA_VERSION);
         }
