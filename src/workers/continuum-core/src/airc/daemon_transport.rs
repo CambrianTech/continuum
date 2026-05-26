@@ -121,11 +121,18 @@ impl AircEventTransport for DaemonAircEventTransport {
         let response = self
             .client
             .inbox(InboxRequest {
-                since: None,
+                since: params
+                    .after_cursor
+                    .as_ref()
+                    .map(|cursor| cursor.to_airc())
+                    .transpose()?,
                 channel: Some(RoomId::from_uuid(params.room_id)),
                 limit: Some(params.limit.unwrap_or(MAX_ROOM_REPLAY_LIMIT)),
             })
             .await?;
+        let newest = response.newest.clone().map(|cursor| {
+            crate::airc::realtime::AircReplayCursor::from_airc(params.room_id, cursor)
+        });
 
         let projection = InMemoryAircRealtimeStore::new(MAX_ROOM_REPLAY_LIMIT);
         for event in response.events {
@@ -135,7 +142,12 @@ impl AircEventTransport for DaemonAircEventTransport {
             projection.publish(AircRealtimePublishParams { envelope })?;
         }
 
-        projection.replay(params)
+        let mut replay = projection.replay(AircRealtimeReplayParams {
+            after_cursor: None,
+            ..params
+        })?;
+        replay.cursor = newest;
+        Ok(replay)
     }
 }
 
@@ -170,7 +182,9 @@ mod tests {
     struct FakeDaemonClient {
         wire: Mutex<Option<PathBuf>>,
         publishes: Mutex<Vec<PublishRequest>>,
+        inbox_requests: Mutex<Vec<InboxRequest>>,
         inbox_events: Mutex<Vec<TranscriptEvent>>,
+        inbox_newest: Mutex<Option<airc_core::TranscriptCursor>>,
     }
 
     #[async_trait]
@@ -194,10 +208,11 @@ mod tests {
             })
         }
 
-        async fn inbox(&self, _request: InboxRequest) -> Result<airc_ipc::InboxResponse, String> {
+        async fn inbox(&self, request: InboxRequest) -> Result<airc_ipc::InboxResponse, String> {
+            self.inbox_requests.lock().push(request);
             Ok(airc_ipc::InboxResponse {
                 events: self.inbox_events.lock().clone(),
-                newest: None,
+                newest: self.inbox_newest.lock().clone(),
             })
         }
     }
@@ -284,7 +299,7 @@ mod tests {
         let replay = transport
             .replay(AircRealtimeReplayParams {
                 room_id: env.room_id,
-                after_event_id: None,
+                after_cursor: None,
                 limit: Some(10),
                 include_presence: None,
                 include_subscriptions: None,
@@ -297,5 +312,50 @@ mod tests {
 
         assert_eq!(replay.events.len(), 1);
         assert_eq!(replay.events[0].event_id, "evt-1");
+    }
+
+    #[tokio::test]
+    async fn replay_passes_lamport_cursor_to_daemon_inbox() {
+        let fake = Arc::new(FakeDaemonClient::default());
+        let env = envelope("evt-1");
+        let since_event = EventId::from_u128(0x10);
+        let newest_event = EventId::from_u128(0x20);
+        *fake.inbox_newest.lock() = Some(airc_core::TranscriptCursor {
+            lamport: 9,
+            event_id: newest_event,
+        });
+        let transport = DaemonAircEventTransport::with_client(fake.clone());
+
+        let replay = transport
+            .replay(AircRealtimeReplayParams {
+                room_id: env.room_id,
+                after_cursor: Some(crate::airc::realtime::AircReplayCursor {
+                    room_id: env.room_id,
+                    lamport: 4,
+                    event_id: since_event.to_string(),
+                    observed_at_ms: None,
+                }),
+                limit: Some(10),
+                include_presence: None,
+                include_subscriptions: None,
+                include_peer_manifests: None,
+                include_capability_index: None,
+                now_ms: None,
+            })
+            .await
+            .unwrap();
+
+        let requests = fake.inbox_requests.lock();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].since,
+            Some(airc_core::TranscriptCursor {
+                lamport: 4,
+                event_id: since_event
+            })
+        );
+        let cursor = replay.cursor.unwrap();
+        assert_eq!(cursor.lamport, 9);
+        assert_eq!(cursor.event_id, newest_event.to_string());
     }
 }

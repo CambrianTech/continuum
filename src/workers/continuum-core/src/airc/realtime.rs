@@ -201,9 +201,35 @@ pub enum AircSubscriptionAction {
 pub struct AircReplayCursor {
     #[ts(type = "string")]
     pub room_id: Uuid,
-    pub last_seen_event_id: String,
+    pub lamport: u64,
+    pub event_id: String,
     #[ts(optional)]
-    pub last_seen_at_ms: Option<u64>,
+    pub observed_at_ms: Option<u64>,
+}
+
+impl AircReplayCursor {
+    pub fn strictly_before(&self, other: &Self) -> bool {
+        self.lamport < other.lamport
+            || (self.lamport == other.lamport && self.event_id < other.event_id)
+    }
+
+    pub fn from_airc(room_id: Uuid, cursor: airc_core::TranscriptCursor) -> Self {
+        Self {
+            room_id,
+            lamport: cursor.lamport,
+            event_id: cursor.event_id.to_string(),
+            observed_at_ms: None,
+        }
+    }
+
+    pub fn to_airc(&self) -> Result<airc_core::TranscriptCursor, String> {
+        let event_uuid = Uuid::parse_str(&self.event_id)
+            .map_err(|error| format!("invalid AIRC replay cursor event_id: {error}"))?;
+        Ok(airc_core::TranscriptCursor {
+            lamport: self.lamport,
+            event_id: airc_core::EventId::from_uuid(event_uuid),
+        })
+    }
 }
 
 /// Subscription control-plane payload.
@@ -537,6 +563,33 @@ mod tests {
             };
             assert_eq!(payload.delivery(), AircRealtimeDelivery::Durable);
         }
+    }
+
+    #[test]
+    fn replay_cursor_orders_by_lamport_then_event_id() {
+        let room_id = Uuid::from_u128(0xA1);
+        let earlier = AircReplayCursor {
+            room_id,
+            lamport: 4,
+            event_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            observed_at_ms: None,
+        };
+        let later_same_lamport = AircReplayCursor {
+            room_id,
+            lamport: 4,
+            event_id: "00000000-0000-0000-0000-000000000002".to_string(),
+            observed_at_ms: None,
+        };
+        let later_lamport = AircReplayCursor {
+            room_id,
+            lamport: 5,
+            event_id: "00000000-0000-0000-0000-000000000000".to_string(),
+            observed_at_ms: None,
+        };
+
+        assert!(earlier.strictly_before(&later_same_lamport));
+        assert!(later_same_lamport.strictly_before(&later_lamport));
+        assert!(!later_lamport.strictly_before(&earlier));
     }
 
     #[test]

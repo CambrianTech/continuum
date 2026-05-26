@@ -59,7 +59,7 @@ pub struct AircRealtimeReplayParams {
     #[ts(type = "string")]
     pub room_id: Uuid,
     #[ts(optional)]
-    pub after_event_id: Option<String>,
+    pub after_cursor: Option<AircReplayCursor>,
     #[ts(optional)]
     pub limit: Option<usize>,
     #[ts(optional)]
@@ -119,10 +119,17 @@ pub struct InMemoryAircRealtimeStore {
 
 #[derive(Debug, Default)]
 struct AircRealtimeState {
-    rooms: HashMap<Uuid, VecDeque<AircRealtimeEnvelope>>,
+    rooms: HashMap<Uuid, VecDeque<StoredRealtimeEnvelope>>,
+    room_lamports: HashMap<Uuid, u64>,
     presence: HashMap<String, AircRealtimeEnvelope>,
     peer_manifests: HashMap<String, AircRealtimeEnvelope>,
     subscriptions: HashMap<String, AircSubscriptionEvent>,
+}
+
+#[derive(Debug, Clone)]
+struct StoredRealtimeEnvelope {
+    envelope: AircRealtimeEnvelope,
+    cursor: AircReplayCursor,
 }
 
 impl Default for InMemoryAircRealtimeStore {
@@ -218,12 +225,8 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
             state.prune_expired_presence(now_ms);
         }
 
-        let events = state.replay_room(params.room_id, params.after_event_id.as_deref(), limit);
-        let cursor = events.last().map(|event| AircReplayCursor {
-            room_id: params.room_id,
-            last_seen_event_id: event.event_id.clone(),
-            last_seen_at_ms: Some(event.created_at_ms),
-        });
+        let events = state.replay_room(params.room_id, params.after_cursor.as_ref(), limit);
+        let cursor = events.last().map(|event| event.cursor.clone());
         let active_presence = if params.include_presence.unwrap_or(false) {
             state
                 .active_presence_for_room(params.room_id)
@@ -250,7 +253,7 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
 
         Ok(AircRealtimeReplayResult {
             room_id: params.room_id,
-            events,
+            events: events.into_iter().map(|event| event.envelope).collect(),
             cursor,
             active_presence,
             active_subscriptions,
@@ -262,8 +265,16 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
 
 impl AircRealtimeState {
     fn push_replay(&mut self, envelope: AircRealtimeEnvelope, max_events_per_room: usize) {
+        let next_lamport = self.room_lamports.entry(envelope.room_id).or_default();
+        *next_lamport += 1;
+        let cursor = AircReplayCursor {
+            room_id: envelope.room_id,
+            lamport: *next_lamport,
+            event_id: envelope.event_id.clone(),
+            observed_at_ms: Some(envelope.created_at_ms),
+        };
         let room = self.rooms.entry(envelope.room_id).or_default();
-        room.push_back(envelope);
+        room.push_back(StoredRealtimeEnvelope { envelope, cursor });
         while room.len() > max_events_per_room {
             room.pop_front();
         }
@@ -272,17 +283,21 @@ impl AircRealtimeState {
     fn replay_room(
         &self,
         room_id: Uuid,
-        after_event_id: Option<&str>,
+        after_cursor: Option<&AircReplayCursor>,
         limit: usize,
-    ) -> Vec<AircRealtimeEnvelope> {
+    ) -> Vec<StoredRealtimeEnvelope> {
         let Some(room) = self.rooms.get(&room_id) else {
             return Vec::new();
         };
-        let start = after_event_id
-            .and_then(|id| room.iter().position(|event| event.event_id == id))
-            .map(|idx| idx + 1)
-            .unwrap_or(0);
-        room.iter().skip(start).take(limit).cloned().collect()
+        room.iter()
+            .filter(|event| {
+                after_cursor
+                    .map(|cursor| cursor.strictly_before(&event.cursor))
+                    .unwrap_or(true)
+            })
+            .take(limit)
+            .cloned()
+            .collect()
     }
 
     fn active_presence_for_room(&self, room_id: Uuid) -> Vec<AircPresenceEvent> {
@@ -486,7 +501,12 @@ mod tests {
         let result = store
             .replay(AircRealtimeReplayParams {
                 room_id: GENERAL,
-                after_event_id: Some("evt-1".to_string()),
+                after_cursor: Some(AircReplayCursor {
+                    room_id: GENERAL,
+                    lamport: 1,
+                    event_id: "evt-1".to_string(),
+                    observed_at_ms: Some(1),
+                }),
                 limit: Some(10),
                 include_presence: None,
                 include_subscriptions: None,
@@ -504,10 +524,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["evt-2", "evt-3"]
         );
-        assert_eq!(
-            result.cursor.unwrap().last_seen_event_id,
-            "evt-3".to_string()
-        );
+        assert_eq!(result.cursor.unwrap().event_id, "evt-3".to_string());
     }
 
     #[test]
@@ -531,7 +548,7 @@ mod tests {
         let live = store
             .replay(AircRealtimeReplayParams {
                 room_id: GENERAL,
-                after_event_id: None,
+                after_cursor: None,
                 limit: None,
                 include_presence: Some(true),
                 include_subscriptions: None,
@@ -547,7 +564,7 @@ mod tests {
         let expired = store
             .replay(AircRealtimeReplayParams {
                 room_id: GENERAL,
-                after_event_id: None,
+                after_cursor: None,
                 limit: None,
                 include_presence: Some(true),
                 include_subscriptions: None,
@@ -610,7 +627,7 @@ mod tests {
         let result = store
             .replay(AircRealtimeReplayParams {
                 room_id: GENERAL,
-                after_event_id: None,
+                after_cursor: None,
                 limit: None,
                 include_presence: None,
                 include_subscriptions: None,
@@ -650,7 +667,7 @@ mod tests {
         let expired = store
             .replay(AircRealtimeReplayParams {
                 room_id: GENERAL,
-                after_event_id: None,
+                after_cursor: None,
                 limit: None,
                 include_presence: None,
                 include_subscriptions: None,
@@ -690,7 +707,7 @@ mod tests {
         let replay = store
             .replay(AircRealtimeReplayParams {
                 room_id: GENERAL,
-                after_event_id: None,
+                after_cursor: None,
                 limit: None,
                 include_presence: None,
                 include_subscriptions: None,
@@ -752,7 +769,7 @@ mod tests {
         let result = store
             .replay(AircRealtimeReplayParams {
                 room_id: GENERAL,
-                after_event_id: None,
+                after_cursor: None,
                 limit: None,
                 include_presence: None,
                 include_subscriptions: Some(true),
@@ -798,7 +815,7 @@ mod tests {
         let result = store
             .replay(AircRealtimeReplayParams {
                 room_id: GENERAL,
-                after_event_id: None,
+                after_cursor: None,
                 limit: None,
                 include_presence: None,
                 include_subscriptions: Some(true),

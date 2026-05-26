@@ -93,7 +93,7 @@ mod tests {
         let replay = transport
             .replay(AircRealtimeReplayParams {
                 room_id,
-                after_event_id: None,
+                after_cursor: None,
                 limit: Some(10),
                 include_presence: None,
                 include_subscriptions: None,

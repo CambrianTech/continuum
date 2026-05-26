@@ -189,10 +189,10 @@ impl ServiceModule for AircModule {
                         description: "Room id to replay.",
                     },
                     ParamSchema {
-                        name: "after_event_id",
-                        param_type: "string",
+                        name: "after_cursor",
+                        param_type: "object",
                         required: false,
-                        description: "Optional cursor event id; replay starts after this event when present.",
+                        description: "Optional lamport cursor; replay starts strictly after (lamport, event_id).",
                     },
                     ParamSchema {
                         name: "limit",
