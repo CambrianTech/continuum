@@ -259,6 +259,55 @@ impl AircMediaControlEvent {
     }
 }
 
+/// Capability advertised by a peer in a room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/airc/AircPeerCapability.ts"
+)]
+pub struct AircPeerCapability {
+    pub id: String,
+    #[ts(optional)]
+    pub label: Option<String>,
+    #[ts(optional)]
+    pub version: Option<String>,
+}
+
+/// Room-scoped peer manifest used for discovery and capability routing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/airc/AircPeerManifest.ts"
+)]
+pub struct AircPeerManifest {
+    pub peer_id: String,
+    #[ts(optional)]
+    pub display_name: Option<String>,
+    pub room_ids: Vec<String>,
+    pub capabilities: Vec<AircPeerCapability>,
+    pub advertised_at_ms: u64,
+    #[ts(optional)]
+    pub expires_at_ms: Option<u64>,
+}
+
+impl AircPeerManifest {
+    pub fn coalesce_key(&self) -> String {
+        format!("peer_manifest:{}", self.peer_id)
+    }
+
+    pub fn is_expired_at(&self, now_ms: u64) -> bool {
+        self.expires_at_ms
+            .map(|expires_at| now_ms >= expires_at)
+            .unwrap_or(false)
+    }
+
+    pub fn advertises_room(&self, room_id: &str) -> bool {
+        self.room_ids.iter().any(|candidate| candidate == room_id)
+    }
+}
+
 /// Acknowledgement and receipt state for durable delivery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -281,6 +330,7 @@ pub struct AircReceipt {
 pub enum AircRealtimePayload {
     ExistingSchema { payload: AircRealtimePayloadRef },
     Presence { event: AircPresenceEvent },
+    PeerManifest { manifest: AircPeerManifest },
     Subscription { event: AircSubscriptionEvent },
     MediaControl { event: AircMediaControlEvent },
     Receipt { receipt: AircReceipt },
@@ -295,6 +345,7 @@ impl AircRealtimePayload {
                 _ => AircRealtimeDelivery::Durable,
             },
             Self::Presence { event } => event.delivery(),
+            Self::PeerManifest { .. } => AircRealtimeDelivery::EphemeralCoalesced,
             Self::Subscription { .. } | Self::MediaControl { .. } => AircRealtimeDelivery::Control,
             Self::Receipt { .. } => AircRealtimeDelivery::ReceiptOnly,
         }
@@ -409,6 +460,31 @@ mod tests {
 
         let payload = AircRealtimePayload::MediaControl { event };
         assert_eq!(payload.delivery(), AircRealtimeDelivery::Control);
+    }
+
+    #[test]
+    fn peer_manifest_is_ephemeral_room_scoped_capability_advertisement() {
+        let manifest = AircPeerManifest {
+            peer_id: "peer-continuum-1".to_string(),
+            display_name: Some("Continuum GPU Host".to_string()),
+            room_ids: vec!["general".to_string(), "cambriantech".to_string()],
+            capabilities: vec![AircPeerCapability {
+                id: "continuum.lora.invoke".to_string(),
+                label: Some("LoRA invocation".to_string()),
+                version: Some("1".to_string()),
+            }],
+            advertised_at_ms: 1_000,
+            expires_at_ms: Some(10_000),
+        };
+
+        assert_eq!(manifest.coalesce_key(), "peer_manifest:peer-continuum-1");
+        assert!(manifest.advertises_room("general"));
+        assert!(!manifest.advertises_room("useideem"));
+        assert!(!manifest.is_expired_at(9_999));
+        assert!(manifest.is_expired_at(10_000));
+
+        let payload = AircRealtimePayload::PeerManifest { manifest };
+        assert_eq!(payload.delivery(), AircRealtimeDelivery::EphemeralCoalesced);
     }
 
     #[test]

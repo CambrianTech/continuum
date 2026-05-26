@@ -84,6 +84,8 @@ mod tests {
                 limit: Some(10),
                 include_presence: None,
                 include_subscriptions: None,
+                include_peer_manifests: None,
+                include_capability_index: None,
                 now_ms: None,
             })
             .unwrap();
