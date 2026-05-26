@@ -142,14 +142,20 @@ export abstract class CommandDaemon extends DaemonBase {
     }
 
     try {
-      // Check if timeout is specified in command params
-      const timeout = (message.payload as CommandParams).timeout;
-
       // Resolve userId: use payload's userId if present and real, otherwise resolve from session
       let resolvedUserId: UUID = (message.payload as CommandParams).userId ?? SYSTEM_SCOPES.SYSTEM;
       if (resolvedUserId === SYSTEM_SCOPES.SYSTEM && requestSessionId) {
         resolvedUserId = await this.resolveUserIdFromSession(requestSessionId) ?? SYSTEM_SCOPES.SYSTEM;
       }
+
+      const scopedParams = command.withDefaults(
+        { ...message.payload, userId: resolvedUserId } as Partial<CommandParams>,
+        requestSessionId,
+        requestContext,
+      );
+
+      // Check if timeout is specified in command params
+      const timeout = scopedParams.timeout;
 
       // Grid routing: check if this command should execute on a remote node.
       // Uses the same interceptor registered on Commands (server-side only).
@@ -157,7 +163,7 @@ export abstract class CommandDaemon extends DaemonBase {
       if (!commandName.startsWith('grid/')) {
         const interceptor = (Commands as unknown as { _gridInterceptor: { tryRouteRemote: (cmd: string, params: unknown) => Promise<unknown> } | null })._gridInterceptor;
         if (interceptor) {
-          const remoteResult = await interceptor.tryRouteRemote(commandName, message.payload);
+          const remoteResult = await interceptor.tryRouteRemote(commandName, scopedParams);
           if (remoteResult !== null) {
             return createCommandSuccessResponse(remoteResult as CommandResult, requestContext, undefined, requestSessionId);
           }
@@ -166,7 +172,7 @@ export abstract class CommandDaemon extends DaemonBase {
 
       // Execute command with session context for dual logging
       const executionPromise = globalSessionContext.withSession(requestSessionId, async () => {
-        return await command.execute({ userId: resolvedUserId, ...message.payload } as CommandParams);
+        return await command.execute(scopedParams);
       });
 
       // Apply timeout if specified
@@ -302,4 +308,3 @@ export abstract class CommandDaemon extends DaemonBase {
     });
   }
 }
-

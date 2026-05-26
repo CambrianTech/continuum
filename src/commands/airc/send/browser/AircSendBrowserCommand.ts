@@ -5,10 +5,13 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandScope, JTAGContext } from '@system/core/types/JTAGTypes';
 import type { AircSendParams, AircSendResult } from '../shared/AircSendTypes';
 
 export class AircSendBrowserCommand extends CommandBase<AircSendParams, AircSendResult> {
+  protected static override get naturalScope(): CommandScope {
+    return { type: 'room' };
+  }
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('airc/send', context, subpath, commander);

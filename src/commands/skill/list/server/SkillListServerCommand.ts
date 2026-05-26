@@ -27,8 +27,8 @@ export class SkillListServerCommand extends CommandBase<SkillListParams, SkillLi
     if (params.status?.trim()) {
       filter.status = params.status;
     }
-    if (params.scope?.trim()) {
-      filter.scope = params.scope;
+    if (params.skillScope?.trim()) {
+      filter.scope = params.skillScope;
     }
     if (params.createdById?.trim()) {
       filter.createdById = params.createdById;

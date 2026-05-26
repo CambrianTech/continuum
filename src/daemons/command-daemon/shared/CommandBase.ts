@@ -6,7 +6,7 @@
  */
 
 import { JTAGModule } from '../../../system/core/shared/JTAGModule';
-import type { JTAGContext, CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
+import type { CommandScope, JTAGContext, CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
 import { JTAG_ENVIRONMENTS, JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
@@ -83,6 +83,17 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
   }
 
   /**
+   * Natural execution scope for this command.
+   *
+   * Subclasses override this when a command is inherently room/project/grid
+   * scoped. Commands with no natural scope leave params.scope unset unless
+   * the caller provided one explicitly.
+   */
+  protected static get naturalScope(): CommandScope | undefined {
+    return undefined;
+  }
+
+  /**
    * Static execute - Universal command execution from anywhere
    *
    * Works in both browser and server with zero boilerplate:
@@ -154,7 +165,16 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
    * @param sessionId - Current session ID from the active request
    */
   public getDefaultParams(sessionId: UUID, context: JTAGContext): TParams {
-    return {sessionId, context, userId: SYSTEM_SCOPES.SYSTEM} as TParams;
+    const commandClass = this.constructor as typeof CommandBase;
+    const params: CommandParams = {
+      sessionId,
+      context,
+      userId: SYSTEM_SCOPES.SYSTEM,
+    };
+    if (commandClass.naturalScope) {
+      return { ...params, scope: commandClass.naturalScope } as TParams;
+    }
+    return params as TParams;
   }
 
   /**
