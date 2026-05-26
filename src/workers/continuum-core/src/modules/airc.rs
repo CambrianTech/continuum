@@ -3,7 +3,8 @@
 use crate::airc::{
     AircEventTransport, AircQueueClient, AircQueueListRequest, AircQueueScanParams,
     AircRealtimePublishParams, AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient,
-    InMemoryAircRealtimeStore, StoreAircEventTransport, TokioAircCommandRunner,
+    DaemonAircEventTransport, InMemoryAircRealtimeStore, StoreAircEventTransport,
+    TokioAircCommandRunner, default_socket_path_in,
 };
 use crate::runtime::{
     CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ParamSchema,
@@ -21,10 +22,18 @@ pub struct AircModule {
 
 impl AircModule {
     pub fn new() -> Self {
+        let airc_home = std::env::current_dir()
+            .map(|dir| dir.join(".airc"))
+            .unwrap_or_else(|_| std::path::PathBuf::from(".airc"));
+        Self::with_daemon_home(airc_home)
+    }
+
+    pub fn with_daemon_home(airc_home: impl Into<std::path::PathBuf>) -> Self {
+        let airc_home = airc_home.into();
         Self {
             queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
-            event_transport: Arc::new(StoreAircEventTransport::new(Arc::new(
-                InMemoryAircRealtimeStore::default(),
+            event_transport: Arc::new(DaemonAircEventTransport::new(default_socket_path_in(
+                &airc_home,
             ))),
         }
     }
@@ -95,13 +104,13 @@ impl ServiceModule for AircModule {
             "airc/realtime-publish" => {
                 let params: AircRealtimePublishParams = serde_json::from_value(params)
                     .map_err(|e| format!("invalid airc/realtime-publish params: {e}"))?;
-                let result = self.event_transport.publish(params)?;
+                let result = self.event_transport.publish(params).await?;
                 CommandResult::json(&result)
             }
             "airc/realtime-replay" => {
                 let params: AircRealtimeReplayParams = serde_json::from_value(params)
                     .map_err(|e| format!("invalid airc/realtime-replay params: {e}"))?;
-                let result = self.event_transport.replay(params)?;
+                let result = self.event_transport.replay(params).await?;
                 CommandResult::json(&result)
             }
             _ => Err(format!("Unknown airc command: {command}")),
@@ -265,8 +274,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl AircEventTransport for FakeEventTransport {
-        fn publish(
+        async fn publish(
             &self,
             params: AircRealtimePublishParams,
         ) -> Result<AircRealtimePublishResult, String> {
@@ -285,7 +295,7 @@ mod tests {
             })
         }
 
-        fn replay(
+        async fn replay(
             &self,
             params: AircRealtimeReplayParams,
         ) -> Result<AircRealtimeReplayResult, String> {

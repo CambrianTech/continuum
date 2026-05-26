@@ -47,6 +47,7 @@ ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }  # L1-6 con
 # (Unix domain socket / Windows named pipe). Pulls airc-protocol +
 # airc-core transitively. SHA pinned at the workspace level.
 airc-ipc.workspace = true
+airc-core.workspace = true
 airc-protocol.workspace = true
 
 async-trait.workspace = true

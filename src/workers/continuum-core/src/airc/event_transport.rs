@@ -8,18 +8,24 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use crate::airc::realtime_store::{
     AircRealtimePublishParams, AircRealtimePublishResult, AircRealtimeReplayParams,
     AircRealtimeReplayResult, AircRealtimeStore,
 };
 
+#[async_trait]
 pub trait AircEventTransport: Send + Sync {
-    fn publish(
+    async fn publish(
         &self,
         params: AircRealtimePublishParams,
     ) -> Result<AircRealtimePublishResult, String>;
 
-    fn replay(&self, params: AircRealtimeReplayParams) -> Result<AircRealtimeReplayResult, String>;
+    async fn replay(
+        &self,
+        params: AircRealtimeReplayParams,
+    ) -> Result<AircRealtimeReplayResult, String>;
 }
 
 #[derive(Clone)]
@@ -33,15 +39,19 @@ impl StoreAircEventTransport {
     }
 }
 
+#[async_trait]
 impl AircEventTransport for StoreAircEventTransport {
-    fn publish(
+    async fn publish(
         &self,
         params: AircRealtimePublishParams,
     ) -> Result<AircRealtimePublishResult, String> {
         self.store.publish(params)
     }
 
-    fn replay(&self, params: AircRealtimeReplayParams) -> Result<AircRealtimeReplayResult, String> {
+    async fn replay(
+        &self,
+        params: AircRealtimeReplayParams,
+    ) -> Result<AircRealtimeReplayResult, String> {
         self.store.replay(params)
     }
 }
@@ -56,8 +66,8 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    #[test]
-    fn store_transport_round_trips_without_cli_output_parsing() {
+    #[tokio::test]
+    async fn store_transport_round_trips_without_cli_output_parsing() {
         let transport =
             StoreAircEventTransport::new(Arc::new(InMemoryAircRealtimeStore::default()));
         let room_id = Uuid::from_u128(0xA1);
@@ -76,6 +86,7 @@ mod tests {
 
         let publish = transport
             .publish(AircRealtimePublishParams { envelope })
+            .await
             .unwrap();
         assert!(publish.stored_for_replay);
 
@@ -90,6 +101,7 @@ mod tests {
                 include_capability_index: None,
                 now_ms: None,
             })
+            .await
             .unwrap();
 
         assert_eq!(replay.events.len(), 1);
