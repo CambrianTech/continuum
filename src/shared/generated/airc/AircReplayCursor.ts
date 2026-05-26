@@ -3,4 +3,4 @@
 /**
  * Cursor for replay/resume across reconnects.
  */
-export type AircReplayCursor = { roomId: string, lastSeenEventId: string, lastSeenAtMs?: bigint, };
+export type AircReplayCursor = { roomId: string, lamport: bigint, eventId: string, observedAtMs?: bigint, };

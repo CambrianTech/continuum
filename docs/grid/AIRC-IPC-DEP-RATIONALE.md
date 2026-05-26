@@ -66,5 +66,5 @@ Decision: α. airc exposes `ResolveWireRequest { channel: Uuid }` over `airc-ipc
 ## Follow-up PRs
 
 1. **continuum**: L1-6 Phase B — peer-pubkey lookup via L1-4's `presence:peer-manifest` and `signing_pubkey_hex`.
-2. **continuum/airc**: cursor contract upgrade. `airc-ipc::InboxRequest` is lamport-cursor-native; Continuum's public replay API is still event-id-cursor-shaped. The bridge handles current bounded replay, but the cross-system contract should move to `(lamport, event_id)` cursors before high-rate Continuum event streams depend on it.
+2. **continuum/airc**: cursor contract upgrade. `airc-ipc::InboxRequest` is lamport-cursor-native; Continuum's public replay API now accepts `afterCursor` and returns a cursor shaped as `(lamport, event_id)` so high-rate Continuum event streams resume from the substrate position instead of fetching a bounded page and filtering by event id.
 3. **continuum**: runtime e2e proof. Start a daemon for a temp project `.airc`, publish a Continuum realtime envelope through `AircModule::new()`, observe the attach stream republish it into `MessageBus`, and prove no CLI/stdout path participates.
