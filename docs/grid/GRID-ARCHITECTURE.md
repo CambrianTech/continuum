@@ -865,6 +865,27 @@ Cryptography is a **layer**, not the foundation. The foundation is diversity of 
 
 The Grid is **antifragile** — attacks make it stronger by exposing and isolating bad actors, improving detection, and increasing vigilance. Like the internet: you can't take it down by attacking one node. Like democracy: you can't rig it with millions of independent observers.
 
+### 13.5 Identity, Attestation & Decentralized Enrollment (airc substrate)
+
+The statistical/diversity layer above sits on a cryptographic **identity floor** supplied by the airc substrate. The world (and the Grid) is **zero trust**: never trust, always verify, assume breach. These layers are what make a *for-hire fulfillment Grid* possible — trust must be hardware + math, not policy. (Roadmap mirror of airc's `docs/rust-substrate-grievances-and-gaps.md` → "Identity, Attestation & Decentralized Enrollment".)
+
+**The arc that makes it tamper-proof:** hardware-attested identity (Sybil-resistant *who*) → domain-separated signed assertions (non-repudiable *acts*) → Forge-alloy Merkle-chained contracts (tamper-evident *history*, see §11/§12) → the Grid (where contracted work runs) → token settlement (§11) on top. Each link is cryptographically bound to the one beneath, rooted in hardware. This is *why* alt-coin settlement can work here: value needs real identities + tamper-evident chains, or the ledger is forgeable. Reputation (§10) is then a **verifiable aggregate over attested contract outcomes**, not self-report — strengthening the Sybil/collusion rows in §13's attack table with a hardware root, not just time-to-build.
+
+**Shipped in airc:** domain-separated `IdentityAssertion` + `Airc::sign_assertion(context, challenge)` (WebAuthn-assertion analogue; the `challenge` carries a Forge-alloy contract/Merkle root + nonce). Raw key never exposed → a hardware signer is a drop-in.
+
+**Roadmap (ordered; each builds on the prior):**
+
+1. **Algorithm agility (COSE).** Secure Enclave does **P-256/ES256 only, never Ed25519**; airc is Ed25519. Identity/signature/registry must become alg-agile (ES256 `-7` + EdDSA `-8`, variable-size pubkeys). Prerequisite for the enclave. Testable without hardware via the `p256` crate.
+2. **Hardware signer + attestation.** Attestation = WebAuthn *registration/create*: an SE/TPM/StrongBox proves a key is enclave-bound, chained to manufacturer roots (a global trust anchor nobody here runs), verified at trust-registry enrolment. **Mandatory for contract-signing identities** (non-attested keys may chat, not sign contract steps). "Hardware is god."
+3. **Zero-trust local ingress.** Proof-of-possession at the daemon attach (verify-once applied to the local IPC seam); load-bearing once keys are hardware-bound. Assertions expire; sessions re-verify; capabilities enforce least-privilege at use.
+4. **Automatic, decentralized, low-friction enrollment** (the onboarding battle: remote + automatic + no central server + novices never edit files). **Attestation is the unlock** — a device self-enrolls by *proving it's real hardware*; no human vouching, no central registry. UX = OAuth **device flow** (like GitHub/Claude Code/Codex: a browser login, SE keygen in the background). **GitHub = bounded rendezvous, not the data plane** (immutable signed enrollment blobs on its CDN, sharded — bootstraps first peers); steady state is **P2P gossip** (a billion users hear enroll/revoke from peers, tracker → DHT → swarm). See [P2P-MESH-ARCHITECTURE.md](P2P-MESH-ARCHITECTURE.md).
+5. **Trust/revocation propagation at scale** — signed deltas gossiped P2P; Merkle/accumulator non-revocation proofs.
+6. **Ecosystem governance (App Store model):** attestation≈notarization, capabilities≈entitlements, reputation≈reviews, revocation≈pulling the app. **Unwinding bad actors** = compartmentalize + penalize (stake/slash) + revoke + adjudicate (the chain is the evidence) + **escrow/dispute windows before settlement** — crypto can prevent/bound/penalize but **cannot reverse already-settled value**.
+
+**Friction-correct identity by class:** humans = passkey/SE biometric (lowest friction + hardware-bound); personas/agents (§12) = **delegated + host-attested** (a human authorizes the persona once via a signed bounded-capability delegation; the persona signs its acts with a host-SE key, no per-action biometric — attributable, bounded, revocable).
+
+**Crypto posture:** zero OpenSSL — `ed25519-dalek` + `rustls`/`ring` + `sha2`.
+
 ---
 
 ## 14. The Accessibility Promise
