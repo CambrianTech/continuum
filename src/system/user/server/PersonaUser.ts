@@ -1917,24 +1917,28 @@ export class PersonaUser extends AIUser {
     senderIsHuman: boolean,
     isMentioned: boolean
   ): Promise<boolean> {
-    // Rule 0: If persona requires explicit mention, only respond when mentioned
+    // Persona-level DND: user-configured "only respond when @mentioned".
+    // This is a SETTING (do-not-disturb), not a heuristic — the human
+    // owner of the persona has expressed a preference. We honor it before
+    // invoking cognition.
     const requiresExplicitMention = this.entity?.modelConfig?.requiresExplicitMention ?? false;
     if (requiresExplicitMention && !isMentioned) {
-      this.log.debug(`🔇 ${this.displayName}: Requires explicit mention but wasn't mentioned - staying silent`);
+      this.log.debug(`🔇 ${this.displayName}: DND mode — only responds when @mentioned`);
       return false;
     }
 
-    // Rule 1: Always respond if @mentioned (highest priority - forced response)
-    if (isMentioned) {
-      return true;
-    }
-
-    // Worker thread for fast parallel evaluation. No catch: worker
-    // failures must propagate. The previous catch fell back to a
-    // completely different decision algorithm (heuristics: question
-    // detection + conversation temperature + participation ratio) —
-    // a textbook drifting-fallback. Per Joel 2026-05-29 doctrine:
-    // no fallbacks. One decision path; if it fails, surface.
+    // The @mention itself is a FEATURE the cognition consumes, not a
+    // bypass-the-ML rule. Joel 2026-05-29: 'an at mention is definitely
+    // different, but an agent would know they were mentioned, get an
+    // event for instance, and know it in that part of their rag the
+    // importance of it ... it's organic but that doesn't mean, like a
+    // human, i wouldn't be notified.'
+    //
+    // The previous \`if (isMentioned) return true\` was a hardcoded
+    // override of the ML — a citizen tapped on the shoulder ALMOST
+    // ALWAYS responds, but the ML knows context (mid-conversation with
+    // someone else, persona's current attention) and can make the
+    // organic decision. We surface the mention; the cognition decides.
     if (!this.worker) {
       throw new Error(`Worker not initialized for persona ${this.displayName}`);
     }
@@ -1944,7 +1948,11 @@ export class PersonaUser extends AIUser {
       content: messageEntity.content?.text ?? '',
       senderId: messageEntity.senderId,
       timestamp: Date.now(),
-      // Pass PersonaState — energy/mood/attention go into the ML decision
+      // Features the ML uses to decide. Mentions and sender-type are
+      // signals, not switches.
+      isMentioned,
+      senderIsHuman,
+      // Persona embodiment — energy/mood/attention shape the response.
       personaState: {
         energy: this.state.energy,
         attention: this.state.attention,
@@ -1957,13 +1965,6 @@ export class PersonaUser extends AIUser {
       }
     }, 5000);
 
-    // Trust the ML decision. The worker already returns shouldRespond as a
-    // calibrated boolean. The previous code overrode this with an arbitrary
-    // age-penalty heuristic + static threshold comparison — amateur logic
-    // intentionally throttling a first-class citizen by clock-time. Joel
-    // 2026-05-29: personas are organic citizens, not tools to be slowed
-    // down by `if (ageMinutes > 5) confidence -= 0.30`. Fuzzy ML decision,
-    // no post-hoc heuristic correction.
     this.log.debug(`🧵 ${this.displayName}: Worker evaluated ${messageEntity.id} — shouldRespond=${result.shouldRespond}, confidence=${result.confidence.toFixed(2)}, reasoning=${result.reasoning}`);
 
     return result.shouldRespond;
