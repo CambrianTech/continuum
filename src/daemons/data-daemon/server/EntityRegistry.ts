@@ -82,7 +82,6 @@ import { PersonaRAGContextEntity } from '../../../system/data/entities/PersonaRA
 import { TimelineEventEntity } from '../../../system/data/entities/TimelineEventEntity';
 import { FeedbackEntity } from '../../../system/data/entities/FeedbackEntity';
 import { CallEntity } from '../../../system/data/entities/CallEntity';
-import { SocialCredentialEntity } from '../../../system/social/shared/SocialCredentialEntity';
 import { HandleEntity } from '../../../system/data/entities/HandleEntity';
 import { SkillEntity } from '../../../system/data/entities/SkillEntity';
 import { AcademySessionEntity } from '../../../system/genome/entities/AcademySessionEntity';
@@ -149,7 +148,6 @@ export function initializeEntityRegistry(): void {
   new TimelineEventEntity();
   new FeedbackEntity();
   new CallEntity();
-  new SocialCredentialEntity();
   new HandleEntity();
   new SkillEntity();
   new AcademySessionEntity();
@@ -208,7 +206,6 @@ export function initializeEntityRegistry(): void {
   registerEntity(TimelineEventEntity.collection, TimelineEventEntity);
   registerEntity(FeedbackEntity.collection, FeedbackEntity);
   registerEntity(CallEntity.collection, CallEntity);
-  registerEntity(SocialCredentialEntity.collection, SocialCredentialEntity);
   registerEntity(HandleEntity.collection, HandleEntity);
   registerEntity(SkillEntity.collection, SkillEntity);
   registerEntity(AcademySessionEntity.collection, AcademySessionEntity);
