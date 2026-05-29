@@ -928,18 +928,16 @@ export class PersonaUser extends AIUser {
 
     // STEP 3: Update status to 'online' in database.
     // ORM.update() auto-emits 'data:users:updated' → UI updates status indicators.
-    // This is the proof-of-life signal: if initialize() completes, the persona is alive.
-    try {
-      await ORM.update<UserEntity>(
-        COLLECTIONS.USERS, this.id,
-        { status: 'online' as const, lastActiveAt: new Date() },
-        false, // don't increment version for status change
-        'default'
-      );
-      this.log.info(`🟢 ${this.displayName}: Status → online`);
-    } catch (e) {
-      this.log.warn(`⚠️ ${this.displayName}: Failed to update status to online: ${e}`);
-    }
+    // This IS the proof-of-life signal — if the write silently fails the
+    // persona is registered as alive in memory but invisible to anyone
+    // observing the DB. No catch: status write must succeed or init fails.
+    await ORM.update<UserEntity>(
+      COLLECTIONS.USERS, this.id,
+      { status: 'online' as const, lastActiveAt: new Date() },
+      false, // don't increment version for status change
+      'default'
+    );
+    this.log.info(`🟢 ${this.displayName}: Status → online`);
 
     // Start RTOS subprocesses
     // Hippocampus MUST init first — it opens longterm.db and provides the DB handle.
@@ -952,17 +950,15 @@ export class PersonaUser extends AIUser {
     // via live reference, CognitionLogger has it via registerDbHandle().
     await this.limbic!.ensureDbReady();
 
-    // Retry corpus load if initial attempt was empty (startup race: schema didn't exist yet)
+    // Retry corpus load if initial attempt was empty (startup race: schema
+    // didn't exist yet). No catch: Hippocampus has now created the schema,
+    // so a failure here is real corruption, not a race. Surface it.
     if (this._rustCognition && this._corpusLoadedEmpty) {
-      try {
-        const { memories, events } = await this.loadCorpusFromORM();
-        if (memories.length > 0 || events.length > 0) {
-          const corpusResult = await this._rustCognition.memoryLoadCorpus(memories, events);
-          this.log.info(`${this.displayName}: Corpus reloaded post-Hippocampus — ${corpusResult.memory_count} memories, ${corpusResult.timeline_event_count} events`);
-          this._corpusLoadedEmpty = false;
-        }
-      } catch (error) {
-        this.log.warn(`${this.displayName}: Corpus reload post-Hippocampus failed:`, error);
+      const { memories, events } = await this.loadCorpusFromORM();
+      if (memories.length > 0 || events.length > 0) {
+        const corpusResult = await this._rustCognition.memoryLoadCorpus(memories, events);
+        this.log.info(`${this.displayName}: Corpus reloaded post-Hippocampus — ${corpusResult.memory_count} memories, ${corpusResult.timeline_event_count} events`);
+        this._corpusLoadedEmpty = false;
       }
     }
 
@@ -1158,61 +1154,52 @@ export class PersonaUser extends AIUser {
    */
   private async autoJoinGeneralRoom(): Promise<void> {
     if (!this.client) {
-      this.log.warn(`⚠️ ${this.displayName}: Cannot auto-join general room - no client available`);
+      throw new Error(`Cannot auto-join general room for ${this.displayName}: no client available`);
+    }
+
+    // No catch: a persona that silently fails to join the general room is
+    // invisible to the default space. The previous swallow let init complete
+    // looking fine while leaving the persona absent. Per Joel 2026-05-29:
+    // no fallbacks.
+    const queryResult = await ORM.query<RoomEntity>({
+      collection: COLLECTIONS.ROOMS,
+      filter: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
+    }, 'default');
+
+    if (!queryResult.success || !queryResult.data?.length) {
+      throw new Error(`General room not found — cannot auto-join ${this.displayName}`);
+    }
+
+    const generalRoomRecord = queryResult.data[0];
+    if (!generalRoomRecord) {
+      throw new Error(`General room query returned malformed record for ${this.displayName}`);
+    }
+
+    const generalRoom = generalRoomRecord.data;
+
+    // Check if already a member
+    const isMember = generalRoom.members?.some((m: { userId: UUID }) => m.userId === this.id);
+    if (isMember) {
+      this.log.debug(`✅ ${this.displayName}: Already member of general room`);
       return;
     }
 
-    try {
-      // Query for general room using ORM.query (server-side only)
-      const queryResult = await ORM.query<RoomEntity>({
-        collection: COLLECTIONS.ROOMS,
-        filter: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
-      }, 'default');
+    // Add self to members
+    const updatedMembers = [
+      ...(generalRoom.members ?? []),
+      { userId: this.id, role: 'member' as const, joinedAt: new Date() }
+    ];
 
-      if (!queryResult.success || !queryResult.data?.length) {
-        this.log.warn(`⚠️ ${this.displayName}: General room not found - cannot auto-join`);
-        return;
-      }
+    await ORM.update<RoomEntity>(
+      COLLECTIONS.ROOMS,
+      generalRoom.id,
+      { members: updatedMembers },
+      true,
+      'default'
+    );
 
-      const generalRoomRecord = queryResult.data[0];
-      if (!generalRoomRecord) {
-        return;
-      }
-
-      const generalRoom = generalRoomRecord.data;
-
-      // Check if already a member
-      const isMember = generalRoom.members?.some((m: { userId: UUID }) => m.userId === this.id);
-      if (isMember) {
-        this.log.debug(`✅ ${this.displayName}: Already member of general room`);
-        return;
-      }
-
-      // Add self to members (just updating the entity, not adding subscriptions)
-      const updatedMembers = [
-        ...(generalRoom.members ?? []),
-        {
-          userId: this.id,
-          role: 'member' as const,
-          joinedAt: new Date()
-        }
-      ];
-
-      // Update room with new member using ORM.update
-      await ORM.update<RoomEntity>(
-        COLLECTIONS.ROOMS,
-        generalRoom.id,
-        { members: updatedMembers },
-        true,
-        'default'
-      );
-
-      this.log.info(`✅ ${this.displayName}: Auto-joined general room (added to members array)`);
-      // Reload my rooms to pick up the change
-      await this.loadMyRooms();
-    } catch (error) {
-      this.log.error(`❌ ${this.displayName}: Error auto-joining general room:`, error);
-    }
+    this.log.info(`✅ ${this.displayName}: Auto-joined general room (added to members array)`);
+    await this.loadMyRooms();
   }
 
   /**
@@ -2103,17 +2090,16 @@ export class PersonaUser extends AIUser {
   async shutdown(): Promise<void> {
     // Update status to 'offline' FIRST, before tearing down event system.
     // ORM.update() auto-emits 'data:users:updated' → UI updates status indicators.
-    try {
-      await ORM.update<UserEntity>(
-        COLLECTIONS.USERS, this.id,
-        { status: 'offline' as const },
-        false, // don't increment version for status change
-        'default'
-      );
-      this.log.info(`🔴 ${this.displayName}: Status → offline`);
-    } catch (e) {
-      this.log.warn(`⚠️ ${this.displayName}: Failed to update status to offline: ${e}`);
-    }
+    // No catch: silent failure here leaves the persona showing 'online' in
+    // the DB forever after shutdown. Inconsistent state is worse than a
+    // noisy failure.
+    await ORM.update<UserEntity>(
+      COLLECTIONS.USERS, this.id,
+      { status: 'offline' as const },
+      false, // don't increment version for status change
+      'default'
+    );
+    this.log.info(`🔴 ${this.displayName}: Status → offline`);
 
     // Unregister Rust bridge from PersonaMessageGate to prevent leak
     PersonaMessageGate.unregisterRustBridge(this._rustCognition);
