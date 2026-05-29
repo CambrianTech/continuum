@@ -1,14 +1,16 @@
 /**
  * PersonaMessageEvaluator - Handles message evaluation and response decision for PersonaUser
  *
- * REFACTORING: Extracted from PersonaUser.ts (lines 566-1869)
- * Pure function extraction - no behavioral changes
+ * This module orchestrates the response flow:
+ * - Rust fullEvaluate (ALL pre-response gates in one IPC call)
+ * - Response coordination (turn claiming)
+ * - Cognition-based response planning + execution
+ * - Training signal extraction (awaited, not fire-and-forget)
  *
- * This module contains the core message evaluation logic:
- * - Cognition-based response planning
- * - LLM-based gating decisions
- * - Heuristic fallbacks
- * - Response coordination
+ * No heuristic fallbacks. Per Joel 2026-05-29: the cognition decides, the
+ * orchestration surfaces failures. Decision-time errors default to silent
+ * (don't respond) — see evaluateShouldRespond's outer catch — but that's
+ * a safe default, not a second decision algorithm.
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
@@ -90,9 +92,8 @@ export type GatingResult = GatingRespondResult | GatingSilentResult;
  *
  * Handles:
  * - Cognition-based response planning (with SelfState, WorkingMemory)
- * - Message gating (should respond?)
+ * - Message gating via Rust fullEvaluate (ALL gates in one IPC call)
  * - Response coordination (with other AIs)
- * - Heuristic scoring and fallbacks
  */
 export class PersonaMessageEvaluator {
   private readonly trainingSignalExtractor: PersonaTrainingSignalExtractor;
@@ -190,11 +191,13 @@ export class PersonaMessageEvaluator {
     // ECHO CHAMBER: Now handled by Rust Gate 6 inside fullEvaluate() above.
     // No separate TS-side check needed — Rust checks echo chamber atomically.
 
-    // SIGNAL DETECTION: Analyze message content for training signals
-    // Fire-and-forget - AI classifier determines if content is feedback
-    this.detectAndBufferTrainingSignal(messageEntity).catch(err => {
-      this.log(`⚠️ ${this.personaUser.displayName}: Signal detection failed (non-fatal):`, err);
-    });
+    // SIGNAL DETECTION: Analyze message content for training signals.
+    // Awaited (was fire-and-forget) — silent failure here means the persona
+    // misses learning signals. If it throws, the outer catch in
+    // evaluateAndPossiblyRespondWithCognition turns it into silent-on-error
+    // (the correct default for evaluation failure). Per Joel 2026-05-29:
+    // no fallbacks.
+    await this.detectAndBufferTrainingSignal(messageEntity);
 
     // STEP 1: Create Task from message
     let t0 = Date.now();
@@ -669,9 +672,10 @@ export class PersonaMessageEvaluator {
     // Signal conversation activity (warms room — active conversation stays alive)
     getChatCoordinator().onMessageServiced(messageEntity.roomId, this.personaUser.id);
 
-    // Track response for rate limiting (Rust is sole authority)
-    this.personaUser.rustCognition.trackResponse(messageEntity.roomId)
-      .catch(err => this.log(`⚠️ Rust trackResponse failed (non-fatal): ${err}`));
+    // Track response for rate limiting. Rust is sole authority — if this
+    // fails the rate counter is wrong and the persona could flood. Awaited,
+    // not fire-and-forget; no swallow. Per Joel 2026-05-29: no fallbacks.
+    await this.personaUser.rustCognition.trackResponse(messageEntity.roomId);
 
     // PHASE 2: Track activity in PersonaState (energy depletion, mood calculation)
     // Recalculate priority to estimate complexity (higher priority = more engaging conversation)
