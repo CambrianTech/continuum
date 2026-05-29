@@ -720,9 +720,8 @@ export class PersonaUser extends AIUser {
     // Eliminates ALL lookup functions (getContextWindow, isSlowLocalModel, etc).
     //
     // No catch: if the adapter can't answer, init MUST fail loud. The previous
-    // "Non-fatal — Lookup fallback remains" comment lied — the lookup methods
-    // it referred to are themselves what this call is meant to replace.
-    // Per Joel 2026-05-29: no fallbacks.
+    // "Non-fatal — Lookup remains" comment was lying — the lookup methods it
+    // referred to are themselves what this call replaces.
     const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
     const ipc = new RustCoreIPCClient(getContinuumCoreSocketPath());
     await ipc.connect();
@@ -762,8 +761,8 @@ export class PersonaUser extends AIUser {
     // Also wires the bridge to inbox for Rust-backed channel routing.
     // No catch: a persona without Rust cognition is a brain-dead citizen.
     // The previous "Don't throw - let persona initialize, but message
-    // handling will fail loudly" semantic created zombie personas. Per
-    // Joel 2026-05-29: no fallbacks. Init must complete or fail loud.
+    // handling will fail loudly" semantic created zombie personas. Init
+    // must complete or fail loud.
     {
       // Phase A: Rust bridge must init first — everything else depends on it
       await this._rustCognition?.initialize();
@@ -1115,9 +1114,9 @@ export class PersonaUser extends AIUser {
   private async wireGenomeToProvider(retryCount: number = 0, maxRetries: number = 5): Promise<void> {
     // Wait for AIProviderDaemon init with exponential backoff (startup race).
     // No final-bailout-stub-mode: if the daemon never initializes, persona
-    // can't get LoRA adapters, can't function. Per Joel 2026-05-29: no
-    // fallbacks. The previous "running in STUB MODE" was a textbook
-    // dead-code path masquerading as "still working."
+    // can't get LoRA adapters, can't function. The previous "running in
+    // STUB MODE" was a textbook dead-code path masquerading as "still
+    // working."
     if (!AIProviderDaemon.isInitialized()) {
       if (retryCount >= maxRetries) {
         throw new Error(
@@ -1159,8 +1158,7 @@ export class PersonaUser extends AIUser {
 
     // No catch: a persona that silently fails to join the general room is
     // invisible to the default space. The previous swallow let init complete
-    // looking fine while leaving the persona absent. Per Joel 2026-05-29:
-    // no fallbacks.
+    // looking fine while leaving the persona absent.
     const queryResult = await ORM.query<RoomEntity>({
       collection: COLLECTIONS.ROOMS,
       filter: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
@@ -1215,9 +1213,9 @@ export class PersonaUser extends AIUser {
   private async catchUpOnRecentMessages(): Promise<void> {
     // No catch: catch-up failures must surface. The previous "non-fatal"
     // swallow meant the persona started up looking healthy with missed
-    // messages silently dropped. Per Joel 2026-05-29 doctrine: no
-    // fallbacks. A throw here will be caught by the caller's circuit
-    // breaker, which is the correct behavior for an init step.
+    // messages silently dropped. A throw here will be caught by the
+    // caller's circuit breaker, which is the correct behavior for an
+    // init step.
     const roomIds = Array.from(this.myRoomIds);
     if (roomIds.length === 0) {
       this.log.debug(`⏭️ ${this.displayName}: No rooms to catch up on`);
@@ -1323,8 +1321,7 @@ export class PersonaUser extends AIUser {
     // the structural progress guard. If it fails silently, the persona will
     // re-process the same message every tick cycle (Joel verified bug
     // 2026-04-20: stranded items, zero progression). Both the success-flag
-    // check AND the catch were dropping that failure on the floor. Per
-    // Joel 2026-05-29: no fallbacks.
+    // check AND the catch were dropping that failure on the floor.
     const result = await this.storage.save(this.state);
     if (!result.success) {
       throw new Error(`Bookmark save failed for ${this.displayName} (stateId=${this.state.id}, roomId=${roomId}): ${result.error}`);

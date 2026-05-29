@@ -254,10 +254,9 @@ export class PersonaAutonomousLoop {
 
     // Activate LoRA adapter for messages via the Rust domain classifier.
     // No silent swallow: classify failures propagate to the circuit breaker
-    // (the loop's own catch at runServiceLoop). No "no-bridge" fallback:
+    // (the loop's own catch at runServiceLoop). No "no-bridge" branch:
     // if the Rust bridge isn't available, that's a real init bug to surface,
-    // not a state to paper over with item.domain. Per Joel 2026-05-29
-    // doctrine: no fallbacks.
+    // not a state to paper over with item.domain.
     if (item.type === 'message' && item.content) {
       const bridge = this.personaUser.rustCognitionBridge;
       if (!bridge) {

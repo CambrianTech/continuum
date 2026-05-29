@@ -7,7 +7,7 @@
  * - Cognition-based response planning + execution
  * - Training signal extraction (awaited, not fire-and-forget)
  *
- * No heuristic fallbacks. Per Joel 2026-05-29: the cognition decides, the
+ * No heuristic gates. Per Joel 2026-05-29: the cognition decides, the
  * orchestration surfaces failures. Decision-time errors default to silent
  * (don't respond) — see evaluateShouldRespond's outer catch — but that's
  * a safe default, not a second decision algorithm.
@@ -195,8 +195,7 @@ export class PersonaMessageEvaluator {
     // Awaited (was fire-and-forget) — silent failure here means the persona
     // misses learning signals. If it throws, the outer catch in
     // evaluateAndPossiblyRespondWithCognition turns it into silent-on-error
-    // (the correct default for evaluation failure). Per Joel 2026-05-29:
-    // no fallbacks.
+    // (the correct default for evaluation failure).
     await this.detectAndBufferTrainingSignal(messageEntity);
 
     // STEP 1: Create Task from message
@@ -674,7 +673,7 @@ export class PersonaMessageEvaluator {
 
     // Track response for rate limiting. Rust is sole authority — if this
     // fails the rate counter is wrong and the persona could flood. Awaited,
-    // not fire-and-forget; no swallow. Per Joel 2026-05-29: no fallbacks.
+    // not fire-and-forget; no swallow.
     await this.personaUser.rustCognition.trackResponse(messageEntity.roomId);
 
     // PHASE 2: Track activity in PersonaState (energy depletion, mood calculation)
@@ -962,7 +961,7 @@ export class PersonaMessageEvaluator {
         ).catch(err => this.log(`⚠️ Error event emit failed: ${err}`));
       }
 
-      // Error in evaluation = SILENT. No fallback guessing.
+      // Error in evaluation = SILENT. No guessing path.
       return {
         shouldRespond: false as const,
         confidence: 0,
