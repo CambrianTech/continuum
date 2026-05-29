@@ -816,29 +816,28 @@ export class PersonaResponseGenerator {
     if (!this.trainingAccumulator) return;
     const accumulator = this.trainingAccumulator;
     const bridge = this.rustCognitionBridge;
-    const fallbackDomain = this.inferTrainingDomain(originalMessage);
+    // No bridge → no Rust classifier → skip training capture. The previous
+    // path inferred a domain via substring-matching ('```' → 'code',
+    // 'teach' → 'teaching', else 'conversation') and used it as a silent
+    // backup when the ML failed. Heuristic-on-a-citizen, exactly what
+    // Joel 2026-05-29 ruled out. Skipping a single training event is
+    // better than poisoning the corpus with a guessed label.
+    if (!bridge) return;
     const inputText = originalMessage.content.text ?? '';
 
     (async (): Promise<void> => {
-      let domain = fallbackDomain;
-      let qualityRating: number | undefined;
-      if (bridge) {
-        try {
-          const classification = await bridge.classifyDomain(inputText);
-          domain = classification.domain;
-          bridge.recordActivity(domain, true).catch(() => {});
-          qualityRating = (await bridge.scoreInteraction(inputText, finalText)).score;
-        } catch { /* fallback domain already set */ }
-      }
+      const classification = await bridge.classifyDomain(inputText);
+      await bridge.recordActivity(classification.domain, true);
+      const qualityRating = (await bridge.scoreInteraction(inputText, finalText)).score;
       await accumulator.captureInteraction({
         roleId: this.personaId,
         personaId: this.personaId,
-        domain,
+        domain: classification.domain,
         input: inputText,
         output: finalText,
         qualityRating,
       });
-    })().catch(err => this.log(`⚠️ Failed to capture training: ${err}`));
+    })().catch(err => this.log(`❌ Training capture failed: ${err}`));
   }
 
   private recordFitness(generateStartTime: number): void {
@@ -891,17 +890,6 @@ export class PersonaResponseGenerator {
     }
 
     return { success: false, error: errorMsg, storedToolResultIds };
-  }
-
-  private inferTrainingDomain(message: ProcessableMessage): string {
-    const text = message.content.text ?? '';
-    if (text.includes('```') || text.includes('function ') || text.includes('import ') || text.includes('const ')) {
-      return 'code';
-    }
-    if (text.toLowerCase().includes('teach') || text.toLowerCase().includes('learn') || text.toLowerCase().includes('exam')) {
-      return 'teaching';
-    }
-    return 'conversation';
   }
 
   private timestampToNumber(timestamp: Date | number | string | undefined): number {
