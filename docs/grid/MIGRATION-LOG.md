@@ -9,6 +9,7 @@ Tracks per-module decisions in the migration from TS-coupled persona infrastruct
 - **TS is widgets + config UX**, one interface among many. Pure-Rust forms must exist (AR, headless grid persona on a 970, OpenClaw).
 - **Commands are kernel-level**, compose, used by clients AND the system itself. Rust-implemented, ts-rs-bound, generator-authored.
 - **Commands ARE tool calls.** One executor surface for: (a) persona LLM tool-use, (b) UI command invocation, (c) `./jtag` CLI. The shape the model emits and the shape the UI emits both dispatch to the same Rust executor. No parallel paths.
+- **Commands compose across the grid via airc.** A command dispatched on the MacBook Air can route to a 5090 box's executor over airc and stream results back via ack/promises/async. So `inference/generate` runs *wherever the GPU lives*, not just locally. **This is why TS-locked commands break the architecture** — they can only run on nodes with nodejs. Pure-Rust commands run on the 970, on a Raspberry Pi, on a friend's machine, inside an AR headset's compute.
 - **Migrate, don't blindly delete.** Each module classified before action.
 
 ## Per-target classification
@@ -132,9 +133,32 @@ jtag CLI → Commands.execute → same Rust CommandExecutor
 
 Rust `command_executor.rs` lines 49–61: tries the Rust ModuleRegistry first, routes to TS via `/tmp/jtag-command-router.sock` if the command isn't Rust-implemented.
 
+### Grid composability (Joel 2026-05-29 follow-up)
+
+Commands aren't just composable within ONE process — they compose across the
+GRID via airc. The executor needs to be able to dispatch a command to a peer
+node and get the result back (airc's ack/promises/async machinery is for this).
+
+Implications:
+- A persona running on the MacBook Air can invoke `inference/generate` and have
+  it execute on the 5090 box, returning the result over airc. The persona
+  doesn't care where it ran.
+- The 3x1080ti box hosts training. The 5090 hosts heavy inference. The 970 can
+  host smaller models. The MacBook Air can dispatch + consume but rarely
+  computes.
+- **Pure-Rust commands work on any node.** TS-locked commands work only on
+  nodes with nodejs. This is THE reason the migration matters — it unlocks
+  every node form (headless 970, Raspberry Pi, AR headset compute, friend's
+  machine) to participate.
+- The current `command_executor.rs` routes Rust-vs-TS via Unix socket. The
+  grid extension routes local-vs-remote via airc. The shape is the same — a
+  dispatcher that picks the right backend.
+
 ### So what's the migration target?
 
-Not "build the unified executor." It's already built. The real targets:
+Not "build the unified executor." It's already built (locally). Grid-extension
+of it is the next architectural piece (likely peer's lane via airc). The TS-side
+migration targets:
 
 1. **Push more command implementations into Rust.** The ~15 Rust modules cover infrastructure (code, gpu, embedding, etc.) but persona-shaped concerns (cognition gates, training-signal classification, response generation) are still TS-implemented at the *body* of each command, even though the Rust path can route to them.
 
