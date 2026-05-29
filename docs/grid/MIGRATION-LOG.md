@@ -8,6 +8,7 @@ Tracks per-module decisions in the migration from TS-coupled persona infrastruct
 - **No amateur heuristics on first-class citizens.** Substring matching, magic-number arithmetic, time-decay throttling — all violate the citizen-of-continuum framing.
 - **TS is widgets + config UX**, one interface among many. Pure-Rust forms must exist (AR, headless grid persona on a 970, OpenClaw).
 - **Commands are kernel-level**, compose, used by clients AND the system itself. Rust-implemented, ts-rs-bound, generator-authored.
+- **Commands ARE tool calls.** One executor surface for: (a) persona LLM tool-use, (b) UI command invocation, (c) `./jtag` CLI. The shape the model emits and the shape the UI emits both dispatch to the same Rust executor. No parallel paths.
 - **Migrate, don't blindly delete.** Each module classified before action.
 
 ## Per-target classification
