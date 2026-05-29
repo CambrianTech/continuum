@@ -783,8 +783,12 @@ export class PersonaUser extends AIUser {
 
     // STEP 1.5.1: Initialize Rust cognition bridge (connects to continuum-core IPC)
     // This enables fast-path decisions (<1ms) for should-respond, priority, deduplication
-    // Also wires the bridge to inbox for Rust-backed channel routing
-    try {
+    // Also wires the bridge to inbox for Rust-backed channel routing.
+    // No catch: a persona without Rust cognition is a brain-dead citizen.
+    // The previous "Don't throw - let persona initialize, but message
+    // handling will fail loudly" semantic created zombie personas. Per
+    // Joel 2026-05-29: no fallbacks. Init must complete or fail loud.
+    {
       // Phase A: Rust bridge must init first — everything else depends on it
       await this._rustCognition?.initialize();
       if (this._rustCognition) {
@@ -862,26 +866,21 @@ export class PersonaUser extends AIUser {
 
         await Promise.all(parallelTasks);
       }
-    } catch (error) {
-      this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);
-      // Don't throw - let persona initialize, but message handling will fail loudly
     }
 
-    // STEP 1.6: Register with ResourceManager for holistic resource allocation
-    try {
-      const { getResourceManager } = await import('../../resources/shared/ResourceManager.js');
-      getResourceManager().registerAdapter(this.id, this.displayName);
-      this.log.info(`🔧 ${this.displayName}: Registered with ResourceManager`);
-    } catch (error) {
-      this.log.warn(`⚠️  ${this.displayName}: Could not register with ResourceManager:`, error);
-      // Non-fatal: isAvailable() will default to simple worker ready check
-    }
+    // STEP 1.6: Register with ResourceManager for holistic resource allocation.
+    // No catch: a persona that ISN'T registered with the resource manager
+    // can't be allocated GPU/memory/budget — it's a dead citizen.
+    const { getResourceManager } = await import('../../resources/shared/ResourceManager.js');
+    getResourceManager().registerAdapter(this.id, this.displayName);
+    this.log.info(`🔧 ${this.displayName}: Registered with ResourceManager`);
 
     // STEP 1.7: Wire AI provider to genome for real LoRA adapter loading (genome vision)
     // This enables PersonaGenome.activateSkill() → CandleAdapter.applySkill() → InferenceWorker.loadAdapter()
-    // Without this, adapters run in stub mode (tracking state only, no actual GPU loading)
-    // NOTE: AIProviderDaemon may not be initialized yet (race condition), so use deferred wiring
-    this.wireGenomeToProvider();
+    // AIProviderDaemon may not be initialized yet (race condition); the method
+    // waits with exponential backoff. Now awaited — previously fire-and-forget,
+    // which masked stub-mode init failures as "fine."
+    await this.wireGenomeToProvider();
 
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
@@ -1141,37 +1140,35 @@ export class PersonaUser extends AIUser {
    * @param retryCount - Number of retries attempted (default 0)
    * @param maxRetries - Maximum retry attempts (default 5)
    */
-  private wireGenomeToProvider(retryCount: number = 0, maxRetries: number = 5): void {
-    // Check if daemon is initialized
+  private async wireGenomeToProvider(retryCount: number = 0, maxRetries: number = 5): Promise<void> {
+    // Wait for AIProviderDaemon init with exponential backoff (startup race).
+    // No final-bailout-stub-mode: if the daemon never initializes, persona
+    // can't get LoRA adapters, can't function. Per Joel 2026-05-29: no
+    // fallbacks. The previous "running in STUB MODE" was a textbook
+    // dead-code path masquerading as "still working."
     if (!AIProviderDaemon.isInitialized()) {
-      if (retryCount < maxRetries) {
-        // Schedule retry with exponential backoff (2s, 4s, 8s, 16s, 32s)
-        const delay = Math.pow(2, retryCount + 1) * 1000;
-        this.logger.enqueueLog('cognition.log', `🧬 AIProviderDaemon not ready, retry ${retryCount + 1}/${maxRetries} in ${delay}ms`);
-        setTimeout(() => this.wireGenomeToProvider(retryCount + 1, maxRetries), delay);
-      } else {
-        this.logger.enqueueLog('cognition.log', `⚠️ Genome wiring FAILED after ${maxRetries} retries — running in STUB MODE`);
+      if (retryCount >= maxRetries) {
+        throw new Error(
+          `Genome wiring failed for ${this.displayName}: AIProviderDaemon not initialized after ${maxRetries} retries`
+        );
       }
-      return;
+      const delay = Math.pow(2, retryCount + 1) * 1000;
+      this.logger.enqueueLog('cognition.log', `🧬 AIProviderDaemon not ready, retry ${retryCount + 1}/${maxRetries} in ${delay}ms`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return this.wireGenomeToProvider(retryCount + 1, maxRetries);
     }
 
-    // Daemon is ready, wire the genome
-    try {
-      // Training/LoRA composition still uses the Candle adapter. Runtime chat
-      // inference does not.
-      const candleAdapter = AIProviderDaemon.getAdapter('candle');
-      this.logger.enqueueLog('cognition.log', `🧬 wireGenomeToProvider — trainingAdapter=${candleAdapter ? 'found' : 'null'}, provider=${this.modelConfig.provider}`);
-      if (candleAdapter) {
-        this.memory.genome.setAIProvider(candleAdapter);
-        this.logger.enqueueLog('cognition.log', `🧬 Genome wired to training adapter (LoRA composition enabled)`);
-      } else {
-        this.log.warn(`⚠️ ${this.displayName}: No Candle adapter available for genome`);
-      }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      this.log.warn(`⚠️ ${this.displayName}: Could not wire genome to AI provider: ${errorMsg}`);
-      // Non-fatal: genome will run in stub mode
+    // Training/LoRA composition still uses the Candle adapter. Runtime chat
+    // inference does not. No catch: getAdapter failures are real init bugs.
+    const candleAdapter = AIProviderDaemon.getAdapter('candle');
+    this.logger.enqueueLog('cognition.log', `🧬 wireGenomeToProvider — trainingAdapter=${candleAdapter ? 'found' : 'null'}, provider=${this.modelConfig.provider}`);
+    if (!candleAdapter) {
+      throw new Error(
+        `Genome wiring failed for ${this.displayName}: no Candle adapter available (required for LoRA composition)`
+      );
     }
+    this.memory.genome.setAIProvider(candleAdapter);
+    this.logger.enqueueLog('cognition.log', `🧬 Genome wired to training adapter (LoRA composition enabled)`);
   }
 
   /**
@@ -1348,29 +1345,28 @@ export class PersonaUser extends AIUser {
    * @param messageId - Message ID for exact tracking
    */
   public async updateMessageBookmark(roomId: UUID, timestamp: Date | number, messageId: UUID): Promise<void> {
-    try {
-      const ts = typeof timestamp === 'number' ? new Date(timestamp) : timestamp;
+    const ts = typeof timestamp === 'number' ? new Date(timestamp) : timestamp;
 
-      // Update roomReadState directly (state may be plain object from DB, not class instance)
-      if (!this.state.roomReadState) {
-        this.state.roomReadState = {};
-      }
-      this.state.roomReadState[roomId] = {
-        lastReadMessageTimestamp: ts.toISOString(),
-        lastReadMessageId: messageId
-      };
-
-      // Persist state change - storage.save returns result, doesn't throw
-      const result = await this.storage.save(this.state);
-      if (!result.success) {
-        this.log.warn(`⚠️ ${this.displayName}: Bookmark save failed: ${result.error} (stateId=${this.state.id}, roomId=${roomId})`);
-      } else {
-        this.log.debug(`🔖 ${this.displayName}: Bookmark updated for room ${roomId.slice(0,8)} → ${ts.toISOString()}`);
-      }
-    } catch (error) {
-      this.log.warn(`⚠️ ${this.displayName}: Failed to update bookmark: ${error instanceof Error ? error.message : String(error)}`);
-      // Non-fatal - continue processing
+    // Update roomReadState directly (state may be plain object from DB, not class instance)
+    if (!this.state.roomReadState) {
+      this.state.roomReadState = {};
     }
+    this.state.roomReadState[roomId] = {
+      lastReadMessageTimestamp: ts.toISOString(),
+      lastReadMessageId: messageId
+    };
+
+    // Persist state change. No swallow on either path: bookmark advance is
+    // the structural progress guard. If it fails silently, the persona will
+    // re-process the same message every tick cycle (Joel verified bug
+    // 2026-04-20: stranded items, zero progression). Both the success-flag
+    // check AND the catch were dropping that failure on the floor. Per
+    // Joel 2026-05-29: no fallbacks.
+    const result = await this.storage.save(this.state);
+    if (!result.success) {
+      throw new Error(`Bookmark save failed for ${this.displayName} (stateId=${this.state.id}, roomId=${roomId}): ${result.error}`);
+    }
+    this.log.debug(`🔖 ${this.displayName}: Bookmark updated for room ${roomId.slice(0,8)} → ${ts.toISOString()}`);
   }
 
   /**
