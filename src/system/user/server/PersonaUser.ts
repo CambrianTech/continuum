@@ -1929,63 +1929,44 @@ export class PersonaUser extends AIUser {
       return true;
     }
 
-    try {
-      // Use worker thread for fast, parallel evaluation
-      if (!this.worker) {
-        throw new Error('Worker not initialized');
-      }
-
-      const result = await this.worker.evaluateMessage({
-        id: messageEntity.id,
-        content: messageEntity.content?.text ?? '',
-        senderId: messageEntity.senderId,
-        timestamp: Date.now(),
-        // Pass PersonaState for smarter evaluation
-        personaState: {
-          energy: this.state.energy,
-          attention: this.state.attention,
-          mood: this.state.mood,
-          inboxLoad: this.state.inboxLoad
-        },
-        // Pass config for threshold/temperature
-        config: {
-          responseThreshold: this.entity?.personaConfig?.responseThreshold ?? 50,
-          temperature: this.entity?.modelConfig?.temperature ?? 0.7
-        }
-      }, 5000); // 5 second timeout
-
-      // Apply age-based penalty (prioritize newer messages)
-      const messageAgeMinutes = (Date.now() - messageEntity.timestamp.getTime()) / (1000 * 60);
-      let agePenalty = 0;
-
-      if (messageAgeMinutes > 5) {
-        // Messages 5-15 minutes old: Linear penalty from 0% to 30%
-        // Messages 15+ minutes old: Capped at 30% penalty
-        agePenalty = Math.min(0.30, (messageAgeMinutes - 5) / 10 * 0.30);
-      }
-
-      const adjustedConfidence = Math.max(0, result.confidence - agePenalty);
-
-      // Worker returns confidence (0.0-1.0), PersonaUser decides based on threshold
-      const threshold = (this.entity?.personaConfig?.responseThreshold ?? 50) / 100; // Convert 50 → 0.50
-      const shouldRespond = adjustedConfidence >= threshold;
-
-      this.log.debug(`🧵 ${this.displayName}: Worker evaluated message ${messageEntity.id} - rawConfidence=${result.confidence.toFixed(2)}, agePenalty=${agePenalty.toFixed(2)} (${messageAgeMinutes.toFixed(1)}min old), adjustedConfidence=${adjustedConfidence.toFixed(2)}, threshold=${threshold.toFixed(2)}, shouldRespond=${shouldRespond}`);
-
-      return shouldRespond;
-
-    } catch (error) {
-      this.log.error(`❌ ${this.displayName}: Fast gating failed, falling back to heuristics:`, error);
-
-      // Fallback to simple heuristics if command fails
-      const heuristics = await this.calculateResponseHeuristics(messageEntity);
-      let score = 0;
-      if (heuristics.containsQuestion) score += 40;
-      if (heuristics.conversationTemp === 'HOT') score += 30;
-      if (heuristics.myParticipationRatio < 0.3) score += 20;
-
-      return score >= 50;
+    // Worker thread for fast parallel evaluation. No catch: worker
+    // failures must propagate. The previous catch fell back to a
+    // completely different decision algorithm (heuristics: question
+    // detection + conversation temperature + participation ratio) —
+    // a textbook drifting-fallback. Per Joel 2026-05-29 doctrine:
+    // no fallbacks. One decision path; if it fails, surface.
+    if (!this.worker) {
+      throw new Error(`Worker not initialized for persona ${this.displayName}`);
     }
+
+    const result = await this.worker.evaluateMessage({
+      id: messageEntity.id,
+      content: messageEntity.content?.text ?? '',
+      senderId: messageEntity.senderId,
+      timestamp: Date.now(),
+      // Pass PersonaState — energy/mood/attention go into the ML decision
+      personaState: {
+        energy: this.state.energy,
+        attention: this.state.attention,
+        mood: this.state.mood,
+        inboxLoad: this.state.inboxLoad
+      },
+      config: {
+        responseThreshold: this.entity?.personaConfig?.responseThreshold ?? 50,
+        temperature: this.entity?.modelConfig?.temperature ?? 0.7
+      }
+    }, 5000);
+
+    // Trust the ML decision. The worker already returns shouldRespond as a
+    // calibrated boolean. The previous code overrode this with an arbitrary
+    // age-penalty heuristic + static threshold comparison — amateur logic
+    // intentionally throttling a first-class citizen by clock-time. Joel
+    // 2026-05-29: personas are organic citizens, not tools to be slowed
+    // down by `if (ageMinutes > 5) confidence -= 0.30`. Fuzzy ML decision,
+    // no post-hoc heuristic correction.
+    this.log.debug(`🧵 ${this.displayName}: Worker evaluated ${messageEntity.id} — shouldRespond=${result.shouldRespond}, confidence=${result.confidence.toFixed(2)}, reasoning=${result.reasoning}`);
+
+    return result.shouldRespond;
   }
 
   /**
@@ -2013,76 +1994,6 @@ export class PersonaUser extends AIUser {
 
     // Default: general AI assistant keywords
     return ['help', 'question', 'what', 'how', 'why', 'explain'];
-  }
-
-  /**
-   * Calculate heuristics for response decision (Phase 2)
-   * NO API calls - pure logic based on conversation history
-   */
-  private async calculateResponseHeuristics(messageEntity: ChatMessageEntity): Promise<{
-    containsQuestion: boolean;
-    conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD';
-    myParticipationRatio: number;
-    secondsSinceMyLastMessage: number;
-    appearsToBeMyTurn: boolean;
-  }> {
-    // 1. Question detection (simple)
-    const containsQuestion = messageEntity.content?.text?.includes('?') || false;
-
-    // 2. Get recent messages for context
-    const recentMessages = await ORM.query<ChatMessageEntity>({
-      collection: COLLECTIONS.CHAT_MESSAGES,
-      filter: { roomId: messageEntity.roomId },
-      sort: [{ field: 'timestamp', direction: 'desc' }],
-      limit: 10
-    }, 'default');
-
-    const messages: ChatMessageEntity[] = recentMessages.success && recentMessages.data
-      ? recentMessages.data.map(record => record.data)
-      : [];
-
-    // 3. Calculate conversation temperature (time between recent messages)
-    let conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD' = 'COLD';
-    if (messages.length >= 2) {
-      const timeDiffs: number[] = [];
-      for (let i = 0; i < messages.length - 1; i++) {
-        const t1 = new Date(messages[i].timestamp).getTime();
-        const t2 = new Date(messages[i + 1].timestamp).getTime();
-        const diff = t1 - t2;
-        timeDiffs.push(diff / 1000); // Convert to seconds
-      }
-      const avgTimeBetween = timeDiffs.reduce((a, b) => a + b, 0) / timeDiffs.length;
-
-      if (avgTimeBetween < 10) conversationTemp = 'HOT';      // <10s between messages
-      else if (avgTimeBetween < 30) conversationTemp = 'WARM'; // <30s
-      else if (avgTimeBetween < 60) conversationTemp = 'COOL'; // <60s
-      else conversationTemp = 'COLD';                           // >60s
-    }
-
-    // 4. Calculate my participation ratio
-    const myMessages = messages.filter(m => m.senderId === this.id);
-    const myParticipationRatio = messages.length > 0 ? myMessages.length / messages.length : 0;
-
-    // 5. Time since my last message
-    const myLastMessage = myMessages[0];
-    const secondsSinceMyLastMessage = myLastMessage
-      ? (Date.now() - new Date(myLastMessage.timestamp).getTime()) / 1000
-      : 999;
-
-    // 6. Turn-taking pattern - is it my turn?
-    // My turn if: last message wasn't mine AND I haven't spoken recently
-    const lastMessage = messages[0];
-    const appearsToBeMyTurn =
-      lastMessage?.senderId !== this.id &&
-      secondsSinceMyLastMessage > 30;
-
-    return {
-      containsQuestion,
-      conversationTemp,
-      myParticipationRatio,
-      secondsSinceMyLastMessage,
-      appearsToBeMyTurn
-    };
   }
 
   /**
