@@ -94,3 +94,67 @@ Categories used in the audit:
 - airc PR #1084 (Phase 1.C, send-side SQLite WAL + dedup): in flight. 3.56-3.71 ms/op → 2.01-1.87 ms/op = 1.77-1.98x measured.
 - Continuum-side dual-write shim deletion (system/airc-chat/* + airc_admission.rs) waits for airc 1.C boundary.
 - 15p continuum real-workload validation owed to peer once continuum stack boots again.
+
+---
+
+## 2026-05-29 — Commands surface audit (pre-PR survey)
+
+Survey to map the migration target before doing it. Joel 2026-05-29:
+"commands are composed of commands and most code operations are tool/command
+calls. We look at these as kernel level codes we find reuse. They use each
+other and the system uses them as well... there needs to be a tool/command
+executors. Literally all of those commands are made available as tool calls
+for both the ux and the personas or you over jtag cliq."
+
+### Surface inventory
+
+- **53** top-level command directories under `src/commands/`.
+- **100** generator specs under `src/generator/specs/`. Some specs lack matching command directories (spec-without-impl); some commands lack matching specs (hand-authored before generator existed).
+- **~15** Rust modules with `command_prefixes` (in `continuum-core/src/modules/*.rs` and `continuum-core/src/runtime/*.rs`): code, avatar, logger, cognition, channel, persona_allocator, embedding, events, health, pressure_broker, persona service_module, plus the runtime layer.
+- **~15** Rust IPC mixins (`continuum-core/bindings/modules/*.ts`): base, sentinel, system_resources, tool_parsing, gpu, search, inference, plasticity, rag, voice, dataset, avatar, runtime, cognition, code.
+
+### The unification ALREADY exists
+
+The universal executor is in place. Three caller shapes funnel into it:
+
+```
+LLM tool call → AgentToolExecutor (TS — format parsing)
+              → ToolRegistry.executeTool()
+              → Commands.execute(toolName, params)  ← universal primitive
+              → Rust CommandExecutor (Rust module registry OR TS via Unix socket)
+
+UI command → Commands.execute(name, params) → same Rust CommandExecutor
+
+jtag CLI → Commands.execute → same Rust CommandExecutor
+```
+
+`ToolRegistry.executeTool` line 600 in its docstring explicitly says: "This is the 'adapter' the user mentioned - ONE function that can execute ANY command." Line 664 dispatches: `await Commands.execute(toolName, commandParams)`.
+
+Rust `command_executor.rs` lines 49–61: tries the Rust ModuleRegistry first, routes to TS via `/tmp/jtag-command-router.sock` if the command isn't Rust-implemented.
+
+### So what's the migration target?
+
+Not "build the unified executor." It's already built. The real targets:
+
+1. **Push more command implementations into Rust.** The ~15 Rust modules cover infrastructure (code, gpu, embedding, etc.) but persona-shaped concerns (cognition gates, training-signal classification, response generation) are still TS-implemented at the *body* of each command, even though the Rust path can route to them.
+
+2. **Find commands whose TS implementation IS the duplication.** A persona's cognition decision shouldn't have an LLM-tool-call form and a UI-command form with different logic — they should both invoke the same Rust function. Any TS file that's doing cognition work IS that duplication.
+
+3. **Find the spec-without-impl set.** 100 specs vs 53 command dirs and ~15 Rust modules. Some commands are aspirational; some are TS-only. Each one's classification (per the 9 categories) tells us delete vs keep vs migrate.
+
+4. **Audit `ToolRegistry.executeBuiltInTool` for what bypasses Commands.execute.** Built-in tools at line 611 short-circuit the universal dispatcher. Each built-in is suspect — if a tool is universal-ish, it should be a command. If it's truly meta (introspection of the tool set, e.g., `search_tools`), built-in is correct.
+
+5. **PersonaToolExecutor's persona-specific pre/post processing** (workspace bootstrap, media collection, cognition logging, sentinel auto-config) is core-shaped TS. Migration target: move into Rust, then the TS-side becomes the LLM-format-parsing shim and nothing else.
+
+### Decisions for the next PR
+
+The next PR is **per-spec triage**, not "delete things." For each command:
+- Has a Rust implementation? → TS-side is the form-adapter only, no logic.
+- Has only TS implementation? → Is the work core-shaped (migrate) or form-shaped (keep)?
+- Has only a spec, no implementation? → Decide: implement Rust-side, or delete the spec.
+
+Pace: write up findings as I survey, merge piece by piece. Don't try to do all 100 at once.
+
+### Anomaly noted, not addressed
+
+`ToolRegistry.executeTool` line 638: `parsedParams[key] = value; // Fallback to string`. JSON.parse fails on a complex-type param → stash raw string. This is type-coercion tolerance (under-typed input), not Joel's drifting-fallback pattern. Keep.
