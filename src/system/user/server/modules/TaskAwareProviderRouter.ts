@@ -90,8 +90,17 @@ export function getDailySpend(): { date: string; spent: number; budget: number; 
  */
 const CLOUD_REQUIRED_DOMAINS = new Set<string>([]);
 
-/** Provider fallback order for capability-demanding tasks */
-const CLOUD_PROVIDER_FALLBACK: readonly string[] = [
+/**
+ * Provider preference order for the cloud-routing path.
+ *
+ * NOT a fail-over chain. When an operator has configured cloud routing
+ * for a specific domain (CLOUD_REQUIRED_DOMAINS — empty by default per
+ * the no-fallback + zero-API-keys rules), the router picks the FIRST
+ * provider on this list that the user has actually configured keys
+ * for. So this is "which provider to try first when the operator
+ * routes to cloud," not "switch providers when one fails."
+ */
+const CLOUD_PROVIDER_PREFERENCE_ORDER: readonly string[] = [
   'deepseek',    // Best price/performance for coding
   'anthropic',   // Best reasoning
   'openai',      // Strong general
@@ -224,7 +233,7 @@ export function routeForTask(
   }
 
   // Need cloud — find the best available provider
-  for (const provider of CLOUD_PROVIDER_FALLBACK) {
+  for (const provider of CLOUD_PROVIDER_PREFERENCE_ORDER) {
     if (availableProviders.has(provider)) {
       const model = CLOUD_PROVIDER_MODELS[provider];
       const reason = domainRequiresCloud

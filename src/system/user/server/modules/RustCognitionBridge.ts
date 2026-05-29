@@ -845,11 +845,12 @@ export class RustCognitionBridge {
   // ========================================================================
 
   /**
-   * Select the best model using 4-tier priority chain:
+   * Select the best model using 4-tier priority chain (most specific to
+   * universal — not a fail-over chain; one tier is selected per call):
    * 1. Trait-specific adapter (domain → trait mapping)
    * 2. Current active adapter
    * 3. Any available trained adapter
-   * 4. Base model fallback
+   * 4. Base model (universal default — no adapters available)
    * THROWS on failure
    */
   /**
