@@ -8,16 +8,32 @@
 
 ---
 
+## Architectural ground rules (Joel directives 2026-05-29)
+
+These are non-negotiable across every layer below. They are why the migration EXISTS, not nice-to-haves.
+
+1. **Rust core; Node.js is web only.** Node.js exists for browser UI, config-loading at boot, and human UX. Nothing else. Anything that handles routing, persistence, inference, command dispatch, or persona reasoning lives in Rust (`src/workers/continuum-core/` and sibling crates). The TS layer is the thin web edge — `Commands.execute()` / `Events.emit()` calls into Rust via the existing IPC; rendering reads back.
+2. **AI persona under Rust domain.** `system/user/server/PersonaUser.ts` (2312 LOC) and its orchestrators were CPU-killing the box (V8 single-threaded loop blocking on every reasoning step, JSON marshalling per IPC). Migration target is `continuum-core/src/persona/` — much of which is already Rust (`channel_registry`, `inbox`, `evaluator`, `cognition`, `prompt_assembly`, `genome_paging`). What remains in TS is the orchestrator and dispatchers; those move. See **Layer 0** below.
+3. **GPU or fail for inference.** No CPU-only inference path; `llama` crate refuses to build on macOS without `--features metal` by design. Same for training (candle Metal/CUDA). Performant inference cannot exist without GPU acceleration; performant training even more so.
+4. **No `dyn Any` / `as_any` patterns.** Type erasure via `Any` hides the wire shape that ts-rs needs to reflect and obscures Rust performance characteristics. When a current trait requires `as_any`, that's debt — file a card to redesign the trait, don't propagate the pattern.
+5. **ts-rs is the bindings source of truth.** Rust types are canonical; TypeScript bindings are generated via `#[derive(TS)]` + `cargo test` triggering ts-rs into `shared/generated/`. NEVER hand-write a TS type that crosses the Rust↔TS boundary. The Rust struct is the schema; the TS is a projection.
+6. **Inference is llama.cpp through-and-through.** Never ollama, never suggest ollama. Candle stays for training, Orpheus TTS, and legacy backends. Inference flows through the `llama` crate against vendored llama.cpp (`src/workers/vendor/llama.cpp`).
+
+Every roadmap item below is read through these rules. Owner-suggestion text from the original draft (which still said "TS-only" for several Rust-target items) has been updated.
+
+---
+
 ## Status (auto-updateable from checkbox state)
 
 | Layer | Complete | Total | % |
 |---|---|---|---|
+| L0 Persona → Rust migration (CPU win) | 0 | 5 | 0% |
 | L1 Foundation (substrate) | 0 | 6 | 0% |
 | L2 Chat migration (chat-out-of-ORM finish) | 0 | 5 | 0% |
 | L3 Alloy refactor (Domain Extensibility) | 0 | 3 | 0% |
 | L4 Per-command opt-in (Phases A–G) | 0 | 18 | 0% |
 | L5 Patch deletion (cleanup) | 0 | 5 | 0% |
-| **OVERALL** | **0** | **37** | **0%** |
+| **OVERALL** | **0** | **42** | **0%** |
 
 ---
 
@@ -49,13 +65,20 @@
 ## Dependency graph (high-level)
 
 ```
-L1 Foundation (substrate)
-  ├── L1-1 EventClass registry
-  ├── L1-2 AircEventTransport ──────────┐
-  ├── L1-3 CommandBase.naturalScope ────┤
-  ├── L1-4 presence:peer-manifest ──────┤
-  ├── L1-5 grid-router-daemon (needs L1-3 + L1-4)
-  └── L1-6 contract event chain (needs L1-4)
+L0 Persona → Rust migration (CPU win, parallel to L1)
+  ├── L0-1 PersonaServiceModule (ServiceModule wrapper for service_cycle)
+  ├── L0-2 cognition dispatch in Rust (queue-item → response_orchestrator)
+  ├── L0-3 PersonaGenomeManager → Rust (LoRA activation in-process)
+  ├── L0-4 PersonaInbox routing in Rust (eliminate TS service-loop IPC)
+  └── L0-5 PersonaAutonomousLoop deletion (TS shell becomes thin shim)
+
+L1 Foundation (substrate) — Rust core; TS is browser projection only
+  ├── L1-1 EventClass registry (Rust types + ts-rs)
+  ├── L1-2 AircEventTransport (Rust impl; TS shim subscribes for browser)
+  ├── L1-3 CommandBase.naturalScope (Rust kernel; TS surface generated)
+  ├── L1-4 presence:peer-manifest (Rust canonical state + ts-rs view)
+  ├── L1-5 grid-router-daemon (Rust router) (needs L1-3 + L1-4)
+  └── L1-6 contract event chain (Rust signing + verify) (needs L1-4)
               │
               ▼
 L2 Chat migration (needs L1-1, L1-2)
@@ -93,66 +116,108 @@ L5 Patch deletion (interleaved with L2-L4 as upstreams complete)
 - L3 → L4-Phase-F + L4-Phase-G (non-ML alloy + distributed forge)
 - L1-6 → L4-Phase-C+ (contract chain needed for paid tiers)
 - L2-2 (UI on new events) → L2-3 (collection delete) — never delete the collection before its consumers migrate
+- L0 is independent — runs parallel to L1, no cross-dependency. PersonaUser migration unblocks the CPU on every machine the user runs continuum on, immediately.
+
+---
+
+## Layer 0: Persona → Rust migration (CPU win)
+
+**Why this layer:** the TS `PersonaUser` + its orchestrators were killing the CPU per Joel's 2026-05-29 directive. V8 single-threaded event loop blocked on every reasoning step; JSON marshalling on every IPC round-trip to Rust. With 15 personas active, the box was IPC-bound on persona logic before any inference even ran. The Rust persona implementation already exists (`continuum-core::persona::{channel_registry, inbox, evaluator, cognition, prompt_assembly, genome_paging}`) — this layer **finishes the migration that was 70% complete**, eliminating the TS-side service loops that were the actual CPU sink.
+
+**Parallel to L1:** Layer 0 is independent of the substrate work (L1) — different files, different code paths. Both can ship simultaneously.
+
+- [ ] **L0-1**: `PersonaServiceModule` — `ServiceModule` impl that owns the service cycle in-process
+  - **Scope:** `continuum-core/src/persona/service_module.rs`. Wraps `ChannelRegistry::service_cycle()` + `PersonaState` under the runtime's `ServiceModule` trait. Tick at 250ms (matches TS cadence floor) runs the cycle inside the Rust runtime, no IPC. Commands: `persona/<id>/status`, `persona/<id>/drain-now`. Circuit breaker mirrors the TS shape (5 consecutive errors → 30s cooldown).
+  - **Status:** Initial commit shipped to branch `continuum-core-airc-embed` (2026-05-29). Build verification blocked on workspace state.
+  - **Depends:** none (uses existing Rust persona modules)
+  - **Est:** 1 day (already scaffolded; needs cognition-dispatch glue from L0-2)
+  - **Done = :** module registers; tick drives `service_cycle()`; `persona/<id>/status` returns JSON snapshot; TS `PersonaAutonomousLoop` can be replaced with a thin shim that just spawns this module.
+
+- [ ] **L0-2**: Cognition dispatch in Rust — translate queue items → `response_orchestrator` input
+  - **Scope:** Replace the current TODO in `PersonaServiceModule::service_once` with real dispatch. The Rust `cognition::response_orchestrator` already exists; this is the wiring from a `ServiceCycleResult.item` (JSON value from a `Box<dyn QueueItemBehavior>`) into the orchestrator's request shape + writing the response back to the persona's output channel.
+  - **Depends:** L0-1
+  - **Est:** 2-3 days
+  - **Done = :** dispatching an inbox item runs through cognition in Rust end-to-end without a TS IPC hop; same response shape as today's TS path; integration test with a synthetic inbox item.
+
+- [ ] **L0-3**: `PersonaGenomeManager` → Rust (LoRA activation in-process)
+  - **Scope:** Move LoRA paging activation from `system/user/server/modules/PersonaGenomeManager.ts` into `continuum-core/src/persona/genome_paging.rs` (the engine already exists; the orchestration layer needs to move). Activation must be in-process so a service tick that needs a new adapter doesn't pay IPC overhead.
+  - **Depends:** L0-1 (service module is the caller)
+  - **Est:** 3-5 days
+  - **Done = :** an inbox item whose domain needs an adapter not currently active triggers paging in the Rust tick; adapter is loaded into llama crate's context; cognition dispatch uses it; no TS roundtrip on the hot path.
+
+- [ ] **L0-4**: `PersonaInbox` routing fully in Rust (eliminate TS service-loop signaling)
+  - **Scope:** Today `PersonaInbox.waitForWork()` is a TS signal that blocks the service loop. With the loop in Rust (L0-1), the waiting can be a tokio condvar/notify directly on the channel queue. Delete the TS signal plumbing once everything subscribed to it moves to the Rust path.
+  - **Depends:** L0-1 + at least one consumer migrated
+  - **Est:** 2-3 days
+  - **Done = :** Rust tick wakes immediately on enqueue; no TS-side `waitForWork` calls remain in `PersonaUser`; signal-channel plumbing in `PersonaInbox.ts` deleted.
+
+- [ ] **L0-5**: Delete `PersonaAutonomousLoop.ts` (TS shell → thin shim or full delete)
+  - **Scope:** Once L0-1 through L0-4 are live, `PersonaAutonomousLoop.ts` and the `RustCognitionBridge.serviceCycleFull()` hot-path call are obsolete. The TS PersonaUser becomes a thin shim that creates the Rust persona at startup (one IPC call) and subscribes to "persona response ready" events for widget rendering.
+  - **Depends:** L0-1 + L0-2 + L0-3 + L0-4
+  - **Est:** 1 day
+  - **Done = :** `PersonaAutonomousLoop.ts` deleted; `RustCognitionBridge.serviceCycleFull` IPC command removed; TS `PersonaUser` is < 500 LOC (down from 2312); a 15-persona profiled run shows the V8 main-thread blocking that prompted this layer is GONE.
+
+**L0 exit criteria:** all 5 items checked; a 15-persona profiled run on the Intel Mac (2017) shows V8 main-thread CPU drop measurably (target: 60%+ reduction in the persona service-loop call stack), and a single-persona response latency from inbox-enqueue to response-emit is < 50ms (down from current ~150-300ms median).
 
 ---
 
 ## Layer 1: Foundation (substrate)
 
-**Why first:** every other layer depends on these primitives. No L2-L5 PR lands before L1 is green.
+**Why first:** every other layer depends on these primitives. No L2-L5 PR lands before L1 is green. **Owner-suggestions reflect Joel's rust-core / web-only-TS directive — items that the original draft scoped as "tab-2 (TS-only)" are now Rust-primary with thin TS shims for browser concerns.**
 
 - [ ] **L1-1** (card `935a58b8-99cf-4c53-87fc-71ee543c694e`): EventClass declaration system + registry
   - **Card:** (see card on the row above)
-  - **Scope:** `src/system/events/EventClass.ts` + `EventClassRegistry.ts`. Typed event class declarations with `broadcast`, `channel`, `schemaVersion` metadata. `Events.emit()` consults registry to pick transport(s).
+  - **Scope:** `continuum-core/src/events/event_class.rs` + `event_class_registry.rs` (Rust source of truth) + `#[derive(TS)]` to emit `shared/generated/code/EventClass.ts` etc. `src/system/events/EventClass.ts` becomes a re-export of the generated types. `Events.emit()` (TS) reads the generated registry; the Rust runtime reads the same registry for cross-process traffic.
   - **Spec ref:** GRID-BUS-ARCHITECTURE §2.2 + §6.2
   - **Depends:** none
-  - **Owner suggestion:** tab-2 (TS-only)
+  - **Owner suggestion:** Rust kernel (continuum-core) + ts-rs binding pass. Browser-edge subscription wiring is the only TS-touched piece.
   - **Est:** 2-3 days
-  - **Done = :** EventClass declarations accepted; `Events.emit()` reads metadata; existing event uses continue working unchanged (backward-compat); unit tests for the registry + classifier round-trip.
+  - **Done = :** EventClass declarations live in Rust; ts-rs emits TS types; `Events.emit()` reads metadata; existing event uses continue working unchanged (backward-compat); unit tests in Rust for the registry round-trip; ts-rs-generated TS types compile against existing `Events.subscribe()` callers.
 
 - [ ] **L1-2** (card `4f4e77d9-c00a-4062-8f12-580b07752642`): AircEventTransport adapter
   - **Card:** (see card on the row above)
-  - **Scope:** `src/system/events/transports/AircEventTransport.ts`. Implements existing `EventTransport` interface. Outbound: `Events.emit()` → publishes to appropriate airc channel. Inbound: airc events past local cursor → `Events.checkWildcardSubscriptions()`. Persists cursor per-subscriber for restart-safe replay.
+  - **Scope:** Rust `continuum-core/src/airc/event_transport.rs` impls `airc_lib::adapter::ConsumerAdapter` against airc PR #1075's trait, registered via `Airc::register_adapter` (airc PR #1081). Outbound: continuum-core's event bus publishes to airc via `Airc::publish` (or the typed-publish API once it lands). Inbound: airc's dispatch task delivers envelopes whose `forge.body_hint = forge.continuum.event.v1` to the adapter's `on_envelope`. TS shim in `src/system/events/transports/AircEventTransport.ts` is a thin pass-through that subscribes to the Rust core's "incoming event" notification — browser-side only.
   - **Spec ref:** GRID-BUS-ARCHITECTURE §6.1 + §3.1 (matches the proven shape from Lane C2's #1434 design, now framed as a transport)
-  - **Depends:** L1-1
-  - **Owner suggestion:** claude-tab-1 / 55c30b28 (Lane C2 author — has the airc-lib trait shapes already)
+  - **Depends:** L1-1, plus airc PR #1075 (ConsumerAdapter trait) + #1081 (dispatch wire) merged
+  - **Owner suggestion:** Rust adapter impl (continuum-core/airc) primary; TS shim is browser-side projection. Lane C2's prior design is the contract reference, not the implementation surface.
   - **Est:** 3-5 days
-  - **Done = :** event round-trips A→B across two machines; cursor persists across restart; no `chat_messages` writes side-effect; integration test covers the round-trip.
+  - **Done = :** event round-trips A→B across two machines THROUGH RUST (no TS in the hot path); cursor persists across restart; no `chat_messages` writes side-effect; integration test in `continuum-core` covers the round-trip with the existing `ContinuumAdapter`.
 
 - [ ] **L1-3** (card `e7b4f8ec-64c5-4b9a-b294-91541784ed25`): CommandBase.naturalScope + CommandParams.scope
   - **Card:** (see card on the row above)
-  - **Scope:** Rename `naturalEnvironment` → `naturalScope` with backward-compat shim mapping old values. Add `scope` field to `CommandParams`. `Commands.execute()` resolves effective scope from class + per-call override. `remoteExecute()` learns the third (grid) path.
+  - **Scope:** Source of truth is Rust `CommandSpec` (in continuum-core's command kernel) extended with `natural_scope` + per-call `scope`. ts-rs generates the TS surface. The TS `CommandBase` becomes a thin generated re-export + backward-compat shim mapping old `naturalEnvironment` to `naturalScope` for callers that haven't migrated. `Commands.execute()` (TS) reads the generated registry; the actual scope resolution + dispatch happens in Rust. `remoteExecute()` (Rust) learns the third (grid) path.
   - **Spec ref:** GRID-BUS-ARCHITECTURE §2.1
   - **Depends:** none (orthogonal to L1-1; can land in parallel)
-  - **Owner suggestion:** tab-2 (TS CommandBase) + codex/543c0bf7 (Rust kernel grid-path handler)
+  - **Owner suggestion:** Rust kernel primary (continuum-core command spec + dispatch). TS shim is generated + a small backward-compat mapper, not authored.
   - **Est:** 2-3 days
-  - **Done = :** `PingCommand` annotated `naturalScope: 'grid'`; `PingCommand.execute({}, { scope: { target: 'grid', peer_id: '<other>' } })` returns the other peer's info; old `naturalEnvironment` callers still work.
+  - **Done = :** `PingCommand` annotated `natural_scope: "grid"` in Rust (TS sees it through ts-rs); `PingCommand.execute({}, { scope: { target: 'grid', peer_id: '<other>' } })` returns the other peer's info; old `naturalEnvironment` callers still work via the generated shim.
 
 - [ ] **L1-4** (card `9762c4db-561d-4258-8094-9d99a5818db9`): `presence:peer-manifest` event class + capability index
   - **Card:** (see card on the row above)
-  - **Scope:** Manifest schema (offers/wants/terms/signatures per GRID-BUS §4). Folder maintains per-peer latest-manifest view; indexed by capability for dispatcher lookup. Rust canonical state + TS read-side bindings.
+  - **Scope:** Rust source of truth for manifest schema (`#[derive(TS)]`) + per-peer latest-manifest folder + capability index. All consumers (Rust router, TS browser introspection) read the same generated types. No hand-written TS schema duplication.
   - **Spec ref:** GRID-BUS-ARCHITECTURE §4 + MULTI-PEER-COMMANDS §6.2 (liveness + withdrawal)
   - **Depends:** L1-1 + L1-2
-  - **Owner suggestion:** codex/543c0bf7 (Rust state) — overlaps naturally with #1007 budgeted-context work
+  - **Owner suggestion:** Rust kernel (continuum-core::grid::manifest). Overlaps naturally with #1007 budgeted-context work.
   - **Est:** 3-5 days
-  - **Done = :** two peers boot, each sees the other's manifest in their local index; `grid/show-routes` introspection lists capabilities by peer; capability-withdrawn event removes the offer; integration test for join → exchange → withdrawal cycle.
+  - **Done = :** two peers boot, each sees the other's manifest in their local index; `grid/show-routes` (Rust command, ts-rs surface) lists capabilities by peer; capability-withdrawn event removes the offer; integration test in Rust for join → exchange → withdrawal cycle.
 
 - [ ] **L1-5** (card `d90d9844-2616-430e-82c2-2fa092840f11`): `grid-router-daemon` + bid loop
   - **Card:** (see card on the row above)
-  - **Scope:** `src/daemons/grid-router-daemon/`. Subscribes to peer-manifest + resource-pressure + peer-departed events. Maintains routing table. Runs local policy engine. Implements bid loop (`command:bid-request` → `:bid-response` → `:bid-accepted`/`:bid-released`). Handles routed-command forwarding (multi-hop with `forwarded_by` loop detection).
+  - **Scope:** Rust `continuum-core/src/grid/router.rs` (and a thin daemon entrypoint if a separate process is needed; otherwise an in-process ServiceModule). Subscribes to peer-manifest + resource-pressure + peer-departed events. Maintains routing table. Runs local policy engine in Rust. Implements bid loop (`command:bid-request` → `:bid-response` → `:bid-accepted`/`:bid-released`). Handles routed-command forwarding (multi-hop with `forwarded_by` loop detection). NO TS daemon scaffolding — the router lives entirely in continuum-core; if process isolation is wanted it's a Rust binary.
   - **Spec ref:** GRID-BUS-ARCHITECTURE §3 + §4.1 + §11.1
   - **Depends:** L1-3 + L1-4
-  - **Owner suggestion:** codex (Rust router logic) + tab-2 (TS daemon scaffolding)
+  - **Owner suggestion:** Rust kernel only. The "TS daemon scaffolding" suggestion from the original draft is OBSOLETE — Node daemons that own routing semantics are exactly what Joel's "no node for core features" directive removes.
   - **Est:** 5-7 days
-  - **Done = :** laptop persona dispatches `inference/run` with `requires: { capability: '...' }`; router resolves to GPU peer; result returns within `max_latency_ms`; introspection (`grid/show-routes`, `grid/show-recent-dispatches`) exposes the decision trace.
+  - **Done = :** laptop persona dispatches `inference/run` with `requires: { capability: '...' }`; Rust router resolves to GPU peer; result returns within `max_latency_ms`; introspection (`grid/show-routes`, `grid/show-recent-dispatches` — Rust commands with ts-rs surface) exposes the decision trace.
 
 - [ ] **L1-6** (card `e25898e6-8690-46dc-9693-c67d65b60f6e`): Contract event chain + ed25519 signatures
   - **Card:** (see card on the row above)
-  - **Scope:** Event classes: `contract:proposed` / `:bid` / `:accepted` / `:executing` / `:delivered` / `:verified` / `:paid` / `:disputed`. Signed envelopes (ed25519). Reference `alloy_hash` for the substance of what's being contracted. Audit-replayable from airc cursor.
+  - **Scope:** Rust event classes (`#[derive(TS)]`): `contract:proposed` / `:bid` / `:accepted` / `:executing` / `:delivered` / `:verified` / `:paid` / `:disputed`. Signed envelopes (ed25519) in Rust — both signing AND verify, no TS-side crypto on the hot path. Reference `alloy_hash` for the substance of what's being contracted. Audit-replayable from airc cursor.
   - **Spec ref:** GRID-BUS-ARCHITECTURE §4.4 + MULTI-PEER-COMMANDS §7
   - **Depends:** L1-4 (needs peer signing keys from manifest) + L1-2 (broadcast transport)
-  - **Owner suggestion:** tab-2 (event classes + TS signing) + codex (Rust signature verify)
+  - **Owner suggestion:** Rust kernel (contracts module, ed25519 sign + verify both Rust). TS event-class projection is ts-rs-generated.
   - **Est:** 3-5 days
-  - **Done = :** end-to-end contract chain — proposed → bid → accepted → executed → delivered → verified → paid — for a `ping` grid dispatch with zero-LP household terms; airc cursor replay reproduces the chain bit-equivalently.
+  - **Done = :** end-to-end contract chain — proposed → bid → accepted → executed → delivered → verified → paid — for a `ping` grid dispatch with zero-LP household terms; ALL crypto in Rust; airc cursor replay reproduces the chain bit-equivalently.
 
 **L1 exit criteria:** all 6 items checked; two-peer smoke test passes (laptop ↔ bigmama-wsl): cross-grid ping, capability advertisement visible both ways, contract event chain replayable from airc cursor.
 
