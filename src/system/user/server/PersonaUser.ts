@@ -1970,33 +1970,6 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Get domain keywords for this persona
-   * Reads from UserEntity.personaConfig if available, otherwise infers from name
-   */
-  private getPersonaDomainKeywords(): string[] {
-    // Read from entity configuration if available
-    if (this.entity?.personaConfig?.domainKeywords?.length) {
-      return [...this.entity.personaConfig.domainKeywords];
-    }
-
-    // Fallback: infer from persona name (temporary until all personas configured)
-    const nameLower = this.displayName.toLowerCase();
-
-    if (nameLower.includes('teacher') || nameLower.includes('academy')) {
-      return ['teaching', 'education', 'learning', 'explain', 'understand', 'lesson'];
-    }
-    if (nameLower.includes('code') || nameLower.includes('dev') || nameLower.includes('review')) {
-      return ['code', 'programming', 'function', 'bug', 'typescript', 'javascript'];
-    }
-    if (nameLower.includes('plan') || nameLower.includes('architect')) {
-      return ['plan', 'architecture', 'design', 'structure', 'organize'];
-    }
-
-    // Default: general AI assistant keywords
-    return ['help', 'question', 'what', 'how', 'why', 'explain'];
-  }
-
-  /**
    * Check if a sender is a human user (not AI/persona/agent)
    * CRITICAL for preventing infinite response loops between AI users
    */
