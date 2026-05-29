@@ -52,7 +52,6 @@ class CollectionConstantsGenerator {
     const entityPaths = [
       join(this.rootPath, 'system/data/entities/*Entity.ts'),
       join(this.rootPath, 'system/genome/entities/*Entity.ts'),
-      join(this.rootPath, 'system/social/shared/*Entity.ts'),
       join(this.rootPath, 'daemons/data-daemon/shared/entities/*Entity.ts'),
     ];
 

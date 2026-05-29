@@ -10,6 +10,7 @@ Tracks per-module decisions in the migration from TS-coupled persona infrastruct
 - **Commands are kernel-level**, compose, used by clients AND the system itself. Rust-implemented, ts-rs-bound, generator-authored.
 - **Commands ARE tool calls.** One executor surface for: (a) persona LLM tool-use, (b) UI command invocation, (c) `./jtag` CLI. The shape the model emits and the shape the UI emits both dispatch to the same Rust executor. No parallel paths.
 - **Commands compose across the grid via airc.** A command dispatched on the MacBook Air can route to a 5090 box's executor over airc and stream results back via ack/promises/async. So `inference/generate` runs *wherever the GPU lives*, not just locally. **This is why TS-locked commands break the architecture** — they can only run on nodes with nodejs. Pure-Rust commands run on the 970, on a Raspberry Pi, on a friend's machine, inside an AR headset's compute.
+- **Base classes make commands + events portable across airc.** Joel 2026-05-29: "Same is true for events and commmada and events are portable across boundaries. This is absolutely mission critical for airc transport. Think of yourself as a Java developer for a bit." Each command param + event payload extends a base type with the wire-required fields (correlation id, session id, source identity, timestamps). The base types ARE the airc serialization contract: ts-rs generates identical TS shapes from the Rust source of truth, so the same envelope deserializes identically on both ends. No remote-aware variants, no parallel paths — strong-typed Java-style inheritance is the portability infrastructure.
 - **Migrate, don't blindly delete.** Each module classified before action.
 
 ## Per-target classification
@@ -182,3 +183,84 @@ Pace: write up findings as I survey, merge piece by piece. Don't try to do all 1
 ### Anomaly noted, not addressed
 
 `ToolRegistry.executeTool` line 638: `parsedParams[key] = value; // Fallback to string`. JSON.parse fails on a complex-type param → stash raw string. This is type-coercion tolerance (under-typed input), not Joel's drifting-fallback pattern. Keep.
+
+---
+
+## 2026-05-29 — Commands triage (slice 1)
+
+First per-command classification slice. Pace: small, focused, document the
+decision per command. No bulk action — each command gets thought.
+
+### Per-command inventory snapshot
+
+(`/tmp/cmd_survey.txt` — 52 top-level command dirs surveyed.)
+
+Top by LOC:
+| Command | LOC | Has spec | Has Rust handler |
+|---|---|---|---|
+| ai | 15,538 | ✓ | ✓ |
+| genome | 10,074 | ✓ | ✓ |
+| development | 9,829 | ✓ | ✓ |
+| interface | 8,602 | ✓ | ✓ |
+| collaboration | 8,453 | ✗ | ✓ |
+| data | 4,736 | ✗ | ✓ |
+| social | 4,436 | ✗ | ✗ |
+| sentinel | 3,512 | ✓ | ✓ |
+| code | 3,197 | ✓ | ✓ |
+| workspace | 3,016 | ✓ | ✓ |
+
+"No spec, no Rust" set (~16 commands totaling ~14 kLOC) is the next bulk
+target — but each gets individual triage rather than mass action.
+
+### Slice 1 commands triaged
+
+#### `ping` (398 LOC, no spec, no Rust handler) — partial action
+
+**Classification:** **#8 — core-shaped TS that should migrate eventually**, but the work is split:
+- Server info collection (process stats, runtime) — **core-shaped**, Rust target.
+- AI status composition (calls `ai/status` command) — **composition example**, the right shape; should be Rust-callable too.
+- Browser info collection — **form-specific**, lives in the web form's implementation; absent for jtag CLI / VR / headless.
+
+**Action taken this slice:** killed an aiStatus all-zeros fallback. The previous catch handler caught any failure of the `ai/status` composition and substituted a synthesized `{ total: 0, healthy: 0, starting: 0, degraded: 0, dead: 0 }` object — i.e., LIED that there were zero AI personas when actually the check itself had failed. Now: if the composition fails, `aiStatus` stays undefined; the caller sees no field and knows the check didn't run.
+
+**Deferred for migration PR:** Rust-implement the server-info + ai-status-composition path. Browser collection stays form-specific.
+
+**Architectural note:** Line 32 — `commandDaemon.commands.get('ai/status')` direct map access (cast hack) instead of `Commands.execute('ai/status', ...)`. Comment retained explaining the same-process-IPC-roundtrip avoidance. When the Rust executor matures, intra-process command composition should be a first-class API, not a map-cast.
+
+#### `help` (461 LOC, no spec, no Rust handler) — classify, defer
+
+**Classification:** **#4/#8 hybrid** — currently filesystem-introspection of the TS command tree on disk. The COMMAND is universal (every form should be able to get help) but the CURRENT implementation reads `src/commands/*/README.md` files from disk, which is intrinsically TS-form (those files only exist in the TS repo layout).
+
+**Right shape long-term:** the command registry (Rust ModuleRegistry today; eventually a unified runtime registry) should expose `describe` introspection. `help` becomes a thin wrapper that queries the registry for command names + their declared descriptions. Then any form gets help symmetrically.
+
+**Action this slice:** none. Classification recorded. Migration target = "registry-introspection-based help" but only meaningful after more commands are Rust-registered.
+
+#### `social` (4,436 LOC commands + ~1,500 LOC support layer) — DROPPED
+
+**Classification:** **deferred → dropped on direct call.** Joel 2026-05-29: "Don't worry about social. Drop it."
+
+**Action taken this slice:** Full cascade delete. Joel's "drop it" applied to the entire concept, not just the command directory — the support layer that exists only to feed those commands also has no purpose without them.
+
+Deleted:
+- `src/commands/social/` (full directory — 14 sub-command surfaces × {browser, server, shared, test} layouts)
+- `src/system/social/` (`SocialCommandHelper`, `SocialMediaProviderRegistry`, `ISocialMediaProvider`, `SocialCredentialEntity`, `SocialMediaTypes`, `MoltbookProvider`)
+- `src/system/rag/sources/SocialMediaRAGSource.ts` (the "social media HUD" RAG injection for personas — Priority 55 entry in ChatRAGBuilder)
+
+Patched out of:
+- `src/system/rag/builders/ChatRAGBuilder.ts` — removed import + `new SocialMediaRAGSource()` from the source chain
+- `src/system/rag/sources/index.ts` — removed export
+- `src/daemons/data-daemon/server/EntityRegistry.ts` — removed `SocialCredentialEntity` import, instantiation, and `registerEntity` call
+- `src/generator/generate-collection-constants.ts` — removed `system/social/shared/*Entity.ts` from the entity-discovery globs
+
+Regenerated:
+- `src/server/generated.ts` + `src/browser/generated.ts` via `npx tsx src/generator/generate-structure.ts` — went from 351 to 343 commands
+
+**Net delete:** ≈ 5,800+ LOC of TS surface across 100+ files. TS still compiles clean (the 6 pre-existing `Cannot find module '../config'` errors remain unchanged).
+
+**Note on the broader principle:** the social subsystem is also a worked example of why TS-locked commands are dangerous — it consumed RAG priority on every persona's context, even though no production form was actively exercising it. The cost was carried by every persona, every message, in TS time. With it gone, the persona context becomes cleaner AND the kloc drops.
+
+### Open questions for follow-up slices
+
+- The "no spec, no Rust" set totals ~14 kLOC. Going slice-by-slice (3–5 commands at a time) is the survivable pace.
+- The "has spec, no Rust" set (e.g., `model`, `state`, `dev`, `claude`, `logging`) means the generator produced TS-side scaffolding but the Rust impl was never written. Each is a candidate for Rust implementation OR for spec deletion (if the command shouldn't exist).
+- Several big "has Rust" commands (`ai`, `genome`, `development`) probably have substantial TS bodies *on top of* the Rust path. Worth checking if those TS bodies duplicate Rust logic.
