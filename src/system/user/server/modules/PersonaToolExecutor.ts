@@ -11,8 +11,7 @@
  *
  * KEY METHODS:
  * - executeSingleTool()       — core per-tool pipeline (delegate + persona pre/post)
- * - executeToolCalls()        — XML-formatted batch execution (for XML fallback path)
- * - executeNativeToolCalls()  — structured batch execution (for native tool_result protocol)
+ * - executeNativeToolCalls()  — structured batch execution (native tool_result protocol)
  */
 
 import { CognitionLogger } from './cognition/CognitionLogger';
@@ -345,45 +344,6 @@ export class PersonaToolExecutor {
   // ──────────────────────────────────────────────
 
   /**
-   * Execute tool calls and return XML-formatted results + optional media.
-   * Used by the XML fallback path for non-native providers.
-   */
-  async executeToolCalls(
-    toolCalls: ToolCall[],
-    context: ToolExecutionContext
-  ): Promise<{
-    formattedResults: string;
-    media?: MediaItem[];
-    storedResultIds: UUID[];
-  }> {
-    if (toolCalls.length === 0) {
-      return { formattedResults: '', storedResultIds: [] };
-    }
-
-    this.log.info(`Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
-
-    const filtered = await this.prepareBatch(toolCalls, context);
-    if (filtered.length === 0) {
-      this.log.warn('All tool calls blocked by loop detection');
-      return { formattedResults: '[All tool calls blocked - infinite loop detected]', storedResultIds: [] };
-    }
-
-    // Execute all tools concurrently
-    const executions = await Promise.all(filtered.map(tc => this.executeSingleTool(tc, context)));
-
-    const allMedia = executions.flatMap(e => e.media);
-    const storedResultIds = executions.map(e => e.resultId);
-    const successCount = executions.filter(e => e.result.success).length;
-    this.log.info(`Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media loaded, ${storedResultIds.length} stored`);
-
-    return {
-      formattedResults: executions.map(e => this.formatToolResult(e.result)).join('\n\n'),
-      media: allMedia.length > 0 ? allMedia : undefined,
-      storedResultIds,
-    };
-  }
-
-  /**
    * Execute native tool calls from the canonical agent loop.
    * Returns per-tool ToolResult objects with full content and tool_use_id correlation.
    */
@@ -455,31 +415,6 @@ export class PersonaToolExecutor {
       media: executions.flatMap(e => e.media),
       storedIds: executions.map(e => e.resultId),
     };
-  }
-
-  /**
-   * Format tool result as XML
-   */
-  private formatToolResult(result: ToolResult): string {
-    if (result.success && result.content) {
-      return `<tool_result>
-<tool_name>${result.toolName}</tool_name>
-<status>success</status>
-<content>
-${result.content}
-</content>
-</tool_result>`;
-    } else {
-      return `<tool_result>
-<tool_name>${result.toolName}</tool_name>
-<status>error</status>
-<error>
-\`\`\`
-${result.error || 'Unknown error'}
-\`\`\`
-</error>
-</tool_result>`;
-    }
   }
 
   /**
