@@ -51,7 +51,6 @@ import { getModelConfigForProvider } from './config/PersonaModelConfigs';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../data/entities/CoordinationDecisionEntity';
 import type { RAGContext as PipelineRAGContext } from '../../rag/shared/RAGTypes';
-import { PersonaWorkerThread } from '../../../shared/workers/PersonaWorkerThread';
 import {
   AI_DECISION_EVENTS,
   type AIEvaluatingEventData,
@@ -170,7 +169,6 @@ export class PersonaUser extends AIUser {
   public sessionId: UUID | null = null;
 
   // Worker thread for parallel message evaluation
-  private worker: PersonaWorkerThread | null = null;
 
   // AI model configuration (provider, model, temperature, etc.)
   public modelConfig: ModelConfig;
@@ -656,22 +654,6 @@ export class PersonaUser extends AIUser {
     }
 
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
-
-    // Initialize worker thread for this persona
-    // Worker is a model-free fallback for should-respond checks. The normal
-    // gate is Rust fullEvaluate; local chat inference is llama.cpp/Qwen.
-    this.worker = new PersonaWorkerThread(this.id, {
-      providerType: 'local',
-      providerConfig: {
-        // Use the same model the persona uses for chat. With DMR+Metal
-        // this is fast enough for gating (~50 tok/s). Using a separate
-        // 1B model required pulling a second model into DMR which
-        // install.sh doesn't do for Carl's default — missing model →
-        // gating errors → no replies. Same-model avoids the catalog
-        // mismatch entirely.
-        model: this.modelConfig.model
-      }
-    });
   }
 
   /**
@@ -775,13 +757,7 @@ export class PersonaUser extends AIUser {
       this.log.debug(`🎯 ${this.displayName}: Context enriched with callerType='persona' and modelConfig for vision-capable tool output`);
     }
 
-    // STEP 1.5: Start worker thread for message evaluation
-    if (this.worker) {
-      await this.worker.start();
-      this.log.info(`🧵 ${this.displayName}: Worker thread started`);
-    }
-
-    // STEP 1.5.1: Initialize Rust cognition bridge (connects to continuum-core IPC)
+    // STEP 1.5: Initialize Rust cognition bridge (connects to continuum-core IPC)
     // This enables fast-path decisions (<1ms) for should-respond, priority, deduplication
     // Also wires the bridge to inbox for Rust-backed channel routing.
     // No catch: a persona without Rust cognition is a brain-dead citizen.
@@ -1903,70 +1879,6 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Use fast bag-of-words scoring to decide whether to respond to a message
-   *
-   * Replaces slow LLM gating (<1ms vs ~500ms+) with deterministic scoring
-   * Uses ai/should-respond-fast command for consistent, testable gating
-   */
-  private async shouldRespondToMessage(
-    messageEntity: ChatMessageEntity,
-    senderIsHuman: boolean,
-    isMentioned: boolean
-  ): Promise<boolean> {
-    // Persona-level DND: user-configured "only respond when @mentioned".
-    // This is a SETTING (do-not-disturb), not a heuristic — the human
-    // owner of the persona has expressed a preference. We honor it before
-    // invoking cognition.
-    const requiresExplicitMention = this.entity?.modelConfig?.requiresExplicitMention ?? false;
-    if (requiresExplicitMention && !isMentioned) {
-      this.log.debug(`🔇 ${this.displayName}: DND mode — only responds when @mentioned`);
-      return false;
-    }
-
-    // The @mention itself is a FEATURE the cognition consumes, not a
-    // bypass-the-ML rule. Joel 2026-05-29: 'an at mention is definitely
-    // different, but an agent would know they were mentioned, get an
-    // event for instance, and know it in that part of their rag the
-    // importance of it ... it's organic but that doesn't mean, like a
-    // human, i wouldn't be notified.'
-    //
-    // The previous \`if (isMentioned) return true\` was a hardcoded
-    // override of the ML — a citizen tapped on the shoulder ALMOST
-    // ALWAYS responds, but the ML knows context (mid-conversation with
-    // someone else, persona's current attention) and can make the
-    // organic decision. We surface the mention; the cognition decides.
-    if (!this.worker) {
-      throw new Error(`Worker not initialized for persona ${this.displayName}`);
-    }
-
-    const result = await this.worker.evaluateMessage({
-      id: messageEntity.id,
-      content: messageEntity.content?.text ?? '',
-      senderId: messageEntity.senderId,
-      timestamp: Date.now(),
-      // Features the ML uses to decide. Mentions and sender-type are
-      // signals, not switches.
-      isMentioned,
-      senderIsHuman,
-      // Persona embodiment — energy/mood/attention shape the response.
-      personaState: {
-        energy: this.state.energy,
-        attention: this.state.attention,
-        mood: this.state.mood,
-        inboxLoad: this.state.inboxLoad
-      },
-      config: {
-        responseThreshold: this.entity?.personaConfig?.responseThreshold ?? 50,
-        temperature: this.entity?.modelConfig?.temperature ?? 0.7
-      }
-    }, 5000);
-
-    this.log.debug(`🧵 ${this.displayName}: Worker evaluated ${messageEntity.id} — shouldRespond=${result.shouldRespond}, confidence=${result.confidence.toFixed(2)}, reasoning=${result.reasoning}`);
-
-    return result.shouldRespond;
-  }
-
-  /**
    * Check if a sender is a human user (not AI/persona/agent)
    * CRITICAL for preventing infinite response loops between AI users
    */
@@ -2257,12 +2169,6 @@ export class PersonaUser extends AIUser {
 
     // PHASE 6: Shutdown memory module (genome + RAG)
     await this.memory.shutdown();
-
-    if (this.worker) {
-      await this.worker.shutdown();
-      this.log.info(`🧵 ${this.displayName}: Worker thread shut down`);
-      this.worker = null;
-    }
   }
 
 }
