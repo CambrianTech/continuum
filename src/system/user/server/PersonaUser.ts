@@ -736,28 +736,29 @@ export class PersonaUser extends AIUser {
     // STEP 1.15: Fetch ModelInfo from Rust adapter — the source of truth for
     // context window, tok/s, capabilities. One IPC call, cached for lifetime.
     // Eliminates ALL lookup functions (getContextWindow, isSlowLocalModel, etc).
-    try {
-      const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
-      const ipc = new RustCoreIPCClient(getContinuumCoreSocketPath());
-      await ipc.connect();
-      const result = await ipc.request({
-        command: 'ai/model-info',
-        provider: this.modelConfig.provider,
-        model: this.modelConfig.model,
-      });
-      if (result.success && result.result?.modelInfo) {
-        const mi = result.result.modelInfo;
-        this.modelInfo = {
-          contextWindow: mi.contextWindow ?? mi.context_window ?? 8192,
-          tokensPerSecond: mi.tokensPerSecond ?? mi.tokens_per_second ?? 50,
-          maxOutputTokens: mi.maxOutputTokens ?? mi.max_output_tokens ?? 4096,
-        };
-        this.log.info(`📋 ${this.displayName}: ModelInfo from adapter: ctx=${this.modelInfo.contextWindow}, tps=${this.modelInfo.tokensPerSecond}`);
-      }
-      ipc.disconnect();
-    } catch {
-      // Non-fatal — adapter may not be ready yet. Lookup fallback remains.
+    //
+    // No catch: if the adapter can't answer, init MUST fail loud. The previous
+    // "Non-fatal — Lookup fallback remains" comment lied — the lookup methods
+    // it referred to are themselves what this call is meant to replace.
+    // Per Joel 2026-05-29: no fallbacks.
+    const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+    const ipc = new RustCoreIPCClient(getContinuumCoreSocketPath());
+    await ipc.connect();
+    const result = await ipc.request({
+      command: 'ai/model-info',
+      provider: this.modelConfig.provider,
+      model: this.modelConfig.model,
+    });
+    if (result.success && result.result?.modelInfo) {
+      const mi = result.result.modelInfo;
+      this.modelInfo = {
+        contextWindow: mi.contextWindow ?? mi.context_window ?? 8192,
+        tokensPerSecond: mi.tokensPerSecond ?? mi.tokens_per_second ?? 50,
+        maxOutputTokens: mi.maxOutputTokens ?? mi.max_output_tokens ?? 4096,
+      };
+      this.log.info(`📋 ${this.displayName}: ModelInfo from adapter: ctx=${this.modelInfo.contextWindow}, tps=${this.modelInfo.tokensPerSecond}`);
     }
+    ipc.disconnect();
 
     // STEP 1.2: Generate sessionId for tool execution attribution (don't register with SessionDaemon yet to avoid init timeout)
     if (!this.sessionId) {
@@ -1252,85 +1253,86 @@ export class PersonaUser extends AIUser {
    *   latest-room signal per room for explicit replay tests.
    */
   private async catchUpOnRecentMessages(): Promise<void> {
-    try {
-      const roomIds = Array.from(this.myRoomIds);
-      if (roomIds.length === 0) {
-        this.log.debug(`⏭️ ${this.displayName}: No rooms to catch up on`);
-        return;
+    // No catch: catch-up failures must surface. The previous "non-fatal"
+    // swallow meant the persona started up looking healthy with missed
+    // messages silently dropped. Per Joel 2026-05-29 doctrine: no
+    // fallbacks. A throw here will be caught by the caller's circuit
+    // breaker, which is the correct behavior for an init step.
+    const roomIds = Array.from(this.myRoomIds);
+    if (roomIds.length === 0) {
+      this.log.debug(`⏭️ ${this.displayName}: No rooms to catch up on`);
+      return;
+    }
+
+    let totalCaughtUp = 0;
+    let totalBookmarked = 0;
+    const processStartupBacklog = process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === '1' ||
+      process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === 'true';
+
+    // Process each room's bookmark independently
+    for (const roomId of roomIds) {
+      const latest = await ORM.query<ChatMessageEntity>({
+        collection: COLLECTIONS.CHAT_MESSAGES,
+        filter: {
+          roomId,
+          senderId: { $ne: this.id },
+          senderType: { $ne: 'system' }
+        },
+        sort: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 1
+      }, 'default');
+
+      const latestMessage = latest.success && latest.data?.[0]?.data;
+      if (!latestMessage) {
+        continue;
       }
 
-      let totalCaughtUp = 0;
-      let totalBookmarked = 0;
-      const processStartupBacklog = process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === '1' ||
-        process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === 'true';
-
-      // Process each room's bookmark independently
-      for (const roomId of roomIds) {
-        const latest = await ORM.query<ChatMessageEntity>({
-          collection: COLLECTIONS.CHAT_MESSAGES,
-          filter: {
-            roomId,
-            senderId: { $ne: this.id },
-            senderType: { $ne: 'system' }
-          },
-          sort: [{ field: 'timestamp', direction: 'desc' }],
-          limit: 1
-        }, 'default');
-
-        const latestMessage = latest.success && latest.data?.[0]?.data;
-        if (!latestMessage) {
-          continue;
-        }
-
-        if (!processStartupBacklog) {
-          await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
-          totalBookmarked += 1;
-          continue;
-        }
-
-        // Direct property access (state may be plain object from DB)
-        const roomState = this.state.roomReadState?.[roomId];
-        const cutoffTime = roomState?.lastReadMessageTimestamp;
-
-        if (!cutoffTime) {
-          await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
-          totalBookmarked += 1;
-          continue;
-        }
-
-        const recentMessages = await ORM.query<ChatMessageEntity>({
-          collection: COLLECTIONS.CHAT_MESSAGES,
-          filter: {
-            roomId,
-            timestamp: { $gt: cutoffTime }, // Messages AFTER bookmark
-            senderId: { $ne: this.id },
-            senderType: { $ne: 'system' }
-          },
-          sort: [{ field: 'timestamp', direction: 'asc' }],
-          limit: 100 // Process up to 100 per room
-        }, 'default');
-
-        if (!recentMessages.success || !recentMessages.data || recentMessages.data.length === 0) {
-          continue;
-        }
-
-        const messages = recentMessages.data.map(r => r.data);
-        const latestBacklogMessage = messages[messages.length - 1];
-        this.log.info(`🔄 ${this.displayName}: Consolidating ${messages.length} catch-up messages in room ${roomId.slice(0,8)} into one latest-room signal`);
-
-        await this.handleChatMessage(latestBacklogMessage);
-        totalCaughtUp += 1;
+      if (!processStartupBacklog) {
+        await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
+        totalBookmarked += 1;
+        continue;
       }
 
-      if (totalCaughtUp > 0) {
-        this.log.info(`✅ ${this.displayName}: Catch-up complete (${totalCaughtUp} consolidated room signal(s))`);
+      // Direct property access (state may be plain object from DB)
+      const roomState = this.state.roomReadState?.[roomId];
+      const cutoffTime = roomState?.lastReadMessageTimestamp;
+
+      if (!cutoffTime) {
+        await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
+        totalBookmarked += 1;
+        continue;
       }
 
-      if (totalBookmarked > 0) {
-        this.log.info(`🔖 ${this.displayName}: Startup catch-up advanced ${totalBookmarked} room bookmark(s) to current tail; backlog generation disabled`);
+      const recentMessages = await ORM.query<ChatMessageEntity>({
+        collection: COLLECTIONS.CHAT_MESSAGES,
+        filter: {
+          roomId,
+          timestamp: { $gt: cutoffTime }, // Messages AFTER bookmark
+          senderId: { $ne: this.id },
+          senderType: { $ne: 'system' }
+        },
+        sort: [{ field: 'timestamp', direction: 'asc' }],
+        limit: 100 // Process up to 100 per room
+      }, 'default');
+
+      if (!recentMessages.success || !recentMessages.data || recentMessages.data.length === 0) {
+        continue;
       }
-    } catch (error) {
-      this.log.warn(`⚠️ ${this.displayName}: Catch-up failed (non-fatal):`, error);
+
+      const messages = recentMessages.data.map(r => r.data);
+      const latestBacklogMessage = messages[messages.length - 1];
+      this.log.info(`🔄 ${this.displayName}: Consolidating ${messages.length} catch-up messages in room ${roomId.slice(0,8)} into one latest-room signal`);
+
+      await this.handleChatMessage(latestBacklogMessage);
+      totalCaughtUp += 1;
+    }
+
+    if (totalCaughtUp > 0) {
+      this.log.info(`✅ ${this.displayName}: Catch-up complete (${totalCaughtUp} consolidated room signal(s))`);
+    }
+
+    if (totalBookmarked > 0) {
+      this.log.info(`🔖 ${this.displayName}: Startup catch-up advanced ${totalBookmarked} room bookmark(s) to current tail; backlog generation disabled`);
     }
   }
 
