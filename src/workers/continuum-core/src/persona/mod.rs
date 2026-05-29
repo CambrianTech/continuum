@@ -36,6 +36,7 @@ pub mod trace;
 pub mod resource_forecast;
 pub mod response;
 pub mod self_task_generator;
+pub mod service_module;
 pub mod text_analysis;
 pub mod turn_context;
 pub mod turn_frame;
