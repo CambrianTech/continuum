@@ -76,6 +76,16 @@ export class SignalDetector {
   private classificationCache: Map<string, SignalClassification> = new Map();
   private readonly CACHE_TTL_MS = 60000; // 1 minute cache
 
+  /** Sentinel returned when AI classification can't run — never a signal. */
+  static readonly NO_SIGNAL: SignalClassification = {
+    isSignal: false,
+    signalType: 'none',
+    trait: TRAIT_TYPES.TONE_AND_VOICE,
+    polarity: 'negative',
+    confidence: 0,
+    reasoning: 'AI classifier unavailable'
+  };
+
   /**
    * Detect a training signal from a user message using AI classification
    */
@@ -113,103 +123,6 @@ export class SignalDetector {
   }
 
   /**
-   * Synchronous fallback using simple heuristics (for non-blocking path)
-   * Only catches obvious signals - AI classification handles nuanced cases
-   */
-  detectSignal(
-    message: ProcessableMessage,
-    precedingAIMessage: ChatMessageEntity | null,
-    conversationHistory: ChatMessageEntity[]
-  ): TrainingSignal | null {
-    // Content-based classification - no sender type filtering
-    const text = (message.content?.text || '').trim();
-    if (text.length < 3) return null;
-
-    // Quick heuristic check - only very obvious signals
-    const classification = this.quickClassify(text);
-    if (!classification.isSignal) return null;
-
-    const context = this.buildContext(message, precedingAIMessage, conversationHistory);
-
-    return {
-      type: classification.signalType,
-      trait: classification.trait,
-      polarity: classification.polarity,
-      confidence: classification.confidence,
-      originalMessage: precedingAIMessage,
-      userResponse: message,
-      context,
-      detectedAt: Date.now(),
-    };
-  }
-
-  /**
-   * Quick heuristic classification for obvious signals only
-   * Defers to AI for anything ambiguous
-   */
-  private quickClassify(text: string): SignalClassification {
-    const lower = text.toLowerCase();
-    const noSignal: SignalClassification = {
-      isSignal: false,
-      signalType: 'none',
-      trait: TRAIT_TYPES.TONE_AND_VOICE,
-      polarity: 'negative',
-      confidence: 0,
-      reasoning: 'No obvious signal detected'
-    };
-
-    // Very short positive responses (high confidence approval)
-    if (/^(perfect|exactly|thanks|great|yes)[!.]?$/i.test(text)) {
-      return {
-        isSignal: true,
-        signalType: 'approval',
-        trait: TRAIT_TYPES.TONE_AND_VOICE,
-        polarity: 'positive',
-        confidence: 0.9,
-        reasoning: 'Short affirmative response'
-      };
-    }
-
-    // Explicit correction starters
-    if (/^(no,?\s|wrong|incorrect|that'?s\s+not)/i.test(text)) {
-      return {
-        isSignal: true,
-        signalType: 'correction',
-        trait: this.inferTraitFromContent(text),
-        polarity: 'negative',
-        confidence: 0.85,
-        reasoning: 'Explicit correction indicator'
-      };
-    }
-
-    // Explicit feedback about style/format
-    if (/\b(too\s+(long|short|verbose|brief)|be\s+more\s+(concise|detailed))\b/i.test(text)) {
-      return {
-        isSignal: true,
-        signalType: 'explicit_feedback',
-        trait: TRAIT_TYPES.TONE_AND_VOICE,
-        polarity: 'negative',
-        confidence: 0.85,
-        reasoning: 'Explicit style feedback'
-      };
-    }
-
-    // Frustration indicators
-    if (/\b(i\s+already|how\s+many\s+times)\b/i.test(text) || /\bagain:/i.test(text)) {
-      return {
-        isSignal: true,
-        signalType: 'frustration',
-        trait: TRAIT_TYPES.SOCIAL_DYNAMICS,
-        polarity: 'negative',
-        confidence: 0.8,
-        reasoning: 'Frustration indicator'
-      };
-    }
-
-    return noSignal;
-  }
-
-  /**
    * Use AI to classify signal type and trait semantically
    */
   private async classifyWithAI(
@@ -233,8 +146,13 @@ export class SignalDetector {
         systemPrompt: 'You are a signal classifier. Output ONLY valid JSON, no other text.'
       }) as AIGenerateResult;
 
+      // No backup heuristic: an unclassified message means an unclassified
+      // message. The previous \`return this.quickClassify(...)\` poisoned
+      // the training corpus with substring-matched labels when the AI
+      // classifier was unavailable. Better to skip the signal than label
+      // it wrong.
       if (!result.success || !result.text) {
-        return this.quickClassify(userText);  // Fallback to heuristics
+        return SignalDetector.NO_SIGNAL;
       }
 
       const classification = this.parseClassificationResponse(result.text);
@@ -246,7 +164,7 @@ export class SignalDetector {
       return classification;
     } catch (error) {
       console.error('[SignalDetector] AI classification failed:', error);
-      return this.quickClassify(userText);  // Fallback to heuristics
+      return SignalDetector.NO_SIGNAL;
     }
   }
 
@@ -328,28 +246,6 @@ Output JSON only:
   private validateTrait(trait: string): TraitType {
     const validTraits = Object.values(TRAIT_TYPES);
     return (validTraits as readonly string[]).includes(trait) ? trait as TraitType : TRAIT_TYPES.TONE_AND_VOICE;
-  }
-
-  /**
-   * Infer trait from message content (simple keyword-based)
-   */
-  private inferTraitFromContent(text: string): TraitType {
-    const lower = text.toLowerCase();
-
-    if (/\b(wrong|incorrect|false|error|mistake|actually)\b/.test(lower)) {
-      return TRAIT_TYPES.DOMAIN_EXPERTISE;
-    }
-    if (/\b(logic|reasoning|explain|why|how|step)\b/.test(lower)) {
-      return TRAIT_TYPES.REASONING_STYLE;
-    }
-    if (/\b(rude|polite|helpful|listen|understand)\b/.test(lower)) {
-      return TRAIT_TYPES.SOCIAL_DYNAMICS;
-    }
-    if (/\b(creative|original|boring|interesting)\b/.test(lower)) {
-      return TRAIT_TYPES.CREATIVE_EXPRESSION;
-    }
-
-    return TRAIT_TYPES.TONE_AND_VOICE;
   }
 
   /**

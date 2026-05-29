@@ -51,7 +51,6 @@ import { getModelConfigForProvider } from './config/PersonaModelConfigs';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../data/entities/CoordinationDecisionEntity';
 import type { RAGContext as PipelineRAGContext } from '../../rag/shared/RAGTypes';
-import { PersonaWorkerThread } from '../../../shared/workers/PersonaWorkerThread';
 import {
   AI_DECISION_EVENTS,
   type AIEvaluatingEventData,
@@ -170,7 +169,6 @@ export class PersonaUser extends AIUser {
   public sessionId: UUID | null = null;
 
   // Worker thread for parallel message evaluation
-  private worker: PersonaWorkerThread | null = null;
 
   // AI model configuration (provider, model, temperature, etc.)
   public modelConfig: ModelConfig;
@@ -656,22 +654,6 @@ export class PersonaUser extends AIUser {
     }
 
     this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
-
-    // Initialize worker thread for this persona
-    // Worker is a model-free fallback for should-respond checks. The normal
-    // gate is Rust fullEvaluate; local chat inference is llama.cpp/Qwen.
-    this.worker = new PersonaWorkerThread(this.id, {
-      providerType: 'local',
-      providerConfig: {
-        // Use the same model the persona uses for chat. With DMR+Metal
-        // this is fast enough for gating (~50 tok/s). Using a separate
-        // 1B model required pulling a second model into DMR which
-        // install.sh doesn't do for Carl's default — missing model →
-        // gating errors → no replies. Same-model avoids the catalog
-        // mismatch entirely.
-        model: this.modelConfig.model
-      }
-    });
   }
 
   /**
@@ -736,28 +718,28 @@ export class PersonaUser extends AIUser {
     // STEP 1.15: Fetch ModelInfo from Rust adapter — the source of truth for
     // context window, tok/s, capabilities. One IPC call, cached for lifetime.
     // Eliminates ALL lookup functions (getContextWindow, isSlowLocalModel, etc).
-    try {
-      const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
-      const ipc = new RustCoreIPCClient(getContinuumCoreSocketPath());
-      await ipc.connect();
-      const result = await ipc.request({
-        command: 'ai/model-info',
-        provider: this.modelConfig.provider,
-        model: this.modelConfig.model,
-      });
-      if (result.success && result.result?.modelInfo) {
-        const mi = result.result.modelInfo;
-        this.modelInfo = {
-          contextWindow: mi.contextWindow ?? mi.context_window ?? 8192,
-          tokensPerSecond: mi.tokensPerSecond ?? mi.tokens_per_second ?? 50,
-          maxOutputTokens: mi.maxOutputTokens ?? mi.max_output_tokens ?? 4096,
-        };
-        this.log.info(`📋 ${this.displayName}: ModelInfo from adapter: ctx=${this.modelInfo.contextWindow}, tps=${this.modelInfo.tokensPerSecond}`);
-      }
-      ipc.disconnect();
-    } catch {
-      // Non-fatal — adapter may not be ready yet. Lookup fallback remains.
+    //
+    // No catch: if the adapter can't answer, init MUST fail loud. The previous
+    // "Non-fatal — Lookup remains" comment was lying — the lookup methods it
+    // referred to are themselves what this call replaces.
+    const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+    const ipc = new RustCoreIPCClient(getContinuumCoreSocketPath());
+    await ipc.connect();
+    const result = await ipc.request({
+      command: 'ai/model-info',
+      provider: this.modelConfig.provider,
+      model: this.modelConfig.model,
+    });
+    if (result.success && result.result?.modelInfo) {
+      const mi = result.result.modelInfo;
+      this.modelInfo = {
+        contextWindow: mi.contextWindow ?? mi.context_window ?? 8192,
+        tokensPerSecond: mi.tokensPerSecond ?? mi.tokens_per_second ?? 50,
+        maxOutputTokens: mi.maxOutputTokens ?? mi.max_output_tokens ?? 4096,
+      };
+      this.log.info(`📋 ${this.displayName}: ModelInfo from adapter: ctx=${this.modelInfo.contextWindow}, tps=${this.modelInfo.tokensPerSecond}`);
     }
+    ipc.disconnect();
 
     // STEP 1.2: Generate sessionId for tool execution attribution (don't register with SessionDaemon yet to avoid init timeout)
     if (!this.sessionId) {
@@ -774,16 +756,14 @@ export class PersonaUser extends AIUser {
       this.log.debug(`🎯 ${this.displayName}: Context enriched with callerType='persona' and modelConfig for vision-capable tool output`);
     }
 
-    // STEP 1.5: Start worker thread for message evaluation
-    if (this.worker) {
-      await this.worker.start();
-      this.log.info(`🧵 ${this.displayName}: Worker thread started`);
-    }
-
-    // STEP 1.5.1: Initialize Rust cognition bridge (connects to continuum-core IPC)
+    // STEP 1.5: Initialize Rust cognition bridge (connects to continuum-core IPC)
     // This enables fast-path decisions (<1ms) for should-respond, priority, deduplication
-    // Also wires the bridge to inbox for Rust-backed channel routing
-    try {
+    // Also wires the bridge to inbox for Rust-backed channel routing.
+    // No catch: a persona without Rust cognition is a brain-dead citizen.
+    // The previous "Don't throw - let persona initialize, but message
+    // handling will fail loudly" semantic created zombie personas. Init
+    // must complete or fail loud.
+    {
       // Phase A: Rust bridge must init first — everything else depends on it
       await this._rustCognition?.initialize();
       if (this._rustCognition) {
@@ -861,26 +841,21 @@ export class PersonaUser extends AIUser {
 
         await Promise.all(parallelTasks);
       }
-    } catch (error) {
-      this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);
-      // Don't throw - let persona initialize, but message handling will fail loudly
     }
 
-    // STEP 1.6: Register with ResourceManager for holistic resource allocation
-    try {
-      const { getResourceManager } = await import('../../resources/shared/ResourceManager.js');
-      getResourceManager().registerAdapter(this.id, this.displayName);
-      this.log.info(`🔧 ${this.displayName}: Registered with ResourceManager`);
-    } catch (error) {
-      this.log.warn(`⚠️  ${this.displayName}: Could not register with ResourceManager:`, error);
-      // Non-fatal: isAvailable() will default to simple worker ready check
-    }
+    // STEP 1.6: Register with ResourceManager for holistic resource allocation.
+    // No catch: a persona that ISN'T registered with the resource manager
+    // can't be allocated GPU/memory/budget — it's a dead citizen.
+    const { getResourceManager } = await import('../../resources/shared/ResourceManager.js');
+    getResourceManager().registerAdapter(this.id, this.displayName);
+    this.log.info(`🔧 ${this.displayName}: Registered with ResourceManager`);
 
     // STEP 1.7: Wire AI provider to genome for real LoRA adapter loading (genome vision)
     // This enables PersonaGenome.activateSkill() → CandleAdapter.applySkill() → InferenceWorker.loadAdapter()
-    // Without this, adapters run in stub mode (tracking state only, no actual GPU loading)
-    // NOTE: AIProviderDaemon may not be initialized yet (race condition), so use deferred wiring
-    this.wireGenomeToProvider();
+    // AIProviderDaemon may not be initialized yet (race condition); the method
+    // waits with exponential backoff. Now awaited — previously fire-and-forget,
+    // which masked stub-mode init failures as "fine."
+    await this.wireGenomeToProvider();
 
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
@@ -952,18 +927,16 @@ export class PersonaUser extends AIUser {
 
     // STEP 3: Update status to 'online' in database.
     // ORM.update() auto-emits 'data:users:updated' → UI updates status indicators.
-    // This is the proof-of-life signal: if initialize() completes, the persona is alive.
-    try {
-      await ORM.update<UserEntity>(
-        COLLECTIONS.USERS, this.id,
-        { status: 'online' as const, lastActiveAt: new Date() },
-        false, // don't increment version for status change
-        'default'
-      );
-      this.log.info(`🟢 ${this.displayName}: Status → online`);
-    } catch (e) {
-      this.log.warn(`⚠️ ${this.displayName}: Failed to update status to online: ${e}`);
-    }
+    // This IS the proof-of-life signal — if the write silently fails the
+    // persona is registered as alive in memory but invisible to anyone
+    // observing the DB. No catch: status write must succeed or init fails.
+    await ORM.update<UserEntity>(
+      COLLECTIONS.USERS, this.id,
+      { status: 'online' as const, lastActiveAt: new Date() },
+      false, // don't increment version for status change
+      'default'
+    );
+    this.log.info(`🟢 ${this.displayName}: Status → online`);
 
     // Start RTOS subprocesses
     // Hippocampus MUST init first — it opens longterm.db and provides the DB handle.
@@ -976,17 +949,15 @@ export class PersonaUser extends AIUser {
     // via live reference, CognitionLogger has it via registerDbHandle().
     await this.limbic!.ensureDbReady();
 
-    // Retry corpus load if initial attempt was empty (startup race: schema didn't exist yet)
+    // Retry corpus load if initial attempt was empty (startup race: schema
+    // didn't exist yet). No catch: Hippocampus has now created the schema,
+    // so a failure here is real corruption, not a race. Surface it.
     if (this._rustCognition && this._corpusLoadedEmpty) {
-      try {
-        const { memories, events } = await this.loadCorpusFromORM();
-        if (memories.length > 0 || events.length > 0) {
-          const corpusResult = await this._rustCognition.memoryLoadCorpus(memories, events);
-          this.log.info(`${this.displayName}: Corpus reloaded post-Hippocampus — ${corpusResult.memory_count} memories, ${corpusResult.timeline_event_count} events`);
-          this._corpusLoadedEmpty = false;
-        }
-      } catch (error) {
-        this.log.warn(`${this.displayName}: Corpus reload post-Hippocampus failed:`, error);
+      const { memories, events } = await this.loadCorpusFromORM();
+      if (memories.length > 0 || events.length > 0) {
+        const corpusResult = await this._rustCognition.memoryLoadCorpus(memories, events);
+        this.log.info(`${this.displayName}: Corpus reloaded post-Hippocampus — ${corpusResult.memory_count} memories, ${corpusResult.timeline_event_count} events`);
+        this._corpusLoadedEmpty = false;
       }
     }
 
@@ -1140,37 +1111,35 @@ export class PersonaUser extends AIUser {
    * @param retryCount - Number of retries attempted (default 0)
    * @param maxRetries - Maximum retry attempts (default 5)
    */
-  private wireGenomeToProvider(retryCount: number = 0, maxRetries: number = 5): void {
-    // Check if daemon is initialized
+  private async wireGenomeToProvider(retryCount: number = 0, maxRetries: number = 5): Promise<void> {
+    // Wait for AIProviderDaemon init with exponential backoff (startup race).
+    // No final-bailout-stub-mode: if the daemon never initializes, persona
+    // can't get LoRA adapters, can't function. The previous "running in
+    // STUB MODE" was a textbook dead-code path masquerading as "still
+    // working."
     if (!AIProviderDaemon.isInitialized()) {
-      if (retryCount < maxRetries) {
-        // Schedule retry with exponential backoff (2s, 4s, 8s, 16s, 32s)
-        const delay = Math.pow(2, retryCount + 1) * 1000;
-        this.logger.enqueueLog('cognition.log', `🧬 AIProviderDaemon not ready, retry ${retryCount + 1}/${maxRetries} in ${delay}ms`);
-        setTimeout(() => this.wireGenomeToProvider(retryCount + 1, maxRetries), delay);
-      } else {
-        this.logger.enqueueLog('cognition.log', `⚠️ Genome wiring FAILED after ${maxRetries} retries — running in STUB MODE`);
+      if (retryCount >= maxRetries) {
+        throw new Error(
+          `Genome wiring failed for ${this.displayName}: AIProviderDaemon not initialized after ${maxRetries} retries`
+        );
       }
-      return;
+      const delay = Math.pow(2, retryCount + 1) * 1000;
+      this.logger.enqueueLog('cognition.log', `🧬 AIProviderDaemon not ready, retry ${retryCount + 1}/${maxRetries} in ${delay}ms`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return this.wireGenomeToProvider(retryCount + 1, maxRetries);
     }
 
-    // Daemon is ready, wire the genome
-    try {
-      // Training/LoRA composition still uses the Candle adapter. Runtime chat
-      // inference does not.
-      const candleAdapter = AIProviderDaemon.getAdapter('candle');
-      this.logger.enqueueLog('cognition.log', `🧬 wireGenomeToProvider — trainingAdapter=${candleAdapter ? 'found' : 'null'}, provider=${this.modelConfig.provider}`);
-      if (candleAdapter) {
-        this.memory.genome.setAIProvider(candleAdapter);
-        this.logger.enqueueLog('cognition.log', `🧬 Genome wired to training adapter (LoRA composition enabled)`);
-      } else {
-        this.log.warn(`⚠️ ${this.displayName}: No Candle adapter available for genome`);
-      }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      this.log.warn(`⚠️ ${this.displayName}: Could not wire genome to AI provider: ${errorMsg}`);
-      // Non-fatal: genome will run in stub mode
+    // Training/LoRA composition still uses the Candle adapter. Runtime chat
+    // inference does not. No catch: getAdapter failures are real init bugs.
+    const candleAdapter = AIProviderDaemon.getAdapter('candle');
+    this.logger.enqueueLog('cognition.log', `🧬 wireGenomeToProvider — trainingAdapter=${candleAdapter ? 'found' : 'null'}, provider=${this.modelConfig.provider}`);
+    if (!candleAdapter) {
+      throw new Error(
+        `Genome wiring failed for ${this.displayName}: no Candle adapter available (required for LoRA composition)`
+      );
     }
+    this.memory.genome.setAIProvider(candleAdapter);
+    this.logger.enqueueLog('cognition.log', `🧬 Genome wired to training adapter (LoRA composition enabled)`);
   }
 
   /**
@@ -1184,61 +1153,51 @@ export class PersonaUser extends AIUser {
    */
   private async autoJoinGeneralRoom(): Promise<void> {
     if (!this.client) {
-      this.log.warn(`⚠️ ${this.displayName}: Cannot auto-join general room - no client available`);
+      throw new Error(`Cannot auto-join general room for ${this.displayName}: no client available`);
+    }
+
+    // No catch: a persona that silently fails to join the general room is
+    // invisible to the default space. The previous swallow let init complete
+    // looking fine while leaving the persona absent.
+    const queryResult = await ORM.query<RoomEntity>({
+      collection: COLLECTIONS.ROOMS,
+      filter: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
+    }, 'default');
+
+    if (!queryResult.success || !queryResult.data?.length) {
+      throw new Error(`General room not found — cannot auto-join ${this.displayName}`);
+    }
+
+    const generalRoomRecord = queryResult.data[0];
+    if (!generalRoomRecord) {
+      throw new Error(`General room query returned malformed record for ${this.displayName}`);
+    }
+
+    const generalRoom = generalRoomRecord.data;
+
+    // Check if already a member
+    const isMember = generalRoom.members?.some((m: { userId: UUID }) => m.userId === this.id);
+    if (isMember) {
+      this.log.debug(`✅ ${this.displayName}: Already member of general room`);
       return;
     }
 
-    try {
-      // Query for general room using ORM.query (server-side only)
-      const queryResult = await ORM.query<RoomEntity>({
-        collection: COLLECTIONS.ROOMS,
-        filter: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
-      }, 'default');
+    // Add self to members
+    const updatedMembers = [
+      ...(generalRoom.members ?? []),
+      { userId: this.id, role: 'member' as const, joinedAt: new Date() }
+    ];
 
-      if (!queryResult.success || !queryResult.data?.length) {
-        this.log.warn(`⚠️ ${this.displayName}: General room not found - cannot auto-join`);
-        return;
-      }
+    await ORM.update<RoomEntity>(
+      COLLECTIONS.ROOMS,
+      generalRoom.id,
+      { members: updatedMembers },
+      true,
+      'default'
+    );
 
-      const generalRoomRecord = queryResult.data[0];
-      if (!generalRoomRecord) {
-        return;
-      }
-
-      const generalRoom = generalRoomRecord.data;
-
-      // Check if already a member
-      const isMember = generalRoom.members?.some((m: { userId: UUID }) => m.userId === this.id);
-      if (isMember) {
-        this.log.debug(`✅ ${this.displayName}: Already member of general room`);
-        return;
-      }
-
-      // Add self to members (just updating the entity, not adding subscriptions)
-      const updatedMembers = [
-        ...(generalRoom.members ?? []),
-        {
-          userId: this.id,
-          role: 'member' as const,
-          joinedAt: new Date()
-        }
-      ];
-
-      // Update room with new member using ORM.update
-      await ORM.update<RoomEntity>(
-        COLLECTIONS.ROOMS,
-        generalRoom.id,
-        { members: updatedMembers },
-        true,
-        'default'
-      );
-
-      this.log.info(`✅ ${this.displayName}: Auto-joined general room (added to members array)`);
-      // Reload my rooms to pick up the change
-      await this.loadMyRooms();
-    } catch (error) {
-      this.log.error(`❌ ${this.displayName}: Error auto-joining general room:`, error);
-    }
+    this.log.info(`✅ ${this.displayName}: Auto-joined general room (added to members array)`);
+    await this.loadMyRooms();
   }
 
   /**
@@ -1252,85 +1211,86 @@ export class PersonaUser extends AIUser {
    *   latest-room signal per room for explicit replay tests.
    */
   private async catchUpOnRecentMessages(): Promise<void> {
-    try {
-      const roomIds = Array.from(this.myRoomIds);
-      if (roomIds.length === 0) {
-        this.log.debug(`⏭️ ${this.displayName}: No rooms to catch up on`);
-        return;
+    // No catch: catch-up failures must surface. The previous "non-fatal"
+    // swallow meant the persona started up looking healthy with missed
+    // messages silently dropped. A throw here will be caught by the
+    // caller's circuit breaker, which is the correct behavior for an
+    // init step.
+    const roomIds = Array.from(this.myRoomIds);
+    if (roomIds.length === 0) {
+      this.log.debug(`⏭️ ${this.displayName}: No rooms to catch up on`);
+      return;
+    }
+
+    let totalCaughtUp = 0;
+    let totalBookmarked = 0;
+    const processStartupBacklog = process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === '1' ||
+      process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === 'true';
+
+    // Process each room's bookmark independently
+    for (const roomId of roomIds) {
+      const latest = await ORM.query<ChatMessageEntity>({
+        collection: COLLECTIONS.CHAT_MESSAGES,
+        filter: {
+          roomId,
+          senderId: { $ne: this.id },
+          senderType: { $ne: 'system' }
+        },
+        sort: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 1
+      }, 'default');
+
+      const latestMessage = latest.success && latest.data?.[0]?.data;
+      if (!latestMessage) {
+        continue;
       }
 
-      let totalCaughtUp = 0;
-      let totalBookmarked = 0;
-      const processStartupBacklog = process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === '1' ||
-        process.env.CONTINUUM_PROCESS_STARTUP_BACKLOG === 'true';
-
-      // Process each room's bookmark independently
-      for (const roomId of roomIds) {
-        const latest = await ORM.query<ChatMessageEntity>({
-          collection: COLLECTIONS.CHAT_MESSAGES,
-          filter: {
-            roomId,
-            senderId: { $ne: this.id },
-            senderType: { $ne: 'system' }
-          },
-          sort: [{ field: 'timestamp', direction: 'desc' }],
-          limit: 1
-        }, 'default');
-
-        const latestMessage = latest.success && latest.data?.[0]?.data;
-        if (!latestMessage) {
-          continue;
-        }
-
-        if (!processStartupBacklog) {
-          await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
-          totalBookmarked += 1;
-          continue;
-        }
-
-        // Direct property access (state may be plain object from DB)
-        const roomState = this.state.roomReadState?.[roomId];
-        const cutoffTime = roomState?.lastReadMessageTimestamp;
-
-        if (!cutoffTime) {
-          await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
-          totalBookmarked += 1;
-          continue;
-        }
-
-        const recentMessages = await ORM.query<ChatMessageEntity>({
-          collection: COLLECTIONS.CHAT_MESSAGES,
-          filter: {
-            roomId,
-            timestamp: { $gt: cutoffTime }, // Messages AFTER bookmark
-            senderId: { $ne: this.id },
-            senderType: { $ne: 'system' }
-          },
-          sort: [{ field: 'timestamp', direction: 'asc' }],
-          limit: 100 // Process up to 100 per room
-        }, 'default');
-
-        if (!recentMessages.success || !recentMessages.data || recentMessages.data.length === 0) {
-          continue;
-        }
-
-        const messages = recentMessages.data.map(r => r.data);
-        const latestBacklogMessage = messages[messages.length - 1];
-        this.log.info(`🔄 ${this.displayName}: Consolidating ${messages.length} catch-up messages in room ${roomId.slice(0,8)} into one latest-room signal`);
-
-        await this.handleChatMessage(latestBacklogMessage);
-        totalCaughtUp += 1;
+      if (!processStartupBacklog) {
+        await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
+        totalBookmarked += 1;
+        continue;
       }
 
-      if (totalCaughtUp > 0) {
-        this.log.info(`✅ ${this.displayName}: Catch-up complete (${totalCaughtUp} consolidated room signal(s))`);
+      // Direct property access (state may be plain object from DB)
+      const roomState = this.state.roomReadState?.[roomId];
+      const cutoffTime = roomState?.lastReadMessageTimestamp;
+
+      if (!cutoffTime) {
+        await this.updateMessageBookmark(roomId, latestMessage.timestamp, latestMessage.id);
+        totalBookmarked += 1;
+        continue;
       }
 
-      if (totalBookmarked > 0) {
-        this.log.info(`🔖 ${this.displayName}: Startup catch-up advanced ${totalBookmarked} room bookmark(s) to current tail; backlog generation disabled`);
+      const recentMessages = await ORM.query<ChatMessageEntity>({
+        collection: COLLECTIONS.CHAT_MESSAGES,
+        filter: {
+          roomId,
+          timestamp: { $gt: cutoffTime }, // Messages AFTER bookmark
+          senderId: { $ne: this.id },
+          senderType: { $ne: 'system' }
+        },
+        sort: [{ field: 'timestamp', direction: 'asc' }],
+        limit: 100 // Process up to 100 per room
+      }, 'default');
+
+      if (!recentMessages.success || !recentMessages.data || recentMessages.data.length === 0) {
+        continue;
       }
-    } catch (error) {
-      this.log.warn(`⚠️ ${this.displayName}: Catch-up failed (non-fatal):`, error);
+
+      const messages = recentMessages.data.map(r => r.data);
+      const latestBacklogMessage = messages[messages.length - 1];
+      this.log.info(`🔄 ${this.displayName}: Consolidating ${messages.length} catch-up messages in room ${roomId.slice(0,8)} into one latest-room signal`);
+
+      await this.handleChatMessage(latestBacklogMessage);
+      totalCaughtUp += 1;
+    }
+
+    if (totalCaughtUp > 0) {
+      this.log.info(`✅ ${this.displayName}: Catch-up complete (${totalCaughtUp} consolidated room signal(s))`);
+    }
+
+    if (totalBookmarked > 0) {
+      this.log.info(`🔖 ${this.displayName}: Startup catch-up advanced ${totalBookmarked} room bookmark(s) to current tail; backlog generation disabled`);
     }
   }
 
@@ -1346,29 +1306,27 @@ export class PersonaUser extends AIUser {
    * @param messageId - Message ID for exact tracking
    */
   public async updateMessageBookmark(roomId: UUID, timestamp: Date | number, messageId: UUID): Promise<void> {
-    try {
-      const ts = typeof timestamp === 'number' ? new Date(timestamp) : timestamp;
+    const ts = typeof timestamp === 'number' ? new Date(timestamp) : timestamp;
 
-      // Update roomReadState directly (state may be plain object from DB, not class instance)
-      if (!this.state.roomReadState) {
-        this.state.roomReadState = {};
-      }
-      this.state.roomReadState[roomId] = {
-        lastReadMessageTimestamp: ts.toISOString(),
-        lastReadMessageId: messageId
-      };
-
-      // Persist state change - storage.save returns result, doesn't throw
-      const result = await this.storage.save(this.state);
-      if (!result.success) {
-        this.log.warn(`⚠️ ${this.displayName}: Bookmark save failed: ${result.error} (stateId=${this.state.id}, roomId=${roomId})`);
-      } else {
-        this.log.debug(`🔖 ${this.displayName}: Bookmark updated for room ${roomId.slice(0,8)} → ${ts.toISOString()}`);
-      }
-    } catch (error) {
-      this.log.warn(`⚠️ ${this.displayName}: Failed to update bookmark: ${error instanceof Error ? error.message : String(error)}`);
-      // Non-fatal - continue processing
+    // Update roomReadState directly (state may be plain object from DB, not class instance)
+    if (!this.state.roomReadState) {
+      this.state.roomReadState = {};
     }
+    this.state.roomReadState[roomId] = {
+      lastReadMessageTimestamp: ts.toISOString(),
+      lastReadMessageId: messageId
+    };
+
+    // Persist state change. No swallow on either path: bookmark advance is
+    // the structural progress guard. If it fails silently, the persona will
+    // re-process the same message every tick cycle (Joel verified bug
+    // 2026-04-20: stranded items, zero progression). Both the success-flag
+    // check AND the catch were dropping that failure on the floor.
+    const result = await this.storage.save(this.state);
+    if (!result.success) {
+      throw new Error(`Bookmark save failed for ${this.displayName} (stateId=${this.state.id}, roomId=${roomId}): ${result.error}`);
+    }
+    this.log.debug(`🔖 ${this.displayName}: Bookmark updated for room ${roomId.slice(0,8)} → ${ts.toISOString()}`);
   }
 
   /**
@@ -1905,185 +1863,6 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Use fast bag-of-words scoring to decide whether to respond to a message
-   *
-   * Replaces slow LLM gating (<1ms vs ~500ms+) with deterministic scoring
-   * Uses ai/should-respond-fast command for consistent, testable gating
-   */
-  private async shouldRespondToMessage(
-    messageEntity: ChatMessageEntity,
-    senderIsHuman: boolean,
-    isMentioned: boolean
-  ): Promise<boolean> {
-    // Rule 0: If persona requires explicit mention, only respond when mentioned
-    const requiresExplicitMention = this.entity?.modelConfig?.requiresExplicitMention ?? false;
-    if (requiresExplicitMention && !isMentioned) {
-      this.log.debug(`🔇 ${this.displayName}: Requires explicit mention but wasn't mentioned - staying silent`);
-      return false;
-    }
-
-    // Rule 1: Always respond if @mentioned (highest priority - forced response)
-    if (isMentioned) {
-      return true;
-    }
-
-    try {
-      // Use worker thread for fast, parallel evaluation
-      if (!this.worker) {
-        throw new Error('Worker not initialized');
-      }
-
-      const result = await this.worker.evaluateMessage({
-        id: messageEntity.id,
-        content: messageEntity.content?.text ?? '',
-        senderId: messageEntity.senderId,
-        timestamp: Date.now(),
-        // Pass PersonaState for smarter evaluation
-        personaState: {
-          energy: this.state.energy,
-          attention: this.state.attention,
-          mood: this.state.mood,
-          inboxLoad: this.state.inboxLoad
-        },
-        // Pass config for threshold/temperature
-        config: {
-          responseThreshold: this.entity?.personaConfig?.responseThreshold ?? 50,
-          temperature: this.entity?.modelConfig?.temperature ?? 0.7
-        }
-      }, 5000); // 5 second timeout
-
-      // Apply age-based penalty (prioritize newer messages)
-      const messageAgeMinutes = (Date.now() - messageEntity.timestamp.getTime()) / (1000 * 60);
-      let agePenalty = 0;
-
-      if (messageAgeMinutes > 5) {
-        // Messages 5-15 minutes old: Linear penalty from 0% to 30%
-        // Messages 15+ minutes old: Capped at 30% penalty
-        agePenalty = Math.min(0.30, (messageAgeMinutes - 5) / 10 * 0.30);
-      }
-
-      const adjustedConfidence = Math.max(0, result.confidence - agePenalty);
-
-      // Worker returns confidence (0.0-1.0), PersonaUser decides based on threshold
-      const threshold = (this.entity?.personaConfig?.responseThreshold ?? 50) / 100; // Convert 50 → 0.50
-      const shouldRespond = adjustedConfidence >= threshold;
-
-      this.log.debug(`🧵 ${this.displayName}: Worker evaluated message ${messageEntity.id} - rawConfidence=${result.confidence.toFixed(2)}, agePenalty=${agePenalty.toFixed(2)} (${messageAgeMinutes.toFixed(1)}min old), adjustedConfidence=${adjustedConfidence.toFixed(2)}, threshold=${threshold.toFixed(2)}, shouldRespond=${shouldRespond}`);
-
-      return shouldRespond;
-
-    } catch (error) {
-      this.log.error(`❌ ${this.displayName}: Fast gating failed, falling back to heuristics:`, error);
-
-      // Fallback to simple heuristics if command fails
-      const heuristics = await this.calculateResponseHeuristics(messageEntity);
-      let score = 0;
-      if (heuristics.containsQuestion) score += 40;
-      if (heuristics.conversationTemp === 'HOT') score += 30;
-      if (heuristics.myParticipationRatio < 0.3) score += 20;
-
-      return score >= 50;
-    }
-  }
-
-  /**
-   * Get domain keywords for this persona
-   * Reads from UserEntity.personaConfig if available, otherwise infers from name
-   */
-  private getPersonaDomainKeywords(): string[] {
-    // Read from entity configuration if available
-    if (this.entity?.personaConfig?.domainKeywords?.length) {
-      return [...this.entity.personaConfig.domainKeywords];
-    }
-
-    // Fallback: infer from persona name (temporary until all personas configured)
-    const nameLower = this.displayName.toLowerCase();
-
-    if (nameLower.includes('teacher') || nameLower.includes('academy')) {
-      return ['teaching', 'education', 'learning', 'explain', 'understand', 'lesson'];
-    }
-    if (nameLower.includes('code') || nameLower.includes('dev') || nameLower.includes('review')) {
-      return ['code', 'programming', 'function', 'bug', 'typescript', 'javascript'];
-    }
-    if (nameLower.includes('plan') || nameLower.includes('architect')) {
-      return ['plan', 'architecture', 'design', 'structure', 'organize'];
-    }
-
-    // Default: general AI assistant keywords
-    return ['help', 'question', 'what', 'how', 'why', 'explain'];
-  }
-
-  /**
-   * Calculate heuristics for response decision (Phase 2)
-   * NO API calls - pure logic based on conversation history
-   */
-  private async calculateResponseHeuristics(messageEntity: ChatMessageEntity): Promise<{
-    containsQuestion: boolean;
-    conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD';
-    myParticipationRatio: number;
-    secondsSinceMyLastMessage: number;
-    appearsToBeMyTurn: boolean;
-  }> {
-    // 1. Question detection (simple)
-    const containsQuestion = messageEntity.content?.text?.includes('?') || false;
-
-    // 2. Get recent messages for context
-    const recentMessages = await ORM.query<ChatMessageEntity>({
-      collection: COLLECTIONS.CHAT_MESSAGES,
-      filter: { roomId: messageEntity.roomId },
-      sort: [{ field: 'timestamp', direction: 'desc' }],
-      limit: 10
-    }, 'default');
-
-    const messages: ChatMessageEntity[] = recentMessages.success && recentMessages.data
-      ? recentMessages.data.map(record => record.data)
-      : [];
-
-    // 3. Calculate conversation temperature (time between recent messages)
-    let conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD' = 'COLD';
-    if (messages.length >= 2) {
-      const timeDiffs: number[] = [];
-      for (let i = 0; i < messages.length - 1; i++) {
-        const t1 = new Date(messages[i].timestamp).getTime();
-        const t2 = new Date(messages[i + 1].timestamp).getTime();
-        const diff = t1 - t2;
-        timeDiffs.push(diff / 1000); // Convert to seconds
-      }
-      const avgTimeBetween = timeDiffs.reduce((a, b) => a + b, 0) / timeDiffs.length;
-
-      if (avgTimeBetween < 10) conversationTemp = 'HOT';      // <10s between messages
-      else if (avgTimeBetween < 30) conversationTemp = 'WARM'; // <30s
-      else if (avgTimeBetween < 60) conversationTemp = 'COOL'; // <60s
-      else conversationTemp = 'COLD';                           // >60s
-    }
-
-    // 4. Calculate my participation ratio
-    const myMessages = messages.filter(m => m.senderId === this.id);
-    const myParticipationRatio = messages.length > 0 ? myMessages.length / messages.length : 0;
-
-    // 5. Time since my last message
-    const myLastMessage = myMessages[0];
-    const secondsSinceMyLastMessage = myLastMessage
-      ? (Date.now() - new Date(myLastMessage.timestamp).getTime()) / 1000
-      : 999;
-
-    // 6. Turn-taking pattern - is it my turn?
-    // My turn if: last message wasn't mine AND I haven't spoken recently
-    const lastMessage = messages[0];
-    const appearsToBeMyTurn =
-      lastMessage?.senderId !== this.id &&
-      secondsSinceMyLastMessage > 30;
-
-    return {
-      containsQuestion,
-      conversationTemp,
-      myParticipationRatio,
-      secondsSinceMyLastMessage,
-      appearsToBeMyTurn
-    };
-  }
-
-  /**
    * Check if a sender is a human user (not AI/persona/agent)
    * CRITICAL for preventing infinite response loops between AI users
    */
@@ -2308,17 +2087,16 @@ export class PersonaUser extends AIUser {
   async shutdown(): Promise<void> {
     // Update status to 'offline' FIRST, before tearing down event system.
     // ORM.update() auto-emits 'data:users:updated' → UI updates status indicators.
-    try {
-      await ORM.update<UserEntity>(
-        COLLECTIONS.USERS, this.id,
-        { status: 'offline' as const },
-        false, // don't increment version for status change
-        'default'
-      );
-      this.log.info(`🔴 ${this.displayName}: Status → offline`);
-    } catch (e) {
-      this.log.warn(`⚠️ ${this.displayName}: Failed to update status to offline: ${e}`);
-    }
+    // No catch: silent failure here leaves the persona showing 'online' in
+    // the DB forever after shutdown. Inconsistent state is worse than a
+    // noisy failure.
+    await ORM.update<UserEntity>(
+      COLLECTIONS.USERS, this.id,
+      { status: 'offline' as const },
+      false, // don't increment version for status change
+      'default'
+    );
+    this.log.info(`🔴 ${this.displayName}: Status → offline`);
 
     // Unregister Rust bridge from PersonaMessageGate to prevent leak
     PersonaMessageGate.unregisterRustBridge(this._rustCognition);
@@ -2374,12 +2152,6 @@ export class PersonaUser extends AIUser {
 
     // PHASE 6: Shutdown memory module (genome + RAG)
     await this.memory.shutdown();
-
-    if (this.worker) {
-      await this.worker.shutdown();
-      this.log.info(`🧵 ${this.displayName}: Worker thread shut down`);
-      this.worker = null;
-    }
   }
 
 }

@@ -69,18 +69,14 @@ export class PersonaAutonomousLoop {
     this.log(`🔄 ${this.personaUser.displayName}: Starting autonomous servicing (SIGNAL-BASED WAITING)`);
     this.servicingLoopActive = true;
 
-    // Register with system-wide learning scheduler for continuous learning
-    try {
-      const scheduler = LearningScheduler.sharedInstance();
-      scheduler.registerPersona(
-        this.personaUser.id,
-        this.personaUser.displayName,
-        this.personaUser.trainingManager,
-        this.personaUser.trainingAccumulator,
-      );
-    } catch {
-      // Non-fatal — continuous learning is optional
-    }
+    // Register with system-wide learning scheduler for continuous learning.
+    // No catch: registration failure is a real init bug, not "optional."
+    LearningScheduler.sharedInstance().registerPersona(
+      this.personaUser.id,
+      this.personaUser.displayName,
+      this.personaUser.trainingManager,
+      this.personaUser.trainingAccumulator,
+    );
 
     this.runServiceLoop().catch((error: any) => {
       this.log(`❌ ${this.personaUser.displayName}: Service loop crashed: ${error}`);
@@ -107,24 +103,24 @@ export class PersonaAutonomousLoop {
     // is lost and items stay stranded in the Rust inbox until a NEW
     // signal arrives. Verified 2026-04-20: 4 personas, 4-7 stranded
     // chats each, zero progression. One pre-loop drain catches them.
-    try {
-      const bridge = this.personaUser.rustCognitionBridge;
-      if (bridge) {
-        let drained = 0;
-        while (drained < 20) {
-          const result = await bridge.serviceCycleFull();
-          if (!result.should_process || !result.item) break;
-          const queueItem = fromRustServiceItem(result.item as Record<string, unknown>);
-          if (!queueItem) break;
-          await this.handleItem(queueItem, result.decision ?? undefined);
-          drained++;
-        }
-        if (drained > 0) {
-          this.log(`💧 ${this.personaUser.displayName}: Drained ${drained} pre-existing items from Rust inbox at loop startup`);
-        }
+    //
+    // No catch: this drain is the workaround for stranded items. If the
+    // drain ITSELF fails, the symptom is identical to no-drain (stranded
+    // items, zero progression). The error must surface.
+    const bridge = this.personaUser.rustCognitionBridge;
+    if (bridge) {
+      let drained = 0;
+      while (drained < 20) {
+        const result = await bridge.serviceCycleFull();
+        if (!result.should_process || !result.item) break;
+        const queueItem = fromRustServiceItem(result.item as Record<string, unknown>);
+        if (!queueItem) break;
+        await this.handleItem(queueItem, result.decision ?? undefined);
+        drained++;
       }
-    } catch (error) {
-      this.log(`⚠️ ${this.personaUser.displayName}: Startup drain failed (non-fatal): ${error}`);
+      if (drained > 0) {
+        this.log(`💧 ${this.personaUser.displayName}: Drained ${drained} pre-existing items from Rust inbox at loop startup`);
+      }
     }
 
     while (this.servicingLoopActive) {
@@ -256,20 +252,20 @@ export class PersonaAutonomousLoop {
       }
     }
 
-    // Activate appropriate LoRA adapter based on domain
-    // Uses Rust DomainClassifier for dynamic adapter-aware routing
-    if (item.type === 'message' && item.content && this.personaUser.rustCognitionBridge) {
-      try {
-        const classification = await this.personaUser.rustCognitionBridge.classifyDomain(item.content);
-        if (classification.adapter_name) {
-          await this.personaUser.memory.genome.activateSkill(classification.adapter_name);
-        }
-      } catch {
-        // Classification failure is non-fatal — proceed without adapter activation
+    // Activate LoRA adapter for messages via the Rust domain classifier.
+    // No silent swallow: classify failures propagate to the circuit breaker
+    // (the loop's own catch at runServiceLoop). No "no-bridge" branch:
+    // if the Rust bridge isn't available, that's a real init bug to surface,
+    // not a state to paper over with item.domain.
+    if (item.type === 'message' && item.content) {
+      const bridge = this.personaUser.rustCognitionBridge;
+      if (!bridge) {
+        throw new Error(`rustCognitionBridge unavailable in handleItem — init race or runtime failure (persona=${this.personaUser.displayName})`);
       }
-    } else if (item.domain) {
-      // Task-domain fallback for non-message items or when Rust bridge unavailable
-      await this.personaUser.memory.genome.activateForDomain(item.domain);
+      const classification = await bridge.classifyDomain(item.content);
+      if (classification.adapter_name) {
+        await this.personaUser.memory.genome.activateSkill(classification.adapter_name);
+      }
     }
 
     if (item.type === 'message') {
@@ -277,13 +273,12 @@ export class PersonaAutonomousLoop {
       const senderIsHuman = item.senderType === 'human' || item.senderType === 'agent';
       const messageText = item.content ?? '';
 
-      // ALWAYS advance bookmark, even if response fails. Otherwise a single
-      // failed message (e.g., provider 400/timeout) blocks the persona forever —
-      // Rust re-polls the same un-bookmarked message every tick cycle.
+      // Bookmark ALWAYS advances — otherwise one failed message blocks the
+      // persona forever (Rust re-polls un-bookmarked messages every tick).
+      // The advance is structural progress; the response failure is a
+      // real signal that propagates to the circuit breaker. Both happen.
       try {
         await this.personaUser.evaluateAndPossiblyRespondWithCognition(processable, senderIsHuman, messageText, decision);
-      } catch (error: any) {
-        this.log(`⚠️ ${this.personaUser.displayName}: Failed to respond to message ${item.id?.slice(0, 8)}: ${error.message ?? error}`);
       } finally {
         await this.personaUser.updateMessageBookmark(item.roomId, item.timestamp, item.id);
       }

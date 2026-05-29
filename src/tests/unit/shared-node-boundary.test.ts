@@ -30,7 +30,6 @@ const KNOWN_SHARED_NODE_IMPORTS = new Set([
   'shared/ModelRegistry.ts',
   'shared/ipc/archive-worker/CommandRouterServer.ts',
   'shared/utils/ProcessUtils.ts',
-  'shared/workers/PersonaWorkerThread.ts',
   'system/core/router/shared/JTAGRouterOptimized.ts',
   'system/core/shared/TimingHarness.ts',
   'system/shared/Config.ts',
