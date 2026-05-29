@@ -264,3 +264,65 @@ Regenerated:
 - The "no spec, no Rust" set totals ~14 kLOC. Going slice-by-slice (3–5 commands at a time) is the survivable pace.
 - The "has spec, no Rust" set (e.g., `model`, `state`, `dev`, `claude`, `logging`) means the generator produced TS-side scaffolding but the Rust impl was never written. Each is a candidate for Rust implementation OR for spec deletion (if the command shouldn't exist).
 - Several big "has Rust" commands (`ai`, `genome`, `development`) probably have substantial TS bodies *on top of* the Rust path. Worth checking if those TS bodies duplicate Rust logic.
+
+---
+
+## 2026-05-29 — Chat-message-flow migration scope (gated on airc e51ab14e)
+
+Airc PR #1084 (Phase 1.C — chat substrate throughput 281→498 msg/s) merged. I committed to peer that I'd start the continuum-side dual-write shim deletion against that release boundary. **Correction after surveying: the shim deletion is the front of a much bigger migration**, gated on **airc card e51ab14e (machine-singular daemon)**, not on Phase 1.C. Documenting the full scope now so the slice is peer-reviewable and ready to execute when e51ab14e lands.
+
+### Today's dual-write architecture
+
+```
+ChatSendServerCommand (commands/collaboration/chat/send/server/)
+  └→ AircChatDualWriteService (system/airc-chat/server/)
+      ├→ AircChatPublisher → publishes to airc room
+      └→ AircToORMMirrorWriter → writes ChatMessageEntity to local ORM
+```
+
+The TS shim (`system/airc-chat/` — 1069 LOC: publisher, dual-write service, mirror writer, mapper, types, envelope builder + 4 test files) is just the write side. The mirror entity is then READ by many continuum-side consumers from the local ORM, which means deleting only the writer leaves readers reading silently-stale data — exactly the silent-fallback pattern the doctrine forbids.
+
+### ChatMessageEntity readers (the actual migration surface)
+
+| Reader | Purpose | Migration target |
+|---|---|---|
+| `PersonaUser.catchUpOnRecentMessages` (~line 1232) | Startup catch-up on missed messages per room | Airc room history query at startup; result shape matches today's ORM query |
+| `PersonaUser.handleChatMessage` (downstream of catch-up) | Process backlog message | Same handler, fed from airc subscription instead of ORM read |
+| `TrainingDaemonServer` (line ~233) | Capture chat for training data | Airc room subscription buffered into training pipeline; or read from airc history when training run starts |
+| `ToolRegistry` chat-message handling | Tool call embedding/extraction from chat | Read from airc room (likely already form-specific since tools see chat from inside the room) |
+| `RoomActivityBatch` (system/user/server/attention/) | Batch room activity for attention/presence | Airc presence + room event subscription, not ORM query |
+| Generated bindings (`RecentMessage`, `ToolOutcome`, `MediaItemLite`) | ts-rs-emitted types | Stay typed; airc envelope content is structurally compatible. Regenerate once Rust-side airc message types stabilize |
+
+### Why this is gated on e51ab14e
+
+Without machine-singular daemon, multiple personas on one box are different airc peers in different process scopes. They can each publish to a shared room but **don't see each other's writes live** — only at point-in-time queries against the coordinator store. So:
+
+- A persona enrolled in `general` writes its response to airc
+- The other 14 personas don't see that response in real time
+- They only see it when something triggers a point-in-time history query
+- Result: the 15-persona scenario looks like turn-based correspondence, not a live room
+
+With e51ab14e (one daemon per machine-account), all personas on Joel's box share one airc daemon bus, live delivery works across processes, the scenario actually works.
+
+### Migration sequencing (when e51ab14e lands)
+
+1. **Subscribe** — wire each ChatMessageEntity reader to an airc room subscription instead of ORM polling. Additive: readers see both the airc subscription AND the dual-write ORM data; behaviors should be identical.
+2. **Verify** — run the 15-persona general-room scenario, confirm subscription-based reads match dual-write reads.
+3. **Stop dual-writing** — `ChatSendServerCommand` calls `AircChatPublisher` directly, no `AircToORMMirrorWriter`. ORM mirror stops being written; readers (now subscription-based) don't care.
+4. **Delete the shim** — `system/airc-chat/` (1069 LOC TS).
+5. **Verify CHAT_MESSAGES collection is unwritten** — if nothing writes to it, the collection is dead. Delete the entity + remove from EntityRegistry.
+6. **Bench** — measure continuum-side throughput against substrate's Phase 1.C 498 msg/s baseline. If continuum-side flow doesn't keep up, that's a fresh bottleneck to find.
+
+### NOT the shim
+
+- The Rust `airc_admission.rs` in `continuum-core/src/persona/` is **NOT** the dual-write shim. It's the memory admission path that converts a signed airc envelope into an AdmissionCandidate for persona memory. Stays.
+- WebRTC SDP / MediaSignaling handling — likely already on the airc side; verify when wiring the live multi-persona test.
+- Theme / room presentation — independent of chat-message migration; web form's concern, no substrate change needed.
+
+### Pre-work I can do without blockers
+
+- Each ChatMessageEntity reader's subscription-shape sketch (what `airc_subscribe` call replaces what `ORM.query`).
+- Bench harness for the 15-persona scenario (compile-time even if can't run yet).
+- Cleanup of any silent-fallback patterns in the readers (`catch { return [] }` etc.) — independent doctrine work.
+
+Surfaces as separate slices as I get to them.
