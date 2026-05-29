@@ -259,6 +259,54 @@ Regenerated:
 
 **Note on the broader principle:** the social subsystem is also a worked example of why TS-locked commands are dangerous — it consumed RAG priority on every persona's context, even though no production form was actively exercising it. The cost was carried by every persona, every message, in TS time. With it gone, the persona context becomes cleaner AND the kloc drops.
 
+---
+
+## 2026-05-29 — Commands triage (slice 2)
+
+Four small no-spec-no-Rust commands triaged. No code changes — the classifications are the value; future-me and peer reading this know what each is and what its migration shape is.
+
+#### `indicator` (153 LOC) — KEEP
+
+**Classification:** #4 (form-specific implementation of a universal command).
+
+Server emits a console.log line with a type icon, then delegates to the browser via `remoteExecute(params)`. Browser presumably creates a visual DOM notification (toast). Per-form impl is correct: CLI/jtag form prints to terminal, web form renders a UI element, VR/AR form would render a 3D-world notification, headless form may no-op or log.
+
+**Note:** when a persona uses `indicator` as a tool call, the indicator surfaces in whatever form the user is currently inhabiting (web/VR/AR). That's the Tron-citizen materializing in the user's room.
+
+#### `positron/cursor` (192 LOC) — KEEP, future reorg suggested
+
+**Classification:** #4 (form-specific implementation of a universal command).
+
+"Enables AIs to point, highlight, and draw attention to elements in the UI. The cursor is the AI's 'hand' - its spatial presence in the interface." Server delegates to browser; browser draws DOM overlay (circle/rectangle/arrow/underline) at coordinates or selector.
+
+**Reorg note** (per organization-purity doctrine): `positron/` has only one child (`cursor`). The cursor concept fits under `interface/` (which already has click, screenshot, scroll, type, navigate, etc. — all UI presence commands). Future move: `positron/cursor/` → `interface/cursor/`. Not in this slice — would cascade through generated.ts, command constants, DocumentationSource references. Tracked here for when it's the right opportunity.
+
+#### `list` (492 LOC) — DEFER MIGRATE
+
+**Classification:** #4/#8 hybrid.
+
+Currently reads `src/scripts/generate-command-schemas.ts` output from disk (TS-form filesystem introspection). The CONCEPT is universal (any caller asks "what commands exist?"), but the IMPLEMENTATION reads files specific to the TS form's layout.
+
+**Right shape long-term:** the Rust ModuleRegistry exposes introspection. `list` becomes a thin wrapper that queries the registry. Then any form (web UI, jtag CLI, VR persona, headless grid node) gets the same enumeration via the same path.
+
+**Migration target:** post-grid-extension of ModuleRegistry. Defer until enough commands are Rust-registered that registry-introspection is meaningful.
+
+#### `recipe` (515 LOC) — DEFER MIGRATE
+
+**Classification:** #8 (core-shaped TS that should migrate), gated on room-is-airc embed.
+
+`recipe/run` loads a recipe by uniqueId, resolves template, validates model availability via RecipeAssembler, dispatches to `sentinel/run` with the resolved template. The TS body is mostly orchestration — composing other commands.
+
+Joel 2026-05-29: "Recipes create rooms — `airc.join('<recipe-id>')` materializes a room on demand, room doctrine system at `Airc::room_doctrine` carries the per-recipe behavior."
+
+**Right shape:** recipe/run becomes a Rust command that:
+1. `airc.join(recipe.uniqueId)` — materializes the airc room for this recipe
+2. Loads recipe definition (likely from `#settings` per peer's 1224aac2 card)
+3. Attaches the recipe's roleId-mapped personas as airc peers in the room
+4. Dispatches to sentinel orchestration (also moving to Rust)
+
+**Migration target:** gated on (a) airc#1075 ConsumerAdapter merge unblocking continuum-core's airc::embed, (b) airc room creation API stabilized, (c) #settings room (1224aac2) for recipe definition storage. Once those three land, the whole recipe-run orchestration moves to Rust in one slice.
+
 ### Open questions for follow-up slices
 
 - The "no spec, no Rust" set totals ~14 kLOC. Going slice-by-slice (3–5 commands at a time) is the survivable pace.
