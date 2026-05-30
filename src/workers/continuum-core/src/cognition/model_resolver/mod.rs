@@ -43,7 +43,6 @@ use crate::cognition::adaptive_throughput::TargetSilicon;
 use crate::model_registry::types::{Capability, Model, Provider, ProviderKind};
 use std::collections::HashMap;
 
-
 fn derive_target_silicon(
     model: &Model,
     provider_kinds: &HashMap<&str, ProviderKind>,
@@ -794,7 +793,10 @@ mod tests {
         assert!(req.required_capabilities.contains(&Capability::Vision));
         assert!(req.required_capabilities.contains(&Capability::AudioInput));
         assert!(req.required_capabilities.contains(&Capability::AudioOutput));
-        assert_eq!(req.silicon_residency, SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly);
+        assert_eq!(
+            req.silicon_residency,
+            SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly
+        );
         assert_eq!(req.provider_policy, LocalOrCloudPolicy::PreferLocal);
     }
 
@@ -804,7 +806,10 @@ mod tests {
         assert_eq!(req.provider_policy, LocalOrCloudPolicy::LocalOnly);
         // Bar fields still bundled.
         assert!(req.required_capabilities.contains(&Capability::Vision));
-        assert_eq!(req.silicon_residency, SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly);
+        assert_eq!(
+            req.silicon_residency,
+            SiliconResidencyRequirement::GpuOrUnifiedMemoryOnly
+        );
     }
 
     #[test]
@@ -830,7 +835,9 @@ mod tests {
                     "error must name Vision capability: {required_sensory_capabilities:?}"
                 );
                 assert!(
-                    required_sensory_capabilities.iter().any(|c| c == "AudioInput"),
+                    required_sensory_capabilities
+                        .iter()
+                        .any(|c| c == "AudioInput"),
                     "error must name AudioInput capability: {required_sensory_capabilities:?}"
                 );
             }

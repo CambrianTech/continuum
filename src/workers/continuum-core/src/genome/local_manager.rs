@@ -170,11 +170,7 @@ impl LocalWorkingSetManager {
 
 #[async_trait]
 impl WorkingSetManager for LocalWorkingSetManager {
-    async fn page_in(
-        &self,
-        persona: PersonaId,
-        page: PageRef,
-    ) -> Result<PageHandle, PageFault> {
+    async fn page_in(&self, persona: PersonaId, page: PageRef) -> Result<PageHandle, PageFault> {
         // Already resident? — fast path.
         {
             let working_sets = self.working_sets.read();
@@ -311,11 +307,7 @@ impl WorkingSetManager for LocalWorkingSetManager {
         None
     }
 
-    fn audit_access(
-        &self,
-        persona: PersonaId,
-        page: PageRef,
-    ) -> Result<(), AccessDenied> {
+    fn audit_access(&self, persona: PersonaId, page: PageRef) -> Result<(), AccessDenied> {
         let result: Result<(), AccessDenied> = match self.page_owners.read().get(&page).copied() {
             Some(owner) if owner != persona => Err(AccessDenied {
                 actor: persona,
@@ -549,11 +541,7 @@ mod tests {
         let fast = StubTier::new(TierRole::Fast, vec![]);
         let bench = StubTier::new(TierRole::Bench, vec![]);
         let cold = StubTier::new(TierRole::Cold, vec![page]);
-        let mgr = LocalWorkingSetManager::new(vec![
-            fast.clone(),
-            bench.clone(),
-            cold.clone(),
-        ]);
+        let mgr = LocalWorkingSetManager::new(vec![fast.clone(), bench.clone(), cold.clone()]);
         let persona = make_persona(8);
         mgr.register_persona(persona, capacity_uma());
 
@@ -742,9 +730,7 @@ mod tests {
 
     // ─── PR-5 bus-publishing tests ──────────────────────────────
 
-    use crate::genome::bus::{
-        all_genome_artifact_selectors, ACCESS_DENIED_KEY, PAGE_FAULT_KEY,
-    };
+    use crate::genome::bus::{all_genome_artifact_selectors, ACCESS_DENIED_KEY, PAGE_FAULT_KEY};
     use crate::runtime::artifact_handle::{ArtifactKey, ArtifactSelector};
     use crate::runtime::runtime::Runtime;
     use crate::runtime::service_module::{
@@ -781,10 +767,7 @@ mod tests {
                 tick_interval: None,
             }
         }
-        async fn initialize(
-            &self,
-            _ctx: &crate::runtime::ModuleContext,
-        ) -> Result<(), String> {
+        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
             Ok(())
         }
         async fn handle_command(
@@ -802,7 +785,9 @@ mod tests {
             key: &ArtifactKey,
             payload: serde_json::Value,
         ) -> Result<(), String> {
-            self.captured.lock().push((key.as_str().to_string(), payload));
+            self.captured
+                .lock()
+                .push((key.as_str().to_string(), payload));
             Ok(())
         }
         fn as_any(&self) -> &dyn Any {
@@ -843,8 +828,7 @@ mod tests {
     async fn page_in_true_cold_miss_with_bus_publishes_page_fault() {
         let cold = StubTier::new(TierRole::Cold, vec![]);
         let fast = StubTier::new(TierRole::Fast, vec![]);
-        let (mgr, _runtime, captured) =
-            wire_manager_to_runtime(vec![fast, cold]).await;
+        let (mgr, _runtime, captured) = wire_manager_to_runtime(vec![fast, cold]).await;
 
         let persona = make_persona(30);
         mgr.register_persona(persona, capacity_uma());
@@ -862,10 +846,7 @@ mod tests {
         }
 
         let events = captured.lock().clone();
-        let faults: Vec<_> = events
-            .iter()
-            .filter(|(k, _)| k == PAGE_FAULT_KEY)
-            .collect();
+        let faults: Vec<_> = events.iter().filter(|(k, _)| k == PAGE_FAULT_KEY).collect();
         assert_eq!(faults.len(), 1, "exactly one PageFault published");
         let fault: PageFault = serde_json::from_value(faults[0].1.clone()).unwrap();
         assert_eq!(fault.from_role, None, "true cold miss has no from_role");
@@ -882,8 +863,7 @@ mod tests {
         let page = make_page(40);
         let cold = StubTier::new(TierRole::Cold, vec![page]);
         let fast = StubTier::new(TierRole::Fast, vec![]);
-        let (mgr, _runtime, captured) =
-            wire_manager_to_runtime(vec![fast, cold]).await;
+        let (mgr, _runtime, captured) = wire_manager_to_runtime(vec![fast, cold]).await;
 
         let persona = make_persona(41);
         mgr.register_persona(persona, capacity_uma());
@@ -898,10 +878,7 @@ mod tests {
         }
 
         let events = captured.lock().clone();
-        let faults: Vec<_> = events
-            .iter()
-            .filter(|(k, _)| k == PAGE_FAULT_KEY)
-            .collect();
+        let faults: Vec<_> = events.iter().filter(|(k, _)| k == PAGE_FAULT_KEY).collect();
         assert_eq!(faults.len(), 1);
         let fault: PageFault = serde_json::from_value(faults[0].1.clone()).unwrap();
         assert_eq!(fault.from_role, Some(TierRole::Cold));
@@ -930,7 +907,11 @@ mod tests {
             }
         }
         assert_eq!(
-            captured.lock().iter().filter(|(k, _)| k == PAGE_FAULT_KEY).count(),
+            captured
+                .lock()
+                .iter()
+                .filter(|(k, _)| k == PAGE_FAULT_KEY)
+                .count(),
             1
         );
 
@@ -942,7 +923,11 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert_eq!(
-            captured.lock().iter().filter(|(k, _)| k == PAGE_FAULT_KEY).count(),
+            captured
+                .lock()
+                .iter()
+                .filter(|(k, _)| k == PAGE_FAULT_KEY)
+                .count(),
             1,
             "resident-hit path must not publish"
         );
@@ -985,8 +970,7 @@ mod tests {
             .filter(|(k, _)| k == ACCESS_DENIED_KEY)
             .collect();
         assert_eq!(denied_events.len(), 1, "exactly one AccessDenied published");
-        let denied: AccessDenied =
-            serde_json::from_value(denied_events[0].1.clone()).unwrap();
+        let denied: AccessDenied = serde_json::from_value(denied_events[0].1.clone()).unwrap();
         assert_eq!(denied.actor, intruder);
         assert_eq!(denied.owner, Some(owner));
     }

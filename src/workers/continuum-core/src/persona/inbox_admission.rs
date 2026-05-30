@@ -67,7 +67,9 @@ use super::admission::{
     AdmissionCandidate, AdmissionConfig, AdmissionContext, AdmissionGate, IsMemorable,
     SeenContentLookup, SeenEventLookup,
 };
-use super::engram::{AdmissionDecision, AdmissionError, ChatMessageRef, EngramKind, EngramOrigin, TrustState};
+use super::engram::{
+    AdmissionDecision, AdmissionError, ChatMessageRef, EngramKind, EngramOrigin, TrustState,
+};
 use super::trace::CognitionTrace;
 use super::types::{InboxMessage, SenderType};
 
@@ -352,9 +354,16 @@ mod tests {
         let hash = content_hash_sha256("hello, world");
         assert!(hash.starts_with("sha256:"), "got: {hash}");
         let hex = &hash["sha256:".len()..];
-        assert_eq!(hex.len(), 64, "hex must be 64 chars (32-byte SHA-256): {hex}");
-        assert!(hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-                "hex must be lowercase: {hex}");
+        assert_eq!(
+            hex.len(),
+            64,
+            "hex must be 64 chars (32-byte SHA-256): {hex}"
+        );
+        assert!(
+            hex.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "hex must be lowercase: {hex}"
+        );
     }
 
     /// What this catches: the same input always produces the same hash.
@@ -442,8 +451,10 @@ mod tests {
         assert_eq!(cand.recall_keys, vec!["test-sender".to_string()]);
         // Content hash on candidate matches the origin's
         if let EngramOrigin::Chat(ref r) = cand.origin {
-            assert_eq!(r.content_hash, cand.content_hash,
-                       "candidate.content_hash must equal origin.content_hash");
+            assert_eq!(
+                r.content_hash, cand.content_hash,
+                "candidate.content_hash must equal origin.content_hash"
+            );
         } else {
             panic!("expected Chat origin");
         }
@@ -511,8 +522,13 @@ mod tests {
         let mut trace = CognitionTrace::new();
         let msg = synthetic_message("short", SenderType::Human);
 
-        match runner.admit(&msg, &content, &events, Some(&mut trace)).unwrap() {
-            AdmissionDecision::Drop { reason: AdmissionDropReason::NotMemorable { .. } } => {}
+        match runner
+            .admit(&msg, &content, &events, Some(&mut trace))
+            .unwrap()
+        {
+            AdmissionDecision::Drop {
+                reason: AdmissionDropReason::NotMemorable { .. },
+            } => {}
             other => panic!("expected Drop NotMemorable, got {other:?}"),
         }
     }
@@ -532,8 +548,13 @@ mod tests {
         let mut trace = CognitionTrace::new();
 
         let msg = synthetic_message(content_text, SenderType::Human);
-        match runner.admit(&msg, &content, &events, Some(&mut trace)).unwrap() {
-            AdmissionDecision::Drop { reason: AdmissionDropReason::Duplicate { existing_engram_id } } => {
+        match runner
+            .admit(&msg, &content, &events, Some(&mut trace))
+            .unwrap()
+        {
+            AdmissionDecision::Drop {
+                reason: AdmissionDropReason::Duplicate { existing_engram_id },
+            } => {
                 assert_eq!(existing_engram_id, existing);
             }
             other => panic!("expected Drop Duplicate, got {other:?}"),
@@ -576,7 +597,10 @@ mod tests {
         );
 
         match runner.admit(&msg, &content, &events, Some(&mut trace)) {
-            Err(AdmissionError::TrustBoundaryRejected { source_trust, threshold }) => {
+            Err(AdmissionError::TrustBoundaryRejected {
+                source_trust,
+                threshold,
+            }) => {
                 assert_eq!(source_trust, TrustState::Authenticated);
                 assert_eq!(threshold, TrustState::IntragridMember);
             }
@@ -630,7 +654,9 @@ mod tests {
         // via the custom recipe — proves the custom recipe is the one being
         // consulted.
         let msg = synthetic_message("short", SenderType::Human);
-        let decision = runner.admit(&msg, &content, &events, Some(&mut trace)).unwrap();
+        let decision = runner
+            .admit(&msg, &content, &events, Some(&mut trace))
+            .unwrap();
         assert!(matches!(decision, AdmissionDecision::Admit { .. }));
     }
 

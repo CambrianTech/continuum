@@ -107,15 +107,21 @@ impl PeerId {
     export_to = "../../../shared/generated/genome/ResidencyHint.ts"
 )]
 pub enum ResidencyHint {
-    Hot { role: TierRole },
-    Local { role: TierRole },
+    Hot {
+        role: TierRole,
+    },
+    Local {
+        role: TierRole,
+    },
     GridPeer {
         peer: PeerId,
         #[serde(rename = "estLatencyMs")]
         #[ts(rename = "estLatencyMs", type = "number")]
         est_latency_ms: u32,
     },
-    NotResident { acquirable_from: AcquireSource },
+    NotResident {
+        acquirable_from: AcquireSource,
+    },
 }
 
 /// Where the substrate would have to get an artifact from if it
@@ -153,10 +159,7 @@ pub enum AcquireSource {
 /// bounded; defaults sum to 1.0).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/RecallScore.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/RecallScore.ts")]
 pub struct RecallScore {
     /// Cosine similarity between query embedding and artifact
     /// metadata embedding. Range [0.0, 1.0]; 1.0 = identical.
@@ -187,10 +190,7 @@ pub struct RecallScore {
 /// federation-scope plumbing through every caller.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/RecallScope.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/RecallScope.ts")]
 pub enum RecallScope {
     /// Never leave this machine. Fastest; may return a thinner
     /// RankedPool if local artifacts don't cover the query well.
@@ -251,10 +251,7 @@ pub enum FreshnessTarget {
 /// hasn't named — recall treats them with default weights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/TaskKind.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/TaskKind.ts")]
 pub enum TaskKind {
     Chat,
     Code,
@@ -271,10 +268,7 @@ pub enum TaskKind {
 /// can map a peer to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/TrustClass.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/TrustClass.ts")]
 pub enum TrustClass {
     /// The persona's own artifacts. Always full trust.
     Local,
@@ -295,10 +289,7 @@ pub enum TrustClass {
 /// context needed to debug.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/RecallError.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/RecallError.ts")]
 pub enum RecallError {
     /// The query's resource budget couldn't be satisfied by any
     /// combination of available artifacts.
@@ -395,12 +386,16 @@ mod tests {
     /// rename of a variant breaks every consumer.
     #[test]
     fn residency_hint_serializes_with_kind_tag() {
-        let hot = ResidencyHint::Hot { role: TierRole::Fast };
+        let hot = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
         let j = serde_json::to_string(&hot).unwrap();
         assert!(j.contains("\"kind\":\"hot\""), "got {j}");
         assert!(j.contains("\"role\":\"fast\""), "got {j}");
 
-        let local = ResidencyHint::Local { role: TierRole::Cold };
+        let local = ResidencyHint::Local {
+            role: TierRole::Cold,
+        };
         let j = serde_json::to_string(&local).unwrap();
         assert!(j.contains("\"kind\":\"local\""), "got {j}");
         assert!(j.contains("\"role\":\"cold\""), "got {j}");

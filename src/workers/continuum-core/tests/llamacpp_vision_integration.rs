@@ -39,14 +39,18 @@ fn qwen2_vl_paths() -> (PathBuf, PathBuf) {
     let model = env::var("QWEN2_VL_7B_GGUF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env::var("HOME").expect("HOME env var must be set for this integration test"))
-                .join("models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf")
+            PathBuf::from(
+                env::var("HOME").expect("HOME env var must be set for this integration test"),
+            )
+            .join("models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf")
         });
     let mmproj = env::var("QWEN2_VL_7B_MMPROJ")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env::var("HOME").expect("HOME env var must be set for this integration test"))
-                .join("models/qwen2-vl-7b/mmproj-Qwen2-VL-7B-Instruct-f16.gguf")
+            PathBuf::from(
+                env::var("HOME").expect("HOME env var must be set for this integration test"),
+            )
+            .join("models/qwen2-vl-7b/mmproj-Qwen2-VL-7B-Instruct-f16.gguf")
         });
     (model, mmproj)
 }

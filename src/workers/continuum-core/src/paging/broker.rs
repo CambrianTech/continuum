@@ -74,10 +74,7 @@ fn evict_amount_for(pool: &dyn ResourcePool) -> u64 {
 /// — operators can pattern-match without stringly-typed comparisons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/paging/PressureTier.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/paging/PressureTier.ts")]
 pub enum PressureTier {
     /// All pools comfortably under their budgets.
     Normal,
@@ -131,10 +128,7 @@ impl Default for BrokerConfig {
 /// Per-pool snapshot exposed to monitoring / IPC.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/paging/PoolView.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/paging/PoolView.ts")]
 pub struct PoolView {
     pub name: String,
     pub pressure: f64,
@@ -614,10 +608,7 @@ mod tests {
             report.triggered,
             "broker should fire on real pool over budget"
         );
-        assert!(
-            report.bytes_freed > 0,
-            "evict_at_least should free bytes"
-        );
+        assert!(report.bytes_freed > 0, "evict_at_least should free bytes");
         assert_eq!(report.pools_acted, vec!["real-embeddings".to_string()]);
         // Pressure should drop after eviction.
         assert!(

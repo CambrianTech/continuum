@@ -263,9 +263,7 @@ pub enum ToolEmbeddingError {
     CacheEmpty,
     /// Provider returned fewer embedding vectors than requested. Pins
     /// the wire contract; partial responses are typed errors here.
-    #[error(
-        "provider returned {got} embeddings, expected {expected} (1 per requested tool)"
-    )]
+    #[error("provider returned {got} embeddings, expected {expected} (1 per requested tool)")]
     EmbeddingCountMismatch { got: usize, expected: usize },
 }
 
@@ -404,13 +402,9 @@ pub async fn semantic_search_tools(
         .await
         .map_err(ToolEmbeddingError::EmbeddingFailed)?;
 
-    let query_vector = response
-        .embeddings
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            ToolEmbeddingError::EmbeddingFailed("provider returned no query embedding".to_string())
-        })?;
+    let query_vector = response.embeddings.into_iter().next().ok_or_else(|| {
+        ToolEmbeddingError::EmbeddingFailed("provider returned no query embedding".to_string())
+    })?;
 
     let mut results: Vec<SemanticSearchResult> = cached_embeddings
         .iter()

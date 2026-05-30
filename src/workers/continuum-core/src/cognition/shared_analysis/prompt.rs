@@ -127,17 +127,17 @@ pub(super) fn build_prompt(input: &AnalysisInput) -> String {
 
     // ── Header + history ────────────────────────────────────────────
     buf.push_str("Recent conversation:\n");
-    let history_count = input
-        .recent_history
-        .len()
-        .min(HISTORY_SNAPSHOT_SIZE);
+    let history_count = input.recent_history.len().min(HISTORY_SNAPSHOT_SIZE);
     if history_count == 0 {
         buf.push_str("(no prior messages)\n");
     } else {
         // Same logical slice as `iter().rev().take(N).rev()`: the LAST
         // N messages in chronological order. Compute the start index
         // directly to avoid the double-rev allocation pattern.
-        let start = input.recent_history.len().saturating_sub(HISTORY_SNAPSHOT_SIZE);
+        let start = input
+            .recent_history
+            .len()
+            .saturating_sub(HISTORY_SNAPSHOT_SIZE);
         for m in &input.recent_history[start..] {
             sanitize_into(&mut buf, &m.sender_name);
             buf.push_str(": ");

@@ -229,7 +229,9 @@ impl VoiceActivityDetection for SileroVAD {
         // overhead per frame) is ORT's call to make once it sees the model
         // graph + the GPU device profile.
         let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
-            .map_err(|e| VADError::ModelNotLoaded(format!("ORT GPU EP setup failed (Silero VAD): {e}")))?;
+            .map_err(|e| {
+                VADError::ModelNotLoaded(format!("ORT GPU EP setup failed (Silero VAD): {e}"))
+            })?;
         // Load model with ONNX Runtime
         let session = Session::builder()
             .map_err(|e| VADError::ModelNotLoaded(e.to_string()))?

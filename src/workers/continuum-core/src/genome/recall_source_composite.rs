@@ -121,10 +121,7 @@ impl CandidateSource for CompositeCandidateSource {
             .collect();
         let per_source_results = futures::future::join_all(futures).await;
 
-        let mut merged: Vec<CandidateArtifact> = per_source_results
-            .into_iter()
-            .flatten()
-            .collect();
+        let mut merged: Vec<CandidateArtifact> = per_source_results.into_iter().flatten().collect();
 
         match self.dedup {
             DedupPolicy::None => merged,
@@ -143,9 +140,7 @@ mod tests {
     //! order, dedup policy correctness, and pass-through for
     //! single-source / empty-source cases.
     use super::*;
-    use crate::genome::recall::{
-        FreshnessTarget, RecallScope, ResidencyHint, TaskKind,
-    };
+    use crate::genome::recall::{FreshnessTarget, RecallScope, ResidencyHint, TaskKind};
     use crate::genome::recall_trait::{DomainHint, RecallBudget, RecallContext};
     use crate::genome::tier::TierRole;
     use crate::genome::working_set::PersonaId;
@@ -191,7 +186,9 @@ mod tests {
             semantic_factor: 0.5,
             outcome_history_factor: 0.5,
             last_used_ms: 0,
-            residency: ResidencyHint::Hot { role: TierRole::Fast },
+            residency: ResidencyHint::Hot {
+                role: TierRole::Fast,
+            },
             provenance_trust_factor: 0.5,
         }
     }
@@ -218,8 +215,7 @@ mod tests {
     /// "configure later" state, not a failure.
     #[tokio::test]
     async fn empty_composite_returns_empty_vec() {
-        let composite =
-            CompositeCandidateSource::new(Vec::new(), DedupPolicy::ByArtifactId);
+        let composite = CompositeCandidateSource::new(Vec::new(), DedupPolicy::ByArtifactId);
         let results = composite.fetch(&query(), &ctx()).await;
         assert!(results.is_empty());
         assert_eq!(composite.source_count(), 0);
@@ -231,8 +227,7 @@ mod tests {
     #[tokio::test]
     async fn single_source_composite_passes_through() {
         let src = StubSource::new(vec![cand(1, PageKind::LoRALayer)]);
-        let composite =
-            CompositeCandidateSource::new(vec![src.clone()], DedupPolicy::ByArtifactId);
+        let composite = CompositeCandidateSource::new(vec![src.clone()], DedupPolicy::ByArtifactId);
         let results = composite.fetch(&query(), &ctx()).await;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].artifact_id, art(1));
@@ -270,10 +265,15 @@ mod tests {
     /// dedup (first hit wins).
     #[tokio::test]
     async fn merge_preserves_source_iteration_order() {
-        let src_a = StubSource::new(vec![cand(1, PageKind::LoRALayer), cand(2, PageKind::LoRALayer)]);
-        let src_b = StubSource::new(vec![cand(3, PageKind::LoRALayer), cand(4, PageKind::LoRALayer)]);
-        let composite =
-            CompositeCandidateSource::new(vec![src_a, src_b], DedupPolicy::None);
+        let src_a = StubSource::new(vec![
+            cand(1, PageKind::LoRALayer),
+            cand(2, PageKind::LoRALayer),
+        ]);
+        let src_b = StubSource::new(vec![
+            cand(3, PageKind::LoRALayer),
+            cand(4, PageKind::LoRALayer),
+        ]);
+        let composite = CompositeCandidateSource::new(vec![src_a, src_b], DedupPolicy::None);
 
         let results = composite.fetch(&query(), &ctx()).await;
         assert_eq!(results.len(), 4);
@@ -307,12 +307,13 @@ mod tests {
     #[tokio::test]
     async fn dedup_by_artifact_id_keeps_first_occurrence_only() {
         let src_a = StubSource::new(vec![cand(7, PageKind::LoRALayer)]);
-        let src_b = StubSource::new(vec![cand(7, PageKind::LoRALayer), cand(8, PageKind::LoRALayer)]);
+        let src_b = StubSource::new(vec![
+            cand(7, PageKind::LoRALayer),
+            cand(8, PageKind::LoRALayer),
+        ]);
         let src_c = StubSource::new(vec![cand(7, PageKind::LoRALayer)]);
-        let composite = CompositeCandidateSource::new(
-            vec![src_a, src_b, src_c],
-            DedupPolicy::ByArtifactId,
-        );
+        let composite =
+            CompositeCandidateSource::new(vec![src_a, src_b, src_c], DedupPolicy::ByArtifactId);
         let results = composite.fetch(&query(), &ctx()).await;
         // artifact 7 from src_a wins; artifact 8 from src_b kept;
         // artifact 7 from src_b and src_c dropped.
@@ -331,8 +332,7 @@ mod tests {
             cand(7, PageKind::LoRALayer),
             cand(7, PageKind::Engram),
         ]);
-        let composite =
-            CompositeCandidateSource::new(vec![src], DedupPolicy::ByArtifactId);
+        let composite = CompositeCandidateSource::new(vec![src], DedupPolicy::ByArtifactId);
         let results = composite.fetch(&query(), &ctx()).await;
         assert_eq!(
             results.len(),
@@ -359,9 +359,8 @@ mod tests {
     #[tokio::test]
     async fn composite_is_object_safe_as_dyn_candidate_source() {
         let src = StubSource::new(vec![cand(1, PageKind::LoRALayer)]);
-        let composite: Arc<dyn CandidateSource> = Arc::new(
-            CompositeCandidateSource::with_default_dedup(vec![src]),
-        );
+        let composite: Arc<dyn CandidateSource> =
+            Arc::new(CompositeCandidateSource::with_default_dedup(vec![src]));
         let results = composite.fetch(&query(), &ctx()).await;
         assert_eq!(results.len(), 1);
     }

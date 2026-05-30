@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use airc_ipc::{AttachRequest, DaemonClient, Response, codec::read_frame};
+use airc_ipc::{codec::read_frame, AttachRequest, DaemonClient, Response};
 use tracing::warn;
 
 use crate::airc::realtime_wire::{bus_event_from_envelope, envelope_from_event};
@@ -87,7 +87,7 @@ mod tests {
         Body, ClientId, EventId, MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind,
     };
     use serde_json::json;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
     use uuid::Uuid;
 
     fn transcript_event(body: Option<Body>, headers: airc_core::Headers) -> TranscriptEvent {
@@ -158,11 +158,9 @@ mod tests {
 
         publish_transcript_event(&event, &bus).await.unwrap();
 
-        assert!(
-            timeout(Duration::from_millis(20), receiver.recv())
-                .await
-                .is_err()
-        );
+        assert!(timeout(Duration::from_millis(20), receiver.recv())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -177,10 +175,8 @@ mod tests {
 
         publish_transcript_event(&event, &bus).await.unwrap();
 
-        assert!(
-            timeout(Duration::from_millis(20), receiver.recv())
-                .await
-                .is_err()
-        );
+        assert!(timeout(Duration::from_millis(20), receiver.recv())
+            .await
+            .is_err());
     }
 }

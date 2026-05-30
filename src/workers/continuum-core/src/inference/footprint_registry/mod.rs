@@ -38,7 +38,7 @@ pub use types::{
 use crate::cognition::{
     ThroughputLease, ThroughputLeaseError, ThroughputLeaseRevocationPolicy, ThroughputLeaseSnapshot,
 };
-use dashmap::{DashMap, mapref::entry::Entry};
+use dashmap::{mapref::entry::Entry, DashMap};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::OnceLock;

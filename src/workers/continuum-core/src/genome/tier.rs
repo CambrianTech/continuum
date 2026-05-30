@@ -37,10 +37,7 @@ use super::working_set::PageRef;
 ///   preserved. Never on the hot path; GC during sleep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/TierRole.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/TierRole.ts")]
 pub enum TierRole {
     Fast,
     Warm,
@@ -123,10 +120,7 @@ impl EvictionPolicy {
 /// the tier triggers eviction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/TierCapacity.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/TierCapacity.ts")]
 pub struct TierCapacity {
     /// Bytes currently in use by this tier's backing store.
     #[ts(type = "number")]
@@ -195,10 +189,7 @@ pub struct EvictionRecord {
 /// the shape; PR-2's `TierStore` trait returns it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/TierError.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/TierError.ts")]
 pub enum TierError {
     /// The requested page isn't in this tier and a higher tier
     /// couldn't be paged in (chain exhausted).
@@ -255,7 +246,10 @@ mod tests {
     fn tier_role_serializes_lowercase() {
         assert_eq!(serde_json::to_string(&TierRole::Fast).unwrap(), "\"fast\"");
         assert_eq!(serde_json::to_string(&TierRole::Warm).unwrap(), "\"warm\"");
-        assert_eq!(serde_json::to_string(&TierRole::Bench).unwrap(), "\"bench\"");
+        assert_eq!(
+            serde_json::to_string(&TierRole::Bench).unwrap(),
+            "\"bench\""
+        );
         assert_eq!(serde_json::to_string(&TierRole::Cold).unwrap(), "\"cold\"");
         assert_eq!(
             serde_json::to_string(&TierRole::Frozen).unwrap(),
@@ -380,7 +374,10 @@ mod tests {
             role: TierRole::Warm,
         };
         let json = serde_json::to_string(&e).unwrap();
-        assert!(json.contains("\"kind\":\"roleNotConfigured\""), "got {json}");
+        assert!(
+            json.contains("\"kind\":\"roleNotConfigured\""),
+            "got {json}"
+        );
         assert!(json.contains("\"role\":\"warm\""), "got {json}");
     }
 }

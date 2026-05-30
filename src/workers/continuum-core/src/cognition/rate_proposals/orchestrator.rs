@@ -123,11 +123,8 @@ pub async fn rate_proposals_with_ai(
     let registry_guard = registry.read().await;
     let response = generate_text(&registry_guard, inference_request).await?;
 
-    let ratings = parse_ratings_from_ai_response(
-        &response.text,
-        &context.proposals,
-        &ParseConfig::default(),
-    );
+    let ratings =
+        parse_ratings_from_ai_response(&response.text, &context.proposals, &ParseConfig::default());
 
     Ok(RateProposalsResponse { ratings })
 }

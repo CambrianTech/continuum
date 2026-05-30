@@ -63,10 +63,7 @@ use uuid::Uuid;
 /// and contribute to recall via the same mechanisms a biological memory
 /// store does.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/persona/Engram.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/persona/Engram.ts")]
 pub struct Engram {
     /// Stable engram id. Used for recall keys, deduplication, and as the
     /// referent target for `EngramOrigin::SelfReflection { parent_engram_id }`.
@@ -128,10 +125,7 @@ pub struct Engram {
 /// across kinds, and the discriminator is cheap. Per the airc design
 /// discussion 2026-05-13.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/persona/EngramKind.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/persona/EngramKind.ts")]
 pub enum EngramKind {
     Episodic,
     Semantic,
@@ -410,7 +404,9 @@ pub enum AdmissionError {
     /// The source's trust tier is below the configured threshold for any
     /// admission. Not a `Drop` (which is a policy decision); this is a
     /// hard structural reject before policy runs.
-    #[error("trust boundary rejected: source trust {source_trust:?} below threshold {threshold:?}")]
+    #[error(
+        "trust boundary rejected: source trust {source_trust:?} below threshold {threshold:?}"
+    )]
     TrustBoundaryRejected {
         source_trust: TrustState,
         threshold: TrustState,
@@ -452,13 +448,8 @@ pub enum AdmissionError {
 ///
 /// Ordered roughly from least to most trusted; `PartialOrd` derives so
 /// admission gates can compare `source_trust >= threshold` directly.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS,
-)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/persona/TrustState.ts"
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/persona/TrustState.ts")]
 pub enum TrustState {
     /// Anonymous / unauthenticated — signature missing or fails.
     Untrusted,
@@ -561,7 +552,9 @@ mod tests {
     #[test]
     fn engram_origin_self_reflection_carries_parent() {
         let parent = Uuid::new_v4();
-        let origin = EngramOrigin::SelfReflection { parent_engram_id: parent };
+        let origin = EngramOrigin::SelfReflection {
+            parent_engram_id: parent,
+        };
         let json = serde_json::to_string(&origin).expect("serialize");
         let back: EngramOrigin = serde_json::from_str(&json).expect("deserialize");
         match back {
@@ -620,7 +613,10 @@ mod tests {
         let json = serde_json::to_string(&err).expect("serialize");
         let back: AdmissionError = serde_json::from_str(&json).expect("deserialize");
         match back {
-            AdmissionError::TrustBoundaryRejected { source_trust, threshold } => {
+            AdmissionError::TrustBoundaryRejected {
+                source_trust,
+                threshold,
+            } => {
                 assert_eq!(source_trust, TrustState::Untrusted);
                 assert_eq!(threshold, TrustState::ApprovedPeer);
             }

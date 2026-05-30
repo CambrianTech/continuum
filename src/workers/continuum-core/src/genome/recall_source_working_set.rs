@@ -119,7 +119,9 @@ impl CandidateSource for WorkingSetCandidateSource {
                 semantic_factor: NEUTRAL_FACTOR_STUB,
                 outcome_history_factor: NEUTRAL_FACTOR_STUB,
                 last_used_ms: resident.last_access_ms,
-                residency: ResidencyHint::Hot { role: resident.role },
+                residency: ResidencyHint::Hot {
+                    role: resident.role,
+                },
                 provenance_trust_factor: NEUTRAL_FACTOR_STUB,
             })
             .collect()
@@ -133,13 +135,13 @@ mod tests {
     //! source returns them as candidates that the LocalDemand
     //! AlignedRecall ranks correctly.
     use super::*;
+    use crate::genome::blob::{ArtifactBlob, Provenance};
+    use crate::genome::manager::WorkingSetManager;
     use crate::genome::recall::{FreshnessTarget, RecallScope, TaskKind};
     use crate::genome::recall_impl::LocalDemandAlignedRecall;
     use crate::genome::recall_trait::{
         DemandAlignedRecall, DomainHint, RecallBudget, RecallContext,
     };
-    use crate::genome::blob::{ArtifactBlob, Provenance};
-    use crate::genome::manager::WorkingSetManager;
     use crate::genome::store::TierStore;
     use crate::genome::tier::{EvictionRecord, TierCapacity, TierError, TierRole};
     use crate::genome::working_set::{
@@ -338,9 +340,18 @@ mod tests {
 
         assert_eq!(candidates.len(), 3);
         // Group by kind.
-        let layers: Vec<_> = candidates.iter().filter(|c| c.kind == PageKind::LoRALayer).collect();
-        let experts: Vec<_> = candidates.iter().filter(|c| c.kind == PageKind::MoEExpert).collect();
-        let engrams: Vec<_> = candidates.iter().filter(|c| c.kind == PageKind::Engram).collect();
+        let layers: Vec<_> = candidates
+            .iter()
+            .filter(|c| c.kind == PageKind::LoRALayer)
+            .collect();
+        let experts: Vec<_> = candidates
+            .iter()
+            .filter(|c| c.kind == PageKind::MoEExpert)
+            .collect();
+        let engrams: Vec<_> = candidates
+            .iter()
+            .filter(|c| c.kind == PageKind::Engram)
+            .collect();
         assert_eq!(layers.len(), 1);
         assert_eq!(experts.len(), 1);
         assert_eq!(engrams.len(), 1);
@@ -383,8 +394,7 @@ mod tests {
     async fn source_is_object_safe_for_arc_dyn_dispatch() {
         let tier = AlwaysPresentTier::new(TierRole::Fast);
         let mgr = Arc::new(LocalWorkingSetManager::new(vec![tier]));
-        let source: Arc<dyn CandidateSource> =
-            Arc::new(WorkingSetCandidateSource::new(mgr));
+        let source: Arc<dyn CandidateSource> = Arc::new(WorkingSetCandidateSource::new(mgr));
         let ctx = RecallContext::cold_start(sample_persona(99));
         // Round-trip through the dyn dispatch.
         let candidates = source.fetch(&sample_query(), &ctx).await;

@@ -129,8 +129,8 @@ impl LiveTurnReplayWriter {
     /// Matches `ArtifactWriter::continuum_default()` so both
     /// writers share the same artifact root.
     pub fn continuum_default() -> Self {
-        let home = dirs::home_dir()
-            .expect("home directory must exist for VDD turn-replay artifacts");
+        let home =
+            dirs::home_dir().expect("home directory must exist for VDD turn-replay artifacts");
         Self::new(home.join(".continuum").join("vdd"))
     }
 
@@ -169,11 +169,10 @@ impl LiveTurnReplayWriter {
                 source,
             })?;
         // Trailing newline — convention for cat / grep ergonomics.
-        file.write_all(b"\n")
-            .map_err(|source| VddError::Io {
-                path: path.clone(),
-                source,
-            })?;
+        file.write_all(b"\n").map_err(|source| VddError::Io {
+            path: path.clone(),
+            source,
+        })?;
         Ok(path)
     }
 }
@@ -363,7 +362,9 @@ mod tests {
         let writer = LiveTurnReplayWriter::new(tmp.path());
         let original = sample_fixture();
 
-        let path = writer.write(&original, "request-100").expect("write succeeds");
+        let path = writer
+            .write(&original, "request-100")
+            .expect("write succeeds");
 
         // Path layout: <root>/<git_sha>/turn-replays/<turn_id>.json
         let expected = tmp

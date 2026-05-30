@@ -108,8 +108,8 @@ impl IpcStream for TcpStream {
 pub mod diagnostics;
 pub mod protocol;
 
-pub use protocol::InboxMessageRequest;
 use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
+pub use protocol::InboxMessageRequest;
 use protocol::Response;
 
 // See modules/health.rs, cognition.rs, channel.rs, voice.rs, code.rs, memory.rs,

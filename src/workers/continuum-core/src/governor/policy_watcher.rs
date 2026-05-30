@@ -7,7 +7,7 @@
 //! errors. The watcher callback records and logs failures instead of
 //! replacing a good candidate set with junk.
 
-use crate::governor::{LocalSubstrateGovernor, PolicyFile, PolicyFileError, load_policy_file};
+use crate::governor::{load_policy_file, LocalSubstrateGovernor, PolicyFile, PolicyFileError};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

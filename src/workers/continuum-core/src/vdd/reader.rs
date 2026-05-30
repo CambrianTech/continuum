@@ -246,8 +246,8 @@ mod tests {
     #[test]
     fn empty_root_returns_empty_vec() {
         let tmp = tempfile::tempdir().unwrap();
-        let entries = read_records(tmp.path(), &VddReadOptions::default())
-            .expect("empty root reads cleanly");
+        let entries =
+            read_records(tmp.path(), &VddReadOptions::default()).expect("empty root reads cleanly");
         assert!(entries.is_empty());
     }
 
@@ -262,8 +262,7 @@ mod tests {
         let manifest = ReproducibilityManifest::from_record(&original, &[]);
         writer.write(&original, &manifest).expect("write succeeds");
 
-        let entries = read_records(tmp.path(), &VddReadOptions::default())
-            .expect("read succeeds");
+        let entries = read_records(tmp.path(), &VddReadOptions::default()).expect("read succeeds");
         assert_eq!(entries.len(), 1);
         let entry = &entries[0];
         assert_eq!(entry.record.git_sha, "abc1234");
@@ -292,8 +291,7 @@ mod tests {
             writer.write(&r, &m).unwrap();
         }
 
-        let entries = read_records(tmp.path(), &VddReadOptions::default())
-            .expect("read succeeds");
+        let entries = read_records(tmp.path(), &VddReadOptions::default()).expect("read succeeds");
         let pairs: Vec<(&str, &str)> = entries
             .iter()
             .map(|e| (e.record.git_sha.as_str(), e.record.scenario.as_str()))
@@ -384,7 +382,10 @@ mod tests {
         let latest = latest_per_scenario(entries);
         assert_eq!(latest.len(), 1);
         let entry = latest
-            .get(&("sha-x".to_string(), "chat-roundtrip-live-harness".to_string()))
+            .get(&(
+                "sha-x".to_string(),
+                "chat-roundtrip-live-harness".to_string(),
+            ))
             .expect("scenario present");
         assert_eq!(entry.record.status, HarnessStatus::Fail);
         assert_eq!(entry.record.silence_reasons, vec!["model_load_timeout"]);

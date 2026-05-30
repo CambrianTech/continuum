@@ -181,8 +181,7 @@ fn select_vision_model(opts: &VisionDescribeOptions) -> Option<(String, String)>
         })
         .collect();
 
-    pick_vision_candidate(&candidates, opts)
-        .map(|c| (c.model_id.clone(), c.provider_id.clone()))
+    pick_vision_candidate(&candidates, opts).map(|c| (c.model_id.clone(), c.provider_id.clone()))
 }
 
 /// Build the describe prompt from option flags.

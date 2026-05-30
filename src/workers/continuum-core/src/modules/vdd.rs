@@ -116,7 +116,11 @@ impl ServiceModule for VddModule {
 
                 let report = if latest_only {
                     let collapsed = latest_per_scenario(entries);
-                    build_report(collapsed.into_values().collect(), &self.artifact_root, &opts)
+                    build_report(
+                        collapsed.into_values().collect(),
+                        &self.artifact_root,
+                        &opts,
+                    )
                 } else {
                     build_report(entries, &self.artifact_root, &opts)
                 };
@@ -347,10 +351,25 @@ mod tests {
     async fn report_aggregates_summary_across_record_statuses() {
         let tmp = tempfile::tempdir().unwrap();
         // 2 pass on different shas.
-        write(tmp.path(), "sha-a", "chat-roundtrip-live-harness", HarnessStatus::Pass);
-        write(tmp.path(), "sha-b", "chat-roundtrip-live-harness", HarnessStatus::Pass);
+        write(
+            tmp.path(),
+            "sha-a",
+            "chat-roundtrip-live-harness",
+            HarnessStatus::Pass,
+        );
+        write(
+            tmp.path(),
+            "sha-b",
+            "chat-roundtrip-live-harness",
+            HarnessStatus::Pass,
+        );
         // 1 fail.
-        write(tmp.path(), "sha-c", "chat-roundtrip-live-harness", HarnessStatus::Fail);
+        write(
+            tmp.path(),
+            "sha-c",
+            "chat-roundtrip-live-harness",
+            HarnessStatus::Fail,
+        );
         // 1 prerequisite_missing.
         write(
             tmp.path(),
@@ -383,7 +402,12 @@ mod tests {
     async fn report_git_sha_filter_narrows_results_and_echoes_back() {
         let tmp = tempfile::tempdir().unwrap();
         for sha in ["sha-a", "sha-b", "sha-c"] {
-            write(tmp.path(), sha, "chat-roundtrip-live-harness", HarnessStatus::Pass);
+            write(
+                tmp.path(),
+                sha,
+                "chat-roundtrip-live-harness",
+                HarnessStatus::Pass,
+            );
         }
 
         let module = VddModule::with_root(tmp.path());
@@ -490,7 +514,9 @@ mod tests {
             "source path points at the on-disk record file"
         );
         assert!(
-            report.artifact_root.contains(tmp.path().file_name().unwrap().to_str().unwrap()),
+            report
+                .artifact_root
+                .contains(tmp.path().file_name().unwrap().to_str().unwrap()),
             "artifact_root surfaces the resolved root path"
         );
     }

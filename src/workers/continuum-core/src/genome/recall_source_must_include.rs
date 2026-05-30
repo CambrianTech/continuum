@@ -128,19 +128,17 @@ mod tests {
     //! verify the composite-with-dedup pattern works as expected
     //! when a working-set source has overlapping artifacts.
     use super::*;
+    use crate::genome::blob::{ArtifactBlob, Provenance};
     use crate::genome::local_manager::LocalWorkingSetManager;
     use crate::genome::manager::WorkingSetManager;
     use crate::genome::recall::{FreshnessTarget, RecallScope, TaskKind};
-    use crate::genome::recall_source_composite::{
-        CompositeCandidateSource, DedupPolicy,
-    };
+    use crate::genome::recall_source_composite::{CompositeCandidateSource, DedupPolicy};
     use crate::genome::recall_source_working_set::WorkingSetCandidateSource;
     use crate::genome::recall_trait::{
         DomainHint, EngramRef, LoRALayerRef, MoEExpertRef, RecallBudget, RecallContext,
     };
     use crate::genome::store::TierStore;
     use crate::genome::tier::{EvictionRecord, TierCapacity, TierError, TierRole};
-    use crate::genome::blob::{ArtifactBlob, Provenance};
     use crate::genome::working_set::{
         ArtifactId, PageHandle, PageOffset, PageRef, PersonaId, WorkingSetCapacity,
     };
@@ -197,9 +195,18 @@ mod tests {
         let candidates = src.fetch(&query, &ctx()).await;
         assert_eq!(candidates.len(), 3);
 
-        let layers: Vec<_> = candidates.iter().filter(|c| c.kind == PageKind::LoRALayer).collect();
-        let experts: Vec<_> = candidates.iter().filter(|c| c.kind == PageKind::MoEExpert).collect();
-        let engrams: Vec<_> = candidates.iter().filter(|c| c.kind == PageKind::Engram).collect();
+        let layers: Vec<_> = candidates
+            .iter()
+            .filter(|c| c.kind == PageKind::LoRALayer)
+            .collect();
+        let experts: Vec<_> = candidates
+            .iter()
+            .filter(|c| c.kind == PageKind::MoEExpert)
+            .collect();
+        let engrams: Vec<_> = candidates
+            .iter()
+            .filter(|c| c.kind == PageKind::Engram)
+            .collect();
         assert_eq!(layers.len(), 1);
         assert_eq!(experts.len(), 1);
         assert_eq!(engrams.len(), 1);
@@ -293,12 +300,7 @@ mod tests {
                 Err(TierError::PageNotFound { page })
             }
         }
-        async fn write(
-            &self,
-            _: PageRef,
-            _: ArtifactBlob,
-            _: Provenance,
-        ) -> Result<(), TierError> {
+        async fn write(&self, _: PageRef, _: ArtifactBlob, _: Provenance) -> Result<(), TierError> {
             Ok(())
         }
         async fn evict(&self, _: usize) -> Vec<EvictionRecord> {
@@ -368,13 +370,19 @@ mod tests {
         // non-resident artifact 200 (NotResident).
         assert_eq!(candidates.len(), 2);
 
-        let c_100 = candidates.iter().find(|c| c.artifact_id == art(100)).unwrap();
+        let c_100 = candidates
+            .iter()
+            .find(|c| c.artifact_id == art(100))
+            .unwrap();
         match &c_100.residency {
             ResidencyHint::Hot { role } => assert_eq!(*role, TierRole::Fast),
             other => panic!("artifact 100 should be Hot (working-set won dedup), got {other:?}"),
         }
 
-        let c_200 = candidates.iter().find(|c| c.artifact_id == art(200)).unwrap();
+        let c_200 = candidates
+            .iter()
+            .find(|c| c.artifact_id == art(200))
+            .unwrap();
         match &c_200.residency {
             ResidencyHint::NotResident { acquirable_from } => {
                 assert_eq!(*acquirable_from, AcquireSource::SentinelRefinement);

@@ -18,9 +18,8 @@ use regex::Regex;
 /// the response, including newlines. Mirrors TS `/\{[\s\S]*\}/` exactly. NOT
 /// anchored — the AI may emit prose before/after the JSON despite the prompt
 /// rule "Output ONLY the JSON object", so the matcher tolerates it.
-static JSON_ENVELOPE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?s)\{.*\}").expect("static regex compiles")
-});
+static JSON_ENVELOPE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)\{.*\}").expect("static regex compiles"));
 
 /// Typed parse failure. Carrier for the TS shim's `validationErrors` array
 /// when surfaced through PR-2's IPC handler. Avoids the silent
@@ -73,11 +72,11 @@ pub fn parse_recipe_from_ai_response(
 ) -> Result<RecipeDefinitionShape, ParseError> {
     let preview = preview(response_text);
 
-    let envelope = JSON_ENVELOPE_RE.find(response_text).ok_or(
-        ParseError::NoJsonEnvelope {
+    let envelope = JSON_ENVELOPE_RE
+        .find(response_text)
+        .ok_or(ParseError::NoJsonEnvelope {
             raw_preview: preview.clone(),
-        },
-    )?;
+        })?;
 
     serde_json::from_str::<RecipeDefinitionShape>(envelope.as_str()).map_err(|err| {
         ParseError::MalformedJson {
@@ -229,7 +228,8 @@ Hope that helps!"#;
     /// human-readable messages.
     #[test]
     fn missing_optional_fields_default_to_none_or_empty() {
-        let response = r#"{"uniqueId": "minimal", "name": "M", "displayName": "M", "description": "min"}"#;
+        let response =
+            r#"{"uniqueId": "minimal", "name": "M", "displayName": "M", "description": "min"}"#;
         let shape = parse_recipe_from_ai_response(response).expect("partial parses");
         assert_eq!(shape.unique_id, "minimal");
         assert_eq!(shape.version, None);

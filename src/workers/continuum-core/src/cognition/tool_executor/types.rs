@@ -228,10 +228,7 @@ pub struct ParsedToolBatch {
 // can `if (err.error === 'ToolNotFound')` directly. `data` holds
 // the structured fields. Same pattern as `AdmissionDecision`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/cognition/ToolError.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/cognition/ToolError.ts")]
 #[serde(tag = "error", content = "data")]
 pub enum ToolError {
     /// Caller named a tool that isn't in the registry.
@@ -276,8 +273,14 @@ impl std::fmt::Display for ToolError {
             ToolError::Forbidden { tool, reason } => {
                 write!(f, "tool '{tool}' forbidden: {reason}")
             }
-            ToolError::ParseFailed { raw_preview, reason } => {
-                write!(f, "tool parse failed ({reason}); raw preview: {raw_preview}")
+            ToolError::ParseFailed {
+                raw_preview,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "tool parse failed ({reason}); raw preview: {raw_preview}"
+                )
             }
             ToolError::StoreFailed { tool, underlying } => {
                 write!(f, "tool '{tool}' store failed: {underlying}")

@@ -82,7 +82,11 @@ pub fn parse_ratings_from_ai_response(
     ratings
 }
 
-fn parse_one_section(section: &str, proposal: &ResponseProposal, config: &ParseConfig) -> ProposalRating {
+fn parse_one_section(
+    section: &str,
+    proposal: &ResponseProposal,
+    config: &ParseConfig,
+) -> ProposalRating {
     // Score: floating-point, clamped to [0, 1] per TS.
     let score_re = Regex::new(r"(?i)Score:\s*([0-9.]+)").expect("static regex");
     let score = score_re
@@ -164,7 +168,10 @@ Reasoning: Different approach, valuable alternative
         assert_eq!(ratings[0].proposal_id, "p-1");
         assert!((ratings[0].score - 0.85).abs() < 1e-9);
         assert!(ratings[0].should_post);
-        assert_eq!(ratings[0].reasoning, "High quality response with good technical detail");
+        assert_eq!(
+            ratings[0].reasoning,
+            "High quality response with good technical detail"
+        );
         assert_eq!(ratings[1].proposal_id, "p-2");
         assert!((ratings[1].score - 0.60).abs() < 1e-9);
         assert!(!ratings[1].should_post);

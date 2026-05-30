@@ -85,7 +85,8 @@ impl ServiceModule for ForgeModule {
                 let parsed: ForgeRunParams = serde_json::from_value(params)
                     .map_err(|e| format!("forge/run: invalid params: {e}"))?;
 
-                let artifact = synthesize_stub_artifact(&parsed.recipe, parsed.hardware_node.as_deref())?;
+                let artifact =
+                    synthesize_stub_artifact(&parsed.recipe, parsed.hardware_node.as_deref())?;
                 let json = serde_json::to_value(&artifact)
                     .map_err(|e| format!("forge/run: serialize artifact: {e}"))?;
                 Ok(CommandResult::Json(json))
@@ -102,7 +103,10 @@ impl ServiceModule for ForgeModule {
 /// Synthesize a stub `ForgeArtifact` from a recipe. Phase 4 placeholder
 /// — real foundry execution lands in Phase 5+. Caller persists the
 /// returned artifact via `data/upsert` against `forge_artifacts`.
-fn synthesize_stub_artifact(recipe: &ForgeRecipe, hardware_node: Option<&str>) -> Result<ForgeArtifact, String> {
+fn synthesize_stub_artifact(
+    recipe: &ForgeRecipe,
+    hardware_node: Option<&str>,
+) -> Result<ForgeArtifact, String> {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("system time before epoch: {e}"))?
@@ -111,7 +115,16 @@ fn synthesize_stub_artifact(recipe: &ForgeRecipe, hardware_node: Option<&str>) -
     // Derive an identifiable stub hash from the recipe id (first 16 hex
     // chars). Real Phase 5 hash will be sha256 of the populated alloy
     // content. Stub format prefix avoids collision with real hashes.
-    let stub_hash = format!("sha256:stub-{}", recipe.id.simple().to_string().chars().take(16).collect::<String>());
+    let stub_hash = format!(
+        "sha256:stub-{}",
+        recipe
+            .id
+            .simple()
+            .to_string()
+            .chars()
+            .take(16)
+            .collect::<String>()
+    );
 
     Ok(ForgeArtifact {
         id: Uuid::new_v4(),
@@ -257,7 +270,10 @@ mod tests {
         assert_eq!(artifact.hardware_verified.len(), 1);
         assert_eq!(artifact.hardware_verified[0].device, "m5-pro@local");
         assert_eq!(artifact.hardware_verified[0].format, "stub");
-        assert!(!artifact.hardware_verified[0].verified, "stub is not verified");
+        assert!(
+            !artifact.hardware_verified[0].verified,
+            "stub is not verified"
+        );
     }
 
     /// What this catches: with no hardware_node, hardware_verified

@@ -198,7 +198,6 @@ pub struct AlloyHardware {
 #[ts(export, export_to = "../../../shared/generated/forge/ForgeRecipe.ts")]
 pub struct ForgeRecipe {
     //--- Identity ----------------------------------------------------------
-
     /// Stable recipe identifier. Generated at recipe creation time.
     #[ts(type = "string")]
     pub id: Uuid,
@@ -230,7 +229,6 @@ pub struct ForgeRecipe {
     pub license: String,
 
     //--- Methodology / falsifiability prose --------------------------------
-
     /// Optional link to the methodology paper.
     #[ts(optional)]
     pub methodology_paper_url: Option<String>,
@@ -244,12 +242,10 @@ pub struct ForgeRecipe {
     pub prior_metric_baselines: Vec<PriorBaseline>,
 
     //--- Source -----------------------------------------------------------
-
     /// Base model + architecture metadata.
     pub source: AlloySource,
 
     //--- Pipeline ---------------------------------------------------------
-
     /// Ordered pipeline of recipe stages. v1 carries stages as opaque
     /// JSON values matching the existing `AlloyStage` discriminated
     /// union in `forge-alloy/python/forge_alloy/types.py`. Phase 2
@@ -265,7 +261,6 @@ pub struct ForgeRecipe {
     pub cycles: u32,
 
     //--- Calibration / eval inputs ----------------------------------------
-
     /// Held-out corpus pointer (importance profile + LoRA training).
     pub calibration_corpus: CorpusRef,
 
@@ -280,12 +275,10 @@ pub struct ForgeRecipe {
     pub evaluation_benchmarks: Vec<BenchmarkDef>,
 
     //--- Hardware target --------------------------------------------------
-
     /// Target hardware envelope (VRAM, device list, CPU fallback).
     pub hardware: AlloyHardware,
 
     //--- Lineage ----------------------------------------------------------
-
     /// Parent recipe id, if this recipe was forked from another. None
     /// for net-new recipes. v1 lineage is one-directional (recipe →
     /// recipe); bidirectional lineage (recipe ← artifact) is a future
@@ -294,7 +287,6 @@ pub struct ForgeRecipe {
     pub parent_recipe_id: Option<Uuid>,
 
     //--- Timestamps -------------------------------------------------------
-
     /// When the recipe was authored (epoch milliseconds UTC). Same
     /// convention as `Engram.admitted_at_ms` from the engram thread —
     /// `u64` epoch ms, not chrono::DateTime.
@@ -362,7 +354,11 @@ mod tests {
             calibration_corpus: sample_corpus(),
             quant_tiers: vec![QuantTier {
                 format: "gguf".to_string(),
-                variants: vec!["Q4_K_M".to_string(), "Q5_K_M".to_string(), "Q8_0".to_string()],
+                variants: vec![
+                    "Q4_K_M".to_string(),
+                    "Q5_K_M".to_string(),
+                    "Q8_0".to_string(),
+                ],
                 target_devices: vec!["m1-8gb".to_string(), "m5-pro".to_string()],
             }],
             evaluation_benchmarks: vec![BenchmarkDef {

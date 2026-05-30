@@ -648,11 +648,7 @@ mod piece_2_pr3_dispatch_tests {
             .await;
         runtime
             .bus()
-            .publish(
-                "anything/at/all",
-                serde_json::json!({}),
-                runtime.registry(),
-            )
+            .publish("anything/at/all", serde_json::json!({}), runtime.registry())
             .await;
 
         assert!(

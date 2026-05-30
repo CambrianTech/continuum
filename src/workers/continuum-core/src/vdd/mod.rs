@@ -17,7 +17,7 @@ pub use chat_roundtrip::{
 };
 pub use reader::{latest_per_scenario, read_records, VddReadOptions, VddRecordEntry};
 pub use record::{HarnessStatus, StandardVddRecord, VddError};
-pub use registry::{HARNESS_SPECS, HarnessCadence, HarnessId, HarnessSpec, harness_spec};
+pub use registry::{harness_spec, HarnessCadence, HarnessId, HarnessSpec, HARNESS_SPECS};
 pub use turn_replay::{
     read_fixture, LiveTurnReplayFixture, LiveTurnReplayWriter,
     LIVE_TURN_REPLAY_FIXTURE_SCHEMA_VERSION,

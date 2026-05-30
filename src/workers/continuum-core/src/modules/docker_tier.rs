@@ -41,7 +41,11 @@ use ts_rs::TS;
 
 /// Result of probing the Docker storage tier on the current host.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 #[ts(
     export,
     export_to = "../../../shared/generated/system/DockerTierProbe.ts"
@@ -77,10 +81,7 @@ pub enum DockerTierProbe {
     /// Returning the variant rather than panicking lets callers carry
     /// on (the resource manager treats unprobeable tiers as `unknown
     /// capacity` and refuses to bound on them).
-    Unsupported {
-        os: String,
-        reason: String,
-    },
+    Unsupported { os: String, reason: String },
 }
 
 impl DockerTierProbe {

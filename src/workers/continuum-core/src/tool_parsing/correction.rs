@@ -243,16 +243,12 @@ mod tests {
         let result = correct_tool_call("code/write", &params);
         assert_eq!(result.parameters.get("filePath").unwrap(), "/test.ts");
         assert_eq!(result.parameters.get("content").unwrap(), "hello world");
-        assert!(
-            result
-                .param_corrections
-                .contains(&"path -> filePath".to_string())
-        );
-        assert!(
-            result
-                .param_corrections
-                .contains(&"text -> content".to_string())
-        );
+        assert!(result
+            .param_corrections
+            .contains(&"path -> filePath".to_string()));
+        assert!(result
+            .param_corrections
+            .contains(&"text -> content".to_string()));
     }
 
     #[test]

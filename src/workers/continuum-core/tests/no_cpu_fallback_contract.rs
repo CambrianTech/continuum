@@ -25,14 +25,11 @@
 //!   https://github.com/CambrianTech/continuum/issues/1262#issuecomment-4461757997
 //!   https://github.com/CambrianTech/continuum/issues/1280#issuecomment-4462181316
 
-const LLAMACPP_BACKEND_SOURCE: &str =
-    include_str!("../src/inference/backends/llamacpp.rs");
+const LLAMACPP_BACKEND_SOURCE: &str = include_str!("../src/inference/backends/llamacpp.rs");
 
-const ORT_PROVIDERS_SOURCE: &str =
-    include_str!("../src/inference/ort_providers.rs");
+const ORT_PROVIDERS_SOURCE: &str = include_str!("../src/inference/ort_providers.rs");
 
-const LLAMACPP_ADAPTER_SOURCE: &str =
-    include_str!("../src/inference/llamacpp_adapter.rs");
+const LLAMACPP_ADAPTER_SOURCE: &str = include_str!("../src/inference/llamacpp_adapter.rs");
 
 // Candle-side sources surfaced by #1316 ALPHA-GAP finding #5: the
 // no_cpu_fallback contract test originally covered only llama.cpp +
@@ -43,20 +40,15 @@ const LLAMACPP_ADAPTER_SOURCE: &str =
 // of those paths without breaking this gate. The constants below close
 // that hole.
 
-const INFERENCE_GRPC_MODEL_SOURCE: &str =
-    include_str!("../../inference-grpc/src/model.rs");
+const INFERENCE_GRPC_MODEL_SOURCE: &str = include_str!("../../inference-grpc/src/model.rs");
 
-const ORPHEUS_TTS_SOURCE: &str =
-    include_str!("../src/live/audio/tts/orpheus.rs");
+const ORPHEUS_TTS_SOURCE: &str = include_str!("../src/live/audio/tts/orpheus.rs");
 
-const RESIDENCY_GATE_SOURCE: &str =
-    include_str!("../src/inference_capability/residency.rs");
+const RESIDENCY_GATE_SOURCE: &str = include_str!("../src/inference_capability/residency.rs");
 
-const ENFORCEMENT_SOURCE: &str =
-    include_str!("../src/inference_capability/enforcement.rs");
+const ENFORCEMENT_SOURCE: &str = include_str!("../src/inference_capability/enforcement.rs");
 
-const HW_PROBE_SOURCE: &str =
-    include_str!("../src/inference_capability/hw_probe.rs");
+const HW_PROBE_SOURCE: &str = include_str!("../src/inference_capability/hw_probe.rs");
 
 #[test]
 fn llamacpp_default_config_requires_full_gpu_offload() {
@@ -138,8 +130,7 @@ fn inference_grpc_select_best_device_hard_fails_on_no_gpu() {
     // someone silently re-add Device::Cpu as the "Ok" fallback.
     assert!(
         INFERENCE_GRPC_MODEL_SOURCE.contains("fn select_best_device")
-            && (INFERENCE_GRPC_MODEL_SOURCE
-                .contains("fn select_best_device() -> Result<Device")
+            && (INFERENCE_GRPC_MODEL_SOURCE.contains("fn select_best_device() -> Result<Device")
                 || INFERENCE_GRPC_MODEL_SOURCE
                     .contains("fn select_best_device() -> Result <Device")),
         "select_best_device must return Result<Device, ...>. If you changed the signature \
@@ -156,8 +147,7 @@ fn orpheus_tts_select_device_hard_fails_on_no_metal() {
     // caller sees the broken state instead of getting choppy CPU TTS.
 
     assert!(
-        ORPHEUS_TTS_SOURCE.contains("fn select_device") &&
-        ORPHEUS_TTS_SOURCE.contains("TTSError"),
+        ORPHEUS_TTS_SOURCE.contains("fn select_device") && ORPHEUS_TTS_SOURCE.contains("TTSError"),
         "orpheus.rs select_device must return Result<Device, TTSError> and refuse to fall \
          back to CPU. If you removed the Result return type or the TTSError variant, \
          the TTS path silently CPU-degrades — the exact bug #1312 fixed."
@@ -244,9 +234,9 @@ fn hw_probe_does_not_introduce_cpu_fallback() {
     // what's available).
 
     assert!(
-        HW_PROBE_SOURCE.contains("Probe NEVER panics") ||
-        HW_PROBE_SOURCE.contains("never panics") ||
-        HW_PROBE_SOURCE.contains("probe NEVER panics"),
+        HW_PROBE_SOURCE.contains("Probe NEVER panics")
+            || HW_PROBE_SOURCE.contains("never panics")
+            || HW_PROBE_SOURCE.contains("probe NEVER panics"),
         "hw_probe.rs must document its never-panic contract — the probe is called from \
          supervisor + adapter init code, panicking there crashes the process. Comment \
          is also the contract for reviewers: don't add a panic path here."

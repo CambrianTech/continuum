@@ -175,7 +175,10 @@ mod tests {
     #[test]
     fn pressure_above_one_clamps_to_100_pct() {
         let signal = alert_to_signal(&alert_at("critical", 1.5));
-        assert_eq!(signal, Some(PressureSignal::SystemMemHigh { used_pct: 100 }));
+        assert_eq!(
+            signal,
+            Some(PressureSignal::SystemMemHigh { used_pct: 100 })
+        );
     }
 
     /// What this catches: negative pressure clamps to used_pct = 0. A

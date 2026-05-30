@@ -171,11 +171,7 @@ fn build_input(fix: &Fixture, known_specialties: Vec<String>) -> RespondInput {
         // the room-level fields from the captured fixture, then bundles
         // them into Arc<TurnContext> so the constructed RespondInput
         // matches the live IPC path's shape.
-        turn_context: TurnContext::arc(
-            fix.rust_request.room_id,
-            recent_history,
-            known_specialties,
-        ),
+        turn_context: TurnContext::arc(fix.rust_request.room_id, recent_history, known_specialties),
         message_id: fix.rust_request.message_id,
         message_text: fix.rust_request.message_text.clone(),
         other_persona_names: Vec::new(),

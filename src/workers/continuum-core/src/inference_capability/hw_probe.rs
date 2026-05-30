@@ -174,7 +174,10 @@ fn try_detect_cuda() -> Option<(u64, String)> {
     {
         use std::process::Command;
         let output = Command::new("nvidia-smi")
-            .args(["--query-gpu=memory.total,name", "--format=csv,noheader,nounits"])
+            .args([
+                "--query-gpu=memory.total,name",
+                "--format=csv,noheader,nounits",
+            ])
             .output()
             .ok()?;
         let stdout = String::from_utf8(output.stdout).ok()?;
@@ -271,7 +274,11 @@ mod tests {
         assert!(!hw.has_metal);
         assert!(hw.has_cuda);
         assert!(hw.has_vulkan);
-        assert_eq!(hw.total_vram_bytes, 32 * 1024 * 1024 * 1024, "MAX of CUDA+Vulkan reports");
+        assert_eq!(
+            hw.total_vram_bytes,
+            32 * 1024 * 1024 * 1024,
+            "MAX of CUDA+Vulkan reports"
+        );
         assert_eq!(hw.cpu_cores, 32);
         assert_eq!(hw.system_ram_bytes, 128 * 1024 * 1024 * 1024);
     }
@@ -394,14 +401,7 @@ mod tests {
     /// doesn't itself silently fix bad inputs.
     #[test]
     fn zero_cpu_cores_propagates_to_profile() {
-        let hw = build_hardware_profile(
-            None,
-            None,
-            None,
-            0,
-            8 * 1024 * 1024 * 1024,
-            "test".into(),
-        );
+        let hw = build_hardware_profile(None, None, None, 0, 8 * 1024 * 1024 * 1024, "test".into());
         assert_eq!(hw.cpu_cores, 0);
     }
 
@@ -485,7 +485,11 @@ mod tests {
     fn live_probe_does_not_panic() {
         let hw = probe_hardware_profile();
         // Sanity: cpu_cores must be at least 1 (clamped)
-        assert!(hw.cpu_cores >= 1, "cpu_cores={} should be clamped >=1", hw.cpu_cores);
+        assert!(
+            hw.cpu_cores >= 1,
+            "cpu_cores={} should be clamped >=1",
+            hw.cpu_cores
+        );
         // Sanity: platform string is non-empty
         assert!(!hw.platform.is_empty());
         // Sanity: on a no-GPU-features build, all flags must be false

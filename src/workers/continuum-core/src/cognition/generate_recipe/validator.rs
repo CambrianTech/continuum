@@ -49,10 +49,21 @@ const VALID_ROLE_TYPES: &[&str] = &["organizational", "perceptual", "creative"];
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidationError {
     Missing(&'static str),
-    InvalidFormat { field: &'static str, value: String, expected: &'static str },
-    InvalidEnumValue { field: &'static str, value: String, allowed: &'static [&'static str] },
+    InvalidFormat {
+        field: &'static str,
+        value: String,
+        expected: &'static str,
+    },
+    InvalidEnumValue {
+        field: &'static str,
+        value: String,
+        allowed: &'static [&'static str],
+    },
     PipelineEmpty,
-    PipelineStepMissingField { index: usize, field: &'static str },
+    PipelineStepMissingField {
+        index: usize,
+        field: &'static str,
+    },
     DuplicateUniqueId(String),
 }
 
@@ -136,10 +147,7 @@ pub fn validate_recipe_structure(
                     field: "command",
                 });
             }
-            let has_params_object = step
-                .get("params")
-                .map(|v| v.is_object())
-                .unwrap_or(false);
+            let has_params_object = step.get("params").map(|v| v.is_object()).unwrap_or(false);
             if !has_params_object {
                 errors.push(ValidationError::PipelineStepMissingField {
                     index: idx,
@@ -250,10 +258,7 @@ pub fn validate_recipe_structure(
     // The filesystem collision check stays TS-side (RecipeLoader.getInstance().
     // getAllRecipes()), but the in-request check using the carrier list runs
     // here so the AI can be told "that ID is taken" without an extra IPC trip.
-    if !recipe.unique_id.is_empty()
-        && existing_recipe_ids
-            .iter()
-            .any(|id| id == &recipe.unique_id)
+    if !recipe.unique_id.is_empty() && existing_recipe_ids.iter().any(|id| id == &recipe.unique_id)
     {
         errors.push(ValidationError::DuplicateUniqueId(recipe.unique_id.clone()));
     }
@@ -298,10 +303,7 @@ mod tests {
     fn happy_path_well_formed_recipe_validates_clean() {
         let recipe = valid_minimal_recipe();
         let errors = validate_recipe_structure(&recipe, &[]);
-        assert!(
-            errors.is_empty(),
-            "expected no errors, got: {errors:?}"
-        );
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
     /// What this catches: missing top-level required fields are surfaced
@@ -358,7 +360,7 @@ mod tests {
         let mut recipe = valid_minimal_recipe();
         recipe.pipeline = vec![
             json!({"command": "rag/build", "params": {}}),
-            json!({}), // step 1 has neither command nor params
+            json!({}),                         // step 1 has neither command nor params
             json!({"command": "ai/generate"}), // step 2 has command but no params
         ];
         let errors = validate_recipe_structure(&recipe, &[]);

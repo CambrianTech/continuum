@@ -51,8 +51,7 @@ use super::recall::{RecallError, RecallScore, ResidencyHint};
 use super::recall_scoring::{score, DEFAULT_RECENCY_HALF_LIFE_MS};
 use super::recall_trait::{
     CapabilityQuery, CompositionHint, DemandAlignedRecall, EngramRef, LoRALayerRef, MoEExpertRef,
-    RankedPool, RecallContext, RecallScoreWeights,
-    RecallTrace,
+    RankedPool, RecallContext, RecallScoreWeights, RecallTrace,
 };
 use super::working_set::{ArtifactId, PageKind};
 
@@ -211,11 +210,7 @@ impl LocalDemandAlignedRecall {
     /// `SystemTime::now`) so callers can replay with snapshotted
     /// clocks — the spec requires replay determinism, and reading
     /// `now()` inside the ranker would break that.
-    pub fn rank(
-        &self,
-        now_ms: u64,
-        candidates: Vec<CandidateArtifact>,
-    ) -> RankedPool {
+    pub fn rank(&self, now_ms: u64, candidates: Vec<CandidateArtifact>) -> RankedPool {
         let mut layers: Vec<(LoRALayerRef, RecallScore, ResidencyHint)> = Vec::new();
         let mut experts: Vec<(MoEExpertRef, RecallScore, ResidencyHint)> = Vec::new();
         let mut engrams: Vec<(EngramRef, RecallScore, ResidencyHint)> = Vec::new();
@@ -238,9 +233,7 @@ impl LocalDemandAlignedRecall {
                 PageKind::MoEExpert => {
                     experts.push((MoEExpertRef(c.artifact_id), scored, c.residency))
                 }
-                PageKind::Engram => {
-                    engrams.push((EngramRef(c.artifact_id), scored, c.residency))
-                }
+                PageKind::Engram => engrams.push((EngramRef(c.artifact_id), scored, c.residency)),
                 PageKind::KVCache => {
                     // Spec's RankedPool has three sub-pools; KV
                     // cache pages are working-set state, not recall
@@ -437,7 +430,9 @@ mod tests {
     #[test]
     fn rank_partitions_by_kind_into_correct_sub_pool() {
         let r = LocalDemandAlignedRecall::new();
-        let residency = ResidencyHint::Hot { role: TierRole::Fast };
+        let residency = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
         let candidates = vec![
             cand(PageKind::LoRALayer, 1, 0.9, 0.5, residency.clone()),
             cand(PageKind::MoEExpert, 2, 0.8, 0.5, residency.clone()),
@@ -459,7 +454,9 @@ mod tests {
     #[test]
     fn rank_sorts_each_sub_pool_descending_by_combined() {
         let r = LocalDemandAlignedRecall::new();
-        let hot = ResidencyHint::Hot { role: TierRole::Fast };
+        let hot = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
         let candidates = vec![
             // Lower semantic
             cand(PageKind::LoRALayer, 10, 0.2, 0.5, hot.clone()),
@@ -493,7 +490,9 @@ mod tests {
     #[test]
     fn rank_silently_drops_kvcache_candidates() {
         let r = LocalDemandAlignedRecall::new();
-        let hot = ResidencyHint::Hot { role: TierRole::Fast };
+        let hot = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
         let candidates = vec![
             cand(PageKind::LoRALayer, 1, 0.9, 0.5, hot.clone()),
             cand(PageKind::KVCache, 2, 0.9, 0.5, hot.clone()),
@@ -513,7 +512,9 @@ mod tests {
     #[test]
     fn rank_score_factors_match_pr3a_for_each_candidate() {
         let r = LocalDemandAlignedRecall::new();
-        let hot = ResidencyHint::Hot { role: TierRole::Fast };
+        let hot = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
         let candidates = vec![cand(PageKind::LoRALayer, 1, 0.9, 0.8, hot.clone())];
         let now = 1_000_000;
         let pool = r.rank(now, candidates);
@@ -535,7 +536,9 @@ mod tests {
     #[test]
     fn rank_is_deterministic_across_calls() {
         let r = LocalDemandAlignedRecall::new();
-        let hot = ResidencyHint::Hot { role: TierRole::Fast };
+        let hot = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
         let candidates = vec![
             cand(PageKind::LoRALayer, 1, 0.9, 0.5, hot.clone()),
             cand(PageKind::LoRALayer, 2, 0.5, 0.5, hot),
@@ -553,7 +556,9 @@ mod tests {
     #[test]
     fn rank_includes_not_resident_candidates_at_lower_score() {
         let r = LocalDemandAlignedRecall::new();
-        let hot = ResidencyHint::Hot { role: TierRole::Fast };
+        let hot = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
         let not_res = ResidencyHint::NotResident {
             acquirable_from: AcquireSource::SentinelRefinement,
         };
@@ -586,21 +591,27 @@ mod tests {
                 1,
                 0.5,
                 0.5,
-                ResidencyHint::Local { role: TierRole::Frozen },
+                ResidencyHint::Local {
+                    role: TierRole::Frozen,
+                },
             ),
             cand(
                 PageKind::LoRALayer,
                 2,
                 0.5,
                 0.5,
-                ResidencyHint::Hot { role: TierRole::Fast },
+                ResidencyHint::Hot {
+                    role: TierRole::Fast,
+                },
             ),
             cand(
                 PageKind::LoRALayer,
                 3,
                 0.5,
                 0.5,
-                ResidencyHint::Local { role: TierRole::Bench },
+                ResidencyHint::Local {
+                    role: TierRole::Bench,
+                },
             ),
         ];
         let pool = r.rank(1000, candidates);
@@ -640,10 +651,10 @@ mod tests {
 
     // ─── PR-3c: trait impl + CandidateSource tests ─────────────
 
+    use crate::genome::recall::{FreshnessTarget, RecallError, RecallScope, TaskKind};
     use crate::genome::recall_trait::{
         CapabilityQuery, DemandAlignedRecall, DomainHint, RecallBudget, RecallContext, RecallTrace,
     };
-    use crate::genome::recall::{FreshnessTarget, RecallError, RecallScope, TaskKind};
     use crate::genome::working_set::PersonaId;
     use parking_lot::Mutex;
 
@@ -703,8 +714,7 @@ mod tests {
     /// use.
     #[tokio::test]
     async fn recall_dispatches_through_dyn_demand_aligned_recall() {
-        let recall: Arc<dyn DemandAlignedRecall> =
-            Arc::new(LocalDemandAlignedRecall::new());
+        let recall: Arc<dyn DemandAlignedRecall> = Arc::new(LocalDemandAlignedRecall::new());
         let ctx = RecallContext::cold_start(sample_persona());
         let pool = recall.recall(&sample_query(), &ctx).await.unwrap();
         assert!(pool.layers.is_empty());
@@ -730,7 +740,9 @@ mod tests {
     /// source's canned candidates land in the resulting pool.
     #[tokio::test]
     async fn recall_with_source_dispatches_to_fetch_and_ranks() {
-        let hot = ResidencyHint::Hot { role: super::super::tier::TierRole::Fast };
+        let hot = ResidencyHint::Hot {
+            role: super::super::tier::TierRole::Fast,
+        };
         let cand = CandidateArtifact {
             kind: PageKind::LoRALayer,
             artifact_id: ArtifactId::new(Uuid::from_u128(42)),
@@ -748,7 +760,7 @@ mod tests {
 
         assert_eq!(source.fetch_count(), 1, "source.fetch must be called once");
         assert_eq!(pool.layers.len(), 1);
-        assert_eq!(pool.layers[0].0.0.as_uuid(), Uuid::from_u128(42));
+        assert_eq!(pool.layers[0].0 .0.as_uuid(), Uuid::from_u128(42));
     }
 
     /// What this catches: with_config_and_source preserves all

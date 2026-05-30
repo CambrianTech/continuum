@@ -1,10 +1,10 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    AircEventTransport, AircQueueClient, AircQueueListRequest, AircQueueScanParams,
-    AircRealtimePublishParams, AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient,
-    DaemonAircEventTransport, InMemoryAircRealtimeStore, StoreAircEventTransport,
-    TokioAircCommandRunner, default_socket_path_in, spawn_daemon_attach,
+    default_socket_path_in, spawn_daemon_attach, AircEventTransport, AircQueueClient,
+    AircQueueListRequest, AircQueueScanParams, AircRealtimePublishParams, AircRealtimeReplayParams,
+    AircRealtimeStore, CliAircQueueClient, DaemonAircEventTransport, InMemoryAircRealtimeStore,
+    StoreAircEventTransport, TokioAircCommandRunner,
 };
 use crate::runtime::{
     CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ParamSchema,

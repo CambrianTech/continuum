@@ -24,6 +24,6 @@ pub use artifacts::{
     resolve_local_model_dir_for_model_id,
 };
 pub use catalog::{models as catalog_models, providers as catalog_providers};
-pub use loader::{Registry, RegistryError, load_models, load_providers, load_registry};
+pub use loader::{load_models, load_providers, load_registry, Registry, RegistryError};
 pub use singleton::{global, init_global, try_global};
 pub use types::{Arch, AuthKind, Capability, Model, Provider};

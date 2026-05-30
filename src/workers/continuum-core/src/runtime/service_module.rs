@@ -254,11 +254,7 @@ pub trait ServiceModule: Send + Sync + Any {
     /// this from the publisher's task; long work belongs in `tick` or
     /// in a spawned task. Errors are logged by the dispatcher; the
     /// publisher is not blocked by a slow subscriber.
-    async fn on_artifact_available(
-        &self,
-        _key: &ArtifactKey,
-        _value: Value,
-    ) -> Result<(), String> {
+    async fn on_artifact_available(&self, _key: &ArtifactKey, _value: Value) -> Result<(), String> {
         Ok(())
     }
 
@@ -296,11 +292,15 @@ mod tests {
                 tick_interval: None,
             }
         }
-        async fn initialize(&self, _ctx: &super::super::ModuleContext) -> Result<(), String> { Ok(()) }
+        async fn initialize(&self, _ctx: &super::super::ModuleContext) -> Result<(), String> {
+            Ok(())
+        }
         async fn handle_command(&self, _: &str, _: Value) -> Result<CommandResult, String> {
             Err("not handled".to_string())
         }
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     /// Module that opts in — represents what Lane D's persona modules
@@ -320,7 +320,9 @@ mod tests {
                 tick_interval: None,
             }
         }
-        async fn initialize(&self, _ctx: &super::super::ModuleContext) -> Result<(), String> { Ok(()) }
+        async fn initialize(&self, _ctx: &super::super::ModuleContext) -> Result<(), String> {
+            Ok(())
+        }
         async fn handle_command(&self, _: &str, _: Value) -> Result<CommandResult, String> {
             Err("not handled".to_string())
         }
@@ -350,7 +352,9 @@ mod tests {
             Ok(())
         }
 
-        fn as_any(&self) -> &dyn Any { self }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     /// What this catches: default-impl methods return the "no
@@ -364,10 +368,7 @@ mod tests {
         assert!(m.artifact_subscriptions().is_empty());
         assert_eq!(m.cadence(), None);
         let result = m
-            .on_artifact_available(
-                &ArtifactKey::from("anything/at/all"),
-                Value::Null,
-            )
+            .on_artifact_available(&ArtifactKey::from("anything/at/all"), Value::Null)
             .await;
         assert!(
             result.is_ok(),
@@ -397,7 +398,8 @@ mod tests {
             "opted-in module should subscribe to broker snapshot"
         );
         assert!(
-            !subs.iter()
+            !subs
+                .iter()
                 .any(|s| s.matches(&ArtifactKey::from("cognition/rate_proposals.result"))),
             "subscription set is bounded — random unrelated keys don't match"
         );

@@ -151,7 +151,9 @@ impl ResponderConfig {
     /// not inside the inference layer.
     pub fn validate(&self) -> Result<(), String> {
         if self.model.trim().is_empty() {
-            return Err("ResponderConfig.model is empty (persona must declare its model)".to_string());
+            return Err(
+                "ResponderConfig.model is empty (persona must declare its model)".to_string(),
+            );
         }
         if self.specialty.trim().is_empty() {
             return Err(
@@ -404,9 +406,8 @@ impl PersonaServiceModule {
         if item_type != "chat" {
             return Ok(ServicePopDecision::UnsupportedItem { item_type });
         }
-        let wire: ChatItemWire = serde_json::from_value(item_value).map_err(|e| {
-            format!("service_once_for: failed to deserialize chat item: {e}")
-        })?;
+        let wire: ChatItemWire = serde_json::from_value(item_value)
+            .map_err(|e| format!("service_once_for: failed to deserialize chat item: {e}"))?;
         let sender_is_human = matches!(wire.sender_type, SenderType::Human);
         let request = FullEvaluateRequest {
             persona_id: persona.persona_id,
@@ -559,9 +560,7 @@ impl PersonaServiceModule {
                         })?;
                         drained += 1;
                     }
-                    Ok(ServicePopDecision::NeedsResponse {
-                        respond_input, ..
-                    }) => {
+                    Ok(ServicePopDecision::NeedsResponse { respond_input, .. }) => {
                         // Lock is dropped here. respond() runs free.
                         let respond_result = self.responder.respond(*respond_input).await;
                         match respond_result {
@@ -667,11 +666,7 @@ impl ServiceModule for PersonaServiceModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "persona/status" => {
                 let snapshot = self.enrolled_snapshot()?;
@@ -838,8 +833,10 @@ mod tests {
     async fn enroll_is_idempotent_and_updates_display_name() {
         let m = fresh_module();
         let persona_id = Uuid::new_v4();
-        m.enroll(persona_id, "First", test_config()).expect("first enroll");
-        m.enroll(persona_id, "Second", test_config()).expect("second enroll");
+        m.enroll(persona_id, "First", test_config())
+            .expect("first enroll");
+        m.enroll(persona_id, "Second", test_config())
+            .expect("second enroll");
         assert_eq!(m.enrolled_count().unwrap(), 1);
         let snapshot = m.enrolled_snapshot().unwrap();
         assert_eq!(snapshot.len(), 1);
@@ -863,7 +860,10 @@ mod tests {
             .handle_command("persona/enroll", json!({"display_name": "Helper"}))
             .await
             .expect_err("enroll without persona_id must fail");
-        assert!(err.contains("persona_id"), "error names the missing param: {err}");
+        assert!(
+            err.contains("persona_id"),
+            "error names the missing param: {err}"
+        );
     }
 
     #[tokio::test]
@@ -918,7 +918,8 @@ mod tests {
     async fn tick_with_enrolled_persona_and_no_items_is_no_op() {
         let m = fresh_module();
         let persona_id = Uuid::new_v4();
-        m.enroll(persona_id, "Helper", test_config()).expect("enroll");
+        m.enroll(persona_id, "Helper", test_config())
+            .expect("enroll");
         // No items in any channel — tick should drain nothing, errors zero.
         m.tick().await.expect("tick succeeds with idle persona");
         assert_eq!(m.enrolled_count().unwrap(), 1);
@@ -973,7 +974,8 @@ mod tests {
     async fn service_once_for_idle_returns_idle() {
         let m = fresh_module();
         let persona_id = Uuid::new_v4();
-        m.enroll(persona_id, "Helper", test_config()).expect("enroll");
+        m.enroll(persona_id, "Helper", test_config())
+            .expect("enroll");
         let mut personas = m.personas.lock().unwrap();
         let persona = personas.get_mut(&persona_id).unwrap();
         ensure_chat_channel(persona);
@@ -986,7 +988,8 @@ mod tests {
     async fn service_once_for_dispatches_chat_item_through_full_evaluate() {
         let m = fresh_module();
         let persona_id = Uuid::new_v4();
-        m.enroll(persona_id, "Helper", test_config()).expect("enroll");
+        m.enroll(persona_id, "Helper", test_config())
+            .expect("enroll");
         let room_id = Uuid::new_v4();
         let mut personas = m.personas.lock().unwrap();
         let persona = personas.get_mut(&persona_id).unwrap();
@@ -997,8 +1000,8 @@ mod tests {
             .channels
             .route(Box::new(item))
             .expect("route chat item to Chat channel");
-        let outcome =
-            PersonaServiceModule::service_once_for(persona, 1_700_000_000_000).expect("dispatch ok");
+        let outcome = PersonaServiceModule::service_once_for(persona, 1_700_000_000_000)
+            .expect("dispatch ok");
         // Sender is human + persona is not in DND + no rate limit → gate
         // says respond → NeedsResponse with a fully-formed RespondInput.
         match outcome {
@@ -1068,7 +1071,10 @@ mod tests {
             )
             .await
             .expect_err("enroll command must require model");
-        assert!(err.contains("model"), "error names the missing param: {err}");
+        assert!(
+            err.contains("model"),
+            "error names the missing param: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1089,7 +1095,9 @@ mod tests {
                     .expect("route");
             }
         }
-        m.drain_all_personas(1_700_000_000_000).await.expect("drain ok");
+        m.drain_all_personas(1_700_000_000_000)
+            .await
+            .expect("drain ok");
         // Both personas should be healthy: zero consecutive failures,
         // closed circuit.
         let personas = m.personas.lock().unwrap();
@@ -1106,7 +1114,8 @@ mod tests {
         // processed; the remainder stays queued.
         let m = fresh_module();
         let persona_id = Uuid::new_v4();
-        m.enroll(persona_id, "Helper", test_config()).expect("enroll");
+        m.enroll(persona_id, "Helper", test_config())
+            .expect("enroll");
         let room_id = Uuid::new_v4();
         let staged = MAX_DRAIN_PER_TICK as usize + 5;
         {
@@ -1119,13 +1128,12 @@ mod tests {
                 let mut item = test_chat_item(&format!("msg {i}"), true, room_id);
                 // Vary timestamps so consolidation orders deterministically.
                 item.timestamp = 1_700_000_000_000 + i as u64;
-                persona
-                    .channels
-                    .route(Box::new(item))
-                    .expect("route item");
+                persona.channels.route(Box::new(item)).expect("route item");
             }
         }
-        m.drain_all_personas(1_700_000_000_000).await.expect("drain ok");
+        m.drain_all_personas(1_700_000_000_000)
+            .await
+            .expect("drain ok");
         // After one drain pass, the queue should NOT be empty (we
         // staged more than the per-tick cap and ChatQueueItem
         // consolidates same-room items, so the actual count drained
@@ -1180,7 +1188,9 @@ mod tests {
         }
     }
 
-    fn module_with_responder(script: ResponderScript) -> (PersonaServiceModule, Arc<MockResponder>) {
+    fn module_with_responder(
+        script: ResponderScript,
+    ) -> (PersonaServiceModule, Arc<MockResponder>) {
         let mock = Arc::new(MockResponder {
             call_count: AtomicU32::new(0),
             scripted: script,
@@ -1194,8 +1204,7 @@ mod tests {
 
     #[tokio::test]
     async fn drain_calls_responder_when_gate_says_yes() {
-        let (m, mock) =
-            module_with_responder(ResponderScript::AlwaysSpoke("howdy".to_string()));
+        let (m, mock) = module_with_responder(ResponderScript::AlwaysSpoke("howdy".to_string()));
         let persona_id = Uuid::new_v4();
         m.enroll(persona_id, "Helper", test_config())
             .expect("enroll");
@@ -1230,8 +1239,7 @@ mod tests {
         // ai-sender + no @mention → response_cap / sender filter typically
         // gates it silent. Either way, if SilentByDecision fires, the
         // responder must NOT be invoked.
-        let (m, mock) =
-            module_with_responder(ResponderScript::AlwaysSpoke("never".to_string()));
+        let (m, mock) = module_with_responder(ResponderScript::AlwaysSpoke("never".to_string()));
         let persona_id = Uuid::new_v4();
         m.enroll(persona_id, "Helper", test_config())
             .expect("enroll");
@@ -1267,9 +1275,8 @@ mod tests {
         // at MAX_DRAIN_PER_TICK (20) per tick AND breaks on inference
         // error. So each tick we hit exactly ONE inference error before
         // breaking. We drive 15 ticks.
-        let (m, mock) = module_with_responder(ResponderScript::AlwaysErr(
-            "model not loaded".to_string(),
-        ));
+        let (m, mock) =
+            module_with_responder(ResponderScript::AlwaysErr("model not loaded".to_string()));
         let persona_id = Uuid::new_v4();
         m.enroll(persona_id, "Helper", test_config())
             .expect("enroll");
@@ -1296,8 +1303,7 @@ mod tests {
         let personas = m.personas.lock().unwrap();
         let p = personas.get(&persona_id).unwrap();
         assert_eq!(
-            p.consecutive_inference_failures,
-            CIRCUIT_BREAKER_MAX_CONSECUTIVE_INFERENCE_FAILURES,
+            p.consecutive_inference_failures, CIRCUIT_BREAKER_MAX_CONSECUTIVE_INFERENCE_FAILURES,
             "inference failure counter should equal the threshold"
         );
         assert_ne!(
@@ -1309,9 +1315,8 @@ mod tests {
     #[tokio::test]
     async fn inference_failure_below_threshold_does_not_trip_circuit() {
         // 1 inference error → counter at 1, circuit still closed.
-        let (m, _mock) = module_with_responder(ResponderScript::AlwaysErr(
-            "transient hiccup".to_string(),
-        ));
+        let (m, _mock) =
+            module_with_responder(ResponderScript::AlwaysErr("transient hiccup".to_string()));
         let persona_id = Uuid::new_v4();
         m.enroll(persona_id, "Helper", test_config())
             .expect("enroll");

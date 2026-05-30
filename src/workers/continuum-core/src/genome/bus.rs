@@ -80,11 +80,7 @@ pub const ACCESS_DENIED_KEY: &str = "genome/working_set.access_denied";
 /// serialize cleanly, so a failure here would indicate substrate
 /// corruption, not a user-visible bug. The trace bus still fires
 /// (with empty payload) so subscribers see something happened.
-pub async fn publish_page_fault(
-    bus: &MessageBus,
-    registry: &ModuleRegistry,
-    fault: &PageFault,
-) {
+pub async fn publish_page_fault(bus: &MessageBus, registry: &ModuleRegistry, fault: &PageFault) {
     let payload = serde_json::to_value(fault).unwrap_or(serde_json::Value::Null);
     bus.publish(PAGE_FAULT_KEY, payload, registry).await;
 }
@@ -157,9 +153,7 @@ mod tests {
     //! dispatch path end-to-end for genome events.
     use super::*;
     use crate::genome::tier::{EvictionPolicy, TierRole};
-    use crate::genome::working_set::{
-        ArtifactId, PageKind, PageOffset, PageRef, PersonaId,
-    };
+    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, PageRef, PersonaId};
     use crate::runtime::runtime::Runtime;
     use crate::runtime::service_module::{
         CommandResult, ModuleConfig, ModulePriority, ServiceModule,
@@ -202,10 +196,7 @@ mod tests {
                 tick_interval: None,
             }
         }
-        async fn initialize(
-            &self,
-            _ctx: &crate::runtime::ModuleContext,
-        ) -> Result<(), String> {
+        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
             Ok(())
         }
         async fn handle_command(
@@ -223,7 +214,9 @@ mod tests {
             key: &ArtifactKey,
             payload: serde_json::Value,
         ) -> Result<(), String> {
-            self.captured.lock().push((key.as_str().to_string(), payload));
+            self.captured
+                .lock()
+                .push((key.as_str().to_string(), payload));
             Ok(())
         }
         fn as_any(&self) -> &dyn Any {
@@ -299,10 +292,7 @@ mod tests {
         publish_page_fault(runtime.bus(), runtime.registry(), &fault).await;
 
         let events = captured.lock().clone();
-        let fault_events: Vec<_> = events
-            .iter()
-            .filter(|(k, _)| k == PAGE_FAULT_KEY)
-            .collect();
+        let fault_events: Vec<_> = events.iter().filter(|(k, _)| k == PAGE_FAULT_KEY).collect();
         assert_eq!(fault_events.len(), 1);
         let (_, payload) = fault_events[0];
         // Payload round-trips back into PageFault — the serde shape
@@ -336,8 +326,7 @@ mod tests {
             .filter(|(k, _)| k == EVICTION_RECORD_KEY)
             .collect();
         assert_eq!(evict_events.len(), 1);
-        let back: EvictionRecord =
-            serde_json::from_value(evict_events[0].1.clone()).unwrap();
+        let back: EvictionRecord = serde_json::from_value(evict_events[0].1.clone()).unwrap();
         assert_eq!(back, record);
     }
 
@@ -365,8 +354,7 @@ mod tests {
             .filter(|(k, _)| k == ACCESS_DENIED_KEY)
             .collect();
         assert_eq!(denied_events.len(), 1);
-        let back: AccessDenied =
-            serde_json::from_value(denied_events[0].1.clone()).unwrap();
+        let back: AccessDenied = serde_json::from_value(denied_events[0].1.clone()).unwrap();
         assert_eq!(back, denied);
     }
 
@@ -440,10 +428,7 @@ mod tests {
                     tick_interval: None,
                 }
             }
-            async fn initialize(
-                &self,
-                _: &crate::runtime::ModuleContext,
-            ) -> Result<(), String> {
+            async fn initialize(&self, _: &crate::runtime::ModuleContext) -> Result<(), String> {
                 Ok(())
             }
             async fn handle_command(
@@ -494,7 +479,11 @@ mod tests {
         publish_eviction_record(runtime.bus(), runtime.registry(), &evict).await;
 
         let events = captured.lock().clone();
-        assert_eq!(events.len(), 1, "only one event delivered to selective subscriber");
+        assert_eq!(
+            events.len(),
+            1,
+            "only one event delivered to selective subscriber"
+        );
         assert_eq!(events[0], PAGE_FAULT_KEY);
     }
 }

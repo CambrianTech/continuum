@@ -64,7 +64,10 @@ pub const CASCADE_STEP_MAX: u8 = 5;
 /// rewrite the policy.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
-#[ts(export, export_to = "../../../shared/generated/governor/CascadeAction.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/CascadeAction.ts"
+)]
 pub enum CascadeAction {
     /// Keep the current step. The pressure signal didn't cross any
     /// threshold (or didn't cross it for long enough).
@@ -90,11 +93,14 @@ pub enum CascadeAction {
 /// for the M-Air anchor + 5090 anchor).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/governor/CascadeThresholds.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/CascadeThresholds.ts"
+)]
 pub struct CascadeThresholds {
     // Step 1: speculation miss + queue depth + VRAM
-    pub spec_miss_rate_advance: f32,    // > → advance to step 1
-    pub spec_miss_rate_retreat: f32,    // < → retreat from step 1
+    pub spec_miss_rate_advance: f32, // > → advance to step 1
+    pub spec_miss_rate_retreat: f32, // < → retreat from step 1
     #[ts(type = "number")]
     pub inference_queue_depth_advance: u32, // > → advance
     #[ts(type = "number")]
@@ -416,8 +422,11 @@ pub fn apply_cascade_step_to_policy(
 
     // Step 2+: personas_concurrent -= 1, defer non-realtime
     if step >= 2 {
-        policy.concurrency_caps.personas_concurrent =
-            base.concurrency_caps.personas_concurrent.saturating_sub(1).max(1);
+        policy.concurrency_caps.personas_concurrent = base
+            .concurrency_caps
+            .personas_concurrent
+            .saturating_sub(1)
+            .max(1);
         // delayed + background cadence stretched (max with 2.0 so
         // already-stretched values aren't shrunk)
         policy.cadence_multipliers.delayed = base.cadence_multipliers.delayed.max(2.0);
@@ -439,8 +448,7 @@ pub fn apply_cascade_step_to_policy(
 
     // Step 5: consolidation Manual
     if step >= 5 {
-        policy.consolidation_schedule =
-            crate::governor::types::ConsolidationSchedule::Manual;
+        policy.consolidation_schedule = crate::governor::types::ConsolidationSchedule::Manual;
     }
 
     policy
@@ -557,11 +565,7 @@ mod tests {
     /// What this catches: VRAM > 85% triggers Advance.
     #[test]
     fn vram_high_at_step_0_advances() {
-        let action = evaluate_next_step(
-            0,
-            &PressureSignal::VRAMHigh { used_pct: 90 },
-            &thresh(),
-        );
+        let action = evaluate_next_step(0, &PressureSignal::VRAMHigh { used_pct: 90 }, &thresh());
         assert_eq!(action, CascadeAction::Advance);
     }
 
@@ -569,11 +573,7 @@ mod tests {
     /// advance. Boundary.
     #[test]
     fn vram_at_threshold_doesnt_advance() {
-        let action = evaluate_next_step(
-            0,
-            &PressureSignal::VRAMHigh { used_pct: 85 },
-            &thresh(),
-        );
+        let action = evaluate_next_step(0, &PressureSignal::VRAMHigh { used_pct: 85 }, &thresh());
         assert_eq!(action, CascadeAction::Hold);
     }
 
@@ -602,7 +602,11 @@ mod tests {
                 &PressureSignal::SpeculationMissRate { rate: *rate },
                 &thresh(),
             );
-            assert_eq!(action, CascadeAction::Hold, "rate {rate} should Hold in gap");
+            assert_eq!(
+                action,
+                CascadeAction::Hold,
+                "rate {rate} should Hold in gap"
+            );
         }
     }
 
@@ -620,11 +624,7 @@ mod tests {
     /// What this catches: VRAM < 70 at step 1 retreats.
     #[test]
     fn vram_low_at_step_1_retreats() {
-        let action = evaluate_next_step(
-            1,
-            &PressureSignal::VRAMHigh { used_pct: 60 },
-            &thresh(),
-        );
+        let action = evaluate_next_step(1, &PressureSignal::VRAMHigh { used_pct: 60 }, &thresh());
         assert_eq!(action, CascadeAction::Retreat);
     }
 
@@ -667,7 +667,11 @@ mod tests {
                 },
                 &thresh(),
             );
-            assert_eq!(action, CascadeAction::Retreat, "severity={severity:?} should retreat");
+            assert_eq!(
+                action,
+                CascadeAction::Retreat,
+                "severity={severity:?} should retreat"
+            );
         }
     }
 
@@ -732,7 +736,11 @@ mod tests {
                 },
                 &thresh(),
             );
-            assert_eq!(action, CascadeAction::Hold, "severity={non_cool:?} at max step holds");
+            assert_eq!(
+                action,
+                CascadeAction::Hold,
+                "severity={non_cool:?} at max step holds"
+            );
         }
     }
 
@@ -745,11 +753,8 @@ mod tests {
     fn user_active_holds_at_every_step() {
         for step in 0..=CASCADE_STEP_MAX {
             for foreground in [true, false] {
-                let action = evaluate_next_step(
-                    step,
-                    &PressureSignal::UserActive { foreground },
-                    &thresh(),
-                );
+                let action =
+                    evaluate_next_step(step, &PressureSignal::UserActive { foreground }, &thresh());
                 assert_eq!(
                     action,
                     CascadeAction::Hold,
@@ -774,7 +779,10 @@ mod tests {
     fn apply_advance_bumps_one_capped_at_max() {
         assert_eq!(apply_action(0, CascadeAction::Advance), 1);
         assert_eq!(apply_action(3, CascadeAction::Advance), 4);
-        assert_eq!(apply_action(CASCADE_STEP_MAX, CascadeAction::Advance), CASCADE_STEP_MAX);
+        assert_eq!(
+            apply_action(CASCADE_STEP_MAX, CascadeAction::Advance),
+            CASCADE_STEP_MAX
+        );
     }
 
     /// What this catches: Retreat drops by 1, saturated at MIN.
@@ -931,12 +939,18 @@ mod tests {
         let base = base_policy_5090();
         let after = apply_cascade_step_to_policy(&base, 0);
         assert_eq!(after.cascade_step, 0);
-        assert_eq!(after.speculation_aggressiveness, base.speculation_aggressiveness);
+        assert_eq!(
+            after.speculation_aggressiveness,
+            base.speculation_aggressiveness
+        );
         assert_eq!(
             after.concurrency_caps.personas_concurrent,
             base.concurrency_caps.personas_concurrent
         );
-        assert_eq!(after.tier_sizes.l1_lora_layers, base.tier_sizes.l1_lora_layers);
+        assert_eq!(
+            after.tier_sizes.l1_lora_layers,
+            base.tier_sizes.l1_lora_layers
+        );
         assert_eq!(after.consolidation_schedule, base.consolidation_schedule);
     }
 
@@ -946,7 +960,10 @@ mod tests {
     #[test]
     fn apply_step_1_drops_speculation_aggressive_to_balanced() {
         let base = base_policy_5090();
-        assert_eq!(base.speculation_aggressiveness, SpeculationLevel::Aggressive);
+        assert_eq!(
+            base.speculation_aggressiveness,
+            SpeculationLevel::Aggressive
+        );
         let after = apply_cascade_step_to_policy(&base, 1);
         assert_eq!(after.cascade_step, 1);
         assert_eq!(after.speculation_aggressiveness, SpeculationLevel::Balanced);
@@ -982,7 +999,7 @@ mod tests {
         let after = apply_cascade_step_to_policy(&base, 2);
         assert_eq!(after.cascade_step, 2);
         assert_eq!(after.concurrency_caps.personas_concurrent, 7); // 8 - 1
-        // Cumulative: step 1's speculation drop still applies
+                                                                   // Cumulative: step 1's speculation drop still applies
         assert_eq!(after.speculation_aggressiveness, SpeculationLevel::Balanced);
     }
 
@@ -1003,7 +1020,10 @@ mod tests {
     fn apply_step_2_stretches_non_realtime_cadence() {
         let base = base_policy_5090();
         let after = apply_cascade_step_to_policy(&base, 2);
-        assert_eq!(after.cadence_multipliers.realtime, base.cadence_multipliers.realtime);
+        assert_eq!(
+            after.cadence_multipliers.realtime,
+            base.cadence_multipliers.realtime
+        );
         assert!(after.cadence_multipliers.delayed >= 2.0);
         assert!(after.cadence_multipliers.background >= 2.0);
     }
@@ -1028,8 +1048,11 @@ mod tests {
         assert_eq!(after.cascade_step, 3);
         assert_eq!(after.tier_sizes.l1_lora_layers, 6); // 8 * 0.75
         assert_eq!(after.tier_sizes.l1_kv_tokens, 12288); // 16384 * 0.75
-        // L2/L3 untouched at step 3
-        assert_eq!(after.tier_sizes.l2_lora_layers, base.tier_sizes.l2_lora_layers);
+                                                          // L2/L3 untouched at step 3
+        assert_eq!(
+            after.tier_sizes.l2_lora_layers,
+            base.tier_sizes.l2_lora_layers
+        );
     }
 
     /// What this catches: l1 floor at 1 when base is already small.
@@ -1133,8 +1156,7 @@ mod tests {
         // But tier_sizes is STILL shrunk (step 0 doesn't undo step 3's
         // shrink — it just doesn't re-apply it from a now-shrunk base).
         assert_eq!(
-            reset_attempt.tier_sizes.l1_lora_layers,
-            throttled.tier_sizes.l1_lora_layers,
+            reset_attempt.tier_sizes.l1_lora_layers, throttled.tier_sizes.l1_lora_layers,
             "step 0 from transformed policy ≠ base; caller MUST hold base separately"
         );
     }

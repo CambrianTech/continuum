@@ -276,8 +276,14 @@ impl ChatQueueItem {
         // VideoFrameQueueItem / GameMoveQueueItem can choose different
         // trigger rules appropriate to their domain.
         let latest_with_media = all_messages.iter().rev().find(|m| !m.media.is_empty());
-        let trigger = latest_with_media.copied().unwrap_or(*all_messages.last().unwrap());
-        let prior: Vec<&ChatQueueItem> = all_messages.iter().copied().filter(|m| m.id != trigger.id).collect();
+        let trigger = latest_with_media
+            .copied()
+            .unwrap_or(*all_messages.last().unwrap());
+        let prior: Vec<&ChatQueueItem> = all_messages
+            .iter()
+            .copied()
+            .filter(|m| m.id != trigger.id)
+            .collect();
 
         // Build consolidated context
         let mut context: Vec<ConsolidatedContext> = self.consolidated_context.clone();

@@ -65,10 +65,10 @@
 use continuum_core::ai::types::{ContentPart, MessageContent};
 use continuum_core::cognition::tool_executor::types::MediaItemLite;
 use continuum_core::model_registry::Capability;
-use continuum_core::persona::prompt_assembly::PromptMessage;
 use continuum_core::persona::cognition_io::{
     build_respond_input, PersonaContext, Signal, SignalKind, SignalOriginator,
 };
+use continuum_core::persona::prompt_assembly::PromptMessage;
 use continuum_core::persona::response::build_messages_with_media;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -215,9 +215,10 @@ fn signal_and_ctx_from_legacy_fixture(
     // New shape (post-IPC-reshape commit 983d30102): rust_request already
     // has `signal` + `personaContext` as nested objects matching the wire
     // shape exactly. Deserialize directly. No reconstruction needed.
-    if let (Some(signal_json), Some(ctx_json)) =
-        (rust_request.get("signal"), rust_request.get("personaContext"))
-    {
+    if let (Some(signal_json), Some(ctx_json)) = (
+        rust_request.get("signal"),
+        rust_request.get("personaContext"),
+    ) {
         let signal: Signal = serde_json::from_value(signal_json.clone())
             .map_err(|e| format!("new-shape signal deserialize failed: {e}"))?;
         let ctx: PersonaContext = serde_json::from_value(ctx_json.clone())
@@ -286,7 +287,9 @@ fn signal_and_ctx_from_legacy_fixture(
         kind: SignalKind::ChatMessage,
         text: message_text,
         media,
-        originator: SignalOriginator::User { user_id: Uuid::nil() },
+        originator: SignalOriginator::User {
+            user_id: Uuid::nil(),
+        },
         timestamp_ms: 0,
         message_id: Some(message_id),
     };
@@ -334,7 +337,9 @@ fn fixtures_replay_through_message_builder() {
         let prompt = synth_prompt_messages(rust_request);
         let out = build_messages_with_media(prompt, &media, &caps);
 
-        let last = out.last().expect("builder always returns at least one message");
+        let last = out
+            .last()
+            .expect("builder always returns at least one message");
         let image_parts: Vec<&ContentPart> = match &last.content {
             MessageContent::Text(_) => Vec::new(),
             MessageContent::Parts(parts) => parts
@@ -493,8 +498,10 @@ async fn ensure_llamacpp_qwen2vl_registered() -> Option<()> {
         if !gguf_path.exists() {
             continue;
         }
-        let mut adapter: Box<dyn AIProviderAdapter> =
-            Box::new(LlamaCppAdapter::with_model_id(gguf_path.clone(), m.id.clone()));
+        let mut adapter: Box<dyn AIProviderAdapter> = Box::new(LlamaCppAdapter::with_model_id(
+            gguf_path.clone(),
+            m.id.clone(),
+        ));
         adapter
             .initialize()
             .await
@@ -537,10 +544,7 @@ async fn vision_fixture_describes_image_via_real_model() {
             let caps = extract_capabilities(rust_request);
             let has_real_image = media.iter().any(|m| {
                 m.item_type == "image"
-                    && m.base64
-                        .as_deref()
-                        .map(|b| !b.is_empty())
-                        .unwrap_or(false)
+                    && m.base64.as_deref().map(|b| !b.is_empty()).unwrap_or(false)
             });
             has_real_image && caps.contains(&Capability::Vision)
         })
@@ -602,7 +606,9 @@ async fn vision_fixture_describes_image_via_real_model() {
         let (signal, ctx) = match signal_and_ctx_from_legacy_fixture(rust_request) {
             Ok(pair) => pair,
             Err(e) => {
-                failures.push(format!("[{fname}] could not build Signal+PersonaContext: {e}"));
+                failures.push(format!(
+                    "[{fname}] could not build Signal+PersonaContext: {e}"
+                ));
                 continue;
             }
         };
@@ -647,7 +653,9 @@ async fn vision_fixture_describes_image_via_real_model() {
                      a response. reason: {reason}"
                 ));
             }
-            PersonaResponse::Spoke { text, model_used, .. } => {
+            PersonaResponse::Spoke {
+                text, model_used, ..
+            } => {
                 let trimmed = text.trim();
                 if trimmed.len() < 30 {
                     failures.push(format!(

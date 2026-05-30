@@ -291,10 +291,14 @@ pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
         .max()
         .unwrap_or(0);
 
-    let first_response_budget_ms =
-        effective_budget_ms(req.first_response_budget_ms, default_first_response_budget_ms());
-    let all_responses_budget_ms =
-        effective_budget_ms(req.all_responses_budget_ms, default_all_responses_budget_ms());
+    let first_response_budget_ms = effective_budget_ms(
+        req.first_response_budget_ms,
+        default_first_response_budget_ms(),
+    );
+    let all_responses_budget_ms = effective_budget_ms(
+        req.all_responses_budget_ms,
+        default_all_responses_budget_ms(),
+    );
 
     RecipeTurnBatchPlan {
         turn_key,
@@ -611,21 +615,13 @@ mod tests {
         let mut req = request();
         req.local_inference_capacity = 1;
         req.personas = vec![
-            candidate(
-                "11111111-1111-4111-8111-111111111111",
-                "Local One",
-                "local",
-            ),
+            candidate("11111111-1111-4111-8111-111111111111", "Local One", "local"),
             candidate(
                 "22222222-2222-4222-8222-222222222222",
                 "Cloud One",
                 "anthropic",
             ),
-            candidate(
-                "33333333-3333-4333-8333-333333333333",
-                "Local Two",
-                "local",
-            ),
+            candidate("33333333-3333-4333-8333-333333333333", "Local Two", "local"),
         ];
         req.personas[1].model = "claude-opus-4.1".to_string();
 

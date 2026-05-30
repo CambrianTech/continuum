@@ -74,10 +74,7 @@ impl ArtifactId {
 /// differently from a `LoRALayer` page even within the same tier).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/PageKind.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/PageKind.ts")]
 pub enum PageKind {
     /// One layer slice of a LoRA adapter (Q, K, V, or O projection of
     /// a transformer block).
@@ -100,10 +97,7 @@ pub enum PageKind {
 /// a hook to enforce "this PageRef points inside ArtifactId X".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/PageOffset.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/PageOffset.ts")]
 pub enum PageOffset {
     /// The page IS the whole artifact (LoRA layer adapter, single
     /// engram). No sub-artifact split.
@@ -134,10 +128,7 @@ pub enum PageOffset {
 /// `WorkingSet.pages`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/PageRef.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/PageRef.ts")]
 pub struct PageRef {
     pub kind: PageKind,
     pub artifact: ArtifactId,
@@ -151,10 +142,7 @@ pub struct PageRef {
 /// pin the handle (Fast / Warm) or stream-read it (Cold / Frozen).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/PageHandle.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/PageHandle.ts")]
 pub struct PageHandle {
     pub page: PageRef,
     pub tier_role: TierRole,
@@ -177,10 +165,7 @@ pub struct PageHandle {
 /// in caller-side `Instant`s.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/ResidentPage.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/ResidentPage.ts")]
 pub struct ResidentPage {
     pub page: PageRef,
     pub role: TierRole,
@@ -229,10 +214,7 @@ pub struct WorkingSetCapacity {
 /// instead of BTreeMap because access is by exact match, not range.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/WorkingSet.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/WorkingSet.ts")]
 pub struct WorkingSet {
     pub persona: PersonaId,
     /// All resident pages for this persona, keyed by a stringified
@@ -261,8 +243,7 @@ impl WorkingSet {
     pub fn invariants_hold(&self) -> bool {
         for (key, page) in &self.pages {
             // PageRef key serialization matches the stored page.
-            let expected_key =
-                serde_json::to_string(&page.page).unwrap_or_default();
+            let expected_key = serde_json::to_string(&page.page).unwrap_or_default();
             if key != &expected_key {
                 return false;
             }
@@ -287,10 +268,7 @@ impl WorkingSet {
 /// page existed in `role` and got moved up.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/PageFault.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/PageFault.ts")]
 pub struct PageFault {
     pub page: PageRef,
     /// Where the page was before the fault. `None` for true cold
@@ -324,10 +302,7 @@ pub struct PageFault {
 /// its `AccessDenied` audit-log inputs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/genome/AccessDenied.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/genome/AccessDenied.ts")]
 pub struct AccessDenied {
     /// Which persona attempted the access.
     pub actor: PersonaId,
@@ -436,7 +411,10 @@ mod tests {
             serde_json::to_string(&PageKind::KVCache).unwrap(),
             "\"kVCache\""
         );
-        assert_eq!(serde_json::to_string(&PageKind::Engram).unwrap(), "\"engram\"");
+        assert_eq!(
+            serde_json::to_string(&PageKind::Engram).unwrap(),
+            "\"engram\""
+        );
     }
 
     /// What this catches: PageOffset's tagged enum form on the wire.

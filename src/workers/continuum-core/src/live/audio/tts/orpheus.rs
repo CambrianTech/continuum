@@ -206,7 +206,9 @@ impl OrpheusTts {
         // run on GPU. Pre-this-PR Orpheus never configured an EP at all,
         // so ORT's implicit CPU EP took every op silently.
         let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
-            .map_err(|e| TTSError::ModelNotLoaded(format!("ORT GPU EP setup failed (Orpheus SNAC): {e}")))?;
+            .map_err(|e| {
+                TTSError::ModelNotLoaded(format!("ORT GPU EP setup failed (Orpheus SNAC): {e}"))
+            })?;
         Session::builder()
             .map_err(|e| TTSError::ModelNotLoaded(format!("SNAC session builder: {e}")))?
             .with_execution_providers(providers)

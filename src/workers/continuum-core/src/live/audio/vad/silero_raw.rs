@@ -162,7 +162,9 @@ impl VoiceActivityDetection for SileroRawVAD {
         // must run on GPU. Pre-this-PR Silero never configured an EP at all,
         // so ORT's implicit CPU EP took every op silently.
         let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
-            .map_err(|e| VADError::ModelNotLoaded(format!("ORT GPU EP setup failed (Silero VAD raw): {e}")))?;
+            .map_err(|e| {
+                VADError::ModelNotLoaded(format!("ORT GPU EP setup failed (Silero VAD raw): {e}"))
+            })?;
         // Load ONNX model
         let session = Session::builder()
             .map_err(|e| VADError::ModelNotLoaded(e.to_string()))?

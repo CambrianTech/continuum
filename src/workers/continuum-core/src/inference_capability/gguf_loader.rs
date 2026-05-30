@@ -190,10 +190,10 @@ pub(crate) fn file_type_to_bytes_per_param(ft: u32) -> Result<f64, String> {
     // Source: llama.cpp ggml-quants.h ggml_ftype enum + bits-per-weight
     // for each quantization scheme. Divided by 8 for bytes-per-weight.
     match ft {
-        0 => Ok(4.0),           // ALL_F32
-        1 => Ok(2.0),           // MOSTLY_F16
-        2 => Ok(4.5 / 8.0),     // MOSTLY_Q4_0
-        3 => Ok(5.0 / 8.0),     // MOSTLY_Q4_1
+        0 => Ok(4.0),       // ALL_F32
+        1 => Ok(2.0),       // MOSTLY_F16
+        2 => Ok(4.5 / 8.0), // MOSTLY_Q4_0
+        3 => Ok(5.0 / 8.0), // MOSTLY_Q4_1
         // 4-5 removed in modern llama.cpp
         7 => Ok(8.5 / 8.0),     // MOSTLY_Q8_0
         8 => Ok(5.5 / 8.0),     // MOSTLY_Q5_0
@@ -284,7 +284,10 @@ mod tests {
     #[test]
     fn q4_k_m_bytes_per_param_within_band() {
         let bpp = file_type_to_bytes_per_param(15).unwrap();
-        assert!(bpp > 0.55 && bpp < 0.65, "Q4_K_M bpp={bpp} outside 0.55-0.65 band");
+        assert!(
+            bpp > 0.55 && bpp < 0.65,
+            "Q4_K_M bpp={bpp} outside 0.55-0.65 band"
+        );
     }
 
     /// What this catches: FP16 (1) gives exactly 2.0 bytes/param.
@@ -311,7 +314,10 @@ mod tests {
         let result = file_type_to_bytes_per_param(9999);
         assert!(result.is_err());
         let msg = result.unwrap_err();
-        assert!(msg.contains("9999"), "error should name the unknown value: {msg}");
+        assert!(
+            msg.contains("9999"),
+            "error should name the unknown value: {msg}"
+        );
     }
 
     /// What this catches: removed file_types (4, 5 in modern llama.cpp)
@@ -387,7 +393,10 @@ mod tests {
     #[test]
     fn qwen2_and_qwen2vl_have_empty_layer_kinds() {
         assert_eq!(layer_kinds_for_architecture("qwen2"), Vec::<String>::new());
-        assert_eq!(layer_kinds_for_architecture("qwen2vl"), Vec::<String>::new());
+        assert_eq!(
+            layer_kinds_for_architecture("qwen2vl"),
+            Vec::<String>::new()
+        );
     }
 
     /// What this catches: arbitrary unknown architecture returns
@@ -399,10 +408,16 @@ mod tests {
     /// only when the architecture-keyed rule kicks in.
     #[test]
     fn unknown_arch_returns_empty_kinds() {
-        assert_eq!(layer_kinds_for_architecture("mistral"), Vec::<String>::new());
+        assert_eq!(
+            layer_kinds_for_architecture("mistral"),
+            Vec::<String>::new()
+        );
         assert_eq!(layer_kinds_for_architecture("phi3"), Vec::<String>::new());
         assert_eq!(layer_kinds_for_architecture(""), Vec::<String>::new());
-        assert_eq!(layer_kinds_for_architecture("future-model"), Vec::<String>::new());
+        assert_eq!(
+            layer_kinds_for_architecture("future-model"),
+            Vec::<String>::new()
+        );
     }
 
     /// What this catches: layer-kind table stays stable for the
@@ -452,7 +467,9 @@ mod tests {
             .ok()
             .map(|d| d.join("Cargo.toml"))
             .filter(|p| p.exists());
-        let Some(path) = path else { return; };
+        let Some(path) = path else {
+            return;
+        };
         let result = read_qwen_model_metadata(&path);
         assert!(result.is_err(), "non-GGUF file should Err, got Ok");
     }

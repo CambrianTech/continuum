@@ -1,6 +1,6 @@
 use continuum_core::vdd::{
-    ArtifactWriter, ChatRoundtripConfig, ChatRoundtripHarness, HARNESS_SPECS, HarnessId,
-    HarnessStatus, LiveChatProbe,
+    ArtifactWriter, ChatRoundtripConfig, ChatRoundtripHarness, HarnessId, HarnessStatus,
+    LiveChatProbe, HARNESS_SPECS,
 };
 use std::str::FromStr;
 

@@ -48,7 +48,7 @@ pub use orchestrator::{generate_recipe_with_ai, GenerateRecipeOrchestratorParams
 pub use parser::{parse_recipe_from_ai_response, ParseError};
 pub use prompt::{build_recipe_system_prompt, build_recipe_user_prompt};
 pub use types::{
-    RecipeDefinitionShape, RecipeGenerateHints, RecipeGenerationRequest,
-    RecipeGenerationResponse, RecipeTemplateInfo,
+    RecipeDefinitionShape, RecipeGenerateHints, RecipeGenerationRequest, RecipeGenerationResponse,
+    RecipeTemplateInfo,
 };
 pub use validator::{validate_recipe_structure, ValidationError};
