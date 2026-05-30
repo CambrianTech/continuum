@@ -1858,64 +1858,14 @@ impl DataModule {
             .into_command_result()
     }
 
-    /// Pull the cursor id out of the request envelope — preferring the
-    /// kernel-level `handle`, falling back to the legacy `queryId`
-    /// field, failing loud when neither is present or the handle is
-    /// mis-owned/mis-typed. Single resolver shared by query-next and
-    /// query-close so the dual-shape contract has ONE place to drift.
-    fn resolve_query_cursor_id(
-        handle: &Option<HandleRef>,
-        legacy_query_id: &Option<String>,
-        command: &str,
-    ) -> Result<String, String> {
-        if let Some(h) = handle {
-            // Kernel typed contract: a handle minted by a different
-            // module reaching this module's handler is ALWAYS a bug.
-            // The grid interceptor is supposed to have routed the call
-            // back to the actual owner before we ever see it; arriving
-            // here with the wrong owner means either the routing
-            // misfired or a caller hand-crafted a bogus handle. Either
-            // way, fail loud with the offending values named.
-            if h.owner != DATA_MODULE_OWNER {
-                return Err(format!(
-                    "{command}: handle owner mismatch — got owner={:?}, this module owns only {:?}. \
-                     Handles must be minted by the same module that consumes them, OR the grid \
-                     interceptor must route the command back to the owner before dispatch.",
-                    h.owner, DATA_MODULE_OWNER
-                ));
-            }
-            // Within the data module, multiple handle shapes are
-            // possible in principle (e.g., a future `data::Migration`
-            // handle). The type tag is the within-module discriminator;
-            // a wrong tag here means the caller threaded a handle
-            // belonging to a DIFFERENT resource through the cursor
-            // surface. Same fail-loud reasoning.
-            if h.type_tag != QUERY_CURSOR_TYPE_TAG {
-                return Err(format!(
-                    "{command}: handle type mismatch — got type_tag={:?}, expected {:?}. \
-                     This handler operates only on query-cursor handles; threading a different \
-                     handle shape here is a programming error.",
-                    h.type_tag, QUERY_CURSOR_TYPE_TAG
-                ));
-            }
-            return Ok(h.id.to_string());
-        }
-
-        if let Some(id) = legacy_query_id {
-            // Belt-and-braces: legacy callers send a UUID-shaped string;
-            // a non-UUID string is almost certainly a bug, but the
-            // existing wire contract doesn't guarantee validation —
-            // accept it as-is to preserve back-compat. If the string
-            // fails the DashMap lookup later, the "not found" path
-            // surfaces it.
-            return Ok(id.clone());
-        }
-
-        Err(format!(
-            "{command}: neither `handle` (envelope field) nor `queryId` (legacy params field) \
-             was provided. Pass the handle minted by `data/query-open` via either shape."
-        ))
-    }
+    // The dual-shape (envelope handle OR legacy `queryId` string)
+    // resolver previously lived here as a 35-line inline helper.
+    // That logic moved into the substrate at
+    // [`CommandRequest::handle_id_or_legacy`] (with owner/type
+    // validation via [`HandleRef::expect_owned_by`]) so every future
+    // migration of a stringly-typed id to a typed handle reaches
+    // for the same primitive. `handle_query_next` / `handle_query_close`
+    // call it directly with this module's owner + type tag constants.
 
     /// Get next page from paginated query.
     ///
@@ -1932,8 +1882,13 @@ impl DataModule {
         use std::time::Instant;
         let start = Instant::now();
 
-        let cursor_id =
-            Self::resolve_query_cursor_id(&req.handle, &req.params.query_id, "data/query-next")?;
+        let cursor_id = req.handle_id_or_legacy(
+            DATA_MODULE_OWNER,
+            QUERY_CURSOR_TYPE_TAG,
+            "queryId",
+            &req.params.query_id,
+            "data/query-next",
+        )?;
 
         // ── Acquire the per-cursor mutex ─────────────────────────────
         //
@@ -2079,8 +2034,13 @@ impl DataModule {
         &self,
         req: CommandRequest<QueryCloseParams>,
     ) -> Result<CommandResult, String> {
-        let cursor_id =
-            Self::resolve_query_cursor_id(&req.handle, &req.params.query_id, "data/query-close")?;
+        let cursor_id = req.handle_id_or_legacy(
+            DATA_MODULE_OWNER,
+            QUERY_CURSOR_TYPE_TAG,
+            "queryId",
+            &req.params.query_id,
+            "data/query-close",
+        )?;
         let removed = self.paginated_queries.remove(&cursor_id).is_some();
 
         log_info!(
