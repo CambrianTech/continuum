@@ -135,7 +135,8 @@
   "tiers": {
     "mba":  { "min_ram_gb": 16, "default_chat": "qwen3.5-0.8b-general", "description": "MacBook Air / 16-23GB RAM. Chat-only OOTB, minimal footprint." },
     "mid":  { "min_ram_gb": 24, "default_chat": "qwen3.5-2b-general",   "description": "Mid-tier 24-31GB. Larger context window viable." },
-    "full": { "min_ram_gb": 32, "default_chat": "qwen3.5-4b-code-forged", "description": "32GB+. Full multimodal experience including vision." }
+    "full": { "min_ram_gb": 32, "default_chat": "qwen3.5-4b-code-forged", "description": "32GB+. Full multimodal experience including vision." },
+    "mac_intel_discrete": { "default_chat": "qwen3.5-0.8b-general", "description": "Mac Intel with discrete AMD or integrated Intel UHD Metal device (e.g. MacBookPro15,1 / Radeon Pro 560X). llama.cpp Metal shaders unreliable on this path; CPU-only with smallest forged model until our CambrianTech/llama.cpp fork patches AMD-Metal kernels OR grid-share routes to an Apple-Silicon or NVIDIA peer." }
   },
 
   "symbolic_refs": {
@@ -159,7 +160,8 @@
     "by_tier": {
       "mba":  ["qwen3.5-0.8b-general"],
       "mid":  ["qwen3.5-2b-general"],
-      "full": ["qwen3.5-4b-code-forged", "qwen2-vl-7b"]
+      "full": ["qwen3.5-4b-code-forged", "qwen2-vl-7b"],
+      "mac_intel_discrete": ["qwen3.5-0.8b-general"]
     }
   },
 

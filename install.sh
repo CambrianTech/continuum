@@ -235,6 +235,23 @@ For 16GB MBA: chat-only OOTB works (smaller model). For 32GB+: full multimodal e
       CONTINUUM_TIER="primary"
       info "Hardware tier: primary (${PHYS_GB}GB) — full multimodal + Qwen 4B code-forged"
     fi
+
+    # Mac Intel override — RAM-based tier alone misclassifies Mac Intel +
+    # discrete AMD or integrated Intel UHD as full/primary, but the
+    # llama.cpp Metal-AMD shader path produces incoherent tokens on this
+    # hardware (continuum 2026-05-30 evidence on MacBookPro15,1 / Radeon
+    # Pro 560X: 0.8 tok/s + multilingual garbage + hundreds of nil
+    # tensor buffer errors). Force the small CPU-runnable model tier
+    # regardless of RAM until our CambrianTech/llama.cpp fork patches
+    # the Metal-AMD kernels OR grid-share routes to an Apple-Silicon /
+    # NVIDIA peer. Mirrors the Rust HwCapabilityTier::MacIntelMetalDiscrete
+    # branch and the `mac_intel_discrete` tier in src/shared/models.json.
+    CPU_BRAND=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "")
+    if [[ "$CPU_BRAND" == *"Intel"* ]]; then
+      info "Mac Intel detected ($CPU_BRAND) — overriding to mac_intel_discrete tier (Metal-AMD shaders unreliable; smallest forged model + CPU-only floor)"
+      CONTINUUM_TIER="mac_intel_discrete"
+      NATIVE_RESERVE_MIB=$((5 * 1024))
+    fi
     export CONTINUUM_TIER
     MACOS_RESERVE_MIB=$((6 * 1024))
     HEADROOM_MIB=$((NATIVE_RESERVE_MIB + MACOS_RESERVE_MIB))
@@ -417,6 +434,15 @@ EOF
       # 24-31GB: 2B general (~1.4GB GGUF). Bigger context window viable.
       PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-2b-general-forged"
       info "Persona model tier: mid → qwen3.5-2b-general-forged (~1.4GB)"
+      ;;
+    mac_intel_discrete)
+      # Mac Intel + discrete AMD / integrated Intel UHD. llama.cpp Metal
+      # shaders broken on this path; smallest forged model + CPU-only.
+      # Matches `tiers.mac_intel_discrete.default_chat` in
+      # src/shared/models.json. When CambrianTech/llama.cpp lands the
+      # Metal-AMD shader patch, this branch can promote to mid or full.
+      PERSONA_MODEL="hf.co/continuum-ai/qwen3.5-0.8b-general-forged"
+      info "Persona model tier: mac_intel_discrete → qwen3.5-0.8b-general-forged (~500MB, CPU-only)"
       ;;
     *)
       # 32GB+: original code-forged 4B (~2.7GB GGUF). Multimodal headroom.
