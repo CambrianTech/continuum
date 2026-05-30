@@ -383,10 +383,25 @@ impl LlamaCppAdapter {
         let mmproj_path = crate::model_registry::try_global()
             .and_then(|reg| reg.model(&self.default_model))
             .and_then(|m| m.mmproj_local_path.clone());
+        // CONTINUUM_TIER is set by install.sh's hardware probe (commit
+        // 7b3b8e086) — when the install detects a Mac Intel + discrete
+        // AMD or integrated Intel UHD host, it exports
+        // CONTINUUM_TIER=mac_intel_discrete because llama.cpp's
+        // Metal-AMD shaders produce garbled tokens at 0.8 tok/s with
+        // hundreds of nil tensor buffer errors (continuum 2026-05-30
+        // evidence on MacBookPro15,1 / Radeon Pro 560X). CPU-only at
+        // 1.1 tok/s + coherent output beats broken Metal every time
+        // — n_gpu_layers=0 forces the CPU path. Follow-up: native
+        // Rust probe at adapter construction so this doesn't depend
+        // on the install-time env-var trust chain (see task tracker).
+        let n_gpu_layers: i32 = match std::env::var("CONTINUUM_TIER").as_deref() {
+            Ok("mac_intel_discrete") => 0,
+            _ => -1,
+        };
         let config = LlamaCppConfig {
             model_path: self.model_path.clone(),
             mmproj_path,
-            n_gpu_layers: -1, // All layers to GPU
+            n_gpu_layers,
             // None = honor model's n_ctx_train. Adapter caller can shrink
             // this via with_context_length() to bound the KV cache (24GB
             // at 262K → 500MB at 16K).
