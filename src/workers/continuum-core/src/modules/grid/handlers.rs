@@ -109,6 +109,13 @@ pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<Comman
 }
 
 /// grid/send — execute a command on a remote node.
+/// grid/send — dispatch a command to a specific node by id.
+///
+/// Thin wrapper around the lower-level [`dispatch_to_node`] primitive:
+/// parses params, looks up the node, then delegates. The send-frame
+/// dance + audit + result mapping lives in `dispatch_to_node` so the
+/// new `GridInterceptor` (runtime/grid_interceptor.rs) can reuse it
+/// for capability-based routing without re-parsing param shapes.
 pub async fn handle_send(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
     let node_id = params
         .get("nodeId")
@@ -128,10 +135,32 @@ pub async fn handle_send(state: &Arc<GridState>, params: Value) -> Result<Comman
         .get(node_id)
         .ok_or_else(|| format!("Unknown node: {node_id}"))?;
 
+    dispatch_to_node(state, &node, remote_command, remote_params).await
+}
+
+/// Dispatch a command to a specific (already-resolved) [`GridNode`].
+///
+/// This is the core send-frame primitive — open a transport connection,
+/// send a CommandRequest frame, await the matching CommandResult frame,
+/// audit the round-trip, return the result.
+///
+/// Pulled out of [`handle_send`] in this PR so the new `GridInterceptor`
+/// (runtime/grid_interceptor.rs) can reuse the same dispatch path when
+/// the [`super::router::GridRouter`] decides a command should hop to a
+/// remote node. Both callers — the explicit `grid/send` command and the
+/// implicit capability-based interceptor — go through this function, so
+/// there is exactly one place that knows how to send a Continuum command
+/// over the grid wire.
+pub async fn dispatch_to_node(
+    state: &Arc<GridState>,
+    node: &GridNode,
+    remote_command: &str,
+    remote_params: Value,
+) -> Result<CommandResult, String> {
     let address = node
         .addresses
         .first()
-        .ok_or_else(|| format!("Node {node_id} has no addresses"))?;
+        .ok_or_else(|| format!("Node {} has no addresses", node.node_id))?;
 
     let transport = find_transport_for_address(&state.transports, address)
         .ok_or_else(|| format!("No transport for {}", address.display_address()))?;
@@ -145,7 +174,7 @@ pub async fn handle_send(state: &Arc<GridState>, params: Value) -> Result<Comman
     let frame = GridFrame::command_request(
         corr_id.clone(),
         our_address,
-        node_id.to_string(),
+        node.node_id.clone(),
         remote_command.to_string(),
         remote_params,
     );
@@ -155,17 +184,17 @@ pub async fn handle_send(state: &Arc<GridState>, params: Value) -> Result<Comman
     let conn = transport
         .connect(address)
         .await
-        .map_err(|e| format!("Connect to {node_id} failed: {e}"))?;
+        .map_err(|e| format!("Connect to {} failed: {e}", node.node_id))?;
 
     conn.send_frame(&frame)
         .await
-        .map_err(|e| format!("Send to {node_id} failed: {e}"))?;
+        .map_err(|e| format!("Send to {} failed: {e}", node.node_id))?;
 
     // 5 minute timeout for long operations (training, etc.)
     let response = tokio::time::timeout(Duration::from_secs(300), conn.recv_frame())
         .await
-        .map_err(|_| format!("Command '{remote_command}' on {node_id} timed out (300s)"))?
-        .map_err(|e| format!("Recv from {node_id} failed: {e}"))?;
+        .map_err(|_| format!("Command '{remote_command}' on {} timed out (300s)", node.node_id))?
+        .map_err(|e| format!("Recv from {} failed: {e}", node.node_id))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
     let _ = conn.close().await;
@@ -181,7 +210,7 @@ pub async fn handle_send(state: &Arc<GridState>, params: Value) -> Result<Comman
         .log(&AuditEntry {
             timestamp: frame::now_millis(),
             direction: AuditDirection::Outbound,
-            remote_node: node_id.to_string(),
+            remote_node: node.node_id.clone(),
             command: remote_command.to_string(),
             correlation_id: corr_id,
             outcome,

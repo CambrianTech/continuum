@@ -931,11 +931,13 @@ pub fn start_server(
         .join("grid");
     let local_has_gpu = gpu_manager.total_vram_bytes() > 0;
     let local_vram_mb = gpu_manager.total_vram_bytes() / (1024 * 1024);
-    runtime.register(Arc::new(GridModule::new(
-        grid_dir,
-        local_has_gpu,
-        local_vram_mb,
-    )));
+    // Keep a handle on the GridModule's state so we can build the
+    // GridInterceptor below. The interceptor needs the same router +
+    // node registry + transports the GridModule itself runs on; using
+    // the public `state()` getter avoids duplicating any of that.
+    let grid_module = Arc::new(GridModule::new(grid_dir, local_has_gpu, local_vram_mb));
+    let grid_state = grid_module.state();
+    runtime.register(grid_module);
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {
@@ -966,7 +968,19 @@ pub fn start_server(
     // Initialize global CommandExecutor for all spawned processes (sentinels, agents, etc.)
     // This allows ANY async task to execute ANY command (Rust or TypeScript)
     // TypeScript commands route via Unix socket to /tmp/jtag-command-router.sock
-    crate::runtime::init_executor(runtime.registry_arc());
+    //
+    // Interceptor chain order (per MODULE-ARCHITECTURE.md §5): airc
+    // sits at the head so explicit aircPeer/aircRoom targeting beats
+    // grid's capability-based remote routing. grid sits next so
+    // routingHint / nodeId / capability-based commands hop to a peer
+    // before the kernel tries local Rust dispatch. Both interceptors
+    // decline cleanly when their routing decision is "local," so
+    // existing commands see zero behavior change.
+    let interceptors: Vec<std::sync::Arc<dyn crate::runtime::CommandInterceptor>> = vec![
+        std::sync::Arc::new(crate::runtime::AircInterceptor::new()),
+        std::sync::Arc::new(crate::runtime::GridInterceptor::new(grid_state)),
+    ];
+    crate::runtime::init_executor_with_interceptors(runtime.registry_arc(), interceptors);
 
     let listener = UnixListener::bind(socket_path)?;
     // Make the socket world-rw so callers running under a different UID

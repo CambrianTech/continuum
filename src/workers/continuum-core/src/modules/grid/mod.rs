@@ -43,7 +43,7 @@ use dashmap::DashMap;
 use frame::GridFrame;
 use node::NodeCapability;
 use registry::NodeRegistry;
-use router::GridRouter;
+use router::{GridRouter, RouteDecision};
 use transport::GridTransport;
 use transports::reticulum::ReticulumTransport;
 use transports::tailscale::TailscaleTransport;
@@ -114,6 +114,56 @@ impl GridModule {
                 bus: Mutex::new(None),
                 local_capabilities: RwLock::new(caps),
             }),
+        }
+    }
+
+    /// Get a clone of the shared `Arc<GridState>` for use by external
+    /// consumers (notably `runtime::grid_interceptor::GridInterceptor`).
+    ///
+    /// The state holds the router + node registry + transports — every
+    /// piece needed to make a remote-routing decision. Exposing it as
+    /// `Arc` lets the kernel install the GridInterceptor at startup
+    /// without taking ownership of GridState (which is GridModule's).
+    pub fn state(&self) -> Arc<GridState> {
+        self.state.clone()
+    }
+}
+
+impl GridState {
+    /// Apply the routing policy to a command. If the policy decides
+    /// this node should handle it locally, returns `Ok(None)` — the
+    /// caller (typically `runtime::grid_interceptor::GridInterceptor`)
+    /// declines so the kernel can fall through to local Rust + TS
+    /// dispatch. If the policy picks a remote node, dispatches the
+    /// command over the grid wire and returns `Ok(Some(result))`.
+    ///
+    /// Errors propagate; the interceptor surfaces them to the caller
+    /// per the `CommandInterceptor` contract (no silent fallthrough
+    /// on Err). Examples: transport unreachable, remote command timed
+    /// out, remote returned error.
+    ///
+    /// This is the kernel's hook into grid routing — the SAME primitive
+    /// the explicit `grid/send` command goes through, just driven by
+    /// policy rather than by an explicit `nodeId` param. One dispatch
+    /// path, two callers (explicit + implicit).
+    pub async fn try_route_remote(
+        self: &Arc<Self>,
+        command: &str,
+        params: &serde_json::Value,
+    ) -> Result<Option<crate::runtime::CommandResult>, String> {
+        match self.router.route(command, params, &self.registry) {
+            RouteDecision::Local => Ok(None),
+            RouteDecision::Remote { node, reason } => {
+                tracing::debug!(
+                    "GridState::try_route_remote: routing '{}' to {} (reason: {})",
+                    command,
+                    node.node_id,
+                    reason
+                );
+                let result =
+                    handlers::dispatch_to_node(self, &node, command, params.clone()).await?;
+                Ok(Some(result))
+            }
         }
     }
 }

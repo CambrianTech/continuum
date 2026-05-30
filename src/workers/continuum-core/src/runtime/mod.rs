@@ -30,6 +30,7 @@ pub mod brain_region;
 pub mod command_executor;
 pub mod command_interceptor;
 pub mod control;
+pub mod grid_interceptor;
 pub mod message_bus;
 pub mod module_context;
 pub mod module_logger;
@@ -51,9 +52,10 @@ pub use brain_region::{
 pub use airc_interceptor::AircInterceptor;
 pub use command_executor::{
     execute as execute_command, execute_json as execute_command_json, executor, init_executor,
-    CommandExecutor,
+    init_executor_with_interceptors, CommandExecutor,
 };
 pub use command_interceptor::{CommandInterceptor, InterceptorOutcome};
+pub use grid_interceptor::GridInterceptor;
 pub use control::{ModuleInfo, RuntimeControl};
 pub use message_bus::MessageBus;
 pub use module_context::ModuleContext;
