@@ -76,6 +76,91 @@ pub struct ChatPollResult {
     pub after_message_id: Option<Uuid>,
 }
 
+// ── chat/send ────────────────────────────────────────────────────────
+
+/// Params for `collaboration/chat/send` (alias: `chat/send`).
+///
+/// The kernel command takes already-resolved UUIDs for both room and
+/// sender. Name/identity resolution (sender priority chain:
+/// explicit → owner → fallback; room name → uuid) stays in the TS
+/// browser/CLI layer (or a future `channel/resolve` + `user/resolve`
+/// pair). That keeps the kernel command compositional with future
+/// resolver modules rather than dragging name resolution into every
+/// caller of the chat surface.
+///
+/// Media externalization, full reply-to threading metadata, and vision
+/// pre-warming are deferred to follow-up PRs — this first migration
+/// stress-tests the dual-write composition (chat → data + chat → airc)
+/// which is the substrate-shaped kink the design needed proof of.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/chat/ChatSendParams.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSendParams {
+    /// Destination room. The kernel command requires an
+    /// already-resolved UUID; room-name lookup is the caller's job.
+    #[ts(type = "string")]
+    pub room_id: Uuid,
+
+    /// Sender identity. The kernel command requires an
+    /// already-resolved UUID; the sender priority chain (explicit
+    /// senderId → human owner → fallback) is the caller's job.
+    #[ts(type = "string")]
+    pub sender_id: Uuid,
+
+    /// Message text. Other media types (image, audio, file) are
+    /// deferred — when media externalization migrates, this struct
+    /// gains a `media: Option<Vec<MediaItem>>` field.
+    pub text: String,
+
+    /// Optional thread anchor. When set, both the stored message and
+    /// the airc-published envelope carry this as the reply-to link.
+    #[serde(default)]
+    #[ts(optional, type = "string")]
+    pub reply_to_id: Option<Uuid>,
+}
+
+/// Result of `chat/send`.
+///
+/// Carries the stored message's id (the local persistence ground
+/// truth) AND the airc event id (the broadcast ground truth). When
+/// airc partial-fails — data succeeded but airc failed — `event_id`
+/// is `None` and `warning` names what happened.
+///
+/// The kernel-level `success` flag (on the `CommandResponse` envelope
+/// wrapping this) is `true` whenever the message was stored locally.
+/// An airc-only failure is NOT command-level failure: the message
+/// IS in the local store, consumers see it via `chat/poll`, and a
+/// future retry/sync mechanism heals the broadcast.
+///
+/// Hard failure (data/create failed) propagates as a typed `Err`
+/// from the handler — the message never reaches the store, no airc
+/// publish is attempted.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/chat/ChatSendResult.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSendResult {
+    /// The stored message's UUID. Always present on success. Callers
+    /// thread this when they need to follow up (edit, reply,
+    /// delete) — it's the canonical id for the message regardless of
+    /// whether the airc broadcast succeeded.
+    #[ts(type = "string")]
+    pub message_id: Uuid,
+
+    /// The airc realtime event id, when broadcast succeeded. `None`
+    /// means the local store has the message but the broadcast didn't
+    /// land — see `warning`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub event_id: Option<String>,
+
+    /// Set when airc partial-failed. Names the failure mode so the
+    /// caller can decide whether to retry, surface a UI warning,
+    /// or just log. Absent on full success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub warning: Option<String>,
+}
+
 /// The collection chat messages live in. Matches
 /// `ChatMessageEntity.collection` on the TS side. Centralized here so
 /// every chat command in this module reaches the same shelf — and
