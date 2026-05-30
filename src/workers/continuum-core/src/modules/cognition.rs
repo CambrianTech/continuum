@@ -1795,10 +1795,13 @@ async fn execute_rust_module_json(
         format!("{command}: no Rust module route registered; refusing TypeScript fallback")
     })?;
 
-    match module.handle_command(&routed_command, params).await? {
-        CommandResult::Json(value) => Ok(value),
-        CommandResult::Binary { metadata, .. } => Ok(metadata),
-    }
+    // Project the cell shape into a plain JSON Value. Handle returns
+    // its HandleRef as JSON (the caller can hold it and pass back);
+    // Stream/Lambda return their not-yet-wired protocol error.
+    module
+        .handle_command(&routed_command, params)
+        .await?
+        .to_json_value()
 }
 
 #[cfg(test)]
@@ -2003,7 +2006,7 @@ mod turn_execute_tests {
                     "empty drain produces null inferenceResponse; got {v}"
                 );
             }
-            CommandResult::Binary { .. } => panic!("expected Json"),
+            other => panic!("expected CommandResult::Json, got {other:?}"),
         }
     }
 

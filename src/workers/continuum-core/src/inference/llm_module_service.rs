@@ -528,7 +528,7 @@ mod tests {
                 assert_eq!(response.complete.tokens_generated, 3);
                 assert_eq!(response.first_token.request_id, req.request_id);
             }
-            CommandResult::Binary { .. } => panic!("expected Json response"),
+            other => panic!("expected CommandResult::Json, got {other:?}"),
         }
     }
 

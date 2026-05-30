@@ -27,6 +27,7 @@ use std::sync::OnceLock;
 pub mod airc_interceptor;
 pub mod artifact_handle;
 pub mod brain_region;
+pub mod cell_shapes;
 pub mod command_executor;
 pub mod command_interceptor;
 pub mod control;
@@ -50,6 +51,7 @@ pub use brain_region::{
     SleepPhase, TickOutcome,
 };
 pub use airc_interceptor::AircInterceptor;
+pub use cell_shapes::{HandleRef, LambdaPlaceholder, StreamPlaceholder};
 pub use command_executor::{
     execute as execute_command, execute_json as execute_command_json, executor, init_executor,
     init_executor_with_interceptors, CommandExecutor,

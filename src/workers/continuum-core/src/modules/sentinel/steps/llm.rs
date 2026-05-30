@@ -198,6 +198,38 @@ async fn execute_generate_mode(
                     "unexpected binary response from ai/generate",
                 ));
             }
+            // Cell shapes from MODULE-ARCHITECTURE.md §5.1 — ai/generate
+            // should always return Json; receiving any other shape is a
+            // contract violation we surface as a step error rather than
+            // silently dropping. The Handle shape is the natural future
+            // home for streaming inference sessions (start → handle →
+            // poll), but ai/generate (one-shot completion) stays Json.
+            Ok(CommandResult::Handle(h)) => {
+                return Err(step_err(
+                    pipeline_ctx.handle_id,
+                    "LLM step",
+                    format!(
+                        "ai/generate must return Json, got Handle (owner={}, type={}); \
+                         streaming inference belongs on a different command, not the \
+                         one-shot generate path",
+                        h.owner, h.type_tag
+                    ),
+                ));
+            }
+            Ok(CommandResult::Stream(_)) => {
+                return Err(step_err(
+                    pipeline_ctx.handle_id,
+                    "LLM step",
+                    CommandResult::stream_protocol_error(),
+                ));
+            }
+            Ok(CommandResult::Lambda(_)) => {
+                return Err(step_err(
+                    pipeline_ctx.handle_id,
+                    "LLM step",
+                    CommandResult::lambda_protocol_error(),
+                ));
+            }
             Err(e) => {
                 if is_transient_error(&e) && attempt < LLM_MAX_RETRIES {
                     last_error = e;
