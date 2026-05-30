@@ -26,6 +26,7 @@ pub mod embedding;
 pub mod entity_schemas;
 pub mod events;
 pub mod forge;
+pub mod generator;
 pub mod gpu;
 pub mod grid;
 pub mod health;
