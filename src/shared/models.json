@@ -36,7 +36,7 @@
       "hf_repo": "continuum-ai/qwen3.5-4b-code-forged-GGUF",
       "format": "gguf",
       "architecture": "qwen3",
-      "files": ["qwen3.5-4b-code-forged-q4_k_m.gguf"],
+      "files": ["qwen3.5-4b-code-forged-Q4_K_M.gguf"],
       "size_gb": 2.7,
       "min_ram_gb": 32,
       "chat_template": "qwen2",
