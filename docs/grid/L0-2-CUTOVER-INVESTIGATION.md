@@ -144,6 +144,69 @@ Three commits, in order, each green on its own:
 - Touching the producer-side tick in `channel.rs`. It works; integration is already there.
 - Deleting any of the four genuinely-new contributions my work added (Responder DI, separated CB thresholds, validated ResponderConfig, lock discipline). Those carry forward into the refactor.
 
+## Followup finding: my `UnsupportedItem` outcome IS silent drop
+
+Joel 2026-05-29 follow-up framing: *"yeah we want the flexibility to allow various recipes, channels, chains of thought, through channels. these personas are designing things, talking in other chats, collaborating, coding, sometimes just learning. They're supposed to be alive, not static, flexible for the future. ... inbox is all sorts of things in a brain. its channels. ... users multitask so do personas."*
+
+That phrasing is the operative one. **Personas multitask** — exactly like a human user who's mid-conversation in chat A, has a code review pending in PR queue, is generating a study plan in academy, has a voice call waiting. Each one is a channel; each channel pops items the persona services; the persona's cognition decides priority + attention + dispatch.
+
+The dispatch loop has to handle ALL the activity domains, not just chat. My `UnsupportedItem` outcome is treating non-chat domains as out-of-scope when they're actually first-class.
+
+**And the channels cross-pollinate.** Joel 2026-05-29: *"these are contexts and they cross polinate."* The persona's chat conversation informs how it shows up in code review. The training corpus from completed academy sessions surfaces as engrams in subsequent recall. LoRA expertise distilled from coding work travels into how the persona talks about that code. Channels aren't isolated queues — they're contexts sharing the same per-persona cognition.
+
+Architecturally that means: per-domain ACTIVITY HANDLERS dispatch the per-domain WORK, but they all read and write the SAME per-persona `PersonaCognition` (already shared via `channel_state.personas`). The handler isolation is for routing; the context unity is for memory + learning. The cross-pollination is implicit — `ChatHandler` admits an engram via `cognition.admission`; later `CodeHandler` recalls it via `cognition.admission.recall_recent` because they share the same `PersonaCognition` instance. Genome / LoRA expertise updates from any domain become available to any other domain through the same shared state.
+
+So the synthesis doesn't need new cross-pollination machinery — it just needs to keep the per-persona cognition as the shared context spine that ALL handlers read/write. My initial design already does this (shared `Arc<PersonaCognition>` per persona, supplied to all dispatch paths). The thing I missed is the multi-handler routing on top.
+
+**Hard problem flag (not solved in this slice):** Joel 2026-05-29: *"if i chatted with someone they know about it in a live chat or in a game ... or while coding ... this is sort of hard to manage in rag."* The cross-pollination is exactly what the user EXPECTS — Joel mentions Tron in chat-A, then opens a coding session about webgl, the persona surfaces the Tron context because it's relevant. That requires RAG retrieval policy that knows what's relevant *across* domains, not just within one.
+
+The architecture this synthesis lands gives us the substrate (shared per-persona cognition, shared admission state, shared recall surface). The RAG retrieval policy that decides "this chat memory is relevant to this code session" is a separate concern — it's about what `cognition.admission.recall_*` returns when called from different contexts. Not solved here; flagging as known hard.
+
+What this synthesis at least guarantees: the chat handler and the code handler share the same admission store + recall surface, so it's *possible* for the retrieval to surface cross-domain memories. Without that substrate, the cross-pollination wouldn't even be possible. With it, it becomes a retrieval-policy problem, not an architecture problem.
+
+My L0-2-respond-call code:
+
+```rust
+if item_type != "chat" {
+    return Ok(ServicePopDecision::UnsupportedItem { item_type });
+}
+```
+
+`service_cycle` has already POPPED the item from the channel queue by the time the type check runs. Discarding it without a handler is silent drop dressed as observability. Under the "channels are the persona's brain" framing, dropping a voice frame / task / code-edit item is dropping a thought.
+
+The fix isn't "don't pop yet" — `service_cycle` is the canonical pop. The fix is **dispatch handlers per activity domain**:
+
+```rust
+trait ActivityHandler: Send + Sync {
+    fn activity_domain(&self) -> ActivityDomain;
+    async fn handle(&self, persona_id: Uuid, item: ChannelItem) -> Result<HandlerOutcome, String>;
+}
+```
+
+`PersonaServiceModule` holds a `HashMap<ActivityDomain, Arc<dyn ActivityHandler>>`. `service_once_for` routes the popped item by domain. The chat handler wraps `Responder::respond`. Task handler runs the task executor. Voice handler runs the voice loop. Code handler does code dispatch. Etc.
+
+Recipes register new activity handlers at runtime (no recompile to add a new activity domain). Academy reads `HandlerOutcome::Completed` records into training corpus.
+
+This expands L0-2-cutover scope but it's the right shape. The synthesis becomes:
+
+| Concern | Source of truth |
+|---|---|
+| Per-persona channel storage (ALL domains) | `channel.rs::ChannelState.registries` |
+| Activity dispatch registry | `PersonaServiceModule.handlers: HashMap<ActivityDomain, Arc<dyn ActivityHandler>>` |
+| Chat → respond() | `ChatHandler` impl wrapping the existing `Responder` trait |
+| Task → executor | `TaskHandler` impl (next slice; PersonaTaskExecutor.ts migration target) |
+| Voice → voice loop | `VoiceHandler` impl (later slice) |
+| Code, code-review, training, recipe-step, ... | each its own handler, registered by recipes / system at init |
+
+### Revised L0-2-cutover commit plan
+
+- **A — Refactor for ChannelState consumption + ActivityHandler trait.** `EnrolledPersona` slims (drops cognition/channels/state). `PersonaServiceModule.with_responder` extended to `with_handlers` (responder becomes the default chat-handler). `service_once_for` routes by domain. Unsupported items: if no handler is registered for the domain, surface as `Err` so the circuit breaker trips (not silently dropped — the persona's queue is leaking items).
+- **B — Production wire (chat only).** Same as before. Chat handler ships; voice/task/etc handlers can be left to surface as `Err` if items arrive on those channels (or stubbed handlers that log + re-queue, defer-not-drop). TS PersonaAutonomousLoop still runs in parallel.
+- **C — Atomic TS deletion.** Same as before. By this point, chat works end-to-end through Rust. Non-chat channels still have placeholder behavior; their handlers ship in subsequent slices that aren't part of L0-2-cutover.
+- **D+ (later) — Per-domain handler slices.** Each new handler (task, voice, code, ...) is its own migration slice. TaskHandler maps to PersonaTaskExecutor.ts deletion. VoiceHandler to whatever the voice TS surface is. Etc.
+
+This frames L0-2-cutover as "wire the dispatch shape AND ship chat end-to-end," not "delete the TS loop and pray every domain works." The infinite-recipe / academy-as-training-distiller pattern Joel describes is structurally supported.
+
 ## Open question
 
 Whether my `EnrolledPersona.responder_config` should live as a sibling field on `channel_state` (i.e. extend `ChannelState` with the config) OR stay separate in my service module. Arguments either way:
