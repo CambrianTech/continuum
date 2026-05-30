@@ -99,32 +99,39 @@ trap teardown EXIT INT TERM
 # a 25-min build that times out OR worse, silently using a stale
 # canary image and reporting "tests pass!" on someone else's binary.
 #
-# CONTINUUM_IMAGE_TAG comes from the workflow (pr-N for PRs, canary
-# for manual triggers). We check the variants install path pulls:
-# continuum-core-vulkan is the heavy one; the lighter siblings
-# (node-server, widget-server, model-init) share the tag scheme.
-# Operator escape hatch: CARL_ALLOW_LOCAL_BUILD=1 opts into the
-# install.sh fallback — useful when explicitly debugging the build
+# Only the HEAVY Rust binary image (continuum-core-vulkan) must exist
+# pre-built — that's the one whose local build is a 25-min cargo
+# build --release that hits CARL_INSTALL_TIMEOUT_SEC. The lighter TS
+# images (node-server, widget-server, model-init) build in under a
+# minute on either arch per Joel 2026-05-30 — install.sh's fallback
+# building them locally is acceptable, doesn't blow the timeout.
+#
+# This split avoids the precheck mis-firing on the common case where
+# canary has the Rust image fresh (BigMama pushed) but the lighter
+# TS sidecar images haven't been pushed yet under the canary tag.
+# Just the Rust image being present is sufficient to make the smoke
+# fast and meaningful.
+#
+# CONTINUUM_IMAGE_TAG comes from the workflow (canary by default
+# per the carl-install-smoke.yml change in this commit). Operator
+# escape hatch: CARL_ALLOW_LOCAL_BUILD=1 opts into install.sh's
+# full fallback — useful when explicitly debugging the heavy build
 # path, NOT for production CI.
-REQUIRED_IMAGE_VARIANTS=(
-  "continuum-core-vulkan"
-  "node-server"
-  "widget-server"
-  "model-init"
-)
+RUST_BINARY_IMAGE="continuum-core-vulkan"
 RESOLVED_TAG="${CONTINUUM_IMAGE_TAG:-canary}"
 MISSING_IMAGES=()
 echo ""
-echo "━━━ pre-flight: verifying ghcr.io images at :${RESOLVED_TAG} ━━━"
-for variant in "${REQUIRED_IMAGE_VARIANTS[@]}"; do
-  ref="ghcr.io/cambriantech/${variant}:${RESOLVED_TAG}"
-  if docker manifest inspect "$ref" >/dev/null 2>&1; then
-    echo "  ✓ $ref"
-  else
-    echo "  ✗ $ref (MISSING)"
-    MISSING_IMAGES+=("$ref")
-  fi
-done
+echo "━━━ pre-flight: verifying heavy ghcr.io image at :${RESOLVED_TAG} ━━━"
+RUST_REF="ghcr.io/cambriantech/${RUST_BINARY_IMAGE}:${RESOLVED_TAG}"
+if docker manifest inspect "$RUST_REF" >/dev/null 2>&1; then
+  echo "  ✓ $RUST_REF"
+else
+  echo "  ✗ $RUST_REF (MISSING — heavy build, blocks the smoke)"
+  MISSING_IMAGES+=("$RUST_REF")
+fi
+echo "  (lighter TS sidecars node-server / widget-server / model-init"
+echo "   will be pulled if present, built locally if not — sub-minute"
+echo "   cost either way; not gated by this pre-flight)"
 
 if [ ${#MISSING_IMAGES[@]} -gt 0 ]; then
   echo ""
