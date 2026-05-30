@@ -73,6 +73,96 @@ teardown() {
 }
 trap teardown EXIT INT TERM
 
+# ── 0. Pre-flight: verify the required ghcr.io images exist ──
+# install.sh has a `compose pull 2>/dev/null || warn ... will build locally`
+# fallback so end users on uncommon architectures (e.g. ports to future
+# phone targets) still have a path. CI must NOT take that fallback —
+# building continuum-core-vulkan from source on the no-GPU GHA runner
+# is a full cargo build --release that takes 25+ minutes and hits
+# CARL_INSTALL_TIMEOUT_SEC, which is exactly the silent downgrade
+# Joel called out 2026-05-30 ("Relying on stale builds is dumb" /
+# "fix properly. What broke, what is the long term goal").
+#
+# What broke (concrete): PR #1476 (avatars context fix) fixed the
+# `docker compose build` error; install.sh then proceeded to
+# `compose pull` which failed (pr-1476 image hadn't been pushed via
+# scripts/push-current-arch.sh), and silently fell through to
+# `compose up` → docker build → cargo build --release → 25min
+# timeout. The avatars fix WORKED; the deeper issue is the silent
+# downgrade after pull failure.
+#
+# Long-term goal: every PR's install-smoke tests THIS PR's binary,
+# fast and reliably. That requires the pre-built image to exist
+# (dev pre-push pipeline publishes pr-N). When the publish didn't
+# happen, the smoke should fail LOUDLY ("image missing, push via
+# scripts/push-current-arch.sh") instead of silently slipping into
+# a 25-min build that times out OR worse, silently using a stale
+# canary image and reporting "tests pass!" on someone else's binary.
+#
+# CONTINUUM_IMAGE_TAG comes from the workflow (pr-N for PRs, canary
+# for manual triggers). We check the variants install path pulls:
+# continuum-core-vulkan is the heavy one; the lighter siblings
+# (node-server, widget-server, model-init) share the tag scheme.
+# Operator escape hatch: CARL_ALLOW_LOCAL_BUILD=1 opts into the
+# install.sh fallback — useful when explicitly debugging the build
+# path, NOT for production CI.
+REQUIRED_IMAGE_VARIANTS=(
+  "continuum-core-vulkan"
+  "node-server"
+  "widget-server"
+  "model-init"
+)
+RESOLVED_TAG="${CONTINUUM_IMAGE_TAG:-canary}"
+MISSING_IMAGES=()
+echo ""
+echo "━━━ pre-flight: verifying ghcr.io images at :${RESOLVED_TAG} ━━━"
+for variant in "${REQUIRED_IMAGE_VARIANTS[@]}"; do
+  ref="ghcr.io/cambriantech/${variant}:${RESOLVED_TAG}"
+  if docker manifest inspect "$ref" >/dev/null 2>&1; then
+    echo "  ✓ $ref"
+  else
+    echo "  ✗ $ref (MISSING)"
+    MISSING_IMAGES+=("$ref")
+  fi
+done
+
+if [ ${#MISSING_IMAGES[@]} -gt 0 ]; then
+  echo ""
+  echo "❌ Required images missing at :${RESOLVED_TAG} — refusing to silently fall"
+  echo "   through to install.sh's local-build path."
+  echo ""
+  echo "   Missing:"
+  for img in "${MISSING_IMAGES[@]}"; do
+    echo "     $img"
+  done
+  echo ""
+  echo "   Root cause: the dev pre-push pipeline didn't publish images for this PR."
+  echo "   Architecturally — CI is for CHECK, not BUILD (Joel 2026-04-23). Devs"
+  echo "   publish images via scripts/push-current-arch.sh before push; the CI"
+  echo "   smoke uses the pre-built images and times the install path end-to-end."
+  echo ""
+  echo "   To unblock this run on a build machine that supports the target arch:"
+  echo "     scripts/push-current-arch.sh"
+  echo "   Then re-run this workflow. The publish pipeline tags pr-\${PR_NUMBER}."
+  echo ""
+  echo "   For PRs that genuinely don't change the binary (docker-compose tweaks,"
+  echo "   docs, ts-only): the dev push pipeline already aliases pr-N from canary"
+  echo "   in that case (see scripts/push-image.sh manifest copy path) — running"
+  echo "   scripts/push-current-arch.sh from any dev box is the right move."
+  echo ""
+  echo "   Operator override (debugging only, NOT for production CI): set"
+  echo "     CARL_ALLOW_LOCAL_BUILD=1"
+  echo "   in the workflow env to fall through to install.sh's local-build."
+  echo "   This will likely time out at CARL_INSTALL_TIMEOUT_SEC=${CARL_INSTALL_TIMEOUT_SEC}s"
+  echo "   and tests the LOCAL build, not the published image."
+  if [ "${CARL_ALLOW_LOCAL_BUILD:-0}" = "1" ]; then
+    echo ""
+    echo "   CARL_ALLOW_LOCAL_BUILD=1 set — continuing into the local-build fallback."
+  else
+    exit 1
+  fi
+fi
+
 # ── 1. Run Carl's exact install command ───────────────────────
 echo ""
 echo "━━━ running install.sh from $CARL_INSTALL_REF ━━━"
