@@ -239,11 +239,46 @@ impl CommandExecutor {
 // Global executor instance - initialized once at startup
 static GLOBAL_EXECUTOR: std::sync::OnceLock<Arc<CommandExecutor>> = std::sync::OnceLock::new();
 
-/// Initialize the global command executor (called once at startup)
+/// Initialize the global command executor with no interceptors.
+///
+/// Back-compat shim around [`init_executor_with_interceptors`] for
+/// callers that don't have transports to wire. Prefer the
+/// `_with_interceptors` form in production startup so commands can
+/// transparently route to remote peers via grid / airc / future
+/// transports.
 pub fn init_executor(registry: Arc<ModuleRegistry>) {
+    init_executor_with_interceptors(registry, Vec::new());
+}
+
+/// Initialize the global command executor with a wired interceptor
+/// chain.
+///
+/// Production startup (`ipc::start_server`) calls this with
+/// `[AircInterceptor, GridInterceptor]` so capability-based routing
+/// and explicit airc-targeted commands work transparently from any
+/// caller. The chain order is policy: the earlier an interceptor
+/// sits, the higher its priority (airc beats grid because explicit
+/// peer targets shouldn't be overridden by grid's capability heuristic).
+///
+/// Idempotent: only the first call wins (per the underlying
+/// `OnceLock`). A subsequent call is silently a no-op — useful for
+/// test fixtures that may try to init multiple times but should
+/// preserve the production wiring.
+pub fn init_executor_with_interceptors(
+    registry: Arc<ModuleRegistry>,
+    interceptors: Vec<Arc<dyn CommandInterceptor>>,
+) {
     let log = super::logger("command-executor");
-    let _ = GLOBAL_EXECUTOR.set(Arc::new(CommandExecutor::new(registry)));
-    log.info(&format!("Initialized (TS bridge: {})", TS_COMMAND_SOCKET));
+    let interceptor_count = interceptors.len();
+    let mut executor = CommandExecutor::new(registry);
+    for interceptor in interceptors {
+        executor = executor.with_interceptor(interceptor);
+    }
+    let _ = GLOBAL_EXECUTOR.set(Arc::new(executor));
+    log.info(&format!(
+        "Initialized with {} interceptor(s) (TS bridge: {})",
+        interceptor_count, TS_COMMAND_SOCKET
+    ));
 }
 
 /// Get the global command executor
