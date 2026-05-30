@@ -29,6 +29,7 @@ pub mod forge;
 pub mod gpu;
 pub mod grid;
 pub mod health;
+pub mod hippocampus;
 pub mod inference;
 pub mod live;
 pub mod logger;
