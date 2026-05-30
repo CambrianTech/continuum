@@ -22,6 +22,7 @@ pub mod channel_types;
 pub mod cognition;
 pub mod domain_classifier;
 pub mod engram;
+pub mod engram_graph;
 pub mod evaluator;
 pub mod genome_paging;
 pub mod inbox;
