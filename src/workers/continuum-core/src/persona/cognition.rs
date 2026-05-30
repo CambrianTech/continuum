@@ -72,6 +72,13 @@ pub struct PriorityFactors {
 pub struct PersonaCognitionEngine {
     persona_id: Uuid,
     persona_name: String,
+    /// Lowercase form of `persona_name`, precomputed once at construction
+    /// for the per-message [`Self::is_mentioned`] hot path. Stored as
+    /// `Box<str>` (immutable, no excess capacity) instead of `String`.
+    name_lower: Box<str>,
+    /// Precomputed `"@" + name_lower` for the @mention substring check.
+    /// Same hot-path-amortization story as `name_lower`.
+    mention_marker: Box<str>,
     state: PersonaState,
     inbox: PersonaInbox,
     #[allow(dead_code)] // Will be used for RAG context building
@@ -92,9 +99,13 @@ impl PersonaCognitionEngine {
         rag_engine: Arc<RagEngine>,
         shutdown_rx: watch::Receiver<bool>,
     ) -> Self {
+        let name_lower = persona_name.to_lowercase().into_boxed_str();
+        let mention_marker = format!("@{name_lower}").into_boxed_str();
         Self {
             persona_id,
-            persona_name: persona_name.clone(),
+            persona_name,
+            name_lower,
+            mention_marker,
             state: PersonaState::new(),
             inbox: PersonaInbox::new(persona_id),
             rag_engine,
@@ -170,13 +181,26 @@ impl PersonaCognitionEngine {
         }
     }
 
-    /// Check if persona is mentioned in content
+    /// Check if persona is mentioned in content.
+    ///
+    /// Zero-alloc hot path: `name_lower` and `mention_marker` are
+    /// precomputed on the engine at construction (see [`Self::new`]).
+    /// The case-insensitive substring search walks bytes directly via
+    /// [`contains_ascii_case_insensitive`] so `content.to_lowercase()`
+    /// — proportional-to-message-length allocation per call — is
+    /// avoided too. Previous implementation allocated three Strings
+    /// per call (content_lower + name_lower + format!("@{name}"));
+    /// called once per message per persona per tick, this was a
+    /// real GC pressure source on busy rooms.
+    ///
+    /// Persona names are ASCII (Helper AI, Teacher AI, etc.); ASCII
+    /// case-insensitive matching covers the @mention path without
+    /// pulling in Unicode case folding. Non-ASCII content bytes
+    /// compare byte-for-byte (cannot false-match ASCII bytes — see
+    /// [`u8::eq_ignore_ascii_case`]).
     fn is_mentioned(&self, content: &str) -> bool {
-        let content_lower = content.to_lowercase();
-        let name_lower = self.persona_name.to_lowercase();
-
-        // Check @mention
-        content_lower.contains(&format!("@{name_lower}")) || content_lower.contains(&name_lower)
+        contains_ascii_case_insensitive(content, &self.mention_marker)
+            || contains_ascii_case_insensitive(content, &self.name_lower)
     }
 
     /// Fast-path decision: should we even consider responding?
@@ -304,6 +328,36 @@ impl PersonaCognitionEngine {
     }
 }
 
+/// Case-insensitive ASCII substring search. Returns `true` when
+/// `haystack` contains `needle`, comparing alphabetic ASCII bytes
+/// case-insensitively (via [`u8::eq_ignore_ascii_case`]) and all other
+/// bytes literally.
+///
+/// Used by [`PersonaCognitionEngine::is_mentioned`] to avoid the
+/// `haystack.to_lowercase()` allocation that would otherwise fire once
+/// per message per persona per tick. Names + mention markers in
+/// continuum are ASCII, so the ASCII fast path is sufficient — non-ASCII
+/// content bytes can't accidentally match an ASCII needle byte because
+/// `eq_ignore_ascii_case` only folds bytes in `0x41..=0x5A` /
+/// `0x61..=0x7A` and compares others byte-for-byte.
+///
+/// Complexity: O((haystack_len - needle_len + 1) * needle_len) — naive
+/// scan, same as `str::contains` minus the allocation. Persona names
+/// are ~5-20 chars and chat content is typically ~100-500 chars, so
+/// the constant factor is small; the saved allocation is the actual
+/// win at scale.
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    if n.len() > h.len() {
+        return false;
+    }
+    h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+}
+
 //=============================================================================
 // TESTS
 //=============================================================================
@@ -400,5 +454,68 @@ mod tests {
         let decision2 = engine.fast_path_decision(&msg);
         assert!(!decision2.should_respond);
         assert_eq!(decision2.reason, "Already evaluated");
+    }
+
+    // ─── contains_ascii_case_insensitive — zero-alloc helper ────────────
+
+    #[test]
+    fn helper_matches_exact_case() {
+        assert!(contains_ascii_case_insensitive("hello world", "hello"));
+        assert!(contains_ascii_case_insensitive("hello world", "world"));
+    }
+
+    #[test]
+    fn helper_matches_case_insensitively() {
+        assert!(contains_ascii_case_insensitive("Hello World", "hello"));
+        // @ is byte 0x40 — non-alphabetic, must match literally. The
+        // haystack DOES contain '@', so case-folded substring matches.
+        assert!(contains_ascii_case_insensitive("Yo @HELPER are you", "@helper"));
+        assert!(contains_ascii_case_insensitive("Hey Helper Ai!", "helper ai"));
+        // Negative: literal '@' is required when needle has it.
+        assert!(!contains_ascii_case_insensitive("HEY HELPER", "@helper"));
+    }
+
+    #[test]
+    fn helper_rejects_when_needle_absent() {
+        assert!(!contains_ascii_case_insensitive("hello world", "goodbye"));
+        assert!(!contains_ascii_case_insensitive("short", "much longer needle"));
+    }
+
+    #[test]
+    fn helper_empty_needle_always_matches() {
+        // Mirrors std::str::contains("") semantics — every haystack
+        // (including the empty one) contains the empty substring.
+        assert!(contains_ascii_case_insensitive("anything", ""));
+        assert!(contains_ascii_case_insensitive("", ""));
+    }
+
+    #[test]
+    fn helper_non_ascii_does_not_false_match_ascii() {
+        // Non-ASCII bytes can't case-fold against ASCII bytes — confirms
+        // that emoji-heavy or unicode-rich chat content won't trigger
+        // spurious @mention hits.
+        assert!(!contains_ascii_case_insensitive("hé", "he"));
+        assert!(!contains_ascii_case_insensitive("\u{1F44B} hello", "\u{1F44B} world"));
+        // ASCII-still-matches-inside-unicode-content path stays correct.
+        assert!(contains_ascii_case_insensitive("\u{1F44B} Helper AI", "helper ai"));
+    }
+
+    #[tokio::test]
+    async fn is_mentioned_uses_cached_lowercase_via_engine() {
+        // Constructs the engine with a mixed-case name; verifies all
+        // four casing variants resolve through the same cached state.
+        let rag_engine = Arc::new(RagEngine::new());
+        let (_tx, rx) = watch::channel(false);
+        let engine = PersonaCognitionEngine::new(
+            Uuid::new_v4(),
+            "Helper AI".into(),
+            rag_engine,
+            rx,
+        );
+        assert!(engine.is_mentioned("@helper ai please"));
+        assert!(engine.is_mentioned("@HELPER AI"));
+        assert!(engine.is_mentioned("Hey helper ai, can you..."));
+        assert!(engine.is_mentioned("Helper AI is great"));
+        assert!(!engine.is_mentioned("totally unrelated message"));
     }
 }
