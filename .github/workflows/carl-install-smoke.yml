@@ -94,24 +94,31 @@ jobs:
         env:
           # PR HEAD sha so smoke fetches install.sh from THIS PR.
           CARL_INSTALL_REF: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
-          # Pin docker images to :pr-N (PR-scoped, mutable per push). Refreshed
-          # by push-image.sh on every dev push, so always reflects this PR's
-          # latest source — but never collides with another PR or canary.
-          # Slices the dev didn't push directly are aliased from :canary by the
-          # dev script (manifest copy, no rebuild). :latest was the prior
-          # default and went 9-14 days stale in April 2026 — never use it for
-          # smoke.
+          # Default to the canary image tag for ALL PR runs (and manual
+          # triggers). Per Joel 2026-05-30: per-PR docker rebuilds aren't
+          # worthwhile at the canary level — image publishing takes a lot of
+          # machines and the build is currently bloated by Node-legacy
+          # surface that the longer-term Rust-core / thin-Node-client
+          # extraction will remove. Image rebuilds are a main-promotion
+          # gate, not a per-PR check.
           #
-          # Resolution priority: PR# > input.image_tag > 'canary'.
-          # On workflow_dispatch (no PR context) the bare `pr-${{ ... }}`
-          # interpolated to 'pr-' (empty after dash), causing install.sh to
-          # miss the registry and fall back to 'will build locally' — which
-          # then ran a full Rust compile of continuum-core-vulkan on the
-          # no-GPU runner and hit the 25-min runner cap (observed run
-          # 25400718464). The conditional below makes manual triggers
-          # default to the canary tag (the cadence we publish on) and lets
-          # operators override via the image_tag input from the UI.
-          CONTINUUM_IMAGE_TAG: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || inputs.image_tag || 'canary' }}
+          # The previous logic set pr-${PR_NUMBER} for PR runs, which
+          # required `scripts/push-current-arch.sh` to have run for the PR
+          # before the smoke would pass. That published images per PR which
+          # we don't actually need — it just generated "image missing →
+          # silent compose build → 25-min timeout" failures (observed on
+          # #1476 at 25m45s; #1085 from May 11 also has this exact failure
+          # signature). Defaulting to :canary tests the install path
+          # against canary's binary, which is the correct semantic for the
+          # PR-stage gate: validate THIS PR's install.sh + docker-compose
+          # changes; validate the binary at main promotion when fresh
+          # images get built.
+          #
+          # Manual triggers + workflow_dispatch can still override via the
+          # `image_tag` input (useful for explicit pr-N testing when a dev
+          # has pushed pr-N for binary regression work, or for testing a
+          # specific historical canary tag).
+          CONTINUUM_IMAGE_TAG: ${{ inputs.image_tag || 'canary' }}
           # 25-min cap on the docker-only install. Hybrid (Mac source-build)
           # path would exceed this — by design, that's the gate firing on
           # the README/install mismatch.
