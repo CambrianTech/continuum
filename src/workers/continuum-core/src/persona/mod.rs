@@ -20,6 +20,7 @@ pub mod channel_queue;
 pub mod channel_registry;
 pub mod channel_types;
 pub mod cognition;
+pub mod cognition_io;
 pub mod domain_classifier;
 pub mod engram;
 pub mod evaluator;
@@ -30,14 +31,13 @@ pub mod media_policy;
 pub mod message_cache;
 pub mod model_selection;
 pub mod prompt_assembly;
-pub mod cognition_io;
 pub mod recorder;
-pub mod trace;
 pub mod resource_forecast;
 pub mod response;
 pub mod self_task_generator;
 pub mod service_module;
 pub mod text_analysis;
+pub mod trace;
 pub mod turn_context;
 pub mod turn_frame;
 pub mod types;
@@ -62,8 +62,8 @@ pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, Se
 pub use cognition::{CognitionDecision, PersonaCognitionEngine, PriorityFactors, PriorityScore};
 pub use domain_classifier::{DomainClassification, DomainClassifier, QualityFactors, QualityScore};
 pub use engram::{
-    AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, ChatMessageRef,
-    Engram, EngramKind, EngramOrigin, ToolInvocationRef, TrustState,
+    AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, ChatMessageRef, Engram,
+    EngramKind, EngramOrigin, ToolInvocationRef, TrustState,
 };
 pub use evaluator::{
     AdequacyResult, FullEvaluateRequest, FullEvaluateResult, GateDetails, RateLimiterState,
@@ -75,8 +75,8 @@ pub use genome_paging::{
 };
 pub use inbox::{PersonaInbox, PersonaInboxFrame, PersonaInboxFrameMetrics};
 pub use inbox_admission::{
-    content_hash_sha256, inbox_message_to_candidate, inbox_message_to_origin,
-    InboxAdmissionRunner, TrustMapping,
+    content_hash_sha256, inbox_message_to_candidate, inbox_message_to_origin, InboxAdmissionRunner,
+    TrustMapping,
 };
 pub use message_cache::{
     CachedMessage, ContentDedupResult, ContentDeduplicator, EchoChamberResult, RecentMessageCache,

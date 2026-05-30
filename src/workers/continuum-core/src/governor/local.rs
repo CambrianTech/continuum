@@ -45,14 +45,14 @@
 //! - Policy directory discovery (PR-3d); callers must provide explicit
 //!   candidates via `set_candidates`
 
+use crate::governor::cascade::{
+    apply_action, apply_cascade_step_to_policy, evaluate_next_step, CascadeAction,
+    CascadeThresholds,
+};
+use crate::governor::policy_selector::{select_policy, PolicySelectionError};
+use crate::governor::types::{GovernorPolicy, GovernorSnapshot, HardwareClass, PressureSignal};
 use crate::governor::PolicyFile;
 use crate::governor::SubstrateGovernor;
-use crate::governor::cascade::{
-    CascadeAction, CascadeThresholds, apply_action, apply_cascade_step_to_policy,
-    evaluate_next_step,
-};
-use crate::governor::policy_selector::{PolicySelectionError, select_policy};
-use crate::governor::types::{GovernorPolicy, GovernorSnapshot, HardwareClass, PressureSignal};
 use arc_swap::ArcSwap;
 use std::sync::{Arc, Mutex};
 

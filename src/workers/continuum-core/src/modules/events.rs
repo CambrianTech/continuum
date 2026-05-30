@@ -172,7 +172,10 @@ mod tests {
         let name = "ipc-test:declare-then-get";
 
         let result = module
-            .handle_command("events/declare-class", declare_params_broadcast_global(name))
+            .handle_command(
+                "events/declare-class",
+                declare_params_broadcast_global(name),
+            )
             .await
             .unwrap();
         match result {
@@ -185,10 +188,7 @@ mod tests {
         }
 
         let result = module
-            .handle_command(
-                "events/get-class",
-                serde_json::json!({ "name": name }),
-            )
+            .handle_command("events/get-class", serde_json::json!({ "name": name }))
             .await
             .unwrap();
         match result {
@@ -239,7 +239,10 @@ mod tests {
         let module = EventsModule::new();
         let name = "ipc-test:resolve-global";
         module
-            .handle_command("events/declare-class", declare_params_broadcast_global(name))
+            .handle_command(
+                "events/declare-class",
+                declare_params_broadcast_global(name),
+            )
             .await
             .unwrap();
 
@@ -276,9 +279,9 @@ mod tests {
         match result {
             CommandResult::Json(v) => {
                 let arr = v.as_array().expect("list returns array");
-                let found = arr.iter().any(|c| {
-                    c.get("name").and_then(|n| n.as_str()) == Some(name)
-                });
+                let found = arr
+                    .iter()
+                    .any(|c| c.get("name").and_then(|n| n.as_str()) == Some(name));
                 assert!(found, "declared class should appear in list");
             }
             _ => panic!("expected json array"),

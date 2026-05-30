@@ -62,10 +62,7 @@ use ts_rs::TS;
 /// humans reading subscription lists, not the dispatcher.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/runtime/ArtifactKey.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/runtime/ArtifactKey.ts")]
 pub struct ArtifactKey(pub String);
 
 impl ArtifactKey {
@@ -153,10 +150,7 @@ impl ArtifactSelector {
 /// truly never wakes shouldn't exist as a registered module.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", tag = "kind")]
-#[ts(
-    export,
-    export_to = "../../../shared/generated/runtime/Cadence.ts"
-)]
+#[ts(export, export_to = "../../../shared/generated/runtime/Cadence.ts")]
 pub enum Cadence {
     Periodic {
         /// Requested floor on tick interval. ms over the wire so the

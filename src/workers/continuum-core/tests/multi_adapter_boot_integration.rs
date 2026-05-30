@@ -93,7 +93,12 @@ async fn llamacpp_local_models_coexist_without_metal_oom() {
         local_rows.len()
     );
     for m in &local_rows {
-        let mtmd = if m.mmproj_local_path.as_ref().map(|p| p.exists()).unwrap_or(false) {
+        let mtmd = if m
+            .mmproj_local_path
+            .as_ref()
+            .map(|p| p.exists())
+            .unwrap_or(false)
+        {
             "mtmd-capable"
         } else {
             "text-only"
@@ -109,8 +114,8 @@ async fn llamacpp_local_models_coexist_without_metal_oom() {
     let mut adapters: Vec<Box<dyn AIProviderAdapter>> = Vec::with_capacity(local_rows.len());
     for model_meta in &local_rows {
         let gguf = model_meta.gguf_local_path.as_ref().unwrap().clone();
-        let adapter = LlamaCppAdapter::with_model_id(gguf, model_meta.id.clone())
-            .with_context_length(32768);
+        let adapter =
+            LlamaCppAdapter::with_model_id(gguf, model_meta.id.clone()).with_context_length(32768);
         let mut boxed: Box<dyn AIProviderAdapter> = Box::new(adapter);
         let init_start = std::time::Instant::now();
         boxed

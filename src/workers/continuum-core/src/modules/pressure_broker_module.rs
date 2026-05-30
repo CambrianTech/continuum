@@ -27,7 +27,7 @@
 //! pattern keeps the boot sequence in `ipc/mod.rs` uniform and gives the
 //! broker the same shutdown / metrics treatment as everything else.
 
-use crate::governor::{SubstrateGovernor, governor_alert_sink};
+use crate::governor::{governor_alert_sink, SubstrateGovernor};
 use crate::modules::docker_tier_pool::DockerTierPool;
 use crate::paging::{BrokerConfig, PressureBroker, ResourcePool};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};

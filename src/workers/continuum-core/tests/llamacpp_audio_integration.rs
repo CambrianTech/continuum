@@ -36,14 +36,18 @@ fn qwen2_audio_paths() -> (PathBuf, PathBuf) {
     let model = env::var("QWEN2_AUDIO_7B_GGUF")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env::var("HOME").expect("HOME env var must be set for this integration test"))
-                .join("models/qwen2-audio-7b/Qwen2-Audio-7B-Instruct-Q4_K_M.gguf")
+            PathBuf::from(
+                env::var("HOME").expect("HOME env var must be set for this integration test"),
+            )
+            .join("models/qwen2-audio-7b/Qwen2-Audio-7B-Instruct-Q4_K_M.gguf")
         });
     let mmproj = env::var("QWEN2_AUDIO_7B_MMPROJ")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env::var("HOME").expect("HOME env var must be set for this integration test"))
-                .join("models/qwen2-audio-7b/mmproj-Qwen2-Audio-7B-Instruct-f16.gguf")
+            PathBuf::from(
+                env::var("HOME").expect("HOME env var must be set for this integration test"),
+            )
+            .join("models/qwen2-audio-7b/mmproj-Qwen2-Audio-7B-Instruct-f16.gguf")
         });
     (model, mmproj)
 }
@@ -92,9 +96,12 @@ fn load_or_generate_test_wav() -> Option<Vec<u8>> {
     }
     let convert_ok = Command::new("afconvert")
         .args([
-            "-f", "WAVE",
-            "-d", "LEI16@16000",
-            "-c", "1",
+            "-f",
+            "WAVE",
+            "-d",
+            "LEI16@16000",
+            "-c",
+            "1",
             aiff.to_str()?,
             path.to_str()?,
         ])
@@ -232,7 +239,14 @@ fn qwen2_audio_describes_clip_via_rust_pipeline() {
     // would mean the audio bytes never made it to the encoder.
     let lower = text.to_lowercase();
     let signal_words = [
-        "hello", "test", "audio", "model", "describe", "hear", "clip", "understanding",
+        "hello",
+        "test",
+        "audio",
+        "model",
+        "describe",
+        "hear",
+        "clip",
+        "understanding",
     ];
     let hits: Vec<&str> = signal_words
         .iter()

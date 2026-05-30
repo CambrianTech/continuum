@@ -16,7 +16,7 @@
 //! A deferred `init_global` keeps that control.
 
 use super::catalog;
-use super::loader::{Registry, RegistryError, load_registry};
+use super::loader::{load_registry, Registry, RegistryError};
 use std::path::Path;
 use std::sync::OnceLock;
 

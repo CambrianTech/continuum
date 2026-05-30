@@ -82,7 +82,10 @@ mod tests {
             field: "summary".to_string(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("summary"), "expected field name in message: {msg}");
+        assert!(
+            msg.contains("summary"),
+            "expected field name in message: {msg}"
+        );
         assert!(
             msg.contains("missing required field"),
             "expected variant context in message: {msg}"

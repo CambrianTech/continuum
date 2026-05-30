@@ -260,10 +260,8 @@ mod tests {
         assert_eq!(record.status, HarnessStatus::Pass);
         assert_eq!(record.first_response_ms, Some(40));
         assert!(bundle.manifest_toml.exists());
-        assert!(
-            std::fs::read_to_string(&bundle.summary_md)
-                .unwrap()
-                .contains("chat-roundtrip-live-harness")
-        );
+        assert!(std::fs::read_to_string(&bundle.summary_md)
+            .unwrap()
+            .contains("chat-roundtrip-live-harness"));
     }
 }

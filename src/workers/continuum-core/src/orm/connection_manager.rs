@@ -87,8 +87,7 @@ impl ManagedPool {
     }
 
     fn touch(&self) {
-        self.last_access
-            .store(Self::now_nanos(), Ordering::Relaxed);
+        self.last_access.store(Self::now_nanos(), Ordering::Relaxed);
     }
 
     fn last_access_nanos(&self) -> u64 {

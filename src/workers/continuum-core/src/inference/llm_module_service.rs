@@ -35,9 +35,7 @@ use std::any::Any;
 
 use std::sync::Arc;
 
-use super::llm_module::{
-    FinishReason, FirstTokenEmitted, InferenceComplete, InferenceRequest,
-};
+use super::llm_module::{FinishReason, FirstTokenEmitted, InferenceComplete, InferenceRequest};
 use super::llm_module_bus::{publish_first_token_emitted, publish_inference_complete};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
@@ -47,9 +45,7 @@ use crate::ai::types::{
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::module_context::ModuleContext;
 use crate::runtime::registry::ModuleRegistry;
-use crate::runtime::service_module::{
-    CommandResult, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::service_module::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
 /// Optional bus + registry handle for auto-publishing inference
 /// response events. When set on `InferenceLlmModule`, every
@@ -190,11 +186,7 @@ impl ServiceModule for InferenceLlmModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             COMMAND_REQUEST => self.handle_request(params).await,
             other => Err(format!(
@@ -546,9 +538,7 @@ mod tests {
     #[tokio::test]
     async fn handle_command_unknown_returns_loud_error() {
         let m = InferenceLlmModule::new();
-        let result = m
-            .handle_command("inference/llm/bogus", Value::Null)
-            .await;
+        let result = m.handle_command("inference/llm/bogus", Value::Null).await;
         match result {
             Err(msg) => {
                 assert!(msg.contains("unknown command"));
@@ -622,8 +612,7 @@ mod tests {
     // ─── PR-3b: bus auto-publish tests ─────────────────────────
 
     use crate::inference::llm_module_bus::{
-        FIRST_TOKEN_EMITTED_KEY, INFERENCE_COMPLETE_KEY,
-        inference_response_selectors,
+        inference_response_selectors, FIRST_TOKEN_EMITTED_KEY, INFERENCE_COMPLETE_KEY,
     };
     use crate::runtime::artifact_handle::{ArtifactKey, ArtifactSelector};
     use crate::runtime::runtime::Runtime;
@@ -657,10 +646,7 @@ mod tests {
                 tick_interval: None,
             }
         }
-        async fn initialize(
-            &self,
-            _ctx: &crate::runtime::ModuleContext,
-        ) -> Result<(), String> {
+        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
             Ok(())
         }
         async fn handle_command(
@@ -678,7 +664,9 @@ mod tests {
             key: &ArtifactKey,
             payload: serde_json::Value,
         ) -> Result<(), String> {
-            self.captured.lock().push((key.as_str().to_string(), payload));
+            self.captured
+                .lock()
+                .push((key.as_str().to_string(), payload));
             Ok(())
         }
         fn as_any(&self) -> &dyn Any {
@@ -696,14 +684,14 @@ mod tests {
         let (recorder, captured) = InferenceRecorder::new();
         runtime.register(recorder);
 
-        let module = InferenceLlmModule::with_bus(
-            runtime.bus_arc(),
-            runtime.registry_arc(),
-        );
+        let module = InferenceLlmModule::with_bus(runtime.bus_arc(), runtime.registry_arc());
 
         let req = sample_request();
         let params = serde_json::to_value(&req).unwrap();
-        let _ = module.handle_command(COMMAND_REQUEST, params).await.unwrap();
+        let _ = module
+            .handle_command(COMMAND_REQUEST, params)
+            .await
+            .unwrap();
 
         // Yield to let the spawned publishes run.
         for _ in 0..50 {
@@ -749,7 +737,10 @@ mod tests {
         let module = InferenceLlmModule::new();
         let req = sample_request();
         let params = serde_json::to_value(&req).unwrap();
-        let _ = module.handle_command(COMMAND_REQUEST, params).await.unwrap();
+        let _ = module
+            .handle_command(COMMAND_REQUEST, params)
+            .await
+            .unwrap();
 
         // Yield to give any incorrectly-spawned publish a chance.
         for _ in 0..20 {
@@ -772,10 +763,7 @@ mod tests {
         let (recorder, captured) = InferenceRecorder::new();
         runtime.register(recorder);
 
-        let module = InferenceLlmModule::with_bus(
-            runtime.bus_arc(),
-            runtime.registry_arc(),
-        );
+        let module = InferenceLlmModule::with_bus(runtime.bus_arc(), runtime.registry_arc());
 
         let result = module
             .handle_command("inference/llm/bogus", Value::Null)
@@ -802,10 +790,7 @@ mod tests {
         let (recorder, captured) = InferenceRecorder::new();
         runtime.register(recorder);
 
-        let module = InferenceLlmModule::with_bus(
-            runtime.bus_arc(),
-            runtime.registry_arc(),
-        );
+        let module = InferenceLlmModule::with_bus(runtime.bus_arc(), runtime.registry_arc());
 
         let result = module
             .handle_command(COMMAND_REQUEST, serde_json::json!({"not": "valid"}))
@@ -878,8 +863,14 @@ mod tests {
         let complete = super::translate_adapter_response(&req, response);
         assert_eq!(complete.request_id, req.request_id);
         assert_eq!(complete.persona, req.persona);
-        assert_eq!(complete.completion_text.as_deref(), Some("stub adapter completion"));
-        assert!(complete.completion_tokens.is_empty(), "adapter path is text, not tokens");
+        assert_eq!(
+            complete.completion_text.as_deref(),
+            Some("stub adapter completion")
+        );
+        assert!(
+            complete.completion_tokens.is_empty(),
+            "adapter path is text, not tokens"
+        );
         assert_eq!(complete.tokens_generated, 7);
         assert_eq!(complete.elapsed_ms, 250);
         assert_eq!(complete.finish_reason, FinishReason::Stop);

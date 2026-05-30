@@ -25,8 +25,8 @@
 //! `metal` / `cuda` / `vulkan`. Tests can pass `platform = "mock"` to
 //! bypass.
 
-use crate::cognition::model_resolver::{HostCapability, HwCapabilityTier};
 use crate::cognition::adaptive_throughput::TargetSilicon;
+use crate::cognition::model_resolver::{HostCapability, HwCapabilityTier};
 use crate::gpu::monitor::GpuMonitor;
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
@@ -95,7 +95,10 @@ pub fn detect_host_capability(
     let (hw_capability_tier, primary_target_silicon) = match platform {
         "metal" => {
             let cpu_brand = first_cpu_brand(system_info);
-            (apple_silicon_tier(&cpu_brand, total_mem_mb), TargetSilicon::UnifiedMemory)
+            (
+                apple_silicon_tier(&cpu_brand, total_mem_mb),
+                TargetSilicon::UnifiedMemory,
+            )
         }
         "cuda" => (nvidia_sm_tier(device_name, platform)?, TargetSilicon::Gpu),
         "vulkan" => (HwCapabilityTier::VulkanAmd, TargetSilicon::Gpu),
@@ -289,7 +292,10 @@ mod tests {
     fn nvidia_unknown_sku_errors_no_silent_fallback() {
         let err = nvidia_sm_tier("NVIDIA Voodoo 5 6000", "cuda").unwrap_err();
         match err {
-            ProbeError::UnknownGpuDevice { platform, device_name } => {
+            ProbeError::UnknownGpuDevice {
+                platform,
+                device_name,
+            } => {
                 assert_eq!(platform, "cuda");
                 assert_eq!(device_name, "NVIDIA Voodoo 5 6000");
             }

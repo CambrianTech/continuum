@@ -49,9 +49,7 @@ const MIN_GPU_INFERENCE_VRAM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// CUDA specifically. As llama.cpp/candle gain Vulkan backends, lift
 /// the kind gate (no code change needed elsewhere — registry of kinds
 /// is dynamic).
-pub fn probe_inference_capabilities(
-    hw: &HardwareProfile,
-) -> Vec<InferenceCapability> {
+pub fn probe_inference_capabilities(hw: &HardwareProfile) -> Vec<InferenceCapability> {
     let mut caps: Vec<InferenceCapability> = Vec::new();
 
     let has_native_gpu = hw.has_metal || hw.has_cuda;
@@ -195,11 +193,11 @@ mod tests {
                 "ort-vision".into(),
             ],
         );
+        assert!(caps.iter().all(|c| c.latency_class == LatencyClass::Local));
+        assert!(caps.iter().all(|c| c.current_lease_count == 0));
         assert!(caps
             .iter()
-            .all(|c| c.latency_class == LatencyClass::Local));
-        assert!(caps.iter().all(|c| c.current_lease_count == 0));
-        assert!(caps.iter().all(|c| c.free_vram_bytes == 5 * 1024 * 1024 * 1024));
+            .all(|c| c.free_vram_bytes == 5 * 1024 * 1024 * 1024));
     }
 
     /// What this catches: M5 Pro with 32GB free VRAM advertises every kind
@@ -410,7 +408,14 @@ mod tests {
         let kinds: Vec<&str> = caps.iter().map(|c| c.kind.as_str()).collect();
         assert_eq!(
             kinds,
-            vec!["llamacpp", "candle", "ort-vision", "ort-tts", "ort-stt", "ort-embedding"],
+            vec![
+                "llamacpp",
+                "candle",
+                "ort-vision",
+                "ort-tts",
+                "ort-stt",
+                "ort-embedding"
+            ],
             "ordering shifted — PR-2/PR-3 may have implicit assumptions; pin it explicitly",
         );
     }

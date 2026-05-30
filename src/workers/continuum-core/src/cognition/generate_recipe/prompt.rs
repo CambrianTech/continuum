@@ -149,13 +149,9 @@ Most recipes follow this pipeline:\n\
 
 /// Build the user prompt from the natural language description + optional hints.
 /// Mirrors TS `buildUserPrompt` exactly.
-pub fn build_recipe_user_prompt(
-    description: &str,
-    hints: Option<&RecipeGenerateHints>,
-) -> String {
-    let mut prompt = format!(
-        "Generate a RecipeDefinition JSON for the following activity:\n\n{description}"
-    );
+pub fn build_recipe_user_prompt(description: &str, hints: Option<&RecipeGenerateHints>) -> String {
+    let mut prompt =
+        format!("Generate a RecipeDefinition JSON for the following activity:\n\n{description}");
 
     if let Some(h) = hints {
         let mut hint_parts: Vec<String> = Vec::new();
@@ -223,7 +219,10 @@ mod tests {
     #[test]
     fn system_prompt_contains_role_and_schema_header() {
         let p = build_recipe_system_prompt(&fixture_templates());
-        assert!(p.starts_with("You are a recipe generator"), "header missing");
+        assert!(
+            p.starts_with("You are a recipe generator"),
+            "header missing"
+        );
         assert!(p.contains("## RecipeDefinition Schema"));
         assert!(p.contains("```typescript"));
     }
@@ -235,7 +234,9 @@ mod tests {
     #[test]
     fn system_prompt_renders_template_list_with_required_fields() {
         let p = build_recipe_system_prompt(&fixture_templates());
-        assert!(p.contains("  - research-loop: Iterative research with verification (required: topic, depth)"));
+        assert!(p.contains(
+            "  - research-loop: Iterative research with verification (required: topic, depth)"
+        ));
         assert!(p.contains("  - code-review: Review code with TDD feedback (required: target)"));
     }
 

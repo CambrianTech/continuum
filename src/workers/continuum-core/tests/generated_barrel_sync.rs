@@ -174,8 +174,7 @@ fn scan_all_modules(root: &Path) -> Vec<ModuleDrift> {
         let referenced = parse_barrel_from_paths(&barrel);
         let missing_from_barrel: BTreeSet<String> =
             on_disk.difference(&referenced).cloned().collect();
-        let dangling_exports: BTreeSet<String> =
-            referenced.difference(&on_disk).cloned().collect();
+        let dangling_exports: BTreeSet<String> = referenced.difference(&on_disk).cloned().collect();
         reports.push(ModuleDrift {
             module: module_name,
             missing_from_barrel,
@@ -257,7 +256,10 @@ fn parser_extracts_from_path_not_type_name_on_rename() {
     let input = "export type { ToolCall } from './AgentToolCall';";
     let got = parse_barrel_from_paths_str(input);
     assert!(got.contains("AgentToolCall"), "got: {got:?}");
-    assert!(!got.contains("ToolCall"), "must not extract type name: {got:?}");
+    assert!(
+        !got.contains("ToolCall"),
+        "must not extract type name: {got:?}"
+    );
 }
 
 /// What this catches: double-quoted variants are tolerated. The
@@ -325,8 +327,14 @@ fn drift_detection_reports_both_regression_modes() {
         .collect();
     let missing: BTreeSet<String> = on_disk.difference(&referenced).cloned().collect();
     let dangling: BTreeSet<String> = referenced.difference(&on_disk).cloned().collect();
-    assert_eq!(missing.iter().cloned().collect::<Vec<_>>(), vec!["B".to_string()]);
-    assert_eq!(dangling.iter().cloned().collect::<Vec<_>>(), vec!["C".to_string()]);
+    assert_eq!(
+        missing.iter().cloned().collect::<Vec<_>>(),
+        vec!["B".to_string()]
+    );
+    assert_eq!(
+        dangling.iter().cloned().collect::<Vec<_>>(),
+        vec!["C".to_string()]
+    );
 }
 
 /// Smoke check: every module dir we expect to exist actually does.
@@ -341,10 +349,29 @@ fn drift_detection_reports_both_regression_modes() {
 fn known_modules_still_present() {
     let root = shared_generated_dir();
     let known = [
-        "agent", "ai", "cognition", "code", "dataset", "gpu", "grid",
-        "inference", "ipc", "live", "logger", "mcp", "model_registry",
-        "orm", "persona", "plasticity", "rag", "recipe", "runtime",
-        "search", "sentinel", "system", "voice",
+        "agent",
+        "ai",
+        "cognition",
+        "code",
+        "dataset",
+        "gpu",
+        "grid",
+        "inference",
+        "ipc",
+        "live",
+        "logger",
+        "mcp",
+        "model_registry",
+        "orm",
+        "persona",
+        "plasticity",
+        "rag",
+        "recipe",
+        "runtime",
+        "search",
+        "sentinel",
+        "system",
+        "voice",
     ];
     let on_disk: BTreeSet<String> = fs::read_dir(&root)
         .expect("read shared/generated")
@@ -358,7 +385,11 @@ fn known_modules_still_present() {
             }
         })
         .collect();
-    let missing: Vec<&str> = known.iter().copied().filter(|m| !on_disk.contains(*m)).collect();
+    let missing: Vec<&str> = known
+        .iter()
+        .copied()
+        .filter(|m| !on_disk.contains(*m))
+        .collect();
     assert!(
         missing.is_empty(),
         "known module dir(s) disappeared from shared/generated/: {missing:?}. \

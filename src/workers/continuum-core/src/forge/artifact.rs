@@ -30,7 +30,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::recipe::{AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, PriorBaseline, QuantTier};
+use super::recipe::{
+    AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, PriorBaseline, QuantTier,
+};
 
 //=============================================================================
 // HARDWARE PROFILE — verified post-run
@@ -43,7 +45,10 @@ use super::recipe::{AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, PriorBa
 /// Mirrors the existing Python `HardwareProfile` shape; Phase 2 makes
 /// the Rust type the source of truth.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/forge/HardwareProfile.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/forge/HardwareProfile.ts"
+)]
 pub struct HardwareProfile {
     /// Device label (e.g., "m5-pro", "rtx-5090", "linux-amd64").
     pub device: String,
@@ -78,14 +83,12 @@ pub struct HardwareProfile {
 #[ts(export, export_to = "../../../shared/generated/forge/ForgeArtifact.ts")]
 pub struct ForgeArtifact {
     //--- Identity ----------------------------------------------------------
-
     /// Stable artifact id (different from recipe id — one recipe can
     /// produce many artifacts across multiple runs / hardware tiers).
     #[ts(type = "string")]
     pub id: Uuid,
 
     //--- Recipe lineage (frozen at run time) ------------------------------
-
     /// Which recipe produced this artifact.
     #[ts(type = "string")]
     pub recipe_id: Uuid,
@@ -106,7 +109,6 @@ pub struct ForgeArtifact {
     // field after this artifact was forged, this artifact's snapshot
     // stays as-was — the recipe lineage points to the recipe-version
     // that was current at run time.
-
     /// Paragraph for the README/card.
     pub description: String,
     /// One-line plain-English headline.
@@ -141,7 +143,6 @@ pub struct ForgeArtifact {
     pub hardware: AlloyHardware,
 
     //--- Execution outputs (only the foundry knows these) -----------------
-
     /// When the foundry started this run (epoch milliseconds UTC).
     #[ts(type = "number")]
     pub forged_at_ms: u64,
@@ -328,7 +329,10 @@ mod tests {
         let back: ForgeArtifact = serde_json::from_str(&json).expect("deserialize");
         assert!(back.results.is_none());
         assert!(back.alloy_hash.is_none());
-        assert_eq!(back.recipe_id, artifact.recipe_id, "lineage preserved even on partial");
+        assert_eq!(
+            back.recipe_id, artifact.recipe_id,
+            "lineage preserved even on partial"
+        );
     }
 
     /// What this catches: recipe_id + recipe_version pinning means a
@@ -340,7 +344,10 @@ mod tests {
         // recipe_id + recipe_version + recipe_name. This test is the
         // runtime spec that they're populated.
         let artifact = sample_artifact();
-        assert!(!artifact.recipe_version.is_empty(), "recipe_version is required");
+        assert!(
+            !artifact.recipe_version.is_empty(),
+            "recipe_version is required"
+        );
         assert!(!artifact.recipe_name.is_empty(), "recipe_name is required");
     }
 

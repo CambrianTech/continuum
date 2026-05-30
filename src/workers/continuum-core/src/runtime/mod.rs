@@ -25,12 +25,15 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 pub mod artifact_handle;
+pub mod brain_region;
 pub mod command_executor;
 pub mod control;
 pub mod message_bus;
 pub mod module_context;
 pub mod module_logger;
 pub mod module_metrics;
+pub mod ready_buffer;
+pub mod region_telemetry;
 pub mod registry;
 #[allow(clippy::module_inception)]
 pub mod runtime;
@@ -38,6 +41,11 @@ pub mod service_module;
 pub mod shared_compute;
 
 pub use artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
+pub use brain_region::{
+    BrainRegion, CadenceHint, ComputeClass, MemoryClass, PersonaLifecycle, PressureLevel,
+    PressureProfile, PressureSignalKind, RegionContext, RegionError, RegionId, RegionSignal,
+    SleepPhase, TickOutcome,
+};
 pub use command_executor::{
     execute as execute_command, execute_json as execute_command_json, executor, init_executor,
     CommandExecutor,
@@ -47,6 +55,8 @@ pub use message_bus::MessageBus;
 pub use module_context::ModuleContext;
 pub use module_logger::ModuleLogger;
 pub use module_metrics::{CommandTiming, ModuleMetrics, ModuleStats};
+pub use ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
+pub use region_telemetry::RegionTelemetry;
 pub use registry::ModuleRegistry;
 pub use runtime::Runtime;
 pub use service_module::{

@@ -146,28 +146,24 @@ impl EventClassRegistry {
             .cloned()
             .ok_or_else(|| EventClassChannelResolveError::Undeclared(name.to_string()))?;
         if !entry.config.broadcast {
-            return Err(EventClassChannelResolveError::NotBroadcast(name.to_string()));
+            return Err(EventClassChannelResolveError::NotBroadcast(
+                name.to_string(),
+            ));
         }
         match entry.config.channel {
             EventClassChannelStrategy::Global => Ok("global".to_string()),
-            EventClassChannelStrategy::ByRoomId => {
-                extract_string_field(payload, "roomId").ok_or_else(|| {
-                    EventClassChannelResolveError::MissingPayloadField {
-                        name: name.to_string(),
-                        channel: EventClassChannelStrategy::ByRoomId,
-                        required_field: "roomId",
-                    }
-                })
-            }
-            EventClassChannelStrategy::ByPeerId => {
-                extract_string_field(payload, "peerId").ok_or_else(|| {
-                    EventClassChannelResolveError::MissingPayloadField {
-                        name: name.to_string(),
-                        channel: EventClassChannelStrategy::ByPeerId,
-                        required_field: "peerId",
-                    }
-                })
-            }
+            EventClassChannelStrategy::ByRoomId => extract_string_field(payload, "roomId")
+                .ok_or_else(|| EventClassChannelResolveError::MissingPayloadField {
+                    name: name.to_string(),
+                    channel: EventClassChannelStrategy::ByRoomId,
+                    required_field: "roomId",
+                }),
+            EventClassChannelStrategy::ByPeerId => extract_string_field(payload, "peerId")
+                .ok_or_else(|| EventClassChannelResolveError::MissingPayloadField {
+                    name: name.to_string(),
+                    channel: EventClassChannelStrategy::ByPeerId,
+                    required_field: "peerId",
+                }),
             EventClassChannelStrategy::Custom => {
                 Err(EventClassChannelResolveError::CustomResolverUnsupported {
                     name: name.to_string(),
@@ -333,7 +329,9 @@ mod tests {
         let err = r.declare("foo:bar", &conflict).unwrap_err();
         assert!(matches!(
             err,
-            EventClassRegistryError::Declare(EventClassDeclareError::ConflictingRedeclaration { .. })
+            EventClassRegistryError::Declare(
+                EventClassDeclareError::ConflictingRedeclaration { .. }
+            )
         ));
     }
 
@@ -380,7 +378,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            EventClassChannelResolveError::MissingPayloadField { required_field: "roomId", .. }
+            EventClassChannelResolveError::MissingPayloadField {
+                required_field: "roomId",
+                ..
+            }
         ));
     }
 
@@ -400,7 +401,10 @@ mod tests {
         let err = r
             .resolve_channel("widget:mounted", &serde_json::json!({}))
             .unwrap_err();
-        assert!(matches!(err, EventClassChannelResolveError::NotBroadcast(_)));
+        assert!(matches!(
+            err,
+            EventClassChannelResolveError::NotBroadcast(_)
+        ));
     }
 
     #[test]

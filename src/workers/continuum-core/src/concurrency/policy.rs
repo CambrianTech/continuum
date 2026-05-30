@@ -360,13 +360,18 @@ mod tests {
         // the panic. With the guard, the key is fresh and the new
         // work runs cleanly.
         let result = policy
-            .single_flight(
-                key.clone(),
-                async move { Ok::<usize, String>(99) }.boxed(),
-            )
+            .single_flight(key.clone(), async move { Ok::<usize, String>(99) }.boxed())
             .await;
-        assert_eq!(result, Ok(99), "second call after panic should succeed cleanly");
-        assert_eq!(policy.in_flight_count(), 0, "second call should also clean up");
+        assert_eq!(
+            result,
+            Ok(99),
+            "second call after panic should succeed cleanly"
+        );
+        assert_eq!(
+            policy.in_flight_count(),
+            0,
+            "second call should also clean up"
+        );
     }
 
     /// What this catches: regression in the #1235 fix. The previous

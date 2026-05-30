@@ -120,7 +120,8 @@ pub async fn publish_first_token_emitted(
     event: &FirstTokenEmitted,
 ) {
     let payload = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
-    bus.publish(FIRST_TOKEN_EMITTED_KEY, payload, registry).await;
+    bus.publish(FIRST_TOKEN_EMITTED_KEY, payload, registry)
+        .await;
 }
 
 /// Publish a `ResidencyFault` event. Sentinel-observer subscribes
@@ -234,10 +235,7 @@ mod tests {
                 tick_interval: None,
             }
         }
-        async fn initialize(
-            &self,
-            _ctx: &crate::runtime::ModuleContext,
-        ) -> Result<(), String> {
+        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
             Ok(())
         }
         async fn handle_command(
@@ -259,7 +257,9 @@ mod tests {
             key: &ArtifactKey,
             payload: serde_json::Value,
         ) -> Result<(), String> {
-            self.captured.lock().push((key.as_str().to_string(), payload));
+            self.captured
+                .lock()
+                .push((key.as_str().to_string(), payload));
             Ok(())
         }
         fn as_any(&self) -> &dyn Any {

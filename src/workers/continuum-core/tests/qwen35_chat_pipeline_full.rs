@@ -141,7 +141,13 @@ fn qwen35_scheduler_json_grammar_returns_object() {
     };
 
     let (text, n_tokens) = backend
-        .generate(&prompt, 128, sampling, &["<|im_end|>", "<|endoftext|>"], &[])
+        .generate(
+            &prompt,
+            128,
+            sampling,
+            &["<|im_end|>", "<|endoftext|>"],
+            &[],
+        )
         .expect("generate");
 
     eprintln!("[json-grammar] tokens={n_tokens} text={text:?}");

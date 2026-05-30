@@ -16,25 +16,26 @@ pub mod pressure_bridge;
 pub mod types;
 
 pub use cascade::{
-    CASCADE_STEP_MAX, CASCADE_STEP_MIN, CascadeAction, CascadeThresholds, apply_action,
-    evaluate_next_step,
+    apply_action, evaluate_next_step, CascadeAction, CascadeThresholds, CASCADE_STEP_MAX,
+    CASCADE_STEP_MIN,
 };
 pub use local::LocalSubstrateGovernor;
 pub use policy_file::{
-    PolicyFile, PolicyFileError, into_governor_policy, load_policy_file, parse_policy_text,
+    into_governor_policy, load_policy_file, parse_policy_text, PolicyFile, PolicyFileError,
 };
 pub use policy_selector::{
-    PolicySelectionError, hardware_fingerprint, policy_matches_hardware, select_policy,
+    hardware_fingerprint, policy_matches_hardware, select_policy, PolicySelectionError,
 };
 pub use policy_watcher::{
-    PolicyDirectoryError, PolicyDirectoryWatcher, load_policy_directory, reload_policy_candidates,
-    watch_policy_directory,
+    load_policy_directory, reload_policy_candidates, watch_policy_directory, PolicyDirectoryError,
+    PolicyDirectoryWatcher,
 };
 pub use pressure_bridge::{alert_to_signal, governor_alert_sink};
 pub use types::{
-    CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule, FederationCadence, GovernorPolicy,
-    GovernorSnapshot, HardwareClass, PowerSource, PressureSignal, RecallScoreWeights,
-    SpeculationLevel, TargetSilicon, ThermalClass, ThermalSeverity, TierSizes, classify_hardware,
+    classify_hardware, CadenceMultipliers, ConcurrencyCaps, ConsolidationSchedule,
+    FederationCadence, GovernorPolicy, GovernorSnapshot, HardwareClass, PowerSource,
+    PressureSignal, RecallScoreWeights, SpeculationLevel, TargetSilicon, ThermalClass,
+    ThermalSeverity, TierSizes,
 };
 
 /// The trait every Substrate Governor implementation must satisfy.

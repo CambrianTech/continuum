@@ -103,8 +103,7 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
     // input + a generous overhead estimate for the optional blocks.
     // Avoids the realloc that would otherwise fire on the first
     // `push_str` of an angle/social/voice block (#1209).
-    let mut system_prompt =
-        String::with_capacity(input.system_prompt.len() + 512);
+    let mut system_prompt = String::with_capacity(input.system_prompt.len() + 512);
     system_prompt.push_str(&input.system_prompt);
 
     // Inject shared analysis angle if present — grounds the persona's
@@ -180,12 +179,14 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
             &input.current_message,
             &input.persona_name,
         ),
-        MultiPartyChatStrategy::ProperChatMlSingleParty => build_messages_proper_chatml_single_party(
-            &input.history,
-            &input.current_message,
-            &input.persona_name,
-            &input.other_persona_names,
-        ),
+        MultiPartyChatStrategy::ProperChatMlSingleParty => {
+            build_messages_proper_chatml_single_party(
+                &input.history,
+                &input.current_message,
+                &input.persona_name,
+                &input.other_persona_names,
+            )
+        }
     };
 
     // Estimate tokens (~4 chars per token)
@@ -285,8 +286,8 @@ fn build_messages_single_user_turn(
         .iter()
         .map(|m| m.name.as_ref().map_or(0, |n| n.len() + 2) + m.content.len() + 1)
         .sum();
-    let current_capacity = current.name.as_ref().map_or(20, |n| n.len() + 22)
-        + current.content.len();
+    let current_capacity =
+        current.name.as_ref().map_or(20, |n| n.len() + 22) + current.content.len();
     let closing_cue_capacity = persona_name.len() + 128;
     let mut transcript = String::with_capacity(
         header_overhead + history_capacity + current_capacity + closing_cue_capacity,
@@ -470,10 +471,18 @@ fn append_social_block(buf: &mut String, signals: &SocialSignals) {
         buf.push_str("\n- This message is directed at another persona (not you)");
     }
     if let Some(secs) = signals.seconds_since_last_response {
-        let _ = write!(buf, "\n- You last responded {}s ago in this room", secs.round() as i64);
+        let _ = write!(
+            buf,
+            "\n- You last responded {}s ago in this room",
+            secs.round() as i64
+        );
     }
     if let (Some(count), Some(cap)) = (signals.response_count_this_session, signals.response_cap) {
-        let _ = write!(buf, "\n- You have responded {}/{} times this session", count, cap);
+        let _ = write!(
+            buf,
+            "\n- You have responded {}/{} times this session",
+            count, cap
+        );
     }
 }
 
@@ -550,12 +559,16 @@ mod tests {
             result.system_message
         );
         assert!(
-            result.system_message.contains("- Joel's favorite color is teal."),
+            result
+                .system_message
+                .contains("- Joel's favorite color is teal."),
             "expected bullet-prefixed engram in: {}",
             result.system_message
         );
         assert!(
-            result.system_message.contains("- Joel works in San Francisco."),
+            result
+                .system_message
+                .contains("- Joel works in San Francisco."),
             "expected second bullet in: {}",
             result.system_message
         );
@@ -821,10 +834,7 @@ mod tests {
             timestamp_ms: None,
         };
 
-        let other_personas = vec![
-            "Helper AI".to_string(),
-            "CodeReview AI".to_string(),
-        ];
+        let other_personas = vec!["Helper AI".to_string(), "CodeReview AI".to_string()];
         let messages = build_messages_proper_chatml_single_party(
             &history,
             &current,
@@ -899,12 +909,8 @@ mod tests {
             timestamp_ms: None,
         };
 
-        let messages = build_messages_proper_chatml_single_party(
-            &history,
-            &current,
-            "Local Assistant",
-            &[],
-        );
+        let messages =
+            build_messages_proper_chatml_single_party(&history, &current, "Local Assistant", &[]);
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
@@ -924,12 +930,8 @@ mod tests {
             timestamp_ms: None,
         };
 
-        let messages = build_messages_proper_chatml_single_party(
-            &[],
-            &current,
-            "Local Assistant",
-            &[],
-        );
+        let messages =
+            build_messages_proper_chatml_single_party(&[], &current, "Local Assistant", &[]);
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "user");

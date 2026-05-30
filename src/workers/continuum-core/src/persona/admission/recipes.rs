@@ -49,9 +49,7 @@ impl HeuristicIsMemorable {
     pub fn default_v1() -> Self {
         Self::with_noise_phrases(
             16,
-            [
-                "ack", "ok", "okay", "thanks", "thx", "got it", "+1", "👍",
-            ],
+            ["ack", "ok", "okay", "thanks", "thx", "got it", "+1", "👍"],
         )
     }
 
@@ -87,7 +85,10 @@ impl IsMemorable for HeuristicIsMemorable {
         ctx: &AdmissionContext<'_>,
     ) -> Result<AdmissionDecision, AdmissionError> {
         // Dedup first — cheapest check, eliminates the most common drop case.
-        if let Some(existing) = ctx.seen_content.find_by_content_hash(&candidate.content_hash) {
+        if let Some(existing) = ctx
+            .seen_content
+            .find_by_content_hash(&candidate.content_hash)
+        {
             return Ok(AdmissionDecision::Drop {
                 reason: AdmissionDropReason::Duplicate {
                     existing_engram_id: existing,
@@ -137,8 +138,8 @@ impl IsMemorable for HeuristicIsMemorable {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        AdmissionConfig, AdmissionContext, AdmissionGate, AircMessageRef, EngramKind,
-        EngramOrigin, SeenContentLookup, SeenEventLookup, TrustState,
+        AdmissionConfig, AdmissionContext, AdmissionGate, AircMessageRef, EngramKind, EngramOrigin,
+        SeenContentLookup, SeenEventLookup, TrustState,
     };
     use super::*;
     use crate::persona::trace::CognitionTrace;
@@ -186,11 +187,7 @@ mod tests {
         }
     }
 
-    fn airc_candidate(
-        content: &str,
-        trust: TrustState,
-        message_id: &str,
-    ) -> AdmissionCandidate {
+    fn airc_candidate(content: &str, trust: TrustState, message_id: &str) -> AdmissionCandidate {
         AdmissionCandidate {
             content: content.to_string(),
             kind: EngramKind::Episodic,
@@ -228,12 +225,25 @@ mod tests {
 
         let cand = airc_candidate("short", TrustState::ApprovedPeer, "msg-short");
 
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace)).unwrap() {
+        match AdmissionGate::admit(
+            &cand,
+            &HeuristicIsMemorable::default_v1(),
+            &ctx,
+            Some(&mut trace),
+        )
+        .unwrap()
+        {
             AdmissionDecision::Drop {
                 reason: AdmissionDropReason::NotMemorable { explanation },
             } => {
-                assert!(explanation.contains("too short"), "explanation: {explanation}");
-                assert!(explanation.contains("16"), "must mention threshold: {explanation}");
+                assert!(
+                    explanation.contains("too short"),
+                    "explanation: {explanation}"
+                );
+                assert!(
+                    explanation.contains("16"),
+                    "must mention threshold: {explanation}"
+                );
             }
             other => panic!("expected Drop NotMemorable, got {other:?}"),
         }
@@ -253,11 +263,21 @@ mod tests {
         let padded = "                ACK                ";
         let cand = airc_candidate(padded, TrustState::ApprovedPeer, "msg-noise");
 
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace)).unwrap() {
+        match AdmissionGate::admit(
+            &cand,
+            &HeuristicIsMemorable::default_v1(),
+            &ctx,
+            Some(&mut trace),
+        )
+        .unwrap()
+        {
             AdmissionDecision::Drop {
                 reason: AdmissionDropReason::NotMemorable { explanation },
             } => {
-                assert!(explanation.contains("noise phrase"), "explanation: {explanation}");
+                assert!(
+                    explanation.contains("noise phrase"),
+                    "explanation: {explanation}"
+                );
             }
             other => panic!("expected Drop NotMemorable for noise phrase, got {other:?}"),
         }
@@ -281,10 +301,21 @@ mod tests {
         let ctx = permissive_ctx(&cfg, &content, &events);
         let mut trace = CognitionTrace::new();
 
-        let cand = airc_candidate("twenty-nine character content", TrustState::ApprovedPeer, "msg-d");
+        let cand = airc_candidate(
+            "twenty-nine character content",
+            TrustState::ApprovedPeer,
+            "msg-d",
+        );
         assert_eq!(cand.content_hash, "sha256:fake-29");
 
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace)).unwrap() {
+        match AdmissionGate::admit(
+            &cand,
+            &HeuristicIsMemorable::default_v1(),
+            &ctx,
+            Some(&mut trace),
+        )
+        .unwrap()
+        {
             AdmissionDecision::Drop {
                 reason: AdmissionDropReason::Duplicate { existing_engram_id },
             } => {
@@ -312,7 +343,14 @@ mod tests {
             "msg-admit-1",
         );
 
-        match AdmissionGate::admit(&cand, &HeuristicIsMemorable::default_v1(), &ctx, Some(&mut trace)).unwrap() {
+        match AdmissionGate::admit(
+            &cand,
+            &HeuristicIsMemorable::default_v1(),
+            &ctx,
+            Some(&mut trace),
+        )
+        .unwrap()
+        {
             AdmissionDecision::Admit { engram, why } => {
                 assert_eq!(engram.kind, EngramKind::Episodic);
                 assert_eq!(engram.trust_state_at_admission, TrustState::IntragridMember);

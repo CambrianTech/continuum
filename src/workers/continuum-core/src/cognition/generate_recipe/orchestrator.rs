@@ -94,9 +94,7 @@ pub async fn generate_recipe_with_ai(
     let (system_prompt, user_prompt) = build_prompts(&request);
 
     let provider_id = provider.as_deref().unwrap_or(DEFAULT_PROVIDER).to_string();
-    let model_id = model.unwrap_or_else(|| {
-        default_model_for_provider(&provider_id).to_string()
-    });
+    let model_id = model.unwrap_or_else(|| default_model_for_provider(&provider_id).to_string());
 
     let inference_request = TextGenerationRequest {
         messages: vec![
@@ -178,7 +176,10 @@ mod tests {
             "claude-sonnet-4-5-20250929"
         );
         assert_eq!(default_model_for_provider("openai"), "gpt-4o");
-        assert_eq!(default_model_for_provider("groq"), "llama-3.3-70b-versatile");
+        assert_eq!(
+            default_model_for_provider("groq"),
+            "llama-3.3-70b-versatile"
+        );
         assert_eq!(default_model_for_provider("deepseek"), "deepseek-chat");
         assert_eq!(default_model_for_provider("google"), "gemini-2.5-flash");
         assert_eq!(default_model_for_provider("xai"), "grok-3");

@@ -69,9 +69,9 @@ impl NodeCapabilityRegistry {
         min_free_vram_bytes: u64,
     ) -> impl Iterator<Item = &'a NodeCapability> + 'a {
         self.nodes.values().filter(move |node| {
-            node.capabilities.iter().any(|cap| {
-                cap.kind == *kind && cap.free_vram_bytes >= min_free_vram_bytes
-            })
+            node.capabilities
+                .iter()
+                .any(|cap| cap.kind == *kind && cap.free_vram_bytes >= min_free_vram_bytes)
         })
     }
 
@@ -92,7 +92,12 @@ mod tests {
         kinds, HardwareProfile, InferenceCapability, LatencyClass,
     };
 
-    fn mk_node(node_id: &str, kind: &str, free_vram_bytes: u64, last_updated_ms: u64) -> NodeCapability {
+    fn mk_node(
+        node_id: &str,
+        kind: &str,
+        free_vram_bytes: u64,
+        last_updated_ms: u64,
+    ) -> NodeCapability {
         NodeCapability {
             node_id: node_id.into(),
             hardware: HardwareProfile {
@@ -164,8 +169,18 @@ mod tests {
     #[test]
     fn find_capable_filters_on_kind_and_vram() {
         let mut r = NodeCapabilityRegistry::new();
-        r.upsert(mk_node("big-llamacpp", kinds::LLAMACPP, 24_000_000_000, 100));
-        r.upsert(mk_node("small-llamacpp", kinds::LLAMACPP, 2_000_000_000, 100));
+        r.upsert(mk_node(
+            "big-llamacpp",
+            kinds::LLAMACPP,
+            24_000_000_000,
+            100,
+        ));
+        r.upsert(mk_node(
+            "small-llamacpp",
+            kinds::LLAMACPP,
+            2_000_000_000,
+            100,
+        ));
         r.upsert(mk_node("big-candle", kinds::CANDLE, 24_000_000_000, 100));
 
         let llamacpp = InferenceKind::from(kinds::LLAMACPP);
@@ -192,7 +207,12 @@ mod tests {
     #[test]
     fn find_capable_returns_empty_when_kind_not_advertised() {
         let mut r = NodeCapabilityRegistry::new();
-        r.upsert(mk_node("llamacpp-only", kinds::LLAMACPP, 8_000_000_000, 100));
+        r.upsert(mk_node(
+            "llamacpp-only",
+            kinds::LLAMACPP,
+            8_000_000_000,
+            100,
+        ));
         let ort_vision = InferenceKind::from(kinds::ORT_VISION);
         let got: Vec<_> = r.find_capable(&ort_vision, 0).collect();
         assert!(got.is_empty());
@@ -205,7 +225,12 @@ mod tests {
     fn list_iterates_all_nodes() {
         let mut r = NodeCapabilityRegistry::new();
         for i in 0..5 {
-            r.upsert(mk_node(&format!("node-{i}"), kinds::LLAMACPP, 4_000_000_000, 100));
+            r.upsert(mk_node(
+                &format!("node-{i}"),
+                kinds::LLAMACPP,
+                4_000_000_000,
+                100,
+            ));
         }
         let mut ids: Vec<&str> = r.list().map(|n| n.node_id.as_str()).collect();
         ids.sort();
@@ -304,7 +329,12 @@ mod tests {
     fn remove_all_nodes_returns_to_empty() {
         let mut r = NodeCapabilityRegistry::new();
         for i in 0..3 {
-            r.upsert(mk_node(&format!("n-{i}"), kinds::LLAMACPP, 4_000_000_000, 100));
+            r.upsert(mk_node(
+                &format!("n-{i}"),
+                kinds::LLAMACPP,
+                4_000_000_000,
+                100,
+            ));
         }
         assert_eq!(r.node_count(), 3);
         for i in 0..3 {

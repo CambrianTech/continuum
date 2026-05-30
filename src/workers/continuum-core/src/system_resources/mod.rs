@@ -18,9 +18,9 @@ pub mod monitor;
 pub use concurrency::local_inference_capacity;
 
 pub use memory_pressure::{
-    MemoryBudgetAllocation, MemoryBudgetSnapshot, MemoryBudgetSpec, MemoryPressureMonitor,
-    MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel, PressureSnapshot,
-    is_memory_gate_closed,
+    is_memory_gate_closed, MemoryBudgetAllocation, MemoryBudgetSnapshot, MemoryBudgetSpec,
+    MemoryPressureMonitor, MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel,
+    PressureSnapshot,
 };
 pub use monitor::{
     CpuStats, MemoryStats, ProcessStats, SystemResourceMonitor, SystemResourceSnapshot, TopProcess,

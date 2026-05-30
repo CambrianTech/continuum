@@ -448,10 +448,22 @@ mod tests {
 
     #[test]
     fn test_select_local_model() {
-        assert_eq!(select_local_model(32.0), "continuum-ai/qwen3.5-4b-code-forged-GGUF");
-        assert_eq!(select_local_model(48.0), "continuum-ai/qwen3.5-4b-code-forged-GGUF");
-        assert_eq!(select_local_model(16.0), "continuum-ai/qwen3.5-4b-code-forged-GGUF");
-        assert_eq!(select_local_model(4.0), "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(
+            select_local_model(32.0),
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+        );
+        assert_eq!(
+            select_local_model(48.0),
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+        );
+        assert_eq!(
+            select_local_model(16.0),
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+        );
+        assert_eq!(
+            select_local_model(4.0),
+            "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+        );
     }
 
     #[test]
@@ -493,10 +505,7 @@ mod tests {
             .iter()
             .filter(|a| a.provider == "local")
             .count();
-        assert!(
-            local_count >= 1,
-            "Should create at least one local persona"
-        );
+        assert!(local_count >= 1, "Should create at least one local persona");
 
         // No cloud personas without API keys
         let cloud_count = result
@@ -617,8 +626,7 @@ mod tests {
             "Runtime persona provider must be local, not training backend"
         );
         assert_eq!(
-            first.model,
-            "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            first.model, "continuum-ai/qwen3.5-4b-code-forged-GGUF",
             "CodeReview should use the Qwen3.5 local registry default"
         );
 
@@ -628,8 +636,7 @@ mod tests {
             .expect("Vision AI should be in the Rust persona catalog");
         assert_eq!(vision.provider, "local");
         assert_eq!(
-            vision.model_preferences[0].model,
-            "qwen2-vl-7b-instruct",
+            vision.model_preferences[0].model, "qwen2-vl-7b-instruct",
             "Vision AI should use the Qwen2-VL local registry default"
         );
     }

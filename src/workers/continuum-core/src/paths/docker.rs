@@ -78,7 +78,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn macos_with_home_resolves_to_docker_raw() {
-        if std::env::var("HOME").map(|h| !h.is_empty()).unwrap_or(false) {
+        if std::env::var("HOME")
+            .map(|h| !h.is_empty())
+            .unwrap_or(false)
+        {
             match raw_image_path() {
                 DockerRawPath::Resolved(p) => {
                     assert!(

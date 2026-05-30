@@ -127,9 +127,7 @@ pub fn tier_proximity_for(residency: &ResidencyHint) -> f32 {
     match residency {
         ResidencyHint::Hot { .. } => 1.0,
         ResidencyHint::Local { role } => local_role_score(*role),
-        ResidencyHint::GridPeer {
-            est_latency_ms, ..
-        } => grid_penalty(*est_latency_ms),
+        ResidencyHint::GridPeer { est_latency_ms, .. } => grid_penalty(*est_latency_ms),
         ResidencyHint::NotResident { .. } => 0.0,
     }
 }
@@ -373,10 +371,14 @@ mod tests {
     /// GridPeer=grid_penalty, NotResident=0.0.
     #[test]
     fn tier_proximity_dispatches_by_residency_variant() {
-        let hot = ResidencyHint::Hot { role: TierRole::Fast };
+        let hot = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
         assert_eq!(tier_proximity_for(&hot), 1.0);
 
-        let local = ResidencyHint::Local { role: TierRole::Cold };
+        let local = ResidencyHint::Local {
+            role: TierRole::Cold,
+        };
         assert!((tier_proximity_for(&local) - 0.3).abs() < 1e-6);
 
         let grid = ResidencyHint::GridPeer {
@@ -408,16 +410,18 @@ mod tests {
         // now > half_life so subtraction doesn't underflow.
         let now = DEFAULT_RECENCY_HALF_LIFE_MS + 1_000_000;
         let last_used = now - DEFAULT_RECENCY_HALF_LIFE_MS; // exactly 1 half-life ago
-        let residency = ResidencyHint::Hot { role: TierRole::Fast };
+        let residency = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
 
         let s = score(
-            0.9,                          // semantic
-            0.8,                          // outcome_history
+            0.9, // semantic
+            0.8, // outcome_history
             last_used,
             now,
             DEFAULT_RECENCY_HALF_LIFE_MS,
             &residency,
-            0.7,                          // provenance_trust
+            0.7, // provenance_trust
             &weights,
         );
 
@@ -451,11 +455,13 @@ mod tests {
     fn score_all_factors_one_with_default_weights_gives_one() {
         let weights = RecallScoreWeights::default();
         let now = 1000;
-        let residency = ResidencyHint::Hot { role: TierRole::Fast };
+        let residency = ResidencyHint::Hot {
+            role: TierRole::Fast,
+        };
         let s = score(
             1.0,
             1.0,
-            now,                          // last_used = now → recency 1.0
+            now, // last_used = now → recency 1.0
             now,
             DEFAULT_RECENCY_HALF_LIFE_MS,
             &residency,
@@ -475,7 +481,9 @@ mod tests {
     #[test]
     fn score_is_deterministic_across_calls() {
         let weights = RecallScoreWeights::default();
-        let residency = ResidencyHint::Local { role: TierRole::Bench };
+        let residency = ResidencyHint::Local {
+            role: TierRole::Bench,
+        };
         let s1 = score(0.6, 0.7, 1000, 2000, 1000, &residency, 0.5, &weights);
         let s2 = score(0.6, 0.7, 1000, 2000, 1000, &residency, 0.5, &weights);
         assert!((s1.combined - s2.combined).abs() < 1e-9);
@@ -501,9 +509,9 @@ mod tests {
         // for NotResident).
         let now = 1000 * DEFAULT_RECENCY_HALF_LIFE_MS; // 1000 half-lives in
         let s = score(
-            1.0,                          // perfect semantic match
+            1.0, // perfect semantic match
             0.0,
-            0,                            // last_used: 0 → recency near 0
+            0, // last_used: 0 → recency near 0
             now,
             DEFAULT_RECENCY_HALF_LIFE_MS,
             &residency,
@@ -522,6 +530,10 @@ mod tests {
         // shows WHY this artifact scored low (it's not resident).
         assert_eq!(s.tier_proximity, 0.0);
         // recency near zero — pin the isolation.
-        assert!(s.recency < 1e-3, "recency should be near zero, got {}", s.recency);
+        assert!(
+            s.recency < 1e-3,
+            "recency should be near zero, got {}",
+            s.recency
+        );
     }
 }

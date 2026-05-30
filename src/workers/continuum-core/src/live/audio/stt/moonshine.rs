@@ -229,7 +229,9 @@ impl MoonshineStt {
         // The helper uses the correct `feature = "metal"` gate that
         // matches Cargo.toml.
         let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
-            .map_err(|e| STTError::ModelNotLoaded(format!("ORT GPU EP setup failed (Moonshine STT): {e}")))?;
+            .map_err(|e| {
+                STTError::ModelNotLoaded(format!("ORT GPU EP setup failed (Moonshine STT): {e}"))
+            })?;
         builder = builder
             .with_execution_providers(providers)
             .map_err(|e| STTError::ModelNotLoaded(format!("EP register failed: {e}")))?;

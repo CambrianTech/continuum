@@ -179,12 +179,10 @@ impl AdmissionState {
     fn record_admitted(&self, engram: &Engram) {
         match &engram.origin {
             EngramOrigin::Chat(r) => {
-                self.seen_content
-                    .record(r.content_hash.clone(), engram.id);
+                self.seen_content.record(r.content_hash.clone(), engram.id);
             }
             EngramOrigin::Airc(r) => {
-                self.seen_content
-                    .record(r.content_hash.clone(), engram.id);
+                self.seen_content.record(r.content_hash.clone(), engram.id);
                 self.seen_events
                     .record(r.message_id.clone(), engram.admitted_at_ms);
             }
@@ -230,7 +228,9 @@ impl AdmissionState {
 
     /// True iff `content_hash` is recorded as seen in the dedup store.
     pub fn is_content_seen(&self, content_hash: &str) -> bool {
-        self.seen_content.find_by_content_hash(content_hash).is_some()
+        self.seen_content
+            .find_by_content_hash(content_hash)
+            .is_some()
     }
 
     /// True iff the AIRC event_id is recorded in the replay-protection store.
@@ -301,11 +301,7 @@ impl AdmissionState {
     /// SelfReflection). Newest first, capped at `limit`. Useful for
     /// callers that want "what did I learn from chat" vs "what did I
     /// learn from tool invocations".
-    pub fn recall_by_origin_kind(
-        &self,
-        kind: EngramOriginKind,
-        limit: usize,
-    ) -> Vec<Engram> {
+    pub fn recall_by_origin_kind(&self, kind: EngramOriginKind, limit: usize) -> Vec<Engram> {
         if limit == 0 {
             return Vec::new();
         }
@@ -574,7 +570,11 @@ mod tests {
             !state.is_content_seen(&content_hash),
             "chat-origin quarantine MUST NOT record content_hash (would dangle)"
         );
-        assert_eq!(state.engram_count(), 0, "quarantine MUST NOT add to engram store");
+        assert_eq!(
+            state.engram_count(),
+            0,
+            "quarantine MUST NOT add to engram store"
+        );
     }
 
     /// What this catches: Quarantine of an AIRC-origin engram records
@@ -585,10 +585,8 @@ mod tests {
     fn quarantine_airc_origin_records_event_id_only_not_content_hash() {
         let state = AdmissionState::new();
         let event_id = "airc-msg-quarantine-1";
-        let engram = synthetic_engram_with_airc_origin(
-            "borderline observation worth holding",
-            event_id,
-        );
+        let engram =
+            synthetic_engram_with_airc_origin("borderline observation worth holding", event_id);
         let content_hash = match &engram.origin {
             EngramOrigin::Airc(r) => r.content_hash.clone(),
             _ => unreachable!(),
@@ -609,7 +607,11 @@ mod tests {
             !state.is_content_seen(&content_hash),
             "airc-origin quarantine MUST NOT record content_hash (would dangle)"
         );
-        assert_eq!(state.engram_count(), 0, "quarantine MUST NOT add to engram store");
+        assert_eq!(
+            state.engram_count(),
+            0,
+            "quarantine MUST NOT add to engram store"
+        );
     }
 
     // ── Recall surface (#1121 PR-5) ──────────────────────────────────────
@@ -620,7 +622,10 @@ mod tests {
         let mut trace = CognitionTrace::new();
         let mut ids = Vec::new();
         for c in contents {
-            match state.admit(&synthetic_human_message(c), Some(&mut trace)).unwrap() {
+            match state
+                .admit(&synthetic_human_message(c), Some(&mut trace))
+                .unwrap()
+            {
                 AdmissionDecision::Admit { engram, .. } => ids.push(engram.id),
                 other => panic!("expected Admit for content {c:?}, got {other:?}"),
             }
@@ -664,7 +669,11 @@ mod tests {
         );
         assert_eq!(state.recall_recent(0).len(), 0, "limit=0 returns empty");
         assert_eq!(state.recall_recent(1).len(), 1, "limit=1 returns one");
-        assert_eq!(state.recall_recent(99).len(), 2, "limit > count caps at count");
+        assert_eq!(
+            state.recall_recent(99).len(),
+            2,
+            "limit > count caps at count"
+        );
     }
 
     /// What this catches: recall_by_id returns the exact engram for a
@@ -675,12 +684,18 @@ mod tests {
         let state = AdmissionState::new();
         let ids = admit_n_distinct(
             &state,
-            &["first observation worth storing", "second observation worth storing"],
+            &[
+                "first observation worth storing",
+                "second observation worth storing",
+            ],
         );
         let found = state.recall_by_id(ids[0]).expect("known id must resolve");
         assert_eq!(found.id, ids[0]);
         assert_eq!(found.content, "first observation worth storing");
-        assert!(state.recall_by_id(Uuid::new_v4()).is_none(), "unknown id is None");
+        assert!(
+            state.recall_by_id(Uuid::new_v4()).is_none(),
+            "unknown id is None"
+        );
     }
 
     /// What this catches: keyword search is case-insensitive substring,
@@ -698,7 +713,11 @@ mod tests {
             ],
         );
         let hits = state.recall_by_keyword("recall", 10);
-        assert_eq!(hits.len(), 2, "two engrams contain 'recall' (case-insensitive)");
+        assert_eq!(
+            hits.len(),
+            2,
+            "two engrams contain 'recall' (case-insensitive)"
+        );
         // Newest first: "another RECALL..." was admitted last.
         assert!(
             hits[0].content.contains("another RECALL"),
@@ -772,10 +791,8 @@ mod tests {
     fn admit_airc_origin_still_records_both_content_hash_and_event_id() {
         let state = AdmissionState::new();
         let event_id = "airc-msg-admit-1";
-        let engram = synthetic_engram_with_airc_origin(
-            "valuable observation worth recalling",
-            event_id,
-        );
+        let engram =
+            synthetic_engram_with_airc_origin("valuable observation worth recalling", event_id);
         let content_hash = match &engram.origin {
             EngramOrigin::Airc(r) => r.content_hash.clone(),
             _ => unreachable!(),

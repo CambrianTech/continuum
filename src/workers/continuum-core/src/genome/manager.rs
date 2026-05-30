@@ -37,9 +37,7 @@
 use async_trait::async_trait;
 
 use super::tier::{TierError, TierRole};
-use super::working_set::{
-    AccessDenied, PageFault, PageHandle, PageRef, PersonaId, WorkingSet,
-};
+use super::working_set::{AccessDenied, PageFault, PageHandle, PageRef, PersonaId, WorkingSet};
 
 /// The single trait every working-set implementation satisfies. The
 /// PR-3 implementor will be a per-substrate-process singleton holding
@@ -63,11 +61,7 @@ pub trait WorkingSetManager: Send + Sync {
     /// as success-with-trace-event. A future PR may relax this
     /// signature (e.g. return `Result<(PageHandle, Option<PageFault>),
     /// TierError>`) if downstream feedback wants both.
-    async fn page_in(
-        &self,
-        persona: PersonaId,
-        page: PageRef,
-    ) -> Result<PageHandle, PageFault>;
+    async fn page_in(&self, persona: PersonaId, page: PageRef) -> Result<PageHandle, PageFault>;
 
     /// Demote a page out of the working set toward the named tier
     /// role. Used by composition when it's done with a page (e.g.
@@ -108,11 +102,7 @@ pub trait WorkingSetManager: Send + Sync {
     /// log, regardless of whether the calling persona caught + logged
     /// it itself. Compartmentalization audit trail per
     /// GENOME-FOUNDRY-SENTINEL Part 4.
-    fn audit_access(
-        &self,
-        persona: PersonaId,
-        page: PageRef,
-    ) -> Result<(), AccessDenied>;
+    fn audit_access(&self, persona: PersonaId, page: PageRef) -> Result<(), AccessDenied>;
 }
 
 #[cfg(test)]
@@ -124,9 +114,7 @@ mod tests {
     //! against real semantics; PR-2 only proves the seam.
 
     use super::*;
-    use crate::genome::working_set::{
-        ArtifactId, PageKind, PageOffset, WorkingSetCapacity,
-    };
+    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, WorkingSetCapacity};
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -170,19 +158,13 @@ mod tests {
             self.working_sets.get(&persona)
         }
 
-        fn audit_access(
-            &self,
-            persona: PersonaId,
-            page: PageRef,
-        ) -> Result<(), AccessDenied> {
+        fn audit_access(&self, persona: PersonaId, page: PageRef) -> Result<(), AccessDenied> {
             match self.page_owners.get(&page) {
                 Some(owner) if *owner != persona => Err(AccessDenied {
                     actor: persona,
                     page,
                     owner: Some(*owner),
-                    reason: format!(
-                        "cross-persona read attempt blocked by working-set MMU"
-                    ),
+                    reason: format!("cross-persona read attempt blocked by working-set MMU"),
                 }),
                 _ => Ok(()),
             }

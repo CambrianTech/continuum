@@ -40,7 +40,10 @@ use ts_rs::TS;
 /// rule the rest of the substrate honors.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../shared/generated/governor/TargetSilicon.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/TargetSilicon.ts"
+)]
 pub enum TargetSilicon {
     /// Apple Silicon (M1/M2/M3/M4/M5 + descendants). UMA — system_ram
     /// and "vram" are the same physical pool.
@@ -66,7 +69,10 @@ pub enum TargetSilicon {
 /// the same hardware runs at full aggressiveness.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../shared/generated/governor/PowerSource.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/PowerSource.ts"
+)]
 pub enum PowerSource {
     Battery,
     Plugged,
@@ -77,7 +83,10 @@ pub enum PowerSource {
 /// Probed from silicon + chassis hints at boot.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../shared/generated/governor/ThermalClass.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/ThermalClass.ts"
+)]
 pub enum ThermalClass {
     /// Laptop, fan-limited. MacBook Air, Surface Pro, ultrabooks.
     ThinAndLight,
@@ -92,7 +101,10 @@ pub enum ThermalClass {
 /// Live thermal pressure signal. Drives cascade-step entry/exit.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../shared/generated/governor/ThermalSeverity.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/ThermalSeverity.ts"
+)]
 pub enum ThermalSeverity {
     Cool,
     Warm,
@@ -104,7 +116,10 @@ pub enum ThermalSeverity {
 /// events. The governor selects a policy file off this fingerprint.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/governor/HardwareClass.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/HardwareClass.ts"
+)]
 pub struct HardwareClass {
     pub silicon: TargetSilicon,
     /// Human-readable model name ("M2", "RTX 5090", "Radeon RX 7900 XTX").
@@ -152,7 +167,10 @@ pub struct TierSizes {
 /// stays at 1.0; delayed and background stretch under pressure.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/governor/CadenceMultipliers.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/CadenceMultipliers.ts"
+)]
 pub struct CadenceMultipliers {
     pub realtime: f32,
     pub delayed: f32,
@@ -163,7 +181,10 @@ pub struct CadenceMultipliers {
 /// modules read at task-dispatch time.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/governor/ConcurrencyCaps.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/ConcurrencyCaps.ts"
+)]
 pub struct ConcurrencyCaps {
     #[ts(type = "number")]
     pub personas_concurrent: u32,
@@ -178,7 +199,10 @@ pub struct ConcurrencyCaps {
 /// Speculation aggressiveness. Drops under pressure (cascade step 1).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../shared/generated/governor/SpeculationLevel.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/SpeculationLevel.ts"
+)]
 pub enum SpeculationLevel {
     Off,
     Conservative,
@@ -189,7 +213,10 @@ pub enum SpeculationLevel {
 /// When consolidation (artifact refinement, engram crystallization) runs.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../shared/generated/governor/ConsolidationSchedule.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/ConsolidationSchedule.ts"
+)]
 pub enum ConsolidationSchedule {
     Always,
     Idle,
@@ -200,7 +227,10 @@ pub enum ConsolidationSchedule {
 /// Federation pull cadence — how often a node pulls peer artifacts.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/governor/FederationCadence.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/FederationCadence.ts"
+)]
 pub struct FederationCadence {
     #[ts(type = "number")]
     pub pull_cadence_seconds: u32,
@@ -210,7 +240,10 @@ pub struct FederationCadence {
 /// be ~1.0 by convention; the governor's policy file enforces this.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/governor/RecallScoreWeights.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/RecallScoreWeights.ts"
+)]
 pub struct RecallScoreWeights {
     pub semantic: f32,
     pub outcome_history: f32,
@@ -224,7 +257,10 @@ pub struct RecallScoreWeights {
 /// changes via `arc_swap`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/governor/GovernorPolicy.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/GovernorPolicy.ts"
+)]
 pub struct GovernorPolicy {
     /// Monotonic; increments on every rewrite. Subscribers compare to
     /// detect "did the policy change since I last looked."
@@ -253,7 +289,10 @@ pub struct GovernorPolicy {
 /// (CBAR-SUBSTRATE Lane E) emits these; governor consumes.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
-#[ts(export, export_to = "../../../shared/generated/governor/PressureSignal.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/PressureSignal.ts"
+)]
 pub enum PressureSignal {
     Thermal {
         severity: ThermalSeverity,
@@ -287,7 +326,10 @@ pub enum PressureSignal {
 /// shape).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/governor/GovernorSnapshot.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/governor/GovernorSnapshot.ts"
+)]
 pub struct GovernorSnapshot {
     pub current_policy: GovernorPolicy,
     /// Number of cascade-step transitions since boot. Diagnostic — high
@@ -477,8 +519,14 @@ mod tests {
     /// Mac runs through the wrong policy.
     #[test]
     fn mac_classifies_as_apple_m() {
-        assert_eq!(classify_hardware(&mac_m2_air()).silicon, TargetSilicon::AppleM);
-        assert_eq!(classify_hardware(&m5_pro_workstation()).silicon, TargetSilicon::AppleM);
+        assert_eq!(
+            classify_hardware(&mac_m2_air()).silicon,
+            TargetSilicon::AppleM
+        );
+        assert_eq!(
+            classify_hardware(&m5_pro_workstation()).silicon,
+            TargetSilicon::AppleM
+        );
     }
 
     /// What this catches: NVIDIA + Vulkan (typical Blackwell setup)
@@ -486,7 +534,10 @@ mod tests {
     /// present (CUDA kernels more complete in our llama.cpp build).
     #[test]
     fn nvidia_with_vulkan_classifies_as_cuda() {
-        assert_eq!(classify_hardware(&blackwell_5090()).silicon, TargetSilicon::NvidiaCuda);
+        assert_eq!(
+            classify_hardware(&blackwell_5090()).silicon,
+            TargetSilicon::NvidiaCuda
+        );
     }
 
     /// What this catches: AMD/Intel Vulkan-only host classifies as
@@ -505,7 +556,10 @@ mod tests {
     /// — same no_silent_fallback rule as the inference gate.
     #[test]
     fn cpu_only_classifies_as_none() {
-        assert_eq!(classify_hardware(&cpu_only_server()).silicon, TargetSilicon::None);
+        assert_eq!(
+            classify_hardware(&cpu_only_server()).silicon,
+            TargetSilicon::None
+        );
     }
 
     // ===== UMA VRAM handling =====
@@ -558,7 +612,10 @@ mod tests {
     /// most aggressive thermal throttling target.
     #[test]
     fn ios_classifies_as_mobile() {
-        assert_eq!(classify_hardware(&vision_pro()).thermal_class, ThermalClass::Mobile);
+        assert_eq!(
+            classify_hardware(&vision_pro()).thermal_class,
+            ThermalClass::Mobile
+        );
     }
 
     /// What this catches: "server" in platform → Server thermal class.
@@ -577,7 +634,10 @@ mod tests {
     fn unknown_platform_defaults_to_workstation() {
         let mut hw = blackwell_5090();
         hw.platform = "some-future-platform".into();
-        assert_eq!(classify_hardware(&hw).thermal_class, ThermalClass::Workstation);
+        assert_eq!(
+            classify_hardware(&hw).thermal_class,
+            ThermalClass::Workstation
+        );
     }
 
     // ===== defaults =====
@@ -586,7 +646,10 @@ mod tests {
     /// performance when undetermined). PR-2 wires real probe.
     #[test]
     fn power_source_defaults_to_plugged() {
-        assert_eq!(classify_hardware(&mac_m2_air()).power_source, PowerSource::Plugged);
+        assert_eq!(
+            classify_hardware(&mac_m2_air()).power_source,
+            PowerSource::Plugged
+        );
     }
 
     /// What this catches: battery_pct + thermal_headroom_pct are None
@@ -622,14 +685,26 @@ mod tests {
     /// TS wire. Wire stability — every consumer parses these strings.
     #[test]
     fn target_silicon_serializes_kebab_case() {
-        assert_eq!(serde_json::to_string(&TargetSilicon::AppleM).unwrap(), "\"apple-m\"");
-        assert_eq!(serde_json::to_string(&TargetSilicon::NvidiaCuda).unwrap(), "\"nvidia-cuda\"");
-        assert_eq!(serde_json::to_string(&TargetSilicon::AmdRocm).unwrap(), "\"amd-rocm\"");
+        assert_eq!(
+            serde_json::to_string(&TargetSilicon::AppleM).unwrap(),
+            "\"apple-m\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TargetSilicon::NvidiaCuda).unwrap(),
+            "\"nvidia-cuda\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TargetSilicon::AmdRocm).unwrap(),
+            "\"amd-rocm\""
+        );
         assert_eq!(
             serde_json::to_string(&TargetSilicon::IntelVulkan).unwrap(),
             "\"intel-vulkan\""
         );
-        assert_eq!(serde_json::to_string(&TargetSilicon::None).unwrap(), "\"none\"");
+        assert_eq!(
+            serde_json::to_string(&TargetSilicon::None).unwrap(),
+            "\"none\""
+        );
     }
 
     /// What this catches: HardwareClass round-trips with camelCase.

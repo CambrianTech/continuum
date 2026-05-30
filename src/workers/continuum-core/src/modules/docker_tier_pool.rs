@@ -271,10 +271,7 @@ fn now_ms() -> u64 {
 /// line that `docker system prune` always emits on success. Format is
 /// stable across Docker Desktop versions (verified Docker 24.x + 25.x).
 fn run_docker_prune(args: &[&str]) -> Option<u64> {
-    let output = Command::new("docker")
-        .args(args)
-        .output()
-        .ok()?; // None if `docker` binary not in PATH.
+    let output = Command::new("docker").args(args).output().ok()?; // None if `docker` binary not in PATH.
     if !output.status.success() {
         return None; // Daemon down / permission denied / etc.
     }
@@ -375,7 +372,10 @@ mod tests {
     fn parse_reclaimed_bytes_handles_all_units() {
         // Real Docker outputs (Docker 24.x verified):
         let cases = [
-            ("Deleted Containers:\nfoo\nTotal reclaimed space: 0B\n", 0u64),
+            (
+                "Deleted Containers:\nfoo\nTotal reclaimed space: 0B\n",
+                0u64,
+            ),
             ("...\nTotal reclaimed space: 512B\n", 512),
             ("...\nTotal reclaimed space: 1.5kB\n", 1_500),
             ("...\nTotal reclaimed space: 250MB\n", 250_000_000),
@@ -404,8 +404,8 @@ mod tests {
         let cases = [
             "",
             "some unrelated docker output",
-            "Total reclaimed space:",  // header but no value
-            "Total reclaimed space: 5XYZ",  // unknown unit
+            "Total reclaimed space:",      // header but no value
+            "Total reclaimed space: 5XYZ", // unknown unit
             "Total reclaimed space: not-a-number GB",
         ];
         for input in cases {
@@ -428,7 +428,8 @@ mod tests {
     /// "Total reclaimed space:" is the canonical total.
     #[test]
     fn parse_reclaimed_bytes_picks_last_summary_line() {
-        let input = "Total reclaimed space: 100MB\nDeleted Volumes:\nTotal reclaimed space: 250MB\n";
+        let input =
+            "Total reclaimed space: 100MB\nDeleted Volumes:\nTotal reclaimed space: 250MB\n";
         // Last line wins → 250MB
         assert_eq!(parse_reclaimed_bytes(input), Some(250_000_000));
     }
@@ -457,7 +458,10 @@ mod tests {
                 );
             }
             _ => {
-                assert!(snap.is_empty(), "non-Detected tier should yield zero entries");
+                assert!(
+                    snap.is_empty(),
+                    "non-Detected tier should yield zero entries"
+                );
             }
         }
     }

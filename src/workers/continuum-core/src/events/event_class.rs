@@ -24,7 +24,10 @@ use ts_rs::TS;
 ///   separately from the Rust-canonical config.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/events/EventClassChannelStrategy.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/events/EventClassChannelStrategy.ts"
+)]
 pub enum EventClassChannelStrategy {
     Local,
     Global,
@@ -38,7 +41,10 @@ pub enum EventClassChannelStrategy {
 /// of never silently swallowing evidence.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/events/EventClassUnknownSchemaPolicy.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/events/EventClassUnknownSchemaPolicy.ts"
+)]
 pub enum EventClassUnknownSchemaPolicy {
     Warn,
     #[default]
@@ -49,7 +55,10 @@ pub enum EventClassUnknownSchemaPolicy {
 /// conservative defaults (no broadcast, no airc cost).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/events/EventClassConfig.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/events/EventClassConfig.ts"
+)]
 pub struct EventClassConfig {
     /// Distribute this event class through the airc transport in addition
     /// to the local + WebSocket transports?
@@ -89,7 +98,10 @@ pub struct EventClassConfig {
 /// What the registry stores + what the TS side caches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../shared/generated/events/ResolvedEventClassConfig.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/events/ResolvedEventClassConfig.ts"
+)]
 pub struct ResolvedEventClassConfig {
     pub name: String,
     pub broadcast: bool,
@@ -150,14 +162,12 @@ pub fn resolve_event_class_config(
     }
 
     let broadcast = config.broadcast;
-    let channel = config
-        .channel
-        .unwrap_or(if broadcast {
-            // Will fail validation below — broadcast requires explicit channel.
-            EventClassChannelStrategy::Local
-        } else {
-            EventClassChannelStrategy::Local
-        });
+    let channel = config.channel.unwrap_or(if broadcast {
+        // Will fail validation below — broadcast requires explicit channel.
+        EventClassChannelStrategy::Local
+    } else {
+        EventClassChannelStrategy::Local
+    });
 
     if broadcast && channel == EventClassChannelStrategy::Local {
         return Err(EventClassDeclareError::BroadcastWithoutChannel {
@@ -217,8 +227,8 @@ mod tests {
 
     #[test]
     fn resolves_broadcast_global() {
-        let r = resolve_event_class_config("presence:peer-manifest", &cfg_broadcast_global())
-            .unwrap();
+        let r =
+            resolve_event_class_config("presence:peer-manifest", &cfg_broadcast_global()).unwrap();
         assert!(r.broadcast);
         assert_eq!(r.channel, EventClassChannelStrategy::Global);
     }

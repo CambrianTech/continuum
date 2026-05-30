@@ -206,14 +206,9 @@ impl PersonaContext {
 /// shaped projection (a `FrameUpdate` or `CodeContext` routed to a
 /// chat-cognition step is a host bug — surface it loudly here, not
 /// as silently-wrong cognition output downstream).
-pub fn build_respond_input(
-    signal: &Signal,
-    ctx: &PersonaContext,
-) -> Result<RespondInput, String> {
+pub fn build_respond_input(signal: &Signal, ctx: &PersonaContext) -> Result<RespondInput, String> {
     match &signal.kind {
-        SignalKind::ChatMessage
-        | SignalKind::AutonomousTick
-        | SignalKind::Custom { .. } => {}
+        SignalKind::ChatMessage | SignalKind::AutonomousTick | SignalKind::Custom { .. } => {}
         other => {
             return Err(format!(
                 "build_respond_input: SignalKind::{:?} not supported by the \
@@ -306,24 +301,18 @@ pub fn build_respond_input(
 /// for variants that don't carry an id).
 pub fn signal_to_inbox_message(signal: &Signal, ctx: &PersonaContext) -> InboxMessage {
     let (sender_id, sender_name, sender_type) = match &signal.originator {
-        SignalOriginator::User { user_id } => {
-            (*user_id, String::new(), SenderType::Human)
-        }
+        SignalOriginator::User { user_id } => (*user_id, String::new(), SenderType::Human),
         SignalOriginator::Persona { persona_id } => {
             // Best-effort name — the originator's display name isn't on
             // Signal. Empty string is acceptable; admission scoring uses
             // sender_type, not the name.
             (*persona_id, String::new(), SenderType::Persona)
         }
-        SignalOriginator::Tool { tool_name } => {
-            (Uuid::nil(), tool_name.clone(), SenderType::Agent)
-        }
+        SignalOriginator::Tool { tool_name } => (Uuid::nil(), tool_name.clone(), SenderType::Agent),
         SignalOriginator::GameEngine => {
             (Uuid::nil(), "game-engine".to_string(), SenderType::System)
         }
-        SignalOriginator::System => {
-            (Uuid::nil(), "system".to_string(), SenderType::System)
-        }
+        SignalOriginator::System => (Uuid::nil(), "system".to_string(), SenderType::System),
     };
 
     InboxMessage {
@@ -335,7 +324,11 @@ pub fn signal_to_inbox_message(signal: &Signal, ctx: &PersonaContext) -> InboxMe
         content: signal.text.clone(),
         timestamp: signal.timestamp_ms,
         priority: 0.5,
-        source_modality: Some(if ctx.is_voice { Modality::Voice } else { Modality::Chat }),
+        source_modality: Some(if ctx.is_voice {
+            Modality::Voice
+        } else {
+            Modality::Chat
+        }),
         voice_session_id: None,
     }
 }
@@ -368,7 +361,9 @@ mod tests {
             kind: SignalKind::ChatMessage,
             text: text.to_string(),
             media: vec![],
-            originator: SignalOriginator::User { user_id: Uuid::nil() },
+            originator: SignalOriginator::User {
+                user_id: Uuid::nil(),
+            },
             timestamp_ms: 0,
             message_id: Some(Uuid::nil()),
         }
@@ -384,7 +379,9 @@ mod tests {
             kind: SignalKind::ChatMessage,
             text: "hello".to_string(),
             media: vec![],
-            originator: SignalOriginator::User { user_id: Uuid::nil() },
+            originator: SignalOriginator::User {
+                user_id: Uuid::nil(),
+            },
             timestamp_ms: 1234,
             message_id: Some(Uuid::nil()),
         };
@@ -451,8 +448,7 @@ mod tests {
     fn projection_accepts_autonomous_tick() {
         let mut signal = chat_signal("");
         signal.kind = SignalKind::AutonomousTick;
-        let input = build_respond_input(&signal, &empty_ctx())
-            .expect("autonomous tick accepted");
+        let input = build_respond_input(&signal, &empty_ctx()).expect("autonomous tick accepted");
         assert!(input.message_text.is_empty());
     }
 
@@ -471,8 +467,8 @@ mod tests {
             mime_type: Some("image/png".to_string()),
             description: None,
         }];
-        let input = build_respond_input(&signal, &empty_ctx())
-            .expect("media-bearing chat accepted");
+        let input =
+            build_respond_input(&signal, &empty_ctx()).expect("media-bearing chat accepted");
         assert_eq!(input.message_media.len(), 1);
         assert_eq!(input.message_media[0].item_type, "image");
         assert_eq!(input.message_media[0].base64.as_deref(), Some("AAAA"));
@@ -561,7 +557,12 @@ mod tests {
     #[test]
     fn signal_to_inbox_handles_all_originator_variants() {
         let cases = [
-            (SignalOriginator::Tool { tool_name: "search".to_string() }, SenderType::Agent),
+            (
+                SignalOriginator::Tool {
+                    tool_name: "search".to_string(),
+                },
+                SenderType::Agent,
+            ),
             (SignalOriginator::GameEngine, SenderType::System),
             (SignalOriginator::System, SenderType::System),
         ];

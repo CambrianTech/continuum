@@ -45,8 +45,8 @@ pub mod throughput_lease;
 pub mod tool_embedding;
 pub mod tool_executor;
 pub mod turn_batch;
-pub mod validate_response;
 pub mod types;
+pub mod validate_response;
 pub mod vision_describe;
 
 pub use adaptive_throughput::*;

@@ -191,7 +191,9 @@ impl TextToSpeech for PiperTTS {
             // (#964 family). The helper uses the correct `feature =
             // "metal"` gate that matches Cargo.toml.
             let providers = crate::inference::ort_providers::build_ort_gpu_execution_providers()
-                .map_err(|e| TTSError::ModelNotLoaded(format!("ORT GPU EP setup failed (Piper TTS): {e}")))?;
+                .map_err(|e| {
+                    TTSError::ModelNotLoaded(format!("ORT GPU EP setup failed (Piper TTS): {e}"))
+                })?;
             builder = builder.with_execution_providers(providers)?;
             builder
                 .with_optimization_level(GraphOptimizationLevel::Level3)?

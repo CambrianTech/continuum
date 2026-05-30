@@ -717,13 +717,11 @@ impl ServiceModule for CognitionModule {
                     crate::cognition::tool_embedding::SemanticSearchToolsRequest,
                 >(params.clone())
                 .map_err(|e| format!("Invalid semantic-search-tools request: {e}"))?;
-                let results =
-                    crate::cognition::tool_embedding::semantic_search_tools(request)
-                        .await
-                        .map_err(|e| format!("semantic-search-tools error: {e}"))?;
+                let results = crate::cognition::tool_embedding::semantic_search_tools(request)
+                    .await
+                    .map_err(|e| format!("semantic-search-tools error: {e}"))?;
                 Ok(CommandResult::Json(
-                    serde_json::to_value(&results)
-                        .map_err(|e| format!("Serialize error: {e}"))?,
+                    serde_json::to_value(&results).map_err(|e| format!("Serialize error: {e}"))?,
                 ))
             }
 
@@ -743,8 +741,7 @@ impl ServiceModule for CognitionModule {
                         .await
                         .map_err(|e| format!("validate-response-decision error: {e}"))?;
                 Ok(CommandResult::Json(
-                    serde_json::to_value(&decision)
-                        .map_err(|e| format!("Serialize error: {e}"))?,
+                    serde_json::to_value(&decision).map_err(|e| format!("Serialize error: {e}"))?,
                 ))
             }
 

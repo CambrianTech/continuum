@@ -302,7 +302,10 @@ mod tests {
     #[test]
     fn parse_clarify_wins_when_present() {
         assert_eq!(parse_decision("CLARIFY"), ResponseDecision::Clarify);
-        assert_eq!(parse_decision("clarify, not sure"), ResponseDecision::Clarify);
+        assert_eq!(
+            parse_decision("clarify, not sure"),
+            ResponseDecision::Clarify
+        );
     }
 
     /// SILENT recognized over SUBMIT, but CLARIFY takes precedence over
@@ -360,7 +363,10 @@ mod tests {
         assert_eq!(g.model.as_deref(), Some(DEFAULT_VALIDATE_MODEL));
         assert_eq!(g.temperature, Some(VALIDATE_TEMPERATURE));
         assert_eq!(g.max_tokens, Some(VALIDATE_MAX_TOKENS));
-        assert_eq!(g.purpose.as_deref(), Some("cognition/validate-response-decision"));
+        assert_eq!(
+            g.purpose.as_deref(),
+            Some("cognition/validate-response-decision")
+        );
         assert_eq!(g.messages.len(), 2);
         assert_eq!(g.messages[0].role, "system");
         assert_eq!(g.messages[1].role, "user");

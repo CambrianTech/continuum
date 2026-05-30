@@ -621,9 +621,7 @@ mod tests {
             InferenceDevice::Gpu
         }
         fn supports_model(&self, _model: &str) -> bool {
-            self.model
-                .as_deref()
-                .map_or(true, |model| model == _model)
+            self.model.as_deref().map_or(true, |model| model == _model)
         }
     }
 
