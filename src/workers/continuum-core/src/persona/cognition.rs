@@ -150,7 +150,7 @@ impl PersonaCognitionEngine {
 
         debug!(
             "Priority calc for {} in {:.2}ms: {:.2} (mention={:.2}, sender={:.2}, recency={:.2})",
-            &content[..content.len().min(30)],
+            crate::utils::str_truncate::truncate_at_char_boundary(content, 30),
             start.elapsed().as_secs_f64() * 1000.0,
             final_score,
             mention_score,

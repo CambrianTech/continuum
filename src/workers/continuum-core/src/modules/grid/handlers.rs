@@ -785,7 +785,7 @@ fn query_forge_processes() -> Vec<Value> {
                         else if cmd.contains("train") || cmd.contains("fine") { "training" }
                         else { "unknown" };
 
-                    Some(json!({ "pid": pid, "type": job_type, "detail": &cmd[..cmd.len().min(120)], "cpu": cpu, "mem": mem }))
+                    Some(json!({ "pid": pid, "type": job_type, "detail": crate::utils::str_truncate::truncate_at_char_boundary(&cmd, 120), "cpu": cpu, "mem": mem }))
                 })
                 .collect()
         }

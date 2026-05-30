@@ -86,8 +86,11 @@ impl TransportAddress {
                 }
             }
             Self::Reticulum { destination_hash } => {
-                // Show first 8 chars of hash for brevity
-                let short = &destination_hash[..destination_hash.len().min(8)];
+                // Show first 8 chars of hash for brevity. UTF-8 safe even
+                // though destination_hash is in practice ASCII-hex — the
+                // safe primitive removes the latent panic by construction
+                // per [[every-error-is-an-opportunity-to-battle-harden]].
+                let short = crate::utils::str_truncate::truncate_at_char_boundary(destination_hash, 8);
                 format!("ret:{short}...")
             }
         }
