@@ -24,9 +24,11 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+pub mod airc_interceptor;
 pub mod artifact_handle;
 pub mod brain_region;
 pub mod command_executor;
+pub mod command_interceptor;
 pub mod control;
 pub mod message_bus;
 pub mod module_context;
@@ -46,10 +48,12 @@ pub use brain_region::{
     PressureProfile, PressureSignalKind, RegionContext, RegionError, RegionId, RegionSignal,
     SleepPhase, TickOutcome,
 };
+pub use airc_interceptor::AircInterceptor;
 pub use command_executor::{
     execute as execute_command, execute_json as execute_command_json, executor, init_executor,
     CommandExecutor,
 };
+pub use command_interceptor::{CommandInterceptor, InterceptorOutcome};
 pub use control::{ModuleInfo, RuntimeControl};
 pub use message_bus::MessageBus;
 pub use module_context::ModuleContext;
