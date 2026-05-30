@@ -176,6 +176,67 @@ impl HandleRef {
     pub fn mint(owner: impl Into<String>, type_tag: impl Into<String>) -> Self {
         Self::with_id(owner, Uuid::new_v4(), type_tag)
     }
+
+    /// Validate this handle's `owner` and `type_tag` match the values
+    /// the consumer expects, returning the inner `Uuid` for the
+    /// consumer's own state-map lookup.
+    ///
+    /// This is the canonical handle-validation entry point — every
+    /// handler that consumes a `HandleRef` should call it before
+    /// looking the id up in its state map, so:
+    ///
+    /// - A handle minted by a different module reaching the wrong
+    ///   handler surfaces a typed "owner mismatch" error rather than
+    ///   silently miss-looking-up in the wrong state map. The grid
+    ///   interceptor is supposed to route by `owner` before dispatch
+    ///   ever fires; an owner-mismatch reaching this far means the
+    ///   routing misfired or a caller hand-crafted a bogus handle.
+    ///
+    /// - A handle for the wrong resource (right module, wrong type —
+    ///   e.g. a `data::Migration` handle threaded through a cursor
+    ///   handler) surfaces a typed "type mismatch" error rather than
+    ///   miss-looking-up across handle shapes.
+    ///
+    /// Errors are formatted consistently across every module that
+    /// uses handles, naming BOTH the offending value AND the expected
+    /// value so the caller self-corrects without grepping source.
+    /// Consumers typically prepend their command name via `map_err`:
+    ///
+    /// ```ignore
+    /// let cursor_id = handle.expect_owned_by("data", "data::QueryCursor")
+    ///     .map_err(|e| format!("data/query-next: {e}"))?;
+    /// ```
+    ///
+    /// For dual-shape resolvers that accept EITHER a typed handle
+    /// (envelope) OR a legacy string field (back-compat during
+    /// migration), prefer
+    /// [`crate::runtime::CommandRequest::handle_id_or_legacy`] which
+    /// composes this method with the legacy fallback path and the
+    /// command-name prefix in a single call.
+    pub fn expect_owned_by(
+        &self,
+        expected_owner: &str,
+        expected_type_tag: &str,
+    ) -> Result<Uuid, String> {
+        if self.owner != expected_owner {
+            return Err(format!(
+                "handle owner mismatch — got owner={:?}, expected {:?}. \
+                 Handles must be minted by the same module that consumes them, \
+                 OR the grid interceptor must route the command back to the owner \
+                 before local dispatch.",
+                self.owner, expected_owner
+            ));
+        }
+        if self.type_tag != expected_type_tag {
+            return Err(format!(
+                "handle type mismatch — got type_tag={:?}, expected {:?}. \
+                 This handler operates only on handles of the expected type; \
+                 threading a different handle shape here is a programming error.",
+                self.type_tag, expected_type_tag
+            ));
+        }
+        Ok(self.id)
+    }
 }
 
 fn now_ms() -> u64 {
@@ -329,5 +390,89 @@ mod tests {
         assert_eq!(l, back);
         assert_eq!(back.command, "ai/generate");
         assert_eq!(back.bound_params["model"], "qwen");
+    }
+
+    // ── HandleRef::expect_owned_by ───────────────────────────────────
+    //
+    // The canonical validation entry point distilled from the data
+    // module's first real HandleRef consumer (PR #1490). Every future
+    // handler that consumes a HandleRef should reach for this method
+    // rather than reimplementing the owner/type checks inline.
+
+    #[test]
+    fn expect_owned_by_returns_uuid_when_owner_and_type_match() {
+        let id = Uuid::new_v4();
+        let h = HandleRef::with_id("data", id, "data::QueryCursor");
+        let resolved = h
+            .expect_owned_by("data", "data::QueryCursor")
+            .expect("matched handle must validate");
+        assert_eq!(
+            resolved, id,
+            "expect_owned_by must return the inner UUID, not a string-rendered copy"
+        );
+    }
+
+    #[test]
+    fn expect_owned_by_rejects_wrong_owner_with_both_values_named() {
+        let h = HandleRef::mint("chat", "chat::MessageHandle");
+        let err = h
+            .expect_owned_by("data", "data::QueryCursor")
+            .expect_err("wrong owner must Err");
+        assert!(
+            err.contains("owner mismatch"),
+            "error must name the failure mode: {err}"
+        );
+        assert!(
+            err.contains("\"chat\"") && err.contains("\"data\""),
+            "error must name BOTH offender AND expected so caller self-corrects: {err}"
+        );
+    }
+
+    #[test]
+    fn expect_owned_by_rejects_wrong_type_tag_with_both_values_named() {
+        let h = HandleRef::mint("data", "data::Migration");
+        let err = h
+            .expect_owned_by("data", "data::QueryCursor")
+            .expect_err("wrong type must Err");
+        assert!(
+            err.contains("type mismatch"),
+            "error must name the failure mode: {err}"
+        );
+        assert!(
+            err.contains("data::Migration") && err.contains("data::QueryCursor"),
+            "error must name BOTH offender AND expected: {err}"
+        );
+    }
+
+    #[test]
+    fn expect_owned_by_checks_owner_first_then_type() {
+        // Pin the order: owner mismatch should surface even when the
+        // type tag is ALSO wrong. The owner-first check matters
+        // because owner determines routing — type is a secondary
+        // within-module discriminator.
+        let h = HandleRef::mint("chat", "chat::MessageHandle");
+        let err = h
+            .expect_owned_by("data", "data::QueryCursor")
+            .expect_err("both fields wrong must Err on the routing one first");
+        assert!(
+            err.contains("owner mismatch") && !err.contains("type mismatch"),
+            "owner mismatch must take precedence over type mismatch: {err}"
+        );
+    }
+
+    #[test]
+    fn expect_owned_by_error_includes_routing_hint() {
+        // The owner-mismatch error explicitly points consumers at the
+        // grid interceptor's responsibility to route by owner — that's
+        // the hint that turns "weird error" into "ah, the interceptor
+        // is misconfigured" or "ah, this caller built a bogus handle".
+        let h = HandleRef::mint("chat", "data::QueryCursor");
+        let err = h
+            .expect_owned_by("data", "data::QueryCursor")
+            .expect_err("wrong owner must Err");
+        assert!(
+            err.contains("grid interceptor") || err.contains("route"),
+            "owner-mismatch error must hint at routing semantics: {err}"
+        );
     }
 }
