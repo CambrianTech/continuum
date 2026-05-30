@@ -102,17 +102,60 @@ pub struct ModuleConfig {
     pub tick_interval: Option<Duration>,
 }
 
-/// Result of handling a command.
-/// Supports both JSON-only and binary responses (audio, embeddings).
+/// Result of handling a command — one of the four cell return shapes
+/// per [MODULE-ARCHITECTURE.md §5.1](../../../../../docs/architecture/MODULE-ARCHITECTURE.md).
+///
+/// See [`super::cell_shapes`] for the cell taxonomy + the rationale
+/// for each variant. Short version:
+///
+/// - `Json` / `Binary` — the **Value** cell shape (immediate typed
+///   result). Kept under their original names for back-compat with
+///   the 300+ existing handlers; new code that produces a typed
+///   result still uses `Json` (or `CommandResult::json(&value)?`).
+/// - `Handle` — the **Handle** cell shape, NEW in this PR. Typed
+///   reference to state owned by the producing module. See
+///   [`super::cell_shapes::HandleRef`] for the round-trip protocol.
+///   Answers MODULE-ARCHITECTURE.md §13.1 (hot-path cross-module
+///   state via reference, not copy).
+/// - `Stream` / `Lambda` — reserved cell shapes. Returning these
+///   today is a runtime error per the contract — the variant exists
+///   so the enum shape is fixed before the wire protocols land. See
+///   [`super::cell_shapes::StreamPlaceholder`] and
+///   [`super::cell_shapes::LambdaPlaceholder`].
+///
+/// # Adding to this enum
+///
+/// `#[non_exhaustive]` lets downstream crates match without breaking
+/// when new variants land. Within continuum-core, exhaustive matches
+/// MUST cover the new variants — the compiler enforces this. Use
+/// [`CommandResult::to_json_value`] when the call site just needs the
+/// payload as JSON regardless of which cell shape arrived.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CommandResult {
-    /// Standard JSON response
+    /// Standard JSON response. The Value cell shape under the legacy
+    /// name; preferred for new code that produces a typed result.
     Json(Value),
 
     /// Binary response: JSON metadata + raw bytes.
-    /// Wire format: [JSON header bytes][\0][raw binary bytes]
+    /// Wire format: `[JSON header bytes][\0][raw binary bytes]`.
     /// Used for audio synthesis, embedding vectors, etc.
     Binary { metadata: Value, data: Vec<u8> },
+
+    /// Typed reference to state owned by the producing module. See
+    /// [`super::cell_shapes::HandleRef`] for the round-trip protocol.
+    Handle(super::cell_shapes::HandleRef),
+
+    /// Reserved: streaming result. Returning this today is a runtime
+    /// error — see [`super::cell_shapes::StreamPlaceholder`] for the
+    /// open protocol design.
+    Stream(super::cell_shapes::StreamPlaceholder),
+
+    /// Reserved: lambda (callable returned by a command). Returning
+    /// this today is a runtime error — see
+    /// [`super::cell_shapes::LambdaPlaceholder`] for the open protocol
+    /// design.
+    Lambda(super::cell_shapes::LambdaPlaceholder),
 }
 
 impl CommandResult {
@@ -122,6 +165,78 @@ impl CommandResult {
         serde_json::to_value(value)
             .map(CommandResult::Json)
             .map_err(|e| format!("Serialization error: {e}"))
+    }
+
+    /// Create a Handle result from a producer-allocated UUID.
+    ///
+    /// Use this when the producer minted a UUID up front to insert
+    /// state into its own map under a specific key:
+    ///
+    /// ```ignore
+    /// let id = uuid::Uuid::new_v4();
+    /// self.sessions.insert(id, session_state);
+    /// Ok(CommandResult::handle("ai/inference", id, "ai::InferenceSession"))
+    /// ```
+    ///
+    /// For the simpler case where the producer doesn't need to know
+    /// the UUID before constructing the handle, use
+    /// [`super::cell_shapes::HandleRef::mint`] directly and wrap with
+    /// `CommandResult::Handle(...)`.
+    pub fn handle(
+        owner: impl Into<String>,
+        id: uuid::Uuid,
+        type_tag: impl Into<String>,
+    ) -> Self {
+        CommandResult::Handle(super::cell_shapes::HandleRef::with_id(owner, id, type_tag))
+    }
+
+    /// Project the result into a JSON `Value` for callers that don't
+    /// care about the cell shape — e.g., the TS bridge that wants to
+    /// serialize the result over a Unix socket regardless of which
+    /// cell shape the producer chose.
+    ///
+    /// `Json` returns itself. `Binary` returns its metadata (the
+    /// bytes are dropped — callers needing the raw data must match
+    /// on the variant directly). `Handle` serializes the HandleRef
+    /// as JSON so a TS caller can hold it and pass it back. `Stream`
+    /// and `Lambda` return errors per the not-yet-wired contract:
+    /// projecting them as plain JSON would lose the protocol shape
+    /// the caller needs to consume them, so we fail loud rather than
+    /// silently degrade.
+    pub fn to_json_value(&self) -> Result<Value, String> {
+        match self {
+            CommandResult::Json(v) => Ok(v.clone()),
+            CommandResult::Binary { metadata, .. } => Ok(metadata.clone()),
+            CommandResult::Handle(h) => serde_json::to_value(h)
+                .map_err(|e| format!("HandleRef serialization failed: {e}")),
+            CommandResult::Stream(_) => Err(Self::stream_protocol_error()),
+            CommandResult::Lambda(_) => Err(Self::lambda_protocol_error()),
+        }
+    }
+
+    /// Canonical error message for handlers that try to return a Stream
+    /// today. Surfaced from any callsite that needs to reject the
+    /// not-yet-wired streaming variant — same wording everywhere so
+    /// the failure mode is easy to grep.
+    pub fn stream_protocol_error() -> String {
+        "Stream cell shape is reserved but not yet wired — the streaming \
+         wire protocol (frame format, correlation IDs, backpressure, \
+         cancellation) hasn't been designed yet. Handlers MUST return \
+         Json/Binary/Handle until the protocol lands. See \
+         MODULE-ARCHITECTURE.md §5.1 + runtime::cell_shapes::StreamPlaceholder."
+            .to_string()
+    }
+
+    /// Canonical error message for handlers that try to return a Lambda
+    /// today. Same shape as [`Self::stream_protocol_error`].
+    pub fn lambda_protocol_error() -> String {
+        "Lambda cell shape is reserved but not yet wired — the lambda \
+         invocation protocol (curried-command dispatch, bound-params \
+         merge, return-shape propagation) hasn't been designed yet. \
+         Handlers MUST return Json/Binary/Handle until the protocol \
+         lands. See MODULE-ARCHITECTURE.md §5.1 + \
+         runtime::cell_shapes::LambdaPlaceholder."
+            .to_string()
     }
 }
 
@@ -465,5 +580,130 @@ mod tests {
             0,
             "no module subscribes to nothing/here — dispatcher walks zero"
         );
+    }
+
+    // ── CommandResult cell shape integration tests ─────────────────
+    //
+    // The cell shape unit tests live in
+    // `runtime::cell_shapes::tests` (HandleRef construction,
+    // serialization, distinct UUIDs, etc.). The tests below assert
+    // the integration between the cell shapes and `CommandResult` —
+    // the constructors + `to_json_value` projection that every
+    // wire-crossing site uses.
+
+    use crate::runtime::cell_shapes::{HandleRef, LambdaPlaceholder, StreamPlaceholder};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn json_to_json_value_returns_original() {
+        let v = json!({ "x": 1 });
+        let r = CommandResult::Json(v.clone());
+        assert_eq!(r.to_json_value().unwrap(), v);
+    }
+
+    #[test]
+    fn binary_to_json_value_returns_metadata_drops_bytes() {
+        // The Binary variant carries metadata + raw bytes; projecting
+        // to plain JSON drops the bytes and returns metadata. Callers
+        // who need the raw bytes match on the variant directly (e.g.,
+        // the IPC layer encodes them in the binary frame).
+        let metadata = json!({ "format": "pcm-16le", "sample_rate": 48_000 });
+        let r = CommandResult::Binary {
+            metadata: metadata.clone(),
+            data: vec![0u8, 1, 2, 3],
+        };
+        assert_eq!(r.to_json_value().unwrap(), metadata);
+    }
+
+    #[test]
+    fn handle_to_json_value_serializes_handle_ref() {
+        let id = Uuid::new_v4();
+        let r = CommandResult::handle("ai/inference", id, "ai::InferenceSession");
+        let json = r.to_json_value().expect("Handle must project to JSON");
+        assert_eq!(json["owner"], "ai/inference");
+        assert_eq!(json["type_tag"], "ai::InferenceSession");
+        assert!(json["id"].is_string(), "id must serialize as string");
+        assert_eq!(json["id"].as_str().unwrap(), id.to_string());
+        assert!(json["created_at_ms"].is_number());
+    }
+
+    #[test]
+    fn stream_to_json_value_returns_protocol_error() {
+        let r = CommandResult::Stream(StreamPlaceholder::new("corr-001"));
+        let err = r
+            .to_json_value()
+            .expect_err("Stream must NOT project as JSON — protocol not wired");
+        assert!(
+            err.contains("Stream cell shape is reserved"),
+            "error must name the cell shape so callers find the doc: {err}"
+        );
+        assert!(
+            err.contains("MODULE-ARCHITECTURE"),
+            "error must point at the canonical doc: {err}"
+        );
+    }
+
+    #[test]
+    fn lambda_to_json_value_returns_protocol_error() {
+        let r = CommandResult::Lambda(LambdaPlaceholder::new("ai/generate", json!({})));
+        let err = r
+            .to_json_value()
+            .expect_err("Lambda must NOT project as JSON — protocol not wired");
+        assert!(
+            err.contains("Lambda cell shape is reserved"),
+            "error must name the cell shape so callers find the doc: {err}"
+        );
+    }
+
+    #[test]
+    fn command_result_handle_constructor_matches_handle_ref_with_id() {
+        let id = Uuid::new_v4();
+        let r = CommandResult::handle("ai/inference", id, "ai::InferenceSession");
+        match r {
+            CommandResult::Handle(h) => {
+                assert_eq!(h.id, id);
+                assert_eq!(h.owner, "ai/inference");
+                assert_eq!(h.type_tag, "ai::InferenceSession");
+            }
+            other => panic!("expected Handle variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn command_result_protocol_errors_have_stable_wording() {
+        // The error wording is matched on by callers (the sentinel
+        // step builds its own step_err from these). Pin the prefix
+        // so future edits don't accidentally break matching code.
+        let stream_err = CommandResult::stream_protocol_error();
+        let lambda_err = CommandResult::lambda_protocol_error();
+        assert!(stream_err.starts_with("Stream cell shape is reserved"));
+        assert!(lambda_err.starts_with("Lambda cell shape is reserved"));
+        // Both should point at the architecture doc for context.
+        for err in [&stream_err, &lambda_err] {
+            assert!(
+                err.contains("MODULE-ARCHITECTURE"),
+                "error must point at the canonical doc: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn handle_ref_round_trips_through_command_result_serialization() {
+        // End-to-end pinning: a Handle returned by a Rust handler can
+        // be projected to JSON, sent over the wire, deserialized on the
+        // TS side as { owner, id, type_tag, created_at_ms }, echoed
+        // back as a param on a subsequent call, deserialized in Rust
+        // as HandleRef, and resolve to the same handle.
+        let id = Uuid::new_v4();
+        let original = HandleRef::with_id("ai/inference", id, "ai::InferenceSession");
+        // Mint a Handle result, project to JSON (wire crossing #1).
+        let r = CommandResult::Handle(original.clone());
+        let wire = r.to_json_value().unwrap();
+        // TS-side echo: serialize the JSON to a string and parse back.
+        let echoed = serde_json::to_string(&wire).unwrap();
+        let from_wire: HandleRef = serde_json::from_str(&echoed).unwrap();
+        assert_eq!(from_wire, original);
+        assert_eq!(from_wire.id, id);
     }
 }

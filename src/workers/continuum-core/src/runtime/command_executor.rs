@@ -141,12 +141,14 @@ impl CommandExecutor {
         Ok(CommandResult::Json(json))
     }
 
-    /// Convenience: execute and extract JSON directly
+    /// Convenience: execute and extract JSON directly.
+    ///
+    /// Delegates to [`CommandResult::to_json_value`] which handles all
+    /// cell shapes — Json/Binary return their payload, Handle serializes
+    /// the HandleRef, Stream/Lambda return their not-yet-wired protocol
+    /// error so the caller knows the cell shape requires direct match.
     pub async fn execute_json(&self, command: &str, params: Value) -> Result<Value, String> {
-        match self.execute(command, params).await? {
-            CommandResult::Json(v) => Ok(v),
-            CommandResult::Binary { metadata, .. } => Ok(metadata),
-        }
+        self.execute(command, params).await?.to_json_value()
     }
 
     /// Execute a command ONLY via TypeScript (bypasses Rust registry).

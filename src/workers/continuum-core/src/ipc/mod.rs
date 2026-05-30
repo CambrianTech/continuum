@@ -367,6 +367,15 @@ fn handle_client<S: IpcStream>(stream: S, state: Arc<ServerState>) -> std::io::R
                         json_header: Response::success(metadata),
                         binary_data: data,
                     },
+                    // Cell shapes from MODULE-ARCHITECTURE.md §5.1.
+                    // Handle: serialize the HandleRef as JSON over the
+                    // wire; the TS-side caller holds it and passes back
+                    // on subsequent calls (long-running session pattern
+                    // — inference, training, hosting, ORM).
+                    Some(Ok(other)) => match other.to_json_value() {
+                        Ok(value) => HandleResult::Json(Response::success(value)),
+                        Err(e) => HandleResult::Json(Response::error(e)),
+                    },
                     Some(Err(e)) => HandleResult::Json(Response::error(e)),
                     None => HandleResult::Json(Response::error(format!(
                         "Unknown command: '{}'. No module registered for this command prefix.",

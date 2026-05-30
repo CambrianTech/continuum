@@ -138,10 +138,10 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
             // Command matched a Rust module prefix — try Rust handler first
             let (module, full_cmd) = result;
             match module.handle_command(&full_cmd, params.clone()).await {
-                Ok(CommandResult::Json(value)) => GridFrame::success_response(request, value),
-                Ok(CommandResult::Binary { metadata, .. }) => {
-                    GridFrame::success_response(request, metadata)
-                }
+                Ok(cmd_result) => match cmd_result.to_json_value() {
+                    Ok(value) => GridFrame::success_response(request, value),
+                    Err(e) => GridFrame::error_response(request, e),
+                },
                 Err(e) if e.starts_with("Unknown") => {
                     // Rust module doesn't handle this specific command —
                     // fall through to TypeScript layer (e.g., grid/node-status,
