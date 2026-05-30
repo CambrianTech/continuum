@@ -116,21 +116,33 @@ impl ChannelRegistry {
         }
     }
 
-    /// Get full status snapshot
+    /// Get full status snapshot.
+    ///
+    /// Single-pass aggregation: builds the per-channel status Vec AND the
+    /// rollup fields (total_size / has_urgent_work / has_work) in one
+    /// walk over DOMAIN_PRIORITY_ORDER. Previously did 1 walk to build
+    /// the Vec then 3 more walks to sum/any/any over the result, plus
+    /// Vec growth from an unsized `.collect()`. service_cycle() calls
+    /// this every tick (per persona, every 3-10s); the per-tick savings
+    /// compound across the active persona fleet.
     pub fn status(&self) -> ChannelRegistryStatus {
-        let channels: Vec<_> = DOMAIN_PRIORITY_ORDER
-            .iter()
-            .filter_map(|domain| self.channels.get(domain).map(|c| c.status()))
-            .collect();
-
-        let total_size: u32 = channels.iter().map(|c| c.size).sum();
-        let has_urgent = channels.iter().any(|c| c.has_urgent);
-        let has_work = channels.iter().any(|c| c.has_work);
-
+        let mut channels = Vec::with_capacity(DOMAIN_PRIORITY_ORDER.len());
+        let mut total_size: u32 = 0;
+        let mut has_urgent_work = false;
+        let mut has_work = false;
+        for &domain in DOMAIN_PRIORITY_ORDER {
+            if let Some(channel) = self.channels.get(&domain) {
+                let s = channel.status();
+                total_size += s.size;
+                has_urgent_work |= s.has_urgent;
+                has_work |= s.has_work;
+                channels.push(s);
+            }
+        }
         ChannelRegistryStatus {
             channels,
             total_size,
-            has_urgent_work: has_urgent,
+            has_urgent_work,
             has_work,
         }
     }
@@ -165,11 +177,15 @@ impl ChannelRegistry {
 
         let stats = self.status();
 
-        // 3. Check urgent channels first (priority order)
+        // 3. Check urgent channels first (priority order). Single get_mut
+        //    per domain — the previous pattern did get() to check
+        //    has_urgent_work() then get_mut() to pop, doubling the
+        //    HashMap probes per tick. NLL handles the borrow reuse
+        //    cleanly without the double-lookup workaround.
         for &domain in DOMAIN_PRIORITY_ORDER {
-            if let Some(channel) = self.channels.get(&domain) {
+            if let Some(channel) = self.channels.get_mut(&domain) {
                 if channel.has_urgent_work() {
-                    if let Some(item) = self.channels.get_mut(&domain).and_then(|c| c.pop()) {
+                    if let Some(item) = channel.pop() {
                         debug!(
                             "Service cycle: urgent {} item from {:?} channel",
                             item.item_type(),
@@ -187,13 +203,15 @@ impl ChannelRegistry {
             }
         }
 
-        // 4. Non-urgent: check with state gating (skip Audio — already checked for urgent)
+        // 4. Non-urgent: check with state gating (skip Audio — already
+        //    checked for urgent). Same single-lookup pattern as the
+        //    urgent loop above.
         for &domain in &DOMAIN_PRIORITY_ORDER[1..] {
-            if let Some(channel) = self.channels.get(&domain) {
+            if let Some(channel) = self.channels.get_mut(&domain) {
                 if channel.has_work() {
                     let peek_priority = channel.peek_priority();
                     if state.should_engage(peek_priority) {
-                        if let Some(item) = self.channels.get_mut(&domain).and_then(|c| c.pop()) {
+                        if let Some(item) = channel.pop() {
                             debug!(
                                 "Service cycle: non-urgent {} item from {:?} channel (priority {:.2})",
                                 item.item_type(),

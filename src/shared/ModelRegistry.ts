@@ -17,7 +17,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export type ModelKind = 'chat-llm' | 'vision-llm' | 'embedding' | 'stt' | 'tts' | 'tts-trainable' | 'vad' | 'chat-llm-fast';
-export type Tier = 'mba' | 'mid' | 'full';
+
+/**
+ * Host-tier label that drives default-model selection. Most tiers are
+ * RAM-bucketed (mba/mid/full); `mac_intel_discrete` is a hardware-shaped
+ * override for Mac Intel hosts with a discrete AMD or integrated Intel
+ * UHD Metal device — even with 32GB RAM, llama.cpp's Metal-AMD shader
+ * path produces incoherent tokens (continuum 2026-05-30 evidence on
+ * MacBookPro15,1 / Radeon Pro 560X), so the tier policy must override
+ * the RAM-based bucket and pick the smallest forged model that CPU
+ * inference can comfortably run. Matches the Rust `HwCapabilityTier`
+ * variant `MacIntelMetalDiscrete` — keep the two in sync.
+ */
+export type Tier = 'mba' | 'mid' | 'full' | 'mac_intel_discrete';
 
 /**
  * Canonical symbolic refs that personas store in DB. Code reads these
@@ -42,6 +54,7 @@ export const TIERS = {
   MBA: 'mba' as const,
   MID: 'mid' as const,
   FULL: 'full' as const,
+  MAC_INTEL_DISCRETE: 'mac_intel_discrete' as const,
 };
 
 export interface ModelSpec {
@@ -109,11 +122,39 @@ function load(): RegistryFile {
  * Pick host tier from total RAM in GB. Same logic as install.sh's
  * tier-detection block — kept consistent so install-time and runtime
  * resolve to the same default model.
+ *
+ * Pure-RAM fallback. Prefer [`tierFromHost`] when a hardware-capability
+ * hint is available — RAM alone misclassifies Mac Intel + discrete GPU
+ * (32GB Mac Intel reads as "full" but its 4GB AMD VRAM can't run a 4B
+ * model, and the Metal-AMD shader path is broken — continuum 2026-05-30
+ * evidence).
  */
 export function tierFromRamGB(ramGB: number): Tier {
   if (ramGB >= 32) return 'full';
   if (ramGB >= 24) return 'mid';
   return 'mba';
+}
+
+/**
+ * Pick host tier from RAM + hardware-capability tier (matches the Rust
+ * `HwCapabilityTier` variants from `cognition::model_resolver`). The
+ * hardware tier overrides RAM when it names a class whose physical-VRAM
+ * or shader-path budget diverges from the RAM-based expectation.
+ *
+ * Current overrides:
+ * - `mac_intel_metal_discrete` → `mac_intel_discrete`. Mac Intel with
+ *   discrete AMD or integrated Intel UHD. llama.cpp Metal shaders
+ *   unreliable on this path; the tier maps to a small CPU-runnable
+ *   model regardless of system RAM.
+ *
+ * Other hardware tiers (M-series, NVIDIA, VulkanAmd) fall through to
+ * RAM-based selection — they have unified or reliable discrete VRAM
+ * and the RAM heuristic remains accurate. Pass `hwTier === undefined`
+ * to get pure-RAM behavior (equivalent to [`tierFromRamGB`]).
+ */
+export function tierFromHost(ramGB: number, hwTier?: string): Tier {
+  if (hwTier === 'mac_intel_metal_discrete') return 'mac_intel_discrete';
+  return tierFromRamGB(ramGB);
 }
 
 /**

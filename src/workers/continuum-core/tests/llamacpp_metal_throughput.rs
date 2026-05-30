@@ -93,9 +93,20 @@ fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
     }
 
     let load_start = Instant::now();
+    // Override knob: $QWEN35_4B_GPU_LAYERS lets the operator force CPU-only
+    // (=0) or partial-offload (=N) to isolate which side of the Metal/CPU
+    // boundary breaks. Default -1 = all layers on GPU (the original
+    // measurement). Mac Intel + AMD-discrete debugging needs the 0 case
+    // to confirm llama.cpp emits coherent tokens when the Metal-AMD
+    // shader path is bypassed.
+    let n_gpu_layers: i32 = env::var("QWEN35_4B_GPU_LAYERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+    eprintln!("[smoke] n_gpu_layers = {n_gpu_layers}");
     let config = LlamaCppConfig {
         model_path,
-        n_gpu_layers: -1, // Offload all layers to GPU (Metal on Mac)
+        n_gpu_layers,
         context_length: Some(32768),
         n_seq_max: 1,
         n_ubatch: 128,

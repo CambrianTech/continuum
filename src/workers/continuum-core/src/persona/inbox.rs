@@ -104,7 +104,13 @@ impl PersonaInbox {
             }
         }
 
-        heap.extend(retained);
+        // At this point the heap is empty (the while loop drained it).
+        // Re-loading via heap.extend(retained) would push N items at
+        // O(log N) each = O(N log N). BinaryHeap::from(Vec<T>) does
+        // in-place heapify in O(N) (per std docs / sift-down construction).
+        // For a busy persona with hundreds of cross-room messages
+        // (anchor matches few, retained = most), the difference is real.
+        *heap = std::collections::BinaryHeap::from(retained);
         let queue_depth_after = heap.len();
         drop(heap);
 
