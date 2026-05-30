@@ -84,7 +84,20 @@ services:
       context: ./src/workers
       dockerfile: ../../docker/continuum-core-vulkan.Dockerfile
       additional_contexts:
-        avatars: ./src/models/avatars
+        # NOTE: the `avatars: ./src/models/avatars` line was here from
+        # 9b1f6ca2a "Bake CC0 avatar VRM models into continuum-core image"
+        # (April 2026), but src/models is gitignored — the directory
+        # doesn't exist in CI checkouts and the build context fails to
+        # resolve, breaking carl-install-smoke for any PR that touches
+        # install.sh (e.g. #1475). The Dockerfile already handles the
+        # empty-dir case via `RUN mkdir -p /app/avatars` (see
+        # docker/continuum-core.Dockerfile line 143 and the explanatory
+        # comment block at lines 131-142). No Dockerfile uses
+        # `--from=avatars`, so the context declaration was dangling
+        # (referenced nowhere, broke everywhere). Restore when the
+        # avatar-provisioning story lands (LFS, model-init download,
+        # or curl from a CC0 URL in CI before docker build) per the
+        # gap noted in PR891-E2E-VALIDATION.md.
         shared: ./src/shared
         shared-generated: ./src/shared/generated
       args:
