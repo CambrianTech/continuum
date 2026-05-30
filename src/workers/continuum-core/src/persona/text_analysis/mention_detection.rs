@@ -5,7 +5,20 @@
 //!
 //! - `is_persona_mentioned`: @PersonaName, @uniqueid, or "Name," / "Name:" at start
 //! - `has_directed_mention`: any @word pattern (detects messages aimed at a specific persona)
+//!
+//! Hot path: called once per message per persona per tick from the
+//! unified evaluator pre-response gate (see
+//! [`crate::persona::evaluator::full_evaluate`]). Pre-2026-05-30 this
+//! function allocated up to 9 Strings per call (msg.to_lowercase() +
+//! name.to_lowercase() + uid.to_lowercase() + 6 format!() markers for
+//! the @prefix and trailing-comma/colon checks). Now: zero per-call
+//! allocations via [`crate::utils::str_case::contains_ascii_case_insensitive`]
+//! and [`crate::utils::str_case::starts_with_ascii_case_insensitive`],
+//! both of which fold ASCII bytes inline without allocating a
+//! lowercase copy. Persona names + uids are ASCII in continuum so the
+//! ASCII fast path is sufficient.
 
+use crate::utils::str_case::starts_with_ascii_case_insensitive;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -20,39 +33,81 @@ static DIRECTED_MENTION_RE: LazyLock<Regex> =
 /// - @mentions anywhere: `@PersonaName` or `@uniqueid`
 /// - Direct address at start: `PersonaName,` or `PersonaName:` or `uniqueid,` or `uniqueid:`
 ///
-/// All comparisons are case-insensitive.
+/// All comparisons are ASCII case-insensitive. Persona names + uids
+/// are ASCII; the ASCII fast path avoids the unicode-aware
+/// `str::to_lowercase()` allocation per call.
+///
+/// To check "Name," at start (and similarly "Name:"), the function
+/// folds the prefix bytes against `persona_display_name` and then
+/// verifies the next byte is the literal `,` or `:`. The same logic
+/// covers the `persona_unique_id` branch.
 pub fn is_persona_mentioned(
     message_text: &str,
     persona_display_name: &str,
     persona_unique_id: &str,
 ) -> bool {
-    let msg_lower = message_text.to_lowercase();
-    let name_lower = persona_display_name.to_lowercase();
-    let uid_lower = persona_unique_id.to_lowercase();
-
-    // @mentions anywhere: "@PersonaName" or "@uniqueid"
-    if msg_lower.contains(&format!("@{name_lower}")) {
+    // @mentions anywhere: scan for "@" + name / uid in the haystack.
+    // The previous implementation pre-built `format!("@{name_lower}")`
+    // every call; here we scan two passes (one for the @-bare-name
+    // path, one for the rest-of-name), avoiding the marker String.
+    if has_at_mention_of(message_text, persona_display_name) {
         return true;
     }
-    if !uid_lower.is_empty() && msg_lower.contains(&format!("@{uid_lower}")) {
-        return true;
-    }
-
-    // Direct address at start: "PersonaName," or "PersonaName:" or "uniqueid," or "uniqueid:"
-    if msg_lower.starts_with(&format!("{name_lower},"))
-        || msg_lower.starts_with(&format!("{name_lower}:"))
+    if !persona_unique_id.is_empty()
+        && has_at_mention_of(message_text, persona_unique_id)
     {
         return true;
     }
-    if !uid_lower.is_empty()
-        && (msg_lower.starts_with(&format!("{uid_lower},"))
-            || msg_lower.starts_with(&format!("{uid_lower}:")))
+
+    // Direct address at start: "Name," / "Name:" / "uid," / "uid:".
+    // starts_with_ascii_case_insensitive covers the name part; then
+    // the next raw byte (not case-folded) must be the literal
+    // separator.
+    if starts_with_then_separator(message_text, persona_display_name) {
+        return true;
+    }
+    if !persona_unique_id.is_empty()
+        && starts_with_then_separator(message_text, persona_unique_id)
     {
         return true;
     }
 
     false
 }
+
+/// True when `haystack` contains `"@" + name` case-insensitively. Splits
+/// the check into a scan for the `@` byte then a window match — avoids
+/// allocating the `format!("@{name}")` marker.
+fn has_at_mention_of(haystack: &str, name: &str) -> bool {
+    let h = haystack.as_bytes();
+    let n = name.as_bytes();
+    if n.is_empty() {
+        return false;
+    }
+    // Need at least "@" + 1 byte of name to match.
+    if h.len() < n.len() + 1 {
+        return false;
+    }
+    // Look for '@' at any position where `name.len()` more bytes still fit.
+    for i in 0..=(h.len() - n.len() - 1) {
+        if h[i] == b'@' && h[i + 1..i + 1 + n.len()].eq_ignore_ascii_case(n) {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when `haystack` starts with `name` (case-insensitive ASCII) AND
+/// the byte immediately after the name is `,` or `:`. Encodes the
+/// "direct address" idiom — `"Name, ..."` / `"Name: ..."`.
+fn starts_with_then_separator(haystack: &str, name: &str) -> bool {
+    if !starts_with_ascii_case_insensitive(haystack, name) {
+        return false;
+    }
+    let next = haystack.as_bytes().get(name.len()).copied();
+    matches!(next, Some(b',') | Some(b':'))
+}
+
 
 /// Check if a message contains ANY directed @mention (aimed at any persona).
 /// Used to prevent dog-piling: when someone @mentions a specific AI, others stay silent.
