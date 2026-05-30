@@ -132,7 +132,7 @@ fn main() {
                 "pos={:>4} token={:>6}({:>15}) | top5=[{}] | eos={:.2} eot={:.2}",
                 pos,
                 token,
-                &current_decoded[..current_decoded.len().min(15)],
+                continuum_core::utils::str_truncate::truncate_at_char_boundary(&current_decoded, 15),
                 top_decoded.join(", "),
                 eos_logit,
                 eot_logit,
@@ -191,7 +191,7 @@ fn main() {
             0,
             prompt_len - 1,
             best_id,
-            &decoded[..decoded.len().min(15)],
+            continuum_core::utils::str_truncate::truncate_at_char_boundary(&decoded, 15),
             best_val,
             eos_logit
         );
@@ -233,7 +233,7 @@ fn main() {
             i,
             pos,
             best_id,
-            &decoded[..decoded.len().min(15)],
+            continuum_core::utils::str_truncate::truncate_at_char_boundary(&decoded, 15),
             best_val,
             eos_logit
         );

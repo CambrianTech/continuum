@@ -1457,7 +1457,7 @@ impl ServiceModule for CognitionModule {
                     "cognition",
                     "classify-domain {}: '{}...' → domain={}, confidence={:.2}, adapter={:?} ({:.0}μs)",
                     persona_uuid,
-                    &text[..text.len().min(40)],
+                    crate::utils::str_truncate::truncate_at_char_boundary(&text, 40),
                     result.domain,
                     result.confidence,
                     result.adapter_name,
