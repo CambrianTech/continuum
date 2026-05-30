@@ -49,6 +49,21 @@ pub enum HwCapabilityTier {
     M2UmaProMax,
     /// Apple M3 Pro/Max/Ultra, 32GB+ unified memory.
     M3UmaProMax,
+    /// Mac Intel + discrete Metal GPU (AMD Radeon Pro on 2018-2019
+    /// MacBookPro15,*). Distinct from Apple Silicon: Metal API works but
+    /// the GPU is a discrete card with its own small VRAM budget (e.g.
+    /// 4GB on Radeon Pro 560X), no unified memory, Metal 2 only (no
+    /// Metal 3 / tensor API). llama.cpp's Metal shaders assume Apple
+    /// Silicon's unified-memory addressing and produce garbled tokens
+    /// on this path (continuum 2026-05-30 evidence: 0.8 tok/s + nil
+    /// tensor buffers on MacBookPro15,1 / Radeon Pro 560X). Standard
+    /// personas on this tier must downsize to the smallest GGUF that
+    /// fits CPU-only inference until our CambrianTech/llama.cpp fork
+    /// patches the Metal-AMD shader path. TargetSilicon for this tier
+    /// is `Gpu` (discrete VRAM, not unified) — but in PRACTICE the
+    /// resolver should be conservative and prefer CPU lanes until the
+    /// fork patch lands.
+    MacIntelMetalDiscrete,
     /// nVidia compute capability 7.0 (V100).
     Sm70,
     /// nVidia compute capability 7.5 (T4 datacenter, RTX 20xx, GTX 16xx).

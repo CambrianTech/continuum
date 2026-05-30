@@ -67,8 +67,11 @@ pub enum ProbeError {
 /// snapshot. Pure: caller owns both inputs.
 ///
 /// Mapping rules:
-/// - `platform == "metal"` → [`TargetSilicon::UnifiedMemory`]; tier from
-///   CPU brand string + total memory (Apple M-series buckets).
+/// - `platform == "metal"` → see [`metal_tier`]: Apple Silicon →
+///   [`TargetSilicon::UnifiedMemory`] with M-series bucket; Mac Intel +
+///   discrete (AMD/UHD) → [`TargetSilicon::Gpu`] with
+///   [`HwCapabilityTier::MacIntelMetalDiscrete`]; anything else surfaces
+///   [`ProbeError::UnknownGpuDevice`].
 /// - `platform == "cuda"` → [`TargetSilicon::Gpu`]; tier from device-name
 ///   pattern (RTX/A100/H100/V100/B100/T4/etc.).
 /// - `platform == "vulkan"` → [`TargetSilicon::Gpu`];
@@ -95,10 +98,7 @@ pub fn detect_host_capability(
     let (hw_capability_tier, primary_target_silicon) = match platform {
         "metal" => {
             let cpu_brand = first_cpu_brand(system_info);
-            (
-                apple_silicon_tier(&cpu_brand, total_mem_mb),
-                TargetSilicon::UnifiedMemory,
-            )
+            metal_tier(&cpu_brand, device_name, total_mem_mb, platform)?
         }
         "cuda" => (nvidia_sm_tier(device_name, platform)?, TargetSilicon::Gpu),
         "vulkan" => (HwCapabilityTier::VulkanAmd, TargetSilicon::Gpu),
@@ -128,6 +128,56 @@ fn first_cpu_brand(system_info: &System) -> String {
         .unwrap_or_default()
 }
 
+/// Classify a host whose GPU monitor reports `platform == "metal"`. Splits
+/// into two physically-distinct families:
+///
+/// 1. **Apple Silicon** (CPU brand contains `Apple M`): unified memory,
+///    Metal 3 / tensor API works, llama.cpp's Metal shaders are
+///    well-supported. Tier comes from [`apple_silicon_tier`]; silicon is
+///    [`TargetSilicon::UnifiedMemory`].
+/// 2. **Mac Intel + discrete GPU** (Intel CPU brand + non-Apple Metal
+///    device name, e.g. "AMD Radeon Pro 560X"): separate VRAM, Metal 2
+///    only, llama.cpp Metal shaders produce garbled tokens (continuum
+///    2026-05-30 evidence: 0.8 tok/s + nil tensor buffers on
+///    MacBookPro15,1). Tier is [`HwCapabilityTier::MacIntelMetalDiscrete`];
+///    silicon is [`TargetSilicon::Gpu`] (discrete VRAM, NOT unified).
+///
+/// Any other combination — Intel CPU + Apple device name, or unknown CPU
+/// brand entirely — surfaces [`ProbeError::UnknownGpuDevice`] so the
+/// operator adds the variant rather than getting silent default routing.
+/// No silent fallback to `M1Uma16Gb` (which was the bug on this host
+/// before 2026-05-30).
+fn metal_tier(
+    cpu_brand: &str,
+    device_name: &str,
+    total_mem_mb: u32,
+    platform: &str,
+) -> Result<(HwCapabilityTier, TargetSilicon), ProbeError> {
+    if cpu_brand.contains("Apple M") {
+        Ok((
+            apple_silicon_tier(cpu_brand, total_mem_mb),
+            TargetSilicon::UnifiedMemory,
+        ))
+    } else if cpu_brand.to_lowercase().contains("intel") {
+        // Mac Intel with Metal — by elimination this is one of the
+        // 2018-2019 MacBookPro / iMac models with either Intel UHD
+        // integrated or AMD Radeon Pro discrete (often both — system
+        // picks one as system_default). Either way, llama.cpp's Metal
+        // path is unreliable here until we fork-patch the shader
+        // implementation. TargetSilicon::Gpu reflects the physical
+        // reality (discrete VRAM); resolver policy should still prefer
+        // CPU lanes for this tier in practice.
+        Ok((HwCapabilityTier::MacIntelMetalDiscrete, TargetSilicon::Gpu))
+    } else {
+        Err(ProbeError::UnknownGpuDevice {
+            platform: platform.to_string(),
+            device_name: format!(
+                "{device_name} (cpu_brand={cpu_brand}, total_mem_mb={total_mem_mb})"
+            ),
+        })
+    }
+}
+
 /// Map an Apple Silicon CPU brand + total system memory to an
 /// [`HwCapabilityTier`]. The tier represents what model variants this
 /// machine can run, not just the chip generation — so memory is part of
@@ -144,6 +194,11 @@ fn first_cpu_brand(system_info: &System) -> String {
 /// The thresholds are deliberately under the marketing "16GB / 32GB"
 /// numbers because sysinfo reports physical-memory minus reserved
 /// firmware/OS regions — a "16GB" Mac reports ~15.5GiB ≈ 15800MB.
+///
+/// Precondition: caller has verified `cpu_brand` matches Apple Silicon
+/// ([`metal_tier`] enforces this). If a non-Apple brand reaches here it
+/// silently falls into `M1Uma*` — that bug bit Mac Intel hosts before
+/// 2026-05-30; the [`metal_tier`] wrapper is the guard.
 fn apple_silicon_tier(cpu_brand: &str, total_mem_mb: u32) -> HwCapabilityTier {
     if cpu_brand.contains("M3") || cpu_brand.contains("M4") || cpu_brand.contains("M5") {
         HwCapabilityTier::M3UmaProMax
@@ -298,6 +353,86 @@ mod tests {
             } => {
                 assert_eq!(platform, "cuda");
                 assert_eq!(device_name, "NVIDIA Voodoo 5 6000");
+            }
+            other => panic!("expected UnknownGpuDevice; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn metal_tier_routes_apple_silicon_to_uma_branch() {
+        // M3 Pro / 32GB → M3UmaProMax + UnifiedMemory. Confirms the
+        // wrapper still routes Apple Silicon to the existing buckets.
+        let (tier, silicon) =
+            metal_tier("Apple M3 Pro", "Apple M3 Pro", 32_000, "metal").unwrap();
+        assert_eq!(tier, HwCapabilityTier::M3UmaProMax);
+        assert_eq!(silicon, TargetSilicon::UnifiedMemory);
+    }
+
+    #[test]
+    fn metal_tier_routes_mac_intel_amd_to_new_tier_not_silent_m1() {
+        // The 2026-05-30 bug repro: Intel(R) Core(TM) i7-8850H + AMD
+        // Radeon Pro 560X + 32GB RAM was silently classified as
+        // M1Uma16Gb before this fix, which led to the resolver selecting
+        // a 4B model that produced garbled tokens at 0.8 tok/s on the
+        // discrete AMD Metal path. Post-fix it lands on
+        // MacIntelMetalDiscrete with TargetSilicon::Gpu — and the
+        // resolver / tier policy then knows to downsize.
+        let (tier, silicon) = metal_tier(
+            "Intel(R) Core(TM) i7-8850H CPU @ 2.60GHz",
+            "AMD Radeon Pro 560X",
+            32_000,
+            "metal",
+        )
+        .unwrap();
+        assert_eq!(
+            tier,
+            HwCapabilityTier::MacIntelMetalDiscrete,
+            "Mac Intel + AMD discrete must NOT silently route to M1Uma*; \
+             that was the bug on MacBookPro15,1 before 2026-05-30"
+        );
+        assert_eq!(
+            silicon,
+            TargetSilicon::Gpu,
+            "discrete AMD has its own VRAM — NOT unified memory like Apple Silicon"
+        );
+    }
+
+    #[test]
+    fn metal_tier_routes_mac_intel_uhd_to_same_tier() {
+        // Intel UHD Graphics 630 is the integrated GPU; system_default()
+        // can pick it depending on power state. Same tier as discrete —
+        // either way this is "Mac Intel Metal" and llama.cpp's Metal
+        // path is unreliable.
+        let (tier, _silicon) = metal_tier(
+            "Intel(R) Core(TM) i7-8850H CPU @ 2.60GHz",
+            "Intel UHD Graphics 630",
+            32_000,
+            "metal",
+        )
+        .unwrap();
+        assert_eq!(tier, HwCapabilityTier::MacIntelMetalDiscrete);
+    }
+
+    #[test]
+    fn metal_tier_loud_fails_on_unknown_cpu_brand() {
+        // Neither Apple Silicon nor Intel — e.g. some hypothetical
+        // ARM-on-macOS hackintosh, or a misreporting sysinfo. The probe
+        // surfaces UnknownGpuDevice naming all the inputs so the
+        // operator can add a tier rather than getting silent CpuOnly
+        // (or worse, silent M1Uma16Gb like the pre-fix Mac Intel bug).
+        let err = metal_tier("Some Other CPU brand", "Mystery GPU", 16_000, "metal")
+            .unwrap_err();
+        match err {
+            ProbeError::UnknownGpuDevice { platform, device_name } => {
+                assert_eq!(platform, "metal");
+                assert!(
+                    device_name.contains("Mystery GPU"),
+                    "error must name device + cpu brand: {device_name}"
+                );
+                assert!(
+                    device_name.contains("Some Other CPU brand"),
+                    "error must name device + cpu brand: {device_name}"
+                );
             }
             other => panic!("expected UnknownGpuDevice; got {other:?}"),
         }
