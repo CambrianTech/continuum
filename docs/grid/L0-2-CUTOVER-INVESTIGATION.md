@@ -221,3 +221,60 @@ Slight lean toward keeping separate. Worth your call though.
 A go/no-go on the synthesis. If yes, I'll execute commits A → B → C with verification between each.
 
 If you'd rather see a different shape — e.g. retire `channel.rs::ChannelState` in favor of mine, or migrate `cognition.rs::persona/turn-execute` to use `ChannelRegistry` first — say which and I'll re-card.
+
+## Addendum (Joel 2026-05-29): brain regions are CBAR pipeline elements — RTOS, parallel, never blocking
+
+Joel: *"we plan on building motor cortex and other things, we need FAST and relevant cognition. Hippocampus doesnt need to block ... its an ongoing process, like cbar does ... this is an RTOS brain ... it mustn't just be some SLOW single thread ... you need to parallize obsessively wherever you can."*
+
+This re-frames the whole consumer side. The handler-dispatch shape above is correct, but the doc as written makes the handler look like a single linear thing: pop → recall → infer → admit → reply. That's the slow-single-thread anti-pattern. It is NOT what we ship.
+
+### The brain region pattern
+
+Each cognitive subsystem is its OWN `ServiceModule`, with its OWN `tick`, running on its OWN tokio task, under the SAME `SubstrateGovernor`. They communicate by writing/reading shared per-persona state (engrams, ready buffers, motor plans), not by RPC-calling each other on the hot path.
+
+| Region | ServiceModule today | What it does continuously |
+|---|---|---|
+| **Hippocampus** (memory) | `modules/memory.rs` (currently request/response only — needs continuous tick ported from TS `Hippocampus.ts:413`) | Snoops working memory → consolidates to LTM. Pre-loads anticipatory recall into a ready-buffer keyed by `(persona_id, channel_id, topic)`. Backpressure-aware. |
+| **Sensory** (vision/audio/embedding) | `modules/vision.rs`, `modules/embedding.rs` | Pre-computes features off the hot path. Handlers read cached results. |
+| **Motor cortex** (action/output planning) | NOT YET — coming | Continuously scores candidate actions/utterances against the current channel context + persona state. Hands off a pre-ranked plan when the handler asks. |
+| **Channel** (producer) | `modules/channel.rs::ChannelModule.tick` (60s) | DB polls, self-task gen, training checks. |
+| **Persona service** (consumer dispatch) | `persona/service_module.rs` (this PR) | ONLY routes popped items by domain → handler. No heavy lifting in this thread. |
+
+### What this means for the handler thread
+
+The handler does the MINIMUM:
+1. Pop the next item from `ChannelState` (cheap — DashMap read + tokio mutex)
+2. Snapshot the pre-loaded context from hippocampus ready-buffer (cheap — synchronous read, no recall call on hot path)
+3. Call `Responder::respond` (this is the ONE expensive call — the inference itself)
+4. Write outcome (cheap — DB write, can be fire-and-forget for non-critical paths)
+
+The handler NEVER:
+- Calls `hippocampus.recall(...)` and waits. The hippocampus has already pre-loaded what's relevant for this `(persona_id, channel_id)` based on its own telemetry (recent message embeddings, current topic, channel domain). If the ready-buffer is empty when the handler looks, that's the hippocampus's signal to prioritize — but the handler proceeds with what it has rather than blocking. Slightly-stale context > stalled persona.
+- Calls `embedding/generate` and waits. The embedding service tick has already computed embeddings for incoming messages as they arrive.
+- Calls `motor_cortex.plan(...)` and waits (when motor cortex ships). Same pattern — pre-ranked plan in ready-buffer.
+
+### Cross-pollination via shared state, parallel writers
+
+The "personas multitask, contexts cross-pollinate" finding from earlier in this doc gets sharper here:
+
+- Each region writes into the same per-persona `PersonaCognition` (engrams, recall index, genome, sleep state).
+- Each handler reads from it.
+- Because the regions write in PARALLEL (each its own ServiceModule, each its own tick), a chat handler firing at T=0 can read engrams that the hippocampus admitted at T=-100ms from a code-handler outcome at T=-200ms.
+- The persona "knows about" something said in a game while coding because the hippocampus continuously admits across all channels and continuously pre-loads across all channels — not because the chat handler explicitly tells the code handler.
+
+This is the RAG retrieval-policy hard problem flagged earlier, made concrete: the policy lives inside the hippocampus's continuous tick (what does this persona need to "have at the ready" right now, given activity across ALL its channels?), not inside any handler.
+
+### Implications for the L0-2-cutover plan
+
+The three-commit plan (A refactor → B production-wire chat-only → C atomic TS deletion) stands as written. But:
+
+- **Commit A also includes** the `ActivityHandler` trait + dispatch — that was already in the plan above.
+- **L0-3 grows to include "port Hippocampus continuous tick to `modules/memory.rs`"** as its own slice. The TS shape (continuous subprocess with backpressure-aware tick, snoop+consolidate, recall+semanticRecall) is correct; the Rust module currently only exposes the request/response surface (`memory/multi-layer-recall` etc.) and needs the tick body.
+- **L0-4+ adds motor cortex** as a new ServiceModule alongside, not inside the handler.
+- **Parallelism review** belongs in every PR going forward: if a handler awaits on something a region could be pre-computing in parallel, that's a bug — move the work into the region's tick.
+
+### The doctrine, condensed
+
+> **No region of cognition runs on the hot path. Each region is its own RTOS task with its own tick. The handler dispatches and reads pre-staged results. The handler never blocks on recall, embedding, planning, or admission — those are continuously produced by their owning regions, in parallel, governed by `SubstrateGovernor`.**
+
+This is the difference between "we have a Rust persona module" and "we have an RTOS brain." The synthesis above gets us the former. This addendum is what makes it the latter.
