@@ -158,7 +158,11 @@ fn metal_tier(
             apple_silicon_tier(cpu_brand, total_mem_mb),
             TargetSilicon::UnifiedMemory,
         ))
-    } else if cpu_brand.to_lowercase().contains("intel") {
+    } else if cpu_brand.contains("Intel") {
+        // Intel CPU brand strings reliably capitalize "Intel"
+        // (e.g. "Intel(R) Core(TM) i7-8850H CPU @ 2.60GHz") — match
+        // the literal substring directly instead of allocating a
+        // lowercase copy on every boot probe.
         // Mac Intel with Metal — by elimination this is one of the
         // 2018-2019 MacBookPro / iMac models with either Intel UHD
         // integrated or AMD Radeon Pro discrete (often both — system
