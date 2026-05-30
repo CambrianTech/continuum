@@ -777,7 +777,19 @@ mod_jtag_bin_link "$INSTALL_DIR/src/jtag"
 
 # ── 4. Configuration ───────────────────────────────────────
 PHASE="configuration"
-mkdir -p "$CONTINUUM_DATA"
+# Pre-create the directories the docker mount overlays. The continuum-core
+# Dockerfile does `RUN mkdir -p /root/.continuum/sockets …` but the
+# compose `~/.continuum:/root/.continuum` mount overlays that with the
+# HOST's ~/.continuum at container start — so any subdir created at image
+# build time becomes invisible inside the container. continuum-core then
+# fails to bind its IPC socket with "IPC server error: No such file or
+# directory (os error 2)" and the healthcheck never goes green, blocking
+# the whole stack (continuum-core unhealthy → node-server's depends_on
+# fails → compose up exits 1). Caught 2026-05-30 on carl-install-smoke
+# of #1480; the canary image healthcheck regression had been silently
+# blocking install-smoke for any install touching the docker stack.
+mkdir -p "$CONTINUUM_DATA" "$CONTINUUM_DATA/sockets" \
+         "$CONTINUUM_DATA/jtag/data" "$CONTINUUM_DATA/jtag/logs"
 
 CONFIG_FILE="$CONTINUUM_DATA/config.env"
 if [ ! -f "$CONFIG_FILE" ]; then
