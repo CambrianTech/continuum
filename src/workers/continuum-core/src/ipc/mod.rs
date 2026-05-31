@@ -907,7 +907,46 @@ pub fn start_server(
     // start_server is sync but discovery is async; we're on the main
     // bootstrap thread, not inside a tokio task, so blocking here is
     // safe and gates module registration on the discovery result.
-    runtime.register(Arc::new(rt_handle.block_on(AircModule::discover_and_construct())));
+    let airc_module = Arc::new(rt_handle.block_on(AircModule::discover_and_construct()));
+    let persona_bootstrap_deps = airc_module
+        .daemon_socket()
+        .map(|p| p.to_path_buf())
+        .zip(airc_module.default_room());
+    runtime.register(airc_module);
+
+    // PersonaInstanceManagerModule: owns the live PersonaAircRuntime
+    // registry — the kernel's roster of citizens in The Grid. Exposes
+    // `persona/instances/bootstrap`, `persona/instances/list`,
+    // `persona/instances/get`. Only registered when AIRC discovery
+    // produced both a daemon socket AND a default room — without
+    // either, citizens have nowhere to attach. The degraded path
+    // logs and skips registration so the rest of the server boots;
+    // the operator's remedy is the same as for AIRC discovery
+    // failures (install airc / run `airc room <name>`).
+    if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
+        let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        let registry = crate::persona::PersonaAircRuntimeRegistry::new();
+        runtime.register(Arc::new(
+            crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
+                registry,
+                daemon_socket,
+                default_room,
+                continuum_root,
+            ),
+        ));
+        log_info!(
+            "ipc",
+            "server",
+            "PersonaInstanceManagerModule registered — citizens can be bootstrapped via \
+             `persona/instances/bootstrap`"
+        );
+    } else {
+        tracing::warn!(
+            "PersonaInstanceManagerModule NOT registered — AIRC discovery is degraded \
+             (missing socket or default room). Resolve by installing airc and running \
+             `airc room <name>`, then restart continuum-core."
+        );
+    }
 
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health

@@ -188,6 +188,26 @@ impl AircModule {
             attach_channel: None,
         }
     }
+
+    /// The discovered airc daemon socket path, if discovery succeeded.
+    /// Downstream modules (e.g. persona instance manager) read this to
+    /// connect each citizen's `airc_lib::Airc` to the same per-machine
+    /// daemon. `None` means the airc subsystem is in degraded mode
+    /// (queue-only, no daemon attach) — citizens cannot be bootstrapped
+    /// until socket discovery succeeds on a future server restart.
+    pub fn daemon_socket(&self) -> Option<&std::path::Path> {
+        self.attach_socket_path.as_deref()
+    }
+
+    /// The discovered default room (per `airc room` for this scope), if
+    /// any. Used by the persona instance manager as the default landing
+    /// room when bootstrapping a citizen — so a fresh persona shows up
+    /// in the same room Joel publishes into, per the
+    /// `personas-are-citizens-airc-is-identity-provider` doctrine ("I
+    /// expect your general room and theirs to be the same room").
+    pub fn default_room(&self) -> Option<RoomId> {
+        self.attach_channel
+    }
 }
 
 impl Default for AircModule {
