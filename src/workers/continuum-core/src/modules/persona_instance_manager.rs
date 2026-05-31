@@ -88,7 +88,7 @@ impl PersonaInstanceInfo {
         Self {
             persona_id: runtime.persona_id(),
             agent_name: runtime.agent_name().to_string(),
-            peer_id: runtime.airc().peer_id(),
+            peer_id: runtime.airc().peer_id().as_uuid(),
             home: runtime.home().to_path_buf(),
             default_room: runtime.default_room().as_uuid(),
         }
@@ -142,7 +142,14 @@ impl PersonaInstanceManagerModule {
     ///
     /// In this slice the seed is fresh per call (not persisted).
     /// Stable-across-restarts identity is a follow-up.
-    async fn bootstrap_one(&self) -> Result<PersonaInstanceInfo, PersonaAircRuntimeError> {
+    ///
+    /// `pub` so the IPC command surface AND the server-boot wiring
+    /// (`ipc::start_server`) can fire it. The IPC command path is
+    /// for explicit operator/test invocation; the boot path fires
+    /// once at startup to put The Grid's first citizen online so
+    /// `airc peers` from another scope sees her without anyone
+    /// having to type a command.
+    pub async fn bootstrap_one(&self) -> Result<PersonaInstanceInfo, PersonaAircRuntimeError> {
         let persona_id = Uuid::new_v4();
         let agent_name = agent_name_from_identity(&persona_id.to_string());
 

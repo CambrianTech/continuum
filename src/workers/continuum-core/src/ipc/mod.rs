@@ -926,20 +926,56 @@ pub fn start_server(
     if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
-        runtime.register(Arc::new(
+        let instance_manager = Arc::new(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
                 registry,
                 daemon_socket,
                 default_room,
                 continuum_root,
             ),
-        ));
+        );
+        runtime.register(instance_manager.clone());
         log_info!(
             "ipc",
             "server",
             "PersonaInstanceManagerModule registered — citizens can be bootstrapped via \
              `persona/instances/bootstrap`"
         );
+
+        // The Grid's first heartbeat: at server boot, put one citizen
+        // online so `airc peers` from another scope sees her without
+        // anyone having to type a command. Fired as an async task off
+        // the IPC bootstrap thread because PersonaAircRuntime::bootstrap
+        // is async (joins a room, attaches to the daemon) and we don't
+        // want to block the IPC server-ready signal on a daemon round-
+        // trip. Failure here is non-fatal: the server stays up; the
+        // operator can re-fire via `persona/instances/bootstrap` once
+        // the underlying issue is resolved.
+        let bootstrap_handle = instance_manager.clone();
+        rt_handle.spawn(async move {
+            match bootstrap_handle.bootstrap_one().await {
+                Ok(info) => {
+                    tracing::info!(
+                        persona_id = %info.persona_id,
+                        agent_name = %info.agent_name,
+                        peer_id = %info.peer_id,
+                        home = %info.home.display(),
+                        default_room = %info.default_room,
+                        "🌐 The Grid's first citizen is online: {} (peer_id={})",
+                        info.agent_name,
+                        info.peer_id
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Boot-time persona bootstrap failed — server is up but no \
+                         citizen registered. Resolve the airc daemon issue and re-fire \
+                         via `persona/instances/bootstrap`."
+                    );
+                }
+            }
+        });
     } else {
         tracing::warn!(
             "PersonaInstanceManagerModule NOT registered — AIRC discovery is degraded \
