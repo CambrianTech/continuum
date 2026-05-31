@@ -35,7 +35,7 @@ Two disconnected layers. **Log layer**: `LoggerModule` (`src/workers/continuum-c
 | `continuum-core/test` | Same as build — no structured test result (count, failure names, timing). Iteration loop is opaque | Medium | Cargo's `--message-format=json` |
 | `events/command-completed` | `Stream` + `Lambda` cell shapes return runtime errors. No bus subscription for command lifecycle. Polling violates RTOS-brain doctrine | Large | Interceptor chain hook + Events primitive wiring |
 | `code/shell/stream` | `code/shell/watch` is blocking-poll only — incompatible with adaptive cadence loop | Medium | Stream cell shape implementation |
-| `code/delete`, `code/move` | Non-blocking today but required for scaffold cleanup and reorganization | Small | `FileEngine` already has internal support |
+| `code/move` | Non-blocking today but required for scaffold reorganization. (`code/delete` already exists at `modules/code.rs:205`; only `code/move` is genuinely absent.) | Small | `FileEngine` already has internal support |
 
 ## Suggested next-sprint priorities
 
@@ -75,10 +75,12 @@ Two disconnected layers. **Log layer**: `LoggerModule` (`src/workers/continuum-c
 
 **Composes**: Extend `code/shell/execute` module. Forces Stream cell shape implementation — pays the architectural debt of a reserved-but-unimplemented variant.
 
-### 5. `code/delete` + `code/move` (Small)
-**Signature**: `code/delete({path, recursive?}) -> {deleted}` · `code/move({from, to}) -> {moved}`
+### 5. `code/move` (Small)
+**Signature**: `code/move({from, to}) -> {moved}`
 
-**Unblocks**: Scaffold cleanup, module reorganization, removing stale generated artifacts. Not blocking today but rounds out the file CRUD surface.
+**Unblocks**: Module reorganization (rename a scaffolded module dir, move files between subtrees). Not blocking today but rounds out the file CRUD surface.
+
+**Note**: `code/delete` already exists at `modules/code.rs:205` — initial gap-report scan missed it. Only `code/move` is genuinely absent.
 
 ## Alignment with the three-primitive doctrine
 
@@ -88,7 +90,7 @@ Two disconnected layers. **Log layer**: `LoggerModule` (`src/workers/continuum-c
 | `continuum-core/build` / `test` | **Commands** | Request/response with structured result. Each invocation is a discrete unit returning a typed envelope. |
 | `events/command-completed` | **Events** | This is the missing publish/subscribe surface for the dispatch loop. It serves Events specifically because polling-for-result violates the RTOS doctrine of "never block on the hot path." |
 | `code/shell/stream` | **Commands** (returning Stream cell) | The Stream cell shape is a Commands return variant — this implementation activates it. Personas consume the stream like an iterator, not as a subscription. |
-| `code/delete` / `move` | **Commands** | Mutating request/response. Could optionally emit `data:file:deleted` events (Events surface) for sentinel observers. |
+| `code/move` | **Commands** | Mutating request/response. Could optionally emit `data:file:moved` events (Events surface) for sentinel observers. |
 | Persona-side composition | **Persona** | The autonomous loop in `serviceInbox()` is where all of the above compose into self-coding behavior. No new Persona primitives — the existing convergence pattern (inbox + state + genome) handles it. |
 
 ## Connection to the "later parts" of the vision
