@@ -80,7 +80,7 @@ use serde::{Deserialize, Serialize};
 /// Cheap to clone (Copy-ish fields + small handles); typically
 /// constructed once per cognition turn and passed by reference
 /// throughout that turn.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubstrateContext {
     /// Persona this operation is for. Per-persona modules MUST
     /// validate that `ctx.persona_id` matches their own binding
@@ -128,7 +128,7 @@ impl SubstrateContext {
 /// (airc and persona details) and for rag has something special":
 /// composition is the safer shape — we can swap substrate context
 /// behind the scenes without breaking RAG callers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagContext {
     pub substrate: SubstrateContext,
     // Future RAG-specific extensions go here. Empty for now is fine —
@@ -159,10 +159,14 @@ impl RagContext {
 //=============================================================================
 
 /// One source's budget claim. Sent INTO the allocator as input.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RagSourceBudget {
-    /// Stable identifier (`"conversation"`, `"memories"`, …).
-    pub source_id: &'static str,
+    /// Stable identifier (`"conversation"`, `"memories"`, …). Owned
+    /// String so the budget can be serialized into a capture trace
+    /// (per `rag_capture.rs`) and deserialized for replay. Sources
+    /// still expose `source_id()` as `&'static str` via the trait;
+    /// the budget claim is just the wire-shape envelope.
+    pub source_id: String,
 
     /// Priority weight 1-10, higher = more important. Used as the
     /// flex-grow share when distributing free tokens.
@@ -500,7 +504,7 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         // deterministic tie-break — the boot-time output should
         // not depend on slice ordering or hashmap iteration.
         let mut sorted: Vec<&RagSourceBudget> = sources.iter().collect();
-        sorted.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.source_id.cmp(b.source_id)));
+        sorted.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.source_id.cmp(&b.source_id)));
 
         // Working allocation: source_id -> tokens. Use a Vec parallel
         // to sorted for cache-locality + deterministic iteration.
@@ -636,16 +640,16 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
 
         // Build result in input order (NOT sorted order) for caller
         // ergonomics.
-        let mut allocations_by_id: std::collections::HashMap<&'static str, (u32, AllocationState, &RagSourceBudget)> =
+        let mut allocations_by_id: std::collections::HashMap<String, (u32, AllocationState, &RagSourceBudget)> =
             std::collections::HashMap::new();
         for (i, source) in sorted.iter().enumerate() {
-            allocations_by_id.insert(source.source_id, (alloc[i], state[i], *source));
+            allocations_by_id.insert(source.source_id.clone(), (alloc[i], state[i], *source));
         }
         let mut allocations = Vec::with_capacity(sources.len());
         let mut total_allocated = 0u32;
         for src in sources {
             let (tokens, st, _) = allocations_by_id
-                .remove(src.source_id)
+                .remove(&src.source_id)
                 .expect("every source must appear in the working alloc");
             total_allocated = total_allocated.saturating_add(tokens);
             allocations.push(SourceAllocation {
@@ -834,7 +838,7 @@ mod tests {
         required: bool,
     ) -> RagSourceBudget {
         RagSourceBudget {
-            source_id,
+            source_id: source_id.to_string(),
             priority,
             floor_tokens: floor,
             min_tokens: min,
