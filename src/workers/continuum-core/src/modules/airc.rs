@@ -1,11 +1,15 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    default_socket_path_in, spawn_daemon_attach, AircEventTransport, AircQueueClient,
+    discover_airc_socket, spawn_daemon_attach, AircEventTransport, AircQueueClient,
     AircQueueListRequest, AircQueueScanParams, AircRealtimePublishParams, AircRealtimeReplayParams,
     AircRealtimeStore, CliAircQueueClient, DaemonAircEventTransport, InMemoryAircRealtimeStore,
     StoreAircEventTransport, TokioAircCommandRunner,
 };
+// `default_socket_path_in` retained for back-compat callers; deprecated,
+// see `crate::airc::daemon_endpoint` module docs.
+#[allow(deprecated)]
+use crate::airc::default_socket_path_in;
 use crate::runtime::{
     CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ParamSchema,
     ServiceModule,
@@ -22,11 +26,49 @@ pub struct AircModule {
 }
 
 impl AircModule {
+    /// Construct without discovery — falls back to the deprecated local
+    /// resolver. **Prefer [`AircModule::discover_and_construct`]** for
+    /// any new caller; this `new()` exists only because back-compat
+    /// callers (tests, legacy bootstrap) rely on the sync signature.
+    /// The headless boot path (`ipc::start_server`) is moving to the
+    /// async constructor + canonical socket path.
     pub fn new() -> Self {
         let airc_home = std::env::current_dir()
             .map(|dir| dir.join(".airc"))
             .unwrap_or_else(|_| std::path::PathBuf::from(".airc"));
         Self::with_daemon_home(airc_home)
+    }
+
+    /// Discover the airc daemon socket via [`discover_airc_socket`] (asks
+    /// `airc ipc-endpoint` per airc#1095; auto-installs airc if missing).
+    /// On discovery failure, returns a degraded module that responds to
+    /// `airc/*` commands via the in-memory store but performs no daemon
+    /// attach — so the rest of continuum-core boots even when airc is
+    /// unreachable (e.g. CI without network for auto-install).
+    pub async fn discover_and_construct() -> Self {
+        match discover_airc_socket().await {
+            Ok(socket_path) => {
+                tracing::info!(
+                    ?socket_path,
+                    "Discovered airc daemon socket via `airc ipc-endpoint`"
+                );
+                Self {
+                    queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
+                    event_transport: Arc::new(DaemonAircEventTransport::new(socket_path.clone())),
+                    attach_socket_path: Some(socket_path),
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "airc socket discovery failed — AIRC inbound attach disabled. Realtime \
+                     commands will use in-memory store; queue commands will fail loudly. \
+                     Resolve: install airc manually or set AIRC_DAEMON_SOCKET; see error \
+                     above for the suggested remedy."
+                );
+                Self::with_queue_client(Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)))
+            }
+        }
     }
 
     pub fn with_daemon_home(airc_home: impl Into<std::path::PathBuf>) -> Self {
