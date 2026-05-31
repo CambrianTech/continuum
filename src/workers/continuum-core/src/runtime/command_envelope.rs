@@ -189,6 +189,81 @@ impl<P> CommandRequest<P> {
         self.user_id = Some(user_id);
         self
     }
+
+    /// Resolve a resource id during migration from string-typed ids to
+    /// typed [`HandleRef`]s, returning the id as a string.
+    ///
+    /// Walks two possible shapes in priority order:
+    ///
+    /// 1. **Envelope `handle`** (the new canonical shape). When
+    ///    present, validates against the expected `owner` and
+    ///    `type_tag` via [`HandleRef::expect_owned_by`]; a failure
+    ///    here surfaces with the `command` name prepended so the
+    ///    consumer's error names the offending surface, the failure
+    ///    mode, and the expected values in one breath.
+    ///
+    /// 2. **Legacy string field** (the back-compat shape). Returned
+    ///    as-is. The historical wire contract pre-dates UUID typing,
+    ///    so legacy callers may send anything — if the string fails
+    ///    the consumer's downstream lookup, the consumer's own
+    ///    "not found" error names it.
+    ///
+    /// 3. **Neither present** — typed error naming BOTH supported
+    ///    shapes so the caller knows what to add.
+    ///
+    /// This is the single primitive shared by every additive
+    /// migration of a stringly-typed id to a typed handle. See
+    /// `data.rs`'s `handle_query_next` / `handle_query_close` for the
+    /// canonical consumer; other migrations should reach for this
+    /// rather than reimplementing the resolver.
+    ///
+    /// # Why does it return `String`?
+    ///
+    /// Two callers consume the same id today:
+    /// - the envelope path produces a `Uuid` (typed)
+    /// - the legacy path produces a string (predates UUID typing)
+    ///
+    /// To present a unified resolved-id type to the consumer, we
+    /// collapse to `String` — the historical wire format that every
+    /// consumer's existing state map is already keyed on. Future
+    /// modules whose state maps are keyed on `Uuid` can `Uuid::parse_str`
+    /// the result; the parse failure mode for legacy strings is fine
+    /// because handle-only consumers (post-migration) won't have a
+    /// legacy field to fall back to anyway.
+    ///
+    /// # Usage
+    ///
+    /// ```ignore
+    /// let cursor_id = req.handle_id_or_legacy(
+    ///     "data",                   // expected owner
+    ///     "data::QueryCursor",      // expected type_tag
+    ///     "queryId",                // legacy field name (for error)
+    ///     &req.params.query_id,     // legacy field value (Option<String>)
+    ///     "data/query-next",        // command name (for error prefix)
+    /// )?;
+    /// ```
+    pub fn handle_id_or_legacy(
+        &self,
+        expected_owner: &str,
+        expected_type_tag: &str,
+        legacy_field_name: &str,
+        legacy_field: &Option<String>,
+        command: &str,
+    ) -> Result<String, String> {
+        if let Some(h) = &self.handle {
+            return h
+                .expect_owned_by(expected_owner, expected_type_tag)
+                .map(|uuid| uuid.to_string())
+                .map_err(|e| format!("{command}: {e}"));
+        }
+        if let Some(id) = legacy_field {
+            return Ok(id.clone());
+        }
+        Err(format!(
+            "{command}: neither `handle` (envelope field) nor `{legacy_field_name}` \
+             (legacy params field) was provided. Pass the resource id via either shape."
+        ))
+    }
 }
 
 /// Typed envelope around an outbound command's result.
@@ -494,5 +569,174 @@ mod tests {
         assert_eq!(req.session_id, Some(session_id));
         assert_eq!(req.user_id, Some(user_id));
         assert_eq!(req.handle.unwrap().id, handle_id);
+    }
+
+    // ── CommandRequest::handle_id_or_legacy ─────────────────────────
+    //
+    // The single primitive shared by every additive migration of a
+    // stringly-typed id to a typed handle. Distilled from data
+    // module's first real consumer (PR #1490) so future migrations
+    // don't reimplement the resolver. Each kink the data migration
+    // discovered is pinned by a test here so the substrate
+    // guarantees them centrally.
+
+    #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CursorParams {
+        #[serde(default)]
+        query_id: Option<String>,
+    }
+
+    fn cursor_handle(id: Uuid) -> HandleRef {
+        HandleRef::with_id("data", id, "data::QueryCursor")
+    }
+
+    #[test]
+    fn handle_id_or_legacy_prefers_envelope_handle_when_both_present() {
+        // When the envelope carries a handle AND a legacy field is
+        // also present, the typed handle wins. Otherwise consumers
+        // mid-migration would diverge from new consumers about which
+        // id the resolver sees.
+        let h_id = Uuid::new_v4();
+        let req = CommandRequest::new(CursorParams {
+            query_id: Some(Uuid::new_v4().to_string()), // legacy populated
+        })
+        .with_handle(cursor_handle(h_id));
+
+        let resolved = req
+            .handle_id_or_legacy(
+                "data",
+                "data::QueryCursor",
+                "queryId",
+                &req.params.query_id,
+                "data/query-next",
+            )
+            .expect("envelope handle must win");
+        assert_eq!(
+            resolved,
+            h_id.to_string(),
+            "envelope handle MUST win when both shapes are present"
+        );
+    }
+
+    #[test]
+    fn handle_id_or_legacy_falls_back_to_legacy_string_when_no_handle() {
+        let legacy = "11111111-2222-3333-4444-555555555555".to_string();
+        let req = CommandRequest::new(CursorParams {
+            query_id: Some(legacy.clone()),
+        });
+
+        let resolved = req
+            .handle_id_or_legacy(
+                "data",
+                "data::QueryCursor",
+                "queryId",
+                &req.params.query_id,
+                "data/query-next",
+            )
+            .expect("legacy fallback must succeed");
+        assert_eq!(resolved, legacy, "legacy string returned as-is");
+    }
+
+    #[test]
+    fn handle_id_or_legacy_errors_loud_when_neither_shape_provided() {
+        let req = CommandRequest::new(CursorParams::default());
+        let err = req
+            .handle_id_or_legacy(
+                "data",
+                "data::QueryCursor",
+                "queryId",
+                &req.params.query_id,
+                "data/query-next",
+            )
+            .expect_err("empty request must Err");
+        assert!(
+            err.contains("data/query-next"),
+            "error must name the failing command surface: {err}"
+        );
+        assert!(
+            err.contains("`handle`") && err.contains("`queryId`"),
+            "error must name BOTH supported shapes so caller knows what to add: {err}"
+        );
+    }
+
+    #[test]
+    fn handle_id_or_legacy_prepends_command_name_to_handle_validation_errors() {
+        // Critical for diagnostics: when a wrong-owner handle reaches
+        // this resolver, the error must name BOTH the failing command
+        // (so the caller knows which surface) AND the
+        // HandleRef-level mismatch (so the caller knows what to fix).
+        let req = CommandRequest::new(CursorParams::default()).with_handle(HandleRef::mint(
+            "chat",
+            "chat::MessageHandle",
+        ));
+
+        let err = req
+            .handle_id_or_legacy(
+                "data",
+                "data::QueryCursor",
+                "queryId",
+                &req.params.query_id,
+                "data/query-next",
+            )
+            .expect_err("wrong-owner handle must Err");
+        assert!(
+            err.starts_with("data/query-next:"),
+            "command name must prefix the error: {err}"
+        );
+        assert!(
+            err.contains("owner mismatch"),
+            "HandleRef's failure mode must propagate: {err}"
+        );
+        assert!(
+            err.contains("\"chat\"") && err.contains("\"data\""),
+            "both offender and expected named: {err}"
+        );
+    }
+
+    #[test]
+    fn handle_id_or_legacy_propagates_type_mismatch_with_command_name() {
+        let req = CommandRequest::new(CursorParams::default())
+            .with_handle(HandleRef::mint("data", "data::Migration"));
+
+        let err = req
+            .handle_id_or_legacy(
+                "data",
+                "data::QueryCursor",
+                "queryId",
+                &req.params.query_id,
+                "data/query-close",
+            )
+            .expect_err("wrong-type handle must Err");
+        assert!(err.starts_with("data/query-close:"), "command prefix: {err}");
+        assert!(err.contains("type mismatch"), "type mismatch propagates: {err}");
+        assert!(
+            err.contains("data::Migration") && err.contains("data::QueryCursor"),
+            "both offender and expected named: {err}"
+        );
+    }
+
+    #[test]
+    fn handle_id_or_legacy_uses_canonical_uuid_string_for_handle_path() {
+        // The envelope path must produce the UUID's canonical string
+        // form (not some other rendering), so downstream consumers
+        // can use the resolved string as a stable cache key with
+        // legacy-path values from the same migration window.
+        let id = Uuid::new_v4();
+        let req = CommandRequest::new(CursorParams::default()).with_handle(cursor_handle(id));
+        let resolved = req
+            .handle_id_or_legacy(
+                "data",
+                "data::QueryCursor",
+                "queryId",
+                &req.params.query_id,
+                "data/query-next",
+            )
+            .unwrap();
+        assert_eq!(
+            resolved,
+            id.to_string(),
+            "canonical UUID string is the bridge format between handle and legacy paths"
+        );
     }
 }
