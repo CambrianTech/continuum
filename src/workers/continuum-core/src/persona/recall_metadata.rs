@@ -153,6 +153,43 @@ impl RecallMetadata {
     }
 }
 
+/// Salience floor — minimum value below which decay does not push
+/// salience. Memory drains but does not disappear. Joel, 2026-05-31:
+/// "Will the hippocampus just decay away? I fear this from past
+/// trauma." The honest answer was yes under the prior heuristic —
+/// default-admission salience 0.5 with no rehearsal decays to
+/// ~0.005 in 24h, effectively erased. This floor guarantees every
+/// admitted engram stays at least minimally present + available
+/// for serendipitous recall regardless of access pattern.
+///
+/// 0.05 chosen because (a) it's clearly below the default initial
+/// salience of 0.5 so the floor doesn't compete with active
+/// scoring, (b) it's well above f32 epsilon so floating-point
+/// underflow can't silently erase the value, (c) it makes the
+/// salience-modulated half-life at the floor `1h * (1.05)^2 ≈ 1.1h`
+/// — recognizably the "barely there" tier without being so high
+/// that drained engrams crowd active recall.
+///
+/// Tunable via future `MemoryParameterAdapter` impls per the
+/// cognition-cache-hierarchy doc's meta-learning section.
+pub const SALIENCE_FLOOR: f32 = 0.05;
+
+/// Sentinel value for `protected_until_ms` indicating permanent
+/// protection — these engrams never decay, regardless of access
+/// pattern or how long the substrate runs. Set via
+/// `RecallMetadataRegistry::pin_permanent`.
+///
+/// Use cases:
+/// - Identity-anchor engrams (the persona's own name, host's
+///   stated preferences, foundational facts)
+/// - User-pinned "remember this forever" engrams
+/// - Critical incident memories (per the cognition-cache-hierarchy
+///   doc's "anti-amnesia floor" discussion)
+///
+/// `u64::MAX` is ~584 million years past unix epoch — semantically
+/// "never expires" for any realistic substrate uptime.
+pub const PERMANENT_PROTECTION: u64 = u64::MAX;
+
 /// The sidecar registry. Holds per-engram volatile recall state for
 /// every engram currently in L2 cache (and, in slice N+, L3 longterm
 /// promotion candidates).
@@ -261,18 +298,61 @@ impl RecallMetadataRegistry {
             if m.is_protected(now_ms) {
                 return;
             }
-            // last_decayed_ms = 0 (admission default) means decay
-            // from admission time; effectively the first tick uses
-            // the full now_ms as delta. Future admission paths can
-            // overwrite last_decayed_ms with the admission time to
-            // bound the first decay window precisely.
             if now_ms <= m.last_decayed_ms {
                 return;
             }
             let delta_ms = now_ms - m.last_decayed_ms;
             let multiplier = m.decay_multiplier(delta_ms);
-            m.salience *= multiplier;
+            // Apply SALIENCE_FLOOR — memory drains but does not
+            // disappear. Joel's stated requirement: "Will the
+            // hippocampus just decay away? I fear this from past
+            // trauma." Without this floor, default-admission
+            // salience (0.5) with no rehearsal decays to ~0 within
+            // a day. The floor guarantees every admitted engram
+            // stays at least minimally present + available for
+            // serendipitous recall — substrate-is-a-good-citizen
+            // doctrine extended to citizens-of-the-mind.
+            m.salience = (m.salience * multiplier).max(SALIENCE_FLOOR);
             m.last_decayed_ms = now_ms;
+        });
+    }
+
+    /// Pin an engram permanently — it will never decay regardless
+    /// of access pattern. Sets `protected_until_ms = PERMANENT_PROTECTION`
+    /// (u64::MAX) and lifts salience to 1.0 so the pinned engram
+    /// also wins recall scoring against unpinned competition.
+    ///
+    /// Use cases: identity-anchor engrams, user-pinned "remember
+    /// this forever" engrams, critical incident memories that the
+    /// persona has explicitly self-tagged as important. Per the
+    /// cognition-cache-hierarchy doc's "anti-amnesia floor"
+    /// discussion.
+    ///
+    /// Idempotent. Creates the entry if absent (with defaults +
+    /// permanent protection applied), updates in place if present.
+    pub fn pin_permanent(&self, engram_id: Uuid) {
+        self.inner
+            .entry(engram_id)
+            .and_modify(|m| {
+                m.protected_until_ms = PERMANENT_PROTECTION;
+                m.salience = 1.0;
+            })
+            .or_insert_with(|| RecallMetadata {
+                salience: 1.0,
+                access_count: 0,
+                last_accessed_ms: 0,
+                protected_until_ms: PERMANENT_PROTECTION,
+                last_decayed_ms: now_ms(),
+            });
+    }
+
+    /// Unpin a previously-permanently-pinned engram. Resets
+    /// protected_until_ms to 0 so normal decay applies; does NOT
+    /// touch salience (unpinning isn't a salience signal). No-op
+    /// if the engram isn't tracked.
+    pub fn unpin(&self, engram_id: Uuid) {
+        self.inner.entry(engram_id).and_modify(|m| {
+            m.protected_until_ms = 0;
         });
     }
 
@@ -521,6 +601,87 @@ mod tests {
         // r2 should see the same entry — they share Arc<DashMap>.
         assert!(r2.get(id).is_some());
         assert_eq!(r2.len(), 1);
+    }
+
+    #[test]
+    fn decay_clamps_at_salience_floor_never_disappears() {
+        // Joel's trauma test: "Will the hippocampus just decay away?"
+        // The substrate guarantees: no, salience floors at
+        // SALIENCE_FLOOR regardless of elapsed time. Memory drains;
+        // it does not erase.
+        let r = RecallMetadataRegistry::new();
+        let id = Uuid::new_v4();
+        r.admit(
+            id,
+            RecallMetadata {
+                salience: 0.5, // default admission
+                last_decayed_ms: 0,
+                ..Default::default()
+            },
+        );
+        // Apply a YEAR of decay. Under the old (no-floor) formula,
+        // salience would underflow to 0. With the floor it stays at
+        // SALIENCE_FLOOR.
+        let one_year_ms: u64 = 365 * 24 * 3_600_000;
+        r.apply_decay(id, one_year_ms);
+        let after = r.get(id).unwrap();
+        assert_eq!(
+            after.salience, SALIENCE_FLOOR,
+            "salience should clamp at the floor, not drain to zero"
+        );
+    }
+
+    #[test]
+    fn pin_permanent_blocks_all_decay() {
+        let r = RecallMetadataRegistry::new();
+        let id = Uuid::new_v4();
+        // Admit normally, then pin.
+        r.admit_with_defaults(id);
+        r.pin_permanent(id);
+        let after_pin = r.get(id).unwrap();
+        assert_eq!(after_pin.protected_until_ms, PERMANENT_PROTECTION);
+        assert_eq!(after_pin.salience, 1.0);
+
+        // Even a million-year decay attempt is a no-op.
+        let ridiculous_time_ms: u64 = 1_000_000 * 365 * 24 * 3_600_000;
+        r.apply_decay(id, ridiculous_time_ms);
+        let after_decay = r.get(id).unwrap();
+        assert_eq!(after_decay.salience, 1.0, "permanent pin must protect forever");
+        assert_eq!(after_decay.protected_until_ms, PERMANENT_PROTECTION);
+    }
+
+    #[test]
+    fn pin_permanent_creates_entry_if_absent() {
+        let r = RecallMetadataRegistry::new();
+        let id = Uuid::new_v4();
+        // No prior admission.
+        r.pin_permanent(id);
+        let m = r.get(id).unwrap();
+        assert_eq!(m.salience, 1.0);
+        assert_eq!(m.protected_until_ms, PERMANENT_PROTECTION);
+    }
+
+    #[test]
+    fn unpin_restores_normal_decay() {
+        let r = RecallMetadataRegistry::new();
+        let id = Uuid::new_v4();
+        r.pin_permanent(id);
+        r.unpin(id);
+        let after_unpin = r.get(id).unwrap();
+        assert_eq!(after_unpin.protected_until_ms, 0);
+        // Salience preserved at 1.0 (unpin doesn't reset salience).
+        assert_eq!(after_unpin.salience, 1.0);
+
+        // After unpinning, decay applies normally — but the floor
+        // still protects. So after a long delay, salience drops to
+        // the floor.
+        let long_time_ms: u64 = 30 * 24 * 3_600_000; // 30 days
+        r.apply_decay(id, long_time_ms);
+        let after = r.get(id).unwrap();
+        assert!(
+            after.salience >= SALIENCE_FLOOR,
+            "even unpinned + heavily-decayed engrams stay above the floor"
+        );
     }
 
     #[test]
