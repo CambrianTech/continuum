@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 /// [`crate::airc::discover_airc_socket`] for live attach paths.
 #[deprecated(
     since = "0.1.0",
-    note = "Derivation drifts from airc's own resolver — use `crate::airc::discover_airc_socket` which asks airc via `airc ipc-endpoint` (airc#1095)."
+    note = "Derivation drifts from airc's own resolver — use `crate::airc::discover_airc_socket` which asks airc via `airc ipc-endpoint` (airc#1095). Delete this function once `AircModule::with_daemon_home` and `src/workers/continuum-core/src/modules/airc_runtime_e2e_tests.rs` migrate off it (only two remaining callers as of this PR)."
 )]
 pub fn default_socket_path_in(home: &Path) -> PathBuf {
     #[cfg(unix)]
