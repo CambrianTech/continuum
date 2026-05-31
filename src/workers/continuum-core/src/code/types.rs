@@ -319,8 +319,16 @@ pub struct GlobResult {
     pub matches: Vec<String>,
     pub total_matches: u32,
     /// True when the result was truncated to `GLOB_MAX_MATCHES`. The
-    /// substrate caps glob output so a runaway pattern (`**/*`)
-    /// doesn't OOM the caller — partial results are still useful.
+    /// substrate caps glob output so a runaway recursive pattern
+    /// (double-star slash star) doesn't OOM the caller — partial
+    /// results are still useful.
+    ///
+    /// Pattern is intentionally spelled in words rather than glyphs:
+    /// the literal sequence round-trips through ts-rs into a JSDoc
+    /// block on the TS side, where the comment-close glyph
+    /// prematurely terminates the doc comment and breaks the
+    /// TypeScript build. See task #62 ("ts-rs binding drift CI
+    /// guard") for the proper substrate-level fix.
     pub truncated: bool,
     #[ts(optional)]
     pub error: Option<String>,
@@ -328,8 +336,9 @@ pub struct GlobResult {
 
 /// Maximum number of paths a single `code/glob` response returns.
 /// Beyond this, the result is truncated with `truncated: true`. Set
-/// generously enough to cover typical "find all *.rs in a module
-/// tree" use cases without enabling unbounded memory on `**/*`.
+/// generously enough to cover typical "find all rust files in a
+/// module tree" use cases without enabling unbounded memory on a
+/// recursive everything pattern.
 pub const GLOB_MAX_MATCHES: usize = 5_000;
 
 /// Allowed file extensions for write operations.

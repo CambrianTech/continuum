@@ -15,7 +15,15 @@ export type GlobResult = { success: boolean, pattern: string,
 matches: Array<string>, total_matches: number, 
 /**
  * True when the result was truncated to `GLOB_MAX_MATCHES`. The
- * substrate caps glob output so a runaway pattern (`**/*`)
- * doesn't OOM the caller — partial results are still useful.
+ * substrate caps glob output so a runaway recursive pattern
+ * (double-star slash star) doesn't OOM the caller — partial
+ * results are still useful.
+ *
+ * Pattern is intentionally spelled in words rather than glyphs:
+ * the literal sequence round-trips through ts-rs into a JSDoc
+ * block on the TS side, where the comment-close glyph
+ * prematurely terminates the doc comment and breaks the
+ * TypeScript build. See task #62 ("ts-rs binding drift CI
+ * guard") for the proper substrate-level fix.
  */
 truncated: boolean, error?: string, };
