@@ -304,6 +304,7 @@ impl MessageBus {
         let is_realtime = event_name.starts_with("sentinel:")
             || event_name.starts_with("academy:")
             || event_name.starts_with("chat:")
+            || event_name.starts_with("command:")  // RTOS doctrine — every dispatch's completion event reaches the persona loop (see PERSONA-AS-DEVELOPER-GAP.md §P3)
             || event_name.starts_with("presence:")
             || event_name.starts_with("tool:")
             || event_name.contains("chat_messages")  // data:chat_messages:created must not be coalesced
