@@ -19,7 +19,9 @@ pub mod types;
 pub use client::{AircQueueClient, CliAircQueueClient};
 #[allow(deprecated)]
 pub use daemon_endpoint::default_socket_path_in;
-pub use discovery::{discover_airc_socket, discover_default_channel, DiscoveryError};
+pub use discovery::{
+    discover_airc_socket, discover_default_channel, discover_peer_id, DiscoveryError,
+};
 pub use daemon_transport::{AircDaemonClient, DaemonAircEventTransport};
 pub use event_transport::{AircEventTransport, StoreAircEventTransport};
 pub use inbound_attach::spawn_daemon_attach;
