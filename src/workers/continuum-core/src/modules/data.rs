@@ -16,13 +16,16 @@ use crate::orm::{
     sqlite::SqliteAdapter,
     types::{BatchOperation, DataRecord, RecordMetadata, UUID},
 };
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{
+    CommandRequest, CommandResponse, CommandResult, HandleRef, ModuleConfig, ModuleContext,
+    ModulePriority, ServiceModule,
+};
 use crate::{log_error, log_info};
 use async_trait::async_trait;
 use chrono;
 use dashmap::DashMap;
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::any::Any;
 use std::collections::HashMap;
@@ -102,9 +105,23 @@ pub struct DataModule {
     /// Vector cache: (db_path, collection) -> vectors
     /// Uses RwLock for concurrent reads (no mutex contention during searches)
     vector_cache: RwLock<HashMap<VectorCacheKey, VectorCache>>,
-    /// Paginated query state: queryId -> state
-    /// Server-side cursor management for efficient pagination
-    paginated_queries: DashMap<String, PaginatedQueryState>,
+    /// Paginated query state: queryId -> per-cursor mutex.
+    ///
+    /// Server-side cursor management for efficient pagination. The
+    /// per-cursor `tokio::sync::Mutex` serializes concurrent
+    /// `query-next` / `query-close` calls on the SAME cursor — the
+    /// read-then-async-then-write pattern in `handle_query_next` would
+    /// otherwise race when N personas (or a retrying single persona)
+    /// call next on the same handle concurrently, causing every
+    /// caller to read the same page snapshot and produce duplicate
+    /// page-1 reads.
+    ///
+    /// Per Joel 2026-05-30: "Each persona exists in its own threads."
+    /// Independent cursors stay parallel (DashMap's per-shard locking
+    /// preserves the lock-free read path for different cursor ids);
+    /// only same-cursor concurrent activity is serialized, which is
+    /// the minimum required for cursor-state correctness.
+    paginated_queries: DashMap<String, Arc<tokio::sync::Mutex<PaginatedQueryState>>>,
     /// Module context for inter-module communication (event bus, shared compute)
     /// Set during initialize(), used to publish data change events
     context: RwLock<Option<Arc<ModuleContext>>>,
@@ -473,13 +490,18 @@ impl ServiceModule for DataModule {
                 self.handle_query_open(deserialize_params!(command, params)?)
                     .await
             }
+            // query-next/close take the cursor via `CommandRequest` so
+            // the typed envelope's `handle` field is reachable. The
+            // body deserializes into `QueryNextParams`/`QueryCloseParams`
+            // which preserve the legacy flat `queryId` shape; the
+            // handler picks whichever shape the caller used.
             "data/query-next" => {
-                self.handle_query_next(deserialize_params!(command, params)?)
-                    .await
+                let req = CommandRequest::<QueryNextParams>::from_value(params)?;
+                self.handle_query_next(req).await
             }
             "data/query-close" => {
-                self.handle_query_close(deserialize_params!(command, params)?)
-                    .await
+                let req = CommandRequest::<QueryCloseParams>::from_value(params)?;
+                self.handle_query_close(req).await
             }
 
             "adapter/capabilities" => self.handle_capabilities(params).await,
@@ -720,18 +742,69 @@ struct QueryOpenParams {
     count_exact: bool,
 }
 
-/// Get next page params
-#[derive(Debug, Deserialize)]
+/// Get next page params.
+///
+/// The cursor id reaches this handler one of two ways:
+/// - Legacy flat `queryId` string field on the params body (what TS
+///   consumers send today and will keep sending through the migration
+///   window).
+/// - Kernel-level `handle: HandleRef` on the [`CommandRequest`]
+///   envelope (the canonical post-PR #1486 shape — minted by
+///   `data/query-open` via `CommandResponse::with_handle`).
+///
+/// `resolve_query_cursor_id` walks the envelope first, falls back to
+/// the legacy field, and fails loud when neither is present so a
+/// caller who simply forgot the cursor sees a typed error instead of
+/// silently no-op'ing.
+#[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct QueryNextParams {
-    query_id: String,
+    #[serde(default)]
+    query_id: Option<String>,
 }
 
-/// Close query params
-#[derive(Debug, Deserialize)]
+/// Close query params. Same dual-shape contract as
+/// [`QueryNextParams`] — see its docs for the legacy/envelope handoff.
+#[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct QueryCloseParams {
+    #[serde(default)]
+    query_id: Option<String>,
+}
+
+/// The canonical type tag for cursor handles minted by `data/query-open`.
+/// Lives here so cross-module callers can match on it without depending
+/// on string magic.
+const QUERY_CURSOR_TYPE_TAG: &str = "data::QueryCursor";
+
+/// The canonical owner string for handles this module mints. Matches
+/// the module's `name` in `ModuleConfig`. Centralized so a future rename
+/// of the module name is a single edit.
+const DATA_MODULE_OWNER: &str = "data";
+
+/// Response payload shape for `data/query-open`. Lives in a typed struct
+/// so the typed envelope can flatten it cleanly — the legacy wire shape
+/// nests every field under a `data:` key, so we preserve that here.
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct QueryOpenResponseShape {
+    /// Nested for back-compat with the pre-envelope wire shape that
+    /// TS consumers currently parse as `response.data.queryId`. New
+    /// consumers should read the kernel-level `handle` instead.
+    data: QueryOpenInner,
+}
+
+/// Inner payload — the historical fields the cursor returns at open
+/// time. `query_id` stays for back-compat (it's the same UUID stringly
+/// rendered as the `handle.id`); new consumers thread the handle.
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct QueryOpenInner {
     query_id: String,
+    collection: String,
+    total_count: u64,
+    page_size: usize,
+    has_more: bool,
 }
 
 // ============================================================================
@@ -1680,9 +1753,22 @@ impl DataModule {
     // Paginated Query Handlers
     // =========================================================================
 
-    /// Open a paginated query - returns handle with queryId
+    /// Open a paginated query.
     ///
-    /// Advantages over TypeScript:
+    /// Returns BOTH the legacy `queryId` string (for back-compat) AND a
+    /// kernel-typed [`HandleRef`] minted via [`CommandResponse::with_handle`]
+    /// — see PR #1485/#1486 for the cell-shape/envelope substrate. The
+    /// two share an underlying UUID; new callers thread the handle, old
+    /// callers keep reading `response.data.queryId`. A follow-up will
+    /// drop the legacy field once every consumer has migrated.
+    ///
+    /// The handle's `owner` is `"data"` and its `type_tag` is
+    /// `"data::QueryCursor"`. `data/query-next` and `data/query-close`
+    /// validate both fields when the caller threads a handle — passing
+    /// a handle minted by a different module or for a different
+    /// resource is a typed error rather than a silent misroute.
+    ///
+    /// Advantages over the TypeScript path:
     /// - No IPC overhead per page (state is Rust-side)
     /// - Cursor-based pagination using last ID (faster than OFFSET for large datasets)
     /// - DashMap for concurrent query state (lock-free reads)
@@ -1708,8 +1794,12 @@ impl DataModule {
             0
         };
 
-        // Generate unique query ID
-        let query_id = uuid::Uuid::new_v4().to_string();
+        // Mint a UUID once. The same value lives in TWO places: the
+        // DashMap key (a string for back-compat with the existing
+        // storage shape) and the HandleRef.id (a typed Uuid for the
+        // envelope). Identity is the same; only the wire shape differs.
+        let cursor_id = uuid::Uuid::new_v4();
+        let cursor_id_str = cursor_id.to_string();
 
         // has_more starts optimistic — the LIMIT N+1 probe on the first
         // query_next call is the authoritative signal. If the table is
@@ -1720,7 +1810,8 @@ impl DataModule {
             true
         };
 
-        // Create query state (query_id is the DashMap key, not stored in struct)
+        // Create query state (the string form is the DashMap key, not
+        // stored in the struct).
         let state = PaginatedQueryState {
             db_path: params.db_path.clone(),
             collection: params.collection.clone(),
@@ -1734,67 +1825,157 @@ impl DataModule {
             created_at: Instant::now(),
         };
 
-        self.paginated_queries.insert(query_id.clone(), state);
+        self.paginated_queries
+            .insert(cursor_id_str.clone(), Arc::new(tokio::sync::Mutex::new(state)));
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
             "data",
             "query-open",
             "Opened query {} for {} (total={}, pageSize={}) in {}ms",
-            query_id,
+            cursor_id_str,
             params.collection,
             total_count,
             params.page_size,
             total_ms
         );
 
-        // Wrap in StorageResult-style response for TypeScript compatibility
-        Ok(CommandResult::Json(json!({
-            "success": true,
-            "data": {
-                "queryId": query_id,
-                "collection": params.collection,
-                "totalCount": total_count,
-                "pageSize": params.page_size,
-                "hasMore": has_more
-            }
-        })))
+        // Typed envelope: nested `data` preserves the legacy
+        // `response.data.queryId` wire shape; the kernel-level `handle`
+        // is the new canonical reference for the cursor.
+        let response = QueryOpenResponseShape {
+            data: QueryOpenInner {
+                query_id: cursor_id_str,
+                collection: params.collection,
+                total_count,
+                page_size: params.page_size,
+                has_more,
+            },
+        };
+
+        CommandResponse::ok(response)
+            .with_handle(DATA_MODULE_OWNER, cursor_id, QUERY_CURSOR_TYPE_TAG)
+            .into_command_result()
     }
 
-    /// Get next page from paginated query
+    /// Pull the cursor id out of the request envelope — preferring the
+    /// kernel-level `handle`, falling back to the legacy `queryId`
+    /// field, failing loud when neither is present or the handle is
+    /// mis-owned/mis-typed. Single resolver shared by query-next and
+    /// query-close so the dual-shape contract has ONE place to drift.
+    fn resolve_query_cursor_id(
+        handle: &Option<HandleRef>,
+        legacy_query_id: &Option<String>,
+        command: &str,
+    ) -> Result<String, String> {
+        if let Some(h) = handle {
+            // Kernel typed contract: a handle minted by a different
+            // module reaching this module's handler is ALWAYS a bug.
+            // The grid interceptor is supposed to have routed the call
+            // back to the actual owner before we ever see it; arriving
+            // here with the wrong owner means either the routing
+            // misfired or a caller hand-crafted a bogus handle. Either
+            // way, fail loud with the offending values named.
+            if h.owner != DATA_MODULE_OWNER {
+                return Err(format!(
+                    "{command}: handle owner mismatch — got owner={:?}, this module owns only {:?}. \
+                     Handles must be minted by the same module that consumes them, OR the grid \
+                     interceptor must route the command back to the owner before dispatch.",
+                    h.owner, DATA_MODULE_OWNER
+                ));
+            }
+            // Within the data module, multiple handle shapes are
+            // possible in principle (e.g., a future `data::Migration`
+            // handle). The type tag is the within-module discriminator;
+            // a wrong tag here means the caller threaded a handle
+            // belonging to a DIFFERENT resource through the cursor
+            // surface. Same fail-loud reasoning.
+            if h.type_tag != QUERY_CURSOR_TYPE_TAG {
+                return Err(format!(
+                    "{command}: handle type mismatch — got type_tag={:?}, expected {:?}. \
+                     This handler operates only on query-cursor handles; threading a different \
+                     handle shape here is a programming error.",
+                    h.type_tag, QUERY_CURSOR_TYPE_TAG
+                ));
+            }
+            return Ok(h.id.to_string());
+        }
+
+        if let Some(id) = legacy_query_id {
+            // Belt-and-braces: legacy callers send a UUID-shaped string;
+            // a non-UUID string is almost certainly a bug, but the
+            // existing wire contract doesn't guarantee validation —
+            // accept it as-is to preserve back-compat. If the string
+            // fails the DashMap lookup later, the "not found" path
+            // surfaces it.
+            return Ok(id.clone());
+        }
+
+        Err(format!(
+            "{command}: neither `handle` (envelope field) nor `queryId` (legacy params field) \
+             was provided. Pass the handle minted by `data/query-open` via either shape."
+        ))
+    }
+
+    /// Get next page from paginated query.
+    ///
+    /// Cursor id is resolved by [`Self::resolve_query_cursor_id`] from
+    /// either the typed envelope's `handle` (new canonical) or the
+    /// legacy `queryId` field (back-compat).
     ///
     /// Uses keyset pagination (WHERE id > cursor) instead of OFFSET for performance.
     /// For sorted queries, combines sort column(s) with id for deterministic ordering.
-    async fn handle_query_next(&self, params: QueryNextParams) -> Result<CommandResult, String> {
+    async fn handle_query_next(
+        &self,
+        req: CommandRequest<QueryNextParams>,
+    ) -> Result<CommandResult, String> {
         use std::time::Instant;
         let start = Instant::now();
 
-        // Get query state (immutable borrow for read)
-        let state_info = self.paginated_queries.get(&params.query_id).map(|s| {
-            (
-                s.db_path.clone(),
-                s.collection.clone(),
-                s.filter.clone(),
-                s.sort.clone(),
-                s.page_size,
-                s.total_count,
-                s.current_page,
-                s.cursor_id.clone(),
-                s.has_more,
-            )
-        });
+        let cursor_id =
+            Self::resolve_query_cursor_id(&req.handle, &req.params.query_id, "data/query-next")?;
 
-        let (
-            db_path,
-            collection,
-            filter,
-            sort,
-            page_size,
-            total_count,
-            current_page,
-            _cursor_id,
-            has_more,
-        ) = state_info.ok_or_else(|| format!("Query {} not found", params.query_id))?;
+        // ── Acquire the per-cursor mutex ─────────────────────────────
+        //
+        // Clone the Arc<Mutex> handle OUT of the DashMap shard's lock
+        // (cheap, no contention beyond the brief shard read), then
+        // lock the per-cursor mutex for the full read-then-async-
+        // then-write sequence below. The mutex is the substrate's
+        // promise that concurrent next-calls on the SAME cursor
+        // serialize — without it, every caller would read the same
+        // pre-mutation `current_page` snapshot and produce duplicate
+        // page reads (caught by the
+        // `same_cursor_concurrent_next_does_not_corrupt_state` test).
+        //
+        // Concurrent next-calls on DIFFERENT cursors stay fully
+        // parallel because each cursor has its OWN mutex; only same-
+        // cursor activity is serialized, which is the minimum
+        // required for cursor-state correctness.
+        let state_lock = self
+            .paginated_queries
+            .get(&cursor_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| {
+                format!(
+                    "data/query-next: handle not found — cursor {} is unknown to this module. \
+                     The handle may have been minted by a previous process instance, may have been \
+                     closed via data/query-close, or may have been evicted by a future TTL policy.",
+                    cursor_id
+                )
+            })?;
+        let mut state = state_lock.lock().await;
+
+        // Snapshot the read-only fields the adapter query needs into
+        // locals. We keep the lock held across the .await so the
+        // write at the bottom sees a consistent snapshot.
+        let db_path = state.db_path.clone();
+        let collection = state.collection.clone();
+        let filter = state.filter.clone();
+        let sort = state.sort.clone();
+        let page_size = state.page_size;
+        let total_count = state.total_count;
+        let current_page = state.current_page;
+        let has_more = state.has_more;
 
         if !has_more {
             return Ok(CommandResult::Json(json!({
@@ -1841,12 +2022,14 @@ impl DataModule {
         // Get last ID for cursor
         let new_cursor_id = records.last().map(|r| r.id.clone());
 
-        // Update query state
-        if let Some(mut state) = self.paginated_queries.get_mut(&params.query_id) {
-            state.current_page += 1;
-            state.cursor_id = new_cursor_id;
-            state.has_more = new_has_more;
-        }
+        // Update query state — `state` is still the locked
+        // `MutexGuard` from the top of the function, so this write is
+        // atomic with the read above. No second DashMap lookup needed;
+        // the per-cursor mutex held the whole window.
+        state.current_page += 1;
+        state.cursor_id = new_cursor_id;
+        state.has_more = new_has_more;
+        drop(state);
 
         // Convert records to JSON
         let items: Vec<Value> = records
@@ -1870,7 +2053,7 @@ impl DataModule {
             "query-next",
             "Page {} for query {} ({} items, hasMore={}) in {}ms",
             current_page + 1,
-            params.query_id,
+            cursor_id,
             items_count,
             new_has_more,
             total_ms
@@ -1888,21 +2071,29 @@ impl DataModule {
         })))
     }
 
-    /// Close paginated query and free resources
-    async fn handle_query_close(&self, params: QueryCloseParams) -> Result<CommandResult, String> {
-        let removed = self.paginated_queries.remove(&params.query_id).is_some();
+    /// Close paginated query and free resources. Cursor id is resolved
+    /// by [`Self::resolve_query_cursor_id`] from either the typed
+    /// envelope's `handle` (new canonical) or the legacy `queryId`
+    /// field (back-compat).
+    async fn handle_query_close(
+        &self,
+        req: CommandRequest<QueryCloseParams>,
+    ) -> Result<CommandResult, String> {
+        let cursor_id =
+            Self::resolve_query_cursor_id(&req.handle, &req.params.query_id, "data/query-close")?;
+        let removed = self.paginated_queries.remove(&cursor_id).is_some();
 
         log_info!(
             "data",
             "query-close",
             "Closed query {}: removed={}",
-            params.query_id,
+            cursor_id,
             removed
         );
 
         Ok(CommandResult::Json(json!({
             "success": removed,
-            "queryId": params.query_id
+            "queryId": cursor_id
         })))
     }
 
@@ -2803,4 +2994,673 @@ mod tests {
             "Identical 384-dim vectors should have similarity 1.0"
         );
     }
+
+    // ====================================================================
+    // HandleRef migration tests for data/query-open/next/close
+    // ====================================================================
+    //
+    // The cursor surface migrated from a hand-rolled string queryId to
+    // typed HandleRef minted via CommandResponse::with_handle. These
+    // tests cover the migration's hard edges:
+    //   - both wire shapes (envelope handle + legacy queryId) resolve
+    //   - cross-module/cross-resource handles fail loud with named
+    //     owner/type values, not silent misroutes
+    //   - stale handles surface a typed "handle not found" error that
+    //     names the cursor + suggests likely causes
+    //   - the legacy field stays additive — old TS consumers see the
+    //     same JSON shape they parse today, plus a new top-level
+    //     `handle` field they can ignore
+
+    /// Helper: stand up a fresh DataModule + a temp SQLite + the schema
+    /// + N rows. Used by every cursor test below — keeps the cursor
+    /// tests focused on the handle behavior, not on row setup.
+    async fn setup_paginated_for_handle_tests(
+        suffix: &str,
+        rows: usize,
+    ) -> (DataModule, tempfile::TempDir, String) {
+        let module = DataModule::new();
+        let (tmp, db_path) = test_db_path(suffix);
+
+        let schema = CollectionSchema {
+            collection: "test_handle_cursor".to_string(),
+            fields: vec![crate::orm::types::SchemaField {
+                name: "name".to_string(),
+                field_type: crate::orm::types::FieldType::String,
+                indexed: false,
+                unique: false,
+                nullable: true,
+                max_length: None,
+            }],
+            indexes: vec![],
+        };
+        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let _ = adapter.ensure_schema(schema).await;
+
+        for i in 0..rows {
+            let _ = module
+                .handle_command(
+                    "data/create",
+                    json!({
+                        "dbPath": &db_path,
+                        "collection": "test_handle_cursor",
+                        "data": { "name": format!("Item {i}") }
+                    }),
+                )
+                .await;
+        }
+        (module, tmp, db_path)
+    }
+
+    /// Helper: open a cursor + return the response JSON so each test
+    /// can read the new `handle` field and the legacy `data.queryId`
+    /// without re-implementing the open call.
+    async fn open_cursor(module: &DataModule, db_path: &str, page_size: usize) -> Value {
+        let result = module
+            .handle_command(
+                "data/query-open",
+                json!({
+                    "dbPath": db_path,
+                    "collection": "test_handle_cursor",
+                    "pageSize": page_size,
+                }),
+            )
+            .await
+            .expect("query-open must succeed");
+        let CommandResult::Json(v) = result else {
+            panic!("query-open must return CommandResult::Json")
+        };
+        v
+    }
+
+    #[tokio::test]
+    async fn query_open_returns_handle_alongside_legacy_query_id() {
+        let (module, _tmp, db_path) = setup_paginated_for_handle_tests("handle_open", 3).await;
+        let response = open_cursor(&module, &db_path, 10).await;
+
+        // Legacy shape: nested data.queryId still present so existing
+        // TS consumers keep parsing the same fields.
+        let legacy_id = response["data"]["queryId"]
+            .as_str()
+            .expect("legacy queryId must remain in the response shape during migration window");
+
+        // New shape: kernel-level handle minted at top level with the
+        // canonical owner + type tag from the data module's
+        // QUERY_CURSOR_TYPE_TAG / DATA_MODULE_OWNER constants.
+        let handle = &response["handle"];
+        assert!(handle.is_object(), "handle must be present: {response}");
+        assert_eq!(handle["owner"], "data");
+        assert_eq!(handle["type_tag"], "data::QueryCursor");
+        assert!(
+            handle["created_at_ms"].as_u64().is_some(),
+            "handle must carry a creation timestamp"
+        );
+
+        // Identity invariant: the two surfaces MUST address the same
+        // cursor. Otherwise a caller threading the handle and a
+        // caller threading the queryId would see different state.
+        let handle_id = handle["id"]
+            .as_str()
+            .expect("handle.id must be the canonical UUID string");
+        assert_eq!(
+            legacy_id, handle_id,
+            "legacy queryId and handle.id must be the SAME UUID — otherwise dual-shape callers diverge"
+        );
+        // Both fields are real UUIDs.
+        uuid::Uuid::parse_str(handle_id).expect("handle.id must parse as a UUID");
+    }
+
+    #[tokio::test]
+    async fn query_next_accepts_handle_in_envelope() {
+        let (module, _tmp, db_path) = setup_paginated_for_handle_tests("handle_next", 5).await;
+        let open = open_cursor(&module, &db_path, 3).await;
+        let handle = open["handle"].clone();
+
+        // New canonical shape: thread the handle via the envelope.
+        let next = module
+            .handle_command("data/query-next", json!({ "handle": handle }))
+            .await
+            .expect("query-next via handle must succeed");
+        let CommandResult::Json(v) = next else {
+            panic!("expected Json result")
+        };
+        assert_eq!(
+            v["data"]["items"].as_array().unwrap().len(),
+            3,
+            "first page must contain pageSize items"
+        );
+        assert_eq!(v["data"]["pageNumber"], 1);
+        assert_eq!(v["data"]["hasMore"], true);
+    }
+
+    #[tokio::test]
+    async fn query_next_still_accepts_legacy_query_id_field() {
+        let (module, _tmp, db_path) = setup_paginated_for_handle_tests("handle_legacy", 5).await;
+        let open = open_cursor(&module, &db_path, 3).await;
+        let legacy_id = open["data"]["queryId"].as_str().unwrap().to_string();
+
+        // Existing TS callsites send {"queryId": "..."} flat — that path
+        // must keep working through the migration window.
+        let next = module
+            .handle_command("data/query-next", json!({ "queryId": legacy_id }))
+            .await
+            .expect("query-next via legacy queryId must succeed");
+        let CommandResult::Json(v) = next else {
+            panic!("expected Json result")
+        };
+        assert_eq!(v["data"]["items"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn query_next_rejects_handle_with_wrong_owner() {
+        // KINK: a handle minted by another module reaching this
+        // module's handler is a routing bug — fail loud with the
+        // mis-owned value named, NOT a silent lookup miss that would
+        // look like "stale handle".
+        let (module, _tmp, _db) = setup_paginated_for_handle_tests("handle_wrong_owner", 1).await;
+        let bogus_handle = json!({
+            "owner": "chat",
+            "id": uuid::Uuid::new_v4().to_string(),
+            "type_tag": "data::QueryCursor",
+            "created_at_ms": 0_u64,
+        });
+        let err = module
+            .handle_command("data/query-next", json!({ "handle": bogus_handle }))
+            .await
+            .expect_err("handle with non-data owner must surface a typed error");
+        assert!(
+            err.contains("handle owner mismatch"),
+            "error must name the failure mode: {err}"
+        );
+        assert!(
+            err.contains("\"chat\"") && err.contains("\"data\""),
+            "error must name both the offender and the expected owner: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_next_rejects_handle_with_wrong_type_tag() {
+        // KINK: even within the data module, multiple handle shapes
+        // are possible in principle (a future data::Migration handle
+        // alongside data::QueryCursor). Threading the wrong type tag
+        // here must fail loud, not silently treat it as a cursor.
+        let (module, _tmp, _db) = setup_paginated_for_handle_tests("handle_wrong_type", 1).await;
+        let wrong_type = json!({
+            "owner": "data",
+            "id": uuid::Uuid::new_v4().to_string(),
+            "type_tag": "data::Migration",
+            "created_at_ms": 0_u64,
+        });
+        let err = module
+            .handle_command("data/query-next", json!({ "handle": wrong_type }))
+            .await
+            .expect_err("wrong type_tag must surface a typed error");
+        assert!(
+            err.contains("handle type mismatch"),
+            "error must name the failure mode: {err}"
+        );
+        assert!(
+            err.contains("data::Migration") && err.contains("data::QueryCursor"),
+            "error must name both the offender and the expected type: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_next_rejects_when_neither_handle_nor_query_id_provided() {
+        // No handle, no queryId. The TS resolver previously deserialized
+        // an empty `{}` into a `QueryNextParams` with an empty string;
+        // here, BOTH fields are optional so the empty case is reachable.
+        // It must surface a typed error rather than silently 404 with
+        // an empty-string lookup.
+        let (module, _tmp, _db) = setup_paginated_for_handle_tests("handle_neither", 1).await;
+        let err = module
+            .handle_command("data/query-next", json!({}))
+            .await
+            .expect_err("empty params must surface a typed error");
+        assert!(
+            err.contains("neither `handle`")
+                && err.contains("nor `queryId`"),
+            "error must name both supported shapes: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_next_with_unknown_handle_returns_handle_not_found() {
+        // Stale-handle path: a well-formed handle whose id was never
+        // (or no longer) in the DashMap. Must surface a typed error
+        // that names the cursor + suggests likely causes (TTL eviction,
+        // already-closed, prior process instance).
+        let (module, _tmp, _db) = setup_paginated_for_handle_tests("handle_unknown", 1).await;
+        let stale_handle = json!({
+            "owner": "data",
+            "id": uuid::Uuid::new_v4().to_string(),
+            "type_tag": "data::QueryCursor",
+            "created_at_ms": 0_u64,
+        });
+        let err = module
+            .handle_command("data/query-next", json!({ "handle": stale_handle }))
+            .await
+            .expect_err("stale handle must surface a typed error");
+        assert!(
+            err.contains("handle not found"),
+            "error must name the failure mode: {err}"
+        );
+        assert!(
+            err.contains("query-close") || err.contains("evicted"),
+            "error must hint at likely causes so the caller can self-diagnose: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_close_accepts_handle_in_envelope() {
+        let (module, _tmp, db_path) = setup_paginated_for_handle_tests("handle_close", 1).await;
+        let open = open_cursor(&module, &db_path, 5).await;
+        let handle = open["handle"].clone();
+
+        let close = module
+            .handle_command("data/query-close", json!({ "handle": handle }))
+            .await
+            .expect("close via handle must succeed");
+        let CommandResult::Json(v) = close else {
+            panic!("expected Json result")
+        };
+        assert_eq!(v["success"], true);
+
+        // Subsequent next on the SAME handle must now fail loud — the
+        // close actually freed the state, not just acked.
+        let stale_handle = open["handle"].clone();
+        let err = module
+            .handle_command("data/query-next", json!({ "handle": stale_handle }))
+            .await
+            .expect_err("after-close lookup must fail loud");
+        assert!(
+            err.contains("handle not found"),
+            "close + reuse must surface stale-handle error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_close_still_accepts_legacy_query_id_field() {
+        let (module, _tmp, db_path) =
+            setup_paginated_for_handle_tests("handle_close_legacy", 1).await;
+        let open = open_cursor(&module, &db_path, 5).await;
+        let legacy_id = open["data"]["queryId"].as_str().unwrap().to_string();
+
+        let close = module
+            .handle_command("data/query-close", json!({ "queryId": legacy_id }))
+            .await
+            .expect("legacy close must succeed");
+        let CommandResult::Json(v) = close else {
+            panic!("expected Json result")
+        };
+        assert_eq!(v["success"], true);
+    }
+
+    #[tokio::test]
+    async fn full_round_trip_open_next_close_via_handles_only() {
+        // End-to-end through the new canonical shape ONLY (no legacy
+        // queryId reads). 12 rows, page size 5: page 1 → 5 items,
+        // page 2 → 5 items, page 3 → 2 items + hasMore=false. The
+        // handle stays valid across the entire cursor lifetime.
+        let (module, _tmp, db_path) = setup_paginated_for_handle_tests("round_trip", 12).await;
+        let open = open_cursor(&module, &db_path, 5).await;
+        let handle = open["handle"].clone();
+
+        // ── page 1 ───────────────────────────────────────────────────
+        let p1 = module
+            .handle_command("data/query-next", json!({ "handle": handle.clone() }))
+            .await
+            .expect("page 1 must succeed");
+        let CommandResult::Json(p1) = p1 else {
+            panic!("expected Json")
+        };
+        assert_eq!(p1["data"]["items"].as_array().unwrap().len(), 5);
+        assert_eq!(p1["data"]["pageNumber"], 1);
+        assert_eq!(p1["data"]["hasMore"], true);
+
+        // ── page 2 ───────────────────────────────────────────────────
+        let p2 = module
+            .handle_command("data/query-next", json!({ "handle": handle.clone() }))
+            .await
+            .expect("page 2 must succeed");
+        let CommandResult::Json(p2) = p2 else {
+            panic!("expected Json")
+        };
+        assert_eq!(p2["data"]["items"].as_array().unwrap().len(), 5);
+        assert_eq!(p2["data"]["pageNumber"], 2);
+        assert_eq!(p2["data"]["hasMore"], true);
+
+        // ── page 3: partial + terminal ───────────────────────────────
+        let p3 = module
+            .handle_command("data/query-next", json!({ "handle": handle.clone() }))
+            .await
+            .expect("page 3 must succeed");
+        let CommandResult::Json(p3) = p3 else {
+            panic!("expected Json")
+        };
+        assert_eq!(p3["data"]["items"].as_array().unwrap().len(), 2);
+        assert_eq!(p3["data"]["pageNumber"], 3);
+        assert_eq!(p3["data"]["hasMore"], false);
+
+        // ── close ────────────────────────────────────────────────────
+        let close = module
+            .handle_command("data/query-close", json!({ "handle": handle }))
+            .await
+            .expect("close must succeed");
+        let CommandResult::Json(close) = close else {
+            panic!("expected Json")
+        };
+        assert_eq!(close["success"], true);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // Concurrency stress tests for the query-cursor surface
+    // ════════════════════════════════════════════════════════════════
+    //
+    // Per Joel 2026-05-30: "Each persona exists in its own threads."
+    //
+    // The DataModule is registered ONCE; every persona's thread calls
+    // its `&self` handlers concurrently. The paginated-query state
+    // map is a `DashMap` precisely so concurrent cursor activity
+    // doesn't serialize at a module-level mutex. The tests below
+    // pin the invariants the substrate is designed to uphold under
+    // that load — they are not exercising rare paths, they are the
+    // production scenario.
+    //
+    // Every test uses `flavor = "multi_thread", worker_threads = 4`
+    // so tasks actually preempt each other on distinct OS threads.
+    // Single-threaded tokio would silently serialize and pass even
+    // if the substrate had a data race.
+
+    /// Build a fresh `Arc<DataModule>` + tempdir + schema + N seeded
+    /// rows for a concurrency test. Returns the Arc so callers can
+    /// `.clone()` it into spawned tasks without lifetime gymnastics.
+    /// The tempdir's lifetime extends past the test body when bound
+    /// to a `let _tmp = ...` binding so the SQLite file stays alive
+    /// for the duration of every spawned task.
+    async fn setup_concurrent(
+        suffix: &str,
+        rows: usize,
+    ) -> (Arc<DataModule>, tempfile::TempDir, String) {
+        let module = Arc::new(DataModule::new());
+        let (tmp, db_path) = test_db_path(suffix);
+        let schema = CollectionSchema {
+            collection: "test_handle_cursor".to_string(),
+            fields: vec![crate::orm::types::SchemaField {
+                name: "name".to_string(),
+                field_type: crate::orm::types::FieldType::String,
+                indexed: false,
+                unique: false,
+                nullable: true,
+                max_length: None,
+            }],
+            indexes: vec![],
+        };
+        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let _ = adapter.ensure_schema(schema).await;
+        for i in 0..rows {
+            let _ = module
+                .handle_command(
+                    "data/create",
+                    json!({
+                        "dbPath": &db_path,
+                        "collection": "test_handle_cursor",
+                        "data": { "name": format!("Item {i}") }
+                    }),
+                )
+                .await;
+        }
+        (module, tmp, db_path)
+    }
+
+    /// N personas open their own cursor at the same time. Every cursor
+    /// must mint a DISTINCT HandleRef.id (UUID collision check), every
+    /// cursor must be independently reachable via query-next, and
+    /// closing one must NOT close any other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cursors_are_isolated_under_concurrent_open_and_next() {
+        const PARALLEL: usize = 20;
+        // 10 rows seeded → pageSize 3 means each cursor's first page
+        // is a full 3-item page (3 + 3 + 3 + 1 = 4 pages total).
+        let (module, _tmp, db_path) = setup_concurrent("conc_isolated", 10).await;
+
+        // Phase 1: every persona opens its own cursor in parallel.
+        let mut open_tasks = Vec::with_capacity(PARALLEL);
+        for _ in 0..PARALLEL {
+            let module = module.clone();
+            let db_path = db_path.clone();
+            open_tasks.push(tokio::spawn(async move {
+                let result = module
+                    .handle_command(
+                        "data/query-open",
+                        json!({
+                            "dbPath": db_path,
+                            "collection": "test_handle_cursor",
+                            "pageSize": 3,
+                        }),
+                    )
+                    .await
+                    .expect("query-open must succeed");
+                let CommandResult::Json(v) = result else {
+                    panic!("expected Json")
+                };
+                v["handle"].clone()
+            }));
+        }
+        let handles: Vec<Value> = futures::future::join_all(open_tasks)
+            .await
+            .into_iter()
+            .map(|h| h.expect("task must not panic"))
+            .collect();
+
+        // Every minted cursor must have a distinct id.
+        let mut ids: Vec<String> = handles
+            .iter()
+            .map(|h| h["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            before,
+            "concurrent query-open MUST produce distinct cursor UUIDs ({} dups)",
+            before - ids.len()
+        );
+        assert_eq!(ids.len(), PARALLEL);
+
+        // Phase 2: every persona advances its OWN cursor in parallel.
+        // Each cursor's first query-next must return a full page (3
+        // items); page numbering must be per-cursor (always 1 for the
+        // first call), not cross-contaminated.
+        let mut next_tasks = Vec::with_capacity(PARALLEL);
+        for handle in &handles {
+            let module = module.clone();
+            let handle = handle.clone();
+            next_tasks.push(tokio::spawn(async move {
+                let result = module
+                    .handle_command("data/query-next", json!({ "handle": handle }))
+                    .await
+                    .expect("query-next must succeed");
+                let CommandResult::Json(v) = result else {
+                    panic!("expected Json")
+                };
+                (
+                    v["data"]["items"].as_array().unwrap().len(),
+                    v["data"]["pageNumber"].as_u64().unwrap(),
+                )
+            }));
+        }
+        let next_results: Vec<(usize, u64)> = futures::future::join_all(next_tasks)
+            .await
+            .into_iter()
+            .map(|r| r.expect("task must not panic"))
+            .collect();
+
+        for (i, (items, page)) in next_results.iter().enumerate() {
+            assert_eq!(
+                *items, 3,
+                "cursor {i}: first page must return pageSize items independently of sibling cursors"
+            );
+            assert_eq!(
+                *page, 1,
+                "cursor {i}: first call's pageNumber must be 1 — per-cursor state, not shared"
+            );
+        }
+
+        // Phase 3: close half the cursors in parallel. The OTHER half
+        // must still be usable — close MUST be per-cursor.
+        let (to_close, to_keep): (Vec<_>, Vec<_>) = handles
+            .iter()
+            .enumerate()
+            .partition(|(i, _)| i % 2 == 0);
+
+        let mut close_tasks = Vec::with_capacity(to_close.len());
+        for (_, handle) in &to_close {
+            let module = module.clone();
+            let handle = (*handle).clone();
+            close_tasks.push(tokio::spawn(async move {
+                module
+                    .handle_command("data/query-close", json!({ "handle": handle }))
+                    .await
+            }));
+        }
+        for r in futures::future::join_all(close_tasks).await {
+            r.unwrap().expect("close must succeed");
+        }
+
+        // Closed cursors fail loud on next.
+        for (_, handle) in &to_close {
+            let err = module
+                .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
+                .await
+                .expect_err("closed cursor's next must Err");
+            assert!(
+                err.contains("handle not found"),
+                "closed cursor must surface handle-not-found, got: {err}"
+            );
+        }
+
+        // Kept cursors still serve their next page (page 2).
+        for (i, handle) in &to_keep {
+            let result = module
+                .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
+                .await
+                .unwrap_or_else(|e| panic!("kept cursor {i} must still work: {e}"));
+            let CommandResult::Json(v) = result else {
+                panic!("expected Json")
+            };
+            assert_eq!(
+                v["data"]["pageNumber"], 2,
+                "kept cursor {i}: page 2 follows page 1 — closing sibling cursors did NOT touch this one's state"
+            );
+        }
+    }
+
+    /// Same cursor reached by N concurrent `query-next` calls (whether
+    /// from one persona retrying or two callers sharing a handle): the
+    /// substrate MUST serialize them via the per-cursor mutex so the
+    /// cursor advances atomically. Each non-tail page must be served
+    /// AT MOST ONCE.
+    ///
+    /// Originally caught a real substrate kink: without the per-cursor
+    /// mutex, all N concurrent callers read the same `current_page`
+    /// snapshot and all returned pageNumber=1. The fix wrapped each
+    /// cursor's state in a `tokio::sync::Mutex` so the read-then-
+    /// async-then-write window is atomic per cursor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn same_cursor_concurrent_next_does_not_corrupt_state() {
+        const PARALLEL: usize = 8;
+        // 30 items at pageSize 5 = 6 pages. With the per-cursor mutex,
+        // each non-tail page (1..=5) is served exactly once and page 6
+        // is the terminal page (hasMore=false); any extra concurrent
+        // calls after that observe the empty-tail response.
+        let (module, _tmp, db_path) = setup_concurrent("conc_same_cursor", 30).await;
+
+        let open = module
+            .handle_command(
+                "data/query-open",
+                json!({
+                    "dbPath": db_path,
+                    "collection": "test_handle_cursor",
+                    "pageSize": 5,
+                }),
+            )
+            .await
+            .expect("open must succeed");
+        let CommandResult::Json(open) = open else {
+            panic!("expected Json")
+        };
+        let handle = open["handle"].clone();
+
+        // Fire PARALLEL concurrent next calls against the SAME handle.
+        let mut tasks = Vec::with_capacity(PARALLEL);
+        for _ in 0..PARALLEL {
+            let module = module.clone();
+            let handle = handle.clone();
+            tasks.push(tokio::spawn(async move {
+                module
+                    .handle_command("data/query-next", json!({ "handle": handle }))
+                    .await
+            }));
+        }
+        let outcomes: Vec<Result<CommandResult, String>> = futures::future::join_all(tasks)
+            .await
+            .into_iter()
+            .map(|r| r.expect("task must not panic"))
+            .collect();
+
+        // No call should error from concurrency (DashMap's per-shard
+        // locking handles the contention). After the cursor exhausts,
+        // the substrate returns success with `hasMore=false` and an
+        // empty items list — not an error.
+        for (i, outcome) in outcomes.iter().enumerate() {
+            assert!(
+                outcome.is_ok(),
+                "concurrent next call {i} must not Err: {:?}",
+                outcome
+            );
+        }
+
+        // The 6 valid pages + however many empty-tail responses fired
+        // before the cursor exhausted. Page numbers must be monotone
+        // when sorted; no duplicates of a non-tail page (each non-tail
+        // page can only be served ONCE because the cursor advances).
+        let mut page_numbers: Vec<u64> = outcomes
+            .iter()
+            .filter_map(|o| o.as_ref().ok())
+            .filter_map(|r| match r {
+                CommandResult::Json(v) => v["data"]["pageNumber"].as_u64(),
+                _ => None,
+            })
+            .collect();
+        page_numbers.sort();
+
+        // Every served page number must be in [1, 6] (we have 30 items
+        // at pageSize 5 → 6 real pages, all subsequent calls see page
+        // 6 again because the cursor stays at exhausted).
+        for &pn in &page_numbers {
+            assert!(
+                (1..=6).contains(&pn),
+                "concurrent next produced an out-of-range pageNumber: {pn} (expected 1..=6)"
+            );
+        }
+
+        // CRITICAL: each non-tail page (1..=5) must appear AT MOST
+        // once — DashMap's `get_mut` serializes mutators, so the
+        // cursor only advances through each page once. (Page 6 may
+        // appear multiple times because once exhausted the cursor
+        // stops advancing but keeps returning the empty-tail response
+        // — that's the contract.)
+        let mut non_tail_counts = std::collections::HashMap::new();
+        for &pn in page_numbers.iter().filter(|&&pn| pn < 6) {
+            *non_tail_counts.entry(pn).or_insert(0) += 1;
+        }
+        for (page, count) in non_tail_counts {
+            assert_eq!(
+                count, 1,
+                "page {page} served {count} times — the cursor advanced through it MORE than once, indicating a lost serialization"
+            );
+        }
+    }
+
 }
