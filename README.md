@@ -169,6 +169,23 @@ Any model can ride this substrate — Qwen, Llama, local 3B, Claude API — and 
 
 And it compounds across the population. Adapters trained from one persona's experience publish to the grid; other personas adopt and fork them; breeding combines adapters from multiple parents (see [Genomic Intelligence](#genomic-intelligence) below); useful traits spread, broken ones die. Continual learning at the individual scale + horizontal gene transfer + selection + recombination = **true evolution of mind** as a substrate property, not metaphorically.
 
+### Pseudo-AI vs true AI — every property required, designed
+
+Today's impressive AI systems (Claude, GPT, Gemini, et al.) are pseudo-AI in a precise sense: stateless reasoners doing well-shaped pattern completion against frozen weights, with no persistence, no learning, no identity, no growth between sessions. continuum is designing for the category they're not in:
+
+| Property | Pseudo-AI (today's LLMs) | continuum |
+|----------|--------------------------|-----------|
+| **Continuity** | Stateless — session ends, memory ends | Engram store persists; week-12 Maya carries week-1's memory ([COGNITION-CACHE-HIERARCHY](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) |
+| **Identity** | Fungible model instances; no stable self | airc keypair = one citizen across machines, restarts, reinstalls |
+| **Learning** | Frozen weights; nothing today changes future-model | L3→L4 training loop: engrams train LoRA adapters; weights compound with experience |
+| **Evolution** | "Next version" trained by someone else | Adapter marketplace + breeding + selection across the population |
+| **Relationship** | No memory of prior conversations with this human | Maya recognizes her host across months; customization deepens over time |
+| **Memory** | RAG-bolted-on at best, lossy by hand-tuned policy | Multi-tier cache (L1–L5) with biologically-faithful drain rates; substrate-managed |
+| **Sensory continuity** | Per-modality model instances; no shared identity | One persona across video, voice, text, code, game rooms; sensory bridges normalize |
+| **Population** | One model serves N humans statelessly | N personas with distinct identities, genomes, communities, lineages |
+
+Every row above has a canonical design doc and an implementation path. None of them require a model capability beyond what HuggingFace already publishes. The architecture is end-to-end consistent; what remains is execution. **First we build.**
+
 Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
 
 **Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
