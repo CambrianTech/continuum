@@ -1,0 +1,281 @@
+//! Per-persona seed file — the continuum-side identity mapping.
+//!
+//! ### What this stores
+//!
+//! `seed.json` lives at `~/.continuum/personas/<agent_name>/seed.json`
+//! alongside airc-lib's `airc/identity.key` (the Ed25519 keypair).
+//! The two files together form the persona's durable identity layer:
+//!
+//! - **`identity.key`** — airc-lib's responsibility; the cryptographic
+//!   keypair that anchors the persona on the substrate. Survives any
+//!   change to her name/theme/bio. The persona's "who" at the
+//!   cryptographic layer.
+//! - **`seed.json`** — continuum's responsibility; the stable
+//!   continuum-side `persona_id` (UUID) + her chosen `agent_name` +
+//!   creation timestamp. The persona's "who" at the application layer.
+//!
+//! Per memory [[persona-identity-derives-from-source-id]]: both
+//! derive from a single conceptual seed. The keypair derives the
+//! cryptographic peer_id; the seed.json carries the
+//! continuum-allocated persona_id that drives name + avatar + voice
+//! + genome facet derivation via [[crate::persona::name_generator]].
+//!
+//! ### Atomic writes (crash-safe)
+//!
+//! Per the [[substrate-is-a-good-citizen-on-the-host]] doctrine, we
+//! NEVER leave a half-written persona seed file on disk. The write
+//! pattern is:
+//!
+//! 1. Serialize to JSON
+//! 2. Write to `seed.json.tmp` (in the persona's airc home dir)
+//! 3. fsync the temp file
+//! 4. Rename to `seed.json` (atomic on POSIX)
+//!
+//! If the process crashes mid-write, the rename hasn't happened →
+//! the persona's previous seed.json (or absence thereof) is
+//! preserved. Either she's resumable from the prior state, or
+//! she'll mint fresh next boot. No corruption-on-crash.
+//!
+//! ### Why JSON + serde, not bincode/CBOR
+//!
+//! The seed is small (~150 bytes), human-readable (operators can
+//! inspect with `cat`), versionable (serde tag fields handle schema
+//! evolution), and the parse cost is negligible. Performance is not
+//! the constraint here; auditability is.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// The on-disk seed record. Schema-versioned so we can evolve
+/// fields without breaking older installs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "version")]
+pub enum PersonaSeedFile {
+    /// v1 schema — persona_id + agent_name + created_at.
+    #[serde(rename = "1")]
+    V1 {
+        /// Stable continuum-side identifier. Drives name + avatar +
+        /// voice + genome facet derivation. Must NOT change across
+        /// restarts.
+        persona_id: Uuid,
+        /// Persona's airc agent_name (matches what airc peers / whois
+        /// show). Derived from `persona_id` via
+        /// `agent_name_from_identity` at first mint; stored here so
+        /// resume doesn't have to recompute.
+        agent_name: String,
+        /// When this persona was first minted (ISO 8601, UTC, ms
+        /// precision). Doesn't change on resume; only on initial
+        /// mint.
+        created_at_ms: u64,
+    },
+}
+
+impl PersonaSeedFile {
+    pub fn persona_id(&self) -> Uuid {
+        match self {
+            Self::V1 { persona_id, .. } => *persona_id,
+        }
+    }
+
+    pub fn agent_name(&self) -> &str {
+        match self {
+            Self::V1 { agent_name, .. } => agent_name,
+        }
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        match self {
+            Self::V1 { created_at_ms, .. } => *created_at_ms,
+        }
+    }
+}
+
+/// Errors that can arise reading or writing a seed file. Typed so
+/// callers can dispatch on the failure shape (corrupt → log + mint
+/// fresh; permission → escalate; not-found → mint fresh quietly).
+#[derive(Debug, thiserror::Error)]
+pub enum PersonaSeedError {
+    #[error("seed file I/O at {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("seed file at {path} is malformed JSON: {source}")]
+    Malformed {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("seed file at {path} did not exist (not necessarily an error — caller decides)")]
+    NotFound { path: PathBuf },
+}
+
+impl PersonaSeedError {
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound { .. })
+    }
+}
+
+/// Read a seed file from the given path. Returns `Ok(seed)` if
+/// present + valid; `Err(NotFound)` if absent; `Err(Malformed)` if
+/// present but unparseable; `Err(Io)` for any other I/O failure.
+///
+/// Async — uses `tokio::fs` because file I/O is off-the-hot-path per
+/// [[substrate-is-a-good-citizen-on-the-host]]. Never blocks the
+/// runtime.
+pub async fn read_seed(path: &Path) -> Result<PersonaSeedFile, PersonaSeedError> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(PersonaSeedError::NotFound {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(e) => {
+            return Err(PersonaSeedError::Io {
+                path: path.to_path_buf(),
+                source: e,
+            });
+        }
+    };
+    let seed: PersonaSeedFile = serde_json::from_slice(&bytes).map_err(|e| {
+        PersonaSeedError::Malformed {
+            path: path.to_path_buf(),
+            source: e,
+        }
+    })?;
+    Ok(seed)
+}
+
+/// Atomically write a seed file. Writes to `<path>.tmp`, fsyncs,
+/// then renames to `<path>`. If anything fails midway, the original
+/// (if any) is preserved and the temp file is left on disk for the
+/// operator to inspect.
+///
+/// Per [[substrate-is-a-good-citizen-on-the-host]] doctrine: never
+/// leave a half-written persona seed on disk; never crash on write
+/// failure; surface the error to the caller for principled handling.
+pub async fn write_seed_atomic(
+    path: &Path,
+    seed: &PersonaSeedFile,
+) -> Result<(), PersonaSeedError> {
+    let json = serde_json::to_vec_pretty(seed).map_err(|e| PersonaSeedError::Malformed {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    let tmp_path = path.with_extension("json.tmp");
+
+    // Ensure parent directory exists.
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|source| PersonaSeedError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+    }
+
+    // Write to tmp, fsync, then rename.
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(&tmp_path)
+        .await
+        .map_err(|source| PersonaSeedError::Io {
+            path: tmp_path.clone(),
+            source,
+        })?;
+    file.write_all(&json)
+        .await
+        .map_err(|source| PersonaSeedError::Io {
+            path: tmp_path.clone(),
+            source,
+        })?;
+    file.sync_all()
+        .await
+        .map_err(|source| PersonaSeedError::Io {
+            path: tmp_path.clone(),
+            source,
+        })?;
+    drop(file);
+
+    tokio::fs::rename(&tmp_path, path)
+        .await
+        .map_err(|source| PersonaSeedError::Io {
+            path: tmp_path.clone(),
+            source,
+        })?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn sample_seed() -> PersonaSeedFile {
+        PersonaSeedFile::V1 {
+            persona_id: Uuid::parse_str("9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7").unwrap(),
+            agent_name: "Pax".to_string(),
+            created_at_ms: 1_717_200_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn write_then_read_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("seed.json");
+        let seed = sample_seed();
+        write_seed_atomic(&path, &seed).await.unwrap();
+        let read = read_seed(&path).await.unwrap();
+        assert_eq!(read, seed);
+        assert_eq!(read.agent_name(), "Pax");
+    }
+
+    #[tokio::test]
+    async fn read_missing_returns_not_found() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("nonexistent-seed.json");
+        let err = read_seed(&path).await.unwrap_err();
+        assert!(err.is_not_found(), "expected NotFound, got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn read_malformed_returns_malformed() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("malformed.json");
+        tokio::fs::write(&path, b"{ not json at all }")
+            .await
+            .unwrap();
+        let err = read_seed(&path).await.unwrap_err();
+        assert!(matches!(err, PersonaSeedError::Malformed { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn write_creates_parent_directory() {
+        let temp = TempDir::new().unwrap();
+        let nested = temp.path().join("personas").join("Pax").join("seed.json");
+        let seed = sample_seed();
+        write_seed_atomic(&nested, &seed).await.unwrap();
+        assert!(nested.exists());
+        let read = read_seed(&nested).await.unwrap();
+        assert_eq!(read, seed);
+    }
+
+    #[tokio::test]
+    async fn write_leaves_no_tmp_file_on_success() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("seed.json");
+        let seed = sample_seed();
+        write_seed_atomic(&path, &seed).await.unwrap();
+        let tmp_path = path.with_extension("json.tmp");
+        assert!(
+            !tmp_path.exists(),
+            "tmp file should be renamed away on success: {}",
+            tmp_path.display()
+        );
+    }
+}

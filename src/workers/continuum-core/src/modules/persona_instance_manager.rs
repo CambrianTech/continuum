@@ -57,6 +57,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySource};
+use crate::persona::resume_or_mint_provider::now_ms;
+use crate::persona::seed::{write_seed_atomic, PersonaSeedFile};
 use crate::persona::{
     agent_name_from_identity, PersonaAircRuntime, PersonaAircRuntimeError,
     PersonaAircRuntimeRegistry,
@@ -81,6 +84,12 @@ pub struct PersonaInstanceInfo {
     /// The room the persona joined at bootstrap (currently always
     /// the continuum-core's discovered default_room).
     pub default_room: Uuid,
+    /// Whether this citizen was resumed from disk or freshly
+    /// minted. Telemetry honest per
+    /// [[substrate-is-a-good-citizen-on-the-host]] — operators see
+    /// exactly which path produced this persona without having to
+    /// cross-reference log lines.
+    pub source: PersonaIdentitySource,
 }
 
 impl PersonaInstanceInfo {
@@ -91,6 +100,7 @@ impl PersonaInstanceInfo {
             peer_id: runtime.airc().peer_id().as_uuid(),
             home: runtime.home().to_path_buf(),
             default_room: runtime.default_room().as_uuid(),
+            source: runtime.source(),
         }
     }
 }
@@ -134,33 +144,74 @@ impl PersonaInstanceManagerModule {
         &self.registry
     }
 
-    /// Bootstrap a fresh persona. Generates a UUIDv4 seed, derives
-    /// the agent_name from the seed via [`agent_name_from_identity`],
-    /// calls [`PersonaAircRuntime::bootstrap`] (which performs the
-    /// airc-lib identity ceremony — minting a new Ed25519 keypair
-    /// for this persona), and registers the runtime.
+    /// Bootstrap a persona from a [`PersonaIdentityIntent`].
     ///
-    /// In this slice the seed is fresh per call (not persisted).
-    /// Stable-across-restarts identity is a follow-up.
+    /// The intent carries the persona_id, agent_name, and source
+    /// (resumed vs freshly-minted). This method:
     ///
-    /// `pub` so the IPC command surface AND the server-boot wiring
-    /// (`ipc::start_server`) can fire it. The IPC command path is
-    /// for explicit operator/test invocation; the boot path fires
-    /// once at startup to put The Grid's first citizen online so
-    /// `airc peers` from another scope sees her without anyone
-    /// having to type a command.
-    pub async fn bootstrap_one(&self) -> Result<PersonaInstanceInfo, PersonaAircRuntimeError> {
-        let persona_id = Uuid::new_v4();
-        let agent_name = agent_name_from_identity(&persona_id.to_string());
-
+    /// 1. Calls [`PersonaAircRuntime::bootstrap`] (airc-lib identity
+    ///    ceremony — minting a new Ed25519 keypair if first time,
+    ///    loading the existing one if her home already exists).
+    /// 2. For freshly-minted personas, writes `seed.json` to her
+    ///    home directory so the next boot can resume her — this is
+    ///    what makes citizens persistent across server restarts.
+    ///    Resumed personas already have a seed.json by definition;
+    ///    no rewrite needed.
+    /// 3. Registers the runtime in the `PersonaAircRuntimeRegistry`.
+    ///
+    /// Per the no-backwards-compatibility doctrine
+    /// ([[organization-purity-as-we-migrate]]), the signature
+    /// changed in slice 4 from `()` to `&PersonaIdentityIntent` —
+    /// the single existing caller (boot-wire in `ipc::start_server`)
+    /// gets updated in the same commit.
+    pub async fn bootstrap_one(
+        &self,
+        intent: &PersonaIdentityIntent,
+    ) -> Result<PersonaInstanceInfo, PersonaAircRuntimeError> {
         let runtime = PersonaAircRuntime::bootstrap(
-            persona_id,
-            agent_name,
+            intent.persona_id,
+            intent.agent_name.clone(),
             &self.continuum_root,
             self.daemon_socket.clone(),
             self.default_room,
+            intent.source,
         )
         .await?;
+
+        // For freshly-minted personas, write seed.json so next boot
+        // can resume them. Failure here is non-fatal — the persona
+        // bootstrapped fine, she just won't survive a restart.
+        // Logged at warn so operators see and can act.
+        if intent.source == PersonaIdentitySource::FreshlyMinted {
+            // runtime.home() is `<continuum_root>/personas/<name>/airc/`.
+            // seed.json lives one level up at
+            // `<continuum_root>/personas/<name>/seed.json` — alongside
+            // the airc subdirectory, not inside it. This matches the
+            // doctrine that airc owns identity (the keypair inside
+            // airc/) and continuum owns the application-layer mapping
+            // (seed.json one level out).
+            let seed_path = runtime
+                .home()
+                .parent()
+                .map(|p| p.join("seed.json"))
+                .unwrap_or_else(|| runtime.home().join("seed.json"));
+            let seed = PersonaSeedFile::V1 {
+                persona_id: intent.persona_id,
+                agent_name: intent.agent_name.clone(),
+                created_at_ms: now_ms(),
+            };
+            if let Err(e) = write_seed_atomic(&seed_path, &seed).await {
+                tracing::warn!(
+                    error = %e,
+                    persona_id = %intent.persona_id,
+                    agent_name = %intent.agent_name,
+                    seed_path = %seed_path.display(),
+                    "failed to write seed.json — persona is online but won't survive restart. \
+                     Resolve disk/permission issue + restart to re-mint, or write the seed \
+                     manually."
+                );
+            }
+        }
 
         let info = PersonaInstanceInfo::from_runtime(&runtime);
         self.registry.register(runtime);
@@ -189,12 +240,22 @@ impl ServiceModule for PersonaInstanceManagerModule {
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "persona/instances/bootstrap" => {
-                // params currently unused — future: take a PersonaAllocation
-                // and derive seed/genome from it. For now: fresh random
-                // citizen each call.
-                let _ = params;
+                // Mint a fresh intent for this explicit-bootstrap path.
+                // (The boot-wire path uses ResumeOrMintProvider directly
+                // so resumed personas are handled there; this command
+                // is for ad-hoc "spawn me a new citizen" invocations
+                // from tests, operators, or future explicit-add flows.)
+                let _ = params; // future: accept name/theme/genome overrides
+                let persona_id = Uuid::new_v4();
+                let agent_name =
+                    agent_name_from_identity(&persona_id.to_string()).to_string();
+                let intent = PersonaIdentityIntent {
+                    persona_id,
+                    agent_name,
+                    source: PersonaIdentitySource::FreshlyMinted,
+                };
                 let info = self
-                    .bootstrap_one()
+                    .bootstrap_one(&intent)
                     .await
                     .map_err(|e| format!("bootstrap failed: {e}"))?;
                 let json = serde_json::to_value(&info)

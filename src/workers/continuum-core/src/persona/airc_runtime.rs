@@ -98,6 +98,13 @@ pub struct PersonaAircRuntime {
     airc: Arc<Airc>,
     default_room: RoomId,
     inbound_handle: Option<JoinHandle<()>>,
+    /// Where this citizen's identity came from — resumed from disk
+    /// vs freshly minted. Carried for the lifetime of the runtime so
+    /// telemetry surfaces (list/get IPC, future status panels) can
+    /// distinguish without re-deriving from disk. Per
+    /// [[substrate-is-a-good-citizen-on-the-host]]: observability
+    /// honest.
+    source: crate::persona::identity_provider::PersonaIdentitySource,
 }
 
 impl PersonaAircRuntime {
@@ -127,6 +134,7 @@ impl PersonaAircRuntime {
         continuum_root: &Path,
         daemon_socket: PathBuf,
         default_room: RoomId,
+        source: crate::persona::identity_provider::PersonaIdentitySource,
     ) -> Result<Self, PersonaAircRuntimeError> {
         let agent_name = agent_name.into();
         let home = continuum_root
@@ -182,12 +190,18 @@ impl PersonaAircRuntime {
             airc: Arc::new(airc),
             default_room,
             inbound_handle: None,
+            source,
         })
     }
 
     /// The persona's stable continuum identifier.
     pub fn persona_id(&self) -> Uuid {
         self.persona_id
+    }
+
+    /// Where this citizen's identity came from — resumed vs minted.
+    pub fn source(&self) -> crate::persona::identity_provider::PersonaIdentitySource {
+        self.source
     }
 
     /// The persona's airc agent_name (matches what shows up in

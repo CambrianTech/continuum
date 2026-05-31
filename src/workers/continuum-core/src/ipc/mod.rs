@@ -942,37 +942,85 @@ pub fn start_server(
              `persona/instances/bootstrap`"
         );
 
-        // The Grid's first heartbeat: at server boot, put one citizen
-        // online so `airc peers` from another scope sees her without
-        // anyone having to type a command. Fired as an async task off
-        // the IPC bootstrap thread because PersonaAircRuntime::bootstrap
-        // is async (joins a room, attaches to the daemon) and we don't
-        // want to block the IPC server-ready signal on a daemon round-
-        // trip. Failure here is non-fatal: the server stays up; the
-        // operator can re-fire via `persona/instances/bootstrap` once
-        // the underlying issue is resolved.
+        // The Grid's first heartbeat at server boot: resume any
+        // existing citizens from disk + ensure at least one is
+        // present. ResumeOrMintProvider scans
+        // `<continuum_root>/personas/*/seed.json`; for each parsed
+        // seed it yields a ResumedFromDisk intent (airc-lib will load
+        // the existing keypair from identity.key when bootstrap runs
+        // — same persona, same peer_id, across restarts). If no
+        // citizens are on disk, it floor-mints one fresh per the
+        // `min_personas = 1` policy below.
+        //
+        // Fired as an async task off the IPC bootstrap thread so the
+        // server-ready signal isn't blocked on daemon round-trips.
+        // Failure of any single bootstrap is non-fatal — log + move
+        // on; the operator can re-fire via the
+        // `persona/instances/bootstrap` command once the underlying
+        // issue (disk full, daemon down, corrupted seed) is resolved.
         let bootstrap_handle = instance_manager.clone();
+        let continuum_root_for_boot = crate::modules::persona_instance_manager::resolve_continuum_root();
         rt_handle.spawn(async move {
-            match bootstrap_handle.bootstrap_one().await {
-                Ok(info) => {
-                    tracing::info!(
-                        persona_id = %info.persona_id,
-                        agent_name = %info.agent_name,
-                        peer_id = %info.peer_id,
-                        home = %info.home.display(),
-                        default_room = %info.default_room,
-                        "🌐 The Grid's first citizen is online: {} (peer_id={})",
-                        info.agent_name,
-                        info.peer_id
-                    );
-                }
+            use crate::persona::identity_provider::PersonaIdentityProvider;
+            use crate::persona::resume_or_mint_provider::ResumeOrMintProvider;
+            let mut provider = match ResumeOrMintProvider::new(&continuum_root_for_boot, 1).await {
+                Ok(p) => p,
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
-                        "Boot-time persona bootstrap failed — server is up but no \
-                         citizen registered. Resolve the airc daemon issue and re-fire \
-                         via `persona/instances/bootstrap`."
+                        "ResumeOrMintProvider construction failed — server up, no \
+                         citizens online. Resolve continuum_root permissions + restart, \
+                         or fire `persona/instances/bootstrap` manually."
                     );
+                    return;
+                }
+            };
+            loop {
+                let intent = match provider.next_persona().await {
+                    Ok(Some(i)) => i,
+                    Ok(None) => break,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Provider yielded error mid-iteration — stopping boot bootstrap. \
+                             Server stays up; remaining citizens can be bootstrapped via IPC."
+                        );
+                        return;
+                    }
+                };
+                let label = match intent.source {
+                    crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk => {
+                        "resumed"
+                    }
+                    crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted => {
+                        "freshly minted"
+                    }
+                };
+                match bootstrap_handle.bootstrap_one(&intent).await {
+                    Ok(info) => {
+                        tracing::info!(
+                            persona_id = %info.persona_id,
+                            agent_name = %info.agent_name,
+                            peer_id = %info.peer_id,
+                            home = %info.home.display(),
+                            default_room = %info.default_room,
+                            source = ?info.source,
+                            "🌐 The Grid welcomes a {} citizen: {} (peer_id={})",
+                            label,
+                            info.agent_name,
+                            info.peer_id
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            persona_id = %intent.persona_id,
+                            agent_name = %intent.agent_name,
+                            "Boot-time bootstrap failed for {} — server stays up, other \
+                             citizens (if any) will still be attempted.",
+                            intent.agent_name
+                        );
+                    }
                 }
             }
         });
