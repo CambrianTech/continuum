@@ -15,6 +15,7 @@ pub mod airc;
 mod airc_runtime_e2e_tests;
 pub mod auth;
 pub mod avatar;
+pub mod cargo;
 pub mod channel;
 pub mod chat;
 pub mod code;
