@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use airc_core::RoomId;
 use airc_ipc::{codec::read_frame, AttachRequest, DaemonClient, Response};
+use airc_lib::decode_wire_event;
 use tracing::warn;
 
 use crate::airc::realtime_wire::{bus_event_from_envelope, envelope_from_event};
@@ -64,14 +65,26 @@ pub async fn run_daemon_attach(
 pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Result<(), String> {
     match response {
         Response::Ok => Ok(()),
-        Response::Event { event } => publish_transcript_event(event.as_ref(), bus).await,
+        // v5 owner-core schema (task #82): the daemon now streams raw
+        // airc-wire envelope bytes; `airc_lib::decode_wire_event` is
+        // the canonical helper that decodes + projects to a
+        // TranscriptEvent. A malformed buffer is logged + skipped (the
+        // live stream shouldn't die because one event failed to parse).
+        Response::Event { envelope } => match decode_wire_event(envelope) {
+            Ok(event) => publish_transcript_event(&event, bus).await,
+            Err(error) => {
+                warn!("Skipping malformed airc daemon event: {error}");
+                Ok(())
+            }
+        },
         Response::Error { message } => Err(message),
-        Response::Pong
-        | Response::Status(_)
-        | Response::Inbox(_)
-        | Response::Publish(_)
-        | Response::ResolveWire(_)
-        | Response::Peers(_) => Ok(()),
+        // Wildcard for non-event responses the daemon may emit on the
+        // attach stream (Pong, Status, Inbox, Publish, Peers, cursor
+        // advances, future variants). v5 dropped ResolveWire; future
+        // variants come/go on the airc side without breaking continuum
+        // — same `non_exhaustive`-style posture the airc-cli monitor
+        // uses against the same enum.
+        _ => Ok(()),
     }
 }
 

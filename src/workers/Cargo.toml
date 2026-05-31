@@ -20,12 +20,32 @@ members = [
 # integration (CBOR over Unix-socket IPC, no JSON re-encoding in the
 # hot path, byte-stable for ed25519 sig verify on L1-6 envelopes).
 # airc-ipc pulls airc-protocol + airc-core transitively. Bump the rev
-# when adopting an airc change; both crates resolve from the same
+# when adopting an airc change; all crates resolve from the same
 # checkout so the IPC ABI version (IPC_PROTOCOL_VERSION) stays
 # consistent across the dependency graph.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "428f9281e029072c0b7c39eca1781c94136fe697" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "428f9281e029072c0b7c39eca1781c94136fe697" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "428f9281e029072c0b7c39eca1781c94136fe697" }
+#
+# 2026-05-31 bump 428f9281 → 5f6e25f: adopts airc v5 owner-core
+# rewrite (continuum task #82, headless break #3) AND the SDK-side
+# `impl From<>` conversions from airc#1096. Schema changes this PR
+# migrates daemon_transport.rs against:
+#   - Response::Event: { event: Box<TranscriptEvent> } → { envelope: Vec<u8> }
+#     (decoded via `airc_lib::decode_wire_event`)
+#   - PublishRequest: + from_peer/from_client/payload, − wire/body
+#   - InboxResponse: { events: Vec<TranscriptEvent> } → { envelopes: Vec<Vec<u8>> }
+#   - InboxRequest.since: TranscriptCursor → IpcCursor (via .into())
+#   - PublishRequest.kind: FrameKind → IpcKind (via .into())
+#   - PublishRequest.target: MentionTarget → IpcTarget (via .into())
+#   - ResolveWire removed (owner-core daemon owns channels)
+#
+# All on same SHA so IPC ABI version stays consistent. The pinned
+# SHA is currently the tip of the unmerged airc PR branch (#1095 +
+# #1096); re-pin to the post-merge SHA on airc canary/rust-rewrite
+# before merging this continuum PR past canary.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "8f6948c" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "8f6948c" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "8f6948c" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "8f6948c" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "8f6948c" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

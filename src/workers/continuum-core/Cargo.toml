@@ -49,6 +49,11 @@ ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }  # L1-6 con
 airc-ipc.workspace = true
 airc-core.workspace = true
 airc-protocol.workspace = true
+# airc-lib: high-level SDK helpers. `decode_wire_event` (the canonical
+# Vec<u8> → TranscriptEvent decoder for `Response::Event { envelope }`)
+# is what the v5 owner-core migration (task #82) consumes today; the
+# rest of airc-lib is tree-shaken away from the build.
+airc-lib.workspace = true
 
 async-trait.workspace = true
 chrono.workspace = true
