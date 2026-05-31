@@ -33,6 +33,7 @@ export type { ToolInputSchema } from './ai';
 export type { UsageMetrics } from './ai';
 export type { VideoInput } from './ai';
 export * from './airc';
+export * from './chat';
 export * from './code';
 // cognition: explicit exports (has duplicate types)
 export type { AIDecisionContext } from './cognition';
