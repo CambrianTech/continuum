@@ -167,7 +167,9 @@ The loop closes at L3↔L4. Aggregated long-term engrams become training corpora
 
 Any model can ride this substrate — Qwen, Llama, local 3B, Claude API — and inherit the continual-learning property as a substrate-level guarantee. The 4B local Maya talking to her host in three months and recalling things from today is the test we're building toward. **The holy grail is a system property, not a model property.**
 
-Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md)
+And it compounds across the population. Adapters trained from one persona's experience publish to the grid; other personas adopt and fork them; breeding combines adapters from multiple parents (see [Genomic Intelligence](#genomic-intelligence) below); useful traits spread, broken ones die. Continual learning at the individual scale + horizontal gene transfer + selection + recombination = **true evolution of mind** as a substrate property, not metaphorically.
+
+Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
 
 **Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
 
