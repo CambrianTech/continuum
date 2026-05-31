@@ -16,6 +16,7 @@ use crate::persona::genome_paging::GenomePagingEngine;
 use crate::persona::inbox::PersonaInbox;
 use crate::persona::message_cache::{ContentDeduplicator, RecentMessageCache};
 use crate::persona::model_selection::AdapterRegistry;
+use crate::persona::recall_metadata::RecallMetadataRegistry;
 use crate::rag::RagEngine;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -36,9 +37,15 @@ pub struct PersonaCognition {
     /// Admission gate state — engram dedup + replay protection +
     /// in-memory engram store. Holds `InboxAdmissionRunner` configured
     /// with `default_v1()` recipe + permissive trust mapping. Per-persona
-    /// because each persona's memory + dedup are independent. See
-    /// `persona::admission_state` (#1121 PR-4).
+    /// because each persona's memory + dedup are independent.
     pub admission: AdmissionState,
+    /// RecallMetadata sidecar — Algorithm 4's volatile per-engram
+    /// state (salience, access_count, last_accessed_ms,
+    /// protected_until_ms). Shared with AdmissionState (admit-time
+    /// writes flow through there) and with the future recall scorer
+    /// + decay tick (read-mostly hot paths). Per-persona because each
+    /// persona's recall state is independent.
+    pub recall_metadata: Arc<RecallMetadataRegistry>,
 }
 
 impl PersonaCognition {
@@ -56,6 +63,7 @@ impl PersonaCognition {
         genome_budget_mb: f32,
     ) -> Self {
         let (_, shutdown_rx) = tokio::sync::watch::channel(false);
+        let recall_metadata = Arc::new(RecallMetadataRegistry::new());
         Self {
             engine: PersonaCognitionEngine::new(persona_id, persona_name, rag_engine, shutdown_rx),
             inbox: PersonaInbox::new(persona_id),
@@ -66,7 +74,8 @@ impl PersonaCognition {
             domain_classifier: DomainClassifier::new(),
             message_cache: RecentMessageCache::new(),
             content_dedup: ContentDeduplicator::new(),
-            admission: AdmissionState::new(),
+            admission: AdmissionState::new(recall_metadata.clone()),
+            recall_metadata,
         }
     }
 }

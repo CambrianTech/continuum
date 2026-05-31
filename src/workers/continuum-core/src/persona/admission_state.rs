@@ -99,25 +99,50 @@ pub struct AdmissionState {
     seen_content: Arc<InMemorySeenContent>,
     seen_events: Arc<InMemorySeenEvents>,
     engrams: Mutex<Vec<Engram>>,
+    /// RecallMetadata sidecar (slice 5+). When an Engram is admitted,
+    /// its volatile recall state (salience, access_count, decay,
+    /// novelty protection) lives here — separate from the Engram's
+    /// durable content layer per the cognition-cache-hierarchy
+    /// doctrine. Lock-free reads via DashMap; admission-time write
+    /// happens inside record_admitted().
+    recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
 }
 
 impl Default for AdmissionState {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ))
     }
 }
 
 impl AdmissionState {
     /// Construct fresh admission state with the v1 default recipe + permissive
-    /// trust mapping. All personas use the same shape until per-persona
-    /// config customization lands (PR-5+).
-    pub fn new() -> Self {
+    /// trust mapping. `recall_metadata` is the per-persona sidecar registry
+    /// that tracks volatile recall state for every admitted Engram. Per the
+    /// no-backwards-compat doctrine (slice 5+), the constructor now requires
+    /// the registry rather than minting one internally — this lets
+    /// PersonaCognition share a single registry view across admission +
+    /// recall + decay tick subsystems.
+    pub fn new(
+        recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
+    ) -> Self {
         Self {
             runner: InboxAdmissionRunner::default_v1(),
             seen_content: Arc::new(InMemorySeenContent::default()),
             seen_events: Arc::new(InMemorySeenEvents::default()),
             engrams: Mutex::new(Vec::new()),
+            recall_metadata,
         }
+    }
+
+    /// Borrow the shared recall metadata registry. Recall + decay tick
+    /// subsystems clone this Arc for their own reads/writes — they
+    /// observe the same DashMap admission writes into.
+    pub fn recall_metadata(
+        &self,
+    ) -> &Arc<crate::persona::recall_metadata::RecallMetadataRegistry> {
+        &self.recall_metadata
     }
 
     /// Run the admission pipeline on one inbox message, recording all
@@ -194,6 +219,15 @@ impl AdmissionState {
                 // these origins from the inbox path.
             }
         }
+
+        // Slice 6 wiring: mirror this engram into the RecallMetadata
+        // sidecar so the cache hierarchy starts tracking salience,
+        // access count, decay timing, and novelty protection. Initial
+        // metadata is the neutral default; slice 7+ will plug in the
+        // novelty detector (embedding distance × magnitude) to set
+        // scored initial salience + protection windows at this same
+        // call site.
+        self.recall_metadata.admit_with_defaults(engram.id);
     }
 
     /// Replay-only recording for a Quarantined engram: event_id → timestamp
@@ -374,7 +408,9 @@ mod tests {
     /// recording actually feeds back into the next call's recipe).
     #[test]
     fn admit_records_engram_and_dedup_blocks_repeat() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         let mut trace = CognitionTrace::new();
         let content = "this is a non-trivial design observation worth storing";
         let msg = synthetic_human_message(content);
@@ -404,7 +440,9 @@ mod tests {
     /// blocked as duplicate against a non-existent engram).
     #[test]
     fn dropped_message_records_no_side_effect() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         let mut trace = CognitionTrace::new();
         // Short content → drops with NotMemorable.
         let msg = synthetic_human_message("short");
@@ -425,7 +463,9 @@ mod tests {
     /// depends on this; missing items would silently break recall.
     #[test]
     fn admitted_engrams_accumulate_in_order_and_are_retrievable() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         let mut trace = CognitionTrace::new();
         let messages = [
             "first design observation worth recording",
@@ -453,7 +493,9 @@ mod tests {
     /// underlying runner.
     #[test]
     fn admit_emits_one_seam_per_call_through_state_wrapper() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         let mut trace = CognitionTrace::new();
         // Three admits with three different outcomes:
         // (1) admit, (2) drop short, (3) drop duplicate of #1.
@@ -472,7 +514,9 @@ mod tests {
     /// would silently hide config from observability surfaces.
     #[test]
     fn runner_accessor_exposes_default_v1_config() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         assert_eq!(state.runner().recipe().id(), "heuristic.v1");
     }
 
@@ -552,7 +596,9 @@ mod tests {
     /// pointer.
     #[test]
     fn quarantine_chat_origin_records_no_side_effects() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         let engram = synthetic_engram_with_chat_origin("borderline observation");
         let content_hash = match &engram.origin {
             EngramOrigin::Chat(r) => r.content_hash.clone(),
@@ -583,7 +629,9 @@ mod tests {
     /// doesn't store quarantined engrams).
     #[test]
     fn quarantine_airc_origin_records_event_id_only_not_content_hash() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         let event_id = "airc-msg-quarantine-1";
         let engram =
             synthetic_engram_with_airc_origin("borderline observation worth holding", event_id);
@@ -638,7 +686,9 @@ mod tests {
     /// silently invert what callers expect when they ask for "recent".
     #[test]
     fn recall_recent_returns_newest_first() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         let ids = admit_n_distinct(
             &state,
             &[
@@ -659,7 +709,9 @@ mod tests {
     /// it, never panics on limit > available.
     #[test]
     fn recall_recent_respects_limit_above_and_below_count() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         admit_n_distinct(
             &state,
             &[
@@ -681,7 +733,9 @@ mod tests {
     /// pipeline that walks parent/reflection links.
     #[test]
     fn recall_by_id_finds_known_returns_none_unknown() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         let ids = admit_n_distinct(
             &state,
             &[
@@ -703,7 +757,9 @@ mod tests {
     /// (caller-meant-to-skip semantic, not match-everything).
     #[test]
     fn recall_by_keyword_case_insensitive_newest_first_with_limit() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         admit_n_distinct(
             &state,
             &[
@@ -739,7 +795,9 @@ mod tests {
     /// filter must still segregate cleanly.
     #[test]
     fn recall_by_origin_kind_filters_to_requested_variant() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         admit_n_distinct(
             &state,
             &[
@@ -789,7 +847,9 @@ mod tests {
     /// Admit path's recording, dedup would silently break.
     #[test]
     fn admit_airc_origin_still_records_both_content_hash_and_event_id() {
-        let state = AdmissionState::new();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
         let event_id = "airc-msg-admit-1";
         let engram =
             synthetic_engram_with_airc_origin("valuable observation worth recalling", event_id);
