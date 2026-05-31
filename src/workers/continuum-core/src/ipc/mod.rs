@@ -900,7 +900,14 @@ pub fn start_server(
 
     // AircModule: Rust-native AIRC queue/flywheel primitives.
     // Provides airc/queue-scan without routing through Node/TypeScript.
-    runtime.register(Arc::new(AircModule::new()));
+    // Discovery: `AircModule::discover_and_construct` asks `airc ipc-
+    // endpoint` (airc#1095) for the canonical daemon socket and auto-
+    // installs airc if missing — the previous derive-from-home scheme
+    // drifted and broke headless boot. Uses rt_handle.block_on because
+    // start_server is sync but discovery is async; we're on the main
+    // bootstrap thread, not inside a tokio task, so blocking here is
+    // safe and gates module registration on the discovery result.
+    runtime.register(Arc::new(rt_handle.block_on(AircModule::discover_and_construct())));
 
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health

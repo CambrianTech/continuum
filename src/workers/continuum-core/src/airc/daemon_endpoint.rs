@@ -1,11 +1,30 @@
-//! Local AIRC daemon endpoint derivation.
+//! Local AIRC daemon endpoint derivation (DEPRECATED).
+//!
+//! **Use [`crate::airc::discover_airc_socket`] instead.** This module's
+//! resolver is a stale parallel copy of airc's own scheme — it derives
+//! `/tmp/airc-ipc-v<N>-<sha12>.sock` from a hash of the home dir, but
+//! the airc daemon binds `~/.airc/runtime/airc-machine-<account-hash>
+//! -v<N>.sock` under its actual resolution rules. The two never match,
+//! which broke headless continuum-core boot (`AIRC daemon attach
+//! stream stopped: daemon not reachable: ENOENT`).
+//!
+//! Fixed by asking airc directly (`airc ipc-endpoint`, landed in
+//! airc#1095) rather than re-deriving — see [`crate::airc::discovery`]
+//! module docs for the decoupling rationale. This file is kept only so
+//! existing callers compile while their imports migrate to
+//! `discover_airc_socket`; delete once all call sites are switched.
 
 use std::path::{Path, PathBuf};
 
-/// Default daemon IPC endpoint for an AIRC home.
+/// Default daemon IPC endpoint for an AIRC home (DEPRECATED).
 ///
-/// The path is versioned by `airc_ipc::IPC_PROTOCOL_VERSION` so a client
-/// cannot accidentally talk to a daemon speaking an older ABI.
+/// **DO NOT USE for runtime attach** — this derivation does not match
+/// what the airc daemon actually binds (see module-level doc). Use
+/// [`crate::airc::discover_airc_socket`] for live attach paths.
+#[deprecated(
+    since = "0.1.0",
+    note = "Derivation drifts from airc's own resolver — use `crate::airc::discover_airc_socket` which asks airc via `airc ipc-endpoint` (airc#1095). Delete this function once `AircModule::with_daemon_home` and `src/workers/continuum-core/src/modules/airc_runtime_e2e_tests.rs` migrate off it (only two remaining callers as of this PR)."
+)]
 pub fn default_socket_path_in(home: &Path) -> PathBuf {
     #[cfg(unix)]
     {

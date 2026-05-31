@@ -7,6 +7,7 @@
 pub mod client;
 pub mod daemon_endpoint;
 pub mod daemon_transport;
+pub mod discovery;
 pub mod event_transport;
 pub mod inbound_attach;
 pub mod process;
@@ -16,7 +17,9 @@ pub mod realtime_wire;
 pub mod types;
 
 pub use client::{AircQueueClient, CliAircQueueClient};
+#[allow(deprecated)]
 pub use daemon_endpoint::default_socket_path_in;
+pub use discovery::{discover_airc_socket, DiscoveryError};
 pub use daemon_transport::{AircDaemonClient, DaemonAircEventTransport};
 pub use event_transport::{AircEventTransport, StoreAircEventTransport};
 pub use inbound_attach::spawn_daemon_attach;
