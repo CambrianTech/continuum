@@ -469,6 +469,302 @@ impl FileEngine {
         roots
     }
 
+    /// Resolve a workspace-relative path for INTROSPECTION queries
+    /// (`exists`, `list_dir`, `glob_match`) where the path is allowed
+    /// to NOT exist yet — `exists()` returning false isn't an error.
+    ///
+    /// `validate_read` rejects non-existent paths (TraversalBlocked)
+    /// because it canonicalizes, which fails on missing entries.
+    /// That's correct for read/write/edit which require the file —
+    /// but wrong for introspection where the whole point is to
+    /// answer "does this exist?". Hence this separate validator:
+    /// string-level traversal check + join, no existence requirement.
+    fn validate_introspect_path(&self, relative: &str) -> Result<PathBuf, FileEngineError> {
+        // Reject absolute paths — workspace-relative only.
+        if relative.starts_with('/') || relative.starts_with('\\') {
+            return Err(FileEngineError::Security(
+                PathSecurityError::TraversalBlocked {
+                    path: relative.to_string(),
+                    workspace: self.security.workspace_root().display().to_string(),
+                },
+            ));
+        }
+        // Reject `..` segments — the only string-level traversal
+        // vector once absolute prefixes are gone. (PathSecurity's
+        // canonicalize-based check would also catch symlink escapes,
+        // but those require existence; for introspection we accept
+        // string-level safety as the floor.)
+        for segment in relative.split(['/', '\\']) {
+            if segment == ".." {
+                return Err(FileEngineError::Security(
+                    PathSecurityError::TraversalBlocked {
+                        path: relative.to_string(),
+                        workspace: self.security.workspace_root().display().to_string(),
+                    },
+                ));
+            }
+        }
+        Ok(self.security.workspace_root().join(relative))
+    }
+
+    /// Check whether a path exists, and if so what kind of entry it is.
+    ///
+    /// Closes the "is this path safe to write to / scaffold into?"
+    /// question in one call. Per
+    /// [PERSONA-AS-DEVELOPER-GAP.md](../../../../../../../docs/planning/PERSONA-AS-DEVELOPER-GAP.md),
+    /// this is the top-priority filesystem-introspection seam: a
+    /// persona running `generate/module` needs to probe before
+    /// scaffolding to avoid clobbering.
+    ///
+    /// Uses `validate_introspect_path` so non-existent paths report
+    /// `exists: false` rather than failing with a security error.
+    /// Symlinks report as `Symlink` without following — callers that
+    /// want follow-the-link semantics can `code/read` and observe the
+    /// `NotFound` error if the target is broken.
+    pub fn exists(&self, relative_path: &str) -> Result<ExistsResult, FileEngineError> {
+        let abs_path = self.validate_introspect_path(relative_path)?;
+
+        // symlink_metadata so we don't follow links transparently.
+        let meta = fs::symlink_metadata(&abs_path);
+        match meta {
+            Ok(m) => {
+                let kind = if m.is_symlink() {
+                    FsEntryKind::Symlink
+                } else if m.is_file() {
+                    FsEntryKind::File
+                } else if m.is_dir() {
+                    FsEntryKind::Directory
+                } else {
+                    FsEntryKind::Other
+                };
+                let size_bytes = if matches!(kind, FsEntryKind::File) {
+                    Some(m.len())
+                } else {
+                    None
+                };
+                Ok(ExistsResult {
+                    success: true,
+                    exists: true,
+                    file_path: relative_path.to_string(),
+                    kind: Some(kind),
+                    size_bytes,
+                    error: None,
+                })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ExistsResult {
+                success: true,
+                exists: false,
+                file_path: relative_path.to_string(),
+                kind: None,
+                size_bytes: None,
+                error: None,
+            }),
+            Err(e) => Err(FileEngineError::Io(e)),
+        }
+    }
+
+    /// Flat directory listing (no recursion). Hidden entries (names
+    /// starting with `.`) excluded unless `include_hidden` is true.
+    ///
+    /// Sorted: directories first, then files, both alphabetical.
+    /// Predictable order matters for persona reproducibility (a
+    /// generator that picks "first available name" must get the
+    /// same answer every run).
+    ///
+    /// For recursive output, callers use `code/tree` instead — this
+    /// is intentionally O(N) in directory size, not O(N) in subtree
+    /// size, so cheap-by-design.
+    pub fn list_dir(
+        &self,
+        relative_path: &str,
+        include_hidden: bool,
+    ) -> Result<ListResult, FileEngineError> {
+        let abs_path = self.validate_introspect_path(relative_path)?;
+
+        let meta = fs::symlink_metadata(&abs_path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                FileEngineError::NotFound(relative_path.to_string())
+            } else {
+                FileEngineError::Io(e)
+            }
+        })?;
+        if !meta.is_dir() {
+            return Err(FileEngineError::EditFailed(format!(
+                "code/list: not a directory: {}",
+                relative_path
+            )));
+        }
+
+        let workspace_root = self.security.workspace_root();
+        let mut entries: Vec<DirEntry> = Vec::new();
+
+        for raw in fs::read_dir(&abs_path)? {
+            let raw = match raw {
+                Ok(e) => e,
+                Err(_) => continue, // single bad entry shouldn't kill the listing
+            };
+            let name = raw.file_name().to_string_lossy().to_string();
+            if !include_hidden && name.starts_with('.') {
+                continue;
+            }
+            // Stat each entry so we can report kind + size. Errors on
+            // individual entries surface as `Other` rather than
+            // failing the whole listing — partial info beats none.
+            let entry_meta = fs::symlink_metadata(raw.path()).ok();
+            let kind = match entry_meta.as_ref() {
+                Some(m) if m.is_symlink() => FsEntryKind::Symlink,
+                Some(m) if m.is_file() => FsEntryKind::File,
+                Some(m) if m.is_dir() => FsEntryKind::Directory,
+                _ => FsEntryKind::Other,
+            };
+            let size_bytes = match (entry_meta.as_ref(), kind) {
+                (Some(m), FsEntryKind::File) => Some(m.len()),
+                _ => None,
+            };
+            let path = raw
+                .path()
+                .strip_prefix(workspace_root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| raw.path().to_string_lossy().to_string());
+            entries.push(DirEntry {
+                name,
+                path,
+                kind,
+                size_bytes,
+            });
+        }
+
+        // Directories first, then files; alphabetical within each.
+        // Symlinks + Other sort as directories (uncommon enough that
+        // their ordering doesn't justify a third bucket).
+        entries.sort_by(|a, b| {
+            let a_is_file = matches!(a.kind, FsEntryKind::File);
+            let b_is_file = matches!(b.kind, FsEntryKind::File);
+            a_is_file.cmp(&b_is_file).then(a.name.cmp(&b.name))
+        });
+
+        let total_count = entries.len() as u32;
+        Ok(ListResult {
+            success: true,
+            directory_path: relative_path.to_string(),
+            entries,
+            total_count,
+            error: None,
+        })
+    }
+
+    /// Glob expansion scoped to the workspace (or a `root`
+    /// subdirectory of it). Uses the `ignore` crate's overrides for
+    /// `.gitignore`-respecting walks, same as `code/search`.
+    ///
+    /// Patterns are workspace-relative globs like `**/*.rs` or
+    /// `src/workers/**/Cargo.toml`. Output is workspace-relative
+    /// paths, sorted alphabetically. Capped at `GLOB_MAX_MATCHES`
+    /// (5000) so a runaway pattern doesn't OOM the caller —
+    /// `truncated: true` flags the cap.
+    pub fn glob_match(
+        &self,
+        pattern: &str,
+        root: Option<&str>,
+    ) -> Result<GlobResult, FileEngineError> {
+        // Root may not exist; use introspect validator. For the actual
+        // walk, the directory MUST exist — error if not.
+        let scan_root = match root {
+            Some(r) => {
+                let p = self.validate_introspect_path(r)?;
+                if !p.is_dir() {
+                    return Err(FileEngineError::NotFound(format!(
+                        "code/glob: root is not a directory: {r}"
+                    )));
+                }
+                p
+            }
+            None => self.security.workspace_root().to_path_buf(),
+        };
+
+        // Build the override as a whitelist match for the pattern.
+        // OverrideBuilder treats non-`!` patterns as whitelist; we
+        // explicitly check `is_whitelist()` per entry so only matched
+        // files are emitted.
+        let mut overrides = ignore::overrides::OverrideBuilder::new(&scan_root);
+        overrides
+            .add(pattern)
+            .map_err(|e| FileEngineError::EditFailed(format!("code/glob: bad pattern: {e}")))?;
+        let overrides = overrides
+            .build()
+            .map_err(|e| FileEngineError::EditFailed(format!("code/glob: overrides build: {e}")))?;
+
+        // standard_filters=true ⇒ respects .gitignore, .ignore, AND
+        // hides hidden files by default. Persona-as-developer
+        // contract: glob does NOT see dotfiles unless the pattern
+        // explicitly starts with `.` (matches Unix shell intuition).
+        let walker = ignore::WalkBuilder::new(&scan_root)
+            .standard_filters(true)
+            .hidden(true)
+            .build();
+
+        let workspace_root = self.security.workspace_root();
+        let mut matches: Vec<String> = Vec::new();
+        let mut truncated = false;
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+
+            // Skip the scan root itself (the walker yields it).
+            if path == scan_root {
+                continue;
+            }
+
+            // FILES only — directories are not glob matches per the
+            // contract. (A persona that wants to enumerate directories
+            // uses `code/list`.) `file_type` returns Some when the
+            // walker stat'd it; treat None as "skip" (rare).
+            let is_file = entry
+                .file_type()
+                .map(|ft| ft.is_file())
+                .unwrap_or(false);
+            if !is_file {
+                continue;
+            }
+
+            // Explicit whitelist check — only emit when the pattern
+            // matched this specific path. `Override::matched(path,
+            // is_dir)` returns Match::None / Ignore / Whitelist; we
+            // want Whitelist only.
+            let m = overrides.matched(path, false);
+            if !m.is_whitelist() {
+                continue;
+            }
+
+            let rel = path
+                .strip_prefix(workspace_root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| path.to_string_lossy().to_string());
+
+            if matches.len() >= GLOB_MAX_MATCHES {
+                truncated = true;
+                break;
+            }
+            matches.push(rel);
+        }
+
+        matches.sort();
+        let total_matches = matches.len() as u32;
+
+        Ok(GlobResult {
+            success: true,
+            pattern: pattern.to_string(),
+            matches,
+            total_matches,
+            truncated,
+            error: None,
+        })
+    }
+
     /// Get the latest parent ID for a file (for DAG edges).
     fn latest_parent(&self, file_path: &str) -> Vec<Uuid> {
         self.graph
@@ -920,5 +1216,300 @@ mod tests {
             None,
         );
         assert!(result.is_err());
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // Filesystem introspection — persona-as-developer cluster
+    // ════════════════════════════════════════════════════════════════
+    //
+    // Tests for exists / list_dir / glob_match per
+    // docs/planning/PERSONA-AS-DEVELOPER-GAP.md priority 1 (the
+    // safe-self-scaffolding seam).
+
+    fn setup_engine_with_tree() -> (tempfile::TempDir, FileEngine) {
+        let dir = tempfile::tempdir().unwrap();
+        // Mini tree:
+        //   src/main.ts                              file
+        //   src/utils/helpers.ts                     file
+        //   src/utils/.private.ts                    hidden file
+        //   src/empty_dir/                           empty dir
+        //   docs/README.md                           file in sibling
+        fs::create_dir_all(dir.path().join("src/utils")).unwrap();
+        fs::create_dir_all(dir.path().join("src/empty_dir")).unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("src/main.ts"), "x").unwrap();
+        fs::write(dir.path().join("src/utils/helpers.ts"), "y").unwrap();
+        fs::write(dir.path().join("src/utils/.private.ts"), "z").unwrap();
+        fs::write(dir.path().join("docs/README.md"), "w").unwrap();
+        let security = PathSecurity::new(dir.path()).unwrap();
+        let engine = FileEngine::new("test-persona", security);
+        (dir, engine)
+    }
+
+    // ── exists ──────────────────────────────────────────────────────
+
+    #[test]
+    fn exists_reports_file_with_size() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let r = engine.exists("src/main.ts").expect("exists must succeed");
+        assert!(r.exists);
+        assert_eq!(r.kind, Some(FsEntryKind::File));
+        assert_eq!(r.size_bytes, Some(1));
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn exists_reports_directory_without_size() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let r = engine.exists("src/utils").expect("exists must succeed");
+        assert!(r.exists);
+        assert_eq!(r.kind, Some(FsEntryKind::Directory));
+        assert_eq!(r.size_bytes, None, "directories don't report size");
+    }
+
+    #[test]
+    fn exists_reports_false_for_missing_with_no_error() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let r = engine
+            .exists("src/nonexistent.ts")
+            .expect("missing path is NOT an error — exists=false");
+        assert!(!r.exists);
+        assert_eq!(r.kind, None);
+        assert_eq!(r.size_bytes, None);
+        assert!(r.error.is_none(), "missing != error per the contract");
+    }
+
+    #[test]
+    fn exists_rejects_path_outside_workspace_via_path_security() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let err = engine
+            .exists("../escape.ts")
+            .expect_err("workspace escape must fail loud via PathSecurity");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Security") || msg.contains("escape"),
+            "error must surface PathSecurity layer: {msg}"
+        );
+    }
+
+    // ── list_dir ────────────────────────────────────────────────────
+
+    #[test]
+    fn list_dir_returns_flat_listing_directories_first() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let r = engine.list_dir("src", false).expect("list must succeed");
+        assert!(r.success);
+        // src has: main.ts (file), utils (dir), empty_dir (dir)
+        // Sorted: directories first (alphabetical: empty_dir, utils),
+        // then files (main.ts).
+        let names: Vec<&str> = r.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["empty_dir", "utils", "main.ts"],
+            "directories must come before files; each group alphabetical"
+        );
+        assert_eq!(r.total_count, 3);
+    }
+
+    #[test]
+    fn list_dir_excludes_hidden_by_default_includes_when_asked() {
+        let (_dir, engine) = setup_engine_with_tree();
+
+        let default = engine.list_dir("src/utils", false).expect("default");
+        let names: Vec<&str> = default.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["helpers.ts"],
+            ".private.ts must be excluded by default"
+        );
+
+        let with_hidden = engine
+            .list_dir("src/utils", true)
+            .expect("include_hidden=true");
+        let names: Vec<&str> = with_hidden.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![".private.ts", "helpers.ts"],
+            "include_hidden=true surfaces dotfiles, still alphabetical"
+        );
+    }
+
+    #[test]
+    fn list_dir_reports_file_size_only_for_files() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let r = engine.list_dir("src", false).expect("list");
+        for entry in &r.entries {
+            match entry.kind {
+                FsEntryKind::File => assert!(
+                    entry.size_bytes.is_some(),
+                    "{}: file must report size_bytes",
+                    entry.name
+                ),
+                FsEntryKind::Directory => assert!(
+                    entry.size_bytes.is_none(),
+                    "{}: directory must NOT report size_bytes",
+                    entry.name
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn list_dir_rejects_non_directory_path_loud() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let err = engine
+            .list_dir("src/main.ts", false)
+            .expect_err("listing a file (not a dir) must fail loud");
+        assert!(err.to_string().contains("not a directory"));
+    }
+
+    #[test]
+    fn list_dir_for_missing_path_returns_not_found() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let err = engine
+            .list_dir("src/nonexistent", false)
+            .expect_err("missing directory must fail loud");
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn list_dir_handles_empty_directory_cleanly() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let r = engine
+            .list_dir("src/empty_dir", false)
+            .expect("empty dir lists cleanly");
+        assert_eq!(r.entries.len(), 0);
+        assert_eq!(r.total_count, 0);
+    }
+
+    // ── glob_match ──────────────────────────────────────────────────
+
+    #[test]
+    fn glob_matches_files_by_extension_recursively() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let r = engine
+            .glob_match("**/*.ts", None)
+            .expect("glob must succeed");
+        assert!(r.success);
+        // Should match main.ts + helpers.ts (NOT .private.ts —
+        // hidden files excluded by ignore's standard filters).
+        assert!(
+            r.matches.iter().any(|p| p == "src/main.ts"),
+            "expected src/main.ts in matches: {:?}",
+            r.matches
+        );
+        assert!(
+            r.matches.iter().any(|p| p == "src/utils/helpers.ts"),
+            "expected src/utils/helpers.ts in matches: {:?}",
+            r.matches
+        );
+        // Matches are sorted for determinism.
+        let mut sorted = r.matches.clone();
+        sorted.sort();
+        assert_eq!(r.matches, sorted, "matches must be sorted alphabetically");
+        assert!(!r.truncated);
+    }
+
+    #[test]
+    fn glob_scoped_to_subdirectory_via_root_param() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let r = engine
+            .glob_match("**/*.ts", Some("src/utils"))
+            .expect("scoped glob must succeed");
+        // Only helpers.ts should match — main.ts is outside src/utils.
+        assert_eq!(
+            r.matches,
+            vec!["src/utils/helpers.ts".to_string()],
+            "root param must scope the walk: {:?}",
+            r.matches
+        );
+    }
+
+    #[test]
+    fn glob_with_no_matches_returns_empty_not_error() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let r = engine
+            .glob_match("**/*.nope", None)
+            .expect("no matches != error");
+        assert!(r.success);
+        assert!(r.matches.is_empty());
+        assert_eq!(r.total_matches, 0);
+        assert!(!r.truncated);
+    }
+
+    #[test]
+    fn glob_rejects_bad_pattern_loud() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let err = engine
+            .glob_match("[invalid", None)
+            .expect_err("malformed glob must fail loud");
+        assert!(err.to_string().contains("bad pattern"));
+    }
+
+    #[test]
+    fn glob_rejects_root_outside_workspace_via_path_security() {
+        let (_dir, engine) = setup_engine_with_tree();
+        let err = engine
+            .glob_match("**/*", Some("../escape"))
+            .expect_err("workspace escape must fail loud");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Security") || msg.contains("escape"),
+            "PathSecurity layer must surface: {msg}"
+        );
+    }
+
+    // ── concurrency stress test ─────────────────────────────────────
+    //
+    // Per [field manual §4.2](docs/architecture/COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md):
+    // multi-thread tokio for any handler that holds state across
+    // calls. FileEngine is &self read-only here, but workspaces are
+    // shared across personas — N concurrent reads must NOT interfere.
+    //
+    // The test fires 32 concurrent exists/list/glob ops and verifies
+    // every result is internally consistent.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn introspection_under_concurrent_load_returns_consistent_results() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        for i in 0..10 {
+            fs::write(dir.path().join(format!("src/file_{i}.ts")), "x").unwrap();
+        }
+        let security = PathSecurity::new(dir.path()).unwrap();
+        let engine = std::sync::Arc::new(FileEngine::new("test-persona", security));
+
+        const PARALLEL: usize = 32;
+        let mut tasks = Vec::with_capacity(PARALLEL);
+        for i in 0..PARALLEL {
+            let engine = engine.clone();
+            tasks.push(tokio::spawn(async move {
+                // Each task does the trio: exists + list + glob.
+                let target = format!("src/file_{}.ts", i % 10);
+                let exists = engine.exists(&target).expect("exists");
+                let list = engine.list_dir("src", false).expect("list");
+                let glob = engine.glob_match("**/*.ts", None).expect("glob");
+                (exists, list, glob)
+            }));
+        }
+        let results: Vec<_> = futures::future::join_all(tasks)
+            .await
+            .into_iter()
+            .map(|r| r.expect("task must not panic"))
+            .collect();
+
+        for (exists, list, glob) in &results {
+            // exists: always finds something (we round-robin file_0..9)
+            assert!(exists.exists);
+            assert_eq!(exists.kind, Some(FsEntryKind::File));
+            // list: always returns the 10 src files
+            assert_eq!(list.total_count, 10, "list result must be stable across concurrent reads");
+            // glob: always returns the 10 src files
+            assert_eq!(
+                glob.total_matches, 10,
+                "glob must return all 10 matches regardless of concurrent siblings"
+            );
+        }
     }
 }

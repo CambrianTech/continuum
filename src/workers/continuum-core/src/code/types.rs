@@ -224,6 +224,123 @@ pub struct GitStatusInfo {
     pub error: Option<String>,
 }
 
+/// Kind of filesystem entry reported by `code/exists` and `code/list`.
+/// Coalesced into one enum so a single value covers presence + type,
+/// avoiding two round trips for the common "does this exist and is
+/// it a file or a directory?" question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/code/FsEntryKind.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum FsEntryKind {
+    /// Regular file (`is_file`).
+    File,
+    /// Directory (`is_dir`).
+    Directory,
+    /// Symbolic link (`is_symlink`). `code/list` follows symlinks by
+    /// default when reporting size; `code/exists` reports the link
+    /// itself without following.
+    Symlink,
+    /// Anything else (block device, fifo, etc.) — preserved so the
+    /// substrate doesn't lie about presence even for exotic entries.
+    Other,
+}
+
+/// Result of `code/exists`. Presence + kind in one value so a caller
+/// can decide whether to overwrite vs. create vs. bail in a single
+/// roundtrip.
+///
+/// `exists: false` always means no entry at the path; `kind` is
+/// `None` in that case. When `exists: true`, `kind` is always set
+/// (never `None`).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/code/ExistsResult.ts")]
+pub struct ExistsResult {
+    pub success: bool,
+    pub exists: bool,
+    pub file_path: String,
+    #[ts(optional)]
+    pub kind: Option<FsEntryKind>,
+    /// File size in bytes when `kind == File`; `None` for directories,
+    /// symlinks, or missing entries.
+    #[ts(optional, type = "number")]
+    pub size_bytes: Option<u64>,
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+
+/// One entry in a `code/list` response — a flat directory listing.
+/// Compact: just enough info for a persona to decide whether to
+/// recurse, edit, or skip. For richer recursive output, callers use
+/// `code/tree` instead.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/code/DirEntry.ts")]
+pub struct DirEntry {
+    /// Bare entry name (no path separators).
+    pub name: String,
+    /// Path relative to the workspace root.
+    pub path: String,
+    pub kind: FsEntryKind,
+    /// File size in bytes when `kind == File`; `None` otherwise.
+    #[ts(optional, type = "number")]
+    pub size_bytes: Option<u64>,
+}
+
+/// Result of `code/list`. Flat — no recursion. Hidden entries
+/// (`.git`, `.continuum`, dotfiles) are excluded by default; callers
+/// pass `include_hidden: true` to see them.
+///
+/// Sorted: directories first (alphabetical), then files
+/// (alphabetical). Predictable ordering matters for persona
+/// reproducibility — a generator that picks "first available name"
+/// gets the same answer every run.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/code/ListResult.ts")]
+pub struct ListResult {
+    pub success: bool,
+    pub directory_path: String,
+    pub entries: Vec<DirEntry>,
+    pub total_count: u32,
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+
+/// Result of `code/glob`. Matches are workspace-relative paths,
+/// sorted alphabetically for determinism.
+///
+/// The glob runs scoped to the workspace root unless `root` is set
+/// on the input — `PathSecurity::validate_read` enforces both
+/// boundaries.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/code/GlobResult.ts")]
+pub struct GlobResult {
+    pub success: bool,
+    pub pattern: String,
+    /// Workspace-relative paths of matching entries, sorted.
+    pub matches: Vec<String>,
+    pub total_matches: u32,
+    /// True when the result was truncated to `GLOB_MAX_MATCHES`. The
+    /// substrate caps glob output so a runaway recursive pattern
+    /// (double-star slash star) doesn't OOM the caller — partial
+    /// results are still useful.
+    ///
+    /// Pattern is intentionally spelled in words rather than glyphs:
+    /// the literal sequence round-trips through ts-rs into a JSDoc
+    /// block on the TS side, where the comment-close glyph
+    /// prematurely terminates the doc comment and breaks the
+    /// TypeScript build. See task #62 ("ts-rs binding drift CI
+    /// guard") for the proper substrate-level fix.
+    pub truncated: bool,
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+
+/// Maximum number of paths a single `code/glob` response returns.
+/// Beyond this, the result is truncated with `truncated: true`. Set
+/// generously enough to cover typical "find all rust files in a
+/// module tree" use cases without enabling unbounded memory on a
+/// recursive everything pattern.
+pub const GLOB_MAX_MATCHES: usize = 5_000;
+
 /// Allowed file extensions for write operations.
 pub const ALLOWED_EXTENSIONS: &[&str] = &[
     "ts", "tsx", "js", "jsx", "json", "md", "css", "html", "rs", "toml", "yaml", "yml", "txt",
