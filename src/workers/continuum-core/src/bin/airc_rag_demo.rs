@@ -43,7 +43,24 @@ use continuum_core::persona::rag_capture::{
     JsonlRagCaptureSink, RagCaptureEvent, RagCaptureSink, RecordingRagSource,
 };
 
-const DEMO_AGENT_NAME: &str = "rag-demo";
+const DEFAULT_AGENT_NAME: &str = "rag-demo";
+
+/// Choose which persona to attach as. `CONTINUUM_PERSONA=Paige`
+/// flips the demo from "synthetic seeded rag-demo" to "attach as a
+/// real living persona and show me what their RAG actually looks
+/// like" — answering Joel's directive (2026-05-31): "Look at the rag
+/// for a real room or persona. AIs are gonna need to analyze what's
+/// getting fed into a persona."
+fn persona_name() -> String {
+    std::env::var("CONTINUUM_PERSONA").unwrap_or_else(|_| DEFAULT_AGENT_NAME.to_string())
+}
+
+/// Don't pollute a real persona's transcript with synthetic seed
+/// messages. Skip seeding when the caller explicitly asks for a
+/// real persona via CONTINUUM_PERSONA.
+fn should_seed_messages() -> bool {
+    std::env::var("CONTINUUM_PERSONA").is_err()
+}
 
 /// One profile: a synthetic "what context window am I pretending to
 /// have" + the source budget that goes with it.
@@ -130,25 +147,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("✓ default channel resolved: {default_channel}");
 
-    // 3. Attach the demo persona via airc-lib.
+    // 3. Attach the persona via airc-lib (default `rag-demo`;
+    //    override with CONTINUUM_PERSONA=<name> to attach as a real
+    //    living persona like Paige).
+    let agent = persona_name();
     let root = continuum_root();
     let home = root
         .join("personas")
-        .join(DEMO_AGENT_NAME)
+        .join(&agent)
         .join("airc");
     tokio::fs::create_dir_all(&home).await?;
-    let airc = match airc_lib::Airc::attach_as(home.clone(), DEMO_AGENT_NAME, socket_path.clone())
+    let airc = match airc_lib::Airc::attach_as(home.clone(), &agent, socket_path.clone())
         .await
     {
         Ok(a) => a,
         Err(e) => {
             println!("⚠️  attach_as failed: {e}");
-            println!("    Remedy: check that ~/.continuum/personas/{DEMO_AGENT_NAME}/airc is writable + airc-lib is current.");
+            println!("    Remedy: check that ~/.continuum/personas/{agent}/airc is writable + airc-lib is current.");
             return Ok(());
         }
     };
-    let persona_id = airc.peer_id().as_uuid(); // synthesize a persona_id from the keypair
-    println!("✓ demo persona attached: name={DEMO_AGENT_NAME} peer_id={}", airc.peer_id());
+    let persona_id = airc.peer_id().as_uuid();
+    println!("✓ persona attached: name={agent} peer_id={}", airc.peer_id());
 
     // Join the discovered room so page_recent has something to read.
     let _ = airc
@@ -157,26 +177,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("join failed: {e}"))?;
     println!("✓ joined room {default_channel}");
 
-    // Seed a few self-messages so a fresh rag-demo persona has
-    // something to page back. Real-world personas accumulate this
-    // over their lifetime; the demo bootstraps it deterministically.
-    let seed_lines = [
-        "rag-demo: integration smoke — turn 1",
-        "rag-demo: substrate L1 budget over real airc transcript",
-        "rag-demo: no-clipping doctrine respected by source",
-        "rag-demo: capture trace written for replay",
-    ];
-    for line in seed_lines.iter() {
-        let _ = airc.say(line).await;
+    // Seed a few self-messages ONLY for the synthetic rag-demo persona.
+    // Real personas (CONTINUUM_PERSONA set) keep their transcript clean.
+    if should_seed_messages() {
+        let seed_lines = [
+            "rag-demo: integration smoke — turn 1",
+            "rag-demo: substrate L1 budget over real airc transcript",
+            "rag-demo: no-clipping doctrine respected by source",
+            "rag-demo: capture trace written for replay",
+        ];
+        for line in seed_lines.iter() {
+            let _ = airc.say(line).await;
+        }
+        println!("✓ seeded {} self-messages", seed_lines.len());
+    } else {
+        println!("✓ real persona — no synthetic seeding (transcript stays clean)");
     }
-    println!("✓ seeded {} self-messages", seed_lines.len());
 
     // 4. Build the AircRagSource around the live Airc.
     let reader: Arc<dyn AircTranscriptReader> = Arc::new(airc);
     let airc_source = AircRagSource::new(persona_id, reader).with_fetch_limit(100);
 
     // 5. Capture sink: JSONL under the persona's home.
-    let traces_dir = root.join("personas").join(DEMO_AGENT_NAME).join("rag-traces");
+    let traces_dir = root.join("personas").join(&agent).join("rag-traces");
     tokio::fs::create_dir_all(&traces_dir).await?;
     let trace_path = traces_dir.join("demo-run.jsonl");
     let sink: Arc<dyn RagCaptureSink> =
@@ -260,16 +283,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         if delivery.items.is_empty() {
-            println!("  (no items — room may be empty; try `airc msg \"hello\"` in a different scope to seed)");
+            println!("  (no items — room empty for this persona, or all events were non-text)");
         } else {
-            let preview_count = delivery.items.len().min(3);
+            // Deep introspection: dump per-item content + scoring +
+            // metadata so an AI (or human) can honestly look at what
+            // would be fed into the prompt. Joel (2026-05-31): "AIs
+            // are gonna need to analyze what's getting fed into a
+            // persona. Also why replay was important. That way we
+            // can take an honest look at each prompt."
+            let preview_count = delivery.items.len().min(5);
             for (i, item) in delivery.items.iter().take(preview_count).enumerate() {
-                let snippet: String = item.content.chars().take(80).collect();
+                let score = item
+                    .metadata
+                    .get("score")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let lamport = item
+                    .metadata
+                    .get("lamport")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let peer_short = item
+                    .metadata
+                    .get("peer_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.chars().take(8).collect::<String>())
+                    .unwrap_or_else(|| "????".to_string());
+                let occurred_at_ms = item
+                    .metadata
+                    .get("occurred_at_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let age_s = if occurred_at_ms > 0 && now_ms > occurred_at_ms {
+                    (now_ms - occurred_at_ms) / 1_000
+                } else {
+                    0
+                };
+                let snippet: String = item.content.chars().take(120).collect();
                 println!(
-                    "    [{i}] ({} tokens) {}{}",
-                    item.tokens,
-                    snippet,
-                    if item.content.len() > 80 { "…" } else { "" }
+                    "    [{i:>2}] tokens={:>4} score={:.3} lamport={lamport:<5} peer={peer_short} age={age_s}s",
+                    item.tokens, score
+                );
+                println!(
+                    "         │ {}{}",
+                    snippet.replace('\n', " ⏎ "),
+                    if item.content.chars().count() > 120 { " …" } else { "" }
                 );
             }
             if delivery.items.len() > preview_count {
