@@ -16,6 +16,7 @@ pub mod admission_state;
 pub mod airc_admission;
 pub mod airc_runtime;
 pub mod airc_runtime_registry;
+pub mod airc_source;
 pub mod allocator;
 pub mod channel_items;
 pub mod channel_queue;
