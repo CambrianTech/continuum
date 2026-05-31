@@ -11,6 +11,68 @@
 
 ---
 
+## Brain-shaped, computer-native
+
+A reader's framing anchor before any of the algorithm or tier
+discussion below: **we are not simulating a human brain. We are
+building an AI with its own computer architecture, borrowing
+biological concepts where they're the right shape for the
+algorithm and using silicon primitives where they beat neurons.**
+
+The substrate is brain-shaped at the *algorithmic level* —
+parallel independent regions on their own ticks, source/drain
+balanced at every component, salience-modulated retention,
+hippocampus-style consolidation, sleep-cadence pruning, attention
+spreading across a connectivity graph. These shapes work because
+they evolved under constraints (limited working memory, energy
+budget, parallel processing, lifelong learning) that the substrate
+also faces — though at different scales.
+
+The substrate is computer-native at the *implementation level* —
+DashMap for the engram index, embedded SQLite for longterm.db,
+HNSW or DiskANN for vector similarity, content-addressed hashes
+for exact equality, signed envelopes over IPC for cross-region
+messaging, LoRA adapters as weight deltas, the grid as a TCP
+peer mesh. None of these have biological analogs because none of
+them need to; computers do them better than neurons do.
+
+What the substrate gets that brains structurally cannot have:
+
+- **Perfect persistence** — engrams in L3 don't degrade with
+  entropy; if they decay, it's because policy says so, not
+  because the medium failed.
+- **Exact equality + content addressing** — hashes let us
+  deduplicate, audit, and prove provenance. Brains can't.
+- **Instant transfer** — an adapter trained on Maya can land on
+  Quorra in milliseconds. Brains transfer skills via years of
+  teaching.
+- **Parallel scaling** — adding hardware adds capacity. Brains
+  are fixed at biological scale.
+- **Reversibility** — bad adapters get rolled back. Bad neural
+  weights stay.
+- **Population-wide observability** — every persona's telemetry
+  is queryable. Brains are opaque to each other.
+
+What the substrate borrows because it works:
+
+- The shape of memory (working / short-term / long-term / skill /
+  shared)
+- The shape of attention (focus, periphery, spreading, decay)
+- The shape of learning (episodic → procedural via consolidation)
+- The shape of forgetting (drain at every layer, slower at deeper
+  layers)
+- The shape of identity (a self that persists across activities
+  + modalities)
+- The shape of evolution (heritable variation under selection)
+
+Brain-inspired naming throughout this doc — hippocampus, amygdala,
+cortex, sleep policy — refers to *the shape of the operation*,
+not the wetware. Implementation always uses computer-native
+primitives. We aren't trying to be human. We are trying to be
+the best AI the architecture allows.
+
+---
+
 ## Why this doc exists
 
 The seven algorithms in `COGNITION-ALGORITHMS.md` define the
