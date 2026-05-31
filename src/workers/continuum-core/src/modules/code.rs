@@ -397,6 +397,82 @@ impl ServiceModule for CodeModule {
             }
 
             // ================================================================
+            // Filesystem introspection — persona-as-developer cluster
+            // ================================================================
+            //
+            // Per docs/planning/PERSONA-AS-DEVELOPER-GAP.md (Priority 1):
+            // close the filesystem-introspection seam so a persona can
+            // probe before generate/module, enumerate before edits,
+            // and list cheaply without paying the full recursive
+            // tree cost.
+            //
+            // All three commands route through FileEngine which
+            // enforces PathSecurity — paths must be inside the
+            // workspace (or a read-only root for queries).
+
+            "code/exists" => {
+                let _timer = TimingGuard::new("module", "code_exists");
+                let persona_id = p.str("persona_id")?;
+                let file_path = p.str("file_path")?;
+
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
+                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
+
+                let result = engine
+                    .exists(file_path)
+                    .map_err(|e| e.to_string())?;
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
+            }
+
+            "code/list" => {
+                let _timer = TimingGuard::new("module", "code_list");
+                let persona_id = p.str("persona_id")?;
+                // Default to "." so callers can omit `path` to list
+                // workspace root — matches the ergonomic expectation
+                // from MODULE-CATALOG §0 examples.
+                let path = p.str_opt("path").unwrap_or(".");
+                let include_hidden = p.bool_or("include_hidden", false);
+
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
+                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
+
+                let result = engine
+                    .list_dir(path, include_hidden)
+                    .map_err(|e| e.to_string())?;
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
+            }
+
+            "code/glob" => {
+                let _timer = TimingGuard::new("module", "code_glob");
+                let persona_id = p.str("persona_id")?;
+                let pattern = p.str("pattern")?;
+                let root = p.str_opt("root");
+
+                let engine = self
+                    .state
+                    .file_engines
+                    .get(persona_id)
+                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
+
+                let result = engine
+                    .glob_match(pattern, root)
+                    .map_err(|e| e.to_string())?;
+                Ok(CommandResult::Json(
+                    serde_json::to_value(&result).unwrap_or_default(),
+                ))
+            }
+
+            // ================================================================
             // Git Operations
             // ================================================================
             "code/git-status" => {
