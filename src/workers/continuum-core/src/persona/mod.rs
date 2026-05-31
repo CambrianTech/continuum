@@ -23,6 +23,7 @@ pub mod channel_registry;
 pub mod channel_types;
 pub mod cognition;
 pub mod cognition_io;
+pub mod decay_tick;
 pub mod domain_classifier;
 pub mod engram;
 pub mod engram_graph;
