@@ -237,6 +237,20 @@ impl AIProviderModule {
         // 5: Fireworks
         // 6: XAI
         // 7: Google
+        // 99: Heuristic (always-available CI/sandbox/replay peer)
+
+        // Heuristic adapter: unconditional, no API key required. Per
+        // [[inference-is-an-adapter-always-in-the-loop]] this is the
+        // first-class fake peer that lets every test/CI/sandbox/replay
+        // path go through the inference command without GGUFs or
+        // cloud keys. Lowest priority (99) so it never auto-selects
+        // over real adapters — opt-in via `provider: "heuristic"`.
+        self.log()
+            .info("Registering Heuristic adapter (unconditional, deterministic stand-in)");
+        registry.register(
+            Box::new(crate::ai::HeuristicInferenceAdapter::new()),
+            99,
+        );
 
         // Only register adapters that have API keys configured
         if get_secret("DEEPSEEK_API_KEY").is_some() {

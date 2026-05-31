@@ -22,6 +22,7 @@
 
 pub mod adapter;
 pub mod anthropic_adapter;
+pub mod heuristic_adapter;
 pub mod openai_adapter;
 pub mod registry_bridge;
 pub mod types;
@@ -32,6 +33,7 @@ pub use adapter::{
     LoRAAdapterInfo, LoRACapabilities,
 };
 pub use anthropic_adapter::AnthropicAdapter;
+pub use heuristic_adapter::{HeuristicInferenceAdapter, HEURISTIC_DEFAULT_MODEL, HEURISTIC_PROVIDER_ID};
 pub use openai_adapter::OpenAICompatibleAdapter;
 pub use types::{
     ActiveAdapterRequest, ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest,
