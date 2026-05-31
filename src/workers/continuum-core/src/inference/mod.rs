@@ -31,6 +31,7 @@
 
 pub mod backends;
 pub mod footprint_registry;
+pub mod handle_store;
 pub mod kv_quant;
 pub mod llamacpp_adapter;
 pub mod llm_module;
