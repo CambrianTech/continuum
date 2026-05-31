@@ -2,11 +2,50 @@
 
 > **Premise** (Joel, 2026-05-16): *"The most effective designs are fundamentally simple. Every concern is hundreds of lines, and yet everything is performant. How do we make the others perform like CBAR in Continuum?"*
 >
-> **Companion to** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) (the substrate floor), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (the artifact economy), and [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) (the cognition contract).
+> **Companion to** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) (the substrate floor), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (the artifact economy), [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) (the cognition contract), and [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md) (the module-author field manual).
 >
-> **Status.** Design proposal. Per-module Rust files target `src/workers/continuum-core/src/` under the indicated directories. Implementation lands per ALPHA-GAP lanes.
+> **Status.** Most entries are design proposals targeting per-module Rust files under `src/workers/continuum-core/src/`. **Some are now live in Rust** — see [§0 below](#0-currently-live-in-rust). Implementation lands per ALPHA-GAP lanes.
 
 This document is the **catalog**. Every Continuum concern — RAG, persona, memory, voice, vision, inference, sentinel, foundry, federation, live, AIRC bridge, governor, and the rest — shown as a focused `RuntimeModule`. Each entry names what the module *needs* (subscriptions), what it *provides* (emissions), its resource class + target, its cadence, a screen-or-less handler sketch, and an honest line-count estimate.
+
+## §0. Currently Live In Rust
+
+As of 2026-05-30, the following modules ship Rust implementations. Each has a per-module design doc capturing role, command surface, state model, concurrency contract, migration notes, and kinks found. New entries land here as additional modules clear the [field manual §7 acceptance criteria](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md).
+
+| Module | What ships | PR | Design doc | Concurrency proven |
+|---|---|---|---|---|
+| **`chat`** | `chat/poll` (read) + `chat/send` (dual-write with airc) | [#1489](https://github.com/CambrianTech/continuum/pull/1489) | [CHAT-MODULE.md](CHAT-MODULE.md) | ✅ 4 multi-thread stress tests |
+| **`generator`** | `generate/module` (scaffolds new ServiceModules per [§3 of field manual](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md)) | [#1487](https://github.com/CambrianTech/continuum/pull/1487) + [#1494](https://github.com/CambrianTech/continuum/pull/1494) v2 enriched scaffold | [GENERATOR-MODULE.md](GENERATOR-MODULE.md) | ✅ 3 multi-thread stress tests (caught + fixed silent torn-state race) |
+| **`data` cursors** | `data/query-{open,next,close}` with typed `HandleRef` + back-compat `queryId` | [#1490](https://github.com/CambrianTech/continuum/pull/1490) | [DATA-CURSORS-MODULE.md](DATA-CURSORS-MODULE.md) | ✅ 7 stress tests (caught + fixed read-then-async-then-write race) |
+| **`airc/realtime-store`** | In-process realtime envelope store (bounded replay, coalesced presence, capability index) — moment-of-truth substrate | shipped pre-session; tests in [#1492](https://github.com/CambrianTech/continuum/pull/1492) | [AIRC-REALTIME-STORE-MODULE.md](AIRC-REALTIME-STORE-MODULE.md) | ✅ 4 stress tests pinning moment-of-truth invariants |
+
+### Substrate primitives that landed alongside
+
+The Rust implementations above ride on substrate work codified in [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md):
+
+| Primitive | What it gives a module author | PR |
+|---|---|---|
+| `ServiceModule` trait | The one trait every module implements | landed pre-session |
+| `CommandInterceptor` chain | Local Rust / grid / airc / TS dispatch composed in one chain | [#1483](https://github.com/CambrianTech/continuum/pull/1483) + [#1484](https://github.com/CambrianTech/continuum/pull/1484) |
+| `HandleRef` + cell shapes | Typed reference to producer-owned state; the long-running-work primitive | [#1485](https://github.com/CambrianTech/continuum/pull/1485) |
+| `CommandRequest<P>` / `CommandResponse<T>` | Typed envelopes around params + result, with cross-cutting fields free | [#1486](https://github.com/CambrianTech/continuum/pull/1486) |
+| `HandleRef::expect_owned_by` + `CommandRequest::handle_id_or_legacy` | Canonical handle validation + dual-shape migration resolver — distilled from data cursor consumer | [#1491](https://github.com/CambrianTech/continuum/pull/1491) |
+| Field manual + per-module design template | The 8-section author guide + canonical directory shape | [#1493](https://github.com/CambrianTech/continuum/pull/1493) |
+| Generator v2 (eats own dogfood) | Emits modules matching the design template; new modules scaffolded, not hand-written | [#1494](https://github.com/CambrianTech/continuum/pull/1494) |
+
+### The three primitives map ([memory: three-primitives-commands-events-persona](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md))
+
+Per Joel 2026-05-30: *"Continuum is exactly three primitives — Commands, Events, Persona — in Rust. airc handles grid. Widgets are thin event-subscribers + command-callers. Everything else is supporting cast."*
+
+The currently-live modules map cleanly:
+
+- **Commands**: `chat/poll`, `chat/send`, `generate/module`, `data/query-*` — all the kernel-routable operations
+- **Events**: `airc/realtime-store` — the in-process event substrate; chat/send publishes here via `airc/realtime-publish`; persona inboxes drain here via `airc/realtime-replay`
+- **Persona**: not directly listed above — personas consume the Commands + Events. The persona's autonomous loop, inbox, and cognition stack are the next migration target (per [memory: headless-rust-must-work-soon](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md))
+
+### The remaining catalog below
+
+Everything in §I–§IX below is **design proposal**. Each entry stays in design state until it (a) gets migrated to Rust per the [field manual's acceptance criteria](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md), (b) gets a per-module design doc, and (c) has multi-thread concurrency tests. When that happens, it earns a row in §0 above.
 
 The architectural claim: when the substrate handles the rest — concurrency, scheduling, pressure response, telemetry, replay, lifecycle, reprojection, demand-aligned recall, governor-mediated sizing — **every concern reduces to a few hundred lines and is performant by inheritance.** That is what "fundamentally simple" means in production.
 
