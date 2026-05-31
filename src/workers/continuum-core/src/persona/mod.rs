@@ -27,6 +27,7 @@ pub mod decay_tick;
 pub mod domain_classifier;
 pub mod engram;
 pub mod engram_graph;
+pub mod engram_source;
 pub mod evaluator;
 pub mod genome_paging;
 pub mod identity_provider;

@@ -260,6 +260,18 @@ impl AdmissionState {
         self.engrams.lock().unwrap().get(idx).cloned()
     }
 
+    /// **Test-only**: push an engram directly into the store without
+    /// running the admission pipeline. Used by sibling modules' tests
+    /// (e.g., `engram_source.rs`) to inject deterministic fixture
+    /// engrams without constructing a full inbox-message + admission
+    /// flow. Per crate-test visibility, this is callable from any
+    /// test elsewhere in continuum-core but NOT from production code
+    /// (the cfg gate ensures it doesn't appear in non-test builds).
+    #[cfg(test)]
+    pub fn push_for_test(&self, engram: Engram) {
+        self.engrams.lock().unwrap().push(engram);
+    }
+
     /// True iff `content_hash` is recorded as seen in the dedup store.
     pub fn is_content_seen(&self, content_hash: &str) -> bool {
         self.seen_content
