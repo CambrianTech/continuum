@@ -27,6 +27,10 @@ path = "src/bin/vrm_inspect.rs"
 name = "cargo-continuum-vdd"
 path = "src/bin/cargo-continuum-vdd.rs"
 
+[[bin]]
+name = "airc_rag_demo"
+path = "src/bin/airc_rag_demo.rs"
+
 [dependencies]
 tokio.workspace = true
 serde.workspace = true
