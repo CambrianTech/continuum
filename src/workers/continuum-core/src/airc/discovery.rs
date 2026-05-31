@@ -28,9 +28,28 @@
 //! discovery module. The fix: stop deriving, start asking.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use tokio::process::Command as TokioCommand;
+use tokio::time::timeout;
 use tracing::{info, warn};
+
+/// Deadline for fast subprocess discovery calls (`which airc`,
+/// `airc ipc-endpoint`, `airc room`). 5s matches airc-ipc's
+/// `DEFAULT_RPC_TIMEOUT` — if the airc binary itself hangs for
+/// longer than this, the whole substrate IPC layer would already be
+/// declaring the daemon dead. We refuse to wait longer.
+///
+/// Per [[no-stdio-piping-for-process-ipc]] memory: every subprocess
+/// wait MUST be bounded; an unbounded `.output().await` is a dead-end.
+const DISCOVERY_SUBPROCESS_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Deadline for the auto-install path. Generous because the install
+/// script runs `curl` + `bash` and on a cold install can clone +
+/// build airc — minutes, legitimately. 120s catches a truly stuck
+/// install without holding boot forever; below this we trust the
+/// installer's own progress.
+const AUTO_INSTALL_DEADLINE: Duration = Duration::from_secs(120);
 
 /// Canonical installer URL. Same one printed at the top of airc's
 /// `install.sh` and in airc's README. Pinning here keeps the curl-pipe-
@@ -101,19 +120,25 @@ pub async fn discover_airc_socket() -> Result<PathBuf, DiscoveryError> {
 }
 
 async fn airc_on_path() -> bool {
-    TokioCommand::new("which")
-        .arg("airc")
-        .output()
+    let probe = TokioCommand::new("which").arg("airc").output();
+    timeout(DISCOVERY_SUBPROCESS_DEADLINE, probe)
         .await
+        .ok()
+        .and_then(|res| res.ok())
         .map(|out| out.status.success())
         .unwrap_or(false)
 }
 
 async fn query_airc_endpoint() -> Result<PathBuf, DiscoveryError> {
-    let out = TokioCommand::new("airc")
-        .arg("ipc-endpoint")
-        .output()
+    let call = TokioCommand::new("airc").arg("ipc-endpoint").output();
+    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
         .await
+        .map_err(|_| {
+            DiscoveryError::EndpointCommandFailed(format!(
+                "`airc ipc-endpoint` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                 — substrate is unresponsive, refusing to wait",
+            ))
+        })?
         .map_err(|e| DiscoveryError::EndpointCommandFailed(e.to_string()))?;
     if !out.status.success() {
         return Err(DiscoveryError::EndpointCommandFailed(format!(
@@ -156,10 +181,15 @@ pub async fn discover_default_channel() -> Result<uuid::Uuid, DiscoveryError> {
             ))
         });
     }
-    let out = TokioCommand::new("airc")
-        .arg("room")
-        .output()
+    let call = TokioCommand::new("airc").arg("room").output();
+    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
         .await
+        .map_err(|_| {
+            DiscoveryError::RoomCommandFailed(format!(
+                "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                 — substrate is unresponsive, refusing to wait",
+            ))
+        })?
         .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
     if !out.status.success() {
         return Err(DiscoveryError::RoomCommandFailed(format!(
@@ -208,12 +238,20 @@ async fn auto_install_airc() -> Result<(), DiscoveryError> {
     // `curl -fsSL <URL> | bash` keeps the bootstrap one-shot and matches
     // airc's own published install instructions (top of `install.sh`,
     // README quickstart). bash -c keeps the pipe in one process so we
-    // can capture the combined exit status.
+    // can capture the combined exit status. Wrapped with
+    // [`AUTO_INSTALL_DEADLINE`] so a hung installer can't pin the boot
+    // loop indefinitely — 120s is generous (clone + cargo build on a
+    // cold machine fits inside it) but bounded.
     let cmd = format!("curl -fsSL {AIRC_INSTALL_URL} | bash");
-    let out = TokioCommand::new("bash")
-        .args(["-c", &cmd])
-        .output()
+    let install = TokioCommand::new("bash").args(["-c", &cmd]).output();
+    let out = timeout(AUTO_INSTALL_DEADLINE, install)
         .await
+        .map_err(|_| {
+            DiscoveryError::InstallFailed(format!(
+                "airc installer did not exit within {AUTO_INSTALL_DEADLINE:?} \
+                 — check network + `curl -fsSL {AIRC_INSTALL_URL}` by hand",
+            ))
+        })?
         .map_err(|e| DiscoveryError::InstallFailed(format!("spawn bash: {e}")))?;
     if !out.status.success() {
         return Err(DiscoveryError::InstallFailed(format!(
