@@ -907,7 +907,35 @@ pub fn start_server(
     // start_server is sync but discovery is async; we're on the main
     // bootstrap thread, not inside a tokio task, so blocking here is
     // safe and gates module registration on the discovery result.
-    let airc_module = Arc::new(rt_handle.block_on(AircModule::discover_and_construct()));
+    //
+    // Outer 180s timeout caps total boot stall. Inner subprocess
+    // waits have their own per-call deadlines (5s socket discovery,
+    // 5s peer_id status, 120s auto-install) but the OUTER call has
+    // no overall budget without this wrapper — a wedged daemon
+    // could theoretically chain stalls beyond what individual
+    // deadlines catch. 180s covers worst-case auto-install + a few
+    // discovery rounds. Reviewer-defect-driven (continuum #1507
+    // finding 6); substrate-is-a-good-citizen "predictable startup"
+    // non-negotiable.
+    const AIRC_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+    let airc_module = Arc::new(rt_handle.block_on(async {
+        match tokio::time::timeout(
+            AIRC_DISCOVERY_TIMEOUT,
+            AircModule::discover_and_construct(),
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(_) => {
+                tracing::error!(
+                    timeout_secs = AIRC_DISCOVERY_TIMEOUT.as_secs(),
+                    "AircModule discovery exceeded outer timeout — falling back to degraded module. \
+                     Server will start; AIRC commands degrade until the operator resolves the daemon issue."
+                );
+                AircModule::new()
+            }
+        }
+    }));
     let persona_bootstrap_deps = airc_module
         .daemon_socket()
         .map(|p| p.to_path_buf())

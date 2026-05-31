@@ -176,21 +176,31 @@ async fn scan_personas_dir(personas_dir: &Path) -> Result<Vec<PersonaIdentityInt
         }
     };
 
-    let mut resumed = Vec::new();
+    // First collect entries, sort by directory name for determinism.
+    // tokio::fs::read_dir yields filesystem-native order which varies
+    // across platforms — without sorting, the boot log line "first
+    // citizen welcomed" depends on the underlying filesystem. Sort
+    // alphabetically so behavior is reproducible. Reviewer-defect-
+    // driven (continuum #1507 finding 7).
+    let mut dir_entries: Vec<std::path::PathBuf> = Vec::new();
     while let Some(entry) = entries.next_entry().await.map_err(|source| {
         PersonaIdentityError::HomeScanFailed {
             path: personas_dir.to_path_buf(),
             source,
         }
     })? {
-        let entry_path = entry.path();
-        // Each direct child of personas/ should be a persona directory
-        // named after her agent_name. Anything that isn't a dir is
-        // an operator artifact (stray file, .DS_Store, etc.) and is
-        // silently ignored.
         if !entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+            // Each direct child of personas/ should be a persona
+            // directory; non-dir entries (stray file, .DS_Store, etc.)
+            // are operator artifacts, silently ignored.
             continue;
         }
+        dir_entries.push(entry.path());
+    }
+    dir_entries.sort();
+
+    let mut resumed = Vec::new();
+    for entry_path in dir_entries {
         let seed_path = entry_path.join("seed.json");
         match read_seed(&seed_path).await {
             Ok(seed) => {

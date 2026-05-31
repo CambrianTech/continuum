@@ -167,19 +167,46 @@ pub async fn write_seed_atomic(
         source: e,
     })?;
 
-    let tmp_path = path.with_extension("json.tmp");
+    // Construct the tmp path explicitly from parent + "<filename>.tmp"
+    // rather than via `path.with_extension("json.tmp")` — the latter
+    // breaks for paths without a `.json` suffix (e.g. `with_extension`
+    // would yield `seed.tmp` for a caller passing `seed`, which would
+    // then rename OVER `seed`). Reviewer-defect-driven (continuum
+    // #1507 finding 3).
+    let parent = path.parent().ok_or_else(|| PersonaSeedError::Io {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "seed path must have a parent directory",
+        ),
+    })?;
+    let filename = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .ok_or_else(|| PersonaSeedError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seed path must have a UTF-8 file name",
+            ),
+        })?;
+    let tmp_path = parent.join(format!("{filename}.tmp"));
 
     // Ensure parent directory exists.
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|source| PersonaSeedError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-    }
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|source| PersonaSeedError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
 
-    // Write to tmp, fsync, then rename.
+    // Write to tmp, fsync the file, rename, then fsync the parent
+    // directory. The directory fsync is what makes the rename
+    // genuinely durable against hard power loss — without it, the
+    // rename may not be in the filesystem journal when the system
+    // crashes, even though the file contents are. Reviewer-defect-
+    // driven (continuum #1507 finding 4); substrate-is-a-good-
+    // citizen "reliable" non-negotiable.
     use tokio::io::AsyncWriteExt;
     let mut file = tokio::fs::File::create(&tmp_path)
         .await
@@ -207,6 +234,23 @@ pub async fn write_seed_atomic(
             path: tmp_path.clone(),
             source,
         })?;
+
+    // Fsync the parent dir so the rename is durable against crash.
+    // Opening dir read-only + sync_all is the standard POSIX
+    // pattern. Errors here are surfaced (the caller knows the
+    // rename happened in-memory but may not be on disk), per
+    // every-error-is-an-opportunity-to-battle-harden — failure to
+    // durably persist is signal, not noise.
+    let dir = tokio::fs::File::open(parent).await.map_err(|source| {
+        PersonaSeedError::Io {
+            path: parent.to_path_buf(),
+            source,
+        }
+    })?;
+    dir.sync_all().await.map_err(|source| PersonaSeedError::Io {
+        path: parent.to_path_buf(),
+        source,
+    })?;
 
     Ok(())
 }

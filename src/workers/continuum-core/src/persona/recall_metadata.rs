@@ -80,6 +80,14 @@ pub struct RecallMetadata {
     pub access_count: u32,
     pub last_accessed_ms: u64,
     pub protected_until_ms: u64,
+    /// Wallclock ms of the most recent `apply_decay` call. The
+    /// registry uses this to compute the actual elapsed time since
+    /// the last decay tick, preventing double-decay when the sleep-
+    /// region tick fires with overlapping windows. Per the
+    /// substrate-is-a-good-citizen "reliable" requirement —
+    /// internal invariants enforced by the data structure, not
+    /// promised in docs.
+    pub last_decayed_ms: u64,
 }
 
 impl Default for RecallMetadata {
@@ -96,6 +104,9 @@ impl Default for RecallMetadata {
             // ordinary pathways). The novelty detector sets this
             // for outliers.
             protected_until_ms: 0,
+            // Initialized when admitted so the first decay tick's
+            // delta is bounded.
+            last_decayed_ms: 0,
         }
     }
 }
@@ -111,9 +122,18 @@ impl RecallMetadata {
     /// duration delta in ms.
     ///
     /// Per Algorithm 4 (COGNITION-ALGORITHMS.md line ~230):
-    /// salience-1.0 has a half-life 9× longer than salience-0.0.
-    /// We implement this as exponential decay with a
-    /// salience-modulated half-life: `half_life = base * (1 + s)^2`.
+    /// salience-1.0 has a half-life that scales by `(1 + s)^2`
+    /// relative to salience-0.0 — for s=1, that's exactly 4×. We
+    /// implement this as exponential decay with a salience-
+    /// modulated half-life: `half_life = base * (1 + s)^2`.
+    ///
+    /// (Algorithm 4's source-of-truth doc mentions a 9× figure as
+    /// the intuitive "high-salience persists much longer" claim;
+    /// the formula it specifies actually produces 4× at s=1. Future
+    /// MemoryParameterAdapter implementations may tune the
+    /// exponent or base to land closer to 9× if telemetry says
+    /// it's the better fit — keeping the formula honest about
+    /// what it currently does.)
     ///
     /// For the base half-life we pick 1 hour as a reasonable
     /// starting heuristic per the methodology adapter pattern —
@@ -174,10 +194,19 @@ impl RecallMetadataRegistry {
     /// Admit a new engram with default metadata. Convenience for
     /// admission pathways that haven't computed a novelty score
     /// yet (e.g., legacy admission paths during migration).
+    ///
+    /// Sets `last_decayed_ms` to the current wallclock so the first
+    /// decay tick's delta is bounded by tick cadence rather than
+    /// by the unix epoch. Without this, an engram admitted just
+    /// before a decay tick fires would observe `delta_ms = now_ms`
+    /// — many decades of decay applied in one call, collapsing
+    /// salience to ~0 immediately.
     pub fn admit_with_defaults(&self, engram_id: Uuid) {
-        self.inner
-            .entry(engram_id)
-            .or_insert_with(RecallMetadata::default);
+        let now = now_ms();
+        self.inner.entry(engram_id).or_insert_with(|| RecallMetadata {
+            last_decayed_ms: now,
+            ..RecallMetadata::default()
+        });
     }
 
     /// Record a recall hit. Atomic increment of access_count +
@@ -213,20 +242,37 @@ impl RecallMetadataRegistry {
     }
 
     /// Apply Algorithm 4's salience-modulated decay to this engram.
-    /// `delta_ms` = wallclock time since this engram's last decay
-    /// application (typically since `last_accessed_ms`, or since
-    /// the prior decay tick if more recent).
+    ///
+    /// The registry computes the elapsed time INTERNALLY from
+    /// `last_decayed_ms` (set on admission, refreshed on each
+    /// successful decay). The caller passes only `now_ms`. This
+    /// makes double-decay structurally impossible — overlapping
+    /// sleep-region tick windows simply observe a shorter delta on
+    /// the second pass. Per the substrate-is-a-good-citizen
+    /// "reliable" rule: invariants enforced by the data structure,
+    /// not by caller discipline.
     ///
     /// No-op if the engram is currently inside its novelty
-    /// protection window (per the [[cognition-cache-hierarchy]]
-    /// one-shot-protection rule).
-    pub fn apply_decay(&self, engram_id: Uuid, delta_ms: u64, now_ms: u64) {
+    /// protection window (per the cognition-cache-hierarchy
+    /// one-shot-protection rule). Also no-op if `last_decayed_ms`
+    /// equals or exceeds `now_ms` (clock skew / racing tick).
+    pub fn apply_decay(&self, engram_id: Uuid, now_ms: u64) {
         self.inner.entry(engram_id).and_modify(|m| {
             if m.is_protected(now_ms) {
                 return;
             }
+            // last_decayed_ms = 0 (admission default) means decay
+            // from admission time; effectively the first tick uses
+            // the full now_ms as delta. Future admission paths can
+            // overwrite last_decayed_ms with the admission time to
+            // bound the first decay window precisely.
+            if now_ms <= m.last_decayed_ms {
+                return;
+            }
+            let delta_ms = now_ms - m.last_decayed_ms;
             let multiplier = m.decay_multiplier(delta_ms);
             m.salience *= multiplier;
+            m.last_decayed_ms = now_ms;
         });
     }
 
@@ -277,11 +323,24 @@ mod tests {
     fn admit_with_defaults_creates_neutral_entry() {
         let r = RecallMetadataRegistry::new();
         let id = Uuid::new_v4();
+        let before = now_ms();
         r.admit_with_defaults(id);
+        let after = now_ms();
         let m = r.get(id).unwrap();
-        assert_eq!(m, RecallMetadata::default());
+        // Salience/access/protected fields match Default; last_decayed_ms
+        // is stamped to wallclock (so the first decay tick has a bounded
+        // delta), so compare it separately as a range rather than ==.
         assert_eq!(m.salience, 0.5);
         assert_eq!(m.access_count, 0);
+        assert_eq!(m.last_accessed_ms, 0);
+        assert_eq!(m.protected_until_ms, 0);
+        assert!(
+            m.last_decayed_ms >= before && m.last_decayed_ms <= after,
+            "last_decayed_ms ({}) should be within [{}, {}]",
+            m.last_decayed_ms,
+            before,
+            after
+        );
     }
 
     #[test]
@@ -294,6 +353,7 @@ mod tests {
             access_count: 0,
             last_accessed_ms: 0,
             protected_until_ms: 1000,
+            last_decayed_ms: 0,
         };
         r.admit(id, custom);
         assert_eq!(r.get(id).unwrap(), custom);
@@ -346,16 +406,19 @@ mod tests {
             access_count: 0,
             last_accessed_ms: 0,
             protected_until_ms: 0,
+            // last_decayed_ms = 0; first decay tick at t=2h applies
+            // 2h of decay.
+            last_decayed_ms: 0,
         };
         r.admit(id, m);
 
-        // Apply 2 hours of decay (well past the half-life for
-        // salience=0.8). Salience should drop significantly.
         let two_hours_ms: u64 = 7_200_000;
-        r.apply_decay(id, two_hours_ms, two_hours_ms);
+        r.apply_decay(id, two_hours_ms);
         let decayed = r.get(id).unwrap();
         assert!(decayed.salience < 0.8, "got {}", decayed.salience);
         assert!(decayed.salience > 0.0);
+        // last_decayed_ms advanced to now_ms.
+        assert_eq!(decayed.last_decayed_ms, two_hours_ms);
     }
 
     #[test]
@@ -366,21 +429,19 @@ mod tests {
             salience: 0.8,
             access_count: 0,
             last_accessed_ms: 0,
-            // Protection window extends well into the future.
             protected_until_ms: 100_000_000_000,
+            last_decayed_ms: 0,
         };
         r.admit(id, m);
 
         // Try to decay during protection window. Should be no-op.
-        r.apply_decay(id, 7_200_000, 1_000_000);
+        r.apply_decay(id, 1_000_000);
         let after = r.get(id).unwrap();
         assert_eq!(after.salience, 0.8, "protection window failed to prevent decay");
     }
 
     #[test]
     fn high_salience_decays_slower_than_low() {
-        // Algorithm 4 invariant: salience-1.0 has a half-life 4×
-        // longer than salience-0.0 (we use (1+s)^2 multiplier).
         let r = RecallMetadataRegistry::new();
         let low_id = Uuid::new_v4();
         let high_id = Uuid::new_v4();
@@ -400,19 +461,43 @@ mod tests {
         );
 
         let one_hour_ms: u64 = 3_600_000;
-        // Note: both engrams start at access_count=0, last_accessed=0,
-        // protected_until=0 so neither is protected and decay applies.
-        r.apply_decay(low_id, one_hour_ms, one_hour_ms);
-        r.apply_decay(high_id, one_hour_ms, one_hour_ms);
+        r.apply_decay(low_id, one_hour_ms);
+        r.apply_decay(high_id, one_hour_ms);
         let low_after = r.get(low_id).unwrap();
         let high_after = r.get(high_id).unwrap();
-        // Low: ~0.0 (already at 0, no further decay matters)
         assert!(low_after.salience < 0.5);
-        // High: still > 0.7 after one hour (because half-life is 4h)
         assert!(
             high_after.salience > 0.7,
             "high-salience decayed too fast: {}",
             high_after.salience
+        );
+    }
+
+    #[test]
+    fn apply_decay_twice_with_overlapping_windows_is_safe() {
+        // Reviewer-defect-driven: prove the double-decay defect is
+        // structurally impossible. Two ticks with overlapping
+        // "now" deltas should NOT produce 2× decay; the second tick
+        // simply observes the shortened remaining delta.
+        let r = RecallMetadataRegistry::new();
+        let id = Uuid::new_v4();
+        r.admit(
+            id,
+            RecallMetadata {
+                salience: 0.8,
+                last_decayed_ms: 0,
+                ..Default::default()
+            },
+        );
+        // First tick at t=2h.
+        r.apply_decay(id, 7_200_000);
+        let after_first = r.get(id).unwrap();
+        // Second tick at t=2h (same instant — double-fire).
+        r.apply_decay(id, 7_200_000);
+        let after_second = r.get(id).unwrap();
+        assert_eq!(
+            after_first.salience, after_second.salience,
+            "double-fire at same now_ms should be a no-op (delta=0)"
         );
     }
 
