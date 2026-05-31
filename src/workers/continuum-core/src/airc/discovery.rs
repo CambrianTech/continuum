@@ -59,6 +59,10 @@ pub enum DiscoveryError {
     EndpointCommandFailed(String),
     #[error("`airc ipc-endpoint` returned an empty path — airc binary may be from before #1095 (add the command or upgrade airc)")]
     EmptyPath,
+    #[error("`airc room` failed: {0}")]
+    RoomCommandFailed(String),
+    #[error("`airc room` output did not contain a parseable `channel: <uuid>` line: {0}")]
+    UnparseableChannel(String),
 }
 
 /// Discover the airc daemon socket path. See module docs for resolution
@@ -125,6 +129,81 @@ async fn query_airc_endpoint() -> Result<PathBuf, DiscoveryError> {
     Ok(PathBuf::from(path))
 }
 
+/// Discover the airc scope's current room channel UUID. The owner-core
+/// model requires `AttachRequest.channel` be set explicitly (per-channel
+/// router subscriptions, no global fan-out) — so the inbound attach
+/// path needs a specific channel before it can stream events.
+///
+/// Resolution order:
+///  1. `$AIRC_DEFAULT_CHANNEL` env override — explicit UUID for tests
+///     or operators with multi-room scopes who want to pin the first
+///     attach.
+///  2. Parse `airc room` output for the `channel: <uuid>` line — that's
+///     the scope's current default room, the one `airc msg`/`airc send`
+///     publish to.
+///
+/// Future work: when airc adds `airc room --print-channel` (mirroring
+/// the `airc ipc-endpoint` decoupling pattern), switch to that flag for
+/// stability — the current parser is robust to whitespace but coupled
+/// to airc's human-prose stdout format.
+pub async fn discover_default_channel() -> Result<uuid::Uuid, DiscoveryError> {
+    const AIRC_DEFAULT_CHANNEL_ENV: &str = "AIRC_DEFAULT_CHANNEL";
+    if let Some(raw) = std::env::var_os(AIRC_DEFAULT_CHANNEL_ENV) {
+        let raw = raw.to_string_lossy().trim().to_string();
+        return raw.parse::<uuid::Uuid>().map_err(|e| {
+            DiscoveryError::UnparseableChannel(format!(
+                "{AIRC_DEFAULT_CHANNEL_ENV}={raw:?} is not a valid UUID: {e}"
+            ))
+        });
+    }
+    let out = TokioCommand::new("airc")
+        .arg("room")
+        .output()
+        .await
+        .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+    if !out.status.success() {
+        return Err(DiscoveryError::RoomCommandFailed(format!(
+            "exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    parse_channel_from_room_output(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Extract the `channel: <uuid>` line from `airc room` stdout.
+///
+/// Output today (from airc rust-rewrite branch, as of this PR):
+/// ```text
+/// room:    continuum
+/// wire:    /Users/joel/.airc/wires/continuum
+/// channel: 11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa
+/// ```
+///
+/// We match the literal `channel:` label (case-insensitive) followed by
+/// whitespace and a UUID — robust to alignment changes but coupled to
+/// the label name. If airc renames this field, the parser fails loudly
+/// (UnparseableChannel error) rather than silently misreading.
+fn parse_channel_from_room_output(stdout: &str) -> Result<uuid::Uuid, DiscoveryError> {
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed
+            .strip_prefix("channel:")
+            .or_else(|| trimmed.strip_prefix("Channel:"))
+            .or_else(|| trimmed.strip_prefix("CHANNEL:"))
+        else {
+            continue;
+        };
+        let candidate = rest.trim();
+        if let Ok(uuid) = candidate.parse::<uuid::Uuid>() {
+            return Ok(uuid);
+        }
+    }
+    Err(DiscoveryError::UnparseableChannel(format!(
+        "no `channel: <uuid>` line in stdout: {stdout:?}"
+    )))
+}
+
 async fn auto_install_airc() -> Result<(), DiscoveryError> {
     // `curl -fsSL <URL> | bash` keeps the bootstrap one-shot and matches
     // airc's own published install instructions (top of `install.sh`,
@@ -187,5 +266,48 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains(AIRC_INSTALL_URL));
         assert!(msg.contains(AIRC_DISABLE_AUTOINSTALL));
+    }
+
+    #[test]
+    fn parses_channel_from_typical_airc_room_output() {
+        let stdout = "\
+room:    continuum
+wire:    /Users/joel/.airc/wires/continuum
+channel: 11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa
+";
+        let uuid = parse_channel_from_room_output(stdout).expect("parse channel");
+        assert_eq!(
+            uuid,
+            "11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa"
+                .parse::<uuid::Uuid>()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn parses_channel_with_alternate_capitalization_and_whitespace() {
+        let stdout = "  Channel:    11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa\n";
+        let uuid = parse_channel_from_room_output(stdout).expect("parse channel");
+        assert_eq!(
+            uuid,
+            "11c1a7ac-cb85-5ca0-a5b4-2847280ea3fa"
+                .parse::<uuid::Uuid>()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn parser_fails_loud_when_channel_line_absent() {
+        let stdout = "room:    continuum\nwire:    /tmp/x\n";
+        let err = parse_channel_from_room_output(stdout).expect_err("must fail");
+        assert!(matches!(err, DiscoveryError::UnparseableChannel(_)));
+        assert!(err.to_string().contains("no `channel:"));
+    }
+
+    #[test]
+    fn parser_fails_loud_on_non_uuid_after_label() {
+        let stdout = "channel: not-a-uuid\n";
+        let err = parse_channel_from_room_output(stdout).expect_err("must fail");
+        assert!(matches!(err, DiscoveryError::UnparseableChannel(_)));
     }
 }
