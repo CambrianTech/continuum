@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use airc_core::RoomId;
 use airc_ipc::{codec::read_frame, AttachRequest, DaemonClient, Response};
 use tracing::warn;
 
@@ -15,20 +16,37 @@ use crate::runtime::MessageBus;
 
 pub fn spawn_daemon_attach(
     socket_path: PathBuf,
+    channel: RoomId,
     bus: Arc<MessageBus>,
     runtime: &tokio::runtime::Handle,
 ) {
     runtime.spawn(async move {
-        if let Err(error) = run_daemon_attach(socket_path, bus).await {
+        if let Err(error) = run_daemon_attach(socket_path, channel, bus).await {
             warn!("AIRC daemon attach stream stopped: {error}");
         }
     });
 }
 
-pub async fn run_daemon_attach(socket_path: PathBuf, bus: Arc<MessageBus>) -> Result<(), String> {
+pub async fn run_daemon_attach(
+    socket_path: PathBuf,
+    channel: RoomId,
+    bus: Arc<MessageBus>,
+) -> Result<(), String> {
     let client = DaemonClient::new(socket_path);
+    // Owner-core model (airc-daemon/src/server.rs:274): the router
+    // subscribes per channel — no global fan-out table. AttachRequest
+    // MUST carry `channel: Some(_)` or the daemon responds
+    // `attach requires a channel in the owner-core model`. continuum
+    // discovers the scope's default channel at boot via
+    // `crate::airc::discover_default_channel` (parses `airc room`).
+    // Multi-room scopes will spawn one daemon_attach task per channel
+    // they care about — single-attach today, per-room fan-out as a
+    // follow-up when continuum rooms become first-class.
     let mut stream = client
-        .attach(AttachRequest::default())
+        .attach(AttachRequest {
+            channel: Some(channel),
+            ..AttachRequest::default()
+        })
         .await
         .map_err(|error| format!("failed to attach to airc daemon: {error}"))?;
 

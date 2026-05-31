@@ -1,15 +1,16 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    discover_airc_socket, spawn_daemon_attach, AircEventTransport, AircQueueClient,
-    AircQueueListRequest, AircQueueScanParams, AircRealtimePublishParams, AircRealtimeReplayParams,
-    AircRealtimeStore, CliAircQueueClient, DaemonAircEventTransport, InMemoryAircRealtimeStore,
-    StoreAircEventTransport, TokioAircCommandRunner,
+    discover_airc_socket, discover_default_channel, spawn_daemon_attach, AircEventTransport,
+    AircQueueClient, AircQueueListRequest, AircQueueScanParams, AircRealtimePublishParams,
+    AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient, DaemonAircEventTransport,
+    InMemoryAircRealtimeStore, StoreAircEventTransport, TokioAircCommandRunner,
 };
 // `default_socket_path_in` retained for back-compat callers; deprecated,
 // see `crate::airc::daemon_endpoint` module docs.
 #[allow(deprecated)]
 use crate::airc::default_socket_path_in;
+use airc_core::RoomId;
 use crate::runtime::{
     CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ParamSchema,
     ServiceModule,
@@ -23,6 +24,12 @@ pub struct AircModule {
     queue_client: Arc<dyn AircQueueClient>,
     event_transport: Arc<dyn AircEventTransport>,
     attach_socket_path: Option<std::path::PathBuf>,
+    /// Channel (room) to attach to at `initialize()`. Required by airc's
+    /// owner-core router model (`airc-daemon/src/server.rs:274`); without
+    /// a channel the daemon rejects attach with "attach requires a
+    /// channel in the owner-core model". Discovered via
+    /// [`discover_default_channel`] alongside the socket path.
+    attach_channel: Option<RoomId>,
 }
 
 impl AircModule {
@@ -40,23 +47,23 @@ impl AircModule {
     }
 
     /// Discover the airc daemon socket via [`discover_airc_socket`] (asks
-    /// `airc ipc-endpoint` per airc#1095; auto-installs airc if missing).
-    /// On discovery failure, returns a degraded module that responds to
-    /// `airc/*` commands via the in-memory store but performs no daemon
-    /// attach — so the rest of continuum-core boots even when airc is
-    /// unreachable (e.g. CI without network for auto-install).
+    /// `airc ipc-endpoint` per airc#1095; auto-installs airc if missing)
+    /// AND the default channel via [`discover_default_channel`] (parses
+    /// `airc room` for the scope's current room channel — required by
+    /// airc's owner-core router model). On any discovery failure, returns
+    /// a degraded module that responds to `airc/*` commands via the
+    /// in-memory store but performs no daemon attach — so the rest of
+    /// continuum-core boots even when airc is unreachable (e.g. CI
+    /// without network for auto-install) or the scope has no current
+    /// room (fresh install before `airc room <name>`).
     pub async fn discover_and_construct() -> Self {
-        match discover_airc_socket().await {
-            Ok(socket_path) => {
+        let socket_path = match discover_airc_socket().await {
+            Ok(path) => {
                 tracing::info!(
-                    ?socket_path,
+                    socket_path = ?path,
                     "Discovered airc daemon socket via `airc ipc-endpoint`"
                 );
-                Self {
-                    queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
-                    event_transport: Arc::new(DaemonAircEventTransport::new(socket_path.clone())),
-                    attach_socket_path: Some(socket_path),
-                }
+                path
             }
             Err(error) => {
                 tracing::warn!(
@@ -66,8 +73,42 @@ impl AircModule {
                      Resolve: install airc manually or set AIRC_DAEMON_SOCKET; see error \
                      above for the suggested remedy."
                 );
-                Self::with_queue_client(Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)))
+                return Self::with_queue_client(Arc::new(CliAircQueueClient::new(
+                    TokioAircCommandRunner,
+                )));
             }
+        };
+
+        let attach_channel = match discover_default_channel().await {
+            Ok(uuid) => {
+                tracing::info!(
+                    channel = %uuid,
+                    "Discovered airc default channel via `airc room`"
+                );
+                Some(RoomId::from_uuid(uuid))
+            }
+            Err(error) => {
+                // Socket reachable but no channel — boot continues with
+                // queue + realtime commands, just no inbound attach. The
+                // common case is "fresh install, scope not yet subscribed
+                // to any room"; the operator runs `airc room <name>` and
+                // restarts to wire up the attach.
+                tracing::warn!(
+                    %error,
+                    "airc default-channel discovery failed — AIRC inbound attach disabled. \
+                     Resolve: run `airc room <name>` to subscribe the scope to a room, \
+                     or set AIRC_DEFAULT_CHANNEL=<uuid> to pin a channel explicitly, then \
+                     restart continuum-core."
+                );
+                None
+            }
+        };
+
+        Self {
+            queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
+            event_transport: Arc::new(DaemonAircEventTransport::new(socket_path.clone())),
+            attach_socket_path: Some(socket_path),
+            attach_channel,
         }
     }
 
@@ -78,6 +119,7 @@ impl AircModule {
             queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
             event_transport: Arc::new(DaemonAircEventTransport::new(socket_path.clone())),
             attach_socket_path: Some(socket_path),
+            attach_channel: None,
         }
     }
 
@@ -88,6 +130,7 @@ impl AircModule {
                 InMemoryAircRealtimeStore::default(),
             ))),
             attach_socket_path: None,
+            attach_channel: None,
         }
     }
 
@@ -99,6 +142,7 @@ impl AircModule {
             queue_client,
             event_transport: Arc::new(StoreAircEventTransport::new(realtime_store)),
             attach_socket_path: None,
+            attach_channel: None,
         }
     }
 
@@ -110,6 +154,7 @@ impl AircModule {
             queue_client,
             event_transport,
             attach_socket_path: None,
+            attach_channel: None,
         }
     }
 }
@@ -135,8 +180,23 @@ impl ServiceModule for AircModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        if let Some(socket_path) = self.attach_socket_path.clone() {
-            spawn_daemon_attach(socket_path, ctx.bus.clone(), &ctx.runtime);
+        // Inbound attach requires BOTH a socket (where to connect) AND a
+        // channel (what to subscribe to under airc's owner-core model).
+        // Either being None disables the attach but lets the rest of
+        // the module + the broader continuum-core boot — the operator
+        // sees one of the warnings from `discover_and_construct` so the
+        // remedy path is obvious.
+        match (
+            self.attach_socket_path.clone(),
+            self.attach_channel,
+        ) {
+            (Some(socket_path), Some(channel)) => {
+                spawn_daemon_attach(socket_path, channel, ctx.bus.clone(), &ctx.runtime);
+            }
+            (Some(_), None) | (None, Some(_)) | (None, None) => {
+                // Already warned during construction; stay silent here
+                // to avoid duplicate noise on every boot.
+            }
         }
         Ok(())
     }
