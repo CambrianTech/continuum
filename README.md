@@ -157,6 +157,18 @@ The relationship between a persona and its infrastructure mirrors the relationsh
 
 This is the bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a deterministic sentinel pipeline with verification and retry will produce working code more reliably than a prompted 70B model in a single-shot terminal — because the pipeline remembers, verifies, retries, and learns. The model fills in the creative blanks. The infrastructure handles everything else.
 
+### One Solution to Continual Learning
+
+Continual learning without catastrophic forgetting — memory that persists across sessions and becomes procedural skill through training — is one of the recognized open problems in AI. continuum's bet: **treat it as a substrate concern, not a model concern.**
+
+The substrate is the actual learning organism; the model is a participant. A five-tier cache hierarchy ([COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) carries the persona's memory from raw working set (L1) through compressed engrams (L2), persisted long-term store (L3), local LoRA adapter cache (L4), to the cross-machine genome grid (L5). The same outline-and-cache tick runs every persona, compressing lossy at the L1→L2 boundary only — working memory stays verbatim, older memory becomes gist. Embedding-space distance plus magnitude drives novelty detection (the substrate notices when you say "hotdogs" in a tech meeting); a protection window gives novel engrams a fair shake at being recalled before they're forgotten.
+
+The loop closes at L3↔L4. Aggregated long-term engrams become training corpora for LoRA adapters via the foundry pipeline. Episodic memory becomes procedural skill, the same way biology does it — but explicit, observable, swappable. Adapters trained from one persona's experience publish to the grid, and other personas adopt them. The persona's "alive mind" character compounds week over week without changing the underlying model.
+
+Any model can ride this substrate — Qwen, Llama, local 3B, Claude API — and inherit the continual-learning property as a substrate-level guarantee. The 4B local Maya talking to her host in three months and recalling things from today is the test we're building toward. **The holy grail is a system property, not a model property.**
+
+Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md)
+
 **Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
 
 ---
