@@ -15,6 +15,7 @@ pub mod admission;
 pub mod admission_state;
 pub mod airc_admission;
 pub mod airc_runtime;
+pub mod airc_runtime_registry;
 pub mod allocator;
 pub mod channel_items;
 pub mod channel_queue;
@@ -32,6 +33,7 @@ pub mod inbox_admission;
 pub mod media_policy;
 pub mod message_cache;
 pub mod model_selection;
+pub mod name_generator;
 pub mod prompt_assembly;
 pub mod recorder;
 pub mod resource_forecast;
@@ -54,6 +56,8 @@ pub use airc_admission::{
     airc_envelope_to_candidate, airc_envelope_to_ref, AircAdmissionConversionError,
     AircAdmissionEnvelope,
 };
+pub use airc_runtime::{PersonaAircRuntime, PersonaAircRuntimeError};
+pub use airc_runtime_registry::PersonaAircRuntimeRegistry;
 pub use allocator::{
     allocate as allocate_personas, load_catalog, select_local_model, AllocationResult,
     PersonaAllocation, PersonaCatalogEntry,
@@ -87,6 +91,7 @@ pub use message_cache::{
 pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionError, ModelSelectionRequest, ModelSelectionResult,
 };
+pub use name_generator::agent_name_from_identity;
 pub use turn_context::TurnContext;
 pub use turn_frame::{
     ConsolidatedInboxChunk, PersonaTurnFrame, PersonaTurnFrameReplayRecord, RagAssemblySeed,

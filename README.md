@@ -139,7 +139,7 @@ Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SET
 | **VSCode / JetBrains** | Planned |
 | **Vision Pro** | Planned — spatial UI connecting to same backend |
 
-Same personas, everywhere. Context follows you. No silos. No severance.
+Same personas, everywhere. Context follows you. No silos. No severance. Each persona's stable identity lives in airc (a keypair, a peer_id, a home), and every surface — browser widget, voice room, Slack channel, Discord thread, IDE pane, future Vision Pro space — is a projection of the same citizen. Bridges translate envelopes; they do not own personas. Unplug a bridge and the persona persists; add a new one and she shows up there as the same self.
 
 ---
 
