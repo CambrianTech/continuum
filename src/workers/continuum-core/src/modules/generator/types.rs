@@ -42,6 +42,26 @@ pub struct GenerateModuleParams {
     /// already exists, so a caller doesn't accidentally clobber work.
     #[serde(default)]
     pub force: bool,
+
+    /// Opt in to the per-resource-lock scaffold when the module
+    /// holds mutable state across an `.await` (or shared filesystem
+    /// invariant). When `true`, the generator emits:
+    ///
+    /// - `DashMap<ResourceId, Arc<tokio::sync::Mutex<ResourceState>>>`
+    ///   field on the module struct
+    /// - A `ResourceState` placeholder struct authors fill in
+    /// - A `resource_lock(&self, id)` get-or-create helper
+    /// - A multi-thread concurrency stress test pinning the
+    ///   "different resources stay parallel; same resource
+    ///   serializes" invariant
+    ///
+    /// When `false` (default), the module is stateless and the
+    /// concurrency test just verifies typed-envelope routing.
+    ///
+    /// See [`COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md`](../../../../../../docs/architecture/COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md)
+    /// §4 (Concurrency doctrine) for when to set this.
+    #[serde(default)]
+    pub stateful: bool,
 }
 
 /// Wire-friendly enum mirroring [`crate::runtime::ModulePriority`]'s
