@@ -37,6 +37,7 @@ pub mod message_cache;
 pub mod model_selection;
 pub mod name_generator;
 pub mod prompt_assembly;
+pub mod rag_budget;
 pub mod recall_metadata;
 pub mod recorder;
 pub mod resource_forecast;
