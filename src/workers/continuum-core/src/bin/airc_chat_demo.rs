@@ -195,12 +195,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         my_peer_id_short
     );
 
-    // 3. Join the default room.
-    let _ = airc
-        .join(&default_channel.to_string())
+    // 3. Join the room by NAME — not UUID.
+    //
+    // `Airc::join(name)` (airc-lib/src/airc.rs:914) calls
+    // `ChannelName::new(name)` which derives a fresh channel UUID
+    // from the name. Passing a uuid-shaped string as the "name"
+    // creates a brand-new channel whose UUID does NOT match the
+    // intended room — the subscription registers on the wrong
+    // channel and the fan-out misses every publish. Card 800ce5bd
+    // empirically caught this: Paige's subscribe landed on shard 15
+    // / channel 5d33e2a7 (derived from the uuid string),
+    // while `airc msg` published to channel 11c1a7ac with
+    // subscribers_before=0. Use the actual room name; the canonical
+    // continuum room is "continuum" (matches what `airc room`
+    // reports for the same scope).
+    let room_name = std::env::var("CONTINUUM_ROOM").unwrap_or_else(|_| "continuum".to_string());
+    let room = airc
+        .join(&room_name)
         .await
         .map_err(|e| format!("join failed: {e}"))?;
-    println!("✓ joined room {default_channel}");
+    println!(
+        "✓ joined room {room_name} → channel {} (discovered uuid was {default_channel})",
+        room.channel
+    );
 
     // 4. Build the heuristic adapter — substrate's deterministic
     //    proof-of-life inference. Replace with LlamaCppAdapter or

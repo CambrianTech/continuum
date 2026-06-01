@@ -41,11 +41,11 @@ members = [
 # SHA is currently the tip of the unmerged airc PR branch (#1095 +
 # #1096); re-pin to the post-merge SHA on airc canary/rust-rewrite
 # before merging this continuum PR past canary.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "d616e35" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "d616e35" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "d616e35" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "d616e35" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "d616e35" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
