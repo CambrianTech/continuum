@@ -286,7 +286,105 @@ pub trait AIProviderAdapter: Send + Sync {
             .iter()
             .any(|prefix| model_lower.starts_with(prefix))
     }
+
+    /// Whether this adapter is suitable for serving PRODUCTION inference
+    /// traffic — i.e. real cognition for personas talking to users.
+    ///
+    /// Per [[no-fallbacks-ever]] and [[no-if-statements-use-llms-for-cognition]]:
+    /// the substrate NEVER silently substitutes a non-production-capable
+    /// adapter for a production-capable one. Heuristic / canned /
+    /// pattern-matching adapters return `false` here; the production
+    /// selector (`AdapterRegistry::select_production`) hard-errors with a
+    /// diagnostic instead of degrading.
+    ///
+    /// Joel (2026-06-01): "We don't build fucking if statements we use
+    /// LLMs!" and "No fallbacks ever it's forbidden." HeuristicInferenceAdapter
+    /// exists for CI, debug, replay, and similar non-production contexts —
+    /// the substrate is RUINED if those outputs ever serve real personas.
+    ///
+    /// Default: `true`. Override and return `false` ONLY for adapters whose
+    /// outputs are not genuine model inference.
+    fn is_production_capable(&self) -> bool {
+        true
+    }
 }
+
+/// Reason no eligible adapter was found by `AdapterRegistry::select_production`.
+///
+/// Per [[no-fallbacks-ever]] the substrate refuses to substitute a lesser
+/// adapter; instead it returns this error with enough context for the
+/// caller to surface a diagnosable failure (which model, which device, what
+/// IS registered, what's the remediation). The selector NEVER falls back to
+/// a non-production-capable adapter or to a different device class.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterSelectionError {
+    /// No production-capable adapter is registered that satisfies the
+    /// device + model constraints. Carries the registered-adapter list so
+    /// the error message can name what IS available and what's missing.
+    NoEligibleProductionAdapter {
+        requested_model: Option<String>,
+        requested_device: InferenceDevice,
+        preferred_provider: Option<String>,
+        registered_providers: Vec<String>,
+        /// `true` if a HeuristicInferenceAdapter (or similar non-production
+        /// adapter) IS registered but was filtered out. Surfaces the
+        /// "you're not falling back to it for a reason" diagnosis.
+        non_production_adapters_present: bool,
+    },
+}
+
+impl std::fmt::Display for AdapterSelectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoEligibleProductionAdapter {
+                requested_model,
+                requested_device,
+                preferred_provider,
+                registered_providers,
+                non_production_adapters_present,
+            } => {
+                write!(
+                    f,
+                    "no production-capable adapter found for "
+                )?;
+                if let Some(p) = preferred_provider {
+                    write!(f, "preferred_provider='{}' ", p)?;
+                }
+                if let Some(m) = requested_model {
+                    write!(f, "model='{}' ", m)?;
+                }
+                write!(f, "device={:?}. ", requested_device)?;
+                if registered_providers.is_empty() {
+                    write!(f, "No adapters are registered. ")?;
+                } else {
+                    write!(
+                        f,
+                        "Registered production adapters: {:?}. ",
+                        registered_providers
+                    )?;
+                }
+                if *non_production_adapters_present {
+                    write!(
+                        f,
+                        "A non-production adapter (heuristic / canned) IS registered \
+                         but the substrate refuses to substitute it for a real model \
+                         (per no-fallbacks doctrine). "
+                    )?;
+                }
+                write!(
+                    f,
+                    "Remediation: install/configure a real-model adapter that supports \
+                     this model+device, or route this request through `select()` if \
+                     it's a CI/debug context that legitimately wants a non-production \
+                     adapter."
+                )?;
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for AdapterSelectionError {}
 
 /// Registry of AI provider adapters
 /// Manages adapter lifecycle and selection
@@ -410,6 +508,15 @@ impl AdapterRegistry {
 
     /// Select best adapter based on request.
     ///
+    /// Per [[no-fallbacks-ever]] (Joel, 2026-06-01: "No fallbacks ever
+    /// it's forbidden."): if the caller specifies neither `model` nor
+    /// `preferred_provider`, this is auto-discovery without any specifier
+    /// — the textbook leak path that lets fake adapters silently serve
+    /// production traffic. We refuse it and return `None` with a warning.
+    /// Callers MUST specify at least one of: which provider, or which
+    /// model. The substrate's role is to honor that intent precisely,
+    /// not to guess.
+    ///
     /// Device-aware routing (like PyTorch device='cuda' / Android MediaCodec):
     /// - `device = Gpu`: only GPU-capable adapters (DMR, llama-metal, llama-vulkan).
     ///   Hard error if no GPU adapter supports the model. DEFAULT.
@@ -427,6 +534,20 @@ impl AdapterRegistry {
         model: Option<&str>,
         device: InferenceDevice,
     ) -> Option<(&'a str, &'a dyn AIProviderAdapter)> {
+        // 0. No-specifier guard. Auto-discovery without ANY specifier is
+        // the silent-substitution path forbidden by [[no-fallbacks-ever]].
+        // Caller must say what they want.
+        if preferred_provider.is_none() && model.is_none() {
+            clog_warn!(
+                "AdapterRegistry::select called with no preferred_provider AND no model. \
+                 Auto-discovery without a specifier is forbidden per the no-fallbacks doctrine \
+                 — caller MUST specify which provider or which model they want. \
+                 Registered: {:?}.",
+                self.available()
+            );
+            return None;
+        }
+
         // 1. Explicit provider — bypass routing for NAMED adapters.
         //    Special case: "local" means "best available local GPU adapter"
         //    — NOT a specific adapter name. Drops through to device-filtered

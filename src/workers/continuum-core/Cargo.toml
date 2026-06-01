@@ -34,6 +34,12 @@ path = "src/bin/airc_rag_demo.rs"
 [[bin]]
 name = "airc_chat_demo"
 path = "src/bin/airc_chat_demo.rs"
+# Demo binary uses HeuristicInferenceAdapter for deterministic stand-in
+# inference. Per [[no-fallbacks-ever]] and [[no-if-statements-use-llms-
+# for-cognition]], the heuristic adapter is gated behind `test-fixtures`
+# so production builds can't ship it. This bin target accordingly
+# requires the same feature.
+required-features = ["test-fixtures"]
 
 [dependencies]
 tokio.workspace = true
@@ -251,6 +257,25 @@ accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transfor
 # Linux: swap ORT from static (download-binaries) to dynamic loading.
 # Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).
 load-dynamic-ort = ["ort/load-dynamic"]
+
+# test-fixtures: opts in non-production code that exists for CI / debug /
+# replay contexts. Most prominent: HeuristicInferenceAdapter (the
+# deterministic canned-response stand-in for tests). Production binaries
+# MUST NOT build with this feature.
+#
+# Per [[no-fallbacks-ever]] and [[no-if-statements-use-llms-for-cognition]],
+# Joel (2026-06-01): "You mix this fake shit in and it's going live ALL
+# THE TIME. The fake shit is a CHOSEN model adapter no other form."
+# Compile-time gating via this feature is the structural guarantee that
+# release builds physically cannot contain the heuristic adapter. The
+# `#[cfg(any(test, feature = "test-fixtures"))]` gate on
+# `src/ai/heuristic_adapter.rs` means:
+#   - Unit tests inside continuum-core: free via cfg(test).
+#   - Integration tests / demo binaries that need the fixture: opt in
+#     via `cargo test --features test-fixtures` or `--features test-fixtures`
+#     on the bin target.
+#   - Production: heuristic adapter doesn't exist in the binary at all.
+test-fixtures = []
 
 [lints.rust]
 # objc 0.2's msg_send! macro uses the deprecated cargo-clippy cfg check.

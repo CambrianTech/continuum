@@ -196,6 +196,19 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         "Heuristic (deterministic stand-in)"
     }
 
+    /// **NOT** production-capable. Heuristic outputs are deterministic
+    /// canned responses — not real cognition. Per [[no-fallbacks-ever]]
+    /// and [[no-if-statements-use-llms-for-cognition]], heuristic is
+    /// also gated behind `cfg(any(test, feature = "test-fixtures"))`
+    /// at the module level so production binaries cannot link it at
+    /// all; this trait flag is belt-and-suspenders for test-context
+    /// selectors that want to distinguish real-cognition adapters from
+    /// fixtures.
+    fn is_production_capable(&self) -> bool {
+        false
+    }
+
+
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities {
             supports_text_generation: true,
@@ -331,18 +344,29 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         InferenceDevice::Cpu
     }
 
+    /// Declared model prefix: ONLY model names starting with
+    /// `"heuristic"` resolve here. The substrate uses real model names
+    /// like `qwen2.5-7b`, `claude-sonnet`, `deepseek-coder-1.3b`, etc.
+    /// — none of which match. Combined with `is_production_capable() =
+    /// false` and the cfg-gated module, this is a third structural
+    /// barrier against auto-discovery: even at test time, a caller
+    /// that asks for a real model by name never lands here.
+    ///
+    /// Joel (2026-06-01): "The fake shit is a CHOSEN model adapter no
+    /// other form. Declaration." This IS the declaration.
     fn supported_model_prefixes(&self) -> Vec<&'static str> {
-        // Don't claim any specific prefix so we're never auto-selected
-        // by model name. The heuristic adapter is opt-in:
-        // `provider: "heuristic"` must be set explicitly.
-        vec![]
+        vec!["heuristic"]
     }
 
-    fn supports_model(&self, _model: &str) -> bool {
-        // Accept any model name — the request might come in with a
-        // real model ID that the caller wants to substitute. The
-        // determinism contract is per-input, not per-model.
-        true
+    /// Strict opt-in only. The previous implementation returned `true`
+    /// for any model name — which was THE leak path: a caller passing
+    /// `model = Some("qwen2.5-7b")` would route to heuristic if no real
+    /// adapter was registered first. Now: heuristic responds only to
+    /// model names that explicitly start with `"heuristic"`. Production
+    /// model names never match. Per Joel (2026-06-01): "The fake shit
+    /// is a CHOSEN model adapter no other form."
+    fn supports_model(&self, model_name: &str) -> bool {
+        model_name.to_lowercase().starts_with("heuristic")
     }
 }
 
@@ -519,12 +543,27 @@ mod tests {
         assert!(caps.is_local);
     }
 
+    /// Strict model match — heuristic ONLY responds to model names that
+    /// explicitly start with `"heuristic"`. The previous test asserted
+    /// the OPPOSITE (heuristic accepted any model name including real
+    /// production IDs like "anthropic/claude-opus-4-7"), and that was
+    /// the silent-substitution path Joel called out (2026-06-01: "You
+    /// mix this fake shit in and it's going live ALL THE TIME"). Per
+    /// [[no-fallbacks-ever]] + [[no-if-statements-use-llms-for-cognition]],
+    /// heuristic is a CHOSEN adapter — callers must pass an explicit
+    /// `heuristic-*` model name or `provider = "heuristic"`.
     #[tokio::test]
-    async fn supports_any_model_name_so_caller_can_pass_a_real_id_for_substitution() {
+    async fn supports_only_heuristic_model_names_never_substitutes_for_real_models() {
         let adapter = HeuristicInferenceAdapter::new();
-        assert!(adapter.supports_model("anthropic/claude-opus-4-7"));
-        assert!(adapter.supports_model("gpt-4"));
-        assert!(adapter.supports_model("some-future-model"));
+        // Explicit heuristic model names: yes.
+        assert!(adapter.supports_model("heuristic"));
+        assert!(adapter.supports_model("heuristic-echo-v1"));
+        assert!(adapter.supports_model("Heuristic-Test"));
+        // Real production model names: NEVER.
+        assert!(!adapter.supports_model("anthropic/claude-opus-4-7"));
+        assert!(!adapter.supports_model("gpt-4"));
+        assert!(!adapter.supports_model("qwen3.5-4b-code-forged-Q4_K_M"));
+        assert!(!adapter.supports_model("some-future-model"));
     }
 
     /// The slice-completing test: drive the heuristic adapter

@@ -237,20 +237,22 @@ impl AIProviderModule {
         // 5: Fireworks
         // 6: XAI
         // 7: Google
-        // 99: Heuristic (always-available CI/sandbox/replay peer)
-
-        // Heuristic adapter: unconditional, no API key required. Per
-        // [[inference-is-an-adapter-always-in-the-loop]] this is the
-        // first-class fake peer that lets every test/CI/sandbox/replay
-        // path go through the inference command without GGUFs or
-        // cloud keys. Lowest priority (99) so it never auto-selects
-        // over real adapters — opt-in via `provider: "heuristic"`.
-        self.log()
-            .info("Registering Heuristic adapter (unconditional, deterministic stand-in)");
-        registry.register(
-            Box::new(crate::ai::HeuristicInferenceAdapter::new()),
-            99,
-        );
+        //
+        // HeuristicInferenceAdapter is NOT auto-registered here.
+        //
+        // Per [[no-fallbacks-ever]] and [[no-if-statements-use-llms-for-
+        // cognition]] (Joel, 2026-06-01): "You mix this fake shit in and
+        // it's going live ALL THE TIME. The fake shit is a CHOSEN model
+        // adapter no other form. Declaration." Previously this module
+        // unconditionally registered the heuristic adapter at priority 99
+        // with the comment "never auto-selects over real adapters" — that
+        // assumption was wrong. Any production code path that called
+        // `select()` without specifying a model could end up at the
+        // heuristic. The structural fix: heuristic adapter is gated
+        // behind `cfg(any(test, feature = "test-fixtures"))` so production
+        // binaries cannot link it; tests that legitimately want it
+        // register it explicitly in their setup code (no global default
+        // registration, no silent availability).
 
         // Only register adapters that have API keys configured
         if get_secret("DEEPSEEK_API_KEY").is_some() {
