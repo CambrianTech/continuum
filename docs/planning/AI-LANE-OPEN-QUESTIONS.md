@@ -9,7 +9,8 @@
 
 **Parents:**
 - [`docs/architecture/AI-COMMAND-NAMESPACE.md`](../architecture/AI-COMMAND-NAMESPACE.md) — the surface
-- [`docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md`](../architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md) — the daemons behind it
+- [`docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md`](../architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md) — the daemons behind it (aspirational ceiling)
+- [`docs/architecture/INFERENCE-LANES-REALISTIC.md`](../architecture/INFERENCE-LANES-REALISTIC.md) — the realistic build plan composing existing prior art (concrete floor)
 - [`docs/architecture/EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md`](../architecture/EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md) — the inclusivity thesis
 
 ---
@@ -348,6 +349,102 @@ classifier model. When does the scheduler pick which?
     → use native; else crutch)
   - Per-request hint via `purpose`
 - **Decision needed by:** native-multimodal Qwen integration.
+
+---
+
+### Lane: Realistic lane build (#109 floor)
+
+These questions land alongside the new
+[`INFERENCE-LANES-REALISTIC.md`](../architecture/INFERENCE-LANES-REALISTIC.md)
+doc and are the ones the realistic-lane MVP cut has to answer
+before the code goes in.
+
+#### Q21 — llama.cpp batched-decode finish-reason cleanliness
+
+Does the vendored llama.cpp expose per-sequence finish reasons
+(EOS / stop sequence / length) cleanly from batched decode? If
+not, the coordinator must track sequence-by-sequence state
+outside the adapter.
+
+- **Matters because:** the coordinator returns per-handle
+  responses; if it can't tell which lane finished, batching
+  breaks down.
+- **Blocks:** Step 4 of the realistic-lane build (continuous
+  batching in LlamaCpp adapter).
+- **Candidates:**
+  - Direct llama.cpp API audit + use what's there
+  - Wrapper layer that tracks per-sequence state in the adapter
+  - Single-sequence fallback when batched-decode lacks the data
+- **Decision needed by:** before LlamaCpp coordinator wiring.
+
+#### Q22 — Model-pick policy for the realistic target
+
+What `model_for_tier(tier)` mapping does the substrate ship for
+the realistic floor?
+
+- **Matters because:** the substrate must pick something
+  reasonable out of the box on every supported host class — a
+  CPU-only laptop user shouldn't have to configure anything to
+  get a usable persona.
+- **Blocks:** realistic-lane defaults.
+- **Candidates** (draft, Joel decides):
+  - Apple Silicon UMA ≥ 16 GB: Qwen-2.5-7B Q4_K_M
+  - Apple Silicon UMA 8–16 GB: Qwen-2.5-3B Q4_K_M
+  - Mac Intel + Metal ≥ 16 GB: Qwen-2.5-3B Q4_K_M
+  - CPU-only ≥ 8 GB: Gemma-2-2B Q4_K_M (best creative density at small size)
+  - CPU-only < 8 GB: heuristic adapter fallback
+- **Decision needed by:** before realistic-lane MVP ships.
+- **Lives in:** `governor/model_policy.rs` (or similar)
+
+#### Q23 — KV cache precision switch (FP16 ↔ INT8)
+
+When KV cache tightens, does the coordinator silently switch to
+INT8 KV via `inference/kv_quant.rs` (already in tree)?
+
+- **Matters because:** this is the adaptive-resolution dial in
+  miniature. Cheap, big quality preservation, gains ~50% effective
+  KV capacity.
+- **Blocks:** PressureBroker integration for the realistic build.
+- **Candidates:**
+  - Always-on (default INT8 from the start; saves memory by default)
+  - Pressure-driven (FP16 when comfortable; INT8 under Warning;
+    INT4 under High)
+  - Per-lane-class (Pinned lanes stay FP16, Graceful drop to INT8
+    under pressure, Hard always INT8)
+- **Decision needed by:** PressureBroker integration step.
+
+#### Q24 — TaskKind change mid-session
+
+A lane's TaskKind changes during a session (Chat → CodingLarge
+when the user pastes a 100-line file). Can the lane upgrade in
+place?
+
+- **Matters because:** if no in-place upgrade, the user closes +
+  reopens; this is a UX hiccup but tractable. In-place upgrade is
+  smoother but adds complexity.
+- **Blocks:** Step 1 lane API.
+- **Candidates:**
+  - A: Lane is immutable; persona closes + reopens (MVP)
+  - B: `ai/inference/upgrade-lane { handle, new_task }` command that
+    re-acquires the lease at the new budget
+  - C: Coordinator detects need from input length, auto-upgrades
+- **Decision needed by:** Step 1 lane API design. Likely A for MVP,
+  B as a near-follow-up.
+
+#### Q25 — Idle-lane KV demotion policy
+
+When a lane goes idle (no requests for N seconds), does the
+coordinator preemptively demote KV cache to Warm → Bench tier?
+
+- **Matters because:** active conversation needs Fast tier KV;
+  idle lanes hogging Fast tier starve fresh activations. But
+  premature demotion costs latency on re-activation.
+- **Blocks:** PressureBroker lane interaction.
+- **Candidates:**
+  - Only-on-pressure (lazy; idle lanes stay in Fast until pressure)
+  - Time-driven (idle > N seconds → demote regardless of pressure)
+  - Hybrid (small idle window + pressure trigger)
+- **Decision needed by:** PressureBroker lane integration.
 
 ---
 
