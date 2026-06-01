@@ -194,6 +194,99 @@ pub struct LaneInspection {
     pub is_pinned: bool,
 }
 
+/// Capture event emitted by the coordinator for each load-bearing
+/// lane lifecycle decision, per [[observability-is-half-the-architecture]].
+/// The Noop sink reduces these to no-ops in production; mechanic-shop
+/// observers swap in the InMemory or future JSONL sink.
+#[derive(Debug, Clone)]
+pub enum LaneCaptureEvent {
+    /// Open succeeded — admission passed, lease acquired, handle minted.
+    LaneOpened {
+        captured_at_ms: u64,
+        persona: PersonaId,
+        task: TaskKind,
+        class: LaneClass,
+        handle_id: Uuid,
+        lease_id: String,
+        cost_units: u32,
+        bytes_accounted: u64,
+        target_silicon: TargetSilicon,
+    },
+    /// Open failed admission — admission planner denied.
+    LaneAdmissionDenied {
+        captured_at_ms: u64,
+        persona: PersonaId,
+        task: TaskKind,
+        reason: AdmissionDenyReason,
+        cost_units_requested: u32,
+        target_silicon: TargetSilicon,
+    },
+    /// Close — lane released, footprint freed, handle closed.
+    LaneClosed {
+        captured_at_ms: u64,
+        persona: PersonaId,
+        task: TaskKind,
+        handle_id: Uuid,
+        lease_id: String,
+        was_present: bool,
+    },
+}
+
+/// Sink trait for coordinator capture events. `record` is `&self`
+/// so the coordinator's hot path stays lock-free; impls maintain
+/// their own interior mutability. The Noop impl is the production
+/// default + costs nothing.
+pub trait LaneCaptureSink: Send + Sync {
+    fn record(&self, event: LaneCaptureEvent);
+}
+
+/// Zero-cost default. Drops every event.
+pub struct NoopLaneCaptureSink;
+
+impl LaneCaptureSink for NoopLaneCaptureSink {
+    fn record(&self, _event: LaneCaptureEvent) {}
+}
+
+/// In-memory ring of recent events for tests + introspection.
+/// Bounded so a long-running observer doesn't leak memory. Drops
+/// oldest events when at capacity.
+pub struct InMemoryLaneCaptureSink {
+    events: parking_lot::Mutex<std::collections::VecDeque<LaneCaptureEvent>>,
+    capacity: usize,
+}
+
+impl InMemoryLaneCaptureSink {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            events: parking_lot::Mutex::new(std::collections::VecDeque::with_capacity(capacity)),
+            capacity,
+        }
+    }
+    pub fn drain(&self) -> Vec<LaneCaptureEvent> {
+        let mut g = self.events.lock();
+        g.drain(..).collect()
+    }
+    pub fn snapshot(&self) -> Vec<LaneCaptureEvent> {
+        self.events.lock().iter().cloned().collect()
+    }
+    pub fn len(&self) -> usize {
+        self.events.lock().len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.events.lock().is_empty()
+    }
+}
+
+impl LaneCaptureSink for InMemoryLaneCaptureSink {
+    fn record(&self, event: LaneCaptureEvent) {
+        let mut g = self.events.lock();
+        if g.len() == self.capacity {
+            g.pop_front();
+        }
+        g.push_back(event);
+    }
+}
+
 /// The coordinator. Holds the lane map + the registries it composes.
 pub struct InferenceCoordinator {
     footprint: Arc<FootprintRegistry>,
@@ -205,6 +298,9 @@ pub struct InferenceCoordinator {
     /// instances. Atomic so open_lane is lock-free on the hot
     /// path.
     lease_counter: AtomicU64,
+    /// Capture sink for lane lifecycle events. Default = Noop
+    /// (zero overhead). Swap via `with_capture_sink` at construction.
+    capture_sink: Arc<dyn LaneCaptureSink>,
 }
 
 impl InferenceCoordinator {
@@ -219,7 +315,15 @@ impl InferenceCoordinator {
             config,
             lanes: DashMap::new(),
             lease_counter: AtomicU64::new(0),
+            capture_sink: Arc::new(NoopLaneCaptureSink),
         }
+    }
+
+    /// Construct with a non-Noop capture sink. Mechanic-shop /
+    /// observers / tests pass their own sink here.
+    pub fn with_capture_sink(mut self, sink: Arc<dyn LaneCaptureSink>) -> Self {
+        self.capture_sink = sink;
+        self
     }
 
     /// Open a lane: admission → lease + footprint acquire → handle
@@ -311,6 +415,15 @@ impl InferenceCoordinator {
             } else {
                 AdmissionDenyReason::ResourcePressure
             };
+            self.capture_sink
+                .record(LaneCaptureEvent::LaneAdmissionDenied {
+                    captured_at_ms: req.now_ms,
+                    persona: req.persona,
+                    task: req.task,
+                    reason,
+                    cost_units_requested: cost_units,
+                    target_silicon: job.target_silicon,
+                });
             return Err(CoordinatorError::AdmissionDenied {
                 reason,
                 task: req.task,
@@ -356,7 +469,21 @@ impl InferenceCoordinator {
 
         // ── Step D: bind lane ────────────────────────────────────
         let lane = Lane::new(req.persona, req.task, lease, handle.id, class);
+        let lease_id_for_event = lane.lease_id().to_string();
+        let target_silicon_for_event = lane.lease().target_silicon;
         self.lanes.insert(handle.id, lane);
+
+        self.capture_sink.record(LaneCaptureEvent::LaneOpened {
+            captured_at_ms: req.now_ms,
+            persona: req.persona,
+            task: req.task,
+            class,
+            handle_id: handle.id,
+            lease_id: lease_id_for_event,
+            cost_units,
+            bytes_accounted: bytes,
+            target_silicon: target_silicon_for_event,
+        });
         Ok(handle)
     }
 
@@ -365,10 +492,29 @@ impl InferenceCoordinator {
     /// (returns Ok(false)).
     pub fn close_lane(&self, handle: &HandleRef) -> Result<bool, CoordinatorError> {
         let Some((_, lane)) = self.lanes.remove(&handle.id) else {
+            self.capture_sink.record(LaneCaptureEvent::LaneClosed {
+                captured_at_ms: now_ms_for_capture(),
+                persona: PersonaId::new(Uuid::nil()),
+                task: TaskKind::Chat,
+                handle_id: handle.id,
+                lease_id: String::new(),
+                was_present: false,
+            });
             return Ok(false);
         };
-        let _ = self.footprint.release_lease(lane.lease_id());
+        let lease_id = lane.lease_id().to_string();
+        let persona = lane.persona();
+        let task = lane.task();
+        let _ = self.footprint.release_lease(&lease_id);
         let _ = self.handle_store.close(handle);
+        self.capture_sink.record(LaneCaptureEvent::LaneClosed {
+            captured_at_ms: now_ms_for_capture(),
+            persona,
+            task,
+            handle_id: handle.id,
+            lease_id,
+            was_present: true,
+        });
         Ok(true)
     }
 
@@ -416,6 +562,14 @@ impl InferenceCoordinator {
     pub fn handle_store(&self) -> Arc<InferenceHandleStore> {
         self.handle_store.clone()
     }
+}
+
+fn now_ms_for_capture() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn task_kind_str(t: TaskKind) -> &'static str {
@@ -654,6 +808,146 @@ mod tests {
     }
 
     // ── class override ──────────────────────────────────────────
+
+    // ── capture sink ────────────────────────────────────────────
+
+    #[test]
+    fn capture_sink_records_lane_opened_event_on_successful_open() {
+        let sink = Arc::new(InMemoryLaneCaptureSink::new(64));
+        let c = InferenceCoordinator::new(
+            Arc::new(FootprintRegistry::new()),
+            Arc::new(InferenceHandleStore::new()),
+            small_budget_config(),
+        )
+        .with_capture_sink(sink.clone());
+        let h = open_chat(&c, 1, 1_000_000).unwrap();
+        let events = sink.snapshot();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            LaneCaptureEvent::LaneOpened {
+                persona: p,
+                task,
+                class,
+                handle_id,
+                cost_units,
+                target_silicon,
+                ..
+            } => {
+                assert_eq!(*p, persona(1));
+                assert_eq!(*task, TaskKind::Chat);
+                assert_eq!(*class, LaneClass::Interactive);
+                assert_eq!(*handle_id, h.id);
+                assert_eq!(*cost_units, 8 * 1024);
+                assert_eq!(*target_silicon, TargetSilicon::Cpu);
+            }
+            other => panic!("expected LaneOpened, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capture_sink_records_admission_denied_with_reason() {
+        let sink = Arc::new(InMemoryLaneCaptureSink::new(64));
+        let c = InferenceCoordinator::new(
+            Arc::new(FootprintRegistry::new()),
+            Arc::new(InferenceHandleStore::new()),
+            small_budget_config(),
+        )
+        .with_capture_sink(sink.clone());
+        open_chat(&c, 1, 1_000_000).unwrap();
+        open_chat(&c, 2, 1_000_000).unwrap();
+        // Third one denies.
+        let _ = open_chat(&c, 3, 1_000_000).unwrap_err();
+        let events = sink.snapshot();
+        assert_eq!(events.len(), 3); // 2 opened + 1 denied
+        match &events[2] {
+            LaneCaptureEvent::LaneAdmissionDenied { reason, persona: p, task, .. } => {
+                assert_eq!(*reason, AdmissionDenyReason::ResourcePressure);
+                assert_eq!(*p, persona(3));
+                assert_eq!(*task, TaskKind::Chat);
+            }
+            other => panic!("expected LaneAdmissionDenied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capture_sink_records_lane_closed_with_was_present_flag() {
+        let sink = Arc::new(InMemoryLaneCaptureSink::new(64));
+        let c = InferenceCoordinator::new(
+            Arc::new(FootprintRegistry::new()),
+            Arc::new(InferenceHandleStore::new()),
+            small_budget_config(),
+        )
+        .with_capture_sink(sink.clone());
+        let h = open_chat(&c, 7, 1_000_000).unwrap();
+        sink.drain(); // forget the open event
+        c.close_lane(&h).unwrap();
+        c.close_lane(&h).unwrap(); // double close
+        let events = sink.snapshot();
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            LaneCaptureEvent::LaneClosed { was_present, .. } => assert!(*was_present),
+            other => panic!("expected LaneClosed present, got {other:?}"),
+        }
+        match &events[1] {
+            LaneCaptureEvent::LaneClosed { was_present, .. } => assert!(!*was_present),
+            other => panic!("expected LaneClosed absent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn noop_sink_drops_events_without_panic_or_alloc() {
+        // Same workload as the previous test but with the default
+        // Noop sink. Just verify it doesn't panic + the coordinator
+        // works identically.
+        let c = build_coordinator();
+        let h = open_chat(&c, 1, 1_000_000).unwrap();
+        assert!(c.close_lane(&h).unwrap());
+    }
+
+    #[test]
+    fn in_memory_sink_capacity_drops_oldest() {
+        let sink = InMemoryLaneCaptureSink::new(2);
+        sink.record(LaneCaptureEvent::LaneOpened {
+            captured_at_ms: 1,
+            persona: persona(1),
+            task: TaskKind::Chat,
+            class: LaneClass::Interactive,
+            handle_id: Uuid::nil(),
+            lease_id: "a".to_string(),
+            cost_units: 1,
+            bytes_accounted: 1,
+            target_silicon: TargetSilicon::Cpu,
+        });
+        sink.record(LaneCaptureEvent::LaneOpened {
+            captured_at_ms: 2,
+            persona: persona(2),
+            task: TaskKind::Chat,
+            class: LaneClass::Interactive,
+            handle_id: Uuid::nil(),
+            lease_id: "b".to_string(),
+            cost_units: 1,
+            bytes_accounted: 1,
+            target_silicon: TargetSilicon::Cpu,
+        });
+        sink.record(LaneCaptureEvent::LaneOpened {
+            captured_at_ms: 3,
+            persona: persona(3),
+            task: TaskKind::Chat,
+            class: LaneClass::Interactive,
+            handle_id: Uuid::nil(),
+            lease_id: "c".to_string(),
+            cost_units: 1,
+            bytes_accounted: 1,
+            target_silicon: TargetSilicon::Cpu,
+        });
+        // Capacity 2 → first event evicted.
+        let events = sink.snapshot();
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            LaneCaptureEvent::LaneOpened { lease_id, .. } => assert_eq!(lease_id, "b"),
+            other => panic!("expected lease 'b', got {other:?}"),
+        }
+    }
 
     #[test]
     fn class_override_lets_daemon_promote_chat_to_realtime() {
