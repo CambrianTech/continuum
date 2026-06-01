@@ -271,13 +271,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         last_lamport_seen = event.lamport.max(last_lamport_seen);
 
-        // Skip messages from Paige herself (avoid loop).
+        // Skip messages from this persona herself (avoid self-loop).
         if event.peer_id.as_uuid() == persona_id {
             continue;
         }
         // Skip non-text messages.
         let Some(body) = &event.body else { continue };
         let Some(text) = body.as_text() else { continue };
+
+        // Should-respond gate: don't echo other personas' heuristic
+        // replies. Multi-persona substrate proof (Paige + Pax in the
+        // same room, 2026-06-01) showed every heuristic adapter
+        // responding to every other one with a `[heuristic:hash] ack:
+        // "<text>"` line — fan-out works fine, every persona hears
+        // every other, but everyone responding to everyone is an
+        // O(N²) echo storm that fills the bus in seconds. The proper
+        // fix is real cognition with attention + a "do I have
+        // something worth saying" judgment; this is the bridge until
+        // we have that. Skipping the heuristic prefix means personas
+        // still respond to humans (their probes don't carry the
+        // prefix) and stay quiet at each other (their replies do).
+        // Carries a Card tag so the next reader knows this is
+        // doctrinal-but-tactical, not a structural cognition decision.
+        if text.starts_with("[heuristic:") {
+            continue;
+        }
 
         let from_peer_short: String = event.peer_id.to_string().chars().take(8).collect();
         println!("─── inbound (lamport={}) ───", event.lamport);
