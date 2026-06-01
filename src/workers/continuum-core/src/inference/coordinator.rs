@@ -230,6 +230,58 @@ pub enum LaneCaptureEvent {
         lease_id: String,
         was_present: bool,
     },
+    /// Pressure-driven eviction. Differs from LaneClosed in that
+    /// the caller didn't choose it — the substrate did, under
+    /// memory pressure. Reason classifies why this particular
+    /// lane was picked.
+    LaneEvicted {
+        captured_at_ms: u64,
+        persona: PersonaId,
+        task: TaskKind,
+        class: LaneClass,
+        handle_id: Uuid,
+        lease_id: String,
+        bytes_freed: u64,
+        reason: EvictionReason,
+    },
+}
+
+/// Why a particular lane was evicted in a pressure-driven walk.
+/// Reported on `LaneCaptureEvent::LaneEvicted` so observers can
+/// distinguish lease-expiry cleanup from genuine pressure response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvictionReason {
+    /// Lane's lease expired (regardless of class). First priority in
+    /// any eviction walk — expired leases are free bytes.
+    LeaseExpired,
+    /// Class is `Hard` (Background, Sentinel) — first to go under
+    /// non-expired pressure.
+    PressureHard,
+    /// Class is `Graceful` (Interactive) — second under pressure.
+    /// Realtime (Pinned) is never targeted by pressure; expired
+    /// realtime leases fall into `LeaseExpired`.
+    PressureGraceful,
+}
+
+/// Outcome of `evict_under_pressure`.
+#[derive(Debug, Clone)]
+pub struct EvictionResult {
+    pub evicted: Vec<EvictedLane>,
+    pub bytes_freed: u64,
+    /// `target - bytes_freed`. Zero when the target was met. Positive
+    /// when the walk ran out of evictable lanes before reaching the
+    /// target (typically because too many pinned lanes are active).
+    pub bytes_short: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvictedLane {
+    pub handle_id: Uuid,
+    pub persona: PersonaId,
+    pub task: TaskKind,
+    pub class: LaneClass,
+    pub bytes_freed: u64,
+    pub reason: EvictionReason,
 }
 
 /// Sink trait for coordinator capture events. `record` is `&self`
@@ -516,6 +568,151 @@ impl InferenceCoordinator {
             was_present: true,
         });
         Ok(true)
+    }
+
+    /// Pressure-driven eviction walk. Releases lanes until
+    /// `target_bytes` of accounted KV cache is freed, OR the walk
+    /// exhausts non-pinned evictable lanes.
+    ///
+    /// Order:
+    /// 1. Expired leases first, oldest first (any class — expired
+    ///    realtime leases fall here, NOT under PressureHard).
+    /// 2. `Hard` revocation policy lanes (Background, Sentinel),
+    ///    oldest first by lease acquisition time.
+    /// 3. `Graceful` revocation policy lanes (Interactive),
+    ///    oldest first.
+    /// 4. `Pinned` lanes (Realtime) are NEVER targeted by pressure.
+    ///    Expired realtime leases get hit by step 1, not by
+    ///    pressure-class targeting.
+    ///
+    /// Returns `EvictionResult` with the evicted lanes + bytes freed
+    /// + bytes_short (target - freed, zero when target met). Emits
+    /// `LaneCaptureEvent::LaneEvicted` for each lane per
+    /// [[observability-is-half-the-architecture]].
+    ///
+    /// **Critical: pinned lanes are NEVER evicted by pressure.**
+    /// The prior-attempt failure mode was hot-path adapter swap on
+    /// active conversations. The `Pinned` revocation policy is the
+    /// substrate's contract that the realtime lane stays warm until
+    /// the conversation ends. Operator's escape valve: lease
+    /// expiry — when a pinned lease expires (lease.expires_at_ms <
+    /// now_ms), step 1 collects it like any other expired lease.
+    pub fn evict_under_pressure(&self, target_bytes: u64, now_ms: u64) -> EvictionResult {
+        // Snapshot lane references so we don't hold DashMap entries
+        // while we mutate. We need (handle_id, lease_acquired_at_ms,
+        // class, expired?, bytes_to_free).
+        struct EvictCandidate {
+            handle_id: Uuid,
+            acquired_at_ms: u64,
+            class: LaneClass,
+            expired: bool,
+            bytes: u64,
+        }
+        let bytes_per_token = self.config.bytes_per_token;
+        let mut candidates: Vec<EvictCandidate> = self
+            .lanes
+            .iter()
+            .map(|entry| {
+                let lane = entry.value();
+                let expired = lane.is_expired(now_ms);
+                EvictCandidate {
+                    handle_id: lane.handle_id(),
+                    acquired_at_ms: lane.lease().acquired_at_ms,
+                    class: lane.class(),
+                    expired,
+                    bytes: (lane.seed_kv_tokens() as u64).saturating_mul(bytes_per_token),
+                }
+            })
+            .collect();
+
+        // Three tiers, each sorted by acquired_at_ms ascending
+        // (oldest first). Pinned lanes are excluded entirely unless
+        // expired (in which case they go in tier 1).
+        candidates.sort_by(|a, b| {
+            // Sort key: (tier_rank, acquired_at_ms).
+            // tier_rank: 0 = expired, 1 = Hard, 2 = Graceful, 3 = Pinned (excluded later)
+            fn tier(c: &EvictCandidate) -> u8 {
+                if c.expired {
+                    0
+                } else {
+                    match c.class {
+                        LaneClass::Background | LaneClass::Sentinel => 1,
+                        LaneClass::Interactive => 2,
+                        LaneClass::Realtime => 3,
+                    }
+                }
+            }
+            tier(a)
+                .cmp(&tier(b))
+                .then(a.acquired_at_ms.cmp(&b.acquired_at_ms))
+        });
+
+        let mut evicted = Vec::new();
+        let mut bytes_freed: u64 = 0;
+        for cand in candidates {
+            if bytes_freed >= target_bytes {
+                break;
+            }
+            // Pinned + not expired → skip (substrate contract).
+            if cand.class == LaneClass::Realtime && !cand.expired {
+                continue;
+            }
+            let reason = if cand.expired {
+                EvictionReason::LeaseExpired
+            } else if matches!(cand.class, LaneClass::Background | LaneClass::Sentinel) {
+                EvictionReason::PressureHard
+            } else {
+                EvictionReason::PressureGraceful
+            };
+
+            // Snapshot the lane's persona + task + lease_id BEFORE
+            // we remove it from the map, then close + emit.
+            let Some((_, lane)) = self.lanes.remove(&cand.handle_id) else {
+                continue;
+            };
+            let persona = lane.persona();
+            let task = lane.task();
+            let class = lane.class();
+            let lease_id = lane.lease_id().to_string();
+            let bytes_freed_for_lane = cand.bytes;
+
+            let _ = self.footprint.release_lease(&lease_id);
+            // Best-effort handle store close. The session-side close
+            // can't fail unrecoverably; we don't propagate.
+            let handle_ref = HandleRef {
+                owner: crate::inference::handle_store::HANDLE_OWNER.to_string(),
+                id: cand.handle_id,
+                type_tag: crate::inference::handle_store::HANDLE_TYPE_TAG.to_string(),
+                created_at_ms: lane.lease().acquired_at_ms,
+            };
+            let _ = self.handle_store.close(&handle_ref);
+
+            bytes_freed = bytes_freed.saturating_add(bytes_freed_for_lane);
+            self.capture_sink.record(LaneCaptureEvent::LaneEvicted {
+                captured_at_ms: now_ms,
+                persona,
+                task,
+                class,
+                handle_id: cand.handle_id,
+                lease_id,
+                bytes_freed: bytes_freed_for_lane,
+                reason,
+            });
+            evicted.push(EvictedLane {
+                handle_id: cand.handle_id,
+                persona,
+                task,
+                class,
+                bytes_freed: bytes_freed_for_lane,
+                reason,
+            });
+        }
+        let bytes_short = target_bytes.saturating_sub(bytes_freed);
+        EvictionResult {
+            evicted,
+            bytes_freed,
+            bytes_short,
+        }
     }
 
     /// Get a snapshot of one lane's state. Used by the handle
@@ -947,6 +1144,237 @@ mod tests {
             LaneCaptureEvent::LaneOpened { lease_id, .. } => assert_eq!(lease_id, "b"),
             other => panic!("expected lease 'b', got {other:?}"),
         }
+    }
+
+    // ── pressure-driven eviction (step 5) ───────────────────────
+
+    fn open_with_class(
+        c: &InferenceCoordinator,
+        persona_id: u128,
+        task: TaskKind,
+        class: LaneClass,
+        now_ms: u64,
+    ) -> HandleRef {
+        c.open_lane(OpenLaneRequest {
+            persona: persona(persona_id),
+            task,
+            adapter: Arc::new(HeuristicInferenceAdapter::new()),
+            model: None,
+            system_prompt: None,
+            active_adapters: None,
+            class_override: Some(class),
+            now_ms,
+        })
+        .unwrap()
+    }
+
+    fn open_chat_now(c: &InferenceCoordinator, persona_id: u128, now_ms: u64) -> HandleRef {
+        c.open_lane(OpenLaneRequest {
+            persona: persona(persona_id),
+            task: TaskKind::Chat,
+            adapter: Arc::new(HeuristicInferenceAdapter::new()),
+            model: None,
+            system_prompt: None,
+            active_adapters: None,
+            class_override: None,
+            now_ms,
+        })
+        .unwrap()
+    }
+
+    fn eviction_config() -> CoordinatorConfig {
+        // Generous concurrency so we can open many lanes before
+        // evicting; modest cost_units so multiple lanes fit. Long
+        // lease so a typical now=1.5M wall-clock test stays within
+        // the lease window (the expired-lease test uses now past
+        // acquisition + lease_duration to force expiry).
+        CoordinatorConfig {
+            lane_budgets: vec![ThroughputLaneBudget {
+                resource_class: ResourceClass::LocalGeneration,
+                target_silicon: TargetSilicon::Cpu,
+                max_concurrency: 16,
+                max_cost_units: 200_000,
+            }],
+            // 1 byte per token so bytes-freed numbers in tests are
+            // just seed_kv_tokens (8K Chat → 8192 bytes etc.).
+            bytes_per_token: 1,
+            lease_duration_ms: 5_000_000,
+            default_target_silicon: TargetSilicon::Cpu,
+        }
+    }
+
+    fn build_eviction_coordinator() -> InferenceCoordinator {
+        InferenceCoordinator::new(
+            Arc::new(FootprintRegistry::new()),
+            Arc::new(InferenceHandleStore::new()),
+            eviction_config(),
+        )
+    }
+
+    #[test]
+    fn evict_under_pressure_does_not_touch_pinned_realtime_lane() {
+        let c = build_eviction_coordinator();
+        // 1 realtime (pinned), 1 background — evict 100MB of pressure.
+        let realtime = open_with_class(&c, 1, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
+        let _background = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
+        let result = c.evict_under_pressure(100_000_000, 1_500_000);
+        assert_eq!(result.evicted.len(), 1);
+        assert_eq!(result.evicted[0].class, LaneClass::Background);
+        // Realtime lane survives.
+        assert!(c.lane_for_handle(&realtime).is_some());
+        // Only background's bytes were freed (CodingSmall = 32K tokens).
+        assert_eq!(result.bytes_freed, 32 * 1024);
+        assert!(result.bytes_short > 0); // didn't reach 100MB target
+    }
+
+    #[test]
+    fn evict_under_pressure_prefers_hard_then_graceful() {
+        let c = build_eviction_coordinator();
+        // 1 Interactive (Graceful) + 1 Background (Hard) + 1 Sentinel (Hard).
+        let _interactive = open_with_class(&c, 1, TaskKind::Chat, LaneClass::Interactive, 1_000_000);
+        let _background = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
+        let _sentinel = open_with_class(&c, 3, TaskKind::SentinelEasy, LaneClass::Sentinel, 1_000_000);
+        // Evict just one lane's worth (small budget).
+        let result = c.evict_under_pressure(1, 1_500_000);
+        assert_eq!(result.evicted.len(), 1);
+        // First evicted = Hard (Background or Sentinel — older first within tier).
+        assert!(matches!(
+            result.evicted[0].reason,
+            EvictionReason::PressureHard
+        ));
+        assert!(matches!(
+            result.evicted[0].class,
+            LaneClass::Background | LaneClass::Sentinel
+        ));
+    }
+
+    #[test]
+    fn evict_under_pressure_picks_oldest_within_same_tier() {
+        let c = build_eviction_coordinator();
+        // Two Background lanes, different acquired_at_ms.
+        let _old = open_with_class(&c, 1, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
+        let _new = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 2_000_000);
+        let result = c.evict_under_pressure(1, 3_000_000);
+        assert_eq!(result.evicted.len(), 1);
+        // Older lane (persona 1, acquired at 1M) gets evicted first.
+        assert_eq!(result.evicted[0].persona, persona(1));
+    }
+
+    #[test]
+    fn evict_under_pressure_collects_expired_first_even_pinned() {
+        // Need ONE lane expired and one active so pressure-priority
+        // would normally pick the active background, but expired
+        // priority MUST pick the realtime first.
+        let c = build_eviction_coordinator();
+        // Realtime opens at 1M with 5M lease → expires at 6M.
+        let _realtime = open_with_class(&c, 1, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
+        // Background opens at 5M with 5M lease → expires at 10M.
+        let _background = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 5_000_000);
+        // Evict at 7M: realtime expired, background still active.
+        let result = c.evict_under_pressure(1, 7_000_000);
+        assert_eq!(result.evicted.len(), 1);
+        assert_eq!(result.evicted[0].class, LaneClass::Realtime);
+        assert_eq!(result.evicted[0].reason, EvictionReason::LeaseExpired);
+    }
+
+    #[test]
+    fn evict_under_pressure_stops_when_target_met() {
+        let c = build_eviction_coordinator();
+        // 3 Background lanes, each 32K tokens = 32K bytes (with
+        // bytes_per_token=1).
+        for i in 1..=3 {
+            open_with_class(&c, i, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
+        }
+        // Target 33K bytes — enough for 2 lanes but not 3.
+        let result = c.evict_under_pressure(33_000, 1_500_000);
+        assert_eq!(result.evicted.len(), 2);
+        assert_eq!(result.bytes_freed, 64 * 1024);
+        assert_eq!(result.bytes_short, 0);
+        // Third lane still present.
+        assert_eq!(c.lane_count(), 1);
+    }
+
+    #[test]
+    fn evict_under_pressure_reports_bytes_short_when_all_pinned() {
+        let c = build_eviction_coordinator();
+        // 3 Realtime lanes — pressure can't touch any.
+        for i in 1..=3 {
+            open_with_class(&c, i, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
+        }
+        let target = 1_000_000;
+        let result = c.evict_under_pressure(target, 1_500_000);
+        assert_eq!(result.evicted.len(), 0);
+        assert_eq!(result.bytes_freed, 0);
+        assert_eq!(result.bytes_short, target);
+        assert_eq!(c.lane_count(), 3); // all still present
+    }
+
+    #[test]
+    fn evict_under_pressure_emits_lane_evicted_capture_with_reason() {
+        let sink = Arc::new(InMemoryLaneCaptureSink::new(64));
+        let c = InferenceCoordinator::new(
+            Arc::new(FootprintRegistry::new()),
+            Arc::new(InferenceHandleStore::new()),
+            eviction_config(),
+        )
+        .with_capture_sink(sink.clone());
+        let _ = open_chat_now(&c, 1, 1_000_000); // Interactive (Graceful)
+        let _ = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 1_000_000); // Hard
+        sink.drain(); // forget the LaneOpened events
+        let _result = c.evict_under_pressure(1, 1_500_000);
+        let events = sink.snapshot();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            LaneCaptureEvent::LaneEvicted { reason, class, bytes_freed, .. } => {
+                assert_eq!(*reason, EvictionReason::PressureHard);
+                assert_eq!(*class, LaneClass::Background);
+                assert_eq!(*bytes_freed, 32 * 1024);
+            }
+            other => panic!("expected LaneEvicted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evict_under_pressure_with_zero_target_evicts_nothing() {
+        let c = build_eviction_coordinator();
+        for i in 1..=3 {
+            open_chat_now(&c, i, 1_000_000);
+        }
+        let result = c.evict_under_pressure(0, 1_500_000);
+        assert_eq!(result.evicted.len(), 0);
+        assert_eq!(result.bytes_freed, 0);
+        assert_eq!(result.bytes_short, 0);
+        assert_eq!(c.lane_count(), 3);
+    }
+
+    #[test]
+    fn evict_under_pressure_on_empty_coordinator_is_noop() {
+        let c = build_eviction_coordinator();
+        let result = c.evict_under_pressure(1_000_000, 1_500_000);
+        assert_eq!(result.evicted.len(), 0);
+        assert_eq!(result.bytes_freed, 0);
+        assert_eq!(result.bytes_short, 1_000_000);
+    }
+
+    #[test]
+    fn evict_realistic_floor_scenario_three_personas_one_must_yield() {
+        // The substrate's defining boast under pressure:
+        // 3 lanes (Realtime/Interactive/Background), pressure says
+        // free at least 4K bytes. The Background lane yields; the
+        // Realtime + Interactive lanes stay warm. This is the
+        // multi-persona-on-commodity-hardware story under load.
+        let c = build_eviction_coordinator();
+        let realtime = open_with_class(&c, 1, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
+        let interactive = open_with_class(&c, 2, TaskKind::Chat, LaneClass::Interactive, 1_000_000);
+        let _background = open_with_class(&c, 3, TaskKind::GameNpcIdle, LaneClass::Background, 1_000_000);
+        let result = c.evict_under_pressure(4 * 1024, 1_500_000);
+        assert_eq!(result.evicted.len(), 1);
+        assert_eq!(result.evicted[0].class, LaneClass::Background);
+        assert_eq!(result.evicted[0].reason, EvictionReason::PressureHard);
+        // Realtime + Interactive survive.
+        assert!(c.lane_for_handle(&realtime).is_some());
+        assert!(c.lane_for_handle(&interactive).is_some());
+        assert_eq!(c.lane_count(), 2);
     }
 
     #[test]
