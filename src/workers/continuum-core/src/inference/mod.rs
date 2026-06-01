@@ -34,6 +34,7 @@ pub mod footprint_registry;
 pub mod handle_module;
 pub mod handle_store;
 pub mod kv_quant;
+pub mod lane;
 pub mod llamacpp_adapter;
 pub mod llm_module;
 pub mod llm_module_bus;
