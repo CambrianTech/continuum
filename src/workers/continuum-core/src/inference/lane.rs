@@ -47,6 +47,7 @@
 //!   coordinator's capture sink (lands with the coordinator).
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::cognition::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
@@ -84,8 +85,12 @@ pub struct Lane {
 /// Mapped to `ThroughputLeaseRevocationPolicy` via
 /// `class.revocation_policy()`. The mapping is the
 /// substrate's pressure-response contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/inference/LaneClass.ts"
+)]
 pub enum LaneClass {
     /// Active video/voice chat. Pressure broker MUST NOT evict
     /// mid-turn. Maps to `Pinned`.

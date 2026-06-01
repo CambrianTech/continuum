@@ -49,9 +49,15 @@ use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ActiveAdapterRequest, TextGenerationRequest, TextGenerationResponse};
+use crate::genome::working_set::PersonaId;
+use crate::inference::coordinator::{
+    CoordinatorError, InferenceCoordinator, OpenLaneRequest,
+};
 use crate::inference::handle_store::{
     InferenceHandleStore, OpenSessionRequest, HANDLE_OWNER, HANDLE_TYPE_TAG,
 };
+use crate::inference::lane::LaneClass;
+use crate::inference::recipe_budget::TaskKind;
 use crate::runtime::cell_shapes::HandleRef;
 use crate::runtime::{
     CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
@@ -97,6 +103,20 @@ pub struct OpenParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub persona_id: Option<Uuid>,
+    /// What the persona is doing — drives the lane's KV budget +
+    /// class derivation (via [[INFERENCE-LANES-REALISTIC.md]]).
+    /// Defaults to `Chat` when omitted. Ignored when the module
+    /// runs without a coordinator (back-compat path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub task: Option<TaskKind>,
+    /// Override the class derived from `task`. Coordinator-mode
+    /// only. Use when a daemon knows persona context (e.g. voice
+    /// engaged) that implies a different class than `task`
+    /// defaults to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub class_override: Option<LaneClass>,
 }
 
 /// Result of `ai/inference/open`. The minted handle is carried by
@@ -191,6 +211,39 @@ pub struct InspectResult {
     pub has_system_prompt: bool,
     #[ts(type = "number")]
     pub active_adapter_count: u32,
+    // ── Lane fields (populated when the module is coordinator-wired) ──
+
+    /// The persona's task class for this lane. None = non-coordinator
+    /// mode (handle store only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub task: Option<TaskKind>,
+    /// Lane class (Realtime / Interactive / Background / Sentinel).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub class: Option<LaneClass>,
+    /// Seed KV tokens from the recipe budget table.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub seed_kv_tokens: Option<u32>,
+    /// Max KV tokens the lane is allowed to grow to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub max_kv_tokens: Option<u32>,
+    /// Bytes accounted in FootprintRegistry for this lane.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub bytes_accounted: Option<u64>,
+    /// Lease expiration wall-clock — observers track approaching
+    /// expiry to renew or close.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub lease_expires_at_ms: Option<u64>,
+    /// True when the lease is `Pinned` (Realtime) and the pressure
+    /// broker must not evict mid-turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub is_pinned: Option<bool>,
 }
 
 // ── Module ─────────────────────────────────────────────────────────
@@ -215,13 +268,36 @@ pub struct InspectResult {
 pub struct InferenceHandleModule {
     store: Arc<InferenceHandleStore>,
     providers: Arc<DashMap<String, Arc<dyn AIProviderAdapter>>>,
+    /// Optional coordinator. When set, `open` / `close` route
+    /// through lane lifecycle (admission, lease, footprint); when
+    /// None, the module is in back-compat direct-store mode (the
+    /// shipped #107B behavior).
+    coordinator: Option<Arc<InferenceCoordinator>>,
 }
 
 impl InferenceHandleModule {
+    /// Construct without a coordinator — direct-store mode
+    /// (existing #107B behavior). Useful for tests that don't
+    /// need lane lifecycle / observability + for incremental
+    /// rollout where wiring picks coordinator-or-not at boot.
     pub fn new(store: Arc<InferenceHandleStore>) -> Self {
         Self {
             store,
             providers: Arc::new(DashMap::new()),
+            coordinator: None,
+        }
+    }
+
+    /// Construct with a coordinator. The store inside the
+    /// coordinator is used; the `store` field shadows it for
+    /// the back-compat read path (`generate` still routes
+    /// directly to the handle store; Step 4 will wire batching
+    /// via the coordinator).
+    pub fn with_coordinator(coordinator: Arc<InferenceCoordinator>) -> Self {
+        Self {
+            store: coordinator.handle_store(),
+            providers: Arc::new(DashMap::new()),
+            coordinator: Some(coordinator),
         }
     }
 
@@ -335,6 +411,41 @@ impl InferenceHandleModule {
                 )
             })?;
 
+        if let Some(coordinator) = &self.coordinator {
+            let persona = PersonaId::new(params.persona_id.unwrap_or_else(Uuid::new_v4));
+            let task = params.task.unwrap_or(TaskKind::Chat);
+            let now_ms = now_ms_default();
+            let lane_req = OpenLaneRequest {
+                persona,
+                task,
+                adapter,
+                model: params.model,
+                system_prompt: params.system_prompt,
+                active_adapters: params.active_adapters,
+                class_override: params.class_override,
+                now_ms,
+            };
+            let handle = coordinator.open_lane(lane_req).map_err(|e| match e {
+                CoordinatorError::AdmissionDenied { reason, task, persona } => format!(
+                    "{COMMAND_OPEN}: admission denied (reason: {reason:?}, task: {task:?}, persona: {})",
+                    persona.as_uuid()
+                ),
+                CoordinatorError::LeaseAcquireFailed(msg) => {
+                    format!("{COMMAND_OPEN}: lease acquire failed: {msg}")
+                }
+                CoordinatorError::HandleNotFound { handle_id } => {
+                    format!("{COMMAND_OPEN}: handle not found: {handle_id}")
+                }
+            })?;
+            return Ok((
+                handle,
+                OpenResult {
+                    provider: params.provider,
+                },
+            ));
+        }
+
+        // Back-compat path — direct store, no lane lifecycle.
         let handle = self.store.open(
             adapter,
             OpenSessionRequest {
@@ -364,6 +475,12 @@ impl InferenceHandleModule {
     }
 
     async fn close(&self, handle: HandleRef) -> Result<CloseResult, String> {
+        if let Some(coordinator) = &self.coordinator {
+            let released = coordinator
+                .close_lane(&handle)
+                .map_err(|e| format!("{COMMAND_CLOSE}: {e}"))?;
+            return Ok(CloseResult { released });
+        }
         let released = self
             .store
             .close(&handle)
@@ -376,7 +493,7 @@ impl InferenceHandleModule {
             .store
             .inspect(&handle)
             .map_err(|e| format!("{COMMAND_INSPECT}: {e}"))?;
-        Ok(InspectResult {
+        let mut result = InspectResult {
             provider_id: snapshot.provider_id,
             model: snapshot.model,
             persona_id: snapshot.persona_id,
@@ -385,8 +502,35 @@ impl InferenceHandleModule {
             generation_count: snapshot.generation_count,
             has_system_prompt: snapshot.has_system_prompt,
             active_adapter_count: snapshot.active_adapter_count as u32,
-        })
+            task: None,
+            class: None,
+            seed_kv_tokens: None,
+            max_kv_tokens: None,
+            bytes_accounted: None,
+            lease_expires_at_ms: None,
+            is_pinned: None,
+        };
+        if let Some(coordinator) = &self.coordinator {
+            if let Some(lane) = coordinator.inspect(&handle) {
+                result.task = Some(lane.task);
+                result.class = Some(lane.class);
+                result.seed_kv_tokens = Some(lane.seed_kv_tokens);
+                result.max_kv_tokens = Some(lane.max_kv_tokens);
+                result.bytes_accounted = Some(lane.bytes_accounted);
+                result.lease_expires_at_ms = Some(lane.lease_expires_at_ms);
+                result.is_pinned = Some(lane.is_pinned);
+            }
+        }
+        Ok(result)
     }
+}
+
+fn now_ms_default() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -430,6 +574,34 @@ mod tests {
     fn module_with_heuristic() -> InferenceHandleModule {
         let store = Arc::new(InferenceHandleStore::new());
         let module = InferenceHandleModule::new(store);
+        module.register_adapter(
+            HEURISTIC_PROVIDER_ID,
+            Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+        );
+        module
+    }
+
+    fn module_with_coordinator() -> InferenceHandleModule {
+        use crate::cognition::adaptive_throughput::{
+            ResourceClass, TargetSilicon, ThroughputLaneBudget,
+        };
+        use crate::inference::coordinator::{CoordinatorConfig, InferenceCoordinator};
+        use crate::inference::footprint_registry::FootprintRegistry;
+        let footprint = Arc::new(FootprintRegistry::new());
+        let store = Arc::new(InferenceHandleStore::new());
+        let config = CoordinatorConfig {
+            lane_budgets: vec![ThroughputLaneBudget {
+                resource_class: ResourceClass::LocalGeneration,
+                target_silicon: TargetSilicon::UnifiedMemory,
+                max_concurrency: 4,
+                max_cost_units: 40_000,
+            }],
+            bytes_per_token: 64 * 1024,
+            lease_duration_ms: 60_000,
+            default_target_silicon: TargetSilicon::UnifiedMemory,
+        };
+        let coordinator = Arc::new(InferenceCoordinator::new(footprint, store, config));
+        let module = InferenceHandleModule::with_coordinator(coordinator);
         module.register_adapter(
             HEURISTIC_PROVIDER_ID,
             Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
@@ -636,5 +808,128 @@ mod tests {
         let result = m.handle_command(COMMAND_GENERATE, envelope).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing required `handle`"));
+    }
+
+    // ── coordinator-wired path ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn open_through_coordinator_creates_lane_and_returns_handle() {
+        let m = module_with_coordinator();
+        let (handle, _open) = m
+            .open(OpenParams {
+                provider: HEURISTIC_PROVIDER_ID.to_string(),
+                task: Some(TaskKind::VoiceChat),
+                persona_id: Some(Uuid::from_u128(0xCAFE)),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // Inspect should now carry lane fields (because coordinator-wired).
+        let snapshot = m.inspect(handle).await.unwrap();
+        assert_eq!(snapshot.task, Some(TaskKind::VoiceChat));
+        assert_eq!(snapshot.class, Some(LaneClass::Realtime));
+        assert_eq!(snapshot.seed_kv_tokens, Some(8 * 1024));
+        assert_eq!(snapshot.is_pinned, Some(true));
+        assert!(snapshot.bytes_accounted.unwrap() > 0);
+        assert!(snapshot.lease_expires_at_ms.unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn open_through_coordinator_defaults_task_to_chat_when_omitted() {
+        let m = module_with_coordinator();
+        let (handle, _open) = m
+            .open(OpenParams {
+                provider: HEURISTIC_PROVIDER_ID.to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let snapshot = m.inspect(handle).await.unwrap();
+        assert_eq!(snapshot.task, Some(TaskKind::Chat));
+        assert_eq!(snapshot.class, Some(LaneClass::Interactive));
+    }
+
+    #[tokio::test]
+    async fn open_through_coordinator_admission_failure_surfaces_typed_error() {
+        let m = module_with_coordinator();
+        // Open 4 lanes (max_concurrency=4) → all admit. 5th denies.
+        for i in 0..4 {
+            m.open(OpenParams {
+                provider: HEURISTIC_PROVIDER_ID.to_string(),
+                task: Some(TaskKind::Chat),
+                persona_id: Some(Uuid::from_u128(i)),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+        let err = m
+            .open(OpenParams {
+                provider: HEURISTIC_PROVIDER_ID.to_string(),
+                task: Some(TaskKind::Chat),
+                persona_id: Some(Uuid::from_u128(99)),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(err.contains("admission denied"));
+        assert!(err.contains("ResourcePressure"));
+    }
+
+    #[tokio::test]
+    async fn close_through_coordinator_releases_lane() {
+        let m = module_with_coordinator();
+        let (handle, _open) = m
+            .open(OpenParams {
+                provider: HEURISTIC_PROVIDER_ID.to_string(),
+                task: Some(TaskKind::Chat),
+                persona_id: Some(Uuid::from_u128(1)),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let closed = m.close(handle.clone()).await.unwrap();
+        assert!(closed.released);
+        // Inspect after close — base session is also gone (coordinator
+        // closed the handle store entry too).
+        let result = m.inspect(handle).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn class_override_promotes_chat_to_realtime_through_coordinator() {
+        let m = module_with_coordinator();
+        let (handle, _open) = m
+            .open(OpenParams {
+                provider: HEURISTIC_PROVIDER_ID.to_string(),
+                task: Some(TaskKind::Chat),
+                persona_id: Some(Uuid::from_u128(1)),
+                class_override: Some(LaneClass::Realtime),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let snapshot = m.inspect(handle).await.unwrap();
+        assert_eq!(snapshot.class, Some(LaneClass::Realtime));
+        assert_eq!(snapshot.is_pinned, Some(true));
+    }
+
+    #[tokio::test]
+    async fn inspect_in_non_coordinator_mode_leaves_lane_fields_none() {
+        // The original back-compat path doesn't have a coordinator, so
+        // the lane fields stay None.
+        let m = module_with_heuristic();
+        let (handle, _open) = m
+            .open(OpenParams {
+                provider: HEURISTIC_PROVIDER_ID.to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let snapshot = m.inspect(handle).await.unwrap();
+        assert!(snapshot.task.is_none());
+        assert!(snapshot.class.is_none());
+        assert!(snapshot.seed_kv_tokens.is_none());
+        assert!(snapshot.is_pinned.is_none());
     }
 }

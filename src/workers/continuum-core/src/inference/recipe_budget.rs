@@ -13,13 +13,18 @@
 //! recipe author declares as the starting point.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// What the persona is doing — drives the seed context budget.
 ///
 /// Defaults match §14.1 of the design doc. New variants land here as
 /// new task types emerge; the table stays the single source of truth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/inference/TaskKind.ts"
+)]
 pub enum TaskKind {
     /// Text chat — typical multi-party turn fits comfortably.
     Chat,
