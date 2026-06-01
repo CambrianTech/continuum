@@ -32,6 +32,7 @@
 pub mod backends;
 pub mod batching_probe;
 pub mod coordinator;
+pub mod coordinator_pool;
 pub mod footprint_registry;
 pub mod handle_module;
 pub mod handle_store;

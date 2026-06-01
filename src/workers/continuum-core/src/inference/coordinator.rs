@@ -752,6 +752,62 @@ impl InferenceCoordinator {
         self.lanes.is_empty()
     }
 
+    /// Coordinator config (read-only view). Used by the
+    /// CoordinatorResourcePool wrapper to compute capacity bytes
+    /// for PressureBroker integration.
+    pub fn config(&self) -> &CoordinatorConfig {
+        &self.config
+    }
+
+    /// Total bytes currently accounted across all active lanes —
+    /// sum of `seed_kv_tokens × bytes_per_token` per lane. Mirrors
+    /// what `FootprintRegistry::total_bytes()` reports for the
+    /// KvCache resource type, but limited to this coordinator's
+    /// lanes (other adapters / other coordinators on the same
+    /// process have their own footprint slots).
+    pub fn lanes_usage_bytes(&self) -> u64 {
+        let bytes_per_token = self.config.bytes_per_token;
+        self.lanes
+            .iter()
+            .map(|entry| (entry.value().seed_kv_tokens() as u64).saturating_mul(bytes_per_token))
+            .sum()
+    }
+
+    /// Total capacity in bytes the coordinator's lane budgets can
+    /// theoretically host — sum of `lane_budget.max_cost_units ×
+    /// bytes_per_token` across configured budgets. Used by the
+    /// PressureBroker wrapper.
+    pub fn capacity_bytes(&self) -> u64 {
+        let bytes_per_token = self.config.bytes_per_token;
+        self.config
+            .lane_budgets
+            .iter()
+            .map(|b| (b.max_cost_units as u64).saturating_mul(bytes_per_token))
+            .sum()
+    }
+
+    /// One entry per active lane, in the shape PressureBroker /
+    /// dashboards expect (per `paging::pool::ResourcePoolEntry`).
+    pub fn lanes_snapshot(&self) -> Vec<crate::paging::pool::ResourcePoolEntry> {
+        let bytes_per_token = self.config.bytes_per_token;
+        self.lanes
+            .iter()
+            .map(|entry| {
+                let lane = entry.value();
+                let size_bytes =
+                    (lane.seed_kv_tokens() as u64).saturating_mul(bytes_per_token);
+                crate::paging::pool::ResourcePoolEntry {
+                    key: lane.handle_id().to_string(),
+                    size_bytes,
+                    pinned_count: if lane.is_pinned() { 1 } else { 0 },
+                    loaded_at: lane.lease().acquired_at_ms,
+                    last_access_at: lane.lease().acquired_at_ms,
+                    access_count: 0,
+                }
+            })
+            .collect()
+    }
+
     /// Borrow the inner handle store. The handle module uses this
     /// to dispatch generate calls without going through the
     /// coordinator (generation isn't a coordinator concern in Step
