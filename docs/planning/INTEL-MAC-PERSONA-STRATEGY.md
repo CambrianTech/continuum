@@ -1,16 +1,71 @@
-# Intel Mac Persona Strategy — What's Workable
+# Local + Grid Persona Strategy — From Intel Mac to M5
 
 > Joel (2026-05-31): "We want to know if we can get something
-> workable for this Intel Mac." This document answers it.
-> Honest measured constraints, the achievable target, and the
-> three things we ship to make it real.
+> workable for this Intel Mac." Then sharpened: "we do need to
+> run locally on a MacBook m5 24 or 48gb memory or about here.
+> And so even though if our machine can't do it we need to build
+> it AND grid inference and they're just the same command just
+> executed across the wire and airc substrate delivered payloads."
+>
+> Two co-equal targets. Local is the primary execution path on
+> the M5; the Intel Mac is the proof that "substrate works
+> everywhere" extends down to 2018 hardware via grid offload.
+> The unifying contract: grid inference is **the same command**
+> as local inference — `adapter.generate_text(request)` — just
+> with an adapter impl whose transport is airc instead of llama.cpp.
 
 **Status:** Strategy (2026-05-31).
 
-**Target hardware:** MacBookPro15,1 (Mac Intel + AMD Radeon Pro 560X
-discrete GPU). Classified by the substrate as
-`HwCapabilityTier::MacIntelMetalDiscrete` per
-`cognition/host_capability_probe.rs`.
+**Targets (per Joel 2026-05-31, refined):**
+
+> "We'd really be building for 3090 desktops or m5's at the same
+> time. The 5090 is luxury but we will take advantage."
+> "I have 1080ti and 5090 windows only. Don't have the 3090. Just
+> target sizes. M1 or higher ok ram ought to be good too."
+
+So we design for **target SIZES**, not specific GPUs Joel owns:
+
+| Tier | Class | Sized for | Model class |
+|---|---|---|---|
+| **Primary Apple** | M1 Pro/Max → M5 Pro/Max, ≥ 16 GB UMA (24+ preferred) | Daily driver Apple Silicon | Qwen-2.5-7B → 14B → 27B at Q4_K_M (depending on RAM) |
+| **Primary desktop GPU** | NVIDIA Ampere+ class, 24 GB VRAM (RTX 3090 / A5000 / 5090) | Daily driver desktop GPU | Qwen-2.5-14B → 30B at Q4_K_M |
+| **Supported older desktop GPU** | NVIDIA Pascal, 11 GB VRAM (GTX 1080 Ti) | Older desktop still in use; substrate citizen | Qwen-2.5-7B at Q4_K_M (~4.5 GB) |
+| **Joel's actual hardware** | 1080 Ti + 5090 on Windows; MacBookPro15,1 + Intel Mac | Drives the test matrix; CI must work on all of these | as per tier |
+| **Edge local** | MacBookPro15,1 + AMD Radeon Pro 560X | Lower-bound proof; heuristic + reflective + grid offload | None local (CPU 1.1 tok/s); grid offload for real work |
+| **Grid peer** | Any reachable continuum-core-server | Same command surface; transport is the only difference | Whatever that peer hosts |
+
+**Critical principles:**
+
+1. **The design target is Apple Silicon AND desktop GPU
+   SIMULTANEOUSLY.** Both must work as primary daily-driver
+   substrates out of the box. The substrate runs the same Rust
+   code on both; adapter selection + Metal-vs-CUDA backend
+   handles the hardware diff.
+
+2. **Apple Silicon floor is M1 with adequate RAM**, not just M5.
+   M1 Pro / M2 Pro / M3 Pro / M4 Pro at ≥ 16 GB UMA all qualify
+   as "primary local" with appropriate model sizing. M5 is just
+   the newest; the design doesn't require it.
+
+3. **Windows is a first-class platform.** 1080 Ti and 5090 are
+   Joel's actual hardware and they're Windows boxes — the
+   substrate must build, run, and serve personas on Windows the
+   same way as on macOS/Linux. (Continuum-core-server already
+   targets Windows per the existing infrastructure notes.)
+
+4. **5090 / Ampere+ are luxury sizing**, not requirements.
+   Designing AROUND a 5090 would lock out everyone without one.
+   The realistic-floor doc's "ONE base model, N persona lanes"
+   target is the 3090-class size budget; bigger GPUs use the
+   headroom for more lanes / bigger models, not a different
+   architecture.
+
+**Classification (`cognition/model_resolver/types.rs`):**
+- M5 → `HwCapabilityTier::M5UmaProMax` (**not yet enumerated** — task #115 adds the variant; current code would classify M5 as M3UmaProMax fallback)
+- RTX 3090 → `HwCapabilityTier::Sm86`
+- RTX 5090 → `HwCapabilityTier::Sm120`
+- GTX 1080 Ti → `HwCapabilityTier::Sm60` (Pascal, compute capability 6.1; **not yet enumerated** — task #115 adds the variant + probe detection)
+- Intel Mac → `HwCapabilityTier::MacIntelMetalDiscrete`
 
 **Parents:**
 - [`docs/architecture/INFERENCE-LANES-REALISTIC.md`](../architecture/INFERENCE-LANES-REALISTIC.md) — realistic floor
@@ -35,7 +90,168 @@ hard truth shapes everything downstream.
 
 ---
 
-## What 1.1 tok/s actually means for personas
+## Apple Silicon class (primary local) — what's workable
+
+Apple Silicon (M1 Pro/Max → M5 Pro/Max) at ≥ 16 GB UMA is where
+personas run as their daily-driver substrate. The full realistic-
+floor design ships here. Throughput scales with generation; the
+floor is M1.
+
+| Resource | M1 Pro/Max 16-32 GB | M2/M3 Pro/Max 16-48 GB | M4/M5 Pro/Max 24-48+ GB |
+|---|---|---|---|
+| Default model | Qwen-2.5-3B → 7B Q4_K_M | Qwen-2.5-7B → 14B Q4_K_M | Qwen-2.5-14B → 27B Q4_K_M |
+| Inference path | LlamaCppAdapter via Metal (UMA, no n_gpu_layers throttle) | same | same |
+| Throughput (Qwen-7B) | ~20-30 tok/s | ~30-45 tok/s | ~50-70+ tok/s |
+| n_seq_max | **2-4** (RAM-dependent) | **4** (auto-enabled by #110 probe) | **4-6** depending on KV budget |
+| Concurrent lanes | 2-3 active personas | 3-4 | 4-6 |
+| Real-time voice/video | Borderline on M1, comfortable from M2 Pro up | YES | YES + room for vision pipeline |
+
+The realistic-floor doc's "ONE base model, N persona lanes via
+continuous batching" is the Apple Silicon path's primary mode.
+Lane multiplexing through the in-backend scheduler (already
+shipped per #109) serves 3-4 concurrent personas (real
+conversations + reflection + sentinel review) on one model load
+on M2+ class hardware.
+
+**Apple Silicon alone is enough for a single-user substrate with
+rich persona behavior at M2 Pro and above.** Grid offload is the
+unlock for multi-user / heavier work, not a precondition. M1 is
+the floor; below that (M1 base / 8 GB) you're more in the Intel
+Mac territory — heuristic adapter + small models + grid offload
+for serious work.
+
+### NVIDIA desktop GPU class (Ampere+ 24 GB / Blackwell 32 GB)
+
+The CUDA equivalent of the Apple Silicon path. The LlamaCppAdapter
+uses llama.cpp's CUDA backend instead of Metal; everything else is
+the same code path. Joel's 5090 sits in this class.
+
+| Resource | Ampere+ 24 GB VRAM class (RTX 3090 / A5000) | Blackwell 32 GB VRAM (RTX 5090) |
+|---|---|---|
+| Default model | Qwen-2.5-14B Q4_K_M (~9 GB) | Qwen-2.5-32B Q4_K_M (~19 GB) or 14B at FP16 |
+| Throughput | ~60-80 tok/s on 7B; ~30-40 on 14B | ~100+ tok/s on 7B; 50-60 on 14B |
+| n_seq_max | **4-6** | **6-8** |
+| Concurrent lanes | 4-6 active personas + background | 6-8 |
+| Real-time voice/video | YES | YES + room for vision pipeline |
+
+The 24-GB class is the substrate's "good desktop" baseline that
+sizing decisions target. The 5090 (which Joel has, Windows) is
+opportunistic upper-class — same code path, more headroom for
+bigger models or more concurrent lanes.
+
+### NVIDIA Pascal class (GTX 1080 Ti, 11 GB VRAM, Windows)
+
+The substrate's "older desktop still in use" target. Pascal is
+two generations behind Ampere; smaller VRAM means smaller model.
+Joel has one of these (Windows).
+
+| Resource | 1080 Ti class |
+|---|---|
+| Default model | Qwen-2.5-7B Q4_K_M (~4.5 GB) |
+| Throughput | ~30-40 tok/s on 7B |
+| n_seq_max | **2-3** (VRAM headroom dictates) |
+| Concurrent lanes | 2-3 active personas |
+| Real-time voice | Borderline — 7B at 30 tok/s gives ~3-sec responses; chat-class voice works, fast turn-taking marginal |
+| Real-time video | Likely needs grid offload for the avatar |
+
+### Windows support is required
+
+Both of Joel's NVIDIA boxes (1080 Ti + 5090) are Windows.
+Continuum-core-server runs on Windows as a first-class platform —
+not a compatibility afterthought. The CUDA paths use llama.cpp's
+CUDA backend the same way as Linux; the substrate doesn't care
+about OS as long as the adapter + build artifacts produce. Build
+matrix MUST include Windows; CI MUST exercise the Windows path on
+at least the heuristic-adapter substrate flow.
+
+### Substrate-runs-everywhere principle
+
+The same Rust code, the same lane substrate, the same RAG layer,
+the same coordinator + handle store + capture sinks ship on
+**M5 + 3090 + 1080 Ti + 5090 + Intel Mac**. Adapter selection
+(Metal vs CUDA vs CPU-only) + model picks per tier are the only
+hardware-aware bits; everything above the adapter trait is host-
+agnostic.
+
+The grid principle compounds this: a user with an Apple Silicon
+laptop + an older NVIDIA box on Windows + a newer NVIDIA box
+elsewhere (Joel's actual setup) gets the substrate's lane
+coordinator multiplexing locally AND remotely across all of them.
+The substrate doesn't care which lane is where.
+
+### M2+ Pro/Max throughput math (worked example)
+
+- Qwen-2.5-7B Q4_K_M @ ~40 tok/s on M2/M3 Pro (faster on M5)
+- 100-token response = 2.5 seconds wall-clock
+- 4-lane continuous batching: ~25-30 tok/s per lane (aggregate
+  doesn't double, but is much better than serializing)
+- Voice chat: a 50-token reply in ~2-3s — speech-natural turn
+  pacing works
+- Video avatar: avatar lip-sync runs ahead of the audio generation;
+  needs the local TTS path which is its own pipeline
+
+This is the substrate's defining boast realized locally on any
+modern Apple Silicon laptop. No grid required.
+
+## Grid inference — the same command across the wire
+
+Joel (2026-05-31): "grid inference and they're just the same
+command just executed across the wire and airc substrate
+delivered payloads."
+
+This is the architectural contract:
+
+```rust
+// LOCAL — LlamaCppAdapter on M5 via Metal
+let response = adapter.generate_text(request).await?;
+
+// REMOTE — AircRemoteInferenceAdapter (#108) on the same TextGenerationRequest
+let response = remote_adapter.generate_text(request).await?;
+```
+
+The CALLER sees no difference. Both impls return
+`TextGenerationResponse`. The remote impl:
+
+1. Serializes `TextGenerationRequest` as a typed airc envelope
+2. Sends via airc to a peer (the 5090 with continuum-core-server running)
+3. The peer's local `InferenceLlmModule` handles the request via
+   ITS local adapter (whichever is registered there)
+4. The peer serializes the response back as an airc envelope
+5. Local `AircRemoteInferenceAdapter` deserializes and returns
+   `TextGenerationResponse`
+
+Everything ABOVE the adapter trait (handle store, lane coordinator,
+RAG inspection, persona response, chat module, sentinel review)
+treats remote and local identically. Composes with #109's lane
+multiplexing — the coordinator can hold a mix of local AND remote
+handles in the same lane budget.
+
+**Practical use (Joel's actual hardware grid):**
+
+- Apple Silicon laptop hosts most personas locally on a real model
+- Joel's 5090 (Windows desktop, in another room) hosts overflow /
+  specialty personas (bigger model, vision pipeline, code-gen
+  specialist) when reachable via airc
+- Joel's 1080 Ti (Windows) hosts a smaller model serving its own
+  lanes; reachable as a grid peer for additional offload
+- Joel's Intel Mac participates as a citizen via heuristic
+  adapter + reflective lanes locally, and routes any real-model
+  work to one of the GPU boxes via grid
+
+The point: this isn't a single-machine substrate. Joel's actual
+setup is a grid of heterogeneous boxes, and the substrate routes
+lanes wherever capacity is available.
+
+The substrate doesn't know or care where the inference happens.
+That's the whole point.
+
+---
+
+## Intel Mac edge target — what 1.1 tok/s actually means for personas
+
+This section is specific to the Intel Mac (MacBookPro15,1) — the
+substrate's lower-bound proof point. Skip ahead if you're working
+on M5.
 
 A typical persona response is 100-300 tokens. At 1.1 tok/s:
 
@@ -273,8 +489,11 @@ What we ARE doing:
    the full substrate trace."
 
 3. **Workable for real personas (#108):** Grid-offload to a peer
-   with a GPU. The Intel Mac runs lanes; the 5090 runs inference.
-   The substrate handles the routing transparently.
+   with a GPU. The Intel Mac runs lanes; an NVIDIA box (Joel's
+   1080 Ti or 5090) runs inference via the
+   AircRemoteInferenceAdapter — same `adapter.generate_text(req)`
+   command, airc transport. The substrate handles routing
+   transparently.
 
 The realistic floor is not "small model + heroic local serving."
 The realistic floor is "substrate works everywhere + cleverness
