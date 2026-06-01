@@ -22,6 +22,7 @@
 
 pub mod adapter;
 pub mod connection_manager;
+pub mod entity;
 pub mod migration;
 pub mod postgres;
 pub mod query;
@@ -31,6 +32,7 @@ pub mod vector;
 
 pub use adapter::StorageAdapter;
 pub use connection_manager::{ConnectionManager, ConnectionManagerConfig};
+pub use entity::{base_entity_fields, BaseEntity, OrmEntity, OrmEntityRegistry, RegistrationError};
 pub use migration::{MigrationEngine, MigrationHandle};
 pub use postgres::PostgresAdapter;
 pub use query::{QueryBuilder, QueryOperator, SortDirection, StorageQuery};

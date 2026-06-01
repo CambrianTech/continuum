@@ -59,6 +59,8 @@
 //!   a community
 
 use crate::cognition::model_resolver::types::HwCapabilityTier;
+use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
+use crate::orm::{base_entity_fields, OrmEntity};
 use serde::{Deserialize, Serialize};
 
 /// The role a persona instance plays in the substrate. Roles are
@@ -215,6 +217,86 @@ pub struct RoleTemplate {
     pub identity: IdentityDefaults,
     pub cognition: CognitionDefaults,
     pub model_per_tier: ModelChoicePerTier,
+}
+
+// ── ORM entity registration ──────────────────────────────────────
+//
+// Storage shape per [[orm-everything-not-hand-edited-files]]: flat
+// natural-key + flat enum-as-string + JSON columns for the nested
+// IdentityDefaults / CognitionDefaults / ModelChoicePerTier sub-trees.
+// Slice 1 of [[#123]] proves the Rust-native authoring path; slice 2
+// migrates `helper_template()` / `coder_template()` to seed JSON.
+
+impl OrmEntity for RoleTemplate {
+    const COLLECTION: &'static str = "role_templates";
+
+    fn collection_schema() -> CollectionSchema {
+        // BaseEntity columns first — Rust-native authoring adheres to
+        // the same base contract TS-decorator entities use, per Joel's
+        // 2026-06-01 directive. Same storage shape lets adapters,
+        // vector index, exports, and the round-trip-to-JSON treat all
+        // entities uniformly.
+        let mut fields = base_entity_fields();
+        fields.extend(vec![
+            // `role` is the domain-natural key — RoleId serializes as a
+            // lowercase string ("helper", "coder", "sentinel",
+            // "custom"). Unique + indexed because spawner queries are
+            // `WHERE role = ?` constantly. Distinct from the record's
+            // UUID `id` (BaseEntity primary).
+            SchemaField {
+                name: "role".to_string(),
+                field_type: FieldType::String,
+                indexed: true,
+                unique: true,
+                nullable: false,
+                max_length: None,
+            },
+            // SpawnPriority — indexed for "give me all Required roles"
+            // queries the spawner runs every tick.
+            SchemaField {
+                name: "priority".to_string(),
+                field_type: FieldType::String,
+                indexed: true,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+            // Nested structs live as JSON columns. The adapter
+            // serializes serde_json::Value into whatever the backend
+            // uses (sqlite TEXT/json1, postgres jsonb). Queries on
+            // inner fields use JSON-path operators when needed; common
+            // lookups stay flat.
+            SchemaField {
+                name: "identity".to_string(),
+                field_type: FieldType::Json,
+                indexed: false,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+            SchemaField {
+                name: "cognition".to_string(),
+                field_type: FieldType::Json,
+                indexed: false,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+            SchemaField {
+                name: "modelPerTier".to_string(),
+                field_type: FieldType::Json,
+                indexed: false,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+        ]);
+        CollectionSchema {
+            collection: Self::COLLECTION.to_string(),
+            fields,
+            indexes: vec![],
+        }
+    }
 }
 
 // ── Built-in templates: Helper + Coder ───────────────────────────

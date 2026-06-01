@@ -31,6 +31,7 @@ pub mod engram_graph;
 pub mod engram_source;
 pub mod evaluator;
 pub mod genome_paging;
+pub mod hw_tier_descriptor;
 pub mod identity_provider;
 pub mod inbox;
 pub mod inbox_admission;
@@ -111,3 +112,102 @@ pub use turn_frame::{
 };
 pub use types::*;
 pub use unified::PersonaCognition;
+
+// ── Substrate ORM entity registration ────────────────────────────
+//
+// Rust-native authoring path per [[orm-everything-not-hand-edited-
+// files]] and [[authored-data-vs-procedural-projection]] — substrate
+// entities (hw tiers, role templates, identity pools, universes,
+// future continuum config) get their schemas from this side; the
+// TS-decorator pipeline stays for user-app entities.
+//
+// Headless requirement (Joel, 2026-06-01): substrate must work with
+// no Node runtime present. Rust-native authoring is the only valid
+// path for substrate data — TS-decorator pipeline isn't reachable in
+// headless mode.
+//
+// Call this once during continuum-core boot, BEFORE the first
+// `data/ensure-schema` for any of these collections fires. Boot wires
+// it as `register_substrate_orm_entities(OrmEntityRegistry::global())`.
+// The parameter is for testability — tests construct fresh registries
+// to avoid singleton races under parallel cargo test runs.
+
+/// Register the persona substrate's Rust-authored ORM entities into
+/// the supplied registry. Idempotent — repeat calls with the same
+/// schemas are no-ops. Conflicts with a previously registered
+/// different shape return `Err`.
+///
+/// Production boot:
+///   `register_substrate_orm_entities(OrmEntityRegistry::global())?;`
+pub fn register_substrate_orm_entities(
+    registry: &crate::orm::OrmEntityRegistry,
+) -> Result<(), crate::orm::RegistrationError> {
+    registry.register::<hw_tier_descriptor::HwTierDescriptor>()?;
+    registry.register::<role_template::RoleTemplate>()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod orm_entity_registration_tests {
+    use super::*;
+
+    /// Boot-order proof: after `register_substrate_orm_entities`, both
+    /// substrate collections resolve via the Rust path. This is the
+    /// slice-1 acceptance test for #123.
+    #[test]
+    fn substrate_entities_register_and_resolve() {
+        let registry = crate::orm::OrmEntityRegistry::new();
+        register_substrate_orm_entities(&registry).expect("register substrate entities");
+
+        let hw_tiers = registry
+            .resolve("hw_tiers")
+            .expect("hw_tiers resolves via Rust registry");
+        assert_eq!(hw_tiers.collection, "hw_tiers");
+        assert!(
+            hw_tiers.fields.iter().any(|f| f.name == "id" && f.unique),
+            "hw_tiers must have a unique `id` field"
+        );
+
+        let role_templates = registry
+            .resolve("role_templates")
+            .expect("role_templates resolves via Rust registry");
+        assert_eq!(role_templates.collection, "role_templates");
+        assert!(
+            role_templates
+                .fields
+                .iter()
+                .any(|f| f.name == "role" && f.unique),
+            "role_templates must have a unique `role` field"
+        );
+
+        // BaseEntity contract — every Rust-authored entity carries id +
+        // timestamps + version. This is the "adhering to some base"
+        // requirement Joel called out 2026-06-01. If a future entity
+        // forgets to call `base_entity_fields()`, this test catches it.
+        for collection in [&hw_tiers, &role_templates] {
+            let names: Vec<&str> = collection.fields.iter().map(|f| f.name.as_str()).collect();
+            for base in ["id", "createdAt", "updatedAt", "version"] {
+                assert!(
+                    names.contains(&base),
+                    "collection {} missing BaseEntity field '{}' — got {:?}",
+                    collection.collection,
+                    base,
+                    names
+                );
+            }
+        }
+    }
+
+    /// Idempotence: calling twice is safe. Load-bearing because boot
+    /// order across modules can cause double-registration.
+    #[test]
+    fn registration_is_idempotent() {
+        let registry = crate::orm::OrmEntityRegistry::new();
+        register_substrate_orm_entities(&registry).expect("first call");
+        register_substrate_orm_entities(&registry).expect("second call is no-op");
+        register_substrate_orm_entities(&registry).expect("third call still no-op");
+
+        assert!(registry.resolve("hw_tiers").is_some());
+        assert!(registry.resolve("role_templates").is_some());
+    }
+}

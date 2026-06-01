@@ -1096,15 +1096,28 @@ impl DataModule {
         &self,
         params: EnsureSchemaParams,
     ) -> Result<CommandResult, String> {
-        let entity =
-            crate::modules::entity_schemas::resolve(&params.collection).ok_or_else(|| {
-                format!(
-                    "Unknown collection '{}' — not in entity_schemas.json. \
-                     If this is a newly added entity, rebuild TS: `npm run build:ts`.",
-                    params.collection
-                )
-            })?;
-        let collection_schema = crate::modules::entity_schemas::to_collection_schema(entity);
+        // Resolution order per [[orm-everything-not-hand-edited-files]]:
+        //   1. Rust-native registry (substrate entities authored Rust-first:
+        //      hw_tiers, role_templates, identity pools, universes).
+        //   2. entity_schemas.json (TS-decorator authored: chat, users,
+        //      cognition, timeline — the existing pipeline).
+        //   3. Error — collection unknown to either path.
+        let collection_schema = if let Some(rust_schema) =
+            crate::orm::OrmEntityRegistry::global().resolve(&params.collection)
+        {
+            rust_schema
+        } else if let Some(entity) = crate::modules::entity_schemas::resolve(&params.collection) {
+            crate::modules::entity_schemas::to_collection_schema(entity)
+        } else {
+            return Err(format!(
+                "Unknown collection '{}' — not in the Rust ORM registry and not in \
+                 entity_schemas.json. If this is a newly added TS-decorated entity, \
+                 rebuild TS: `npm run build:ts`. If it's a Rust-native substrate entity, \
+                 confirm OrmEntityRegistry::global().register::<YourEntity>() is called \
+                 at boot.",
+                params.collection
+            ));
+        };
         let adapter = self.get_adapter(&params.db_path).await?;
         let result = adapter.ensure_schema(collection_schema).await;
 
