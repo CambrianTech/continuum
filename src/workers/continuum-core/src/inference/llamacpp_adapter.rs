@@ -195,6 +195,29 @@ pub struct LlamaCppAdapter {
     /// CpuResident and Idle land with the paging substrate (Phase 3.x).
     /// See docs/architecture/PERSONA-CONTEXT-PAGING.md §16.
     kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy,
+    /// Continuous-batching slot count. `None` = single-seq mode
+    /// (the conservative qwen3.5 default — its recurrent /
+    /// Gated-Delta-Net Metal graph aborts on multi-seq). When set,
+    /// the in-backend scheduler multiplexes N concurrent
+    /// generations through one shared model load via
+    /// `llamacpp_scheduler.rs`'s driver loop.
+    ///
+    /// **Coordinator wiring:** `InferenceCoordinator::open_lane`
+    /// admits up to `lane_budgets.max_concurrency` lanes against
+    /// this adapter; the scheduler's `n_seq_max` MUST match or
+    /// exceed that number, otherwise admission lets in lanes the
+    /// scheduler can't actually serve in parallel. The realistic-
+    /// floor coordinator config (4 concurrent lanes) pairs with
+    /// `with_n_seq_max(4)` on the adapter.
+    ///
+    /// **Per-model safety:** qwen3.5 (and any model with a
+    /// recurrent KV layer that the Metal graph can't multiplex)
+    /// must keep this at None / 1. Standard Llama / Qwen-2.5 /
+    /// Gemma-2 architectures multiplex cleanly.
+    ///
+    /// See [`docs/architecture/INFERENCE-LANES-REALISTIC.md`]
+    /// (Step 4) for the rollout plan.
+    n_seq_max_override: Option<u32>,
 }
 
 impl LlamaCppAdapter {
@@ -257,6 +280,7 @@ impl LlamaCppAdapter {
             default_model: model.id.clone(),
             context_length_override: None,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
+            n_seq_max_override: None,
         })
     }
 
@@ -285,6 +309,7 @@ impl LlamaCppAdapter {
             default_model: model_id,
             context_length_override: None,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
+            n_seq_max_override: None,
         }
     }
 
@@ -309,6 +334,34 @@ impl LlamaCppAdapter {
     ) -> Self {
         self.kv_quant_policy = policy;
         self
+    }
+
+    /// Enable multi-seq continuous batching at the in-backend
+    /// scheduler. Sets `LlamaCppConfig::n_seq_max = n`, which sizes
+    /// the shared `Context`'s seq pool. Coordinator wiring at
+    /// `InferenceCoordinator` time SHOULD set this to match (or
+    /// modestly exceed) the lane budget's `max_concurrency` so the
+    /// scheduler can actually serve every admitted lane in parallel.
+    ///
+    /// **WARNING (model-specific):** qwen3.5 (and any model with a
+    /// Gated-Delta-Net or recurrent KV layer that llama.cpp's Metal
+    /// graph can't multiplex) MUST keep n_seq_max=1. Standard Llama,
+    /// Qwen-2.5, Gemma-2, and similar transformer architectures
+    /// multiplex cleanly. Caller verifies model compatibility — the
+    /// adapter doesn't auto-detect today. (Q21 follow-up: probe the
+    /// model architecture at load time and refuse n_seq_max>1 for
+    /// known-incompatible families.)
+    pub fn with_n_seq_max(mut self, n: u32) -> Self {
+        self.n_seq_max_override = Some(n.max(1));
+        self
+    }
+
+    /// Current n_seq_max setting (None = single-seq default).
+    /// Coordinators use this to size their admission budgets — if
+    /// the adapter reports None, max_concurrency is effectively 1
+    /// regardless of what the lane budget says.
+    pub fn n_seq_max(&self) -> Option<u32> {
+        self.n_seq_max_override
     }
 
     /// Size the backend's KV by a recipe's persona budgets. The adapter
@@ -407,11 +460,14 @@ impl LlamaCppAdapter {
             // at 262K → 500MB at 16K).
             context_length: self.context_length_override,
             // qwen3.5's recurrent/Gated-Delta-Net Metal graph aborts inside
-            // llama.cpp on the default aggressive graph shape. Keep this path
-            // GPU-only but choose a conservative graph explicitly: single seq,
-            // no FlashAttention auto-upgrade, smaller ubatch. That preserves
-            // Rust-owned local inference while avoiding the known abort path.
-            n_seq_max: 1,
+            // llama.cpp on the default aggressive graph shape. The
+            // historical hard-coded n_seq_max=1 preserved Rust-owned local
+            // inference while avoiding the known abort path. The
+            // realistic-lane work (task #109) lifts this knob to the
+            // adapter caller via `with_n_seq_max(n)` so coordinators can
+            // size the shared scheduler for multi-lane serving. Default
+            // stays at 1 for back-compat + qwen3.5 safety.
+            n_seq_max: self.n_seq_max_override.unwrap_or(1),
             n_ubatch: 128,
             flash_attn: FlashAttn::Disabled,
             fused_gdn_ar: false,
@@ -1008,6 +1064,60 @@ mod tests {
             }
             Ok(_) => panic!("expected NoLocalModelLoadable when no row has gguf_local_path"),
         }
+    }
+
+    // ── n_seq_max coordinator wiring (task #109, step 4) ────────
+
+    #[test]
+    fn n_seq_max_defaults_to_none_for_single_seq_backcompat() {
+        // The adapter without a configured override stays in the
+        // historical single-seq mode. Qwen3.5 + recurrent / GDN
+        // models stay safe; older callers' behavior is unchanged.
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/no-such-file.gguf"),
+            "test-model".to_string(),
+        );
+        assert_eq!(adapter.n_seq_max(), None);
+    }
+
+    #[test]
+    fn n_seq_max_override_round_trips_through_builder() {
+        // Coordinator wiring sets this from
+        // CoordinatorConfig.lane_budgets.max_concurrency.
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/no-such-file.gguf"),
+            "test-model".to_string(),
+        )
+        .with_n_seq_max(4);
+        assert_eq!(adapter.n_seq_max(), Some(4));
+    }
+
+    #[test]
+    fn n_seq_max_zero_clamps_to_one() {
+        // Zero would be a config error — the backend's scheduler
+        // can't serve any seq with n_seq_max=0. Clamping to 1
+        // matches the back-compat default and avoids load-time
+        // panics from inside llama.cpp.
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/no-such-file.gguf"),
+            "test-model".to_string(),
+        )
+        .with_n_seq_max(0);
+        assert_eq!(adapter.n_seq_max(), Some(1));
+    }
+
+    #[test]
+    fn n_seq_max_builder_composes_with_other_overrides() {
+        // Builders should chain — coordinator wiring sets context,
+        // KV quant, AND n_seq_max in one builder pipeline.
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/no-such-file.gguf"),
+            "test-model".to_string(),
+        )
+        .with_context_length(16_384)
+        .with_n_seq_max(4)
+        .with_kv_quant_policy(crate::inference::kv_quant::KvQuantPolicy::default());
+        assert_eq!(adapter.n_seq_max(), Some(4));
     }
 
     #[test]
