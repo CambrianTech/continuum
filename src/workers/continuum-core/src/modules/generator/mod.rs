@@ -311,16 +311,17 @@ mod tests {
 
     fn tempdir() -> std::path::PathBuf {
         // Build a unique tempdir per test so concurrent runs don't
-        // collide. We don't use the `tempfile` crate here to avoid
-        // adding a dev-dep just for this; manual cleanup is fine for
-        // unit tests in the workspace.
+        // collide. PID is constant across cargo's in-process test
+        // threads, so PID+nanos can collide when two tempdir() calls
+        // land in the same SystemTime::now() granularity — and four
+        // tests in this suite use `name: "demo"`, so a tempdir
+        // collision would race them on <base>/demo/mod.rs. UUID v4
+        // makes the suffix collision-free regardless of clock
+        // granularity (uuid is already a workspace dep).
         let base = std::env::temp_dir().join(format!(
             "continuum-generator-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+            uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&base).expect("tempdir create");
         base
