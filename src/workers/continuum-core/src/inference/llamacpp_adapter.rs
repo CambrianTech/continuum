@@ -451,6 +451,52 @@ impl LlamaCppAdapter {
             Ok("mac_intel_discrete") => 0,
             _ => -1,
         };
+        // Defense-in-depth (task #110): the realistic-lane work lifted
+        // n_seq_max to a caller-controlled knob, but the substrate
+        // MUST NOT enable multi-seq batching on architectures that
+        // llama.cpp's batched decode aborts on (qwen3 Gated-Delta-Net,
+        // mamba / rwkv / jamba / griffin / recurrentgemma /
+        // falcon_mamba). The probe reads the GGUF's general.architecture
+        // and classifies. Unsafe architectures clamp n_seq_max → 1
+        // regardless of what the caller configured. A `tracing::warn!`
+        // surfaces the clamp so operators see the safety net firing
+        // instead of silent quality loss.
+        let requested_n_seq_max = self.n_seq_max_override.unwrap_or(1);
+        let effective_n_seq_max = if requested_n_seq_max > 1 {
+            match crate::inference::batching_probe::probe_gguf_batching_safety(
+                &self.model_path,
+            ) {
+                Ok(verdict) => {
+                    let clamped = verdict.clamp_n_seq_max(requested_n_seq_max);
+                    if clamped < requested_n_seq_max {
+                        tracing::warn!(
+                            arch = %verdict.arch(),
+                            requested = requested_n_seq_max,
+                            effective = clamped,
+                            "batching_probe: clamped n_seq_max — architecture is not safe for multi-seq batching; \
+                             continuous batching disabled for this adapter. Coordinator lanes \
+                             will queue at the in-backend scheduler instead of running in parallel."
+                        );
+                    }
+                    clamped
+                }
+                Err(err) => {
+                    // Probe failure shouldn't block adapter load — but
+                    // we conservatively clamp to 1 since we can't
+                    // verify safety. Logged so operators chase the
+                    // root cause (malformed GGUF metadata).
+                    tracing::warn!(
+                        error = %err,
+                        requested = requested_n_seq_max,
+                        "batching_probe failed — conservatively clamping n_seq_max to 1"
+                    );
+                    1
+                }
+            }
+        } else {
+            requested_n_seq_max
+        };
+
         let config = LlamaCppConfig {
             model_path: self.model_path.clone(),
             mmproj_path,
@@ -459,15 +505,12 @@ impl LlamaCppAdapter {
             // this via with_context_length() to bound the KV cache (24GB
             // at 262K → 500MB at 16K).
             context_length: self.context_length_override,
-            // qwen3.5's recurrent/Gated-Delta-Net Metal graph aborts inside
-            // llama.cpp on the default aggressive graph shape. The
-            // historical hard-coded n_seq_max=1 preserved Rust-owned local
-            // inference while avoiding the known abort path. The
-            // realistic-lane work (task #109) lifts this knob to the
-            // adapter caller via `with_n_seq_max(n)` so coordinators can
-            // size the shared scheduler for multi-lane serving. Default
-            // stays at 1 for back-compat + qwen3.5 safety.
-            n_seq_max: self.n_seq_max_override.unwrap_or(1),
+            // n_seq_max comes from the adapter's override clamped by
+            // the model-arch probe above. Standard transformers
+            // (Llama, Qwen-2.5, Gemma-2, ...) pass through; recurrent
+            // / state-space / hybrid families (qwen3, mamba, rwkv,
+            // jamba, ...) clamp to 1. See task #110.
+            n_seq_max: effective_n_seq_max,
             n_ubatch: 128,
             flash_attn: FlashAttn::Disabled,
             fused_gdn_ar: false,

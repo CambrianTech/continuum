@@ -30,6 +30,7 @@
 //!   model.rs            — Minimal: just `rebuild_with_stacked_lora`
 
 pub mod backends;
+pub mod batching_probe;
 pub mod coordinator;
 pub mod footprint_registry;
 pub mod handle_module;
