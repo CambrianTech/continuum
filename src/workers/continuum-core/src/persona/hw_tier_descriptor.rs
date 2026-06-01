@@ -189,6 +189,76 @@ impl OrmEntity for HwTierDescriptor {
     }
 }
 
+// ── Seed JSON (embedded at compile time) ─────────────────────────
+//
+// Per [[orm-everything-not-hand-edited-files]]: repo source is JSON
+// (human-readable, git-diffable, PR-reviewable), runtime backend is
+// the ORM. `include_str!` bakes the seed files into the binary so the
+// substrate always ships data + code together — no runtime path-
+// discovery, no missing-file failure modes, headless-clean.
+//
+// Adding a new tier:
+//   1. Author `seeds/hw_tiers/<tier_id>.json` (camelCase fields)
+//   2. Add a `SEED_*` const here pointing at it via include_str!
+//   3. Add the entry to `SEED_FILES` below
+//   4. Tests fail loud if the JSON doesn't parse into HwTierDescriptor
+//
+// On substrate boot, a future spawn-module step ingests these into
+// the `hw_tiers` ORM collection if it's empty (slice 3). Right now
+// they're available for any caller that wants the defaults.
+
+const SEED_CPU_ONLY: &str = include_str!("../../seeds/hw_tiers/cpu_only.json");
+const SEED_MAC_INTEL_METAL_DISCRETE: &str =
+    include_str!("../../seeds/hw_tiers/mac_intel_metal_discrete.json");
+const SEED_M1_UMA_8GB: &str = include_str!("../../seeds/hw_tiers/m1_uma_8gb.json");
+const SEED_M1_UMA_16GB: &str = include_str!("../../seeds/hw_tiers/m1_uma_16gb.json");
+const SEED_M3_UMA_PRO_MAX: &str = include_str!("../../seeds/hw_tiers/m3_uma_pro_max.json");
+const SEED_M5_UMA_PRO_MAX: &str = include_str!("../../seeds/hw_tiers/m5_uma_pro_max.json");
+const SEED_SM60: &str = include_str!("../../seeds/hw_tiers/sm60.json");
+const SEED_SM120: &str = include_str!("../../seeds/hw_tiers/sm120.json");
+const SEED_CLOUD: &str = include_str!("../../seeds/hw_tiers/cloud.json");
+
+/// Every seed file shipping with this build. Each entry is
+/// `(tier_id, raw_json)` for diagnostic clarity when a parse fails —
+/// the error message can name the file by its expected tier_id.
+pub const SEED_FILES: &[(&str, &str)] = &[
+    ("cpu_only", SEED_CPU_ONLY),
+    ("mac_intel_metal_discrete", SEED_MAC_INTEL_METAL_DISCRETE),
+    ("m1_uma_8gb", SEED_M1_UMA_8GB),
+    ("m1_uma_16gb", SEED_M1_UMA_16GB),
+    ("m3_uma_pro_max", SEED_M3_UMA_PRO_MAX),
+    ("m5_uma_pro_max", SEED_M5_UMA_PRO_MAX),
+    ("sm60", SEED_SM60),
+    ("sm120", SEED_SM120),
+    ("cloud", SEED_CLOUD),
+];
+
+/// Parse every embedded seed file into a Vec<HwTierDescriptor>. Returns
+/// the first parse error with the file's expected tier_id for diagnosis.
+/// Used at boot to populate the `hw_tiers` ORM collection on first run,
+/// and at test time as the #125 CI guard (any drift between the Rust
+/// struct shape and the seed JSON fails the build).
+pub fn parse_seed_descriptors() -> Result<Vec<HwTierDescriptor>, String> {
+    SEED_FILES
+        .iter()
+        .map(|(expected_id, raw)| {
+            let descriptor: HwTierDescriptor = serde_json::from_str(raw).map_err(|e| {
+                format!(
+                    "hw_tiers seed '{}' failed to parse against HwTierDescriptor: {}",
+                    expected_id, e
+                )
+            })?;
+            if descriptor.tier_id != *expected_id {
+                return Err(format!(
+                    "hw_tiers seed '{}.json' has tier_id='{}' — file name and tier_id must match",
+                    expected_id, descriptor.tier_id
+                ));
+            }
+            Ok(descriptor)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +376,85 @@ mod tests {
         assert_eq!(json, "\"base\"");
         let json = serde_json::to_string(&HwTierCategory::Pro).expect("ser Pro");
         assert_eq!(json, "\"pro\"");
+    }
+
+    /// CI guard from #125: every embedded seed JSON must parse cleanly
+    /// against the HwTierDescriptor Rust struct. If the struct grows a
+    /// required field or renames an existing one, this test fails loud
+    /// — you cannot ship a binary whose seed data doesn't match its
+    /// schema.
+    #[test]
+    fn all_seed_files_parse_into_descriptors() {
+        let descriptors = parse_seed_descriptors().expect("all seeds parse");
+        assert!(!descriptors.is_empty(), "no seeds shipped");
+        // Sanity: every tier_id is unique within the seed set.
+        let mut ids: Vec<_> = descriptors.iter().map(|d| d.tier_id.as_str()).collect();
+        ids.sort();
+        let unique_count = {
+            let mut v = ids.clone();
+            v.dedup();
+            v.len()
+        };
+        assert_eq!(
+            ids.len(),
+            unique_count,
+            "duplicate tier_id in seeds — got {:?}",
+            ids
+        );
+    }
+
+    /// The 3-plan framing per Joel's 2026-06-01 directive must have
+    /// representatives across all categories. If a category goes
+    /// empty (someone deletes the only Floor seed), this fails.
+    #[test]
+    fn seeds_cover_all_three_categories() {
+        let descriptors = parse_seed_descriptors().expect("parse");
+        let has_floor = descriptors
+            .iter()
+            .any(|d| matches!(d.category, HwTierCategory::Floor));
+        let has_base = descriptors
+            .iter()
+            .any(|d| matches!(d.category, HwTierCategory::Base));
+        let has_pro = descriptors
+            .iter()
+            .any(|d| matches!(d.category, HwTierCategory::Pro));
+        assert!(has_floor, "no Floor-tier seed shipped");
+        assert!(has_base, "no Base-tier seed shipped");
+        assert!(has_pro, "no Pro-tier seed shipped");
+    }
+
+    /// Specific anchor seeds must be present — they're load-bearing
+    /// for downstream code (spawner, capability gating, etc.).
+    /// Removing them silently would break inference routing.
+    #[test]
+    fn anchor_tiers_are_present() {
+        let descriptors = parse_seed_descriptors().expect("parse");
+        let ids: std::collections::HashSet<&str> =
+            descriptors.iter().map(|d| d.tier_id.as_str()).collect();
+        for required in ["cpu_only", "m1_uma_8gb", "m3_uma_pro_max", "sm120", "cloud"] {
+            assert!(
+                ids.contains(required),
+                "anchor tier '{}' missing from seeds (have {:?})",
+                required,
+                ids
+            );
+        }
+    }
+
+    /// Cross-check: file-name-derived tier_id matches the JSON's
+    /// tier_id field. Catches typos / copy-paste errors at build time.
+    #[test]
+    fn seed_file_names_match_tier_ids() {
+        // parse_seed_descriptors() already enforces this, but make it
+        // an explicit named assertion for clarity in CI failure logs.
+        for (expected_id, raw) in SEED_FILES.iter() {
+            let descriptor: HwTierDescriptor = serde_json::from_str(raw)
+                .unwrap_or_else(|e| panic!("seed '{}' failed to parse: {}", expected_id, e));
+            assert_eq!(
+                descriptor.tier_id, *expected_id,
+                "seed file '{}.json' has mismatched tier_id '{}'",
+                expected_id, descriptor.tier_id
+            );
+        }
     }
 }

@@ -1,0 +1,10 @@
+{
+  "tierId": "mac_intel_metal_discrete",
+  "label": "Mac Intel + Discrete Metal",
+  "category": "floor",
+  "localVideoCapable": false,
+  "minParamsBMeaningful": 0.5,
+  "maxParamsBFits": 3.0,
+  "discreteVramGib": 4,
+  "note": "Intel-era Mac with discrete GPU. Floor tier — supported, not the design target. Live avatars work via WebRTC + animation client-side when inference is routed through grid-inference to a Base/Pro peer."
+}

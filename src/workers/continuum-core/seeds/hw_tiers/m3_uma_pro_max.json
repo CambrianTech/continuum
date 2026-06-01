@@ -1,0 +1,10 @@
+{
+  "tierId": "m3_uma_pro_max",
+  "label": "M3 Pro/Max Unified Memory",
+  "category": "pro",
+  "localVideoCapable": true,
+  "minParamsBMeaningful": 3.0,
+  "maxParamsBFits": 14.0,
+  "unifiedMemoryGib": 36,
+  "note": "Pro tier mid. Multi-persona at 7B + live avatars + grid-inference host for Floor peers. Common daily-driver hardware for the design center moving forward."
+}

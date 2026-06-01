@@ -1,0 +1,9 @@
+{
+  "tierId": "cpu_only",
+  "label": "CPU Only",
+  "category": "floor",
+  "localVideoCapable": false,
+  "minParamsBMeaningful": 0.5,
+  "maxParamsBFits": 1.5,
+  "note": "Floor tier. No GPU acceleration; tiny quantized models only. Local video out of reach without grid-inference offload to a Base/Pro peer."
+}
