@@ -38,9 +38,10 @@ use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::rag_inspect::{
-    inspect_persona_rag, RagInspection, RagInspectionRequest,
+    inspect_persona_rag_with_inference, RagInspection, RagInspectionRequest,
 };
 use crate::runtime::{
     CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
@@ -56,6 +57,14 @@ pub const COMMAND_RAG_INSPECT: &str = "persona/rag-inspect";
 pub struct PersonaResolution {
     pub persona_id: Uuid,
     pub airc_reader: Arc<dyn AircTranscriptReader>,
+    /// Optional inference adapter for the chained probe. When the
+    /// caller sets `chain_inference: true` AND the resolver
+    /// returns Some, the inspection runs RAG → prompt → adapter →
+    /// captured response. Resolver-supplied (not caller-supplied)
+    /// so the substrate decides which adapter — typically the
+    /// persona's preferred one (heuristic for tests; llama.cpp /
+    /// cloud / remote-grid for production).
+    pub inference_adapter: Option<Arc<dyn AIProviderAdapter>>,
 }
 
 /// Maps a persona name to its persona_id + airc reader. Production
@@ -104,6 +113,15 @@ pub struct RagInspectParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub now_ms: Option<u64>,
+    /// When true, chain through inference: assemble delivered items
+    /// into a prompt, call the persona's adapter, capture the
+    /// response into `modelResponse`. Default false (RAG-only).
+    /// Per [[inference-is-an-adapter-always-in-the-loop]] — closes
+    /// the introspection loop so AIs can answer "would I respond
+    /// as it requests?" in one command call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub chain_inference: Option<bool>,
 }
 
 /// One source's allocation outcome — flattened from the library's
@@ -172,10 +190,13 @@ pub struct RagInspectDelivery {
 /// Result of `persona/rag-inspect`. Carries the full allocation
 /// outcome + per-source deliveries so any AI inspecting the persona
 /// can answer the three canonical questions:
-/// - "Would I respond as it requests at this step?" (full prompt
-///   reconstructable from `deliveries`)
-/// - "Which layer is broken?" (per-source allocation + delivery)
-/// - "Is this contextually relevant?" (per-item score + age + peer)
+/// - "Would I respond as it requests at this step?" — full prompt
+///   reconstructable from `deliveries`; when `chainInference=true`,
+///   the actual model response is captured in `modelResponse`.
+/// - "Which layer is broken?" — per-source `allocations` show state
+///   (satisfied / floor_only / dropped / under_provisioned).
+/// - "Is this contextually relevant?" — per-item score + age +
+///   peer in the deliveries.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -204,6 +225,38 @@ pub struct RagInspectResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub trace_path: Option<String>,
+    /// Captured model response when `chainInference=true` was set
+    /// AND the resolver supplied an inference adapter. None on the
+    /// RAG-only path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_response: Option<RagInspectModelResponse>,
+}
+
+/// What the model actually said when the inspection chained through
+/// inference — the answer to the canonical question "would I respond
+/// as it requests at this step?"
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/RagInspectModelResponse.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct RagInspectModelResponse {
+    pub adapter_id: String,
+    pub model: String,
+    /// The assembled prompt — system + messages joined for human +
+    /// AI replay. Other AIs can paste this into a different model
+    /// to compare responses ("would Claude respond differently?").
+    pub prompt_text: String,
+    pub response_text: String,
+    pub finish_reason: String,
+    #[ts(type = "number")]
+    pub input_tokens: u32,
+    #[ts(type = "number")]
+    pub output_tokens: u32,
+    #[ts(type = "number")]
+    pub response_time_ms: u64,
 }
 
 // ── Conversion from library types ─────────────────────────────────
@@ -248,6 +301,16 @@ impl RagInspectResult {
                     .collect(),
             })
             .collect();
+        let model_response = value.model_response.map(|m| RagInspectModelResponse {
+            adapter_id: m.adapter_id,
+            model: m.model,
+            prompt_text: m.prompt_text,
+            response_text: m.response_text,
+            finish_reason: m.finish_reason,
+            input_tokens: m.input_tokens,
+            output_tokens: m.output_tokens,
+            response_time_ms: m.response_time_ms,
+        });
         Self {
             persona_id: value.persona_id,
             persona_name: value.persona_name,
@@ -260,6 +323,7 @@ impl RagInspectResult {
                 .trace_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
+            model_response,
         }
     }
 }
@@ -365,9 +429,17 @@ impl PersonaRagInspectModule {
             request.trace_path = Some(PathBuf::from(p));
         }
 
-        let inspection = inspect_persona_rag(&request, resolution.airc_reader)
-            .await
-            .map_err(|e| format!("{COMMAND_RAG_INSPECT}: {e}"))?;
+        // Chain through inference when the caller asks AND the
+        // resolver supplied an adapter. Either being false → RAG-only.
+        let inference_probe = if params.chain_inference.unwrap_or(false) {
+            resolution.inference_adapter.clone()
+        } else {
+            None
+        };
+        let inspection =
+            inspect_persona_rag_with_inference(&request, resolution.airc_reader, inference_probe)
+                .await
+                .map_err(|e| format!("{COMMAND_RAG_INSPECT}: {e}"))?;
         Ok(RagInspectResult::from_library(inspection))
     }
 }
@@ -438,6 +510,7 @@ mod tests {
     struct StubResolver {
         reader: Arc<dyn AircTranscriptReader>,
         valid_names: Vec<String>,
+        inference_adapter: Option<Arc<dyn AIProviderAdapter>>,
     }
 
     impl PersonaResolver for StubResolver {
@@ -448,6 +521,7 @@ mod tests {
             Ok(PersonaResolution {
                 persona_id: persona_uuid(),
                 airc_reader: self.reader.clone(),
+                inference_adapter: self.inference_adapter.clone(),
             })
         }
     }
@@ -457,6 +531,20 @@ mod tests {
         let resolver = Arc::new(StubResolver {
             reader,
             valid_names: vec!["Paige".to_string(), "Pax".to_string()],
+            inference_adapter: None,
+        });
+        PersonaRagInspectModule::new(resolver)
+    }
+
+    fn module_with_inference(events: Vec<TranscriptEvent>) -> PersonaRagInspectModule {
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        let reader = StubReader::with_events(events);
+        let resolver = Arc::new(StubResolver {
+            reader,
+            valid_names: vec!["Paige".to_string(), "Pax".to_string()],
+            inference_adapter: Some(
+                Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+            ),
         });
         PersonaRagInspectModule::new(resolver)
     }
@@ -588,5 +676,96 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown command"));
+    }
+
+    // ── chained inference probe (task #104) ────────────────────
+
+    #[tokio::test]
+    async fn rag_only_default_leaves_model_response_none() {
+        // chain_inference omitted/false → no model_response in result
+        // (even when the resolver could supply an adapter).
+        let m = module_with_inference(vec![make_event(Some("hi"), 1, 999_000)]);
+        let result = m
+            .inspect(RagInspectParams {
+                persona: "Paige".to_string(),
+                now_ms: Some(1_000_000),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(result.model_response.is_none());
+    }
+
+    #[tokio::test]
+    async fn chain_inference_with_adapter_captures_model_response() {
+        let m = module_with_inference(vec![
+            make_event(Some("first message"), 1, 999_000),
+            make_event(Some("second message"), 2, 999_500),
+        ]);
+        let result = m
+            .inspect(RagInspectParams {
+                persona: "Paige".to_string(),
+                now_ms: Some(1_000_000),
+                chain_inference: Some(true),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mr = result.model_response.expect("expected model_response");
+        assert_eq!(mr.adapter_id, "heuristic");
+        assert!(mr.response_text.starts_with("[heuristic:"));
+        // Heuristic echoes the LAST user message.
+        assert!(mr.response_text.contains("second message"));
+        assert!(mr.prompt_text.contains("You are Paige"));
+        assert_eq!(mr.finish_reason, "stop");
+    }
+
+    #[tokio::test]
+    async fn chain_inference_without_adapter_stays_rag_only() {
+        // chain_inference=true but resolver returns no adapter — the
+        // inspection silently degrades to RAG-only (no model_response).
+        let m = module_with(vec![make_event(Some("hi"), 1, 999_000)]);
+        let result = m
+            .inspect(RagInspectParams {
+                persona: "Paige".to_string(),
+                now_ms: Some(1_000_000),
+                chain_inference: Some(true),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // Resolver returned None for inference_adapter; chain skipped.
+        assert!(result.model_response.is_none());
+    }
+
+    #[tokio::test]
+    async fn chained_path_through_command_surface_returns_model_response_in_wire_shape() {
+        let m = module_with_inference(vec![make_event(Some("ping"), 1, 999_000)]);
+        let envelope = serde_json::to_value(CommandRequest::new(RagInspectParams {
+            persona: "Paige".to_string(),
+            now_ms: Some(1_000_000),
+            chain_inference: Some(true),
+            ..Default::default()
+        }))
+        .unwrap();
+        let result = m.handle_command(COMMAND_RAG_INSPECT, envelope).await.unwrap();
+        let json = match result {
+            CommandResult::Json(v) => v,
+            other => panic!("expected Json, got {other:?}"),
+        };
+        // CommandResponse flattens; model_response should appear at
+        // the top level with camelCase field name.
+        let mr = json
+            .get("modelResponse")
+            .expect("modelResponse field missing")
+            .as_object()
+            .expect("modelResponse should be an object");
+        assert_eq!(mr.get("adapterId").unwrap(), "heuristic");
+        assert!(mr
+            .get("responseText")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .starts_with("[heuristic:"));
     }
 }

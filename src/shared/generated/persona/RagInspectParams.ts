@@ -19,4 +19,13 @@ tracePath?: string,
  * reasons against. Default: substrate's current wall-clock.
  * Set this for deterministic replay tests.
  */
-nowMs?: number, };
+nowMs?: number, 
+/**
+ * When true, chain through inference: assemble delivered items
+ * into a prompt, call the persona's adapter, capture the
+ * response into `modelResponse`. Default false (RAG-only).
+ * Per [[inference-is-an-adapter-always-in-the-loop]] — closes
+ * the introspection loop so AIs can answer "would I respond
+ * as it requests?" in one command call.
+ */
+chainInference?: boolean, };

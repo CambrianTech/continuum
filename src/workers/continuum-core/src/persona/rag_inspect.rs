@@ -124,6 +124,29 @@ pub struct RagInspection {
     /// Path to the JSONL trace if `trace_path` was set on the request,
     /// else `None`. Other AIs / mechanics resume replay against this.
     pub trace_path: Option<PathBuf>,
+    /// Model response when an inference adapter was passed to the
+    /// chained variant `inspect_persona_rag_with_inference`. None
+    /// when the inspection was RAG-only (the default path). This is
+    /// where the canonical "with this prompt would I respond as it
+    /// requests at this step?" question gets answered.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_response: Option<ModelResponseInspection>,
+}
+
+/// Captured model response from the chained inspection variant —
+/// what the inference adapter produced when fed the RAG-delivered
+/// items as a prompt. Carries enough to answer "would I respond as
+/// it requests?" without re-running the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelResponseInspection {
+    pub adapter_id: String,
+    pub model: String,
+    pub prompt_text: String,
+    pub response_text: String,
+    pub finish_reason: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub response_time_ms: u64,
 }
 
 /// Per-source delivery, with the substrate-grade detail every
@@ -158,12 +181,47 @@ pub struct InspectedItem {
 
 /// Run one inspection turn against the persona's airc transcript.
 ///
-/// This is the library entry point. The ServiceModule wraps it; the
-/// demo binary wraps it; tests wrap it via stub readers; future
-/// adversarial reviewers wrap it via the eventual command.
+/// This is the library entry point — RAG-only inspection. The
+/// ServiceModule wraps it; the demo binary wraps it; tests wrap it
+/// via stub readers; future adversarial reviewers wrap it via the
+/// command.
+///
+/// For the FULL chain (RAG → prompt → inference → capture) use
+/// `inspect_persona_rag_with_inference` and pass an
+/// `Arc<dyn AIProviderAdapter>` (heuristic for deterministic tests;
+/// llama.cpp / cloud / remote-grid for production probes).
 pub async fn inspect_persona_rag(
     request: &RagInspectionRequest,
     airc_reader: Arc<dyn AircTranscriptReader>,
+) -> Result<RagInspection, String> {
+    inspect_persona_rag_with_inference(request, airc_reader, None).await
+}
+
+/// Chained variant: after the RAG layer delivers items, assemble
+/// them into a prompt, call the inference adapter, and capture the
+/// response into `RagInspection.model_response`.
+///
+/// Joel (2026-05-31): "AIs are gonna need to analyze what's getting
+/// fed into a persona" — this closes the loop. The canonical three
+/// introspection questions ([[observability-is-half-the-architecture]]):
+///
+/// - "Would I respond as it requests at this step?" — answered by
+///   `model_response`. The prompt text + the actual response are
+///   captured so an inspector can re-run the model with the same
+///   prompt and compare.
+/// - "Which layer is broken?" — `allocation.allocations` + per-source
+///   deliveries (unchanged from the RAG-only path).
+/// - "Is this contextually relevant?" — per-item score + age +
+///   peer_id_prefix in the deliveries (unchanged).
+///
+/// Per [[inference-is-an-adapter-always-in-the-loop]], the inference
+/// goes through an `AIProviderAdapter` — the same trait the
+/// inference command's handle store uses. No bypass, same wire
+/// shape, replay-safe (the heuristic adapter is deterministic).
+pub async fn inspect_persona_rag_with_inference(
+    request: &RagInspectionRequest,
+    airc_reader: Arc<dyn AircTranscriptReader>,
+    inference_probe: Option<Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
 ) -> Result<RagInspection, String> {
     let airc_source = AircRagSource::new(request.persona_id, airc_reader)
         .with_fetch_limit(request.airc_fetch_limit);
@@ -280,6 +338,19 @@ pub async fn inspect_persona_rag(
         })
         .collect();
 
+    // Chain through inference if the caller supplied an adapter.
+    let model_response = match inference_probe {
+        Some(adapter) => Some(
+            run_inference_probe(
+                adapter,
+                &request.persona_name,
+                &delivery.items,
+            )
+            .await?,
+        ),
+        None => None,
+    };
+
     Ok(RagInspection {
         persona_id: request.persona_id,
         persona_name: request.persona_name.clone(),
@@ -293,7 +364,115 @@ pub async fn inspect_persona_rag(
             items,
         }],
         trace_path: request.trace_path.clone(),
+        model_response,
     })
+}
+
+/// Assemble RAG-delivered items into a prompt, call the adapter,
+/// capture the response. Pure helper; the chained variant calls
+/// this when an adapter is present.
+///
+/// Prompt shape (substrate's first cut — slice 12 PromptAssembly
+/// will refine):
+/// - System: "You are <persona_name>. Below are recent messages
+///   from the room you're in; respond as that persona."
+/// - One user message per delivered item, content verbatim.
+async fn run_inference_probe(
+    adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+    persona_name: &str,
+    items: &[crate::persona::rag_budget::RagItem],
+) -> Result<ModelResponseInspection, String> {
+    use crate::ai::types::{
+        ChatMessage, MessageContent, TextGenerationRequest,
+    };
+    let adapter_id = adapter.provider_id().to_string();
+    let model = adapter.default_model().to_string();
+
+    let system_prompt = format!(
+        "You are {persona_name}. Below are recent messages from the room you're in; \
+         respond as that persona."
+    );
+
+    // One user message per item — preserves the multi-turn structure
+    // so the model sees who said what (the source's metadata
+    // includes peer + lamport; future slices will format that
+    // explicitly).
+    let messages: Vec<ChatMessage> = items
+        .iter()
+        .map(|item| ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text(item.content.clone()),
+            name: None,
+        })
+        .collect();
+
+    let prompt_text = render_prompt_text(&system_prompt, &messages);
+
+    let request = TextGenerationRequest {
+        messages,
+        system_prompt: Some(system_prompt),
+        model: Some(model.clone()),
+        provider: None,
+        temperature: None,
+        max_tokens: Some(512),
+        top_p: None,
+        top_k: None,
+        repeat_penalty: None,
+        stop_sequences: None,
+        tools: None,
+        tool_choice: None,
+        response_format: None,
+        active_adapters: None,
+        request_id: None,
+        user_id: None,
+        room_id: None,
+        purpose: Some("rag_inspect_probe".to_string()),
+        persona_id: None,
+    };
+
+    let response = adapter
+        .generate_text(request)
+        .await
+        .map_err(|e| format!("rag_inspect inference probe failed: {e}"))?;
+
+    Ok(ModelResponseInspection {
+        adapter_id,
+        model,
+        prompt_text,
+        response_text: response.text,
+        finish_reason: response.finish_reason.to_string(),
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+        response_time_ms: response.response_time_ms,
+    })
+}
+
+fn render_prompt_text(
+    system_prompt: &str,
+    messages: &[crate::ai::types::ChatMessage],
+) -> String {
+    use crate::ai::types::MessageContent;
+    let mut out = String::new();
+    out.push_str("System: ");
+    out.push_str(system_prompt);
+    out.push('\n');
+    for msg in messages {
+        out.push_str(&msg.role);
+        out.push_str(": ");
+        match &msg.content {
+            MessageContent::Text(s) => out.push_str(s),
+            MessageContent::Parts(parts) => {
+                for p in parts {
+                    if let crate::ai::types::ContentPart::Text { text } = p {
+                        out.push_str(text);
+                        out.push(' ');
+                    }
+                }
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -491,5 +670,109 @@ mod tests {
         let result = inspect_persona_rag(&request(1_000_000), reader).await.unwrap();
         assert_eq!(result.persona_id, persona());
         assert_eq!(result.deliveries[0].items.len(), 1);
+    }
+
+    // ── chained inference probe (task #104) ─────────────────────
+
+    #[tokio::test]
+    async fn ragonly_path_leaves_model_response_none() {
+        let reader = Arc::new(StubReader::new(vec![make_event(Some("hi"), 1, 999_000)]));
+        let result = inspect_persona_rag(&request(1_000_000), reader)
+            .await
+            .unwrap();
+        assert!(result.model_response.is_none());
+    }
+
+    #[tokio::test]
+    async fn chained_path_captures_response_from_heuristic_adapter() {
+        use crate::ai::heuristic_adapter::{HeuristicInferenceAdapter, HEURISTIC_PROVIDER_ID};
+        let reader = Arc::new(StubReader::new(vec![
+            make_event(Some("hello"), 1, 999_000),
+            make_event(Some("world"), 2, 999_500),
+        ]));
+        let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
+            Arc::new(HeuristicInferenceAdapter::new());
+        let result = inspect_persona_rag_with_inference(
+            &request(1_000_000),
+            reader,
+            Some(adapter),
+        )
+        .await
+        .unwrap();
+        let mr = result.model_response.expect("expected model_response");
+        assert_eq!(mr.adapter_id, HEURISTIC_PROVIDER_ID);
+        assert!(mr.response_text.starts_with("[heuristic:"));
+        // The latest user message should appear in the response
+        // (the heuristic adapter echoes the last user turn).
+        assert!(mr.response_text.contains("world"));
+        assert_eq!(mr.finish_reason, "stop");
+        assert!(mr.input_tokens > 0);
+        assert!(mr.output_tokens > 0);
+    }
+
+    #[tokio::test]
+    async fn chained_path_with_zero_items_still_produces_marker_response() {
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        let reader = Arc::new(StubReader::new(vec![]));
+        let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
+            Arc::new(HeuristicInferenceAdapter::new());
+        let result = inspect_persona_rag_with_inference(
+            &request(1_000_000),
+            reader,
+            Some(adapter),
+        )
+        .await
+        .unwrap();
+        let mr = result.model_response.expect("expected model_response even with no items");
+        // The heuristic adapter saw an empty messages list → "(no
+        // user text in prompt)" marker response per its contract.
+        assert!(mr.response_text.contains("(no user text in prompt)"));
+    }
+
+    #[tokio::test]
+    async fn chained_path_prompt_text_carries_system_and_messages() {
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        let reader = Arc::new(StubReader::new(vec![
+            make_event(Some("greetings persona"), 1, 999_000),
+        ]));
+        let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
+            Arc::new(HeuristicInferenceAdapter::new());
+        let result = inspect_persona_rag_with_inference(
+            &request(1_000_000),
+            reader,
+            Some(adapter),
+        )
+        .await
+        .unwrap();
+        let prompt = result.model_response.unwrap().prompt_text;
+        assert!(prompt.contains("You are TestPersona"));
+        assert!(prompt.contains("greetings persona"));
+        assert!(prompt.starts_with("System:"));
+        assert!(prompt.contains("user:"));
+    }
+
+    #[tokio::test]
+    async fn chained_path_same_prompt_yields_same_response_replay_safe() {
+        // The heuristic adapter is deterministic — running the same
+        // inspection twice produces byte-identical responses. This is
+        // the substrate's replay contract per
+        // [[inference-is-an-adapter-always-in-the-loop]].
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        let reader1 = Arc::new(StubReader::new(vec![make_event(Some("hi"), 1, 999_000)]));
+        let reader2 = Arc::new(StubReader::new(vec![make_event(Some("hi"), 1, 999_000)]));
+        let adapter1: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
+            Arc::new(HeuristicInferenceAdapter::new());
+        let adapter2: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
+            Arc::new(HeuristicInferenceAdapter::new());
+        let r1 = inspect_persona_rag_with_inference(&request(1_000_000), reader1, Some(adapter1))
+            .await
+            .unwrap();
+        let r2 = inspect_persona_rag_with_inference(&request(1_000_000), reader2, Some(adapter2))
+            .await
+            .unwrap();
+        let m1 = r1.model_response.unwrap();
+        let m2 = r2.model_response.unwrap();
+        assert_eq!(m1.response_text, m2.response_text);
+        assert_eq!(m1.prompt_text, m2.prompt_text);
     }
 }
