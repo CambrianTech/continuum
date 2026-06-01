@@ -1,0 +1,678 @@
+//! InferenceCoordinator — composes existing substrate primitives
+//! into multi-persona-one-model serving per
+//! [[INFERENCE-LANES-REALISTIC.md]].
+//!
+//! Joel (2026-05-31): "Yeah the inference command doesn't do this.
+//! It's smart subsystems and daemons. Commands are dumb and short."
+//! "We weren't clever enough with our lanes."
+//!
+//! ### What this layer does
+//!
+//! The coordinator owns the LANE LIFECYCLE — admission, lease + memory
+//! accounting, handle binding, eviction. The
+//! `ai/inference/{open,generate,close}` command surface (handle module)
+//! routes through here. The adapter trait + handle store stay
+//! unaware; the coordinator wraps both.
+//!
+//! ### Composition (no reinvention)
+//!
+//! - `plan_adaptive_throughput` from `cognition::adaptive_throughput`
+//!   makes admission decisions keyed by `target_silicon`.
+//! - `FootprintRegistry::acquire_lease` / `release_lease` from
+//!   `inference::footprint_registry` mirrors the lease into byte
+//!   accounting in one call.
+//! - `InferenceHandleStore` from `inference::handle_store` owns the
+//!   actual adapter session.
+//! - `Lane` from `inference::lane` binds (persona, task, lease,
+//!   handle).
+//!
+//! ### Doctrine alignment
+//!
+//! - [[commands-are-kernel-level-and-compose]] — coordinator is a
+//!   plain Rust component (not a ServiceModule). The handle module
+//!   delegates to it; callers never reach it directly.
+//! - [[observability-is-half-the-architecture]] — Step 2 ships
+//!   capture-event SHAPES (LaneCaptureEvent enum, sink trait, Noop
+//!   default). The wiring through `InferenceHandleModule` in Step 3
+//!   adds capture-aware delivery.
+//! - [[host-the-seemingly-impossible]] — the coordinator is what
+//!   makes "16 personas on commodity hardware" real. Lane
+//!   accounting + admission + eviction compose into the substrate's
+//!   defining boast.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use dashmap::DashMap;
+use uuid::Uuid;
+
+use crate::ai::adapter::AIProviderAdapter;
+use crate::ai::types::ActiveAdapterRequest;
+use crate::cognition::adaptive_throughput::{
+    plan_adaptive_throughput, AdaptiveThroughputRequest, ResourceClass, TargetSilicon,
+    ThroughputJob, ThroughputLaneBudget,
+};
+use crate::cognition::throughput_lease::ThroughputLease;
+use crate::genome::working_set::PersonaId;
+use crate::inference::footprint_registry::{FootprintKey, FootprintRegistry, ResourceType};
+use crate::inference::handle_store::{InferenceHandleStore, OpenSessionRequest};
+use crate::inference::kv_quant::Residency;
+use crate::inference::lane::{Lane, LaneClass};
+use crate::inference::recipe_budget::TaskKind;
+use crate::runtime::cell_shapes::HandleRef;
+
+/// Configuration the coordinator needs at construction.
+///
+/// `lane_budgets` is the substrate's per-silicon budget — feeds
+/// the AdaptiveThroughputPlanner. `bytes_per_token` is a
+/// model-specific KV cache estimate (typical 7B FP16 is ~64 KB;
+/// INT8 KV halves it). `lease_duration_ms` is how long a lane's
+/// lease lives before expiring (the coordinator's reclaim sweep
+/// purges expired lanes).
+#[derive(Debug, Clone)]
+pub struct CoordinatorConfig {
+    pub lane_budgets: Vec<ThroughputLaneBudget>,
+    pub bytes_per_token: u64,
+    pub lease_duration_ms: u64,
+    /// Silicon the lanes target — drives admission lookup. Lanes can
+    /// override per-open; this is the default.
+    pub default_target_silicon: TargetSilicon,
+}
+
+impl CoordinatorConfig {
+    /// Sensible default for a CPU-only / unified-memory host. The
+    /// "realistic floor" from the lanes-realistic doc:
+    /// - Local-generation budget for UnifiedMemory @ 4 concurrent lanes,
+    ///   total cost-units ~80K tokens (covers 3× chat + 1× spare).
+    /// - Default ~64 KB / token for FP16 KV.
+    pub fn realistic_floor_default() -> Self {
+        Self {
+            lane_budgets: vec![ThroughputLaneBudget {
+                resource_class: ResourceClass::LocalGeneration,
+                target_silicon: TargetSilicon::UnifiedMemory,
+                max_concurrency: 4,
+                max_cost_units: 80_000,
+            }],
+            bytes_per_token: 64 * 1024,
+            lease_duration_ms: 30 * 60 * 1000, // 30 minutes
+            default_target_silicon: TargetSilicon::UnifiedMemory,
+        }
+    }
+}
+
+/// Inputs for `open_lane`. `adapter` is `Arc<dyn AIProviderAdapter>`
+/// which doesn't implement Debug — that's why this struct doesn't
+/// derive Debug. Field-level inspection in tests goes through
+/// individual accessors / Lane inspection rather than printing the
+/// whole request.
+#[derive(Clone)]
+pub struct OpenLaneRequest {
+    pub persona: PersonaId,
+    pub task: TaskKind,
+    /// The adapter the session runs against. The coordinator
+    /// doesn't touch the registry — caller passes the chosen
+    /// adapter explicitly so wiring (which decides Heuristic vs
+    /// LlamaCpp vs cloud) stays at the module layer.
+    pub adapter: Arc<dyn AIProviderAdapter>,
+    pub model: Option<String>,
+    pub system_prompt: Option<String>,
+    pub active_adapters: Option<Vec<ActiveAdapterRequest>>,
+    /// Override the class derived from `task`. Used by the
+    /// daemons when persona context (currently speaking in voice
+    /// chat, etc.) implies a different class than the task's
+    /// default.
+    pub class_override: Option<LaneClass>,
+    /// Wall-clock the admission + lease use. Caller supplies so
+    /// the coordinator stays pure-of-clock (testable +
+    /// deterministic replay).
+    pub now_ms: u64,
+}
+
+/// Coordinator errors. Typed so callers branch by variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoordinatorError {
+    AdmissionDenied {
+        reason: AdmissionDenyReason,
+        task: TaskKind,
+        persona: PersonaId,
+    },
+    LeaseAcquireFailed(String),
+    HandleNotFound {
+        handle_id: Uuid,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionDenyReason {
+    /// No budget declared for the lane's target_silicon — a
+    /// configuration error per AdaptiveThroughputPlan semantics.
+    NoBudget,
+    /// Lane budget is exhausted — backpressure case; caller
+    /// retries later (or re-targets via grid offload per #108).
+    ResourcePressure,
+    /// The admission planner dropped the job as stale before it
+    /// even got admission consideration. Coordinator never sets
+    /// the stale-after flag explicitly today but lift this so
+    /// the variant exists for future use.
+    Stale,
+}
+
+impl std::fmt::Display for CoordinatorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CoordinatorError::AdmissionDenied { reason, task, persona } => write!(
+                f,
+                "coordinator: admission denied (reason: {reason:?}, task: {task:?}, persona: {})",
+                persona.as_uuid()
+            ),
+            CoordinatorError::LeaseAcquireFailed(msg) => {
+                write!(f, "coordinator: lease acquire failed: {msg}")
+            }
+            CoordinatorError::HandleNotFound { handle_id } => {
+                write!(f, "coordinator: handle not found: {handle_id}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CoordinatorError {}
+
+/// Snapshot of a single lane's state — observability surface for
+/// inspection commands per [[observability-is-half-the-architecture]].
+#[derive(Debug, Clone)]
+pub struct LaneInspection {
+    pub persona: PersonaId,
+    pub task: TaskKind,
+    pub class: LaneClass,
+    pub handle_id: Uuid,
+    pub seed_kv_tokens: u32,
+    pub max_kv_tokens: u32,
+    pub bytes_accounted: u64,
+    pub lease_id: String,
+    pub lease_acquired_at_ms: u64,
+    pub lease_expires_at_ms: u64,
+    pub is_pinned: bool,
+}
+
+/// The coordinator. Holds the lane map + the registries it composes.
+pub struct InferenceCoordinator {
+    footprint: Arc<FootprintRegistry>,
+    handle_store: Arc<InferenceHandleStore>,
+    config: CoordinatorConfig,
+    lanes: DashMap<Uuid, Lane>,
+    /// Monotonic counter for lease IDs — paired with a UUID
+    /// suffix so lease IDs are unique even across coordinator
+    /// instances. Atomic so open_lane is lock-free on the hot
+    /// path.
+    lease_counter: AtomicU64,
+}
+
+impl InferenceCoordinator {
+    pub fn new(
+        footprint: Arc<FootprintRegistry>,
+        handle_store: Arc<InferenceHandleStore>,
+        config: CoordinatorConfig,
+    ) -> Self {
+        Self {
+            footprint,
+            handle_store,
+            config,
+            lanes: DashMap::new(),
+            lease_counter: AtomicU64::new(0),
+        }
+    }
+
+    /// Open a lane: admission → lease + footprint acquire → handle
+    /// store open → bind lane.
+    ///
+    /// Failure at any step leaves the coordinator in a consistent
+    /// state (no partial lane / lease leak). Adapter Arc is dropped
+    /// on failure paths; the handle store entry is closed on lease
+    /// errors after the handle was already opened — that doesn't
+    /// happen in the current code path because we open the handle
+    /// LAST, but the invariant should hold even after Step 4.
+    pub fn open_lane(
+        &self,
+        req: OpenLaneRequest,
+    ) -> Result<HandleRef, CoordinatorError> {
+        let class = req
+            .class_override
+            .unwrap_or_else(|| LaneClass::default_for_task(req.task));
+        let seed_tokens = req.task.default_seed_tokens();
+        // Cost units = tokens (1:1). Simple + maps directly to the
+        // admission planner's per-lane max_cost_units.
+        let cost_units = seed_tokens;
+        let bytes = (seed_tokens as u64).saturating_mul(self.config.bytes_per_token);
+
+        // ── Step A: admission ────────────────────────────────────
+        let job_id = format!(
+            "{}:{}:{}",
+            req.persona.as_uuid(),
+            task_kind_str(req.task),
+            req.now_ms
+        );
+        let job = ThroughputJob {
+            job_id: job_id.clone(),
+            artifact_key: job_id.clone(),
+            resource_class: ResourceClass::LocalGeneration,
+            target_silicon: self.config.default_target_silicon,
+            priority: 0,
+            cost_units,
+            dependency_keys: Vec::new(),
+            created_at_ms: req.now_ms,
+            stale_after_ms: 0,
+        };
+        // Pull existing leases' cost into the planner so admission
+        // sees current load — sum cost_units already consumed at
+        // this target_silicon.
+        let existing_cost: u32 = self
+            .lanes
+            .iter()
+            .filter(|entry| entry.value().lease().target_silicon == job.target_silicon)
+            .map(|entry| entry.value().lease().cost_units)
+            .sum();
+        // Inject a placeholder job representing existing load so the
+        // planner sees the full picture. (Existing leases aren't
+        // tracked as jobs by the pure planner; we synthesize.)
+        let occupancy_job = ThroughputJob {
+            job_id: "__coordinator-occupancy__".to_string(),
+            artifact_key: "__coordinator-occupancy__".to_string(),
+            resource_class: ResourceClass::LocalGeneration,
+            target_silicon: job.target_silicon,
+            priority: u32::MAX, // wins ordering so it gets admitted first
+            cost_units: existing_cost,
+            dependency_keys: Vec::new(),
+            created_at_ms: 0,
+            stale_after_ms: 0,
+        };
+        let admission_req = AdaptiveThroughputRequest {
+            ready_artifact_keys: Vec::new(),
+            lane_budgets: self.config.lane_budgets.clone(),
+            jobs: if existing_cost > 0 {
+                vec![occupancy_job, job.clone()]
+            } else {
+                vec![job.clone()]
+            },
+            now_ms: req.now_ms,
+        };
+        let plan = plan_adaptive_throughput(admission_req);
+        if !plan.admitted.iter().any(|j| j.job_id == job_id) {
+            // The new job wasn't admitted. Classify why.
+            let reason = if plan.dropped_no_budget.iter().any(|j| j.job_id == job_id) {
+                AdmissionDenyReason::NoBudget
+            } else if plan
+                .deferred_resource_pressure
+                .iter()
+                .any(|j| j.job_id == job_id)
+            {
+                AdmissionDenyReason::ResourcePressure
+            } else if plan.dropped_stale.iter().any(|j| j.job_id == job_id) {
+                AdmissionDenyReason::Stale
+            } else {
+                AdmissionDenyReason::ResourcePressure
+            };
+            return Err(CoordinatorError::AdmissionDenied {
+                reason,
+                task: req.task,
+                persona: req.persona,
+            });
+        }
+
+        // ── Step B: lease + footprint ────────────────────────────
+        let lease_seq = self.lease_counter.fetch_add(1, Ordering::Relaxed);
+        let lease_id = format!("lane-lease-{lease_seq}-{}", Uuid::new_v4());
+        let lease = ThroughputLease {
+            lease_id: lease_id.clone(),
+            artifact_key: job.artifact_key.clone(),
+            resource_class: ResourceClass::LocalGeneration,
+            target_silicon: job.target_silicon,
+            holder_id: req.persona.as_uuid().to_string(),
+            cost_units,
+            acquired_at_ms: req.now_ms,
+            expires_at_ms: req
+                .now_ms
+                .saturating_add(self.config.lease_duration_ms),
+            revocation_policy: class.revocation_policy(),
+        };
+        let key = FootprintKey::for_persona(
+            req.persona.as_uuid(),
+            ResourceType::KvCache,
+            Residency::Active,
+        );
+        self.footprint
+            .acquire_lease(lease.clone(), key, bytes, req.now_ms)
+            .map_err(|e| CoordinatorError::LeaseAcquireFailed(format!("{e:?}")))?;
+
+        // ── Step C: open handle ──────────────────────────────────
+        let handle = self.handle_store.open(
+            req.adapter,
+            OpenSessionRequest {
+                model: req.model,
+                system_prompt: req.system_prompt,
+                active_adapters: req.active_adapters,
+                persona_id: Some(req.persona.as_uuid()),
+            },
+        );
+
+        // ── Step D: bind lane ────────────────────────────────────
+        let lane = Lane::new(req.persona, req.task, lease, handle.id, class);
+        self.lanes.insert(handle.id, lane);
+        Ok(handle)
+    }
+
+    /// Close a lane: release footprint+lease + remove lane + close
+    /// handle. Idempotent — closing an already-closed handle is OK
+    /// (returns Ok(false)).
+    pub fn close_lane(&self, handle: &HandleRef) -> Result<bool, CoordinatorError> {
+        let Some((_, lane)) = self.lanes.remove(&handle.id) else {
+            return Ok(false);
+        };
+        let _ = self.footprint.release_lease(lane.lease_id());
+        let _ = self.handle_store.close(handle);
+        Ok(true)
+    }
+
+    /// Get a snapshot of one lane's state. Used by the handle
+    /// module's inspect command per
+    /// [[observability-is-half-the-architecture]].
+    pub fn inspect(&self, handle: &HandleRef) -> Option<LaneInspection> {
+        self.lanes.get(&handle.id).map(|entry| {
+            let lane = entry.value();
+            let bytes = (lane.seed_kv_tokens() as u64).saturating_mul(self.config.bytes_per_token);
+            LaneInspection {
+                persona: lane.persona(),
+                task: lane.task(),
+                class: lane.class(),
+                handle_id: lane.handle_id(),
+                seed_kv_tokens: lane.seed_kv_tokens(),
+                max_kv_tokens: lane.max_kv_tokens(),
+                bytes_accounted: bytes,
+                lease_id: lane.lease_id().to_string(),
+                lease_acquired_at_ms: lane.lease().acquired_at_ms,
+                lease_expires_at_ms: lane.lease().expires_at_ms,
+                is_pinned: lane.is_pinned(),
+            }
+        })
+    }
+
+    /// Snapshot of one lane (clone) — used by tests + the handle
+    /// module for delegation.
+    pub fn lane_for_handle(&self, handle: &HandleRef) -> Option<Lane> {
+        self.lanes.get(&handle.id).map(|e| e.value().clone())
+    }
+
+    pub fn lane_count(&self) -> usize {
+        self.lanes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lanes.is_empty()
+    }
+
+    /// Borrow the inner handle store. The handle module uses this
+    /// to dispatch generate calls without going through the
+    /// coordinator (generation isn't a coordinator concern in Step
+    /// 2; Step 4 wires the batched-decode path).
+    pub fn handle_store(&self) -> Arc<InferenceHandleStore> {
+        self.handle_store.clone()
+    }
+}
+
+fn task_kind_str(t: TaskKind) -> &'static str {
+    match t {
+        TaskKind::Chat => "chat",
+        TaskKind::VoiceChat => "voice_chat",
+        TaskKind::VideoChat => "video_chat",
+        TaskKind::CodingSmall => "coding_small",
+        TaskKind::CodingLarge => "coding_large",
+        TaskKind::GameNpcIdle => "game_npc_idle",
+        TaskKind::GameNpcEngaged => "game_npc_engaged",
+        TaskKind::SentinelEasy => "sentinel_easy",
+        TaskKind::SentinelHard => "sentinel_hard",
+        TaskKind::AcademyStudent => "academy_student",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+
+    fn persona(id: u128) -> PersonaId {
+        PersonaId::new(Uuid::from_u128(id))
+    }
+
+    fn small_budget_config() -> CoordinatorConfig {
+        // Tight budgets so tests can exercise admission deny without
+        // having to set up production-sized numbers.
+        CoordinatorConfig {
+            lane_budgets: vec![ThroughputLaneBudget {
+                resource_class: ResourceClass::LocalGeneration,
+                target_silicon: TargetSilicon::Cpu,
+                // Cap at 2 concurrent lanes to exercise concurrency
+                // backpressure.
+                max_concurrency: 2,
+                // Cap at 20K cost_units (≈ 2× Chat lanes worth).
+                max_cost_units: 20_000,
+            }],
+            // Tiny per-token bytes so footprint stays trivial in tests.
+            bytes_per_token: 1,
+            lease_duration_ms: 60_000,
+            default_target_silicon: TargetSilicon::Cpu,
+        }
+    }
+
+    fn build_coordinator() -> InferenceCoordinator {
+        let footprint = Arc::new(FootprintRegistry::new());
+        let handle_store = Arc::new(InferenceHandleStore::new());
+        InferenceCoordinator::new(footprint, handle_store, small_budget_config())
+    }
+
+    fn open_chat(c: &InferenceCoordinator, persona_id: u128, now_ms: u64)
+        -> Result<HandleRef, CoordinatorError>
+    {
+        c.open_lane(OpenLaneRequest {
+            persona: persona(persona_id),
+            task: TaskKind::Chat,
+            adapter: Arc::new(HeuristicInferenceAdapter::new()),
+            model: None,
+            system_prompt: None,
+            active_adapters: None,
+            class_override: None,
+            now_ms,
+        })
+    }
+
+    // ── basic open + close ──────────────────────────────────────
+
+    #[test]
+    fn open_lane_admits_first_persona_returns_handle() {
+        let c = build_coordinator();
+        let h = open_chat(&c, 1, 1_000_000).unwrap();
+        assert_eq!(c.lane_count(), 1);
+        assert_eq!(h.owner, crate::inference::handle_store::HANDLE_OWNER);
+    }
+
+    #[test]
+    fn lane_is_bound_to_handle_and_carries_persona_task_class() {
+        let c = build_coordinator();
+        let h = open_chat(&c, 1, 1_000_000).unwrap();
+        let lane = c.lane_for_handle(&h).unwrap();
+        assert_eq!(lane.persona(), persona(1));
+        assert_eq!(lane.task(), TaskKind::Chat);
+        assert_eq!(lane.class(), LaneClass::Interactive);
+        assert_eq!(lane.handle_id(), h.id);
+    }
+
+    #[test]
+    fn close_lane_releases_and_decrements_count() {
+        let c = build_coordinator();
+        let h = open_chat(&c, 1, 1_000_000).unwrap();
+        assert_eq!(c.lane_count(), 1);
+        assert!(c.close_lane(&h).unwrap());
+        assert_eq!(c.lane_count(), 0);
+        // Double-close is idempotent.
+        assert!(!c.close_lane(&h).unwrap());
+    }
+
+    // ── admission ───────────────────────────────────────────────
+
+    #[test]
+    fn admission_denies_when_concurrency_exceeded() {
+        let c = build_coordinator();
+        // budget: max_concurrency=2 → first two admit, third denies
+        open_chat(&c, 1, 1_000_000).unwrap();
+        open_chat(&c, 2, 1_000_000).unwrap();
+        let err = open_chat(&c, 3, 1_000_000).unwrap_err();
+        match err {
+            CoordinatorError::AdmissionDenied { reason, .. } => {
+                assert_eq!(reason, AdmissionDenyReason::ResourcePressure);
+            }
+            other => panic!("expected AdmissionDenied, got {other:?}"),
+        }
+        assert_eq!(c.lane_count(), 2);
+    }
+
+    #[test]
+    fn admission_denies_when_cost_units_exceeded() {
+        // Two CodingLarge (128K each) blows past 20K max_cost_units.
+        let c = build_coordinator();
+        let _ = c.open_lane(OpenLaneRequest {
+            persona: persona(1),
+            task: TaskKind::CodingLarge,
+            adapter: Arc::new(HeuristicInferenceAdapter::new()),
+            model: None,
+            system_prompt: None,
+            active_adapters: None,
+            class_override: None,
+            now_ms: 1_000_000,
+        }).unwrap_err();
+        // Even the FIRST CodingLarge fails because its cost_units
+        // (128K) exceeds the lane's max_cost_units (20K).
+        assert_eq!(c.lane_count(), 0);
+    }
+
+    #[test]
+    fn admission_denies_when_no_budget_for_silicon() {
+        // Config only has Cpu budget; request UnifiedMemory.
+        let mut config = small_budget_config();
+        config.default_target_silicon = TargetSilicon::UnifiedMemory;
+        // Don't add a UnifiedMemory lane budget — admission will say NoBudget.
+        let footprint = Arc::new(FootprintRegistry::new());
+        let handle_store = Arc::new(InferenceHandleStore::new());
+        let c = InferenceCoordinator::new(footprint, handle_store, config);
+        let err = open_chat(&c, 1, 1_000_000).unwrap_err();
+        match err {
+            CoordinatorError::AdmissionDenied { reason, .. } => {
+                assert_eq!(reason, AdmissionDenyReason::NoBudget);
+            }
+            other => panic!("expected NoBudget, got {other:?}"),
+        }
+    }
+
+    // ── three-persona realistic floor smoke ─────────────────────
+
+    #[test]
+    fn three_personas_concurrent_lanes_on_one_adapter_realistic_floor() {
+        // The substrate's defining boast at the realistic floor.
+        let mut cfg = small_budget_config();
+        cfg.lane_budgets[0].max_concurrency = 3;
+        cfg.lane_budgets[0].max_cost_units = 30_000;
+        let c = InferenceCoordinator::new(
+            Arc::new(FootprintRegistry::new()),
+            Arc::new(InferenceHandleStore::new()),
+            cfg,
+        );
+        // One shared heuristic adapter.
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        let mk = |id, task| OpenLaneRequest {
+            persona: persona(id),
+            task,
+            adapter: adapter.clone(),
+            model: None,
+            system_prompt: None,
+            active_adapters: None,
+            class_override: None,
+            now_ms: 1_000_000,
+        };
+        let h1 = c.open_lane(mk(1, TaskKind::Chat)).unwrap();
+        let h2 = c.open_lane(mk(2, TaskKind::VoiceChat)).unwrap();
+        let h3 = c.open_lane(mk(3, TaskKind::GameNpcIdle)).unwrap();
+        assert_eq!(c.lane_count(), 3);
+
+        // Distinct lanes per persona × task.
+        let l1 = c.lane_for_handle(&h1).unwrap();
+        let l2 = c.lane_for_handle(&h2).unwrap();
+        let l3 = c.lane_for_handle(&h3).unwrap();
+        assert_eq!(l1.task(), TaskKind::Chat);
+        assert_eq!(l2.task(), TaskKind::VoiceChat);
+        assert_eq!(l3.task(), TaskKind::GameNpcIdle);
+
+        // Class derives correctly per task.
+        assert_eq!(l1.class(), LaneClass::Interactive);
+        assert_eq!(l2.class(), LaneClass::Realtime); // pinned!
+        assert_eq!(l3.class(), LaneClass::Background);
+
+        // KV budgets per recipe table.
+        assert_eq!(l1.seed_kv_tokens(), 8 * 1024);
+        assert_eq!(l2.seed_kv_tokens(), 8 * 1024);
+        assert_eq!(l3.seed_kv_tokens(), 4 * 1024);
+
+        // Pinned status follows class.
+        assert!(l2.is_pinned());
+        assert!(!l1.is_pinned());
+        assert!(!l3.is_pinned());
+    }
+
+    // ── observability + inspection ──────────────────────────────
+
+    #[test]
+    fn inspect_returns_full_snapshot_for_known_handle() {
+        let c = build_coordinator();
+        let h = open_chat(&c, 7, 1_500_000).unwrap();
+        let inspection = c.inspect(&h).unwrap();
+        assert_eq!(inspection.persona, persona(7));
+        assert_eq!(inspection.task, TaskKind::Chat);
+        assert_eq!(inspection.class, LaneClass::Interactive);
+        assert_eq!(inspection.handle_id, h.id);
+        assert_eq!(inspection.seed_kv_tokens, 8 * 1024);
+        assert_eq!(inspection.max_kv_tokens, 16 * 1024);
+        assert_eq!(inspection.bytes_accounted, 8 * 1024); // small config bytes_per_token=1
+        assert_eq!(inspection.lease_acquired_at_ms, 1_500_000);
+        assert_eq!(inspection.lease_expires_at_ms, 1_500_000 + 60_000);
+        assert!(!inspection.is_pinned);
+    }
+
+    #[test]
+    fn inspect_unknown_handle_returns_none() {
+        let c = build_coordinator();
+        let phantom = HandleRef::mint(
+            crate::inference::handle_store::HANDLE_OWNER,
+            crate::inference::handle_store::HANDLE_TYPE_TAG,
+        );
+        assert!(c.inspect(&phantom).is_none());
+    }
+
+    // ── class override ──────────────────────────────────────────
+
+    #[test]
+    fn class_override_lets_daemon_promote_chat_to_realtime() {
+        // A daemon can promote a Chat lane to Realtime when the
+        // persona is currently in a voice-engaged state.
+        let c = build_coordinator();
+        let req = OpenLaneRequest {
+            persona: persona(1),
+            task: TaskKind::Chat,
+            adapter: Arc::new(HeuristicInferenceAdapter::new()),
+            model: None,
+            system_prompt: None,
+            active_adapters: None,
+            class_override: Some(LaneClass::Realtime),
+            now_ms: 1_000_000,
+        };
+        let h = c.open_lane(req).unwrap();
+        let lane = c.lane_for_handle(&h).unwrap();
+        assert_eq!(lane.class(), LaneClass::Realtime);
+        assert!(lane.is_pinned());
+    }
+}
