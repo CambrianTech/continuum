@@ -53,32 +53,62 @@
 //!   coordinator + lane multiplexing tests cover the N-persona
 //!   case; this demo focuses on the chat round-trip.
 //!
-//! ### Known substrate gap exposed by this demo (2026-05-31)
+//! ### Inbound: subscribe, not poll (RTOS doctrine)
 //!
-//! Running the demo against the live daemon revealed that chat
-//! messages from other peers land in `~/.airc/events.sqlite`
-//! `bus_events` (the new owner-core bus path — 9435 entries on
-//! Joel's box) but DO NOT fan out into per-persona scopes'
-//! `events` tables, which is where `airc_lib::Airc::page_recent`
-//! reads. Paige's per-persona scope shows 6 events (all join /
-//! subscription JSON), 0 chat. As a result the demo's loop sees
-//! no inbound messages even though `airc msg` posted them to the
-//! daemon.
+//! v1 of this demo polled `airc.page_recent(N)` every tick to
+//! detect new messages. That hid the substrate's actual contract
+//! and tripped a false-positive "fanout gap" hypothesis. The
+//! reality (confirmed by tracing 2026-06-01):
 //!
-//! This is the headless-personas-talking-over-airc blocker
-//! tracked as task #102 (airc subscription backfill) and is
-//! cross-cut with task #82 (CBOR Response::Event schema
-//! mismatch). Until those two land, this demo proves only that
-//! attach + room join + adapter + outbound `say` work; it does
-//! NOT yet prove the inbound round-trip. Per-tick diagnostics
-//! were added below so the gap stays visible: each poll prints
-//! how many events `page_recent` returned and what the highest
-//! lamport seen is. The moment task #102 lands, the demo starts
-//! responding without code changes.
+//! - `Airc::subscribe()` (`crates/airc-lib/src/messaging.rs:204`)
+//!   ALREADY routes through the daemon's attach stream when
+//!   daemon-attached. It opens `AttachRequest`, decodes each
+//!   `Response::Event { envelope }` via `decode_wire_event`, and
+//!   delivers `Arc<TranscriptEvent>` through an `EventStream` —
+//!   with reconnect-from-cursor on daemon restarts.
+//! - `Airc::page_recent()` (when daemon-attached) issues an
+//!   `InboxRequest` to the daemon which replays the durable
+//!   tier via `state.router.resume_from_cursor`. So the warm-up
+//!   high-water mark IS correct.
+//!
+//! The current shape: page_recent once for the cursor, then loop
+//! on subscribe() forever. No polling, no per-tick diagnostics
+//! needed — events arrive as they're published.
+//!
+//! ### Empirical status (2026-06-01)
+//!
+//! Tested live on Joel's MacBookPro15,1 against the running
+//! daemon (build=71a07525f57c, branch=feat/airc-ipc-endpoint-command):
+//!
+//! 1. Demo starts, attaches as Paige, subscribes via the public
+//!    `Airc::subscribe()` API — `✓ subscribed to live daemon stream`
+//!    prints, no error from the attach handshake.
+//! 2. Three test messages posted via `airc msg` land in the
+//!    daemon's `~/.airc/events.sqlite::bus_events` table
+//!    (verified directly: epoch=124, counters 646-648,
+//!    matching channel uuid).
+//! 3. Demo's `subscribe()` stream yields zero events — no
+//!    "inbound" log line, no "subscribe stream ended" log line.
+//!    The mpsc is open but silent.
+//!
+//! Diagnosis: messages are landing in the bus but the daemon's
+//! per-subscriber fanout is NOT pushing them to Paige's IPC
+//! attach stream. This is **task #82** ("Headless break #3: CBOR
+//! Response::Event schema mismatch") manifesting on the live
+//! daemon — either decode_wire_event silently bails (the
+//! current daemon_subscribe loop `Err(_) => return` swallows it
+//! at airc-lib/src/daemon.rs:416) OR the subscriber filter on
+//! the daemon side doesn't match these envelopes.
+//!
+//! Demo is structurally correct and will start producing
+//! inbound + reply output the moment #82 lands in the daemon.
+//! Until then, only the OUTBOUND half (attach + join + adapter +
+//! say) is provably wired.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+
+use futures::StreamExt;
 
 use continuum_core::ai::adapter::AIProviderAdapter;
 use continuum_core::ai::heuristic_adapter::HeuristicInferenceAdapter;
@@ -89,19 +119,10 @@ use continuum_core::persona::rag_inspect::{
 };
 
 const DEFAULT_AGENT_NAME: &str = "Paige";
-const DEFAULT_POLL_MS: u64 = 3_000;
 const PAGE_RECENT_LIMIT: usize = 25;
 
 fn persona_name() -> String {
     std::env::var("CONTINUUM_PERSONA").unwrap_or_else(|_| DEFAULT_AGENT_NAME.to_string())
-}
-
-fn poll_interval() -> Duration {
-    let ms = std::env::var("CONTINUUM_CHAT_DEMO_POLL_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_POLL_MS);
-    Duration::from_millis(ms)
 }
 
 fn continuum_root() -> PathBuf {
@@ -194,140 +215,109 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let airc_arc = Arc::new(airc);
     let reader: Arc<dyn AircTranscriptReader> = airc_arc.clone();
 
-    // 6. Track the highest lamport we've already responded to.
-    //    Prevents replying to the same message twice + avoids
-    //    replying to messages from before this binary started.
+    // 6. Compute the high-water mark from recent history. This is
+    //    a one-shot page_recent for the cursor only — subscribe()
+    //    takes over for live events. Avoids replying to messages
+    //    that arrived before this binary started.
     let mut last_lamport_seen: u64 = airc_arc
         .page_recent(PAGE_RECENT_LIMIT)
         .await
         .map(|events| events.iter().map(|e| e.lamport).max().unwrap_or(0))
         .unwrap_or(0);
     println!(
-        "✓ starting from lamport={} (responding only to messages received AFTER this).",
+        "✓ warm-up cursor: lamport={} (responding only to events AFTER this).",
         last_lamport_seen
     );
-    println!();
-    println!("Listening for chats. Send a message in the same room to test.");
-    println!("Stop with Ctrl-C.");
+
+    // 7. Open the live daemon attach stream. From here on no
+    //    polling — every new event arrives through `next().await`.
+    let mut stream = airc_arc
+        .subscribe()
+        .await
+        .map_err(|e| format!("subscribe failed: {e}"))?;
+    println!("✓ subscribed to live daemon stream — listening for chats.");
+    println!("  Send a message in the same room to test.");
+    println!("  Stop with Ctrl-C.");
     println!();
 
-    let poll = poll_interval();
-    let mut tick: u64 = 0;
-    loop {
-        tokio::time::sleep(poll).await;
-        tick += 1;
-
-        // Pull recent events; in production we'd subscribe to the
-        // airc event stream, but page_recent + lamport-tracking is
-        // sufficient for the demo's proof-of-life.
-        let events = match airc_arc.page_recent(PAGE_RECENT_LIMIT).await {
-            Ok(events) => events,
-            Err(e) => {
-                eprintln!("page_recent failed: {e}");
+    while let Some(item) = stream.next().await {
+        let event = match item {
+            Ok(e) => e,
+            Err(lag) => {
+                eprintln!("⚠️  live stream lag: {lag} — resume continues from cursor");
                 continue;
             }
         };
 
-        // Per-tick diagnostics — keep the substrate gap loud while
-        // task #102 (airc subscription backfill) is outstanding.
-        // Counts the events that ARE chat-shaped and from peers
-        // other than us, which is what we'd actually respond to.
-        let max_lamport = events.iter().map(|e| e.lamport).max().unwrap_or(0);
-        let text_count = events
-            .iter()
-            .filter(|e| e.body.as_ref().and_then(|b| b.as_text()).is_some())
-            .count();
-        let from_others_count = events
-            .iter()
-            .filter(|e| e.peer_id.as_uuid() != persona_id)
-            .count();
-        eprintln!(
-            "tick={tick} page_recent={} text={} from_others={} max_lamport={} last_seen={}",
-            events.len(),
-            text_count,
-            from_others_count,
-            max_lamport,
-            last_lamport_seen
+        if event.lamport <= last_lamport_seen {
+            continue;
+        }
+        last_lamport_seen = event.lamport.max(last_lamport_seen);
+
+        // Skip messages from Paige herself (avoid loop).
+        if event.peer_id.as_uuid() == persona_id {
+            continue;
+        }
+        // Skip non-text messages.
+        let Some(body) = &event.body else { continue };
+        let Some(text) = body.as_text() else { continue };
+
+        let from_peer_short: String = event.peer_id.to_string().chars().take(8).collect();
+        println!("─── inbound (lamport={}) ───", event.lamport);
+        println!("  from={from_peer_short}");
+        println!("  text={text}");
+
+        // Build a RAG inspection request scoped to Paige.
+        let mut req = RagInspectionRequest::defaults_for(persona_id, agent.clone(), now_ms());
+        req.airc_fetch_limit = PAGE_RECENT_LIMIT;
+
+        // Run the chained inspection: RAG layer surfaces recent
+        // transcript → heuristic adapter generates response →
+        // captured in model_response.
+        let inspection = match inspect_persona_rag_with_inference(
+            &req,
+            reader.clone(),
+            Some(adapter.clone()),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("  inspect_persona_rag_with_inference failed: {e}");
+                continue;
+            }
+        };
+
+        let mr = match inspection.model_response {
+            Some(mr) => mr,
+            None => {
+                println!("  (no model_response — RAG-only path; nothing to post)");
+                continue;
+            }
+        };
+
+        println!(
+            "  RAG delivered {} items",
+            inspection.deliveries[0].items.len()
+        );
+        println!(
+            "  model={} tokens_in={} tokens_out={}",
+            mr.model, mr.input_tokens, mr.output_tokens
         );
 
-        // Process oldest → newest so a burst of messages gets
-        // answered in order.
-        let mut sorted = events;
-        sorted.sort_by_key(|e| e.lamport);
-
-        for event in sorted {
-            if event.lamport <= last_lamport_seen {
-                continue;
+        // Post the response back to airc.
+        match airc_arc.say(&mr.response_text).await {
+            Ok(event_id) => {
+                println!("  ✓ posted reply (event_id={event_id})");
+                println!("    reply: {}", mr.response_text);
             }
-            // Skip messages from Paige herself (avoid loop).
-            if event.peer_id.as_uuid() == persona_id {
-                last_lamport_seen = event.lamport.max(last_lamport_seen);
-                continue;
+            Err(e) => {
+                eprintln!("  airc.say failed: {e}");
             }
-            // Skip non-text messages.
-            let Some(body) = &event.body else {
-                last_lamport_seen = event.lamport.max(last_lamport_seen);
-                continue;
-            };
-            let Some(text) = body.as_text() else {
-                last_lamport_seen = event.lamport.max(last_lamport_seen);
-                continue;
-            };
-
-            let from_peer_short: String = event.peer_id.to_string().chars().take(8).collect();
-            println!("─── inbound (lamport={}) ───", event.lamport);
-            println!("  from={from_peer_short}");
-            println!("  text={text}");
-
-            // Build a RAG inspection request scoped to Paige.
-            let mut req =
-                RagInspectionRequest::defaults_for(persona_id, agent.clone(), now_ms());
-            req.airc_fetch_limit = PAGE_RECENT_LIMIT;
-
-            // Run the chained inspection: RAG layer surfaces recent
-            // transcript → heuristic adapter generates response →
-            // captured in model_response.
-            let inspection = match inspect_persona_rag_with_inference(
-                &req,
-                reader.clone(),
-                Some(adapter.clone()),
-            )
-            .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("  inspect_persona_rag_with_inference failed: {e}");
-                    last_lamport_seen = event.lamport.max(last_lamport_seen);
-                    continue;
-                }
-            };
-
-            let mr = match inspection.model_response {
-                Some(mr) => mr,
-                None => {
-                    println!("  (no model_response — RAG-only path; nothing to post)");
-                    last_lamport_seen = event.lamport.max(last_lamport_seen);
-                    continue;
-                }
-            };
-
-            println!("  RAG delivered {} items", inspection.deliveries[0].items.len());
-            println!("  model={} tokens_in={} tokens_out={}",
-                mr.model, mr.input_tokens, mr.output_tokens);
-
-            // Post the response back to airc.
-            match airc_arc.say(&mr.response_text).await {
-                Ok(event_id) => {
-                    println!("  ✓ posted reply (event_id={event_id})");
-                    println!("    reply: {}", mr.response_text);
-                }
-                Err(e) => {
-                    eprintln!("  airc.say failed: {e}");
-                }
-            }
-            println!();
-
-            last_lamport_seen = event.lamport.max(last_lamport_seen);
         }
+        println!();
     }
+
+    println!("✓ subscribe stream ended — daemon disconnected. Exiting.");
+    Ok(())
 }
