@@ -48,6 +48,7 @@ pub mod recorder;
 pub mod resource_forecast;
 pub mod response;
 pub mod resume_or_mint_provider;
+pub mod role_template;
 pub mod seed;
 pub mod self_task_generator;
 pub mod service_module;
