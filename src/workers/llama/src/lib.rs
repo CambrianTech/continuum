@@ -25,7 +25,16 @@
 // If you genuinely need CPU-only on macOS (rare — testing harness, x86
 // cross-compile), delete this guard deliberately with a commit message
 // justifying it. Don't silently pass a flag that removes it.
-#[cfg(all(target_os = "macos", not(feature = "metal")))]
+//
+// `mac-cpu-only` feature is the declared opt-in: required on Intel Mac
+// + AMD Radeon Pro 560X (MacBookPro15,1) where the ggml-metal device
+// init hangs in uninterruptible kernel wait (observed 2026-06-01 in
+// #129 chat-flawless slice; substrate gets real cognition on this
+// hardware via CPU-only path while the Metal-driver problem is
+// pursued upstream). Production Apple Silicon builds still hit the
+// error if `metal` is omitted; this feature is the escape hatch for
+// hardware where Metal genuinely cannot initialize.
+#[cfg(all(target_os = "macos", not(feature = "metal"), not(feature = "mac-cpu-only")))]
 compile_error!(
     "\n\n\
      ===================================================================\n\
