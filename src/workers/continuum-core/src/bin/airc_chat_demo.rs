@@ -52,6 +52,29 @@
 //! - Not a multi-persona test. ONE persona, ONE room. The
 //!   coordinator + lane multiplexing tests cover the N-persona
 //!   case; this demo focuses on the chat round-trip.
+//!
+//! ### Known substrate gap exposed by this demo (2026-05-31)
+//!
+//! Running the demo against the live daemon revealed that chat
+//! messages from other peers land in `~/.airc/events.sqlite`
+//! `bus_events` (the new owner-core bus path — 9435 entries on
+//! Joel's box) but DO NOT fan out into per-persona scopes'
+//! `events` tables, which is where `airc_lib::Airc::page_recent`
+//! reads. Paige's per-persona scope shows 6 events (all join /
+//! subscription JSON), 0 chat. As a result the demo's loop sees
+//! no inbound messages even though `airc msg` posted them to the
+//! daemon.
+//!
+//! This is the headless-personas-talking-over-airc blocker
+//! tracked as task #102 (airc subscription backfill) and is
+//! cross-cut with task #82 (CBOR Response::Event schema
+//! mismatch). Until those two land, this demo proves only that
+//! attach + room join + adapter + outbound `say` work; it does
+//! NOT yet prove the inbound round-trip. Per-tick diagnostics
+//! were added below so the gap stays visible: each poll prints
+//! how many events `page_recent` returned and what the highest
+//! lamport seen is. The moment task #102 lands, the demo starts
+//! responding without code changes.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -189,8 +212,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     let poll = poll_interval();
+    let mut tick: u64 = 0;
     loop {
         tokio::time::sleep(poll).await;
+        tick += 1;
 
         // Pull recent events; in production we'd subscribe to the
         // airc event stream, but page_recent + lamport-tracking is
@@ -202,6 +227,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         };
+
+        // Per-tick diagnostics — keep the substrate gap loud while
+        // task #102 (airc subscription backfill) is outstanding.
+        // Counts the events that ARE chat-shaped and from peers
+        // other than us, which is what we'd actually respond to.
+        let max_lamport = events.iter().map(|e| e.lamport).max().unwrap_or(0);
+        let text_count = events
+            .iter()
+            .filter(|e| e.body.as_ref().and_then(|b| b.as_text()).is_some())
+            .count();
+        let from_others_count = events
+            .iter()
+            .filter(|e| e.peer_id.as_uuid() != persona_id)
+            .count();
+        eprintln!(
+            "tick={tick} page_recent={} text={} from_others={} max_lamport={} last_seen={}",
+            events.len(),
+            text_count,
+            from_others_count,
+            max_lamport,
+            last_lamport_seen
+        );
 
         // Process oldest → newest so a burst of messages gets
         // answered in order.
