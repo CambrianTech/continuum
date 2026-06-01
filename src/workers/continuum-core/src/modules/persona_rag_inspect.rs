@@ -70,8 +70,14 @@ pub struct PersonaResolution {
 /// Maps a persona name to its persona_id + airc reader. Production
 /// wiring implements this against the real airc daemon + persona
 /// seed file. Tests stub it.
+///
+/// `resolve` is async because the production impl (a) reads
+/// `~/.continuum/personas/<name>/seed.json` via `tokio::fs` and
+/// (b) attaches to the airc daemon via `airc_lib::Airc::attach_as`
+/// which is async. Stubs can return immediately via `async {}.await`.
+#[async_trait]
 pub trait PersonaResolver: Send + Sync {
-    fn resolve(&self, name: &str) -> Result<PersonaResolution, String>;
+    async fn resolve(&self, name: &str) -> Result<PersonaResolution, String>;
 }
 
 // ── Wire types ────────────────────────────────────────────────────
@@ -405,6 +411,7 @@ impl PersonaRagInspectModule {
         let resolution = self
             .resolver
             .resolve(&params.persona)
+            .await
             .map_err(|e| format!("{COMMAND_RAG_INSPECT}: resolve persona '{}': {e}", params.persona))?;
 
         let now_ms = params.now_ms.unwrap_or_else(now_ms_default);
@@ -513,8 +520,9 @@ mod tests {
         inference_adapter: Option<Arc<dyn AIProviderAdapter>>,
     }
 
+    #[async_trait]
     impl PersonaResolver for StubResolver {
-        fn resolve(&self, name: &str) -> Result<PersonaResolution, String> {
+        async fn resolve(&self, name: &str) -> Result<PersonaResolution, String> {
             if !self.valid_names.iter().any(|n| n == name) {
                 return Err(format!("persona '{name}' not found in stub resolver"));
             }
