@@ -953,6 +953,7 @@ pub fn start_server(
     // failures (install airc / run `airc room <name>`).
     if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
         let instance_manager = Arc::new(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
@@ -968,6 +969,40 @@ pub fn start_server(
             "server",
             "PersonaInstanceManagerModule registered — citizens can be bootstrapped via \
              `persona/instances/bootstrap`"
+        );
+
+        // ── persona/rag-inspect — RAG introspection callable from any AI ──
+        //
+        // FilesystemPersonaResolver reads the persona's seed.json + attaches
+        // via airc_lib::Airc::attach_as using the same continuum_root +
+        // daemon_socket the instance manager just used. The module exposes
+        // the `persona/rag-inspect` command so sentinel personas, Claude,
+        // and any other AI can `Commands.execute('persona/rag-inspect', {
+        // persona: 'Paige' })` to honestly see what Paige's RAG layer would
+        // surface right now. Per [[observability-is-half-the-architecture]].
+        //
+        // chain_inference path stays RAG-only here (default_adapter=None)
+        // until the substrate has an Arc-shareable inference adapter pool
+        // (the current AdapterRegistry is Box-based + can't hand out Arcs
+        // without a separate refactor). The chained variant is exercised
+        // by the existing unit tests; production wiring of the inference
+        // probe is a follow-up.
+        let rag_inspect_resolver = std::sync::Arc::new(
+            crate::modules::persona_rag_inspect_filesystem::FilesystemPersonaResolver::new(
+                crate::modules::persona_instance_manager::resolve_continuum_root(),
+                daemon_socket_for_rag_inspect,
+            ),
+        );
+        let rag_inspect_module = std::sync::Arc::new(
+            crate::modules::persona_rag_inspect::PersonaRagInspectModule::new(
+                rag_inspect_resolver,
+            ),
+        );
+        runtime.register(rag_inspect_module);
+        log_info!(
+            "ipc",
+            "server",
+            "PersonaRagInspectModule registered — `persona/rag-inspect` available"
         );
 
         // The Grid's first heartbeat at server boot: resume any
