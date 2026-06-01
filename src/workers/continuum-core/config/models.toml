@@ -236,6 +236,21 @@ capabilities = ["text-generation", "chat", "tool-use", "streaming"]
 cost_input_per_1k = 0.0
 cost_output_per_1k = 0.0
 gguf_hint = "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"
+# Explicit local path — the auto-resolver in
+# `model_registry::artifacts::find_model_dir_in_root` compares
+# `repo_name.to_lowercase().replace('.','')` against the on-disk
+# directory name. For this row that yields `qwen35-4b-code-forged-gguf`
+# vs the actual dir `qwen3.5-4b-code-forged` — no match because the
+# dot stays in the dir name and the dir lacks the `-gguf` suffix.
+# Explicit path bypasses the heuristic and is the source-of-truth for
+# the local file. Lands at boot via `model_registry::artifacts::
+# resolve_gguf`'s explicit branch (first priority). Followup: fix the
+# dir-name heuristic OR rename the dir to match the model_id slug —
+# tracked as a separate doctrinal cleanup. For now this is the path
+# that gets a real LLM running per [[no-fallbacks-ever]] (the resolver
+# correctly returns None today; we're not adding a fallback, we're
+# wiring the explicit field that was always supported).
+gguf_local_path = "~/.continuum/genome/models/qwen3.5-4b-code-forged/qwen3.5-4b-code-forged-Q4_K_M.gguf"
 # Explicit qwen3.5 chatml template. The forged GGUF doesn't embed
 # `tokenizer.chat_template` in its metadata, and llama.cpp's built-in
 # chatml default drifts from qwen3.5's training on boundary tokens
