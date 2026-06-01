@@ -49,6 +49,7 @@ pub mod memory;
 pub mod models;
 pub mod persona_allocator;
 pub mod persona_instance_manager;
+pub mod persona_rag_inspect;
 pub mod plasticity;
 pub mod pressure_broker_module;
 pub mod python_adapter;
