@@ -31,6 +31,10 @@ path = "src/bin/cargo-continuum-vdd.rs"
 name = "airc_rag_demo"
 path = "src/bin/airc_rag_demo.rs"
 
+[[bin]]
+name = "airc_chat_demo"
+path = "src/bin/airc_chat_demo.rs"
+
 [dependencies]
 tokio.workspace = true
 serde.workspace = true
