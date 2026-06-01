@@ -29,6 +29,7 @@
 //!   kv_quant.rs         — KV cache quantization helpers
 //!   model.rs            — Minimal: just `rebuild_with_stacked_lora`
 
+pub mod airc_remote;
 pub mod backends;
 pub mod batching_probe;
 pub mod coordinator;
