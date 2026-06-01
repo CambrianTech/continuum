@@ -392,11 +392,59 @@ impl AIProviderModule {
                 // comfortably exceeds every persona RAG we currently
                 // build. Raise after footprint_registry reports real KV
                 // bytes and we have telemetry proving headroom.
-                let adapter = crate::inference::LlamaCppAdapter::with_model_id(
-                    gguf_path,
+                let adapter_base = crate::inference::LlamaCppAdapter::with_model_id(
+                    gguf_path.clone(),
                     model_meta.id.clone(),
                 )
                 .with_context_length(32768);
+
+                // Probe the GGUF architecture at registration time and
+                // enable multi-seq continuous batching when safe (per
+                // task #110 / batching_probe.rs). Coordinator-managed
+                // lane multiplexing (per task #109) requires
+                // n_seq_max>1 in the in-backend scheduler. Standard
+                // transformers (Llama / Qwen-2.5 / Gemma-2 / Mistral /
+                // ...) classify as SafeForMultiSeq; qwen3 / mamba /
+                // rwkv / jamba / etc. classify as SingleSeqOnly and
+                // we keep them at 1. Default n_seq_max for safe
+                // architectures is 4 — matches the realistic-floor
+                // coordinator config (4 concurrent lanes). The probe
+                // is cheap (GGUF header only, no weights), runs once
+                // per adapter registration.
+                const N_SEQ_MAX_FOR_SAFE_MULTISEQ: u32 = 4;
+                let adapter = match crate::inference::batching_probe::probe_gguf_batching_safety(
+                    &gguf_path,
+                ) {
+                    Ok(verdict) if verdict.safe_for_multi_seq() => {
+                        self.log().info(&format!(
+                            "Architecture `{}` is safe for multi-seq batching; enabling n_seq_max={} \
+                             for coordinator-managed lane multiplexing",
+                            verdict.arch(),
+                            N_SEQ_MAX_FOR_SAFE_MULTISEQ
+                        ));
+                        adapter_base.with_n_seq_max(N_SEQ_MAX_FOR_SAFE_MULTISEQ)
+                    }
+                    Ok(verdict) => {
+                        self.log().info(&format!(
+                            "Architecture `{}` not safe for multi-seq batching ({}); \
+                             keeping n_seq_max=1",
+                            verdict.arch(),
+                            match &verdict {
+                                crate::inference::batching_probe::BatchingSafety::SingleSeqOnly { reason, .. } => reason.as_str(),
+                                _ => "architecture not in curated safe list",
+                            }
+                        ));
+                        adapter_base
+                    }
+                    Err(err) => {
+                        self.log().warn(&format!(
+                            "Batching probe failed for `{}`: {err} — keeping n_seq_max=1 \
+                             (conservative default)",
+                            model_meta.id
+                        ));
+                        adapter_base
+                    }
+                };
                 // Priority 0 — wins over DMR for the model ids it claims.
                 registry.register(Box::new(adapter), 0);
             }
