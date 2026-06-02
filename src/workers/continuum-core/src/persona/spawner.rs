@@ -83,7 +83,7 @@ pub fn derive_spawn_plan(
     roster: &[RosterEntry],
     tier_id: &str,
     tier_category: HwTierCategory,
-    registry: &Arc<crate::model_registry::Registry>,
+    registry: &crate::model_registry::Registry,
 ) -> Vec<Result<PersonaInferenceProfile, InferenceProfileError>> {
     roster
         .iter()

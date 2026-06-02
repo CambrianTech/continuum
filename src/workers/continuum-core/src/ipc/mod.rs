@@ -940,6 +940,7 @@ pub fn start_server(
         .daemon_socket()
         .map(|p| p.to_path_buf())
         .zip(airc_module.default_room());
+    let persona_bootstrap_room_name = airc_module.default_room_name().map(|s| s.to_string());
     runtime.register(airc_module);
 
     // PersonaInstanceManagerModule: owns the live PersonaAircRuntime
@@ -960,6 +961,7 @@ pub fn start_server(
                 registry,
                 daemon_socket,
                 default_room,
+                persona_bootstrap_room_name.clone(),
                 continuum_root,
             ),
         );
@@ -1021,11 +1023,72 @@ pub fn start_server(
         // on; the operator can re-fire via the
         // `persona/instances/bootstrap` command once the underlying
         // issue (disk full, daemon down, corrupted seed) is resolved.
+        // ── Slice 13: substrate-managed persona hosting ──────────────
+        //
+        // Composes slices 7-12 into the production boot path:
+        //
+        //   PersonaSpawnerModule::plan_for_tier (slice 7)
+        //     → bootstrap_planned (slice 8): mints/resumes airc identities
+        //     → materialize_adapters (slice 9): builds inference adapters
+        //     → spawn_persona_service (slice 12): runs the serve_persona_loop
+        //     → PersonaAircRuntimeRegistry::attach_service_loop (slice 13 Q3):
+        //       parks the JoinHandle in the slot alongside the runtime
+        //
+        // BEFORE slice 13: this boot loop called `bootstrap_one` per
+        // persona and logged a welcome — the persona was reachable via
+        // `airc peers` but never responded. Mute citizens.
+        //
+        // AFTER slice 13 (this code): each planned persona gets her
+        // serve_persona_loop running on rt_handle, with the JoinHandle
+        // owned by the registry slot for orderly shutdown.
+        //
+        // Per the design doc HEADLESS-PERSONA-HOST-LOOP.md (PR #1510):
+        //   - P2 (in effect): plan_for_tier returns single Helper until
+        //     slice 14 lands role-in-seed.json.
+        //   - Q1 (applied): bootstrap_planned takes &Registry.
+        //   - Q3 (applied): single registry keyspace owns runtime +
+        //     service loop.
+        //   - P1 (deferred): tokio::signal::ctrl_c wiring lands in a
+        //     follow-up alongside the Runtime::shutdown caller.
+        //     Slot-level shutdown_slot is available via the registry
+        //     and exercised by the persona/instances/* IPC commands.
+        //   - Q2 (deferred): detect_host_capability needs a production
+        //     GpuMonitor constructor that doesn't exist yet (see TODO
+        //     below). For now slice 13 uses CpuOnly + Compat, which
+        //     produces the LCD Qwen2.5-0.5B Helper for all tiers. When
+        //     the GpuMonitor construction lands, swap the hardcoded
+        //     tier for `detect_host_capability(&gpu_monitor, &system_info)`.
+        //   - P3 (deferred): ResourceBroker.acquire admission for each
+        //     adapter spawn is its own slice. Current LCD case (1
+        //     persona × ~500 MiB GGUF) is well within all supported
+        //     tiers' headroom; broker admission becomes load-bearing
+        //     when multi-persona returns in slice 14.
         let bootstrap_handle = instance_manager.clone();
+        let registry_for_lookup = instance_manager.registry().clone();
+        let rt_handle_for_spawn = rt_handle.clone();
         let continuum_root_for_boot = crate::modules::persona_instance_manager::resolve_continuum_root();
         rt_handle.spawn(async move {
-            use crate::persona::identity_provider::PersonaIdentityProvider;
+            use crate::persona::host::spawn_persona_service;
+            use crate::persona::hw_tier_descriptor::HwTierCategory;
             use crate::persona::resume_or_mint_provider::ResumeOrMintProvider;
+            use crate::persona::service_loop::ServeOptions;
+            use crate::persona::spawner_module::{bootstrap_planned, PersonaSpawnerModule};
+            use crate::persona::supervisor::{
+                materialize_adapters, LlamaCppPersonaAdapterFactory,
+            };
+
+            // TODO #52: replace with detect_host_capability once a
+            // production GpuMonitor constructor exists. The current
+            // CpuOnly/Compat default produces the LCD Helper for all
+            // tiers, which is also what plan_for_tier returns under
+            // P2's single-Helper constraint (see slice 14).
+            let host_capability =
+                crate::cognition::model_resolver::types::HwCapabilityTier::CpuOnly;
+            let tier_category = HwTierCategory::Compat;
+            let tier_id = "default".to_string();
+
+            let spawner = PersonaSpawnerModule::new(host_capability, tier_category);
+
             let mut provider = match ResumeOrMintProvider::new(&continuum_root_for_boot, 1).await {
                 Ok(p) => p,
                 Err(e) => {
@@ -1038,54 +1101,139 @@ pub fn start_server(
                     return;
                 }
             };
-            loop {
-                let intent = match provider.next_persona().await {
-                    Ok(Some(i)) => i,
-                    Ok(None) => break,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "Provider yielded error mid-iteration — stopping boot bootstrap. \
-                             Server stays up; remaining citizens can be bootstrapped via IPC."
+
+            let plans = match bootstrap_planned(
+                &spawner,
+                &bootstrap_handle,
+                &mut provider,
+                &tier_id,
+                crate::model_registry::global(),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    // BLOCKER 2 (PR #1511 review finding #2):
+                    // `bootstrap_planned` registers each persona via
+                    // `bootstrap_one` BEFORE the next slot's mint
+                    // runs. If slot k fails, slots 0..k-1 are already
+                    // in the registry but with no service loop
+                    // attached — mute citizens. We MUST orderly-drain
+                    // them (no service loop to abort yet, but the
+                    // registry entry + Arc<Airc> still need to drop
+                    // so the wire subscriber tears down).
+                    let already_registered = registry_for_lookup.ids();
+                    let orphans = already_registered.len();
+                    for orphan_id in already_registered {
+                        // `shutdown_slot` handles "no service loop"
+                        // gracefully (handle_opt is None) and drops
+                        // the Arc cleanly. This is the orderly path
+                        // even when only the Arc needs dropping.
+                        let _ = registry_for_lookup.shutdown_slot(orphan_id).await;
+                    }
+                    tracing::error!(
+                        error = %e,
+                        orphans_drained = orphans,
+                        "slice 13 boot: bootstrap_planned failed; {} partially-registered \
+                         personas drained from the registry. Server stays up; fire \
+                         `persona/instances/bootstrap` manually after resolving the \
+                         underlying issue.",
+                        orphans,
+                    );
+                    return;
+                }
+            };
+
+            let factory: std::sync::Arc<
+                dyn crate::persona::supervisor::PersonaAdapterFactory,
+            > = std::sync::Arc::new(LlamaCppPersonaAdapterFactory);
+            // The supervisor needs a runtime lookup to fold the live
+            // Arc<PersonaAircRuntime> into each PersonaContext —
+            // that's how `&ctx` carries the airc handle. Closure
+            // captures the slice-13 registry view; substrate
+            // invariant is "runtime exists post-bootstrap_one".
+            let registry_for_materialize = registry_for_lookup.clone();
+            let hosted_results = materialize_adapters(plans, &*factory, |pid| {
+                registry_for_materialize.get(pid)
+            })
+            .await;
+
+            let mut hosted_count: usize = 0;
+            let mut failed_count: usize = 0;
+            for (slot_idx, result) in hosted_results.into_iter().enumerate() {
+                match result {
+                    Ok(hosted) => {
+                        // `hosted` is the PersonaContext — it already
+                        // carries the airc runtime as `hosted.runtime`,
+                        // per the `&ctx` doctrine. No separate lookup.
+                        let persona_id = hosted.identity.persona_id;
+                        let agent_name = hosted.identity.agent_name.clone();
+                        let role = hosted.role;
+                        let handle = spawn_persona_service(
+                            hosted,
+                            ServeOptions::default(),
+                            rt_handle_for_spawn.clone(),
                         );
-                        return;
-                    }
-                };
-                let label = match intent.source {
-                    crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk => {
-                        "resumed"
-                    }
-                    crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted => {
-                        "freshly minted"
-                    }
-                };
-                match bootstrap_handle.bootstrap_one(&intent).await {
-                    Ok(info) => {
+                        if let Err((returned_handle, reason)) = registry_for_lookup
+                            .attach_service_loop(persona_id, handle)
+                            .await
+                        {
+                            // BLOCKER 1 (PR #1511 review finding #1):
+                            // JoinHandle::drop detaches the task
+                            // rather than aborting it. Without this
+                            // orderly drain the loop keeps running
+                            // untracked — the boot log would lie that
+                            // "will not respond" while the loop in
+                            // fact does respond (just outside the
+                            // registry's view, so shutdown_slot can't
+                            // find it). attach_service_loop hands the
+                            // handle back exactly so we can do this.
+                            returned_handle.abort();
+                            let _ = returned_handle.await;
+                            tracing::error!(
+                                slot = slot_idx,
+                                persona_id = %persona_id,
+                                reason = reason,
+                                "slice 13 boot: attach_service_loop failed; spawned \
+                                 task drained. Persona registered but unattended — \
+                                 fire `persona/instances/bootstrap` to retry."
+                            );
+                            failed_count += 1;
+                            continue;
+                        }
+                        hosted_count += 1;
                         tracing::info!(
-                            persona_id = %info.persona_id,
-                            agent_name = %info.agent_name,
-                            peer_id = %info.peer_id,
-                            home = %info.home.display(),
-                            default_room = %info.default_room,
-                            source = ?info.source,
-                            "🌐 The Grid welcomes a {} citizen: {} (peer_id={})",
-                            label,
-                            info.agent_name,
-                            info.peer_id
+                            persona_id = %persona_id,
+                            agent_name = %agent_name,
+                            role = ?role,
+                            slot = slot_idx,
+                            "🌐 The Grid hosts citizen {} (slot {}, role {:?}) — substrate \
+                             service-loop attached",
+                            agent_name,
+                            slot_idx,
+                            role,
                         );
                     }
-                    Err(e) => {
+                    Err(err) => {
                         tracing::warn!(
-                            error = %e,
-                            persona_id = %intent.persona_id,
-                            agent_name = %intent.agent_name,
-                            "Boot-time bootstrap failed for {} — server stays up, other \
-                             citizens (if any) will still be attempted.",
-                            intent.agent_name
+                            slot = slot_idx,
+                            error = ?err,
+                            "slice 13 boot: slot materialization failed; sibling \
+                             slots still attempted"
                         );
+                        failed_count += 1;
                     }
                 }
             }
+
+            tracing::info!(
+                hosted = hosted_count,
+                failed = failed_count,
+                "🌐 Substrate boot composition complete (slice 13) — \
+                 {} citizen(s) hosted, {} failed",
+                hosted_count,
+                failed_count,
+            );
         });
     } else {
         tracing::warn!(

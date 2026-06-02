@@ -50,7 +50,6 @@
 //!   the scheduling pool. No hidden thread spawns.
 
 use crate::persona::airc_persona_conversation::AircPersonaConversation;
-use crate::persona::airc_runtime::PersonaAircRuntime;
 use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::service_loop::{serve_persona_loop, ServeOptions, ServeOutcome};
 use crate::persona::supervisor::HostedPersona;
@@ -78,11 +77,20 @@ use tokio::task::JoinHandle;
 /// every turn. Re-spawning with a fresh adapter is the supervisor's
 /// signal that the prior task should be aborted first.
 pub fn spawn_persona_service(
-    hosted: HostedPersona,
-    runtime: Arc<PersonaAircRuntime>,
+    ctx: HostedPersona,
     opts: ServeOptions,
     rt_handle: tokio::runtime::Handle,
 ) -> JoinHandle<Result<ServeOutcome, String>> {
+    // Production callers always populate `ctx.runtime` from the
+    // post-bootstrap registry; the `Option` exists only so test
+    // fixtures can build PersonaContexts without a live airc.
+    // `expect` here is the substrate's "this is a programmer error"
+    // signal — if a None reaches this site in prod, the boot path
+    // skipped a step it shouldn't have.
+    let runtime = ctx
+        .runtime
+        .clone()
+        .expect("spawn_persona_service requires ctx.runtime — None is test-only");
     // Up-cast the persona's Arc<Airc> to Arc<dyn AircTranscriptReader>.
     // `impl AircTranscriptReader for airc_lib::Airc` already exists
     // in airc_source.rs (line 74), so this is a zero-cost type-level
@@ -90,6 +98,6 @@ pub fn spawn_persona_service(
     let reader: Arc<dyn AircTranscriptReader> = runtime.airc().clone();
     let mut conversation = AircPersonaConversation::new(runtime);
     rt_handle.spawn(async move {
-        serve_persona_loop(&hosted, &mut conversation, reader, opts).await
+        serve_persona_loop(&ctx, &mut conversation, reader, opts).await
     })
 }

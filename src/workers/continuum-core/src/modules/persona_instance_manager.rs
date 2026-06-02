@@ -110,6 +110,15 @@ pub struct PersonaInstanceManagerModule {
     registry: PersonaAircRuntimeRegistry,
     daemon_socket: PathBuf,
     default_room: RoomId,
+    /// Human-readable room name (e.g. `"continuum"`). Used by
+    /// `PersonaAircRuntime::bootstrap` when joining the room, because
+    /// `Airc::join(name)` derives the canonical channel from the
+    /// name. If `None`, bootstrap falls back to joining by the
+    /// channel-UUID-as-string, which derives a NEW channel that
+    /// does NOT match the operator's `airc room` — persona lands in
+    /// the wrong room and can't see the operator's messages. PR #1511
+    /// integration test confirmed this empirically.
+    default_room_name: Option<String>,
     continuum_root: PathBuf,
 }
 
@@ -118,9 +127,9 @@ impl PersonaInstanceManagerModule {
     ///
     /// `registry` is shared (cheap to clone — internal `Arc<DashMap>`)
     /// so callers can hand other modules a view of the same roster.
-    /// `daemon_socket` and `default_room` come from
-    /// [`crate::modules::airc::AircModule::daemon_socket`] /
-    /// [`default_room`] — discovered at server boot.
+    /// `daemon_socket`, `default_room`, and `default_room_name` come
+    /// from [`crate::modules::airc::AircModule`]'s discovery:
+    /// [`daemon_socket`] / [`default_room`] / [`default_room_name`].
     /// `continuum_root` is where persona homes get carved out
     /// (typically `~/.continuum/`, env-overridable via
     /// `CONTINUUM_ROOT`).
@@ -128,12 +137,14 @@ impl PersonaInstanceManagerModule {
         registry: PersonaAircRuntimeRegistry,
         daemon_socket: PathBuf,
         default_room: RoomId,
+        default_room_name: Option<String>,
         continuum_root: PathBuf,
     ) -> Self {
         Self {
             registry,
             daemon_socket,
             default_room,
+            default_room_name,
             continuum_root,
         }
     }
@@ -174,6 +185,7 @@ impl PersonaInstanceManagerModule {
             &self.continuum_root,
             self.daemon_socket.clone(),
             self.default_room,
+            self.default_room_name.clone(),
             intent.source,
         )
         .await?;
@@ -326,6 +338,7 @@ mod tests {
             registry,
             PathBuf::from("/nonexistent/socket"),
             RoomId::from_uuid(Uuid::nil()),
+            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         let cfg = module.config();
@@ -348,6 +361,7 @@ mod tests {
             registry,
             PathBuf::from("/nonexistent/socket"),
             RoomId::from_uuid(Uuid::nil()),
+            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         let params = serde_json::json!({"personaId": Uuid::new_v4().to_string()});
@@ -363,6 +377,7 @@ mod tests {
             registry,
             PathBuf::from("/nonexistent/socket"),
             RoomId::from_uuid(Uuid::nil()),
+            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         let res = module
@@ -384,6 +399,7 @@ mod tests {
             registry,
             PathBuf::from("/nonexistent/socket"),
             RoomId::from_uuid(Uuid::nil()),
+            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         let res = module

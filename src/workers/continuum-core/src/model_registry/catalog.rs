@@ -356,6 +356,32 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             ..ModelSpec::default()
         }),
+        // LCD model — the substrate's lowest-common-denominator base
+        // per [[lcd-model-qwen25-05b-and-foundry-lora]]. Qwen2.5 0.5B
+        // Instruct Q4_K_M GGUF, ~468 MiB. Runs on any tier including
+        // CPU-only and Intel Mac mac-cpu-only. Substrate slice 13's
+        // boot composition asks for this model_id explicitly via
+        // `PersonaSpawnerModule::plan_for_tier`.
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF",
+            name: "Qwen2.5-0.5B-Instruct (LCD, in-process)",
+            provider: "llamacpp-local",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 60.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF"),
+            gguf_local_path: Some(
+                "~/.continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            ),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            ..ModelSpec::default()
+        }),
     ]
 }
 

@@ -206,6 +206,70 @@ pub async fn discover_default_channel() -> Result<uuid::Uuid, DiscoveryError> {
     parse_channel_from_room_output(&String::from_utf8_lossy(&out.stdout))
 }
 
+/// Discover the airc scope's current room NAME (the human-readable
+/// name like "continuum"). The substrate's persona bootstrap uses
+/// this for `Airc::join(name)` because joining by `name` derives the
+/// canonical channel; joining by UUID-as-string derives a NEW
+/// channel from the string, landing the persona in a different room
+/// than the one the operator sees in `airc room`. See PR #1511
+/// integration trace: substrate-hosted persona joined channel
+/// `5d33e2a7` (derived from the UUID string) when the operator was
+/// publishing to `11c1a7ac` (the real `continuum` channel).
+///
+/// Resolution order:
+///  1. `$AIRC_DEFAULT_ROOM_NAME` env override.
+///  2. Parse `airc room` output for the `room: <name>` line.
+pub async fn discover_default_room_name() -> Result<String, DiscoveryError> {
+    const AIRC_DEFAULT_ROOM_NAME_ENV: &str = "AIRC_DEFAULT_ROOM_NAME";
+    if let Some(raw) = std::env::var_os(AIRC_DEFAULT_ROOM_NAME_ENV) {
+        let raw = raw.to_string_lossy().trim().to_string();
+        if !raw.is_empty() {
+            return Ok(raw);
+        }
+    }
+    let call = TokioCommand::new("airc").arg("room").output();
+    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
+        .await
+        .map_err(|_| {
+            DiscoveryError::RoomCommandFailed(format!(
+                "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                 — substrate is unresponsive, refusing to wait",
+            ))
+        })?
+        .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+    if !out.status.success() {
+        return Err(DiscoveryError::RoomCommandFailed(format!(
+            "exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    parse_room_name_from_room_output(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Extract the `room: <name>` line from `airc room` stdout. Same
+/// human-prose format as the channel parser; if airc renames either
+/// label the parsers fail loudly rather than silently misreading.
+fn parse_room_name_from_room_output(stdout: &str) -> Result<String, DiscoveryError> {
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed
+            .strip_prefix("room:")
+            .or_else(|| trimmed.strip_prefix("Room:"))
+            .or_else(|| trimmed.strip_prefix("ROOM:"))
+        else {
+            continue;
+        };
+        let name = rest.trim();
+        if !name.is_empty() {
+            return Ok(name.to_string());
+        }
+    }
+    Err(DiscoveryError::UnparseableChannel(format!(
+        "no `room: <name>` line in stdout: {stdout:?}"
+    )))
+}
+
 /// Extract the `channel: <uuid>` line from `airc room` stdout.
 ///
 /// Output today (from airc rust-rewrite branch, as of this PR):

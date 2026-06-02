@@ -67,7 +67,7 @@ pub fn build_profile(
     tier_id: &str,
     tier_category: HwTierCategory,
     model_id: &str,
-    registry: &Arc<crate::model_registry::Registry>,
+    registry: &crate::model_registry::Registry,
 ) -> Result<PersonaInferenceProfile, InferenceProfileError> {
     let _ = role_id; // see module docstring; reserved for cognition_defaults wiring
 

@@ -134,6 +134,7 @@ impl PersonaAircRuntime {
         continuum_root: &Path,
         daemon_socket: PathBuf,
         default_room: RoomId,
+        default_room_name: Option<String>,
         source: crate::persona::identity_provider::PersonaIdentitySource,
     ) -> Result<Self, PersonaAircRuntimeError> {
         let agent_name = agent_name.into();
@@ -165,8 +166,35 @@ impl PersonaAircRuntime {
         // Join the default room. From the daemon's perspective the
         // persona is now an enrolled participant — `airc peers`
         // from another scope MUST list this peer_id.
+        //
+        // CRITICAL: `Airc::join(name)` calls `ChannelName::new(name)`
+        // which DERIVES a channel UUID from the name. If we pass the
+        // UUID-as-string of the operator's channel, that string gets
+        // interpreted as a name and produces a DIFFERENT channel.
+        // The persona then sits in the derived channel while the
+        // operator publishes into the canonical one — they never
+        // see each other. Joining by NAME (e.g. "continuum") lands
+        // both in the same channel. PR #1511 integration test caught
+        // this; demo binary in slice 11 reshaped via `from_attached`
+        // explicitly to work around the same hazard.
+        let join_target = match default_room_name.as_deref() {
+            Some(name) => name.to_string(),
+            None => {
+                tracing::warn!(
+                    persona_id = %persona_id,
+                    agent_name = %agent_name,
+                    room_id = %default_room.as_uuid(),
+                    "PersonaAircRuntime bootstrap: no default_room_name supplied — \
+                     falling back to joining by UUID-as-string, which derives a NEW \
+                     channel. Persona will likely land in the wrong room. Resolve: \
+                     ensure AircModule discovers default_room_name (via `airc room` \
+                     output's `room: <name>` line) and threads it through here.",
+                );
+                default_room.as_uuid().to_string()
+            }
+        };
         let room = airc
-            .join(&default_room.as_uuid().to_string())
+            .join(&join_target)
             .await
             .map_err(|source| PersonaAircRuntimeError::Join {
                 agent_name: agent_name.clone(),
