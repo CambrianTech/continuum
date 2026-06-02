@@ -1,64 +1,55 @@
-//! Persona host helper — slice 12 of #133.
+//! Persona host orchestration — slice 12 + slice 13.5.
 //!
-//! Composes the substrate's per-persona pieces into one tokio task:
+//! This module is the substrate's "spawn / host" surface for
+//! personas. It owns the composition seam that turns an identity
+//! provider into a roster of hosted personas talking on the grid.
 //!
-//!   `HostedPersona` (slice 9)
-//!     + `PersonaAircRuntime` (#87, registered by `bootstrap_one`)
-//!     → `AircPersonaConversation` (slice 11)
-//!     + `Arc<Airc>` as `AircTranscriptReader`
-//!     → `serve_persona_loop` (slice 10)
-//!     → `JoinHandle<Result<ServeOutcome, String>>`
+//! ## What lives here
 //!
-//! ## What slice 12 ships
+//! - [`spawn_persona_service`] — slice 12: the per-persona compose
+//!   point. Takes a fully-assembled [`PersonaContext`] and starts
+//!   her service loop on a tokio handle. Used by the supervisor
+//!   below, and (today) by `airc_chat_demo` directly.
+//! - [`PersonaSpawnSupervisor`] — slice 13.5: the boot-level
+//!   orchestrator. Wraps the slice 7-12 pipeline into one named
+//!   class. Construct it once at substrate boot, call
+//!   [`PersonaSpawnSupervisor::spawn_all`] with an identity
+//!   provider, and it produces a [`BootSummary`] reporting what
+//!   shipped vs what failed.
+//! - [`BootSummary`] / [`BootSlotFailure`] — typed boot-result
+//!   structs. ts-rs-exported so the substrate's observability +
+//!   admin surfaces (web client, jtag CLI, future
+//!   `persona:boot:summary` event consumers) all see the same
+//!   shape per [[clients-are-rust-too-thin-node-web-shell]].
 //!
-//! - [`spawn_persona_service`] — the 5-line composition that takes
-//!   already-bootstrapped pieces and starts hosting a persona.
+//! ## Why the extract-class refactor
 //!
-//! ## What slice 13 will do (not this commit)
-//!
-//! Rewrite the IPC boot loop at
-//! `crate::ipc::start_server` (~line 1024) so that after
-//! `bootstrap_one(&intent)` succeeds, the boot path:
-//!
-//! 1. Materializes the persona's inference profile via
-//!    `build_profile` (slice 5) against the model registry and
-//!    detected hardware tier.
-//! 2. Builds the adapter via `LlamaCppPersonaAdapterFactory`
-//!    (slice 9).
-//! 3. Constructs a `HostedPersona` from
-//!    `(role, info, adapter)`.
-//! 4. Calls `spawn_persona_service` to start the per-persona
-//!    serve loop.
-//!
-//! The boot loop then collects the `JoinHandle`s for graceful
-//! shutdown on server stop.
-//!
-//! Splitting this into slice 12 (helper) + slice 13 (wire-up) keeps
-//! each commit reviewable — slice 12 is the unit-testable
-//! composition seam; slice 13 is the boot-flow rewrite that consumes
-//! it. Per [[organization-purity-as-we-migrate]] the slice-12 helper
-//! is NOT dead code: it ships with slice 13's wire-up as a paired
-//! follow-up in the same sprint.
-//!
-//! ## Doctrine
-//!
-//! - [[no-stdio-piping-for-process-ipc]]: the spawn helper never
-//!   touches stdin/stdout for IPC. The substrate talks to airc only
-//!   via `Arc<PersonaAircRuntime>` and the airc-lib socket protocol.
-//! - [[substrate-is-a-good-citizen-on-the-host]]: per-persona tasks
-//!   run on the supplied `tokio::runtime::Handle` — caller controls
-//!   the scheduling pool. No hidden thread spawns.
+//! Pre-13.5, the boot pipeline was ~170 lines of inline code in
+//! `ipc/mod.rs::start_server`. That mixed "boot the IPC server"
+//! with "spawn personas" — two concerns with different lifetimes
+//! and different test needs. Per Joel's "obsessive elegance"
+//! direction (2026-06-02), this module names the persona-spawn
+//! concern: one struct, one entry point, one typed result. IPC boot
+//! shrinks to ~10 lines that construct + call the supervisor.
 
 use crate::persona::airc_persona_conversation::AircPersonaConversation;
+use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
 use crate::persona::airc_source::AircTranscriptReader;
+use crate::persona::identity_provider::PersonaIdentityProvider;
+use crate::persona::role_template::RoleId;
 use crate::persona::service_loop::{serve_persona_loop, ServeOptions, ServeOutcome};
-use crate::persona::supervisor::HostedPersona;
+use crate::persona::spawner_module::{bootstrap_planned, PersonaSpawnerModule};
+use crate::persona::supervisor::{
+    materialize_adapters, HostedPersona, PersonaAdapterFactory, PersonaContext, SupervisorError,
+};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 /// Spawn one tokio task that hosts a single persona on the airc
 /// grid: subscribes to her room, runs `serve_persona_loop` against
-/// the cognition path, posts replies through `runtime.say`.
+/// the cognition path, posts replies through `ctx.runtime.say`.
 ///
 /// Returns immediately with a `JoinHandle`. The task runs until:
 ///
@@ -68,14 +59,8 @@ use tokio::task::JoinHandle;
 /// - `serve_persona_loop` returns `Err(message)` from a
 ///   non-recoverable error (e.g., `high_water_mark` failed at
 ///   start) — handle resolves with `Err(message)`.
-/// - the handle is `.abort()`'d by the caller — the slice 13
+/// - the handle is `.abort()`'d by the caller — the supervisor's
 ///   shutdown path uses this for graceful drain.
-///
-/// `hosted.adapter` must reference the SAME inference adapter the
-/// substrate intends to keep using for this persona for the full
-/// task lifetime — the loop clone-shares it into the RAG layer
-/// every turn. Re-spawning with a fresh adapter is the supervisor's
-/// signal that the prior task should be aborted first.
 pub fn spawn_persona_service(
     ctx: HostedPersona,
     opts: ServeOptions,
@@ -84,20 +69,308 @@ pub fn spawn_persona_service(
     // Production callers always populate `ctx.runtime` from the
     // post-bootstrap registry; the `Option` exists only so test
     // fixtures can build PersonaContexts without a live airc.
-    // `expect` here is the substrate's "this is a programmer error"
-    // signal — if a None reaches this site in prod, the boot path
-    // skipped a step it shouldn't have.
     let runtime = ctx
         .runtime
         .clone()
         .expect("spawn_persona_service requires ctx.runtime — None is test-only");
-    // Up-cast the persona's Arc<Airc> to Arc<dyn AircTranscriptReader>.
-    // `impl AircTranscriptReader for airc_lib::Airc` already exists
-    // in airc_source.rs (line 74), so this is a zero-cost type-level
-    // coercion — same heap pointer, different vtable view.
     let reader: Arc<dyn AircTranscriptReader> = runtime.airc().clone();
     let mut conversation = AircPersonaConversation::new(runtime);
     rt_handle.spawn(async move {
         serve_persona_loop(&ctx, &mut conversation, reader, opts).await
     })
+}
+
+/// Typed summary of one boot composition run. Replaces the inline
+/// `hosted_count` / `failed_count` counters in `ipc/mod.rs` with a
+/// proper struct that downstream consumers (web client, jtag CLI,
+/// `persona:boot:summary` event subscribers per the design doc's
+/// deferred Q5) can read as one shape.
+///
+/// ts-rs export is deferred — `RoleId` doesn't derive `TS` yet
+/// (slice 14's role-in-seed.json work touches it). Once RoleId is
+/// TS-exportable this struct gets the same treatment, and the web
+/// client + jtag CLI read identical types via [[clients-are-rust-too-thin-node-web-shell]].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootSummary {
+    /// Personas that spawned + attached cleanly.
+    pub hosted: usize,
+    /// Per-slot failure rows.
+    pub failures: Vec<BootSlotFailure>,
+}
+
+impl BootSummary {
+    /// Total slots attempted.
+    pub fn attempted(&self) -> usize {
+        self.hosted + self.failures.len()
+    }
+
+    /// Convenience getter for the failed count.
+    pub fn failed(&self) -> usize {
+        self.failures.len()
+    }
+}
+
+/// One slot's failure facts. Identity is best-effort: if the
+/// failure was at the materialization stage (before the adapter was
+/// built), we still know the role and slot_index; if it was at the
+/// attach stage (after spawn), we additionally know the persona_id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootSlotFailure {
+    pub slot_index: usize,
+    /// `None` if the failure happened before role assignment.
+    pub role: Option<RoleId>,
+    /// `None` if the failure happened before airc-bootstrap.
+    pub persona_id: Option<Uuid>,
+    /// Human-readable reason. Operators read this to diagnose; the
+    /// substrate's [[no-fallbacks-ever]] doctrine means each failure
+    /// gets a named cause, not a silent skip.
+    pub reason: String,
+}
+
+/// The boot-level orchestrator that composes slices 7-12 into one
+/// named class.
+///
+/// Construct once at substrate boot with the configured pipeline
+/// inputs; call [`Self::spawn_all`] with an identity provider to
+/// produce a roster of hosted personas. The supervisor is the
+/// canonical site for the "what does it take to bring N personas
+/// online?" question — every layer of the pipeline lives in one
+/// place, every per-slot failure path lands in [`BootSummary`].
+pub struct PersonaSpawnSupervisor {
+    spawner: PersonaSpawnerModule,
+    instance_manager: Arc<crate::modules::persona_instance_manager::PersonaInstanceManagerModule>,
+    registry: PersonaAircRuntimeRegistry,
+    factory: Arc<dyn PersonaAdapterFactory>,
+    tier_id: String,
+    model_registry: &'static crate::model_registry::Registry,
+    rt_handle: tokio::runtime::Handle,
+}
+
+impl PersonaSpawnSupervisor {
+    /// Construct with the substrate-resolved boot inputs. None of
+    /// these arguments are looked up at construction — the
+    /// supervisor is a value-type aggregator; the work happens in
+    /// [`Self::spawn_all`].
+    pub fn new(
+        spawner: PersonaSpawnerModule,
+        instance_manager: Arc<
+            crate::modules::persona_instance_manager::PersonaInstanceManagerModule,
+        >,
+        factory: Arc<dyn PersonaAdapterFactory>,
+        tier_id: impl Into<String>,
+        model_registry: &'static crate::model_registry::Registry,
+        rt_handle: tokio::runtime::Handle,
+    ) -> Self {
+        let registry = instance_manager.registry().clone();
+        Self {
+            spawner,
+            instance_manager,
+            registry,
+            factory,
+            tier_id: tier_id.into(),
+            model_registry,
+            rt_handle,
+        }
+    }
+
+    /// Run the full boot pipeline:
+    ///
+    /// 1. `bootstrap_planned`: provider intents → airc-bootstrapped
+    ///    [`MaterializedPersonaPlan`](crate::persona::spawner_module::MaterializedPersonaPlan)s.
+    /// 2. `materialize_adapters`: plans → hosted [`PersonaContext`]s
+    ///    (with the runtime looked up from the registry).
+    /// 3. Per slot: `spawn_persona_service` + `attach_service_loop`.
+    ///    Failures drain the spawned task and record into
+    ///    [`BootSummary::failures`] per [[no-fallbacks-ever]].
+    ///
+    /// If `bootstrap_planned` fails (slot-fatal — affects every
+    /// later slot), the supervisor orderly-drains any partial
+    /// registration via `shutdown_slot` and returns a summary with
+    /// `hosted=0` and one synthetic failure row noting the cause.
+    pub async fn spawn_all(
+        &self,
+        provider: &mut dyn PersonaIdentityProvider,
+    ) -> BootSummary {
+        let plans = match bootstrap_planned(
+            &self.spawner,
+            &self.instance_manager,
+            provider,
+            &self.tier_id,
+            self.model_registry,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(err) => {
+                let already_registered = self.registry.ids();
+                let orphans = already_registered.len();
+                for orphan_id in already_registered {
+                    let _ = self.registry.shutdown_slot(orphan_id).await;
+                }
+                tracing::error!(
+                    error = %err,
+                    orphans_drained = orphans,
+                    "PersonaSpawnSupervisor: bootstrap_planned failed; \
+                     {} partially-registered personas drained",
+                    orphans,
+                );
+                return BootSummary {
+                    hosted: 0,
+                    failures: vec![BootSlotFailure {
+                        slot_index: 0,
+                        role: None,
+                        persona_id: None,
+                        reason: format!("bootstrap_planned failed: {err}"),
+                    }],
+                };
+            }
+        };
+
+        let registry_for_lookup = self.registry.clone();
+        let hosted_results =
+            materialize_adapters(plans, &*self.factory, move |pid| registry_for_lookup.get(pid))
+                .await;
+
+        let mut summary = BootSummary::default();
+        for (slot_idx, result) in hosted_results.into_iter().enumerate() {
+            match result {
+                Ok(ctx) => self.spawn_and_attach(slot_idx, ctx, &mut summary).await,
+                Err(err) => {
+                    let (slot_index, role) = supervisor_error_facts(&err);
+                    summary.failures.push(BootSlotFailure {
+                        slot_index: slot_index.unwrap_or(slot_idx),
+                        role: Some(role),
+                        persona_id: None,
+                        reason: format!("{err}"),
+                    });
+                    tracing::warn!(
+                        slot = slot_idx,
+                        error = ?err,
+                        "PersonaSpawnSupervisor: slot materialization failed; \
+                         sibling slots still attempted"
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            hosted = summary.hosted,
+            failed = summary.failed(),
+            "🌐 PersonaSpawnSupervisor: boot composition complete — \
+             {} citizen(s) hosted, {} failed",
+            summary.hosted,
+            summary.failed(),
+        );
+
+        summary
+    }
+
+    /// Spawn one persona's service loop and attach to the registry.
+    /// On `attach_service_loop` failure, orderly-drain the spawned
+    /// handle (per [[organization-purity-as-we-migrate]] — no
+    /// leaked tokio tasks). Updates `summary` in place.
+    async fn spawn_and_attach(
+        &self,
+        slot_idx: usize,
+        ctx: PersonaContext,
+        summary: &mut BootSummary,
+    ) {
+        let persona_id = ctx.identity.persona_id;
+        let agent_name = ctx.identity.agent_name.clone();
+        let role = ctx.role;
+        let handle =
+            spawn_persona_service(ctx, ServeOptions::default(), self.rt_handle.clone());
+        match self.registry.attach_service_loop(persona_id, handle).await {
+            Ok(()) => {
+                summary.hosted += 1;
+                tracing::info!(
+                    persona_id = %persona_id,
+                    agent_name = %agent_name,
+                    role = ?role,
+                    slot = slot_idx,
+                    "🌐 The Grid hosts citizen {} (slot {}, role {:?}) — substrate \
+                     service-loop attached",
+                    agent_name,
+                    slot_idx,
+                    role,
+                );
+            }
+            Err((returned_handle, reason)) => {
+                returned_handle.abort();
+                let _ = returned_handle.await;
+                tracing::error!(
+                    slot = slot_idx,
+                    persona_id = %persona_id,
+                    reason = reason,
+                    "PersonaSpawnSupervisor: attach_service_loop failed; \
+                     spawned task drained. Persona registered but unattended — \
+                     fire `persona/instances/bootstrap` to retry."
+                );
+                summary.failures.push(BootSlotFailure {
+                    slot_index: slot_idx,
+                    role: Some(role),
+                    persona_id: Some(persona_id),
+                    reason: format!("attach_service_loop failed: {reason}"),
+                });
+            }
+        }
+    }
+}
+
+/// Pull (slot_index, role) out of a [`SupervisorError`] in one
+/// place — the error enum's variants both carry these fields but
+/// behind different names. Centralizing the extraction keeps the
+/// summary-construction site clean.
+fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
+    match err {
+        SupervisorError::Profile {
+            slot_index, role, ..
+        }
+        | SupervisorError::AdapterFactory {
+            slot_index, role, ..
+        } => (Some(*slot_index), *role),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boot_summary_attempted_sums_hosted_and_failures() {
+        let mut s = BootSummary::default();
+        s.hosted = 3;
+        s.failures.push(BootSlotFailure {
+            slot_index: 1,
+            role: Some(RoleId::Helper),
+            persona_id: None,
+            reason: "test".into(),
+        });
+        s.failures.push(BootSlotFailure {
+            slot_index: 2,
+            role: Some(RoleId::Coder),
+            persona_id: None,
+            reason: "test".into(),
+        });
+        assert_eq!(s.attempted(), 5);
+        assert_eq!(s.failed(), 2);
+    }
+
+    #[test]
+    fn boot_summary_serde_camel_case() {
+        let s = BootSummary {
+            hosted: 1,
+            failures: vec![BootSlotFailure {
+                slot_index: 0,
+                role: Some(RoleId::Helper),
+                persona_id: None,
+                reason: "demo".into(),
+            }],
+        };
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert!(json.contains("\"hosted\":1"));
+        assert!(json.contains("\"slotIndex\":0"));
+    }
 }
