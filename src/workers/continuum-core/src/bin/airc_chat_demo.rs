@@ -111,8 +111,8 @@ use std::sync::Arc;
 use futures::StreamExt;
 
 use continuum_core::ai::adapter::AIProviderAdapter;
-use continuum_core::ai::heuristic_adapter::HeuristicInferenceAdapter;
 use continuum_core::airc::{discover_airc_socket, discover_default_channel};
+use continuum_core::inference::LlamaCppAdapter;
 use continuum_core::persona::airc_source::AircTranscriptReader;
 use continuum_core::persona::rag_inspect::{
     inspect_persona_rag_with_inference, RagInspectionRequest,
@@ -219,11 +219,93 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         room.channel
     );
 
-    // 4. Build the heuristic adapter — substrate's deterministic
-    //    proof-of-life inference. Replace with LlamaCppAdapter or
-    //    AircRemoteInferenceAdapter via config when ready.
-    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    println!("✓ heuristic adapter ready: {}", adapter.provider_id());
+    // 4. Build the LlamaCppAdapter pointing at the LCD local GGUF.
+    //    Per [[no-fallbacks-ever]] + [[no-if-statements-use-llms-for-
+    //    cognition]] + [[lcd-model-qwen25-05b-and-foundry-lora]] —
+    //    real cognition only. Heuristic adapter is cfg-gated out of
+    //    production (#128) and the binary explicitly uses
+    //    LlamaCppAdapter so there's no fallback path that could land
+    //    on a fake. On Intel Mac without working Metal, build with
+    //    `--features llama/mac-cpu-only` and run with n_gpu_layers=0
+    //    via the LLM_GGUF_PATH-pointed local file.
+    let gguf_path = std::env::var("LLM_GGUF_PATH").unwrap_or_else(|_| {
+        // Default: the LCD inference target — Qwen2.5-0.5B-Instruct
+        // Q4_K_M, ~468 MiB, plain attention, candle-trainable
+        // safetensors sibling available for foundry LoRA work.
+        format!(
+            "{}/.continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            dirs::home_dir()
+                .expect("home directory")
+                .display()
+        )
+    });
+    let gguf_pathbuf = PathBuf::from(&gguf_path);
+    if !gguf_pathbuf.exists() {
+        println!(
+            "⚠️  GGUF not found at {gguf_path}. \
+             Substrate hard-errors per [[no-fallbacks-ever]] — fix the path \
+             via LLM_GGUF_PATH or download the LCD model."
+        );
+        return Ok(());
+    }
+    let n_gpu_layers: i32 = std::env::var("LLM_N_GPU_LAYERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let context_length: usize = std::env::var("LLM_CONTEXT_LENGTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2048);
+    println!(
+        "✓ loading LCD model: {gguf_path} (n_gpu_layers={n_gpu_layers}, context={context_length})"
+    );
+    // Build a PersonaInferenceProfile and construct the adapter via
+    // the intent-driven API per [[intent-driven-api-not-hot-patches]].
+    // Pre-#133 this was a hand-tuned chain (with_model_id +
+    // with_context_length + hardcoded n_ubatch); post-#133 the profile
+    // is the source of truth for every inference knob and the
+    // PersonaSpawnerModule (#121) will eventually be the producer.
+    //
+    // Demo binary builds the profile from env vars for now because
+    // the spawner doesn't exist yet (#133 slice 5). Substrate-managed
+    // personas will get fully-resolved profiles from
+    // role_template + hw_tier_descriptor + model_meta — no env vars,
+    // no ad-hoc string constants.
+    use continuum_core::persona::hw_tier_descriptor::HwTierCategory;
+    use continuum_core::persona::inference_profile::{
+        PersonaInferenceProfile, SamplingProfile,
+    };
+    let profile = PersonaInferenceProfile {
+        persona_id,
+        persona_name: agent.clone(),
+        model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+        gguf_local_path: Some(gguf_pathbuf),
+        // Compat: works everywhere — Intel Mac + AMD discrete falls
+        // here per the post-#129 LCD doctrine.
+        tier_category: HwTierCategory::Compat,
+        tier_id: "mac_intel_metal_discrete".to_string(),
+        context_length: context_length as u32,
+        // n_ubatch=512 covers the realistic 200-500 token RAG-built
+        // persona prompts observed during #130. Substrate default
+        // matches; profile carries it explicitly so the spawner can
+        // tune per role/tier later.
+        n_ubatch: 512,
+        n_batch: context_length as u32,
+        n_seq_max: 1,
+        n_gpu_layers,
+        sampling: SamplingProfile::chat_defaults(),
+        // Adapter falls through to the model_registry row's chat_template
+        // when None — the registry already carries qwen2.5's chatml.
+        chat_template: None,
+        // Defense-in-depth — registry row has these too.
+        stop_sequences: vec!["<|im_end|>".to_string(), "<|endoftext|>".to_string()],
+    };
+    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(
+        LlamaCppAdapter::for_persona(&profile).map_err(|e| {
+            format!("LlamaCppAdapter::for_persona failed: {e}")
+        })?,
+    );
+    println!("✓ real-cognition adapter ready: {}", adapter.provider_id());
     println!();
 
     // 5. Wrap the Airc handle as an AircTranscriptReader so the
@@ -279,23 +361,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let Some(body) = &event.body else { continue };
         let Some(text) = body.as_text() else { continue };
 
-        // Should-respond gate: don't echo other personas' heuristic
-        // replies. Multi-persona substrate proof (Paige + Pax in the
-        // same room, 2026-06-01) showed every heuristic adapter
-        // responding to every other one with a `[heuristic:hash] ack:
-        // "<text>"` line — fan-out works fine, every persona hears
-        // every other, but everyone responding to everyone is an
-        // O(N²) echo storm that fills the bus in seconds. The proper
-        // fix is real cognition with attention + a "do I have
-        // something worth saying" judgment; this is the bridge until
-        // we have that. Skipping the heuristic prefix means personas
-        // still respond to humans (their probes don't carry the
-        // prefix) and stay quiet at each other (their replies do).
-        // Carries a Card tag so the next reader knows this is
-        // doctrinal-but-tactical, not a structural cognition decision.
-        if text.starts_with("[heuristic:") {
-            continue;
-        }
+        // The earlier `text.starts_with("[heuristic:")` echo filter
+        // here was anti-cognition per [[no-if-statements-use-llms-
+        // for-cognition]] (Joel, 2026-06-01: "we don't build fucking
+        // if statements we use LLMs"). With real LCD cognition the
+        // persona reads the conversation, the LLM decides whether to
+        // speak, and "should I respond to my peer's message?" is the
+        // model's judgment, not a substrate pattern-match. Removed.
 
         let from_peer_short: String = event.peer_id.to_string().chars().take(8).collect();
         println!("─── inbound (lamport={}) ───", event.lamport);
