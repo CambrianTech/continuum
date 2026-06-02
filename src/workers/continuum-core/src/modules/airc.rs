@@ -1,11 +1,11 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    discover_airc_socket, discover_default_channel, discover_peer_id, spawn_daemon_attach,
-    AircEventTransport, AircQueueClient, AircQueueListRequest, AircQueueScanParams,
-    AircRealtimePublishParams, AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient,
-    DaemonAircEventTransport, InMemoryAircRealtimeStore, StoreAircEventTransport,
-    TokioAircCommandRunner,
+    discover_airc_socket, discover_default_channel, discover_default_room_name, discover_peer_id,
+    spawn_daemon_attach, AircEventTransport, AircQueueClient, AircQueueListRequest,
+    AircQueueScanParams, AircRealtimePublishParams, AircRealtimeReplayParams, AircRealtimeStore,
+    CliAircQueueClient, DaemonAircEventTransport, InMemoryAircRealtimeStore,
+    StoreAircEventTransport, TokioAircCommandRunner,
 };
 // `default_socket_path_in` retained for back-compat callers; deprecated,
 // see `crate::airc::daemon_endpoint` module docs.
@@ -31,6 +31,14 @@ pub struct AircModule {
     /// channel in the owner-core model". Discovered via
     /// [`discover_default_channel`] alongside the socket path.
     attach_channel: Option<RoomId>,
+    /// Human-readable name of the default room (e.g. `"continuum"`).
+    /// Used by the persona instance manager to join via
+    /// `Airc::join(name)` — joining by the UUID-as-string derives a
+    /// new channel from the string (caught by PR #1511 integration
+    /// test: persona landed in derived channel `5d33e2a7…` when
+    /// operator publishes go to `11c1a7ac…`). Discovered via
+    /// [`discover_default_room_name`] alongside the socket + channel.
+    attach_room_name: Option<String>,
 }
 
 impl AircModule {
@@ -77,6 +85,27 @@ impl AircModule {
                 return Self::with_queue_client(Arc::new(CliAircQueueClient::new(
                     TokioAircCommandRunner,
                 )));
+            }
+        };
+
+        let attach_room_name = match discover_default_room_name().await {
+            Ok(name) => {
+                tracing::info!(
+                    room_name = %name,
+                    "Discovered airc default room name via `airc room`"
+                );
+                Some(name)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "airc default room-name discovery failed — persona bootstrap will fall \
+                     back to joining by the channel-UUID-as-string, which derives a NEW \
+                     channel that does NOT match the operator's `airc room`. Persona will \
+                     be in the wrong room. Resolve: install/update airc so `airc room` \
+                     prints a `room: <name>` line, or set AIRC_DEFAULT_ROOM_NAME=<name>."
+                );
+                None
             }
         };
 
@@ -140,6 +169,7 @@ impl AircModule {
             )),
             attach_socket_path: Some(socket_path),
             attach_channel,
+            attach_room_name,
         }
     }
 
@@ -151,6 +181,7 @@ impl AircModule {
             event_transport: Arc::new(DaemonAircEventTransport::new(socket_path.clone())),
             attach_socket_path: Some(socket_path),
             attach_channel: None,
+            attach_room_name: None,
         }
     }
 
@@ -162,6 +193,7 @@ impl AircModule {
             ))),
             attach_socket_path: None,
             attach_channel: None,
+            attach_room_name: None,
         }
     }
 
@@ -174,6 +206,7 @@ impl AircModule {
             event_transport: Arc::new(StoreAircEventTransport::new(realtime_store)),
             attach_socket_path: None,
             attach_channel: None,
+            attach_room_name: None,
         }
     }
 
@@ -186,6 +219,7 @@ impl AircModule {
             event_transport,
             attach_socket_path: None,
             attach_channel: None,
+            attach_room_name: None,
         }
     }
 
@@ -207,6 +241,15 @@ impl AircModule {
     /// expect your general room and theirs to be the same room").
     pub fn default_room(&self) -> Option<RoomId> {
         self.attach_channel
+    }
+
+    /// The human-readable name of the default room (e.g. `"continuum"`),
+    /// if discovered. Used by the persona instance manager to join via
+    /// `Airc::join(name)` — joining by the channel's UUID-as-string
+    /// would derive a NEW channel and land the persona in the wrong
+    /// room. Per PR #1511 integration trace.
+    pub fn default_room_name(&self) -> Option<&str> {
+        self.attach_room_name.as_deref()
     }
 }
 

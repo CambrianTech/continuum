@@ -940,6 +940,7 @@ pub fn start_server(
         .daemon_socket()
         .map(|p| p.to_path_buf())
         .zip(airc_module.default_room());
+    let persona_bootstrap_room_name = airc_module.default_room_name().map(|s| s.to_string());
     runtime.register(airc_module);
 
     // PersonaInstanceManagerModule: owns the live PersonaAircRuntime
@@ -960,6 +961,7 @@ pub fn start_server(
                 registry,
                 daemon_socket,
                 default_room,
+                persona_bootstrap_room_name.clone(),
                 continuum_root,
             ),
         );

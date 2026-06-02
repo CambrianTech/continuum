@@ -507,6 +507,7 @@ mod tests {
             crate::persona::PersonaAircRuntimeRegistry::default(),
             PathBuf::from("/dev/null/unused"),
             airc_core::RoomId::from_uuid(uuid::Uuid::nil()),
+            None,
             PathBuf::from("/dev/null/unused"),
         );
 
