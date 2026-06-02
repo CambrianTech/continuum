@@ -91,6 +91,30 @@ impl AircPersonaConversation {
 
 #[async_trait]
 impl PersonaConversation for AircPersonaConversation {
+    /// Eagerly opens the airc subscribe stream. Idempotent — calling
+    /// twice is a no-op after the first.
+    ///
+    /// Replaces the slice-11 lazy-on-first-next_message subscribe.
+    /// `serve_persona_loop` calls this once at boot so the daemon
+    /// round-trip lands at startup instead of on the first cognition
+    /// turn. The lazy branch in `next_message` stays as a fallback
+    /// for callers that don't call `prime` first (e.g., direct
+    /// integration tests). Per [[no-fallbacks-ever]] the fallback
+    /// has identical semantics — it's not a degraded path, it's a
+    /// later-binding path.
+    async fn prime(&mut self) -> Result<(), String> {
+        if self.stream.is_some() {
+            return Ok(());
+        }
+        let stream = self
+            .runtime
+            .subscribe()
+            .await
+            .map_err(|e| format!("subscribe failed: {e}"))?;
+        self.stream = Some(stream);
+        Ok(())
+    }
+
     async fn high_water_mark(&self, limit: usize) -> Result<u64, String> {
         let events = self
             .runtime
@@ -101,9 +125,12 @@ impl PersonaConversation for AircPersonaConversation {
     }
 
     async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
-        // Subscribe on first call. Per the doc-comment, this is
-        // intentional — the constructor must remain free so the
-        // supervisor can build many of these at boot.
+        // Eager priming (slice 13.6+): `serve_persona_loop` calls
+        // `prime` at boot so the stream is normally already set when
+        // we arrive here. The lazy fallback below stays for direct
+        // callers (integration tests, future code paths) that
+        // construct + iterate without going through the loop's
+        // pre-prime step — same semantics, just later binding.
         if self.stream.is_none() {
             let stream = self
                 .runtime

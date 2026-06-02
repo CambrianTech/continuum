@@ -75,10 +75,30 @@ pub struct IncomingMessage {
 /// real surface is behind this trait. Slice 11 ships the
 /// `AircPersonaConversation` impl.
 ///
-/// All four methods are async because the production impl chains
-/// over airc's IPC socket. Tests use a stub that's instant.
+/// All methods are async because the production impl chains over
+/// airc's IPC socket. Tests use a stub that's instant.
 #[async_trait]
 pub trait PersonaConversation: Send + Sync {
+    /// Open whatever connection / stream / state the conversation
+    /// needs to start yielding messages. Called once at boot, BEFORE
+    /// the first `high_water_mark` or `next_message`.
+    ///
+    /// Production (`AircPersonaConversation`): opens the airc
+    /// subscribe stream. Without `prime`, the stream was opened
+    /// lazily on first `next_message`, which paid the daemon
+    /// round-trip on the cognition hot path. With `prime`, that
+    /// round-trip lands at the supervisor's boot phase — the
+    /// persona is "ready to converse" the moment her service loop
+    /// starts iterating.
+    ///
+    /// Tests (`StubConversation`): no-op. Idempotent — calling
+    /// `prime` twice is safe but the second call is a no-op.
+    ///
+    /// Returns `Err` if priming fails (daemon unreachable, room
+    /// gone). Per [[no-fallbacks-ever]] the loop refuses to start
+    /// rather than entering a degraded path.
+    async fn prime(&mut self) -> Result<(), String>;
+
     /// Highest lamport observed in transcript history before live
     /// subscription. Used to ignore messages that arrived BEFORE the
     /// persona attached — avoids replying to ancient chat just
@@ -89,6 +109,11 @@ pub trait PersonaConversation: Send + Sync {
     /// stream is exhausted (daemon disconnected, peer gone). On
     /// transient errors (stream lag, transport hiccup) the impl
     /// should yield `Err` so the loop can record + continue.
+    ///
+    /// Assumes `prime` was called once at boot. If it wasn't, the
+    /// impl MAY lazy-prime (production currently does, for
+    /// backward compat) but the substrate's preferred path is
+    /// eager priming so the round-trip lands off the hot path.
     async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String>;
 
     /// Reply with text to the persona's default room.
@@ -172,6 +197,17 @@ async fn serve_persona_loop_inner(
     reader: Arc<dyn AircTranscriptReader>,
     opts: ServeOptions,
 ) -> Result<ServeOutcome, String> {
+    // Pre-subscribe at boot. Moves the airc daemon round-trip from
+    // "first turn" into "service-loop startup" — the persona is
+    // ready to converse the moment the first message arrives, not
+    // one round-trip later. Per [[persona-webrtc-all-tiers-latency-obsessed]]
+    // every layer of the substrate is latency-obsessed; pre-priming
+    // is the cheapest lever the seam offers.
+    conversation
+        .prime()
+        .await
+        .map_err(|e| format!("conversation.prime() failed: {e}"))?;
+
     let mut high_water = conversation
         .high_water_mark(opts.page_recent_limit)
         .await
@@ -293,15 +329,26 @@ mod tests {
     use std::sync::Mutex;
 
     /// Stub conversation: feeds a pre-baked queue of events; records
-    /// every `say` call for assertions.
+    /// every `say` call for assertions. `primed` records whether the
+    /// loop called `prime` at startup — the contract is one call per
+    /// loop invocation.
     struct StubConversation {
         high_water: u64,
         events: Mutex<VecDeque<Result<Option<IncomingMessage>, String>>>,
         said: Mutex<Vec<String>>,
+        primed: AtomicUsize,
     }
 
     #[async_trait]
     impl PersonaConversation for StubConversation {
+        async fn prime(&mut self) -> Result<(), String> {
+            // No stream to open — the stub yields events from an
+            // in-memory queue. The substrate's prime() contract is
+            // satisfied trivially. Records that prime was called so
+            // tests can assert the loop honors the contract.
+            self.primed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
         async fn high_water_mark(&self, _limit: usize) -> Result<u64, String> {
             Ok(self.high_water)
         }
@@ -481,6 +528,7 @@ mod tests {
                 Ok(None),
             ])),
             said: Mutex::new(vec![]),
+            primed: AtomicUsize::new(0),
         };
 
         let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
@@ -500,6 +548,73 @@ mod tests {
         let said = conversation.said.lock().unwrap();
         assert_eq!(said.len(), 1);
         assert_eq!(said[0], "yes, hi.");
+        // The loop primes the conversation exactly once at boot —
+        // before any high_water_mark or next_message call. Per
+        // [[persona-webrtc-all-tiers-latency-obsessed]] this is what
+        // moves the airc subscribe round-trip OFF the cognition hot
+        // path. If a future refactor regresses to lazy subscribe, the
+        // primed count drops to 0 and this test fails loudly.
+        assert_eq!(
+            conversation.primed.load(Ordering::SeqCst),
+            1,
+            "serve_persona_loop must call prime() exactly once at boot"
+        );
+    }
+
+    /// Prime-failure short-circuit: if `prime` returns Err, the loop
+    /// MUST refuse to start rather than entering a degraded path.
+    /// Per [[no-fallbacks-ever]] a broken transport surfaces as an
+    /// error to the caller, not as a silent skip-then-retry loop.
+    #[tokio::test]
+    async fn prime_failure_short_circuits_loop() {
+        struct FailingPrimeConversation {
+            primed_attempts: AtomicUsize,
+        }
+        #[async_trait]
+        impl PersonaConversation for FailingPrimeConversation {
+            async fn prime(&mut self) -> Result<(), String> {
+                self.primed_attempts.fetch_add(1, Ordering::SeqCst);
+                Err("simulated airc daemon unreachable".to_string())
+            }
+            async fn high_water_mark(&self, _limit: usize) -> Result<u64, String> {
+                panic!("high_water_mark must not be called when prime() fails");
+            }
+            async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
+                panic!("next_message must not be called when prime() fails");
+            }
+            async fn say(&self, _text: &str) -> Result<(), String> {
+                panic!("say must not be called when prime() fails");
+            }
+        }
+
+        let hosted = fake_hosted(Uuid::new_v4(), "unused");
+        let mut conversation = FailingPrimeConversation {
+            primed_attempts: AtomicUsize::new(0),
+        };
+        let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
+        let result = serve_persona_loop(
+            &hosted,
+            &mut conversation,
+            reader,
+            ServeOptions {
+                page_recent_limit: 10,
+                rag_fetch_limit: 10,
+                now_ms: fixed_now,
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "loop must return Err on prime failure");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("prime") && msg.contains("simulated airc daemon unreachable"),
+            "error must name prime + propagate the underlying cause: {msg}"
+        );
+        assert_eq!(
+            conversation.primed_attempts.load(Ordering::SeqCst),
+            1,
+            "prime called exactly once before short-circuit"
+        );
     }
 
     /// Self-loop guard: when the inbound peer_id matches the
@@ -521,6 +636,7 @@ mod tests {
                 Ok(None),
             ])),
             said: Mutex::new(vec![]),
+            primed: AtomicUsize::new(0),
         };
 
         let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
@@ -572,6 +688,7 @@ mod tests {
                 Ok(None),
             ])),
             said: Mutex::new(vec![]),
+            primed: AtomicUsize::new(0),
         };
 
         let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
@@ -620,6 +737,7 @@ mod tests {
                 Ok(None),
             ])),
             said: Mutex::new(vec![]),
+            primed: AtomicUsize::new(0),
         };
 
         let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
