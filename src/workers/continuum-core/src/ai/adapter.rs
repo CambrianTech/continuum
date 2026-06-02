@@ -164,8 +164,37 @@ pub trait AIProviderAdapter: Send + Sync {
     /// Get default model for this provider
     fn default_model(&self) -> &str;
 
-    /// Initialize the adapter (verify API key, warm up if needed)
+    /// Initialize the adapter (verify API key, load the model file
+    /// off disk). Pays the model-load wall-clock once at boot so
+    /// downstream consumers see the model's real capabilities from
+    /// the first query on.
     async fn initialize(&mut self) -> Result<(), String>;
+
+    /// Warm the adapter's hot path BEFORE the first real `generate_text`
+    /// call. For llama.cpp: run a tiny throwaway decode against a
+    /// minimal prompt so the KV-cache buffers, attention kernels,
+    /// and sampling state are warm-resident in the substrate's working
+    /// set when the first real turn lands.
+    ///
+    /// Per [[init-once-handle-then-lease-zero-copy-refs]]: the
+    /// substrate's latency story is "init once at boot, lease on hot
+    /// path." `warmup` is the inference-layer instance of that
+    /// pattern, paying the JIT / cache-cold cost in the supervisor's
+    /// `materialize_adapters` step instead of on Joel's first message.
+    ///
+    /// Default impl is `Ok(())` — adapters without a meaningful
+    /// warmup contract (cloud providers, heuristic adapter) opt out
+    /// silently. Local model adapters (LlamaCpp, future Candle) MUST
+    /// override.
+    ///
+    /// Returning Err means the adapter couldn't warm — surfaced by
+    /// the supervisor as a typed slot failure per [[no-fallbacks-ever]].
+    /// The persona doesn't reach "hosted" state if her adapter
+    /// refuses to warm; better fail-loud at boot than degrade
+    /// silently at first turn.
+    async fn warmup(&self) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Shutdown the adapter
     async fn shutdown(&mut self) -> Result<(), String>;

@@ -250,6 +250,18 @@ pub enum SupervisorError {
         role: RoleId,
         message: String,
     },
+    /// The adapter built fine but failed its warmup decode. Per
+    /// [[init-once-handle-then-lease-zero-copy-refs]] warmup is
+    /// part of init, not a hot-path concern; per [[no-fallbacks-ever]]
+    /// a persona whose adapter can't warm doesn't enter "hosted"
+    /// state. Operator decides whether to retry, swap models, or
+    /// surface the underlying inference-backend error.
+    #[error("slot {slot_index} (role {role:?}): adapter warmup decode failed: {message}")]
+    AdapterWarmup {
+        slot_index: usize,
+        role: RoleId,
+        message: String,
+    },
     /// The post-bootstrap registry doesn't have a runtime for this
     /// persona_id. Per [[no-fallbacks-ever]] this is a hard failure —
     /// the supervisor doesn't fabricate or stub a runtime in
@@ -314,20 +326,38 @@ pub async fn materialize_adapters(
                 continue;
             }
         };
-        match factory.build_adapter(&profile).await {
-            Ok(adapter) => out.push(Ok(PersonaContext {
-                role: plan.role,
-                identity,
-                profile,
-                adapter,
-                runtime,
-            })),
-            Err(message) => out.push(Err(SupervisorError::AdapterFactory {
+        let adapter = match factory.build_adapter(&profile).await {
+            Ok(a) => a,
+            Err(message) => {
+                out.push(Err(SupervisorError::AdapterFactory {
+                    slot_index,
+                    role: plan.role,
+                    message,
+                }));
+                continue;
+            }
+        };
+        // Warm the adapter's KV-cache / kernels BEFORE the persona
+        // enters her service loop. Per [[init-once-handle-then-lease-zero-copy-refs]]
+        // the substrate pays init costs at boot, not on Joel's first
+        // message. Per [[no-fallbacks-ever]] warmup failure surfaces
+        // as a typed slot failure — the persona doesn't reach
+        // "hosted" state if her adapter refuses to warm.
+        if let Err(message) = adapter.warmup().await {
+            out.push(Err(SupervisorError::AdapterWarmup {
                 slot_index,
                 role: plan.role,
                 message,
-            })),
+            }));
+            continue;
         }
+        out.push(Ok(PersonaContext {
+            role: plan.role,
+            identity,
+            profile,
+            adapter,
+            runtime,
+        }));
     }
     out
 }
@@ -359,11 +389,13 @@ mod tests {
     }
 
     /// Minimal fake adapter — implements just enough of the trait to
-    /// satisfy the trait object boundary. None of these methods get
-    /// called from `materialize_adapters` itself, so the bodies are
-    /// the simplest possible.
+    /// satisfy the trait object boundary. `warmup_total` is shared
+    /// across the OkFactory's spawned adapters so the supervisor
+    /// test can assert that warmup() was called for each successfully
+    /// materialized adapter per [[init-once-handle-then-lease-zero-copy-refs]].
     struct FakeAdapter {
         provider_id: String,
+        warmup_total: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -384,6 +416,15 @@ mod tests {
             "fake-model"
         }
         async fn initialize(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn warmup(&self) -> Result<(), String> {
+            // Increment the shared counter so the supervisor test
+            // can assert "warmup was called once per successfully-
+            // materialized adapter." If a future refactor forgets
+            // to call warmup in materialize_adapters, the counter
+            // drops to 0 and the regression test fails loudly.
+            self.warmup_total.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
         async fn shutdown(&mut self) -> Result<(), String> {
@@ -411,9 +452,21 @@ mod tests {
 
     /// Always-succeeds factory — returns a `FakeAdapter` tagged with
     /// the profile's `model_id` so tests can verify each persona got
-    /// its own adapter (not one shared instance leaking).
+    /// its own adapter (not one shared instance leaking). The shared
+    /// `warmup_total` counter tracks how many of those adapters had
+    /// `warmup()` called by the supervisor.
     struct OkFactory {
         builds: AtomicUsize,
+        warmup_total: Arc<AtomicUsize>,
+    }
+
+    impl OkFactory {
+        fn new() -> Self {
+            Self {
+                builds: AtomicUsize::new(0),
+                warmup_total: Arc::new(AtomicUsize::new(0)),
+            }
+        }
     }
 
     #[async_trait]
@@ -425,6 +478,7 @@ mod tests {
             self.builds.fetch_add(1, Ordering::SeqCst);
             Ok(Arc::new(FakeAdapter {
                 provider_id: profile.model_id.clone(),
+                warmup_total: self.warmup_total.clone(),
             }))
         }
     }
@@ -440,6 +494,69 @@ mod tests {
             _profile: &PersonaInferenceProfile,
         ) -> Result<Arc<dyn AIProviderAdapter>, String> {
             Err("simulated factory rejection".into())
+        }
+    }
+
+    /// Factory that builds an adapter whose warmup() always fails.
+    /// Verifies the `SupervisorError::AdapterWarmup` variant fires
+    /// when an adapter refuses to warm at boot.
+    struct WarmupFailingFactory;
+
+    struct WarmupFailingAdapter;
+
+    #[async_trait]
+    impl AIProviderAdapter for WarmupFailingAdapter {
+        fn provider_id(&self) -> &str {
+            "warmup-failing"
+        }
+        fn name(&self) -> &str {
+            "warmup-failing"
+        }
+        fn capabilities(&self) -> AdapterCapabilities {
+            AdapterCapabilities::default()
+        }
+        fn api_style(&self) -> ApiStyle {
+            ApiStyle::Local
+        }
+        fn default_model(&self) -> &str {
+            "wf-model"
+        }
+        async fn initialize(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn warmup(&self) -> Result<(), String> {
+            Err("simulated warmup failure".to_string())
+        }
+        async fn shutdown(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn generate_text(
+            &self,
+            _request: TextGenerationRequest,
+        ) -> Result<TextGenerationResponse, String> {
+            panic!("generate_text must not be reachable on failed-warmup adapter")
+        }
+        async fn create_embedding(
+            &self,
+            _request: EmbeddingRequest,
+        ) -> Result<EmbeddingResponse, String> {
+            Err("no embeddings".into())
+        }
+        async fn health_check(&self) -> HealthStatus {
+            HealthStatus::default()
+        }
+        async fn get_available_models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+    }
+
+    #[async_trait]
+    impl PersonaAdapterFactory for WarmupFailingFactory {
+        async fn build_adapter(
+            &self,
+            _profile: &PersonaInferenceProfile,
+        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
+            Ok(Arc::new(WarmupFailingAdapter))
         }
     }
 
@@ -491,9 +608,7 @@ mod tests {
             },
         ];
 
-        let factory = OkFactory {
-            builds: AtomicUsize::new(0),
-        };
+        let factory = OkFactory::new();
         let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
 
         assert_eq!(hosted.len(), 2);
@@ -532,9 +647,7 @@ mod tests {
             },
         ];
 
-        let factory = OkFactory {
-            builds: AtomicUsize::new(0),
-        };
+        let factory = OkFactory::new();
         let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
 
         assert_eq!(hosted.len(), 2);
@@ -590,9 +703,7 @@ mod tests {
     /// no factory calls fire.
     #[tokio::test]
     async fn empty_plans_yields_empty_hosted() {
-        let factory = OkFactory {
-            builds: AtomicUsize::new(0),
-        };
+        let factory = OkFactory::new();
         let hosted = materialize_adapters(vec![], &factory, |_| None).await;
         assert!(hosted.is_empty());
         assert_eq!(factory.builds.load(Ordering::SeqCst), 0);
@@ -619,9 +730,7 @@ mod tests {
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
 
-        let factory = OkFactory {
-            builds: AtomicUsize::new(0),
-        };
+        let factory = OkFactory::new();
         // `|_| None` here is the substrate-bug shape we're locking in:
         // the registry exists but doesn't contain this persona_id.
         let hosted = materialize_adapters(plans, &factory, |_| None).await;
@@ -673,9 +782,7 @@ mod tests {
             },
         ];
 
-        let factory = OkFactory {
-            builds: AtomicUsize::new(0),
-        };
+        let factory = OkFactory::new();
         // Lookup returns Some only for Paige; Pax goes RuntimeMissing.
         let lookup = move |pid: Uuid| -> Option<Arc<dyn AircCitizen>> {
             if pid == pax_persona_id {
@@ -703,5 +810,113 @@ mod tests {
             Err(other) => panic!("expected RuntimeMissing at slot 1, got {other:?}"),
             Ok(_) => panic!("expected RuntimeMissing at slot 1, got Ok"),
         }
+    }
+
+    /// Warmup is called for every successfully-materialized adapter.
+    /// Per [[init-once-handle-then-lease-zero-copy-refs]] the substrate
+    /// pays init costs at boot, not on the user's first message;
+    /// `materialize_adapters` is where that contract gets enforced.
+    /// If a future refactor forgets the warmup call, this test fails
+    /// because the shared counter stays at 0.
+    #[tokio::test]
+    async fn warmup_called_once_per_materialized_adapter() {
+        let plans = vec![
+            MaterializedPersonaPlan {
+                role: RoleId::Helper,
+                instance: fake_instance("Paige"),
+                profile: Ok(fake_profile("Paige", "model-a")),
+            },
+            MaterializedPersonaPlan {
+                role: RoleId::Coder,
+                instance: fake_instance("Pax"),
+                profile: Ok(fake_profile("Pax", "model-b")),
+            },
+        ];
+
+        let factory = OkFactory::new();
+        let warmup_counter = factory.warmup_total.clone();
+        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
+
+        // Both slots materialize cleanly.
+        assert_eq!(hosted.len(), 2);
+        assert!(hosted.iter().all(|r| r.is_ok()));
+        // Every adapter was built AND warmed.
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            warmup_counter.load(Ordering::SeqCst),
+            2,
+            "warmup() must be called once per successfully-materialized adapter"
+        );
+    }
+
+    /// Warmup failure surfaces as `SupervisorError::AdapterWarmup` —
+    /// the persona does NOT reach hosted state. Per [[no-fallbacks-ever]]
+    /// an adapter that refuses to warm gets a typed slot failure;
+    /// sibling slots continue.
+    #[tokio::test]
+    async fn warmup_failure_surfaces_as_typed_slot_error() {
+        let plans = vec![MaterializedPersonaPlan {
+            role: RoleId::Helper,
+            instance: fake_instance("Paige"),
+            profile: Ok(fake_profile("Paige", "model-a")),
+        }];
+
+        let factory = WarmupFailingFactory;
+        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
+
+        assert_eq!(hosted.len(), 1);
+        match &hosted[0] {
+            Err(SupervisorError::AdapterWarmup {
+                slot_index,
+                role,
+                message,
+            }) => {
+                assert_eq!(*slot_index, 0);
+                assert_eq!(*role, RoleId::Helper);
+                assert!(
+                    message.contains("simulated warmup failure"),
+                    "error must propagate underlying cause: {message}"
+                );
+            }
+            Err(other) => panic!("expected AdapterWarmup, got {other:?}"),
+            Ok(_) => panic!("expected AdapterWarmup, got Ok"),
+        }
+    }
+
+    /// Warmup-failed adapters never reach the hosted set, so a
+    /// sibling slot whose adapter warms fine still materializes.
+    /// Locks the per-slot isolation that
+    /// `Profile` / `AdapterFactory` / `RuntimeMissing` already enforce.
+    #[tokio::test]
+    async fn warmup_failure_does_not_taint_sibling_slots() {
+        // Slot 0: OkFactory adapter that warms cleanly.
+        // Slot 1: WarmupFailingFactory adapter that refuses to warm.
+        // We test them with two separate calls (one per factory) since
+        // materialize_adapters takes one factory; assert each plan's
+        // outcome independently.
+        let factory_ok = OkFactory::new();
+        let warmup_ok = factory_ok.warmup_total.clone();
+        let ok_plan = vec![MaterializedPersonaPlan {
+            role: RoleId::Helper,
+            instance: fake_instance("Paige"),
+            profile: Ok(fake_profile("Paige", "model-a")),
+        }];
+        let hosted_ok =
+            materialize_adapters(ok_plan, &factory_ok, stub_citizen_lookup()).await;
+        assert!(hosted_ok[0].is_ok(), "ok-warmup adapter materializes");
+        assert_eq!(warmup_ok.load(Ordering::SeqCst), 1);
+
+        let factory_fail = WarmupFailingFactory;
+        let fail_plan = vec![MaterializedPersonaPlan {
+            role: RoleId::Coder,
+            instance: fake_instance("Pax"),
+            profile: Ok(fake_profile("Pax", "model-b")),
+        }];
+        let hosted_fail =
+            materialize_adapters(fail_plan, &factory_fail, stub_citizen_lookup()).await;
+        assert!(
+            matches!(hosted_fail[0], Err(SupervisorError::AdapterWarmup { .. })),
+            "warmup-failing adapter fails its own slot"
+        );
     }
 }

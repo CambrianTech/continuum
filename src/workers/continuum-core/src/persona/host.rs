@@ -398,6 +398,9 @@ fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
         | SupervisorError::AdapterFactory {
             slot_index, role, ..
         }
+        | SupervisorError::AdapterWarmup {
+            slot_index, role, ..
+        }
         | SupervisorError::RuntimeMissing {
             slot_index, role, ..
         } => (Some(*slot_index), *role),
