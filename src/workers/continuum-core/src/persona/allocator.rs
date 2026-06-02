@@ -446,6 +446,34 @@ mod tests {
         Arc::new(GpuMemoryManager::detect())
     }
 
+    /// Deterministic GpuMemoryManager fixture — the test names what
+    /// budget the allocator is reasoning against, no host probe. Use
+    /// this for allocation-logic tests; reserve `test_gpu_manager()`
+    /// for tests that genuinely care about whatever the host reports.
+    fn test_gpu_manager_with_vram_gb(vram_gb: f64) -> Arc<GpuMemoryManager> {
+        let bytes_per_gb = 1024.0_f64 * 1024.0 * 1024.0;
+        let total_bytes = (vram_gb * bytes_per_gb) as u64;
+        // Mirror GpuMemoryManager::detect's split: 12% reserve, then
+        // the remainder split inference/tts/rendering as
+        // INFERENCE/TTS/RENDERING_BUDGET_PCT (resolved at runtime).
+        // Use simple even splits in tests — the allocator only reads
+        // `total_vram_bytes`, not the per-subsystem breakdown.
+        let reserve_bytes = total_bytes / 8;
+        let usable = total_bytes - reserve_bytes;
+        let third = usable / 3;
+        let (tx, rx) = tokio::sync::watch::channel(0.0_f32);
+        Arc::new(GpuMemoryManager::new_for_test(
+            total_bytes,
+            "test:synthetic".to_string(),
+            third, // inference
+            third, // tts
+            third, // rendering
+            reserve_bytes,
+            tx,
+            rx,
+        ))
+    }
+
     #[test]
     fn test_select_local_model() {
         assert_eq!(
@@ -495,7 +523,16 @@ mod tests {
 
     #[test]
     fn test_allocate_no_keys() {
-        let manager = test_gpu_manager();
+        // Use a deterministic test fixture rather than real hardware
+        // detection. test_gpu_manager() calls GpuMemoryManager::detect()
+        // which leaks host hardware into a pure-logic test — empirically
+        // observed failing on Intel Mac + AMD Radeon Pro 560X (4 GB VRAM
+        // - 2 GB reserve = 2 GB usable, but every local persona needs
+        // 3 GB per catalog.json, so 0 local allocations and the
+        // `local_count >= 1` invariant blows up). The allocator's job is
+        // "given a hardware budget, decide what to spawn"; the test
+        // should hand it a known budget, not ask the OS.
+        let manager = test_gpu_manager_with_vram_gb(16.0);
         let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog);
 
