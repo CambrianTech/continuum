@@ -224,6 +224,48 @@ multi_party_strategy = "proper_chat_ml_single_party"
 
 # ─── In-process llama.cpp (Metal/CUDA direct) ───────────────────────────
 
+# Qwen2.5-0.5B-Instruct GGUF — the substrate's LCD (lowest-common-
+# denominator) model per Joel (2026-06-01) and
+# [[lcd-model-qwen25-05b-and-foundry-lora]]. Plain-attention Qwen2
+# architecture (no SSM ops), 468 MiB on disk at Q4_K_M, runs on Compat
+# tier hardware including this Intel MacBookPro15,1 + Radeon Pro 560X
+# via CPU-only path while [[#131]] tracks the upstream Metal hang fix.
+# Multi-persona at this tier means two of these in parallel; future
+# shared-base + LoRA paging (#122) makes that cheap.
+#
+# Sibling BF16 safetensors at
+# `~/.continuum/genome/models/qwen2.5-0.5b-instruct/safetensors/`
+# are the candle-trainable form for foundry LoRA work
+# ([[experiential-plasticity-mitosis-cull-sentinel]]).
+[[model]]
+id = "continuum-ai/qwen2.5-0.5b-instruct-GGUF"
+name = "Qwen2.5 0.5B Instruct (LCD)"
+provider = "llamacpp-local"
+arch = "qwen2"
+context_window = 32768
+max_output_tokens = 4096
+tokens_per_second = 60.0
+capabilities = ["text-generation", "chat", "streaming"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+gguf_local_path = "~/.continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+# Qwen2.5 chatml template. Qwen2.5-Instruct ships with the same chatml
+# format Qwen3.5 uses; reusing the same template string.
+chat_template = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+# Qwen2.5's tokenizer correctly emits <|im_end|> at chat-turn end as
+# the eos token (id 151645). Listing as a stop sequence anyway for
+# defense-in-depth: scheduler matches against streamed text and stops
+# even if the EOG flag misses for any reason. <|endoftext|> covers the
+# pretrain-style termination path.
+stop_sequences = ["<|im_end|>", "<|endoftext|>"]
+# Qwen2.5 was trained on standard ChatML user/assistant alternation,
+# same multi-party limitation as qwen3.5 — model cannot coherently
+# process multiple AI speakers in one transcript. proper_chat_ml_single
+# _party drops other-persona turns and presents the model only with
+# user/assistant alternation it was trained on.
+multi_party_strategy = "proper_chat_ml_single_party"
+
 [[model]]
 id = "continuum-ai/qwen3.5-4b-code-forged-GGUF"
 name = "Qwen3.5 4B Code-Forged (in-process)"
