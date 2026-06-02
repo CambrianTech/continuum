@@ -23,7 +23,21 @@ The substrate is brain-shaped at the *algorithmic level* —
 parallel independent regions on their own ticks, source/drain
 balanced at every component, salience-modulated retention,
 hippocampus-style consolidation, sleep-cadence pruning, attention
-spreading across a connectivity graph. These shapes work because
+spreading across a connectivity graph.
+
+> **What "source/drain" means here.** A doctrine — every component
+> that produces or accumulates state MUST have a paired draining
+> mechanism. *Source* = whatever feeds it (new admissions, fresh
+> turns, foundry-imported artifacts). *Drain* = the policy that
+> retires what's no longer load-bearing (decay tick on engrams,
+> LRU eviction on adapter cache, anti-amnesia floor on the
+> permanent pin tier). A source without a drain is a leak;
+> over time it spikes pressure on the host. The substrate
+> applies source/drain at every cache tier (L1–L5), at the
+> weights layer (foundry mints LoRA variants, Sentinel + cull
+> retire losing ones), and at the resource layer (PressureBroker
+> + lane refusals). Per [[source-drain-is-the-universal-pattern]]:
+> for every new component, name the drain. These shapes work because
 they evolved under constraints (limited working memory, energy
 budget, parallel processing, lifelong learning) that the substrate
 also faces — though at different scales.
