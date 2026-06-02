@@ -333,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    persona the spawner planned.
     let hosted = HostedPersona {
         role: RoleId::Helper,
-        instance: PersonaInstanceInfo {
+        identity: PersonaInstanceInfo {
             persona_id,
             agent_name: agent.clone(),
             peer_id: persona_id,
@@ -341,7 +341,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             default_room: room.channel.as_uuid(),
             source: PersonaIdentitySource::FreshlyMinted,
         },
+        profile: profile.clone(),
         adapter,
+        runtime: Some(runtime.clone()),
     };
     let mut conversation = AircPersonaConversation::new(runtime);
 

@@ -85,7 +85,11 @@ pub struct RagInspectionRequest {
 impl RagInspectionRequest {
     /// Sensible defaults for "show me what this persona would see
     /// right now at a typical 32k context model." Caller can mutate
-    /// any field after this.
+    /// any field after this. Prefer [`Self::for_persona`] when you
+    /// already have a [`PersonaInferenceProfile`] in hand — that
+    /// path threads the profile's actual context_length through so
+    /// the RAG layer never asks for more tokens than the adapter
+    /// can decode.
     pub fn defaults_for(persona_id: Uuid, persona_name: String, now_ms: u64) -> Self {
         Self {
             persona_id,
@@ -97,6 +101,56 @@ impl RagInspectionRequest {
             },
             airc_floor: 500,
             airc_max: 20_000,
+            airc_priority: 10,
+            airc_required: true,
+            airc_fetch_limit: 100,
+            now_ms,
+            trace_path: None,
+        }
+    }
+
+    /// Derive the inspection request from the persona's inference
+    /// profile — the single source of truth for context budgets.
+    /// `&PersonaInferenceProfile` is the substrate's persona-shape
+    /// context object (analogous to Android's `Context`); every
+    /// downstream layer that needs an inference-shape knob reads
+    /// from this struct instead of copying fields or holding
+    /// duplicate constants.
+    ///
+    /// The derivation:
+    /// - `context_window` = `profile.context_length` (no overflow
+    ///   risk — the RAG layer can never ask for more than the
+    ///   adapter was loaded with).
+    /// - `airc_max` = at most 60% of the runtime context, AND at
+    ///   most what's left after the system + completion reserve.
+    ///   The 60% factor mirrors the `defaults_for` ratio
+    ///   (20_000 / 32_768 ≈ 0.61) so the relative budget shape
+    ///   stays consistent across tier-clamped contexts.
+    /// - `airc_floor` clamps to `airc_max` so floor ≤ max always.
+    pub fn for_persona(
+        persona_id: Uuid,
+        persona_name: String,
+        now_ms: u64,
+        profile: &crate::persona::inference_profile::PersonaInferenceProfile,
+    ) -> Self {
+        let reserved = ReservedTokens {
+            system: 400,
+            completion: 4_000,
+        };
+        let context_window = profile.context_length;
+        let headroom = context_window
+            .saturating_sub(reserved.system + reserved.completion)
+            .max(512);
+        let airc_max = ((context_window as u64) * 6 / 10) as u32;
+        let airc_max = airc_max.min(headroom);
+        let airc_floor = 500_u32.min(airc_max);
+        Self {
+            persona_id,
+            persona_name,
+            context_window,
+            reserved,
+            airc_floor,
+            airc_max,
             airc_priority: 10,
             airc_required: true,
             airc_fetch_limit: 100,

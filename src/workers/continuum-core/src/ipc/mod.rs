@@ -1147,29 +1147,30 @@ pub fn start_server(
             let factory: std::sync::Arc<
                 dyn crate::persona::supervisor::PersonaAdapterFactory,
             > = std::sync::Arc::new(LlamaCppPersonaAdapterFactory);
-            let hosted_results = materialize_adapters(plans, &*factory).await;
+            // The supervisor needs a runtime lookup to fold the live
+            // Arc<PersonaAircRuntime> into each PersonaContext —
+            // that's how `&ctx` carries the airc handle. Closure
+            // captures the slice-13 registry view; substrate
+            // invariant is "runtime exists post-bootstrap_one".
+            let registry_for_materialize = registry_for_lookup.clone();
+            let hosted_results = materialize_adapters(plans, &*factory, |pid| {
+                registry_for_materialize.get(pid)
+            })
+            .await;
 
             let mut hosted_count: usize = 0;
             let mut failed_count: usize = 0;
             for (slot_idx, result) in hosted_results.into_iter().enumerate() {
                 match result {
                     Ok(hosted) => {
-                        let persona_id = hosted.instance.persona_id;
-                        let agent_name = hosted.instance.agent_name.clone();
+                        // `hosted` is the PersonaContext — it already
+                        // carries the airc runtime as `hosted.runtime`,
+                        // per the `&ctx` doctrine. No separate lookup.
+                        let persona_id = hosted.identity.persona_id;
+                        let agent_name = hosted.identity.agent_name.clone();
                         let role = hosted.role;
-                        let Some(runtime) = registry_for_lookup.get(persona_id) else {
-                            tracing::error!(
-                                slot = slot_idx,
-                                persona_id = %persona_id,
-                                "slice 13 boot: runtime missing post-bootstrap — \
-                                 substrate invariant violation"
-                            );
-                            failed_count += 1;
-                            continue;
-                        };
                         let handle = spawn_persona_service(
                             hosted,
-                            runtime,
                             ServeOptions::default(),
                             rt_handle_for_spawn.clone(),
                         );

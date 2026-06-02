@@ -41,6 +41,7 @@
 //!   declared intent and the adapter materializes that.
 
 use crate::ai::adapter::AIProviderAdapter;
+use crate::persona::airc_runtime::PersonaAircRuntime;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
 use crate::persona::role_template::RoleId;
 use crate::persona::spawner_module::MaterializedPersonaPlan;
@@ -85,23 +86,112 @@ impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
     }
 }
 
-/// One row of the supervisor's roster: a persona with airc identity
-/// allocated AND a usable inference adapter constructed. Slice 10's
-/// per-persona subscribe-loop takes a `Vec<HostedPersona>` and binds
-/// each to its room.
-pub struct HostedPersona {
+/// One row of the supervisor's roster — and the substrate's
+/// per-persona context object. Analog of Android's `Context`:
+/// the single struct every persona-scoped function reads from.
+///
+/// ## The `&ctx` doctrine
+///
+/// Persona/cognition/RAG/inference/supervisor functions take
+/// `&PersonaContext` and read what they need. They MUST NOT extract
+/// individual fields and pass them as separate arguments — that
+/// fragments the substrate's source of truth and creates drift.
+/// Every derived shape (a RAG inspection request, a sampling spec
+/// adjustment, a log scope) is produced from `&ctx` via a named
+/// constructor whose name says `for_persona`/`for_ctx`.
+///
+/// ## The substrate's actor model — this IS the airc user
+///
+/// Per `[[personas-are-citizens-airc-is-identity-provider]]`:
+/// "Personas, humans, Claude/OpenClaw/Hermes are the same kind of
+/// citizen." Every actor in the substrate is an airc user.
+///
+/// The substrate's eventual shape (task #142) is a `BaseUser` that
+/// carries the airc props every actor has — peer_id, identity,
+/// runtime, home, default_room — plus per-actor extensions:
+///   - `PersonaContext` = `BaseUser` + (role, profile, adapter)
+///   - `HumanUserContext` = `BaseUser` + UI session + human ID card
+///   - `WebUserContext` = `BaseUser` + tab/session id + auth scope
+///
+/// Same base, different extensions. Past designs that scattered
+/// actor state across multiple ad-hoc structs are explicitly the
+/// anti-pattern this struct exists to prevent (Joel 2026-06-02 —
+/// "design got out of control due to not using a shared object for
+/// all state info required for a persona OR user"). For slice 13,
+/// `PersonaContext` already carries the airc props (via `runtime`)
+/// + persona extensions — so the BaseUser extraction is purely a
+/// rename + trait extraction, additive only.
+///
+/// ## What's in the context
+///
+/// - `identity` — substrate-stable persona_id + airc-side
+///   peer_id/agent_name/home dir + the room she joined at bootstrap.
+/// - `role` — Helper / Coder / Sentinel / Custom. Cognition reads it
+///   to shape prompts.
+/// - `profile` — the inference shape: `context_length`, `n_ubatch`,
+///   sampling, `model_id`, `stop_sequences`, `chat_template`. The
+///   single source of truth for the persona's compute envelope.
+/// - `adapter` — the inference adapter, hot for generate_text. `Arc`
+///   so the service loop can clone-share it with the RAG layer.
+/// - `runtime` — the persona's `Arc<PersonaAircRuntime>` (her grid
+///   presence). The service loop subscribes through this; `say()`
+///   posts through this. Cognition reads `runtime.airc().peer_id()`
+///   for self-filtering.
+///
+/// ## Type-alias note
+///
+/// The struct used to be named `HostedPersona` (slice 9). The rename
+/// to `PersonaContext` signals the design role; `pub type
+/// HostedPersona = PersonaContext;` below keeps slice-9-era callers
+/// compiling without a sweeping rename. New code should use
+/// `PersonaContext` directly.
+pub struct PersonaContext {
     /// Role identity (Helper / Coder / Sentinel / Custom).
     pub role: RoleId,
-    /// airc identity allocation result — peer_id, agent_name, home,
-    /// default room. Copied from the bootstrap step.
-    pub instance: crate::modules::persona_instance_manager::PersonaInstanceInfo,
+    /// The airc-side citizen identity — peer_id, agent_name, home,
+    /// default_room, source (resumed vs minted). This is the
+    /// substrate's universal actor identity per
+    /// `[[personas-are-citizens-airc-is-identity-provider]]`. Same
+    /// type for personas, humans, browsers — everyone has a
+    /// `.identity`. Token/auth state lives inside.
+    pub identity: crate::modules::persona_instance_manager::PersonaInstanceInfo,
+    /// The single source of truth for this persona's inference
+    /// shape — context window, ubatch, sampling, model id, stop
+    /// sequences, etc. Produced by slice-5 `build_profile`. Every
+    /// downstream layer that needs an inference-shape knob
+    /// (service-loop's RAG request, future supervisor health
+    /// commands, replay) reads from this struct — no second copy,
+    /// no derived constants. PR #1511 integration trace caught the
+    /// failure mode of letting the RAG layer's own 32k default
+    /// override the adapter's 2k context_length: llama_decode
+    /// returned -1 because the prompt budget exceeded what the
+    /// adapter was loaded with. The fix is structural — the
+    /// profile is the single source.
+    pub profile: PersonaInferenceProfile,
     /// The inference adapter, ready to receive `generate_text` calls.
     /// `Arc` so the service-loop (#133 slice 10) can clone-and-share
     /// the adapter with the RAG inspector. #122 (shared base) keeps
     /// the same `Arc<dyn ...>` shape — only the concrete adapter
     /// inside changes.
     pub adapter: Arc<dyn AIProviderAdapter>,
+    /// The persona's `Arc<PersonaAircRuntime>` — her grid presence.
+    /// The service loop subscribes through `runtime.airc().subscribe()`
+    /// and posts replies through `runtime.say(text)`. Cognition uses
+    /// `runtime.airc().peer_id()` for self-filtering. Held here so
+    /// `&ctx` is the one handle every layer needs.
+    ///
+    /// `None` only in tests — production materialize_adapters always
+    /// fills this from the registry post-bootstrap. Cleaner trait
+    /// abstraction (`Arc<dyn AircHandle>`) lands with task #142's
+    /// BaseUser hierarchy; for slice 13 the Option keeps the
+    /// supervisor + service-loop tests building without standing up
+    /// a real airc daemon fixture.
+    pub runtime: Option<Arc<PersonaAircRuntime>>,
 }
+
+/// Back-compat alias for the slice-9-era struct name. New code
+/// should write `PersonaContext` directly.
+pub type HostedPersona = PersonaContext;
 
 /// Structured error per failed slot. The two failure modes are:
 ///
@@ -150,7 +240,8 @@ pub enum SupervisorError {
 pub async fn materialize_adapters(
     plans: Vec<MaterializedPersonaPlan>,
     factory: &dyn PersonaAdapterFactory,
-) -> Vec<Result<HostedPersona, SupervisorError>> {
+    runtime_lookup: impl Fn(uuid::Uuid) -> Option<Arc<PersonaAircRuntime>>,
+) -> Vec<Result<PersonaContext, SupervisorError>> {
     let mut out = Vec::with_capacity(plans.len());
     for (slot_index, plan) in plans.into_iter().enumerate() {
         let profile = match plan.profile {
@@ -164,11 +255,15 @@ pub async fn materialize_adapters(
                 continue;
             }
         };
+        let identity = plan.instance;
+        let runtime = runtime_lookup(identity.persona_id);
         match factory.build_adapter(&profile).await {
-            Ok(adapter) => out.push(Ok(HostedPersona {
+            Ok(adapter) => out.push(Ok(PersonaContext {
                 role: plan.role,
-                instance: plan.instance,
+                identity,
+                profile,
                 adapter,
+                runtime,
             })),
             Err(message) => out.push(Err(SupervisorError::AdapterFactory {
                 slot_index,
@@ -332,19 +427,19 @@ mod tests {
         let factory = OkFactory {
             builds: AtomicUsize::new(0),
         };
-        let hosted = materialize_adapters(plans, &factory).await;
+        let hosted = materialize_adapters(plans, &factory, |_| None).await;
 
         assert_eq!(hosted.len(), 2);
         assert_eq!(factory.builds.load(Ordering::SeqCst), 2);
 
         let helper = hosted[0].as_ref().expect("Helper hosted");
         assert_eq!(helper.role, RoleId::Helper);
-        assert_eq!(helper.instance.agent_name, "Paige");
+        assert_eq!(helper.identity.agent_name, "Paige");
         assert_eq!(helper.adapter.provider_id(), "model-a");
 
         let coder = hosted[1].as_ref().expect("Coder hosted");
         assert_eq!(coder.role, RoleId::Coder);
-        assert_eq!(coder.instance.agent_name, "Pax");
+        assert_eq!(coder.identity.agent_name, "Pax");
         assert_eq!(coder.adapter.provider_id(), "model-b");
     }
 
@@ -373,7 +468,7 @@ mod tests {
         let factory = OkFactory {
             builds: AtomicUsize::new(0),
         };
-        let hosted = materialize_adapters(plans, &factory).await;
+        let hosted = materialize_adapters(plans, &factory, |_| None).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory called exactly once — for the Ok row only.
@@ -406,7 +501,7 @@ mod tests {
         }];
 
         let factory = ErrFactory;
-        let hosted = materialize_adapters(plans, &factory).await;
+        let hosted = materialize_adapters(plans, &factory, |_| None).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -431,7 +526,7 @@ mod tests {
         let factory = OkFactory {
             builds: AtomicUsize::new(0),
         };
-        let hosted = materialize_adapters(vec![], &factory).await;
+        let hosted = materialize_adapters(vec![], &factory, |_| None).await;
         assert!(hosted.is_empty());
         assert_eq!(factory.builds.load(Ordering::SeqCst), 0);
     }

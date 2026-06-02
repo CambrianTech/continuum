@@ -165,9 +165,9 @@ pub async fn serve_persona_loop(
         .await
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
 
-    let persona_id = hosted.instance.persona_id;
-    let persona_peer_id = hosted.instance.peer_id;
-    let agent_name = hosted.instance.agent_name.clone();
+    let persona_id = hosted.identity.persona_id;
+    let persona_peer_id = hosted.identity.peer_id;
+    let agent_name = hosted.identity.agent_name.clone();
     // Slice 9 sized `HostedPersona.adapter` as `Arc<dyn ...>` exactly
     // so the loop can clone-and-share with the RAG inspector turn by
     // turn without rebuilding the adapter each time.
@@ -187,7 +187,18 @@ pub async fn serve_persona_loop(
             continue;
         }
 
-        let mut req = RagInspectionRequest::defaults_for(persona_id, agent_name.clone(), (opts.now_ms)());
+        // Profile is the single source of truth for inference shape
+        // (substrate's `&ctx` doctrine — never copy fields out,
+        // never derive duplicates). `for_persona` produces a RAG
+        // request shaped by the profile's actual context_length —
+        // unlike `defaults_for` which would set a 32k budget that
+        // overflows tier-clamped adapters (PR #1511 trace).
+        let mut req = RagInspectionRequest::for_persona(
+            persona_id,
+            agent_name.clone(),
+            (opts.now_ms)(),
+            &hosted.profile,
+        );
         req.airc_fetch_limit = opts.rag_fetch_limit;
 
         let inspection = match inspect_persona_rag_with_inference(
@@ -393,21 +404,49 @@ mod tests {
     }
 
     fn fake_hosted(persona_peer_id: Uuid, reply: &str) -> HostedPersona {
+        use crate::persona::hw_tier_descriptor::HwTierCategory;
+        use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
         let adapter = CannedAdapter {
             reply: reply.to_string(),
             calls: AtomicUsize::new(0),
         };
+        let persona_id = Uuid::new_v4();
+        // Build a profile shaped like the LCD Compat tier — the
+        // substrate's lowest common denominator. Test exercises the
+        // same `&ctx` derivation path production uses; no hardcoded
+        // budget constants outside `profile_builder`.
+        let profile = PersonaInferenceProfile {
+            persona_id,
+            persona_name: "Paige".to_string(),
+            model_id: "fake-model".to_string(),
+            gguf_local_path: None,
+            tier_category: HwTierCategory::Compat,
+            tier_id: "test_fixture".to_string(),
+            context_length: 2048,
+            n_ubatch: 512,
+            n_batch: 2048,
+            n_seq_max: 1,
+            n_gpu_layers: 0,
+            sampling: SamplingProfile::chat_defaults(),
+            chat_template: None,
+            stop_sequences: vec![],
+        };
         HostedPersona {
             role: RoleId::Helper,
-            instance: PersonaInstanceInfo {
-                persona_id: Uuid::new_v4(),
+            identity: PersonaInstanceInfo {
+                persona_id,
                 agent_name: "Paige".to_string(),
                 peer_id: persona_peer_id,
                 home: PathBuf::from("/tmp/fake-service-loop"),
                 default_room: Uuid::nil(),
                 source: PersonaIdentitySource::FreshlyMinted,
             },
+            profile,
             adapter: Arc::new(adapter),
+            // Test fixtures don't run through `spawn_persona_service`,
+            // so the runtime stub is None. Production paths always
+            // populate this from the registry post-bootstrap.
+            runtime: None,
         }
     }
 
