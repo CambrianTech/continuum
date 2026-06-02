@@ -106,12 +106,28 @@ pub fn plan_for_tier(
     let _ = tier_category; // all tiers produce the same single-Helper
                            // plan until slice 14 ships role-aware
                            // mapping + multi-role-per-tier rosters
-    vec![DesiredRole {
+    let plan = vec![DesiredRole {
         role: RoleId::Helper,
         model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-    }]
+    }];
+    // P2 invariant tripwire (PR #1511 review advisory): if a future
+    // refactor adds a second role here without atomically updating
+    // ResumeOrMintProvider's role mapping, position-pairing will
+    // silently mis-pair roles on boot 2 (alphabetic disk order vs
+    // plan order). The debug_assert catches the regression at the
+    // producer in debug + test builds. Slice 14 removes this when
+    // role-in-seed.json makes multi-role plans safe.
+    debug_assert!(
+        plan.len() <= 1,
+        "plan_for_tier returned {} roles before slice 14's role-in-seed.json \
+         landed — position-pairing against ResumeOrMintProvider's alphabetic \
+         disk order would flip role identity on boot 2. See #133 slice 14.",
+        plan.len()
+    );
+    plan
     // TODO #133 slice 14: restore tier-shaped rosters after
-    // RoleAwareProvider + role-in-seed.json land.
+    // RoleAwareProvider + role-in-seed.json land. Remove the
+    // debug_assert above as part of that change.
 }
 
 /// Substrate ServiceModule that surfaces the spawner's roster plan.

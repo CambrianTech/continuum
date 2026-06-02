@@ -1111,11 +1111,32 @@ pub fn start_server(
             {
                 Ok(p) => p,
                 Err(e) => {
+                    // BLOCKER 2 (PR #1511 review finding #2):
+                    // `bootstrap_planned` registers each persona via
+                    // `bootstrap_one` BEFORE the next slot's mint
+                    // runs. If slot k fails, slots 0..k-1 are already
+                    // in the registry but with no service loop
+                    // attached — mute citizens. We MUST orderly-drain
+                    // them (no service loop to abort yet, but the
+                    // registry entry + Arc<Airc> still need to drop
+                    // so the wire subscriber tears down).
+                    let already_registered = registry_for_lookup.ids();
+                    let orphans = already_registered.len();
+                    for orphan_id in already_registered {
+                        // `shutdown_slot` handles "no service loop"
+                        // gracefully (handle_opt is None) and drops
+                        // the Arc cleanly. This is the orderly path
+                        // even when only the Arc needs dropping.
+                        let _ = registry_for_lookup.shutdown_slot(orphan_id).await;
+                    }
                     tracing::error!(
                         error = %e,
-                        "slice 13 boot: bootstrap_planned failed — no personas hosted. \
-                         Server stays up; fire `persona/instances/bootstrap` manually \
-                         after resolving the underlying issue."
+                        orphans_drained = orphans,
+                        "slice 13 boot: bootstrap_planned failed; {} partially-registered \
+                         personas drained from the registry. Server stays up; fire \
+                         `persona/instances/bootstrap` manually after resolving the \
+                         underlying issue.",
+                        orphans,
                     );
                     return;
                 }
@@ -1150,16 +1171,29 @@ pub fn start_server(
                             ServeOptions::default(),
                             rt_handle_for_spawn.clone(),
                         );
-                        if let Err(e) = registry_for_lookup
+                        if let Err((returned_handle, reason)) = registry_for_lookup
                             .attach_service_loop(persona_id, handle)
                             .await
                         {
+                            // BLOCKER 1 (PR #1511 review finding #1):
+                            // JoinHandle::drop detaches the task
+                            // rather than aborting it. Without this
+                            // orderly drain the loop keeps running
+                            // untracked — the boot log would lie that
+                            // "will not respond" while the loop in
+                            // fact does respond (just outside the
+                            // registry's view, so shutdown_slot can't
+                            // find it). attach_service_loop hands the
+                            // handle back exactly so we can do this.
+                            returned_handle.abort();
+                            let _ = returned_handle.await;
                             tracing::error!(
                                 slot = slot_idx,
                                 persona_id = %persona_id,
-                                error = e,
-                                "slice 13 boot: attach_service_loop failed — persona \
-                                 will not respond on the grid"
+                                reason = reason,
+                                "slice 13 boot: attach_service_loop failed; spawned \
+                                 task drained. Persona registered but unattended — \
+                                 fire `persona/instances/bootstrap` to retry."
                             );
                             failed_count += 1;
                             continue;

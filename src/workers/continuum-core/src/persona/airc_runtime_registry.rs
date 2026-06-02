@@ -147,25 +147,43 @@ impl PersonaAircRuntimeRegistry {
     /// Attach a service-loop `JoinHandle` to the persona's slot. The
     /// handle is `.abort()`-ed and awaited during `shutdown_slot`.
     ///
-    /// Errors:
-    /// - `Err("no slot")` if the persona isn't in the registry.
-    /// - `Err("already attached")` if a service loop is already
-    ///   attached. The caller is responsible for `shutdown_slot`-ing
-    ///   the prior loop before attaching a replacement; the registry
-    ///   refuses silent overwrites to avoid leaking the prior task.
+    /// On error returns the handle BACK to the caller so it can
+    /// orderly-drain it (`abort()` + `await`). `JoinHandle::drop`
+    /// detaches rather than aborts — silently dropping the handle
+    /// leaks a running tokio task per [[organization-purity-as-we-
+    /// migrate]] (and PR #1511 review finding #1). The caller's
+    /// orderly-drain pattern:
+    ///
+    /// ```ignore
+    /// match registry.attach_service_loop(persona_id, handle).await {
+    ///     Ok(()) => { /* tracked by registry */ }
+    ///     Err((handle, reason)) => {
+    ///         handle.abort();
+    ///         let _ = handle.await;
+    ///         tracing::warn!(reason, "attach failed, handle drained");
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Error reasons:
+    /// - `"no slot"` if the persona isn't in the registry.
+    /// - `"already attached"` if a service loop is already attached.
+    ///   The caller is responsible for `shutdown_slot`-ing the prior
+    ///   loop before attaching a replacement; the registry refuses
+    ///   silent overwrites to avoid leaking the prior task.
     pub async fn attach_service_loop(
         &self,
         persona_id: Uuid,
         handle: JoinHandle<Result<ServeOutcome, String>>,
-    ) -> Result<(), &'static str> {
-        let slot = self
-            .inner
-            .get(&persona_id)
-            .ok_or("no slot")?
-            .clone();
+    ) -> Result<(), (JoinHandle<Result<ServeOutcome, String>>, &'static str)> {
+        let Some(slot_ref) = self.inner.get(&persona_id) else {
+            return Err((handle, "no slot"));
+        };
+        let slot = slot_ref.clone();
+        drop(slot_ref); // release the DashMap read guard before awaiting the Mutex
         let mut loop_slot = slot.service_loop.lock().await;
         if loop_slot.is_some() {
-            return Err("already attached");
+            return Err((handle, "already attached"));
         }
         *loop_slot = Some(handle);
         Ok(())
@@ -288,16 +306,29 @@ mod tests {
         assert_eq!(Arc::strong_count(&registry.inner), 1);
     }
 
-    /// `attach_service_loop` fails fast when the slot doesn't exist.
-    /// Catches the "we forgot to register before attaching" bug
-    /// (supervisor must register first).
+    /// `attach_service_loop` fails fast when the slot doesn't exist
+    /// AND hands the handle back so the caller can drain it. The
+    /// handed-back handle is intact (`is_finished()` false until the
+    /// caller aborts) — proves no implicit detach happened.
     #[tokio::test]
-    async fn attach_service_loop_errors_when_no_slot() {
+    async fn attach_service_loop_errors_with_handle_when_no_slot() {
         let registry = PersonaAircRuntimeRegistry::new();
         let nonexistent = Uuid::new_v4();
-        let handle = tokio::spawn(async { Ok(ServeOutcome::default()) });
-        let result = registry.attach_service_loop(nonexistent, handle).await;
-        assert_eq!(result, Err("no slot"));
+        // Long-lived task so we can verify the handle is still live
+        // when it comes back to us.
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            Ok(ServeOutcome::default())
+        });
+        let (returned_handle, reason) = registry
+            .attach_service_loop(nonexistent, handle)
+            .await
+            .expect_err("must error when slot missing");
+        assert_eq!(reason, "no slot");
+        // The handle came back live — caller hasn't drained it yet.
+        assert!(!returned_handle.is_finished());
+        returned_handle.abort();
+        let _ = returned_handle.await;
     }
 
     /// `is_service_loop_finished` returns `None` when the slot
