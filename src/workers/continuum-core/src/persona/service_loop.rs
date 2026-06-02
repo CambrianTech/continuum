@@ -154,9 +154,55 @@ impl Default for ServeOptions {
     }
 }
 
+/// Cheap online latency aggregator. Counts samples, tracks total
+/// (for mean), min, and max — all in milliseconds. Bounded memory:
+/// four fields, no Vec growth even over hour-long persona sessions.
+///
+/// Per Joel's "computer engineer" mental model from
+/// [[init-once-handle-then-lease-zero-copy-refs]]: hot-path metric
+/// recording should be branch-predictable, cache-friendly, and
+/// allocation-free. `record` is a few atomic-style updates against
+/// stack-local fields; no heap, no pointer chasing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LatencyAggregate {
+    /// Number of samples recorded.
+    pub count: usize,
+    /// Sum of all sample durations in milliseconds. `mean_ms()`
+    /// divides by `count`.
+    pub total_ms: u64,
+    /// Fastest sample observed. `None` until first `record`.
+    pub min_ms: Option<u64>,
+    /// Slowest sample observed. `None` until first `record`.
+    pub max_ms: Option<u64>,
+}
+
+impl LatencyAggregate {
+    /// Record one sample. O(1), allocation-free.
+    pub fn record(&mut self, ms: u64) {
+        self.count += 1;
+        self.total_ms = self.total_ms.saturating_add(ms);
+        self.min_ms = Some(self.min_ms.map_or(ms, |m| m.min(ms)));
+        self.max_ms = Some(self.max_ms.map_or(ms, |m| m.max(ms)));
+    }
+
+    /// Arithmetic mean in milliseconds. `None` when `count == 0`.
+    pub fn mean_ms(&self) -> Option<f64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.total_ms as f64 / self.count as f64)
+        }
+    }
+}
+
 /// Aggregate stats from one `serve_persona_loop` run. Returned when
 /// the conversation stream ends; useful for operators + tests
 /// asserting on what happened without scraping log lines.
+///
+/// Per Joel 2026-06-02 ("make sure timing and other metrics are in
+/// place"): the substrate doesn't claim "fast airc-bound persona"
+/// without measuring it. `turn_latency` is the structural record of
+/// what the cognition hot path actually costs end-to-end.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServeOutcome {
     /// Messages where the persona produced + posted a reply.
@@ -168,6 +214,18 @@ pub struct ServeOutcome {
     /// Per [[no-fallbacks-ever]] the loop continues; the count is the
     /// substrate's honest record of what didn't work.
     pub turns_errored: usize,
+    /// Per-replied-turn end-to-end latency: from the moment
+    /// `next_message` yielded `Ok(Some(msg))` to the moment
+    /// `conversation.say` returned `Ok(())`. Excludes wait time for
+    /// the next event (which depends on user-typing speed). Captures
+    /// the substrate's per-turn cost — RAG inspect + LLM generate +
+    /// airc publish — which is what the [[init-once-handle-then-lease-zero-copy-refs]]
+    /// pattern is trying to minimize.
+    ///
+    /// Only successful replies are recorded. Errored and skipped turns
+    /// have their own counters; conflating their wall-clock with the
+    /// reply path's wall-clock would muddy the metric.
+    pub turn_latency: LatencyAggregate,
 }
 
 /// Run the per-persona service loop until the conversation stream
@@ -234,6 +292,15 @@ async fn serve_persona_loop_inner(
             continue;
         }
 
+        // Per-turn latency clock starts AFTER the filters above —
+        // we measure the substrate's per-reply cost (RAG + inference
+        // + say), not the wall-clock that includes pre-watermark or
+        // self-loop filtering. Monotonic `Instant` so the metric is
+        // immune to wall-clock skew. Per [[init-once-handle-then-lease-zero-copy-refs]]
+        // the metric is what verifies the doctrine actually shaved
+        // the round-trip the doctrine claims to shave.
+        let turn_started = std::time::Instant::now();
+
         // `&ctx`-pure derivation: RAG request reads the profile
         // (context_length, etc.) directly from ctx. No copied
         // fields. Per [[context-is-the-client-airc-token-is-identity]]
@@ -280,7 +347,18 @@ async fn serve_persona_loop_inner(
             outcome.turns_errored += 1;
             continue;
         }
+        let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
+        outcome.turn_latency.record(turn_duration_ms);
         outcome.turns_replied += 1;
+        tracing::info!(
+            lamport = msg.lamport,
+            turn_duration_ms = turn_duration_ms,
+            turns_replied = outcome.turns_replied,
+            mean_ms = outcome.turn_latency.mean_ms().unwrap_or(0.0),
+            min_ms = outcome.turn_latency.min_ms.unwrap_or(0),
+            max_ms = outcome.turn_latency.max_ms.unwrap_or(0),
+            "turn complete — substrate's per-reply cost recorded"
+        );
     }
 
     Ok(outcome)
@@ -559,6 +637,75 @@ mod tests {
             1,
             "serve_persona_loop must call prime() exactly once at boot"
         );
+        // Latency metric recorded for the one successful reply.
+        // count == 1 — exact assertion; the *value* is wall-clock-
+        // dependent so we just check it's been captured. Per
+        // [[init-once-handle-then-lease-zero-copy-refs]]: the metric
+        // is what verifies the prime/warmup/etc. doctrines actually
+        // moved cold-start off the hot path; if a future refactor
+        // forgets to record, this drops to 0 and fails loudly.
+        assert_eq!(
+            outcome.turn_latency.count, 1,
+            "successful reply must record exactly one latency sample"
+        );
+        assert!(
+            outcome.turn_latency.min_ms.is_some(),
+            "min_ms set after one sample"
+        );
+        assert!(
+            outcome.turn_latency.max_ms.is_some(),
+            "max_ms set after one sample"
+        );
+        assert!(
+            outcome.turn_latency.mean_ms().is_some(),
+            "mean computable after one sample"
+        );
+    }
+
+    /// `LatencyAggregate` math: cheap online min/max/sum/count over
+    /// arbitrary inputs. Empty aggregate returns None for everything;
+    /// after samples, mean = total / count and min/max track extremes.
+    #[test]
+    fn latency_aggregate_records_min_max_sum_count() {
+        let mut agg = LatencyAggregate::default();
+        assert_eq!(agg.count, 0);
+        assert_eq!(agg.total_ms, 0);
+        assert!(agg.min_ms.is_none());
+        assert!(agg.max_ms.is_none());
+        assert!(agg.mean_ms().is_none());
+
+        agg.record(10);
+        assert_eq!(agg.count, 1);
+        assert_eq!(agg.total_ms, 10);
+        assert_eq!(agg.min_ms, Some(10));
+        assert_eq!(agg.max_ms, Some(10));
+        assert_eq!(agg.mean_ms(), Some(10.0));
+
+        agg.record(50);
+        agg.record(30);
+        assert_eq!(agg.count, 3);
+        assert_eq!(agg.total_ms, 90);
+        assert_eq!(agg.min_ms, Some(10));
+        assert_eq!(agg.max_ms, Some(50));
+        assert_eq!(agg.mean_ms(), Some(30.0));
+    }
+
+    /// Saturating add: if the substrate ever runs a session long
+    /// enough for total_ms to approach u64::MAX (~580 million years
+    /// at 1ms/turn), `record` saturates rather than wraps. Locks the
+    /// invariant; the substrate would never hit this in practice but
+    /// the safety property matters per [[every-error-is-an-opportunity-to-battle-harden]].
+    #[test]
+    fn latency_aggregate_saturates_on_overflow() {
+        let mut agg = LatencyAggregate {
+            count: 1,
+            total_ms: u64::MAX - 5,
+            min_ms: Some(0),
+            max_ms: Some(u64::MAX - 5),
+        };
+        agg.record(100);
+        assert_eq!(agg.total_ms, u64::MAX, "saturated, not wrapped");
+        assert_eq!(agg.count, 2);
     }
 
     /// Prime-failure short-circuit: if `prime` returns Err, the loop
