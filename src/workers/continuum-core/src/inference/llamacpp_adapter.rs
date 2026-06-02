@@ -218,6 +218,20 @@ pub struct LlamaCppAdapter {
     /// See [`docs/architecture/INFERENCE-LANES-REALISTIC.md`]
     /// (Step 4) for the rollout plan.
     n_seq_max_override: Option<u32>,
+    /// Max ubatch size override — when set, the LlamaCppConfig built at
+    /// `load()` time uses this instead of the hardcoded default. The
+    /// compute graph is reserved for ubatches up to this size, so
+    /// setting it correctly is what avoids the
+    /// `decode: failed to find a memory slot for batch of size N`
+    /// panic when N exceeds the reserved graph (observed #130
+    /// 2026-06-01 with RAG-built persona prompts at 337 tokens).
+    /// Profile-driven via `PersonaInferenceProfile.n_ubatch`.
+    n_ubatch_override: Option<u32>,
+    /// GPU offload depth override. `None` = honor whatever the load
+    /// path decides from tier policy. Set explicitly when the persona
+    /// profile already resolved the right value (e.g., 0 on Compat
+    /// tier while #131's Metal hang fix is pending).
+    n_gpu_layers_override: Option<i32>,
 }
 
 impl LlamaCppAdapter {
@@ -281,6 +295,8 @@ impl LlamaCppAdapter {
             context_length_override: None,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
             n_seq_max_override: None,
+            n_ubatch_override: None,
+            n_gpu_layers_override: None,
         })
     }
 
@@ -310,7 +326,62 @@ impl LlamaCppAdapter {
             context_length_override: None,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
             n_seq_max_override: None,
+            n_ubatch_override: None,
+            n_gpu_layers_override: None,
         }
+    }
+
+    /// **The intent-driven constructor** per
+    /// [[intent-driven-api-not-hot-patches]] (Joel, 2026-06-01).
+    /// Replaces the chain of `with_model_id().with_context_length()
+    /// .with_n_seq_max()...` with one call that takes a substrate-
+    /// resolved profile and derives every knob from declared intent.
+    ///
+    /// The profile is produced by `PersonaSpawnerModule` (#121) from
+    /// the persona's (role_template, hw_tier_descriptor, model_meta).
+    /// Callers — chat surface, RAG inspector, future inference command
+    /// hot path — never touch n_ubatch, n_seq_max, n_gpu_layers, etc.
+    /// directly; they're already resolved in the profile.
+    ///
+    /// Returns an error per [[no-fallbacks-ever]] if the profile says
+    /// "local inference" but `gguf_local_path` is None (cloud-only
+    /// profiles route through Anthropic/OpenAI adapters, not here).
+    pub fn for_persona(
+        profile: &crate::persona::inference_profile::PersonaInferenceProfile,
+    ) -> Result<Self, crate::persona::inference_profile::InferenceProfileError> {
+        let gguf_path = profile.gguf_local_path.clone().ok_or_else(|| {
+            crate::persona::inference_profile::InferenceProfileError::NoLocalGguf {
+                model_id: profile.model_id.clone(),
+                gguf_hint: None,
+            }
+        })?;
+        Ok(Self {
+            backend: Arc::new(RwLock::new(None)),
+            model_path: gguf_path,
+            last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
+            default_model: profile.model_id.clone(),
+            context_length_override: Some(profile.context_length),
+            kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
+            n_seq_max_override: Some(profile.n_seq_max),
+            n_ubatch_override: Some(profile.n_ubatch),
+            n_gpu_layers_override: Some(profile.n_gpu_layers),
+        })
+    }
+
+    /// Override max ubatch size — typically not needed when using
+    /// `for_persona`; kept for legacy call sites and tests that
+    /// construct ad-hoc adapters without a full profile.
+    pub fn with_n_ubatch(mut self, n: u32) -> Self {
+        self.n_ubatch_override = Some(n);
+        self
+    }
+
+    /// Override GPU offload depth. `-1` = all on GPU; `0` = CPU only;
+    /// N = bottom N layers on GPU. As with `with_n_ubatch`, legacy
+    /// path — production code paths go through `for_persona`.
+    pub fn with_n_gpu_layers(mut self, n: i32) -> Self {
+        self.n_gpu_layers_override = Some(n);
+        self
     }
 
     /// Override the per-sequence context budget. Pass smaller-than-trained
@@ -447,10 +518,17 @@ impl LlamaCppAdapter {
         // — n_gpu_layers=0 forces the CPU path. Follow-up: native
         // Rust probe at adapter construction so this doesn't depend
         // on the install-time env-var trust chain (see task tracker).
-        let n_gpu_layers: i32 = match std::env::var("CONTINUUM_TIER").as_deref() {
-            Ok("mac_intel_discrete") => 0,
-            _ => -1,
-        };
+        // Profile-driven override wins per [[intent-driven-api-not-hot-
+        // patches]] — the substrate already resolved the right value from
+        // the persona's tier_descriptor. Env var stays as the legacy
+        // operator escape hatch for ad-hoc ad-hoc construction (tests,
+        // smoke binaries that don't carry a profile yet).
+        let n_gpu_layers: i32 = self
+            .n_gpu_layers_override
+            .unwrap_or_else(|| match std::env::var("CONTINUUM_TIER").as_deref() {
+                Ok("mac_intel_discrete") => 0,
+                _ => -1,
+            });
         // Defense-in-depth (task #110): the realistic-lane work lifted
         // n_seq_max to a caller-controlled knob, but the substrate
         // MUST NOT enable multi-seq batching on architectures that
@@ -511,7 +589,20 @@ impl LlamaCppAdapter {
             // / state-space / hybrid families (qwen3, mamba, rwkv,
             // jamba, ...) clamp to 1. See task #110.
             n_seq_max: effective_n_seq_max,
-            n_ubatch: 128,
+            // Profile-driven override wins per [[intent-driven-api-not-
+            // hot-patches]]. Fallback to 512 (not the old 128 default)
+            // because compute-graph reservation matches n_ubatch and a
+            // RAG-built persona prompt arrives at 200-500 tokens — at
+            // n_ubatch=128 the scheduler panicked with "decode: failed
+            // to find a memory slot for batch of size 337" during #130
+            // 2026-06-01 multi-persona LCD chat. 512 covers realistic
+            // persona prompts without ballooning memory (graph nodes
+            // scale with n_ubatch but at ~4 KiB per node × 942 nodes ×
+            // 4 multiplier we're talking ~15 MiB per scheduler — trivial).
+            // Future: derive from `models.toml` row per [[orm-everything-
+            // not-hand-edited-files]] so each model declares its own
+            // realistic batch ceiling.
+            n_ubatch: self.n_ubatch_override.unwrap_or(512),
             flash_attn: FlashAttn::Disabled,
             fused_gdn_ar: false,
             fused_gdn_ch: false,
@@ -1000,6 +1091,87 @@ mod tests {
     use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
     use crate::model_registry::Model;
     use std::collections::BTreeSet;
+
+    fn lcd_compat_profile()
+    -> crate::persona::inference_profile::PersonaInferenceProfile {
+        use crate::persona::hw_tier_descriptor::HwTierCategory;
+        use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
+        use uuid::Uuid;
+        PersonaInferenceProfile {
+            persona_id: Uuid::nil(),
+            persona_name: "Paige".to_string(),
+            model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            gguf_local_path: Some(PathBuf::from(
+                "/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            )),
+            tier_category: HwTierCategory::Compat,
+            tier_id: "mac_intel_metal_discrete".to_string(),
+            context_length: 2048,
+            n_ubatch: 512,
+            n_batch: 2048,
+            n_seq_max: 1,
+            n_gpu_layers: 0,
+            sampling: SamplingProfile::chat_defaults(),
+            chat_template: None,
+            stop_sequences: vec!["<|im_end|>".to_string()],
+        }
+    }
+
+    /// `for_persona` produces an adapter with every override field set
+    /// from the profile. Without this, the substrate's intent-driven
+    /// guarantee per [[intent-driven-api-not-hot-patches]] breaks:
+    /// hardcoded defaults silently override what the spawner resolved.
+    #[test]
+    fn for_persona_populates_all_overrides_from_profile() {
+        let profile = lcd_compat_profile();
+        let adapter = LlamaCppAdapter::for_persona(&profile).expect("build adapter");
+        assert_eq!(adapter.model_path, PathBuf::from(
+            "/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        ));
+        assert_eq!(adapter.default_model, profile.model_id);
+        assert_eq!(adapter.context_length_override, Some(2048));
+        assert_eq!(adapter.n_seq_max_override, Some(1));
+        assert_eq!(adapter.n_ubatch_override, Some(512));
+        assert_eq!(adapter.n_gpu_layers_override, Some(0));
+    }
+
+    /// A profile with no `gguf_local_path` is invalid for local
+    /// inference. `for_persona` rejects it loud per [[no-fallbacks-
+    /// ever]] — better an error message naming the missing field than
+    /// a silent fallback to a "default" model.
+    #[test]
+    fn for_persona_errors_when_gguf_local_path_missing() {
+        let mut profile = lcd_compat_profile();
+        profile.gguf_local_path = None;
+        // `LlamaCppAdapter` doesn't derive Debug (Arc<RwLock<...>> isn't
+        // straightforward to format), so `expect_err` won't compile.
+        // Match on the result directly.
+        match LlamaCppAdapter::for_persona(&profile) {
+            Ok(_) => panic!("missing gguf_local_path must error per no-fallbacks doctrine"),
+            Err(crate::persona::inference_profile::InferenceProfileError::NoLocalGguf {
+                model_id,
+                ..
+            }) => {
+                assert_eq!(model_id, "continuum-ai/qwen2.5-0.5b-instruct-GGUF");
+            }
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    /// `with_n_ubatch` and `with_n_gpu_layers` setters work for legacy
+    /// call sites + tests that build adapters without a full profile.
+    /// They're the escape hatch; production paths use `for_persona`.
+    #[test]
+    fn with_n_ubatch_and_n_gpu_layers_setters() {
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/x.gguf"),
+            "model".to_string(),
+        )
+        .with_n_ubatch(1024)
+        .with_n_gpu_layers(20);
+        assert_eq!(adapter.n_ubatch_override, Some(1024));
+        assert_eq!(adapter.n_gpu_layers_override, Some(20));
+    }
 
     fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationRequest {
         TextGenerationRequest {
