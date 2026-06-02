@@ -25,17 +25,30 @@ Slice 13 is the rewire that makes the substrate actually host personas headlessl
 
 ---
 
-## Hard prerequisites (must land BEFORE or AS PART OF slice 13)
+## Slice 13 scope vs deferred follow-ups (REVISED per PR #1510 re-review)
 
-These are not optional. Without them the slice-13 wire-up is dead code.
+The original draft listed P1/P3/Q5/Q7 as "hard prerequisites that MUST land in slice 13." PR #1510 re-review #2 caught the divergence: the slice 13 implementation (#1511, now merged) explicitly defers all four with TODOs cited in the boot-composition preamble. This section accurately reflects what shipped vs what's deferred — and why the substrate is whole without them.
 
-### P1. Server shutdown signal wired to `Runtime::shutdown`
+### Shipped in slice 13 (PR #1511, merged 2026-06-02)
 
-**Status:** missing. `Runtime::shutdown` exists at `runtime/runtime.rs:354`, but `grep -rn 'shutdown()' src/{ipc,bin}/` returns ZERO callers. The server has no `tokio::signal::ctrl_c()` → graceful shutdown today.
+- **Q1**: `bootstrap_planned` / `derive_spawn_plan` / `build_profile` take `&Registry` instead of `&Arc<Registry>`.
+- **Q3**: `PersonaAircRuntimeRegistry` extended to `PersonaSlot { runtime, service_loop }`. `attach_service_loop`, `is_service_loop_finished`, `shutdown_slot` methods added. One keyspace owns both.
+- **P2**: `plan_for_tier` returns single Helper. `debug_assert!(plan.len() <= 1)` at the producer. `slice_14_restores_helper_plus_coder_for_compat` test pinned `#[ignore]` until slice 14.
+- **Boot composition**: `crate::ipc::start_server` boot loop replaced by `bootstrap_planned → materialize_adapters → spawn_persona_service → attach_service_loop`. Old welcome-log-only path deleted per [[organization-purity-as-we-migrate]].
+- **Q2 (partial)**: boot uses `HwCapabilityTier::CpuOnly + HwTierCategory::Compat` hardcoded. `detect_host_capability(&gpu_monitor, &system_info)` is a 3-line replacement once a production `GpuMonitor` constructor exists (no production callsite builds one today; only tests do). TODO in `ipc/mod.rs` cites task #52.
 
-**Consequence if skipped:** the supervisor's `.abort()` hook on each persona's `JoinHandle` becomes dead code — handles drop on process exit, daemon-attach tasks get reaped by tokio runtime drop instead of the orderly path. Wire subscribers leak until process death.
+### Deferred follow-ups (slice 13.5+)
 
-**Required work in slice 13:** wire `tokio::signal::ctrl_c()` (or platform equivalent) in `ipc::start_server`'s main task to call `runtime.shutdown().await`. PersonaSupervisor's `shutdown()` impl then walks its `JoinHandle` collection.
+- **P1**: `tokio::signal::ctrl_c()` → `Runtime::shutdown` is NOT wired in slice 13. Per-slot shutdown is available via `PersonaAircRuntimeRegistry::shutdown_slot` and exercised by `persona/instances/*` IPC commands. Server-level signal handler is its own sub-slice. **Consequence today:** server stops via process kill; tokio runtime drop reaps daemon-attach tasks. Per the cleanup-model section below this is sufficient against the pinned airc rev — `.abort()` (or drop) on the `EventStream`'s `DaemonAttachGuard` aborts the per-channel attach handles. No leak.
+- **P3**: `ResourceBroker.acquire` admission before `factory.build_adapter` is NOT in slice 13. Current LCD case is 1 persona × ~500 MiB GGUF, well within all supported tiers. Becomes load-bearing when multi-persona returns in slice 14 (where #122 shared-base + LoRA paging will need broker admission for the LoRA cache).
+- **Q5**: structured `BootSummary` event publishing is NOT in slice 13. The boot composition logs `hosted_count` / `failed_count` / per-slot `tracing::warn!` for now. Operator observability via log scraping. `MessageBus::publish("persona:boot:summary", ...)` is a slice-13.5 follow-up when a subscriber (alerter, dashboard) wants it.
+- **Q7**: per-persona `is_service_loop_finished` poller is NOT in slice 13. The registry exposes `is_service_loop_finished` so a supervisor poller can land later; for now operators observe via `persona/instances/list` (the registry surfaces the same data through the IPC command).
+
+### Why this divergence is acceptable
+
+Single-persona LCD is in-budget for all tiers. The supervisor's `shutdown_slot` (the orderly path that registry-removes + JoinHandle-aborts) is already exposed for the IPC commands. The cleanup-model section below shows that `.abort()` ALONE (the path tokio runtime drop takes) is sufficient against the pinned airc rev. P1/P3/Q5/Q7 are observability + back-pressure refinements, not invariants the slice-13 substrate violates.
+
+The original "Hard prerequisites" framing predates that verification. The implementation deferred them because the substrate doesn't break without them. The Q2 deferral (no production `GpuMonitor` constructor) is the only one tied to a genuine missing primitive; tasks #52 + slice 13.5 cover it.
 
 ### P2. Single-persona-per-plan invariant (until slice 14)
 
@@ -53,16 +66,6 @@ This is a pre-existing latent bug in `bootstrap_planned` (slice 8) but slice 13 
 **Slice 14 owns:** writing `role: RoleId` into `seed.json` on mint, reading it on resume, refusing to boot if a seed is missing the role field. THEN `plan_for_tier` returns `[Helper, Coder]` again.
 
 This is a real regression in coverage vs the demo binary today (which hosts one persona but its role isn't substrate-typed). Slice 13 still ships the supervisor path; the multi-persona case waits one slice.
-
-### P3. ResourceBroker admission for adapter spawns
-
-**Status:** `modules/resource_broker.rs` exists. Slice 13's adapter materialization loop currently has no admission check.
-
-**Consequence if skipped:** even the LCD case loads ~500 MiB Q4_K_M GGUF per persona. Two personas = ~1 GiB. M5UmaProMax tier could be 5+. Substrate must consult the broker before each `factory.build_adapter()` call. Per [[substrate-is-a-good-citizen-on-the-host]].
-
-**Required work in slice 13:** add `broker.acquire(adapter_memory_budget).await?` before each `materialize_adapters` factory call. Per-slot rejection → mark slot as `RejectedByBroker` in `BootSummary`. The lease handle threads into `HostedPersona` so it releases when the conversation drops.
-
-This is materially new code, not pure composition. If P3 is too heavy for slice 13, the alternative is to gate slice 13 on landing P3 as a slice 12.5 first.
 
 ---
 
@@ -117,59 +120,96 @@ rt_handle.spawn(async move {
     //                                              ↑ per #122 needs broker admission here too;
     //                                                slice 13 adds the wrapper
 
-    let mut summary = BootSummary::default();
+    let mut hosted_count: usize = 0;
+    let mut failed_count: usize = 0;
     for (slot_idx, result) in hosted_results.into_iter().enumerate() {
         match result {
             Ok(hosted) => {
-                let Some(runtime) = registry_for_lookup.get(hosted.instance.persona_id) else {
-                    summary.failed.push((slot_idx, hosted.role, "runtime missing post-bootstrap".into()));
-                    continue;
-                };
+                // `hosted` is the PersonaContext — already carries
+                // the airc runtime as `hosted.runtime` per the
+                // `&ctx` doctrine. No separate lookup.
+                let persona_id = hosted.identity.persona_id;
                 let handle = spawn_persona_service(
-                    hosted.clone(), runtime, ServeOptions::default(), rt_handle.clone(),
+                    hosted, ServeOptions::default(), rt_handle.clone(),
                 );
-                supervisor_for_handles.register(hosted.instance.persona_id, handle);
-                summary.hosted += 1;
+                if let Err((returned_handle, reason)) = registry_for_lookup
+                    .attach_service_loop(persona_id, handle)
+                    .await
+                {
+                    returned_handle.abort();
+                    let _ = returned_handle.await;
+                    tracing::error!(slot=slot_idx, persona_id=%persona_id, reason, "attach failed; handle drained");
+                    failed_count += 1;
+                    continue;
+                }
+                hosted_count += 1;
             }
             Err(err) => {
-                let (slot, role) = err.slot_and_role();
-                summary.failed.push((slot, role, err.to_string()));
+                tracing::warn!(slot=slot_idx, error=?err, "slot materialization failed");
+                failed_count += 1;
             }
         }
     }
-    bus.publish(BusEvent::new("persona:boot:summary", summary.into()));  // see Q5
+    tracing::info!(hosted=hosted_count, failed=failed_count, "🌐 Substrate boot composition complete (slice 13)");
 });
 ```
 
-Net-new code in slice 13: ~25 lines of composition + the `BootSummary` struct + the `PersonaSupervisor::register` call surface. Everything else is composing existing primitives.
+Net-new code in slice 13: ~25 lines of composition. Everything else is composing existing primitives — `bootstrap_planned` (slice 8), `materialize_adapters` (slice 9), `spawn_persona_service` (slice 12), `attach_service_loop` (slice 13 Q3). `BootSummary` event publishing is the **Q5 deferred follow-up** noted in the scope section above — for now slice 13 emits `tracing::info!` lines with the same counters; a structured `MessageBus::publish("persona:boot:summary", ...)` lands when a subscriber wants it.
 
 ---
 
-## Cleanup model (corrected from PR #1510 review)
+## Cleanup model (REVISED per PR #1510 re-review against pinned `f6ed190`)
 
-The slice-12 review noted this section was wrong on the specifics. Corrected:
+PR #1510 re-review #1 caught that the prior revision named the wrong cleanup mechanism. The actual mechanism against the airc rev pinned in `src/workers/Cargo.toml:44-48` (`f6ed190`) is `DaemonAttachGuard`, not the older `ensure_wire_subscriber` / `inner.subscribers` map.
 
-The actual cleanup chain on `JoinHandle.abort()`:
+### What actually fires the cleanup
 
-1. **`abort()` on the JoinHandle**: tokio cancels the task at the next await point. Task drops, owning `hosted` + `conversation`.
-2. **`AircPersonaConversation::drop`**: drops the lazy `Option<EventStream>`.
-3. **`EventStream::drop`** (`airc-lib/src/stream.rs`): drops the `BroadcastStream<Arc<TranscriptEvent>>` (in-process broadcast receiver). Tokio's broadcast Receiver `drop` decrements the in-process subscriber count.
-4. **Wire subscriber** (`airc-lib/src/transport.rs:65 ensure_wire_subscriber`): **NOT dropped by EventStream alone.** The wire subscriber lives in `Arc<Airc>.inner.subscribers` (a `HashMap<PathBuf, WireSubscriber>`). It's idempotent on `subscribe()` — multiple local broadcast subscribers reuse the same wire subscriber. It tears down only via:
-   - Explicit `teardown_wire(&wire)` call (not the path we use), OR
-   - `Arc<Airc>` reaches refcount 0 (drops `inner.subscribers`).
+Production subscribe (`airc-lib/src/messaging.rs:204 subscribe()`) is daemon-attached. It returns an `EventStream` whose internal `EventStreamInner::Daemon` variant holds a `DaemonAttachGuard` (`airc-lib/src/stream.rs:25-68`). The guard owns `Vec<JoinHandle<()>>` — the per-channel attach tasks spawned by `daemon_subscribe`.
 
-**Practical implication for the supervisor:** **`.abort()` alone is INSUFFICIENT to release the daemon-side wire subscription.** The supervisor's shutdown path MUST also:
-
+`DaemonAttachGuard::drop` (`stream.rs:62-68`):
 ```rust
-join_handle.abort();
-join_handle.await;  // drain the abort
-let runtime = registry.remove(persona_id);  // drops Arc<PersonaAircRuntime> → drops Arc<Airc>
-// Arc<Airc> drop → inner.subscribers drop → wire subscriber tasks drop
+impl Drop for DaemonAttachGuard {
+    fn drop(&mut self) {
+        for handle in &self.handles {
+            handle.abort();
+        }
+    }
+}
 ```
 
-If the supervisor's `.abort()` runs but the registry still holds the `Arc<PersonaAircRuntime>`, the wire subscriber stays alive and the daemon keeps sending events into an in-process broadcast channel with no readers — events accumulate in the broadcast buffer until the channel's overflow policy kicks in.
+When the `EventStream` drops, the guard drops, the per-channel attach tasks abort. IPC connections close at the next poll. **No leak.**
 
-**This is a real architectural constraint** that the slice-13 PersonaSupervisor design has to honor. It's also Finding #4 (next section) — `PersonaAircRuntimeRegistry` is on the cleanup path, so the supervisor can't be orthogonal to it.
+### The cleanup chain on `JoinHandle.abort()`
+
+1. **`abort()` on the spawned service-loop `JoinHandle`**: tokio cancels the task at the next await point.
+2. **Task drops**: `hosted` (PersonaContext) and `conversation` (AircPersonaConversation) drop.
+3. **`AircPersonaConversation::drop`**: drops the held `EventStream`.
+4. **`EventStream::drop` → `DaemonAttachGuard::drop`**: aborts each per-channel attach `JoinHandle`. Per-channel attach tasks tear down, IPC handles close.
+
+`.abort()` ALONE is sufficient.
+
+### What `shutdown_slot` adds (and why)
+
+`PersonaAircRuntimeRegistry::shutdown_slot(persona_id)` does the strictly-stronger sequence:
+1. Take the JoinHandle out of the slot.
+2. `abort()` it AND `await` the JoinHandle (drains cleanly — the abort path's cancellation Error is discarded; we did the shutdown intentionally).
+3. Remove the slot from the registry — drops `Arc<PersonaSlot>`, drops `Arc<PersonaAircRuntime>`, drops `Arc<Airc>` (once the last reference releases).
+
+The `await` step ensures the task has fully cancelled before the function returns — useful for orderly server shutdown where the next step depends on this persona being gone. The registry-remove step releases the in-substrate Arc references (so a follow-up `registry.get(persona_id)` correctly returns `None`).
+
+But the daemon-side IPC cleanup happens via the `DaemonAttachGuard` drop chain inside step 2 (the abort path) — the registry-remove is for in-substrate state hygiene, not for daemon-side teardown. Either path (just abort OR shutdown_slot) cleans up the daemon side. `shutdown_slot` adds the registry-remove + drain ordering on top.
+
+### Practical implication
+
+- **Tokio runtime drop on process exit** (slice 13's actual shutdown path until P1 lands): all task `JoinHandle`s drop, all daemon-attach tasks abort via the guard chain. Daemon sees the IPC connection close at its end of the socket. Clean enough for a server exit.
+- **Per-slot shutdown via `persona/instances/*` IPC commands**: uses `shutdown_slot`; orderly + drained + registry cleared. Operator-driven and load-bearing once slice 14 ships multi-persona.
+- **`P1` (slice 13.5)**: wires `tokio::signal::ctrl_c` → walk the registry → call `shutdown_slot` on each persona → then `runtime.shutdown()`. The orderly path for graceful Ctrl-C.
+
+### Architectural constraint (now corrected)
+
+The original "registry-remove is on the cleanup path" framing was wrong for the daemon-side teardown — it's on the in-substrate-state cleanup path. The daemon-side teardown is the `DaemonAttachGuard` drop chain. Both paths matter at different layers; conflating them was the doc's error.
+
+`PersonaAircRuntimeRegistry` is still the single keyspace owning per-persona lifetime info (Q3's resolution stands) — but it's not the sole authority on daemon-side resource release. That authority is the `DaemonAttachGuard` chain inside airc-lib. The substrate just has to let `EventStream` drop happen (which it does, on any abort or task drop).
 
 ---
 
@@ -254,18 +294,29 @@ Integration test happens via the IPC server itself — no real airc daemon, no r
 
 ---
 
-## Slice-13 implementation checklist (extracted from above for the PR)
+## Slice-13 status (PR #1511 merged 2026-06-02)
 
-- [ ] P1 — `tokio::signal::ctrl_c()` → `runtime.shutdown()` wired in `ipc::start_server`
-- [ ] P2 — `plan_for_tier` Compat tier returns `[Helper]` only; Coder entry commented with `// TODO #133 slice 14`; `debug_assert!(plan.len() <= 1)` at the boot composition
-- [ ] P3 — `ResourceBroker.acquire(...)` called before each `factory.build_adapter`; lease tied to `HostedPersona` lifetime
-- [ ] Q1 — `bootstrap_planned` signature takes `&Registry`, internal `Arc::new` once per call
-- [ ] Q2 — boot path calls `detect_host_capability(&gpu_monitor, &system_info)` directly
-- [ ] Q3 — `PersonaAircRuntimeRegistry` extended to hold `HostedPersonaRuntime { airc_runtime, service_loop }`; `remove(persona_id)` becomes the shutdown path
-- [ ] Q5 — `BootSummary` struct + `MessageBus::publish("persona:boot:summary", ...)` at boot composition end
-- [ ] Q7 — supervisor poller task checking `JoinHandle::is_finished()` per registered persona, every 5s
-- [ ] Boot loop at `ipc/mod.rs:1024-1089` REPLACED by the composition above (delete the welcome-log-only path per [[organization-purity-as-we-migrate]] — don't keep both)
-- [ ] Tests 1–5 from the test plan section land alongside
+**Shipped:**
+- [x] Q1 — `bootstrap_planned` signature takes `&Registry`
+- [x] Q3 — `PersonaAircRuntimeRegistry` extended to `PersonaSlot { runtime, service_loop }`; `attach_service_loop`, `is_service_loop_finished`, `shutdown_slot` methods
+- [x] P2 — `plan_for_tier` returns single Helper, `debug_assert!`, ignored slice-14 regression test
+- [x] Boot loop at `ipc/mod.rs` REPLACED by the composition above (per [[organization-purity-as-we-migrate]])
+- [x] Q2 (partial) — hardcoded `CpuOnly + Compat` with TODO citing task #52 + missing production `GpuMonitor` constructor
+
+**Plus integration polish in PR #1511:**
+- [x] Room-name discovery (`discover_default_room_name`) — fixes the join-by-uuid-as-string hazard that landed Paige in the wrong channel
+- [x] LCD model (`continuum-ai/qwen2.5-0.5b-instruct-GGUF`) added to `model_registry::catalog::models()`
+- [x] `PersonaContext` rename (was `HostedPersona`) + `RagInspectionRequest::for_persona(&profile)` single derivation site (the `&ctx` doctrine — see [[context-is-the-client-airc-token-is-identity]])
+
+**Deferred to slice 13.5+ (see Scope section above for reasoning):**
+- [ ] P1 — `tokio::signal::ctrl_c()` → `runtime.shutdown()` wired
+- [ ] P3 — `ResourceBroker.acquire(...)` admission before factory.build_adapter
+- [ ] Q5 — structured `BootSummary` `MessageBus::publish`
+- [ ] Q7 — supervisor poller checking `is_service_loop_finished` every 5s
+- [ ] Q2 completion — `detect_host_capability` once a production `GpuMonitor` constructor lands (task #52-adjacent)
+
+**Integration validation (2026-06-02):**
+- Substrate-hosted Paige replied in Joel's `continuum` room: "Hello Joel, thank you for testing the substrate-managed host loop. I'm here to assist with any questions or concerns you have." Full trace: airc msg → boot composition → AircPersonaConversation subscribe → RagInspectionRequest::for_persona(&ctx.profile) → inspect_persona_rag_with_inference → ctx.runtime.say. Five layers proved end-to-end on Intel Mac CPU-only.
 
 ---
 
