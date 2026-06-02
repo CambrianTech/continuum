@@ -37,7 +37,9 @@ use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
 use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::identity_provider::PersonaIdentityProvider;
 use crate::persona::role_template::RoleId;
-use crate::persona::service_loop::{serve_persona_loop, ServeOptions, ServeOutcome};
+use crate::persona::service_loop::{
+    serve_persona_loop, PersonaConversation, ServeOptions, ServeOutcome,
+};
 use crate::persona::spawner_module::{bootstrap_planned, PersonaSpawnerModule};
 use crate::persona::supervisor::{
     materialize_adapters, HostedPersona, PersonaAdapterFactory, PersonaContext, SupervisorError,
@@ -47,25 +49,34 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-/// Spawn one tokio task that hosts a single persona on the airc
-/// grid: subscribes to her room, runs `serve_persona_loop` against
-/// the cognition path, posts replies through `ctx.runtime.say`.
+/// Spawn one tokio task that hosts a single persona on the airc grid:
+/// subscribes to her room, runs `serve_persona_loop` against the
+/// cognition path, posts replies through `ctx.runtime.say`.
 ///
-/// Returns immediately with a `JoinHandle`. The task runs until:
+/// Per [[init-once-handle-then-lease-zero-copy-refs]]: the airc
+/// subscribe round-trip happens HERE, BEFORE the JoinHandle is
+/// returned. When this future resolves, the persona is genuinely
+/// ready to converse — her stream is open, her registry slot, when
+/// later attached, advertises a substrate-correct "hosted = ready"
+/// invariant (slice-13.6 reviewer fix to PR #1514).
 ///
-/// - the airc subscribe stream ends (daemon disconnect) — handle
-///   resolves with `Ok(ServeOutcome { ... })` summarizing what
-///   happened.
-/// - `serve_persona_loop` returns `Err(message)` from a
-///   non-recoverable error (e.g., `high_water_mark` failed at
-///   start) — handle resolves with `Err(message)`.
-/// - the handle is `.abort()`'d by the caller — the supervisor's
-///   shutdown path uses this for graceful drain.
-pub fn spawn_persona_service(
+/// On Err: the daemon round-trip (prime) failed and the task is
+/// NEVER spawned. Caller (supervisor) records the failure in
+/// `BootSummary::failures` and continues with sibling slots per
+/// [[no-fallbacks-ever]] — no half-spawned persona, no orphaned
+/// service loop, no degraded path.
+///
+/// The returned `JoinHandle` runs until:
+/// - the airc subscribe stream ends (daemon disconnect) — resolves
+///   with `Ok(ServeOutcome { ... })`.
+/// - `serve_persona_loop` returns `Err` from a non-recoverable error
+///   (e.g., `high_water_mark` failed) — resolves with `Err`.
+/// - `.abort()`'d by the caller — the supervisor's shutdown path.
+pub async fn spawn_persona_service(
     ctx: HostedPersona,
     opts: ServeOptions,
     rt_handle: tokio::runtime::Handle,
-) -> JoinHandle<Result<ServeOutcome, String>> {
+) -> Result<JoinHandle<Result<ServeOutcome, String>>, String> {
     // `ctx.runtime: Arc<dyn AircCitizen>` — slice 13.5 trait
     // extraction. The reader for the RAG layer upcoerces from
     // `AircCitizen` to its `AircTranscriptReader` supertrait via
@@ -74,9 +85,23 @@ pub fn spawn_persona_service(
     let citizen = ctx.runtime.clone();
     let reader: Arc<dyn AircTranscriptReader> = citizen.clone();
     let mut conversation = AircPersonaConversation::new(citizen);
-    rt_handle.spawn(async move {
+
+    // Eager priming BEFORE the spawn (slice 13.6 reviewer fix).
+    // The substrate's "hosted = ready" invariant requires that the
+    // daemon subscribe complete BEFORE this function returns —
+    // otherwise the supervisor's `summary.hosted += 1` accountancy
+    // is racing N concurrent in-flight subscribes against itself.
+    // Per [[init-once-handle-then-lease-zero-copy-refs]]: the init
+    // pays at boot, not on hot path; the contract is that the
+    // persona is genuinely warm when "hosted" ticks.
+    conversation
+        .prime()
+        .await
+        .map_err(|e| format!("conversation.prime() failed before spawn: {e}"))?;
+
+    Ok(rt_handle.spawn(async move {
         serve_persona_loop(&ctx, &mut conversation, reader, opts).await
-    })
+    }))
 }
 
 /// Typed summary of one boot composition run. Replaces the inline
@@ -276,9 +301,19 @@ impl PersonaSpawnSupervisor {
     }
 
     /// Spawn one persona's service loop and attach to the registry.
-    /// On `attach_service_loop` failure, orderly-drain the spawned
-    /// handle (per [[organization-purity-as-we-migrate]] — no
-    /// leaked tokio tasks). Updates `summary` in place.
+    ///
+    /// Steps:
+    /// 1. Call `spawn_persona_service` — this AWAITS the daemon
+    ///    subscribe round-trip (prime) before returning. If prime
+    ///    fails, no task is spawned; the slot fails cleanly with no
+    ///    leaked resources per [[no-fallbacks-ever]].
+    /// 2. Attach the returned handle to the registry.
+    /// 3. On `attach_service_loop` failure: orderly-drain the spawned
+    ///    handle per [[organization-purity-as-we-migrate]] — no
+    ///    leaked tokio tasks.
+    ///
+    /// `summary.hosted += 1` only ticks when BOTH prime succeeded AND
+    /// attach succeeded — substrate's "hosted = ready" invariant holds.
     async fn spawn_and_attach(
         &self,
         slot_idx: usize,
@@ -288,8 +323,32 @@ impl PersonaSpawnSupervisor {
         let persona_id = ctx.identity.persona_id;
         let agent_name = ctx.identity.agent_name.clone();
         let role = ctx.role;
-        let handle =
-            spawn_persona_service(ctx, ServeOptions::default(), self.rt_handle.clone());
+        let handle = match spawn_persona_service(
+            ctx,
+            ServeOptions::default(),
+            self.rt_handle.clone(),
+        )
+        .await
+        {
+            Ok(h) => h,
+            Err(reason) => {
+                tracing::error!(
+                    slot = slot_idx,
+                    persona_id = %persona_id,
+                    reason = %reason,
+                    "PersonaSpawnSupervisor: spawn_persona_service failed \
+                     before task spawn (prime round-trip). No service loop \
+                     started; persona's registry entry is unattended."
+                );
+                summary.failures.push(BootSlotFailure {
+                    slot_index: slot_idx,
+                    role: Some(role),
+                    persona_id: Some(persona_id),
+                    reason: format!("spawn_persona_service failed: {reason}"),
+                });
+                return;
+            }
+        };
         match self.registry.attach_service_loop(persona_id, handle).await {
             Ok(()) => {
                 summary.hosted += 1;

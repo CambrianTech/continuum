@@ -125,21 +125,21 @@ impl PersonaConversation for AircPersonaConversation {
     }
 
     async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
-        // Eager priming (slice 13.6+): `serve_persona_loop` calls
-        // `prime` at boot so the stream is normally already set when
-        // we arrive here. The lazy fallback below stays for direct
-        // callers (integration tests, future code paths) that
-        // construct + iterate without going through the loop's
-        // pre-prime step — same semantics, just later binding.
-        if self.stream.is_none() {
-            let stream = self
-                .runtime
-                .subscribe()
-                .await
-                .map_err(|e| format!("subscribe failed: {e}"))?;
-            self.stream = Some(stream);
-        }
-        let stream = self.stream.as_mut().expect("stream initialized above");
+        // Per [[no-fallbacks-ever]]: prime() is the substrate's
+        // single contract for opening the subscribe stream. If a
+        // caller reaches next_message without having primed, the
+        // substrate refuses visibly — never silently lazy-subscribes.
+        // Reviewer-driven fix to PR #1514: the lazy fallback that
+        // used to live here was dead code in production (every caller
+        // goes through serve_persona_loop, which primes at boot) AND
+        // a doctrine violation (soft-language "for future callers"
+        // is exactly the silent-degradation shape we refuse).
+        let stream = self.stream.as_mut().ok_or_else(|| {
+            "AircPersonaConversation::next_message called before prime() — \
+             caller must invoke prime() before iterating (serve_persona_loop \
+             does this automatically at boot)"
+                .to_string()
+        })?;
 
         // Skip self / non-text inline — they're not "next messages"
         // from the loop's perspective. Yielding them with the loop
@@ -182,5 +182,33 @@ impl PersonaConversation for AircPersonaConversation {
             .await
             .map(|_event_id| ())
             .map_err(|e| format!("say failed: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persona::airc_citizen::StubAircCitizen;
+
+    /// Regression test for the slice-13.6 reviewer fix to PR #1514:
+    /// `next_message` MUST refuse if `prime` wasn't called first.
+    /// Per [[no-fallbacks-ever]] the lazy-subscribe fallback that
+    /// used to live in next_message was a soft-language degradation
+    /// path; this test locks the new typed-error contract.
+    ///
+    /// Construction is free; primed state stays false; the first
+    /// `next_message` returns a typed `Err` naming the missing call.
+    #[tokio::test]
+    async fn next_message_without_prime_errors_visibly() {
+        let citizen: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(uuid::Uuid::new_v4()));
+        let mut conversation = AircPersonaConversation::new(citizen);
+        let err = conversation
+            .next_message()
+            .await
+            .expect_err("next_message must error when stream is unprimed");
+        assert!(
+            err.contains("prime"),
+            "error must name the missing call: {err}"
+        );
     }
 }
