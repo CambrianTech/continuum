@@ -495,7 +495,24 @@ mod tests {
 
     #[test]
     fn test_allocate_no_keys() {
-        let manager = test_gpu_manager();
+        // Use a deterministic test fixture rather than real hardware
+        // detection. test_gpu_manager() calls GpuMemoryManager::detect()
+        // which leaks host hardware into a pure-logic test — empirically
+        // observed failing on Intel Mac + AMD Radeon Pro 560X (4 GB VRAM
+        // - reserves = ~2 GB usable, but every local persona needs 3 GB
+        // per catalog.json, so 0 local allocations and the
+        // `local_count >= 1` invariant blows up). The allocator's job is
+        // "given a hardware budget, decide what to spawn"; the test
+        // should hand it a known budget, not ask the OS.
+        //
+        // Sibling tests `test_allocate_5090_tier` + `test_allocate_m1_pro_tier`
+        // already use `GpuMemoryManager::simulated` for the same reason —
+        // 16 GiB is a comfortable mid-tier that fits today's largest local
+        // persona budget (5 GiB for `vision`) with room to spare.
+        let manager = Arc::new(GpuMemoryManager::simulated(
+            "test:synthetic",
+            16 * 1024 * 1024 * 1024,
+        ));
         let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog);
 
