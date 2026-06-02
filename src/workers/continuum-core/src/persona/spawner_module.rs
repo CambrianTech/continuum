@@ -318,7 +318,7 @@ pub async fn bootstrap_planned(
     instance_manager: &PersonaInstanceManagerModule,
     provider: &mut dyn crate::persona::identity_provider::PersonaIdentityProvider,
     tier_id: &str,
-    registry: &Arc<crate::model_registry::Registry>,
+    registry: &crate::model_registry::Registry,
 ) -> Result<Vec<MaterializedPersonaPlan>, BootstrapPlannedError> {
     let plan = module.plan();
     let required = plan.len();
