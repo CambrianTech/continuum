@@ -36,6 +36,7 @@ pub mod identity_provider;
 pub mod inbox;
 pub mod inference_profile;
 pub mod profile_builder;
+pub mod service_loop;
 pub mod spawner;
 pub mod spawner_module;
 pub mod supervisor;

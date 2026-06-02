@@ -45,6 +45,7 @@ use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceP
 use crate::persona::role_template::RoleId;
 use crate::persona::spawner_module::MaterializedPersonaPlan;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// Polymorphism rail for "given a profile, produce an adapter".
 /// Production wiring uses [`LlamaCppPersonaAdapterFactory`]; future
@@ -64,7 +65,7 @@ pub trait PersonaAdapterFactory: Send + Sync {
     async fn build_adapter(
         &self,
         profile: &PersonaInferenceProfile,
-    ) -> Result<Box<dyn AIProviderAdapter>, String>;
+    ) -> Result<Arc<dyn AIProviderAdapter>, String>;
 }
 
 /// Production factory: hands every profile to
@@ -77,10 +78,10 @@ impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
     async fn build_adapter(
         &self,
         profile: &PersonaInferenceProfile,
-    ) -> Result<Box<dyn AIProviderAdapter>, String> {
+    ) -> Result<Arc<dyn AIProviderAdapter>, String> {
         let adapter = crate::inference::llamacpp_adapter::LlamaCppAdapter::for_persona(profile)
             .map_err(|e| format!("LlamaCppAdapter::for_persona failed: {e}"))?;
-        Ok(Box::new(adapter))
+        Ok(Arc::new(adapter))
     }
 }
 
@@ -95,9 +96,11 @@ pub struct HostedPersona {
     /// default room. Copied from the bootstrap step.
     pub instance: crate::modules::persona_instance_manager::PersonaInstanceInfo,
     /// The inference adapter, ready to receive `generate_text` calls.
-    /// Owned by the supervisor; #122 changes this to a shared-base
-    /// handle, not a Box.
-    pub adapter: Box<dyn AIProviderAdapter>,
+    /// `Arc` so the service-loop (#133 slice 10) can clone-and-share
+    /// the adapter with the RAG inspector. #122 (shared base) keeps
+    /// the same `Arc<dyn ...>` shape — only the concrete adapter
+    /// inside changes.
+    pub adapter: Arc<dyn AIProviderAdapter>,
 }
 
 /// Structured error per failed slot. The two failure modes are:
@@ -256,9 +259,9 @@ mod tests {
         async fn build_adapter(
             &self,
             profile: &PersonaInferenceProfile,
-        ) -> Result<Box<dyn AIProviderAdapter>, String> {
+        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
             self.builds.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::new(FakeAdapter {
+            Ok(Arc::new(FakeAdapter {
                 provider_id: profile.model_id.clone(),
             }))
         }
@@ -273,7 +276,7 @@ mod tests {
         async fn build_adapter(
             &self,
             _profile: &PersonaInferenceProfile,
-        ) -> Result<Box<dyn AIProviderAdapter>, String> {
+        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
             Err("simulated factory rejection".into())
         }
     }
