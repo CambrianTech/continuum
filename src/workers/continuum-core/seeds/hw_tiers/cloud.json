@@ -1,7 +1,7 @@
 {
   "tierId": "cloud",
   "label": "Cloud Inference",
-  "category": "pro",
+  "category": "cloud",
   "localVideoCapable": false,
   "minParamsBMeaningful": 7.0,
   "maxParamsBFits": 405.0,

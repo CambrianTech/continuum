@@ -1,7 +1,7 @@
 {
   "tierId": "m1_uma_16gb",
   "label": "M1 16GB Unified Memory",
-  "category": "base",
+  "category": "mseries",
   "localVideoCapable": true,
   "minParamsBMeaningful": 1.0,
   "maxParamsBFits": 7.0,

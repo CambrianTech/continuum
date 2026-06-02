@@ -22,7 +22,15 @@ use crate::orm::{base_entity_fields, OrmEntity};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Tier category — the 3-plan framing.
+/// Tier category — Joel's 5-variant hierarchy (2026-06-01, #133).
+///
+/// Replaces the earlier 3-plan framing (Floor/Base/Pro) with a richer
+/// taxonomy that maps directly to hardware classes the substrate
+/// actually targets. The substrate ships LCD as the always-works safe
+/// mode; everything else lights up on capable hardware. Per [[lcd-model-
+/// qwen25-05b-and-foundry-lora]] and [[optimizing-for-low-end-compounds-
+/// on-high-end]], obsessive optimization on the Compat tier transfers
+/// upward to every higher tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -30,15 +38,30 @@ use ts_rs::TS;
 )]
 #[serde(rename_all = "lowercase")]
 pub enum HwTierCategory {
-    /// Intel laptops, low-end hardware. Inference is small + slow OR
-    /// routed via grid to a Base/Pro peer. Video still possible via
-    /// grid-inference (WebRTC/animation client-side; inference remote).
-    Floor,
-    /// MacBook M-series unified-memory. The design center. Local-leaning.
-    Base,
-    /// M-series Pro/Max, future unified-memory PCs. Local + hosts
-    /// inference for Floor/Base peers via airc.
-    Pro,
+    /// **LCD / safe / compatibility mode.** Works everywhere — Intel
+    /// Mac, CPU-only, anything weak. The substrate's lowest-common-
+    /// denominator. Multi-persona still expected via small models +
+    /// LoRA paging + grid-inference offload for what local can't carry.
+    /// Joel (2026-06-01): "This LCD is the lowest default. This is
+    /// maybe the compatibility mode enum value."
+    Compat,
+    /// Apple Silicon M1-M4 baseline. Unified memory, capable Metal
+    /// backend. Local-leaning. The design center for typical user
+    /// hardware in 2026.
+    MSeries,
+    /// M-series Pro/Max/Ultra. Headroom for 7B-14B local models,
+    /// multi-persona at full quality, hosts inference for Compat
+    /// peers via the grid.
+    MSeriesPro,
+    /// NVIDIA discrete GPUs. Spans Sm60 (Pascal / 1080Ti) through
+    /// Sm120 (Blackwell / 5090). Wide capability range; per-device
+    /// VRAM in the descriptor narrows it.
+    Cuda,
+    /// Cloud-hosted inference (Anthropic, OpenAI, etc.). Not local
+    /// compute — rendering stays local; only the model lives in the
+    /// cloud. Always eligible per
+    /// [[inference-is-an-adapter-always-in-the-loop]].
+    Cloud,
 }
 
 /// One hardware tier's descriptor — flat row in the `hw_tiers`
@@ -348,7 +371,7 @@ mod tests {
         let descriptor = HwTierDescriptor {
             tier_id: "m1_uma_8gb".to_string(),
             label: "M1 8GB Unified Memory".to_string(),
-            category: HwTierCategory::Base,
+            category: HwTierCategory::MSeries,
             local_video_capable: true,
             min_params_b_meaningful: 0.5,
             max_params_b_fits: 3.0,
@@ -370,12 +393,26 @@ mod tests {
     /// Categories serialize as lowercase strings — matches `#[serde(rename_all = "lowercase")]`.
     #[test]
     fn category_serializes_as_lowercase() {
-        let json = serde_json::to_string(&HwTierCategory::Floor).expect("ser Floor");
-        assert_eq!(json, "\"floor\"");
-        let json = serde_json::to_string(&HwTierCategory::Base).expect("ser Base");
-        assert_eq!(json, "\"base\"");
-        let json = serde_json::to_string(&HwTierCategory::Pro).expect("ser Pro");
-        assert_eq!(json, "\"pro\"");
+        assert_eq!(
+            serde_json::to_string(&HwTierCategory::Compat).expect("ser Compat"),
+            "\"compat\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HwTierCategory::MSeries).expect("ser MSeries"),
+            "\"mseries\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HwTierCategory::MSeriesPro).expect("ser MSeriesPro"),
+            "\"mseriespro\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HwTierCategory::Cuda).expect("ser Cuda"),
+            "\"cuda\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HwTierCategory::Cloud).expect("ser Cloud"),
+            "\"cloud\""
+        );
     }
 
     /// CI guard from #125: every embedded seed JSON must parse cleanly
@@ -403,24 +440,23 @@ mod tests {
         );
     }
 
-    /// The 3-plan framing per Joel's 2026-06-01 directive must have
-    /// representatives across all categories. If a category goes
-    /// empty (someone deletes the only Floor seed), this fails.
+    /// 5-variant hierarchy (Joel, 2026-06-01, #133) must have
+    /// representatives in each currently-shipping category. Cloud +
+    /// Compat are non-negotiable (universal fallback / universal floor).
+    /// MSeries + MSeriesPro + Cuda asserted as soon as their seeds ship;
+    /// for now the floor is Compat + MSeries + at least one Cuda variant.
     #[test]
-    fn seeds_cover_all_three_categories() {
+    fn seeds_cover_required_categories() {
         let descriptors = parse_seed_descriptors().expect("parse");
-        let has_floor = descriptors
-            .iter()
-            .any(|d| matches!(d.category, HwTierCategory::Floor));
-        let has_base = descriptors
-            .iter()
-            .any(|d| matches!(d.category, HwTierCategory::Base));
-        let has_pro = descriptors
-            .iter()
-            .any(|d| matches!(d.category, HwTierCategory::Pro));
-        assert!(has_floor, "no Floor-tier seed shipped");
-        assert!(has_base, "no Base-tier seed shipped");
-        assert!(has_pro, "no Pro-tier seed shipped");
+        let has = |cat: HwTierCategory| descriptors.iter().any(|d| d.category == cat);
+        assert!(has(HwTierCategory::Compat), "no Compat-tier seed shipped");
+        assert!(has(HwTierCategory::MSeries), "no MSeries-tier seed shipped");
+        assert!(
+            has(HwTierCategory::MSeriesPro),
+            "no MSeriesPro-tier seed shipped"
+        );
+        assert!(has(HwTierCategory::Cuda), "no Cuda-tier seed shipped");
+        assert!(has(HwTierCategory::Cloud), "no Cloud-tier seed shipped");
     }
 
     /// Specific anchor seeds must be present — they're load-bearing

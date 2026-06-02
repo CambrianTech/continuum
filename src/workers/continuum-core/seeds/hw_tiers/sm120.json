@@ -1,7 +1,7 @@
 {
   "tierId": "sm120",
   "label": "NVIDIA Blackwell (Sm120, RTX 5090)",
-  "category": "pro",
+  "category": "cuda",
   "localVideoCapable": true,
   "minParamsBMeaningful": 7.0,
   "maxParamsBFits": 70.0,

@@ -1,7 +1,7 @@
 {
   "tierId": "m1_uma_8gb",
   "label": "M1 8GB Unified Memory",
-  "category": "base",
+  "category": "mseries",
   "localVideoCapable": true,
   "minParamsBMeaningful": 1.0,
   "maxParamsBFits": 3.0,

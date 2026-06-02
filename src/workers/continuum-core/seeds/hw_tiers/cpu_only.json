@@ -1,7 +1,7 @@
 {
   "tierId": "cpu_only",
   "label": "CPU Only",
-  "category": "floor",
+  "category": "compat",
   "localVideoCapable": false,
   "minParamsBMeaningful": 0.5,
   "maxParamsBFits": 1.5,

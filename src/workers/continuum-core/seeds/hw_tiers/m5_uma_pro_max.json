@@ -1,7 +1,7 @@
 {
   "tierId": "m5_uma_pro_max",
   "label": "M5 Pro/Max Unified Memory",
-  "category": "pro",
+  "category": "mseriespro",
   "localVideoCapable": true,
   "minParamsBMeaningful": 7.0,
   "maxParamsBFits": 30.0,

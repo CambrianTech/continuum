@@ -1,7 +1,7 @@
 {
   "tierId": "sm60",
   "label": "NVIDIA Pascal (Sm60, ~1080 Ti)",
-  "category": "pro",
+  "category": "cuda",
   "localVideoCapable": true,
   "minParamsBMeaningful": 3.0,
   "maxParamsBFits": 11.0,
