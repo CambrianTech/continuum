@@ -231,6 +231,15 @@ pub struct ServeOutcome {
 /// Run the per-persona service loop until the conversation stream
 /// ends.
 ///
+/// **PRECONDITION**: `conversation.prime()` MUST be called by the
+/// caller before invoking this function. The supervisor's
+/// `spawn_persona_service` enforces this. Direct callers (the
+/// `airc_chat_demo` binary, integration tests) must call `prime`
+/// explicitly. Per [[no-fallbacks-ever]] this loop does NOT prime
+/// as a safety net — one place primes, callers honor the contract.
+/// If you forget to prime, the first `next_message` returns a typed
+/// `Err("called before prime()")` so the failure is loud.
+///
 /// Returns the aggregate `ServeOutcome` summarizing what the loop
 /// did. Stream-level transient errors (yielded as `Err` from
 /// `next_message`) increment `turns_errored` and the loop continues;
@@ -255,17 +264,18 @@ async fn serve_persona_loop_inner(
     reader: Arc<dyn AircTranscriptReader>,
     opts: ServeOptions,
 ) -> Result<ServeOutcome, String> {
-    // Pre-subscribe at boot. Moves the airc daemon round-trip from
-    // "first turn" into "service-loop startup" — the persona is
-    // ready to converse the moment the first message arrives, not
-    // one round-trip later. Per [[persona-webrtc-all-tiers-latency-obsessed]]
-    // every layer of the substrate is latency-obsessed; pre-priming
-    // is the cheapest lever the seam offers.
-    conversation
-        .prime()
-        .await
-        .map_err(|e| format!("conversation.prime() failed: {e}"))?;
-
+    // PRECONDITION: caller MUST have called `conversation.prime()`
+    // before entering this loop. The supervisor's `spawn_persona_service`
+    // does this before spawning the task. Direct callers
+    // (`airc_chat_demo`, integration tests) prime explicitly before
+    // calling.
+    //
+    // Per [[no-fallbacks-ever]]: this loop does NOT prime as a safety
+    // net. Calling prime here AND in `spawn_persona_service` would be
+    // belt-and-suspenders fallback shape — one place primes, the
+    // other relies on the contract. If a caller forgot to prime, the
+    // first `next_message` returns a typed `Err("called before prime()")`
+    // — fail-loud, not silently-warm.
     let mut high_water = conversation
         .high_water_mark(opts.page_recent_limit)
         .await
@@ -446,9 +456,17 @@ mod tests {
     /// Stub adapter: every generate_text returns a canned response.
     /// Used so the inspect_persona_rag_with_inference call has
     /// something to return without loading a GGUF.
+    ///
+    /// `inject_delay_ms` injects an awaitable sleep so the latency
+    /// metric test can assert that recorded ms reflect REAL elapsed
+    /// time — not just that `record()` is being called with whatever
+    /// happens to fall out of `Instant::elapsed`. Without this, the
+    /// metric test would be fake-demo-shaped (passing on plumbing,
+    /// silent on correctness).
     struct CannedAdapter {
         reply: String,
         calls: AtomicUsize,
+        inject_delay_ms: u64,
     }
 
     #[async_trait]
@@ -484,6 +502,10 @@ mod tests {
             _request: TextGenerationRequest,
         ) -> Result<TextGenerationResponse, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.inject_delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms))
+                    .await;
+            }
             Ok(TextGenerationResponse {
                 text: self.reply.clone(),
                 model: "canned-model".to_string(),
@@ -532,11 +554,20 @@ mod tests {
     }
 
     fn fake_hosted(persona_peer_id: Uuid, reply: &str) -> HostedPersona {
+        fake_hosted_with_delay(persona_peer_id, reply, 0)
+    }
+
+    fn fake_hosted_with_delay(
+        persona_peer_id: Uuid,
+        reply: &str,
+        inject_delay_ms: u64,
+    ) -> HostedPersona {
         use crate::persona::hw_tier_descriptor::HwTierCategory;
         use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
         let adapter = CannedAdapter {
             reply: reply.to_string(),
             calls: AtomicUsize::new(0),
+            inject_delay_ms,
         };
         let persona_id = Uuid::new_v4();
         // Build a profile shaped like the LCD Compat tier — the
@@ -609,6 +640,14 @@ mod tests {
             primed: AtomicUsize::new(0),
         };
 
+        // Caller-primes contract: direct callers of serve_persona_loop
+        // (tests, demo binaries) prime explicitly before iterating.
+        // The supervisor's spawn_persona_service path does this at the
+        // supervisor level. Per [[no-fallbacks-ever]] there's only ONE
+        // place that primes per code path; the loop assumes the
+        // contract is honored.
+        conversation.prime().await.expect("prime ok");
+
         let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
         let opts = ServeOptions {
             page_recent_limit: 10,
@@ -662,6 +701,66 @@ mod tests {
         );
     }
 
+    /// Honest latency test: injects a real ~80ms sleep into the
+    /// adapter's generate_text, asserts the recorded turn_latency
+    /// reflects that delay. Without this, the count-only test below
+    /// would be fake-demo-shaped — passing on plumbing, silent on
+    /// whether the metric tracks ACTUAL elapsed wall-clock.
+    ///
+    /// Bounds are generous (lower 50ms, upper 5s) so the test is
+    /// jitter-tolerant on noisy CI hosts. A regression that records
+    /// the wrong duration (e.g., measuring something other than the
+    /// reply path) would land outside this range and fail.
+    #[tokio::test]
+    async fn latency_metric_reflects_real_wall_clock() {
+        let persona_peer = Uuid::new_v4();
+        let other_peer = Uuid::new_v4();
+        let hosted = fake_hosted_with_delay(persona_peer, "ok.", 80);
+
+        let mut conversation = StubConversation {
+            high_water: 0,
+            events: Mutex::new(VecDeque::from(vec![
+                Ok(Some(IncomingMessage {
+                    lamport: 1,
+                    peer_id: other_peer,
+                    text: "ping?".to_string(),
+                })),
+                Ok(None),
+            ])),
+            said: Mutex::new(vec![]),
+            primed: AtomicUsize::new(0),
+        };
+
+        conversation.prime().await.expect("prime ok");
+
+        let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
+        let opts = ServeOptions {
+            page_recent_limit: 10,
+            rag_fetch_limit: 10,
+            now_ms: fixed_now,
+        };
+
+        let outcome = serve_persona_loop(&hosted, &mut conversation, reader, opts)
+            .await
+            .expect("loop completes");
+
+        assert_eq!(outcome.turn_latency.count, 1);
+        let observed_ms = outcome
+            .turn_latency
+            .min_ms
+            .expect("recorded after sample");
+        assert!(
+            observed_ms >= 50,
+            "recorded latency ({observed_ms}ms) must reflect the injected 80ms \
+             sleep (allowing CI jitter floor of 50ms)"
+        );
+        assert!(
+            observed_ms < 5000,
+            "recorded latency ({observed_ms}ms) must not balloon — \
+             upper bound 5s for sanity"
+        );
+    }
+
     /// `LatencyAggregate` math: cheap online min/max/sum/count over
     /// arbitrary inputs. Empty aggregate returns None for everything;
     /// after samples, mean = total / count and min/max track extremes.
@@ -708,38 +807,59 @@ mod tests {
         assert_eq!(agg.count, 2);
     }
 
-    /// Prime-failure short-circuit: if `prime` returns Err, the loop
-    /// MUST refuse to start rather than entering a degraded path.
-    /// Per [[no-fallbacks-ever]] a broken transport surfaces as an
-    /// error to the caller, not as a silent skip-then-retry loop.
+    /// Caller-primes contract: per [[no-fallbacks-ever]] the loop does
+    /// NOT prime as a safety net — callers honor the contract. If a
+    /// test forgets to call `conversation.prime()` before
+    /// `serve_persona_loop`, the conversation's `next_message`
+    /// returns a typed `Err("called before prime()")`. The loop
+    /// surfaces this as `turns_errored` per the substrate's
+    /// honest-error doctrine, then ends when the stub yields `None`.
+    ///
+    /// Locks the absence of the belt-and-suspenders prime() call in
+    /// serve_persona_loop_inner. If a future refactor adds a
+    /// safety-net prime back into the loop, this test starts
+    /// reporting `turns_errored == 0`, exposing the regression.
     #[tokio::test]
-    async fn prime_failure_short_circuits_loop() {
-        struct FailingPrimeConversation {
-            primed_attempts: AtomicUsize,
+    async fn loop_without_caller_prime_surfaces_typed_error_per_turn() {
+        let persona_peer = Uuid::new_v4();
+        let other_peer = Uuid::new_v4();
+        let hosted = fake_hosted(persona_peer, "unused");
+
+        struct UnprimedConversation {
+            events: Mutex<VecDeque<()>>,
         }
         #[async_trait]
-        impl PersonaConversation for FailingPrimeConversation {
+        impl PersonaConversation for UnprimedConversation {
             async fn prime(&mut self) -> Result<(), String> {
-                self.primed_attempts.fetch_add(1, Ordering::SeqCst);
-                Err("simulated airc daemon unreachable".to_string())
+                // Test deliberately never calls this — we're verifying
+                // the loop does NOT call it implicitly.
+                panic!("test contract: prime must NOT be invoked by the loop");
             }
             async fn high_water_mark(&self, _limit: usize) -> Result<u64, String> {
-                panic!("high_water_mark must not be called when prime() fails");
+                Ok(0)
             }
             async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
-                panic!("next_message must not be called when prime() fails");
+                // Mimics AircPersonaConversation's typed-err shape when
+                // unprimed. After one error the queue drains and the
+                // loop ends.
+                let mut q = self.events.lock().unwrap();
+                if q.pop_front().is_some() {
+                    Err("called before prime() — caller must invoke prime() first".to_string())
+                } else {
+                    Ok(None)
+                }
             }
             async fn say(&self, _text: &str) -> Result<(), String> {
-                panic!("say must not be called when prime() fails");
+                panic!("say must not be called when next_message errors");
             }
         }
 
-        let hosted = fake_hosted(Uuid::new_v4(), "unused");
-        let mut conversation = FailingPrimeConversation {
-            primed_attempts: AtomicUsize::new(0),
+        let mut conversation = UnprimedConversation {
+            events: Mutex::new(VecDeque::from(vec![()])),
         };
+        let _ = other_peer;
         let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
-        let result = serve_persona_loop(
+        let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
             reader,
@@ -749,19 +869,14 @@ mod tests {
                 now_ms: fixed_now,
             },
         )
-        .await;
+        .await
+        .expect("loop completes (each next_message err counts as turn_errored)");
 
-        assert!(result.is_err(), "loop must return Err on prime failure");
-        let msg = format!("{}", result.unwrap_err());
-        assert!(
-            msg.contains("prime") && msg.contains("simulated airc daemon unreachable"),
-            "error must name prime + propagate the underlying cause: {msg}"
-        );
         assert_eq!(
-            conversation.primed_attempts.load(Ordering::SeqCst),
-            1,
-            "prime called exactly once before short-circuit"
+            outcome.turns_errored, 1,
+            "unprimed conversation's typed next_message err counts as errored turn"
         );
+        assert_eq!(outcome.turns_replied, 0);
     }
 
     /// Self-loop guard: when the inbound peer_id matches the
@@ -785,6 +900,10 @@ mod tests {
             said: Mutex::new(vec![]),
             primed: AtomicUsize::new(0),
         };
+
+        // Caller-primes contract per [[no-fallbacks-ever]] — explicit,
+        // not safety-net.
+        conversation.prime().await.expect("prime ok");
 
         let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
         let outcome = serve_persona_loop(
@@ -838,6 +957,10 @@ mod tests {
             primed: AtomicUsize::new(0),
         };
 
+        // Caller-primes contract per [[no-fallbacks-ever]] — explicit,
+        // not safety-net.
+        conversation.prime().await.expect("prime ok");
+
         let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
         let outcome = serve_persona_loop(
             &hosted,
@@ -886,6 +1009,10 @@ mod tests {
             said: Mutex::new(vec![]),
             primed: AtomicUsize::new(0),
         };
+
+        // Caller-primes contract per [[no-fallbacks-ever]] — explicit,
+        // not safety-net.
+        conversation.prime().await.expect("prime ok");
 
         let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
         let outcome = serve_persona_loop(

@@ -117,7 +117,9 @@ use continuum_core::persona::airc_runtime::PersonaAircRuntime;
 use continuum_core::persona::airc_source::AircTranscriptReader;
 use continuum_core::persona::identity_provider::PersonaIdentitySource;
 use continuum_core::persona::role_template::RoleId;
-use continuum_core::persona::service_loop::{serve_persona_loop, ServeOptions};
+use continuum_core::persona::service_loop::{
+    serve_persona_loop, PersonaConversation, ServeOptions,
+};
 use continuum_core::persona::supervisor::HostedPersona;
 
 const DEFAULT_AGENT_NAME: &str = "Paige";
@@ -348,7 +350,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut conversation = AircPersonaConversation::new(runtime);
 
-    println!("✓ handed off to substrate-managed serve_persona_loop.");
+    // Caller-primes contract per [[no-fallbacks-ever]]: the demo
+    // calls serve_persona_loop directly (no supervisor in between),
+    // so the demo itself is responsible for opening the airc
+    // subscribe stream before iterating. One round-trip, off the
+    // cognition hot path.
+    conversation
+        .prime()
+        .await
+        .map_err(|e| format!("conversation.prime() failed: {e}"))?;
+
+    println!("✓ subscribe stream primed; handed off to substrate-managed serve_persona_loop.");
     println!("  Send a message in the same room to test.");
     println!("  Stop with Ctrl-C.");
     println!();
