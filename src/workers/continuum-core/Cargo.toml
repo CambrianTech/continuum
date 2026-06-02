@@ -34,12 +34,13 @@ path = "src/bin/airc_rag_demo.rs"
 [[bin]]
 name = "airc_chat_demo"
 path = "src/bin/airc_chat_demo.rs"
-# Demo binary uses HeuristicInferenceAdapter for deterministic stand-in
-# inference. Per [[no-fallbacks-ever]] and [[no-if-statements-use-llms-
-# for-cognition]], the heuristic adapter is gated behind `test-fixtures`
-# so production builds can't ship it. This bin target accordingly
-# requires the same feature.
-required-features = ["test-fixtures"]
+# Demo binary uses the LCD LlamaCppAdapter (Qwen2.5-0.5B-Instruct
+# Q4_K_M) for real cognition — no heuristic, no fallback. Heuristic
+# adapter is cfg-gated out via #128 and this binary doesn't import it.
+# On Intel Mac without working Metal, build with
+# `--no-default-features --features livekit-webrtc,accelerate,llama/mac-cpu-only,load-dynamic-ort`
+# and run with LLM_N_GPU_LAYERS=0 (default). Apple Silicon uses
+# `--features metal,accelerate` and gets GPU inference free.
 
 [dependencies]
 tokio.workspace = true
