@@ -194,6 +194,34 @@ impl PersonaAircRuntime {
         })
     }
 
+    /// Wrap an already-attached + already-joined `Arc<Airc>` into a
+    /// `PersonaAircRuntime`. Skips the `bootstrap` join step —
+    /// useful for the demo binary that joins by NAME (the canonical
+    /// path) instead of by uuid-as-string (the bootstrap path's
+    /// current shape — see #133-followup note on `bootstrap`).
+    ///
+    /// The caller is responsible for: (1) calling `attach_as` /
+    /// `join` BEFORE handing the Arc in, (2) supplying the
+    /// `RoomId` matching the room they joined.
+    pub fn from_attached(
+        persona_id: Uuid,
+        agent_name: impl Into<String>,
+        home: PathBuf,
+        airc: Arc<Airc>,
+        default_room: RoomId,
+        source: crate::persona::identity_provider::PersonaIdentitySource,
+    ) -> Self {
+        Self {
+            persona_id,
+            agent_name: agent_name.into(),
+            home,
+            airc,
+            default_room,
+            inbound_handle: None,
+            source,
+        }
+    }
+
     /// The persona's stable continuum identifier.
     pub fn persona_id(&self) -> Uuid {
         self.persona_id

@@ -108,15 +108,17 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use futures::StreamExt;
-
 use continuum_core::ai::adapter::AIProviderAdapter;
 use continuum_core::airc::{discover_airc_socket, discover_default_channel};
 use continuum_core::inference::LlamaCppAdapter;
+use continuum_core::modules::persona_instance_manager::PersonaInstanceInfo;
+use continuum_core::persona::airc_persona_conversation::AircPersonaConversation;
+use continuum_core::persona::airc_runtime::PersonaAircRuntime;
 use continuum_core::persona::airc_source::AircTranscriptReader;
-use continuum_core::persona::rag_inspect::{
-    inspect_persona_rag_with_inference, RagInspectionRequest,
-};
+use continuum_core::persona::identity_provider::PersonaIdentitySource;
+use continuum_core::persona::role_template::RoleId;
+use continuum_core::persona::service_loop::{serve_persona_loop, ServeOptions};
+use continuum_core::persona::supervisor::HostedPersona;
 
 const DEFAULT_AGENT_NAME: &str = "Paige";
 const PAGE_RECENT_LIMIT: usize = 25;
@@ -308,123 +310,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ real-cognition adapter ready: {}", adapter.provider_id());
     println!();
 
-    // 5. Wrap the Airc handle as an AircTranscriptReader so the
-    //    RAG layer can read recent transcript events. Arc-shared
-    //    so we can keep using the underlying handle for `say`.
+    // 5. Wrap the Airc handle in a PersonaAircRuntime via the
+    //    `from_attached` constructor (avoids `bootstrap`'s join-by-
+    //    uuid-as-string path that the demo deliberately works around
+    //    via join-by-name above).
     let airc_arc = Arc::new(airc);
     let reader: Arc<dyn AircTranscriptReader> = airc_arc.clone();
+    let runtime = Arc::new(PersonaAircRuntime::from_attached(
+        persona_id,
+        agent.clone(),
+        home.clone(),
+        airc_arc.clone(),
+        room.channel,
+        PersonaIdentitySource::FreshlyMinted,
+    ));
 
-    // 6. Compute the high-water mark from recent history. This is
-    //    a one-shot page_recent for the cursor only — subscribe()
-    //    takes over for live events. Avoids replying to messages
-    //    that arrived before this binary started.
-    let mut last_lamport_seen: u64 = airc_arc
-        .page_recent(PAGE_RECENT_LIMIT)
-        .await
-        .map(|events| events.iter().map(|e| e.lamport).max().unwrap_or(0))
-        .unwrap_or(0);
-    println!(
-        "✓ warm-up cursor: lamport={} (responding only to events AFTER this).",
-        last_lamport_seen
-    );
+    // 6. Hand off to the substrate-managed service loop. The demo
+    //    binary stops doing the work itself — `serve_persona_loop`
+    //    (from #133 slice 10) owns the subscribe + inbound filter +
+    //    RAG + inference + say cycle. The same call is what slice 12
+    //    will fire from headless `continuum-core` boot for every
+    //    persona the spawner planned.
+    let hosted = HostedPersona {
+        role: RoleId::Helper,
+        instance: PersonaInstanceInfo {
+            persona_id,
+            agent_name: agent.clone(),
+            peer_id: persona_id,
+            home: home.clone(),
+            default_room: room.channel.as_uuid(),
+            source: PersonaIdentitySource::FreshlyMinted,
+        },
+        adapter,
+    };
+    let mut conversation = AircPersonaConversation::new(runtime);
 
-    // 7. Open the live daemon attach stream. From here on no
-    //    polling — every new event arrives through `next().await`.
-    let mut stream = airc_arc
-        .subscribe()
-        .await
-        .map_err(|e| format!("subscribe failed: {e}"))?;
-    println!("✓ subscribed to live daemon stream — listening for chats.");
+    println!("✓ handed off to substrate-managed serve_persona_loop.");
     println!("  Send a message in the same room to test.");
     println!("  Stop with Ctrl-C.");
     println!();
 
-    while let Some(item) = stream.next().await {
-        let event = match item {
-            Ok(e) => e,
-            Err(lag) => {
-                eprintln!("⚠️  live stream lag: {lag} — resume continues from cursor");
-                continue;
-            }
-        };
+    let outcome = serve_persona_loop(
+        &hosted,
+        &mut conversation,
+        reader,
+        ServeOptions {
+            page_recent_limit: PAGE_RECENT_LIMIT,
+            rag_fetch_limit: PAGE_RECENT_LIMIT,
+            now_ms,
+        },
+    )
+    .await
+    .map_err(|e| format!("serve_persona_loop failed: {e}"))?;
 
-        if event.lamport <= last_lamport_seen {
-            continue;
-        }
-        last_lamport_seen = event.lamport.max(last_lamport_seen);
-
-        // Skip messages from this persona herself (avoid self-loop).
-        if event.peer_id.as_uuid() == persona_id {
-            continue;
-        }
-        // Skip non-text messages.
-        let Some(body) = &event.body else { continue };
-        let Some(text) = body.as_text() else { continue };
-
-        // The earlier `text.starts_with("[heuristic:")` echo filter
-        // here was anti-cognition per [[no-if-statements-use-llms-
-        // for-cognition]] (Joel, 2026-06-01: "we don't build fucking
-        // if statements we use LLMs"). With real LCD cognition the
-        // persona reads the conversation, the LLM decides whether to
-        // speak, and "should I respond to my peer's message?" is the
-        // model's judgment, not a substrate pattern-match. Removed.
-
-        let from_peer_short: String = event.peer_id.to_string().chars().take(8).collect();
-        println!("─── inbound (lamport={}) ───", event.lamport);
-        println!("  from={from_peer_short}");
-        println!("  text={text}");
-
-        // Build a RAG inspection request scoped to Paige.
-        let mut req = RagInspectionRequest::defaults_for(persona_id, agent.clone(), now_ms());
-        req.airc_fetch_limit = PAGE_RECENT_LIMIT;
-
-        // Run the chained inspection: RAG layer surfaces recent
-        // transcript → heuristic adapter generates response →
-        // captured in model_response.
-        let inspection = match inspect_persona_rag_with_inference(
-            &req,
-            reader.clone(),
-            Some(adapter.clone()),
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("  inspect_persona_rag_with_inference failed: {e}");
-                continue;
-            }
-        };
-
-        let mr = match inspection.model_response {
-            Some(mr) => mr,
-            None => {
-                println!("  (no model_response — RAG-only path; nothing to post)");
-                continue;
-            }
-        };
-
-        println!(
-            "  RAG delivered {} items",
-            inspection.deliveries[0].items.len()
-        );
-        println!(
-            "  model={} tokens_in={} tokens_out={}",
-            mr.model, mr.input_tokens, mr.output_tokens
-        );
-
-        // Post the response back to airc.
-        match airc_arc.say(&mr.response_text).await {
-            Ok(event_id) => {
-                println!("  ✓ posted reply (event_id={event_id})");
-                println!("    reply: {}", mr.response_text);
-            }
-            Err(e) => {
-                eprintln!("  airc.say failed: {e}");
-            }
-        }
-        println!();
-    }
-
-    println!("✓ subscribe stream ended — daemon disconnected. Exiting.");
+    println!(
+        "✓ loop ended: replied={} skipped={} errored={}",
+        outcome.turns_replied, outcome.turns_skipped, outcome.turns_errored
+    );
     Ok(())
 }
