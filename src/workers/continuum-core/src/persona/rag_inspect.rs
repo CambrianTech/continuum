@@ -158,6 +158,24 @@ impl RagInspectionRequest {
             trace_path: None,
         }
     }
+
+    /// `&ctx`-pure derivation: read everything from the persona's
+    /// context object. The substrate's `&ctx` doctrine
+    /// ([[context-is-the-client-airc-token-is-identity]]) — caller
+    /// hands one reference, derivation reads what it needs.
+    /// Prefer this over [`Self::for_persona`] in any new code that
+    /// already holds a `&PersonaContext`.
+    pub fn for_ctx(
+        ctx: &crate::persona::supervisor::PersonaContext,
+        now_ms: u64,
+    ) -> Self {
+        Self::for_persona(
+            ctx.identity.persona_id,
+            ctx.identity.agent_name.clone(),
+            now_ms,
+            &ctx.profile,
+        )
+    }
 }
 
 /// The honest-look result. Carries the full allocation outcome PLUS

@@ -193,6 +193,30 @@ pub struct PersonaContext {
 /// should write `PersonaContext` directly.
 pub type HostedPersona = PersonaContext;
 
+impl PersonaContext {
+    /// Construct a tracing `Span` tagged with this persona's identity
+    /// + role + tier. Every log line emitted inside the span's scope
+    /// inherits these fields automatically — no more
+    /// `tracing::warn!(persona_id = %ctx.identity.persona_id, ...)`
+    /// at every call site.
+    ///
+    /// Per the `&ctx` doctrine: the span derives from the context,
+    /// the loop scopes the span, the substrate's observability stays
+    /// honest about who did what without manual field threading.
+    pub fn span(&self) -> tracing::Span {
+        tracing::info_span!(
+            "persona",
+            persona_id = %self.identity.persona_id,
+            agent_name = %self.identity.agent_name,
+            peer_id = %self.identity.peer_id,
+            role = ?self.role,
+            tier = %self.profile.tier_id,
+            ctx_len = self.profile.context_length,
+            model = %self.profile.model_id,
+        )
+    }
+}
+
 /// Structured error per failed slot. The two failure modes are:
 ///
 /// - The slice-8 profile resolution already failed (bad model_id,

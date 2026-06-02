@@ -155,7 +155,19 @@ pub struct ServeOutcome {
 /// transcript is consulted once for the high-water mark and is NOT
 /// replayed through RAG — that would echo every pre-restart message.
 pub async fn serve_persona_loop(
-    hosted: &HostedPersona,
+    ctx: &HostedPersona,
+    conversation: &mut dyn PersonaConversation,
+    reader: Arc<dyn AircTranscriptReader>,
+    opts: ServeOptions,
+) -> Result<ServeOutcome, String> {
+    use tracing::Instrument;
+    serve_persona_loop_inner(ctx, conversation, reader, opts)
+        .instrument(ctx.span())
+        .await
+}
+
+async fn serve_persona_loop_inner(
+    ctx: &HostedPersona,
     conversation: &mut dyn PersonaConversation,
     reader: Arc<dyn AircTranscriptReader>,
     opts: ServeOptions,
@@ -165,13 +177,12 @@ pub async fn serve_persona_loop(
         .await
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
 
-    let persona_id = hosted.identity.persona_id;
-    let persona_peer_id = hosted.identity.peer_id;
-    let agent_name = hosted.identity.agent_name.clone();
-    // Slice 9 sized `HostedPersona.adapter` as `Arc<dyn ...>` exactly
-    // so the loop can clone-and-share with the RAG inspector turn by
-    // turn without rebuilding the adapter each time.
-    let adapter: Arc<dyn AIProviderAdapter> = hosted.adapter.clone();
+    // Adapter is shared with the RAG layer turn-by-turn via
+    // `Arc::clone`. Per the `&ctx` doctrine we never extract identity
+    // fields — `ctx.identity.peer_id` reads cleanly at the comparison
+    // site below and every log line inside the span already carries
+    // them as structured fields.
+    let adapter: Arc<dyn AIProviderAdapter> = ctx.adapter.clone();
     let mut outcome = ServeOutcome::default();
 
     while let Some(item) = next_event(conversation, &mut outcome).await {
@@ -182,23 +193,17 @@ pub async fn serve_persona_loop(
         }
         high_water = msg.lamport.max(high_water);
 
-        if msg.peer_id == persona_peer_id {
+        if msg.peer_id == ctx.identity.peer_id {
             outcome.turns_skipped += 1;
             continue;
         }
 
-        // Profile is the single source of truth for inference shape
-        // (substrate's `&ctx` doctrine — never copy fields out,
-        // never derive duplicates). `for_persona` produces a RAG
-        // request shaped by the profile's actual context_length —
-        // unlike `defaults_for` which would set a 32k budget that
-        // overflows tier-clamped adapters (PR #1511 trace).
-        let mut req = RagInspectionRequest::for_persona(
-            persona_id,
-            agent_name.clone(),
-            (opts.now_ms)(),
-            &hosted.profile,
-        );
+        // `&ctx`-pure derivation: RAG request reads the profile
+        // (context_length, etc.) directly from ctx. No copied
+        // fields. Per [[context-is-the-client-airc-token-is-identity]]
+        // the substrate's calling convention is "hand the context,
+        // not its parts."
+        let mut req = RagInspectionRequest::for_ctx(ctx, (opts.now_ms)());
         req.airc_fetch_limit = opts.rag_fetch_limit;
 
         let inspection = match inspect_persona_rag_with_inference(
@@ -210,12 +215,12 @@ pub async fn serve_persona_loop(
         {
             Ok(v) => v,
             Err(e) => {
+                // Persona identity fields come from the entered span;
+                // log lines just add the per-turn delta.
                 tracing::warn!(
-                    persona_id = %persona_id,
-                    persona_name = %agent_name,
                     lamport = msg.lamport,
                     error = %e,
-                    "serve_persona_loop: inspect_persona_rag_with_inference failed"
+                    "inspect_persona_rag_with_inference failed"
                 );
                 outcome.turns_errored += 1;
                 continue;
@@ -232,11 +237,9 @@ pub async fn serve_persona_loop(
 
         if let Err(e) = conversation.say(&mr.response_text).await {
             tracing::warn!(
-                persona_id = %persona_id,
-                persona_name = %agent_name,
                 lamport = msg.lamport,
                 error = %e,
-                "serve_persona_loop: say failed"
+                "say failed"
             );
             outcome.turns_errored += 1;
             continue;
