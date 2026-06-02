@@ -597,4 +597,111 @@ mod tests {
         assert!(hosted.is_empty());
         assert_eq!(factory.builds.load(Ordering::SeqCst), 0);
     }
+
+    /// Missing-runtime path: when `runtime_lookup` returns `None` for
+    /// a real plan, the substrate surfaces `SupervisorError::RuntimeMissing`
+    /// with the slot index, role, and persona_id tagged. Per
+    /// [[no-fallbacks-ever]]: the supervisor never fabricates a runtime
+    /// when the registry lookup fails — a missing slot means the
+    /// bootstrap chain skipped a step and the operator needs to see it.
+    ///
+    /// Locks in the contract for the slice-13.5 trait-extraction:
+    /// `runtime_lookup`'s `Option<Arc<dyn AircCitizen>>` return shape
+    /// is honored by `materialize_adapters` as a structured failure,
+    /// NOT as a silent skip or fall-through to a default citizen.
+    #[tokio::test]
+    async fn runtime_lookup_none_surfaces_as_runtime_missing() {
+        let instance = fake_instance("Paige");
+        let expected_persona_id = instance.persona_id;
+        let plans = vec![MaterializedPersonaPlan {
+            role: RoleId::Helper,
+            instance,
+            profile: Ok(fake_profile("Paige", "model-a")),
+        }];
+
+        let factory = OkFactory {
+            builds: AtomicUsize::new(0),
+        };
+        // `|_| None` here is the substrate-bug shape we're locking in:
+        // the registry exists but doesn't contain this persona_id.
+        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+
+        assert_eq!(hosted.len(), 1);
+        // Factory MUST NOT be called when the runtime lookup fails —
+        // adapter construction is expensive (model load), the
+        // substrate refuses early.
+        assert_eq!(
+            factory.builds.load(Ordering::SeqCst),
+            0,
+            "factory must not run when runtime lookup fails"
+        );
+        match &hosted[0] {
+            Err(SupervisorError::RuntimeMissing {
+                slot_index,
+                role,
+                persona_id,
+            }) => {
+                assert_eq!(*slot_index, 0);
+                assert_eq!(*role, RoleId::Helper);
+                assert_eq!(*persona_id, expected_persona_id);
+            }
+            Err(other) => panic!("expected RuntimeMissing error, got {other:?}"),
+            Ok(_) => panic!("expected RuntimeMissing error, got Ok"),
+        }
+    }
+
+    /// Mixed: slot 0 has a runtime (citizen-stub lookup succeeds),
+    /// slot 1 doesn't (lookup returns None). The supervisor materializes
+    /// the first cleanly and surfaces `RuntimeMissing` for the second —
+    /// proving sibling slots don't cross-affect, matching the
+    /// per-slot error semantics of `Profile` and `AdapterFactory`.
+    #[tokio::test]
+    async fn runtime_missing_only_affects_its_own_slot() {
+        let paige = fake_instance("Paige");
+        let pax = fake_instance("Pax");
+        let pax_persona_id = pax.persona_id;
+        let plans = vec![
+            MaterializedPersonaPlan {
+                role: RoleId::Helper,
+                instance: paige,
+                profile: Ok(fake_profile("Paige", "model-a")),
+            },
+            MaterializedPersonaPlan {
+                role: RoleId::Coder,
+                instance: pax,
+                profile: Ok(fake_profile("Pax", "model-b")),
+            },
+        ];
+
+        let factory = OkFactory {
+            builds: AtomicUsize::new(0),
+        };
+        // Lookup returns Some only for Paige; Pax goes RuntimeMissing.
+        let lookup = move |pid: Uuid| -> Option<Arc<dyn AircCitizen>> {
+            if pid == pax_persona_id {
+                None
+            } else {
+                Some(Arc::new(StubAircCitizen::new(Uuid::new_v4())) as Arc<dyn AircCitizen>)
+            }
+        };
+        let hosted = materialize_adapters(plans, &factory, lookup).await;
+
+        assert_eq!(hosted.len(), 2);
+        // Factory ran exactly once — for Paige, not Pax.
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+        assert!(hosted[0].is_ok(), "Paige materializes cleanly");
+        match &hosted[1] {
+            Err(SupervisorError::RuntimeMissing {
+                slot_index,
+                role,
+                persona_id,
+            }) => {
+                assert_eq!(*slot_index, 1);
+                assert_eq!(*role, RoleId::Coder);
+                assert_eq!(*persona_id, pax_persona_id);
+            }
+            Err(other) => panic!("expected RuntimeMissing at slot 1, got {other:?}"),
+            Ok(_) => panic!("expected RuntimeMissing at slot 1, got Ok"),
+        }
+    }
 }
