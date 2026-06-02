@@ -446,10 +446,15 @@ mod tests {
             },
             profile,
             adapter: Arc::new(adapter),
-            // Test fixtures don't run through `spawn_persona_service`,
-            // so the runtime stub is None. Production paths always
-            // populate this from the registry post-bootstrap.
-            runtime: None,
+            // Service-loop tests drive the loop through `StubConversation`
+            // directly — the citizen handle is never touched. A
+            // [`StubAircCitizen`] satisfies the type without standing
+            // up a real airc daemon; per [[no-fallbacks-ever]] this
+            // replaces the previous `Option<Arc<PersonaAircRuntime>>`
+            // smell with a typed stub.
+            runtime: Arc::new(
+                crate::persona::airc_citizen::StubAircCitizen::new(persona_peer_id),
+            ),
         }
     }
 

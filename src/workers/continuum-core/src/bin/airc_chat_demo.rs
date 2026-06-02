@@ -343,7 +343,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         profile: profile.clone(),
         adapter,
-        runtime: Some(runtime.clone()),
+        // PersonaAircRuntime impls AircCitizen — Arc auto-coerces.
+        runtime: runtime.clone(),
     };
     let mut conversation = AircPersonaConversation::new(runtime);
 

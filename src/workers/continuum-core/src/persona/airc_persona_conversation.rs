@@ -1,11 +1,16 @@
 //! Production [`PersonaConversation`] impl wrapping
-//! `Arc<PersonaAircRuntime>` — slice 11 of #133.
+//! `Arc<dyn AircCitizen>` — slice 11 of #133, re-shaped in slice 13.5
+//! around the [`AircCitizen`] trait.
 //!
 //! This is where the substrate's transport-agnostic loop
 //! ([`super::service_loop::serve_persona_loop`]) meets the live airc
-//! daemon. The trait stays the boundary; this struct is the one place
-//! the substrate touches `airc_lib::Airc::subscribe` / `say` /
-//! `page_recent` directly.
+//! daemon. The conversation trait stays the loop's boundary; this
+//! struct is the one place the substrate calls
+//! [`AircCitizen::subscribe`] / [`AircCitizen::say`] /
+//! [`AircTranscriptReader::page_recent`] directly. Holding
+//! `Arc<dyn AircCitizen>` instead of the concrete runtime keeps the
+//! production projection symmetric with whatever stub a future test
+//! plugs in.
 //!
 //! ## Why slice 11 isn't in slice 10
 //!
@@ -37,20 +42,20 @@
 //! persona at boot, before any of them have necessarily attached to
 //! their rooms yet.
 
-use crate::persona::airc_runtime::PersonaAircRuntime;
+use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_lib::EventStream;
 use async_trait::async_trait;
 use futures::StreamExt;
 use std::sync::Arc;
 
-/// Wraps a [`PersonaAircRuntime`] and projects it onto the substrate's
+/// Wraps an [`AircCitizen`] and projects it onto the substrate's
 /// [`PersonaConversation`] contract. Owns the airc subscribe stream
 /// across calls so successive `next_message` invocations are a
 /// continuation (not a fresh resubscription that would drop in-flight
 /// events).
 pub struct AircPersonaConversation {
-    runtime: Arc<PersonaAircRuntime>,
+    runtime: Arc<dyn AircCitizen>,
     /// The persona's own peer_id, captured at construction. Used by
     /// `next_message` to skip self-loop echoes WITHIN the projection
     /// — the service loop ALSO skips by persona's instance peer_id;
@@ -59,15 +64,15 @@ pub struct AircPersonaConversation {
     own_peer_id: uuid::Uuid,
     /// Lazy-initialized subscribe stream. `None` before the first
     /// `next_message`; `Some` once the daemon attach succeeds. Per-
-    /// runtime stream — never shared across personas.
+    /// citizen stream — never shared across personas.
     stream: Option<EventStream>,
 }
 
 impl AircPersonaConversation {
     /// Construct without contacting the daemon. The subscribe stream
     /// is built on first `next_message`; until then this is free.
-    pub fn new(runtime: Arc<PersonaAircRuntime>) -> Self {
-        let own_peer_id = runtime.airc().peer_id().as_uuid();
+    pub fn new(runtime: Arc<dyn AircCitizen>) -> Self {
+        let own_peer_id = runtime.peer_id();
         Self {
             runtime,
             own_peer_id,
@@ -75,11 +80,11 @@ impl AircPersonaConversation {
         }
     }
 
-    /// Borrow the underlying runtime — useful for the supervisor's
+    /// Borrow the underlying citizen — useful for the supervisor's
     /// registry-eviction path (slice 12) where the supervisor needs
-    /// to look up the runtime back from the conversation for graceful
+    /// to look up the citizen back from the conversation for graceful
     /// shutdown.
-    pub fn runtime(&self) -> &Arc<PersonaAircRuntime> {
+    pub fn runtime(&self) -> &Arc<dyn AircCitizen> {
         &self.runtime
     }
 }
@@ -89,7 +94,6 @@ impl PersonaConversation for AircPersonaConversation {
     async fn high_water_mark(&self, limit: usize) -> Result<u64, String> {
         let events = self
             .runtime
-            .airc()
             .page_recent(limit)
             .await
             .map_err(|e| format!("page_recent failed: {e}"))?;
@@ -103,7 +107,6 @@ impl PersonaConversation for AircPersonaConversation {
         if self.stream.is_none() {
             let stream = self
                 .runtime
-                .airc()
                 .subscribe()
                 .await
                 .map_err(|e| format!("subscribe failed: {e}"))?;

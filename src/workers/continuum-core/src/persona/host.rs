@@ -66,15 +66,14 @@ pub fn spawn_persona_service(
     opts: ServeOptions,
     rt_handle: tokio::runtime::Handle,
 ) -> JoinHandle<Result<ServeOutcome, String>> {
-    // Production callers always populate `ctx.runtime` from the
-    // post-bootstrap registry; the `Option` exists only so test
-    // fixtures can build PersonaContexts without a live airc.
-    let runtime = ctx
-        .runtime
-        .clone()
-        .expect("spawn_persona_service requires ctx.runtime — None is test-only");
-    let reader: Arc<dyn AircTranscriptReader> = runtime.airc().clone();
-    let mut conversation = AircPersonaConversation::new(runtime);
+    // `ctx.runtime: Arc<dyn AircCitizen>` — slice 13.5 trait
+    // extraction. The reader for the RAG layer upcoerces from
+    // `AircCitizen` to its `AircTranscriptReader` supertrait via
+    // Rust 1.86+ trait_upcasting; no manual conversion, no Option,
+    // no `.expect("None is test-only")` per [[no-fallbacks-ever]].
+    let citizen = ctx.runtime.clone();
+    let reader: Arc<dyn AircTranscriptReader> = citizen.clone();
+    let mut conversation = AircPersonaConversation::new(citizen);
     rt_handle.spawn(async move {
         serve_persona_loop(&ctx, &mut conversation, reader, opts).await
     })
@@ -229,9 +228,18 @@ impl PersonaSpawnSupervisor {
         };
 
         let registry_for_lookup = self.registry.clone();
-        let hosted_results =
-            materialize_adapters(plans, &*self.factory, move |pid| registry_for_lookup.get(pid))
-                .await;
+        // `registry.get` returns `Option<Arc<PersonaAircRuntime>>` —
+        // the closure upcoerces to `Option<Arc<dyn AircCitizen>>` so
+        // `PersonaContext.runtime` stays trait-shaped. Per
+        // [[personas-are-citizens-airc-is-identity-provider]] the
+        // citizen type is what the substrate carries; the concrete
+        // runtime is one impl among future BaseUser variants.
+        let hosted_results = materialize_adapters(plans, &*self.factory, move |pid| {
+            registry_for_lookup
+                .get(pid)
+                .map(|r| r as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
+        })
+        .await;
 
         let mut summary = BootSummary::default();
         for (slot_idx, result) in hosted_results.into_iter().enumerate() {
@@ -329,6 +337,9 @@ fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
             slot_index, role, ..
         }
         | SupervisorError::AdapterFactory {
+            slot_index, role, ..
+        }
+        | SupervisorError::RuntimeMissing {
             slot_index, role, ..
         } => (Some(*slot_index), *role),
     }

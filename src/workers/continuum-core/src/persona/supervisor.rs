@@ -41,7 +41,7 @@
 //!   declared intent and the adapter materializes that.
 
 use crate::ai::adapter::AIProviderAdapter;
-use crate::persona::airc_runtime::PersonaAircRuntime;
+use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
 use crate::persona::role_template::RoleId;
 use crate::persona::spawner_module::MaterializedPersonaPlan;
@@ -133,10 +133,12 @@ impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
 ///   single source of truth for the persona's compute envelope.
 /// - `adapter` — the inference adapter, hot for generate_text. `Arc`
 ///   so the service loop can clone-share it with the RAG layer.
-/// - `runtime` — the persona's `Arc<PersonaAircRuntime>` (her grid
+/// - `runtime` — the persona's `Arc<dyn AircCitizen>` (her grid
 ///   presence). The service loop subscribes through this; `say()`
-///   posts through this. Cognition reads `runtime.airc().peer_id()`
-///   for self-filtering.
+///   posts through this. Cognition reads `runtime.peer_id()` for
+///   self-filtering. The trait abstraction (per slice 13.5 +
+///   `[[personas-are-citizens-airc-is-identity-provider]]`) means
+///   tests get a typed stub instead of an `Option`.
 ///
 /// ## Type-alias note
 ///
@@ -174,19 +176,24 @@ pub struct PersonaContext {
     /// the same `Arc<dyn ...>` shape — only the concrete adapter
     /// inside changes.
     pub adapter: Arc<dyn AIProviderAdapter>,
-    /// The persona's `Arc<PersonaAircRuntime>` — her grid presence.
-    /// The service loop subscribes through `runtime.airc().subscribe()`
-    /// and posts replies through `runtime.say(text)`. Cognition uses
-    /// `runtime.airc().peer_id()` for self-filtering. Held here so
-    /// `&ctx` is the one handle every layer needs.
+    /// The persona's `Arc<dyn AircCitizen>` — her grid presence.
+    /// The service loop subscribes through `runtime.subscribe()` and
+    /// posts replies through `runtime.say(text)`. Cognition uses
+    /// `runtime.peer_id()` for self-filtering. Held here so `&ctx`
+    /// is the one handle every layer needs.
     ///
-    /// `None` only in tests — production materialize_adapters always
-    /// fills this from the registry post-bootstrap. Cleaner trait
-    /// abstraction (`Arc<dyn AircHandle>`) lands with task #142's
-    /// BaseUser hierarchy; for slice 13 the Option keeps the
-    /// supervisor + service-loop tests building without standing up
-    /// a real airc daemon fixture.
-    pub runtime: Option<Arc<PersonaAircRuntime>>,
+    /// `Arc<dyn AircCitizen>` (not `Arc<PersonaAircRuntime>`) so test
+    /// fixtures can construct a [`StubAircCitizen`](crate::persona::airc_citizen::StubAircCitizen)
+    /// without standing up the airc daemon. Production callers use
+    /// `materialize_adapters`'s `runtime_lookup` to fetch the live
+    /// runtime from the registry post-bootstrap.
+    ///
+    /// Foundation for task #142's BaseUser hierarchy — every BaseUser
+    /// variant (persona/human/browser) will carry an
+    /// `Arc<dyn AircCitizen>` as her live airc handle, and add
+    /// kind-specific extensions (cognition for persona, WebAuthn for
+    /// human, session state for browser).
+    pub runtime: Arc<dyn AircCitizen>,
 }
 
 /// Back-compat alias for the slice-9-era struct name. New code
@@ -243,6 +250,22 @@ pub enum SupervisorError {
         role: RoleId,
         message: String,
     },
+    /// The post-bootstrap registry doesn't have a runtime for this
+    /// persona_id. Per [[no-fallbacks-ever]] this is a hard failure —
+    /// the supervisor doesn't fabricate or stub a runtime in
+    /// production. If you see this, the bootstrap → registry → lookup
+    /// chain skipped a registration step; investigate
+    /// `PersonaInstanceManagerModule::bootstrap_one` and the
+    /// `PersonaAircRuntimeRegistry` insert path.
+    #[error(
+        "slot {slot_index} (role {role:?}): no airc runtime registered for persona {persona_id} \
+         — substrate bootstrap chain is broken; per [[no-fallbacks-ever]] no default citizen"
+    )]
+    RuntimeMissing {
+        slot_index: usize,
+        role: RoleId,
+        persona_id: uuid::Uuid,
+    },
 }
 
 /// Materialize a roster of `MaterializedPersonaPlan`s into
@@ -264,7 +287,7 @@ pub enum SupervisorError {
 pub async fn materialize_adapters(
     plans: Vec<MaterializedPersonaPlan>,
     factory: &dyn PersonaAdapterFactory,
-    runtime_lookup: impl Fn(uuid::Uuid) -> Option<Arc<PersonaAircRuntime>>,
+    runtime_lookup: impl Fn(uuid::Uuid) -> Option<Arc<dyn AircCitizen>>,
 ) -> Vec<Result<PersonaContext, SupervisorError>> {
     let mut out = Vec::with_capacity(plans.len());
     for (slot_index, plan) in plans.into_iter().enumerate() {
@@ -280,7 +303,17 @@ pub async fn materialize_adapters(
             }
         };
         let identity = plan.instance;
-        let runtime = runtime_lookup(identity.persona_id);
+        let runtime = match runtime_lookup(identity.persona_id) {
+            Some(r) => r,
+            None => {
+                out.push(Err(SupervisorError::RuntimeMissing {
+                    slot_index,
+                    role: plan.role,
+                    persona_id: identity.persona_id,
+                }));
+                continue;
+            }
+        };
         match factory.build_adapter(&profile).await {
             Ok(adapter) => out.push(Ok(PersonaContext {
                 role: plan.role,
@@ -308,12 +341,22 @@ mod tests {
         TextGenerationResponse,
     };
     use crate::modules::persona_instance_manager::PersonaInstanceInfo;
+    use crate::persona::airc_citizen::{AircCitizen, StubAircCitizen};
     use crate::persona::hw_tier_descriptor::HwTierCategory;
     use crate::persona::identity_provider::PersonaIdentitySource;
     use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use uuid::Uuid;
+
+    /// Synthesize a stub citizen for any persona_id — the supervisor
+    /// tests exercise the materialization pipeline, not the airc
+    /// transport, so any peer_id works. Per slice 13.5's AircCitizen
+    /// extraction, the closure returns the trait object directly; no
+    /// `Option<Arc<PersonaAircRuntime>>` smell, no `.expect`.
+    fn stub_citizen_lookup() -> impl Fn(Uuid) -> Option<Arc<dyn AircCitizen>> {
+        |_pid| Some(Arc::new(StubAircCitizen::new(Uuid::new_v4())) as Arc<dyn AircCitizen>)
+    }
 
     /// Minimal fake adapter — implements just enough of the trait to
     /// satisfy the trait object boundary. None of these methods get
@@ -451,7 +494,7 @@ mod tests {
         let factory = OkFactory {
             builds: AtomicUsize::new(0),
         };
-        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
 
         assert_eq!(hosted.len(), 2);
         assert_eq!(factory.builds.load(Ordering::SeqCst), 2);
@@ -492,7 +535,7 @@ mod tests {
         let factory = OkFactory {
             builds: AtomicUsize::new(0),
         };
-        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory called exactly once — for the Ok row only.
@@ -525,7 +568,7 @@ mod tests {
         }];
 
         let factory = ErrFactory;
-        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {

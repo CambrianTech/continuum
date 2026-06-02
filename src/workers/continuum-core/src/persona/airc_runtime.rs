@@ -294,6 +294,37 @@ impl PersonaAircRuntime {
     }
 }
 
+// AircCitizen + AircTranscriptReader impls — substrate's universal
+// airc-handle interface, satisfied by the production runtime. Per
+// [[personas-are-citizens-airc-is-identity-provider]] the trait IS the
+// citizen surface; the concrete runtime is one impl among future
+// peers (human, web, browser). See `persona::airc_citizen` for the
+// trait definition + rationale.
+#[async_trait::async_trait]
+impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
+    async fn page_recent(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
+        self.airc.page_recent(limit).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
+    fn peer_id(&self) -> Uuid {
+        self.airc.peer_id().as_uuid()
+    }
+
+    async fn subscribe(&self) -> Result<airc_lib::EventStream, AircError> {
+        self.airc.subscribe().await
+    }
+
+    async fn say(&self, text: &str) -> Result<EventId, AircError> {
+        self.airc.say(text).await
+    }
+}
+
 impl Drop for PersonaAircRuntime {
     fn drop(&mut self) {
         if let Some(handle) = self.inbound_handle.take() {

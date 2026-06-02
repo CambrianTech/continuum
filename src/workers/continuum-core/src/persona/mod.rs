@@ -14,6 +14,7 @@
 pub mod admission;
 pub mod admission_state;
 pub mod airc_admission;
+pub mod airc_citizen;
 pub mod airc_persona_conversation;
 pub mod airc_runtime;
 pub mod airc_runtime_registry;
