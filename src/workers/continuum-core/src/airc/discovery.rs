@@ -27,10 +27,30 @@
 //! mismatch was the headless-boot break that motivated this
 //! discovery module. The fix: stop deriving, start asking.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use airc_ipc::DaemonClient;
 use tokio::process::Command as TokioCommand;
+use tokio::time::timeout;
 use tracing::{info, warn};
+
+/// Deadline for fast subprocess discovery calls (`which airc`,
+/// `airc ipc-endpoint`, `airc room`). 5s matches airc-ipc's
+/// `DEFAULT_RPC_TIMEOUT` — if the airc binary itself hangs for
+/// longer than this, the whole substrate IPC layer would already be
+/// declaring the daemon dead. We refuse to wait longer.
+///
+/// Per [[no-stdio-piping-for-process-ipc]] memory: every subprocess
+/// wait MUST be bounded; an unbounded `.output().await` is a dead-end.
+const DISCOVERY_SUBPROCESS_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Deadline for the auto-install path. Generous because the install
+/// script runs `curl` + `bash` and on a cold install can clone +
+/// build airc — minutes, legitimately. 120s catches a truly stuck
+/// install without holding boot forever; below this we trust the
+/// installer's own progress.
+const AUTO_INSTALL_DEADLINE: Duration = Duration::from_secs(120);
 
 /// Canonical installer URL. Same one printed at the top of airc's
 /// `install.sh` and in airc's README. Pinning here keeps the curl-pipe-
@@ -63,6 +83,10 @@ pub enum DiscoveryError {
     RoomCommandFailed(String),
     #[error("`airc room` output did not contain a parseable `channel: <uuid>` line: {0}")]
     UnparseableChannel(String),
+    #[error("daemon Status RPC failed: {0}")]
+    PeerStatusFailed(String),
+    #[error("daemon Status returned an unparseable peer_id ({0:?}): {1}")]
+    UnparseablePeerId(String, uuid::Error),
 }
 
 /// Discover the airc daemon socket path. See module docs for resolution
@@ -101,19 +125,25 @@ pub async fn discover_airc_socket() -> Result<PathBuf, DiscoveryError> {
 }
 
 async fn airc_on_path() -> bool {
-    TokioCommand::new("which")
-        .arg("airc")
-        .output()
+    let probe = TokioCommand::new("which").arg("airc").output();
+    timeout(DISCOVERY_SUBPROCESS_DEADLINE, probe)
         .await
+        .ok()
+        .and_then(|res| res.ok())
         .map(|out| out.status.success())
         .unwrap_or(false)
 }
 
 async fn query_airc_endpoint() -> Result<PathBuf, DiscoveryError> {
-    let out = TokioCommand::new("airc")
-        .arg("ipc-endpoint")
-        .output()
+    let call = TokioCommand::new("airc").arg("ipc-endpoint").output();
+    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
         .await
+        .map_err(|_| {
+            DiscoveryError::EndpointCommandFailed(format!(
+                "`airc ipc-endpoint` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                 — substrate is unresponsive, refusing to wait",
+            ))
+        })?
         .map_err(|e| DiscoveryError::EndpointCommandFailed(e.to_string()))?;
     if !out.status.success() {
         return Err(DiscoveryError::EndpointCommandFailed(format!(
@@ -156,10 +186,15 @@ pub async fn discover_default_channel() -> Result<uuid::Uuid, DiscoveryError> {
             ))
         });
     }
-    let out = TokioCommand::new("airc")
-        .arg("room")
-        .output()
+    let call = TokioCommand::new("airc").arg("room").output();
+    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
         .await
+        .map_err(|_| {
+            DiscoveryError::RoomCommandFailed(format!(
+                "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                 — substrate is unresponsive, refusing to wait",
+            ))
+        })?
         .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
     if !out.status.success() {
         return Err(DiscoveryError::RoomCommandFailed(format!(
@@ -204,16 +239,63 @@ fn parse_channel_from_room_output(stdout: &str) -> Result<uuid::Uuid, DiscoveryE
     )))
 }
 
+/// Discover the airc scope's peer UUID — the substrate identity the
+/// running daemon already holds for this machine account. Continuum
+/// uses this as `PublishRequest.from_peer` so its publishes carry
+/// real attribution instead of the anonymous `Uuid::nil()` placeholder
+/// the previous bootstrap shipped with.
+///
+/// Resolution order:
+///   1. `$AIRC_PEER_ID` env override — explicit UUID for tests +
+///      operators pinning identity.
+///   2. Query the daemon's `Status` response via `airc-ipc`'s typed
+///      `DaemonClient` (no shell-out, no stdout parsing — per
+///      [no-stdio-piping-for-process-ipc] memory). 5s deadline
+///      matches the substrate-wide `DEFAULT_RPC_TIMEOUT`.
+///
+/// On failure, callers should fall back to `Uuid::nil()` and warn —
+/// publishes still succeed but appear from "nobody" in the airc
+/// transcript. Headless boot continues regardless.
+pub async fn discover_peer_id(socket_path: &Path) -> Result<uuid::Uuid, DiscoveryError> {
+    const AIRC_PEER_ID_ENV: &str = "AIRC_PEER_ID";
+    if let Some(raw) = std::env::var_os(AIRC_PEER_ID_ENV) {
+        let raw = raw.to_string_lossy().trim().to_string();
+        return raw
+            .parse::<uuid::Uuid>()
+            .map_err(|e| DiscoveryError::UnparseablePeerId(raw, e));
+    }
+    let client = DaemonClient::new(socket_path.to_path_buf());
+    // 5s matches airc-ipc's `DEFAULT_RPC_TIMEOUT`; the Status RPC
+    // itself is internally bounded by `status_with_timeout` so this
+    // outer deadline is defense-in-depth, not the primary gate.
+    let status = client
+        .status_with_timeout(Duration::from_secs(5))
+        .await
+        .map_err(|error| DiscoveryError::PeerStatusFailed(error.to_string()))?;
+    status
+        .peer_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| DiscoveryError::UnparseablePeerId(status.peer_id.clone(), e))
+}
+
 async fn auto_install_airc() -> Result<(), DiscoveryError> {
     // `curl -fsSL <URL> | bash` keeps the bootstrap one-shot and matches
     // airc's own published install instructions (top of `install.sh`,
     // README quickstart). bash -c keeps the pipe in one process so we
-    // can capture the combined exit status.
+    // can capture the combined exit status. Wrapped with
+    // [`AUTO_INSTALL_DEADLINE`] so a hung installer can't pin the boot
+    // loop indefinitely — 120s is generous (clone + cargo build on a
+    // cold machine fits inside it) but bounded.
     let cmd = format!("curl -fsSL {AIRC_INSTALL_URL} | bash");
-    let out = TokioCommand::new("bash")
-        .args(["-c", &cmd])
-        .output()
+    let install = TokioCommand::new("bash").args(["-c", &cmd]).output();
+    let out = timeout(AUTO_INSTALL_DEADLINE, install)
         .await
+        .map_err(|_| {
+            DiscoveryError::InstallFailed(format!(
+                "airc installer did not exit within {AUTO_INSTALL_DEADLINE:?} \
+                 — check network + `curl -fsSL {AIRC_INSTALL_URL}` by hand",
+            ))
+        })?
         .map_err(|e| DiscoveryError::InstallFailed(format!("spawn bash: {e}")))?;
     if !out.status.success() {
         return Err(DiscoveryError::InstallFailed(format!(

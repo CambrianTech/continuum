@@ -1,0 +1,10 @@
+{
+  "tierId": "sm120",
+  "label": "NVIDIA Blackwell (Sm120, RTX 5090)",
+  "category": "cuda",
+  "localVideoCapable": true,
+  "minParamsBMeaningful": 7.0,
+  "maxParamsBFits": 70.0,
+  "discreteVramGib": 32,
+  "note": "Top-end discrete NVIDIA for current generation. 32 GiB VRAM hosts 14B-32B comfortably; with system RAM offload reaches 70B. Pro tier peak for desktop/workstation."
+}

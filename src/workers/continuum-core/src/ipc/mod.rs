@@ -907,7 +907,193 @@ pub fn start_server(
     // start_server is sync but discovery is async; we're on the main
     // bootstrap thread, not inside a tokio task, so blocking here is
     // safe and gates module registration on the discovery result.
-    runtime.register(Arc::new(rt_handle.block_on(AircModule::discover_and_construct())));
+    //
+    // Outer 180s timeout caps total boot stall. Inner subprocess
+    // waits have their own per-call deadlines (5s socket discovery,
+    // 5s peer_id status, 120s auto-install) but the OUTER call has
+    // no overall budget without this wrapper — a wedged daemon
+    // could theoretically chain stalls beyond what individual
+    // deadlines catch. 180s covers worst-case auto-install + a few
+    // discovery rounds. Reviewer-defect-driven (continuum #1507
+    // finding 6); substrate-is-a-good-citizen "predictable startup"
+    // non-negotiable.
+    const AIRC_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+    let airc_module = Arc::new(rt_handle.block_on(async {
+        match tokio::time::timeout(
+            AIRC_DISCOVERY_TIMEOUT,
+            AircModule::discover_and_construct(),
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(_) => {
+                tracing::error!(
+                    timeout_secs = AIRC_DISCOVERY_TIMEOUT.as_secs(),
+                    "AircModule discovery exceeded outer timeout — falling back to degraded module. \
+                     Server will start; AIRC commands degrade until the operator resolves the daemon issue."
+                );
+                AircModule::new()
+            }
+        }
+    }));
+    let persona_bootstrap_deps = airc_module
+        .daemon_socket()
+        .map(|p| p.to_path_buf())
+        .zip(airc_module.default_room());
+    runtime.register(airc_module);
+
+    // PersonaInstanceManagerModule: owns the live PersonaAircRuntime
+    // registry — the kernel's roster of citizens in The Grid. Exposes
+    // `persona/instances/bootstrap`, `persona/instances/list`,
+    // `persona/instances/get`. Only registered when AIRC discovery
+    // produced both a daemon socket AND a default room — without
+    // either, citizens have nowhere to attach. The degraded path
+    // logs and skips registration so the rest of the server boots;
+    // the operator's remedy is the same as for AIRC discovery
+    // failures (install airc / run `airc room <name>`).
+    if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
+        let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        let daemon_socket_for_rag_inspect = daemon_socket.clone();
+        let registry = crate::persona::PersonaAircRuntimeRegistry::new();
+        let instance_manager = Arc::new(
+            crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
+                registry,
+                daemon_socket,
+                default_room,
+                continuum_root,
+            ),
+        );
+        runtime.register(instance_manager.clone());
+        log_info!(
+            "ipc",
+            "server",
+            "PersonaInstanceManagerModule registered — citizens can be bootstrapped via \
+             `persona/instances/bootstrap`"
+        );
+
+        // ── persona/rag-inspect — RAG introspection callable from any AI ──
+        //
+        // FilesystemPersonaResolver reads the persona's seed.json + attaches
+        // via airc_lib::Airc::attach_as using the same continuum_root +
+        // daemon_socket the instance manager just used. The module exposes
+        // the `persona/rag-inspect` command so sentinel personas, Claude,
+        // and any other AI can `Commands.execute('persona/rag-inspect', {
+        // persona: 'Paige' })` to honestly see what Paige's RAG layer would
+        // surface right now. Per [[observability-is-half-the-architecture]].
+        //
+        // chain_inference path stays RAG-only here (default_adapter=None)
+        // until the substrate has an Arc-shareable inference adapter pool
+        // (the current AdapterRegistry is Box-based + can't hand out Arcs
+        // without a separate refactor). The chained variant is exercised
+        // by the existing unit tests; production wiring of the inference
+        // probe is a follow-up.
+        let rag_inspect_resolver = std::sync::Arc::new(
+            crate::modules::persona_rag_inspect_filesystem::FilesystemPersonaResolver::new(
+                crate::modules::persona_instance_manager::resolve_continuum_root(),
+                daemon_socket_for_rag_inspect,
+            ),
+        );
+        let rag_inspect_module = std::sync::Arc::new(
+            crate::modules::persona_rag_inspect::PersonaRagInspectModule::new(
+                rag_inspect_resolver,
+            ),
+        );
+        runtime.register(rag_inspect_module);
+        log_info!(
+            "ipc",
+            "server",
+            "PersonaRagInspectModule registered — `persona/rag-inspect` available"
+        );
+
+        // The Grid's first heartbeat at server boot: resume any
+        // existing citizens from disk + ensure at least one is
+        // present. ResumeOrMintProvider scans
+        // `<continuum_root>/personas/*/seed.json`; for each parsed
+        // seed it yields a ResumedFromDisk intent (airc-lib will load
+        // the existing keypair from identity.key when bootstrap runs
+        // — same persona, same peer_id, across restarts). If no
+        // citizens are on disk, it floor-mints one fresh per the
+        // `min_personas = 1` policy below.
+        //
+        // Fired as an async task off the IPC bootstrap thread so the
+        // server-ready signal isn't blocked on daemon round-trips.
+        // Failure of any single bootstrap is non-fatal — log + move
+        // on; the operator can re-fire via the
+        // `persona/instances/bootstrap` command once the underlying
+        // issue (disk full, daemon down, corrupted seed) is resolved.
+        let bootstrap_handle = instance_manager.clone();
+        let continuum_root_for_boot = crate::modules::persona_instance_manager::resolve_continuum_root();
+        rt_handle.spawn(async move {
+            use crate::persona::identity_provider::PersonaIdentityProvider;
+            use crate::persona::resume_or_mint_provider::ResumeOrMintProvider;
+            let mut provider = match ResumeOrMintProvider::new(&continuum_root_for_boot, 1).await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "ResumeOrMintProvider construction failed — server up, no \
+                         citizens online. Resolve continuum_root permissions + restart, \
+                         or fire `persona/instances/bootstrap` manually."
+                    );
+                    return;
+                }
+            };
+            loop {
+                let intent = match provider.next_persona().await {
+                    Ok(Some(i)) => i,
+                    Ok(None) => break,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Provider yielded error mid-iteration — stopping boot bootstrap. \
+                             Server stays up; remaining citizens can be bootstrapped via IPC."
+                        );
+                        return;
+                    }
+                };
+                let label = match intent.source {
+                    crate::persona::identity_provider::PersonaIdentitySource::ResumedFromDisk => {
+                        "resumed"
+                    }
+                    crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted => {
+                        "freshly minted"
+                    }
+                };
+                match bootstrap_handle.bootstrap_one(&intent).await {
+                    Ok(info) => {
+                        tracing::info!(
+                            persona_id = %info.persona_id,
+                            agent_name = %info.agent_name,
+                            peer_id = %info.peer_id,
+                            home = %info.home.display(),
+                            default_room = %info.default_room,
+                            source = ?info.source,
+                            "🌐 The Grid welcomes a {} citizen: {} (peer_id={})",
+                            label,
+                            info.agent_name,
+                            info.peer_id
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            persona_id = %intent.persona_id,
+                            agent_name = %intent.agent_name,
+                            "Boot-time bootstrap failed for {} — server stays up, other \
+                             citizens (if any) will still be attempted.",
+                            intent.agent_name
+                        );
+                    }
+                }
+            }
+        });
+    } else {
+        tracing::warn!(
+            "PersonaInstanceManagerModule NOT registered — AIRC discovery is degraded \
+             (missing socket or default room). Resolve by installing airc and running \
+             `airc room <name>`, then restart continuum-core."
+        );
+    }
 
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health

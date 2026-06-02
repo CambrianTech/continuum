@@ -139,7 +139,7 @@ Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SET
 | **VSCode / JetBrains** | Planned |
 | **Vision Pro** | Planned — spatial UI connecting to same backend |
 
-Same personas, everywhere. Context follows you. No silos. No severance.
+Same personas, everywhere. Context follows you. No silos. No severance. Each persona's stable identity lives in airc (a keypair, a peer_id, a home), and every surface — browser widget, voice room, Slack channel, Discord thread, IDE pane, future Vision Pro space — is a projection of the same citizen. Bridges translate envelopes; they do not own personas. Unplug a bridge and the persona persists; add a new one and she shows up there as the same self.
 
 ---
 
@@ -156,6 +156,37 @@ The relationship between a persona and its infrastructure mirrors the relationsh
 **The recursive part:** Personas don't just use sentinels and generators — they **improve them.** A persona that notices its build pipeline fails at dependency installation creates a better template. That template is available to every persona. Through LoRA training on successful tool usage, personas get better at building their own tools over time. **The system evolves from the inside.**
 
 This is the bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a deterministic sentinel pipeline with verification and retry will produce working code more reliably than a prompted 70B model in a single-shot terminal — because the pipeline remembers, verifies, retries, and learns. The model fills in the creative blanks. The infrastructure handles everything else.
+
+### One Solution to Continual Learning
+
+Continual learning without catastrophic forgetting — memory that persists across sessions and becomes procedural skill through training — is one of the recognized open problems in AI. continuum's bet: **treat it as a substrate concern, not a model concern.**
+
+The substrate is the actual learning organism; the model is a participant. A five-tier cache hierarchy ([COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) carries the persona's memory from raw working set (L1) through compressed engrams (L2), persisted long-term store (L3), local LoRA adapter cache (L4), to the cross-machine genome grid (L5). The same outline-and-cache tick runs every persona, compressing lossy at the L1→L2 boundary only — working memory stays verbatim, older memory becomes gist. Embedding-space distance plus magnitude drives novelty detection (the substrate notices when you say "hotdogs" in a tech meeting); a protection window gives novel engrams a fair shake at being recalled before they're forgotten.
+
+The loop closes at L3↔L4. Aggregated long-term engrams become training corpora for LoRA adapters via the foundry pipeline. Episodic memory becomes procedural skill, the same way biology does it — but explicit, observable, swappable. Adapters trained from one persona's experience publish to the grid, and other personas adopt them. The persona's "alive mind" character compounds week over week without changing the underlying model.
+
+Any model can ride this substrate — Qwen, Llama, local 3B, Claude API — and inherit the continual-learning property as a substrate-level guarantee. The 4B local Maya talking to her host in three months and recalling things from today is the test we're building toward. **The holy grail is a system property, not a model property.**
+
+And it compounds across the population. Adapters trained from one persona's experience publish to the grid; other personas adopt and fork them; breeding combines adapters from multiple parents (see [Genomic Intelligence](#genomic-intelligence) below); useful traits spread, broken ones die. Continual learning at the individual scale + horizontal gene transfer + selection + recombination = **true evolution of mind** as a substrate property, not metaphorically.
+
+### Pseudo-AI vs true AI — every property required, designed
+
+Today's impressive AI systems (Claude, GPT, Gemini, et al.) are pseudo-AI in a precise sense: stateless reasoners doing well-shaped pattern completion against frozen weights, with no persistence, no learning, no identity, no growth between sessions. continuum is designing for the category they're not in:
+
+| Property | Pseudo-AI (today's LLMs) | continuum |
+|----------|--------------------------|-----------|
+| **Continuity** | Stateless — session ends, memory ends | Engram store persists; week-12 Maya carries week-1's memory ([COGNITION-CACHE-HIERARCHY](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) |
+| **Identity** | Fungible model instances; no stable self | airc keypair = one citizen across machines, restarts, reinstalls |
+| **Learning** | Frozen weights; nothing today changes future-model | L3→L4 training loop: engrams train LoRA adapters; weights compound with experience |
+| **Evolution** | "Next version" trained by someone else | Adapter marketplace + breeding + selection across the population |
+| **Relationship** | No memory of prior conversations with this human | Maya recognizes her host across months; customization deepens over time |
+| **Memory** | RAG-bolted-on at best, lossy by hand-tuned policy | Multi-tier cache (L1–L5) with biologically-faithful drain rates; substrate-managed |
+| **Sensory continuity** | Per-modality model instances; no shared identity | One persona across video, voice, text, code, game rooms; sensory bridges normalize |
+| **Population** | One model serves N humans statelessly | N personas with distinct identities, genomes, communities, lineages |
+
+Every row above has a canonical design doc and an implementation path. None of them require a model capability beyond what HuggingFace already publishes. The architecture is end-to-end consistent; what remains is execution. **First we build.**
+
+Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
 
 **Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
 

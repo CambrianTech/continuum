@@ -49,6 +49,16 @@ pub enum HwCapabilityTier {
     M2UmaProMax,
     /// Apple M3 Pro/Max/Ultra, 32GB+ unified memory.
     M3UmaProMax,
+    /// Apple M4 Pro/Max/Ultra, 32GB+ unified memory. Adds
+    /// Metal 3 tensor-API + AMX matmul accelerators (HW gen 2024).
+    /// Throughput ~30% better than M3 on Qwen-7B Q4_K_M.
+    M4UmaProMax,
+    /// Apple M5 Pro/Max/Ultra, 24-48 GB+ unified memory. Latest
+    /// Apple Silicon (2026). Higher memory-bandwidth + improved
+    /// Metal driver; Qwen-2.5-14B Q4_K_M comfortably at 24 GB,
+    /// 27B at 48 GB. Joel's daily-driver target per
+    /// [`docs/planning/INTEL-MAC-PERSONA-STRATEGY.md`].
+    M5UmaProMax,
     /// Mac Intel + discrete Metal GPU (AMD Radeon Pro on 2018-2019
     /// MacBookPro15,*). Distinct from Apple Silicon: Metal API works but
     /// the GPU is a discrete card with its own small VRAM budget (e.g.
@@ -64,6 +74,14 @@ pub enum HwCapabilityTier {
     /// resolver should be conservative and prefer CPU lanes until the
     /// fork patch lands.
     MacIntelMetalDiscrete,
+    /// nVidia compute capability 6.x (Pascal — GTX 10xx series:
+    /// 1080 Ti, 1080, 1070 Ti, etc.; Tesla P100). Two generations
+    /// behind Ampere; no tensor cores. Standard transformer
+    /// inference works via llama.cpp's CUDA backend; smaller VRAM
+    /// budgets (11 GB on 1080 Ti) constrain model size to Qwen-7B
+    /// class at Q4_K_M. Joel's "older desktop still in use" daily
+    /// target per the strategy doc.
+    Sm60,
     /// nVidia compute capability 7.0 (V100).
     Sm70,
     /// nVidia compute capability 7.5 (T4 datacenter, RTX 20xx, GTX 16xx).

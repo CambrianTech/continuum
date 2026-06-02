@@ -1,0 +1,10 @@
+{
+  "tierId": "sm60",
+  "label": "NVIDIA Pascal (Sm60, ~1080 Ti)",
+  "category": "cuda",
+  "localVideoCapable": true,
+  "minParamsBMeaningful": 3.0,
+  "maxParamsBFits": 11.0,
+  "discreteVramGib": 11,
+  "note": "Older NVIDIA gaming card still in use as a substrate host. 11 GiB VRAM comfortably fits 7B quantized; Pro tier because it can host multi-persona + serve grid-inference to Floor peers."
+}

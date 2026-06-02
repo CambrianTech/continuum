@@ -204,7 +204,14 @@ fn metal_tier(
 /// silently falls into `M1Uma*` — that bug bit Mac Intel hosts before
 /// 2026-05-30; the [`metal_tier`] wrapper is the guard.
 fn apple_silicon_tier(cpu_brand: &str, total_mem_mb: u32) -> HwCapabilityTier {
-    if cpu_brand.contains("M3") || cpu_brand.contains("M4") || cpu_brand.contains("M5") {
+    // Order matters: more-specific patterns before less-specific.
+    // "M5" is checked before any older M*, so M5 doesn't collapse
+    // into M3 fallback (the prior bug per task #115).
+    if cpu_brand.contains("M5") {
+        HwCapabilityTier::M5UmaProMax
+    } else if cpu_brand.contains("M4") {
+        HwCapabilityTier::M4UmaProMax
+    } else if cpu_brand.contains("M3") {
         HwCapabilityTier::M3UmaProMax
     } else if cpu_brand.contains("M2") && total_mem_mb >= 24_000 {
         HwCapabilityTier::M2UmaProMax
@@ -246,6 +253,15 @@ fn nvidia_sm_tier(device_name: &str, platform: &str) -> Result<HwCapabilityTier,
         Ok(HwCapabilityTier::Sm75)
     } else if upper.contains("V100") {
         Ok(HwCapabilityTier::Sm70)
+    } else if upper.contains("GTX 10") || upper.contains("P100") || upper.contains("P40")
+        || upper.contains("P4") || upper.contains("TITAN X") || upper.contains("TITAN XP")
+    {
+        // Pascal generation (compute capability 6.x). GTX 1080 Ti /
+        // 1080 / 1070 Ti / 1070 / 1060 / 1050 Ti; Tesla P-series.
+        // Joel's 1080 Ti on Windows lives here. Standard transformer
+        // inference works via llama.cpp's CUDA backend; smaller VRAM
+        // budgets (11 GB on 1080 Ti) constrain to Qwen-7B class.
+        Ok(HwCapabilityTier::Sm60)
     } else {
         Err(ProbeError::UnknownGpuDevice {
             platform: platform.to_string(),
@@ -337,6 +353,15 @@ mod tests {
             ("NVIDIA GeForce RTX 2080 Ti", HwCapabilityTier::Sm75),
             ("NVIDIA Tesla V100-SXM2-16GB", HwCapabilityTier::Sm70),
             ("NVIDIA B100 80GB", HwCapabilityTier::Sm100),
+            // Pascal — Joel's 1080 Ti + other GTX 10xx + Tesla P*
+            // (task #115).
+            ("NVIDIA GeForce GTX 1080 Ti", HwCapabilityTier::Sm60),
+            ("NVIDIA GeForce GTX 1080", HwCapabilityTier::Sm60),
+            ("NVIDIA GeForce GTX 1070 Ti", HwCapabilityTier::Sm60),
+            ("NVIDIA GeForce GTX 1060", HwCapabilityTier::Sm60),
+            ("NVIDIA Tesla P100", HwCapabilityTier::Sm60),
+            ("NVIDIA Tesla P40", HwCapabilityTier::Sm60),
+            ("NVIDIA TITAN Xp", HwCapabilityTier::Sm60),
         ];
         for (name, expected) in cases {
             assert_eq!(
@@ -345,6 +370,55 @@ mod tests {
                 "device name `{name}` should map to {expected:?}",
             );
         }
+    }
+
+    #[test]
+    fn apple_silicon_m5_classifies_above_m3_not_falling_through() {
+        // Task #115: prior code collapsed M3 / M4 / M5 all into
+        // M3UmaProMax. Now each gets its own tier so the model-pick
+        // table + governor can distinguish them.
+        assert_eq!(
+            apple_silicon_tier("Apple M5 Pro", 32_000),
+            HwCapabilityTier::M5UmaProMax
+        );
+        assert_eq!(
+            apple_silicon_tier("Apple M5 Max", 48_000),
+            HwCapabilityTier::M5UmaProMax
+        );
+    }
+
+    #[test]
+    fn apple_silicon_m4_classifies_distinctly_from_m3() {
+        assert_eq!(
+            apple_silicon_tier("Apple M4 Pro", 24_000),
+            HwCapabilityTier::M4UmaProMax
+        );
+        assert_eq!(
+            apple_silicon_tier("Apple M4 Max", 36_000),
+            HwCapabilityTier::M4UmaProMax
+        );
+    }
+
+    #[test]
+    fn apple_silicon_m3_still_classifies_correctly_after_m4_m5_added() {
+        // Regression guard against ordering bugs from #115.
+        assert_eq!(
+            apple_silicon_tier("Apple M3 Pro", 32_000),
+            HwCapabilityTier::M3UmaProMax
+        );
+        assert_eq!(
+            apple_silicon_tier("Apple M3 Max", 48_000),
+            HwCapabilityTier::M3UmaProMax
+        );
+    }
+
+    #[test]
+    fn apple_silicon_m2_pro_max_stays_in_m2_tier() {
+        // Regression guard — M2 with >= 24 GB stays M2UmaProMax.
+        assert_eq!(
+            apple_silicon_tier("Apple M2 Pro", 32_000),
+            HwCapabilityTier::M2UmaProMax
+        );
     }
 
     #[test]
@@ -468,8 +542,13 @@ mod tests {
         );
         assert_eq!(
             apple_silicon_tier("Apple M4 Max", 64_000),
-            HwCapabilityTier::M3UmaProMax,
-            "M4 currently aliases to M3UmaProMax until a dedicated tier ships"
+            HwCapabilityTier::M4UmaProMax,
+            "M4 now classifies into its own tier (task #115)"
+        );
+        assert_eq!(
+            apple_silicon_tier("Apple M5 Max", 48_000),
+            HwCapabilityTier::M5UmaProMax,
+            "M5 now classifies into its own tier (task #115)"
         );
     }
 }

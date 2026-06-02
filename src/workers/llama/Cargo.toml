@@ -22,3 +22,10 @@ default = []
 metal = []
 cuda = []
 vulkan = []
+# Intentional CPU-only on macOS. Suppresses the lib.rs compile_error
+# that normally guards against accidentally-CPU-only Mac builds.
+# REQUIRED on hardware where ggml-metal device init hangs (Intel Mac
+# + AMD Radeon Pro 560X confirmed; observed in #129 2026-06-01).
+# Apple Silicon production builds should NEVER enable this; they
+# should use `metal` for the 5-10x throughput.
+mac-cpu-only = []

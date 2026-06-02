@@ -3,16 +3,48 @@
 //! Continuum publishes structured events through the running AIRC daemon
 //! using typed IPC requests. No shell command, no stdout parsing, no JSON
 //! command adapter in the hot path.
+//!
+//! ### v5 owner-core schema (task #82)
+//!
+//! The previous v4 IPC carried `Response::Event { event:
+//! Box<TranscriptEvent> }`, `PublishRequest { wire, body }`, and
+//! `InboxResponse.events`. v5 split the IPC wire vocabulary from the
+//! SDK projection:
+//!
+//!   - `PublishRequest.payload: Vec<u8>` — opaque bytes the daemon
+//!     never parses; consumer owns the codec (continuum uses
+//!     `Body::to_payload`, which is JSON bytes round-trippable by any
+//!     other airc consumer via `Body::from_payload`).
+//!   - `PublishRequest.kind: IpcKind` — converted from continuum's
+//!     `FrameKind` via the SDK-side `impl From` landed in airc#1096.
+//!   - `PublishRequest.{from_peer, from_client}: Uuid` — caller
+//!     identity. continuum discovers `from_peer` from the daemon's
+//!     `Status` response at construction time (the scope's identity
+//!     the daemon already holds); `from_client` is a fresh `Uuid::new_v4`
+//!     per process startup so multi-tab attribution stays distinguishable.
+//!   - `InboxResponse.envelopes: Vec<Vec<u8>>` — raw airc-wire bytes;
+//!     decoded via `airc_lib::decode_wire_event` to get a
+//!     `TranscriptEvent` we can project to continuum's envelope shape.
+//!   - `InboxRequest.since: Option<IpcCursor>` — `TranscriptCursor →
+//!     IpcCursor` via the airc#1096 `impl From`.
+//!   - `ResolveWire`/`ResolveWireResponse`/`PublishRequest.wire` —
+//!     removed. The owner-core daemon owns its channels; clients no
+//!     longer ask "where's the file for this channel" because there's
+//!     no file (router is in-memory). Continuum's old "not joined"
+//!     gate is similarly gone — the daemon enforces channel membership
+//!     internally and returns a structured error if the scope isn't in
+//!     the requested channel.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use airc_core::{MentionTarget, RoomId};
 use airc_ipc::{
-    DaemonClient, InboxRequest, PublishRequest, PublishResponse, ResolveWireRequest,
-    ResolveWireResponse,
+    DaemonClient, InboxRequest, IpcDelivery, PublishRequest, PublishResponse,
 };
+use airc_lib::decode_wire_event;
 use async_trait::async_trait;
+use uuid::Uuid;
 
 use crate::airc::event_transport::AircEventTransport;
 use crate::airc::realtime::AircRealtimeDelivery;
@@ -26,11 +58,6 @@ use crate::airc::realtime_wire::{
 
 #[async_trait]
 pub trait AircDaemonClient: Send + Sync {
-    async fn resolve_wire(
-        &self,
-        request: ResolveWireRequest,
-    ) -> Result<ResolveWireResponse, String>;
-
     async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, String>;
 
     async fn inbox(&self, request: InboxRequest) -> Result<airc_ipc::InboxResponse, String>;
@@ -38,15 +65,6 @@ pub trait AircDaemonClient: Send + Sync {
 
 #[async_trait]
 impl AircDaemonClient for DaemonClient {
-    async fn resolve_wire(
-        &self,
-        request: ResolveWireRequest,
-    ) -> Result<ResolveWireResponse, String> {
-        DaemonClient::resolve_wire(self, request)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
     async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, String> {
         DaemonClient::publish(self, request)
             .await
@@ -63,15 +81,39 @@ impl AircDaemonClient for DaemonClient {
 #[derive(Clone)]
 pub struct DaemonAircEventTransport {
     client: Arc<dyn AircDaemonClient>,
+    /// Stable per-process identity for `PublishRequest.from_peer`.
+    /// Discovered from the daemon's `Status` response at
+    /// `AircModule::discover_and_construct` time; `Uuid::nil()` when
+    /// the daemon was unreachable or returned no identity (degraded
+    /// mode — publishes still succeed but attribution is anonymous).
+    from_peer: Uuid,
+    /// Fresh per-process client id distinguishing this continuum-core
+    /// instance from other tabs/agents sharing the same `from_peer`.
+    from_client: Uuid,
 }
 
 impl DaemonAircEventTransport {
+    /// Construct against a real daemon socket with anonymous identity.
+    /// Prefer [`Self::with_identity`] when the caller has discovered
+    /// the scope's peer id (e.g. via the daemon's Status response).
     pub fn new(socket_path: PathBuf) -> Self {
         Self::with_client(Arc::new(DaemonClient::new(socket_path)))
     }
 
     pub fn with_client(client: Arc<dyn AircDaemonClient>) -> Self {
-        Self { client }
+        Self::with_identity(client, Uuid::nil(), Uuid::new_v4())
+    }
+
+    pub fn with_identity(
+        client: Arc<dyn AircDaemonClient>,
+        from_peer: Uuid,
+        from_client: Uuid,
+    ) -> Self {
+        Self {
+            client,
+            from_peer,
+            from_client,
+        }
     }
 }
 
@@ -84,15 +126,26 @@ impl AircEventTransport for DaemonAircEventTransport {
         let envelope = params.envelope;
         envelope.validate_delivery()?;
 
-        let wire = self.resolve_wire(envelope.room_id).await?;
+        // Body → opaque payload bytes. The daemon never parses; any
+        // airc consumer reading our publishes uses Body::from_payload
+        // to project back to a typed Body. Same shape airc-lib's chat
+        // helpers use, so continuum's messages remain interop with
+        // `airc msg`/`airc inbox` readers.
+        let body = body_for_envelope(&envelope)?;
+        let payload = body.to_payload();
+
         let publish = self
             .client
             .publish(PublishRequest {
-                wire,
                 channel: envelope.room_id,
-                kind: frame_kind_for_delivery(envelope.delivery),
-                target: MentionTarget::All,
-                body: body_for_envelope(&envelope)?,
+                from_peer: self.from_peer,
+                from_client: self.from_client,
+                kind: frame_kind_for_delivery(envelope.delivery).into(),
+                delivery: ipc_delivery_for(envelope.delivery),
+                target: MentionTarget::All.into(),
+                correlation_id: None,
+                coalesce_key: None,
+                payload,
                 headers: headers_for_envelope(&envelope),
             })
             .await?;
@@ -121,21 +174,40 @@ impl AircEventTransport for DaemonAircEventTransport {
         let response = self
             .client
             .inbox(InboxRequest {
+                // TranscriptCursor → IpcCursor via the airc#1096 From
+                // impl. `.transpose()?` keeps the `Option<Result<_,_>>`
+                // pattern of the old code; `.map(Into::into)` then
+                // does the type conversion.
                 since: params
                     .after_cursor
                     .as_ref()
                     .map(|cursor| cursor.to_airc())
-                    .transpose()?,
+                    .transpose()?
+                    .map(Into::into),
                 channel: Some(RoomId::from_uuid(params.room_id)),
                 limit: Some(params.limit.unwrap_or(MAX_ROOM_REPLAY_LIMIT)),
             })
             .await?;
-        let newest = response.newest.clone().map(|cursor| {
-            crate::airc::realtime::AircReplayCursor::from_airc(params.room_id, cursor)
+
+        // IpcCursor → TranscriptCursor via the airc#1096 From impl.
+        let newest = response.newest.map(|cursor| {
+            crate::airc::realtime::AircReplayCursor::from_airc(params.room_id, cursor.into())
         });
 
         let projection = InMemoryAircRealtimeStore::new(MAX_ROOM_REPLAY_LIMIT);
-        for event in response.events {
+        for envelope_bytes in response.envelopes {
+            // Decode wire bytes → TranscriptEvent (airc_lib helper),
+            // then project to continuum envelope. Malformed bytes are
+            // skipped rather than failing the whole replay — one bad
+            // event shouldn't lose the page (the old typed-event path
+            // had the same skip-on-projection-error semantic).
+            let event = match decode_wire_event(envelope_bytes) {
+                Ok(event) => event,
+                Err(error) => {
+                    tracing::warn!(%error, "Skipping malformed airc envelope in replay");
+                    continue;
+                }
+            };
             let Some(envelope) = envelope_from_event(&event)? else {
                 continue;
             };
@@ -151,17 +223,24 @@ impl AircEventTransport for DaemonAircEventTransport {
     }
 }
 
-impl DaemonAircEventTransport {
-    async fn resolve_wire(&self, room_id: uuid::Uuid) -> Result<PathBuf, String> {
-        let response = self
-            .client
-            .resolve_wire(ResolveWireRequest { channel: room_id })
-            .await?;
-        response.wire.ok_or_else(|| {
-            format!(
-                "airc channel {room_id} is not joined in the daemon scope; run airc join before publishing"
-            )
-        })
+/// Map continuum's high-level realtime delivery enum to the v5 airc
+/// `IpcDelivery` vocabulary. Reflects the substrate retention
+/// guarantees: Durable persists to the ORM; EphemeralCoalesced is
+/// the latest-wins presence/typing class; ReceiptOnly is the
+/// request-leg of an RPC pair.
+fn ipc_delivery_for(delivery: AircRealtimeDelivery) -> IpcDelivery {
+    match delivery {
+        AircRealtimeDelivery::Durable => IpcDelivery::Durable,
+        AircRealtimeDelivery::EphemeralCoalesced => IpcDelivery::EphemeralLatest,
+        // Control frames carry small state updates that the chat client
+        // still needs after restart; route durable so they survive in
+        // scrollback. The daemon's router will deliver live to anyone
+        // currently attached; the durable copy backs replay/inbox.
+        AircRealtimeDelivery::Control => IpcDelivery::Durable,
+        // ReceiptOnly is an acknowledgement; modeled as the
+        // request-response leg so the daemon correlates it with the
+        // original publish without persisting it as chat content.
+        AircRealtimeDelivery::ReceiptOnly => IpcDelivery::RequestResponse,
     }
 }
 
@@ -172,37 +251,32 @@ mod tests {
         AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema,
     };
     use crate::airc::realtime_wire::CONTINUUM_BODY_HINT;
-    use airc_core::{Body, ClientId, EventId, PeerId, TranscriptEvent, TranscriptKind};
-    use airc_protocol::{FrameKind, HEADER_FORGE_BODY_HINT};
+    use airc_core::{Body, EventId};
+    use airc_ipc::{IpcKind, IpcTarget};
+    use airc_protocol::HEADER_FORGE_BODY_HINT;
     use parking_lot::Mutex;
     use serde_json::json;
     use uuid::Uuid;
 
+    // Round-trip wire-encode of envelopes is exercised by airc-ipc's
+    // own sdk_conversions tests + airc-lib's decode_wire_event tests;
+    // here we focus on continuum's substrate-boundary behavior — the
+    // shape of `PublishRequest` and `InboxRequest` we hand the daemon.
     #[derive(Default)]
     struct FakeDaemonClient {
-        wire: Mutex<Option<PathBuf>>,
         publishes: Mutex<Vec<PublishRequest>>,
         inbox_requests: Mutex<Vec<InboxRequest>>,
-        inbox_events: Mutex<Vec<TranscriptEvent>>,
-        inbox_newest: Mutex<Option<airc_core::TranscriptCursor>>,
+        inbox_newest: Mutex<Option<airc_ipc::IpcCursor>>,
     }
 
     #[async_trait]
     impl AircDaemonClient for FakeDaemonClient {
-        async fn resolve_wire(
-            &self,
-            _request: ResolveWireRequest,
-        ) -> Result<ResolveWireResponse, String> {
-            Ok(ResolveWireResponse {
-                wire: self.wire.lock().clone(),
-            })
-        }
-
         async fn publish(&self, request: PublishRequest) -> Result<PublishResponse, String> {
             self.publishes.lock().push(request);
             Ok(PublishResponse {
                 event_id: EventId::from_u128(0xfeed),
-                lamport: 7,
+                epoch: 0,
+                counter: 7,
                 occurred_at_ms: 1000,
                 channel_id: RoomId::from_u128(0xA1),
             })
@@ -211,8 +285,8 @@ mod tests {
         async fn inbox(&self, request: InboxRequest) -> Result<airc_ipc::InboxResponse, String> {
             self.inbox_requests.lock().push(request);
             Ok(airc_ipc::InboxResponse {
-                events: self.inbox_events.lock().clone(),
-                newest: self.inbox_newest.lock().clone(),
+                envelopes: Vec::new(), // empty: we test cursor/request shape, not decode
+                newest: *self.inbox_newest.lock(),
             })
         }
     }
@@ -233,9 +307,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_resolves_wire_then_sends_structured_body() {
+    async fn publish_sends_v5_shape_to_daemon() {
         let fake = Arc::new(FakeDaemonClient::default());
-        *fake.wire.lock() = Some(PathBuf::from("/tmp/airc-wire"));
         let transport = DaemonAircEventTransport::with_client(fake.clone());
 
         let result = transport
@@ -248,8 +321,17 @@ mod tests {
         assert!(result.ok);
         let publishes = fake.publishes.lock();
         assert_eq!(publishes.len(), 1);
-        assert_eq!(publishes[0].wire, PathBuf::from("/tmp/airc-wire"));
-        assert_eq!(publishes[0].kind, FrameKind::Message);
+        // v5 PublishRequest fields we set: kind (via FrameKind::into),
+        // target (via MentionTarget::into), delivery (Durable for
+        // EventBridge), payload (Body → opaque bytes via to_payload).
+        assert_eq!(publishes[0].kind, IpcKind::Message);
+        assert_eq!(publishes[0].target, IpcTarget::All);
+        assert_eq!(publishes[0].delivery, IpcDelivery::Durable);
+        assert!(!publishes[0].payload.is_empty());
+        // Body round-trip: published payload bytes decode back via
+        // Body::from_payload — proves the JSON envelope is preserved
+        // for downstream readers (airc msg / airc inbox).
+        let _decoded = Body::from_payload(&publishes[0].payload).expect("body roundtrips");
         assert_eq!(
             publishes[0]
                 .headers
@@ -260,68 +342,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_fails_loud_when_room_is_not_joined() {
+    async fn publish_propagates_identity_into_request() {
         let fake = Arc::new(FakeDaemonClient::default());
-        let transport = DaemonAircEventTransport::with_client(fake);
+        let peer = Uuid::from_u128(0xDEAD);
+        let client = Uuid::from_u128(0xBEEF);
+        let transport = DaemonAircEventTransport::with_identity(fake.clone(), peer, client);
 
-        let error = transport
+        transport
             .publish(AircRealtimePublishParams {
                 envelope: envelope("evt-1"),
             })
             .await
-            .unwrap_err();
-
-        assert!(error.contains("not joined"));
-    }
-
-    #[tokio::test]
-    async fn replay_decodes_only_continuum_body_hint_events() {
-        let fake = Arc::new(FakeDaemonClient::default());
-        let env = envelope("evt-1");
-        let event = TranscriptEvent {
-            event_id: EventId::from_u128(1),
-            room_id: RoomId::from_uuid(env.room_id),
-            peer_id: PeerId::from_u128(2),
-            client_id: ClientId::from_u128(3),
-            kind: TranscriptKind::Message,
-            occurred_at_ms: 100,
-            lamport: 1,
-            target: MentionTarget::All,
-            headers: headers_for_envelope(&env),
-            body: Some(Body::Json(serde_json::to_value(&env).unwrap())),
-            attachment: None,
-            receipt: None,
-            metadata: serde_json::Value::Null,
-        };
-        fake.inbox_events.lock().push(event);
-        let transport = DaemonAircEventTransport::with_client(fake);
-
-        let replay = transport
-            .replay(AircRealtimeReplayParams {
-                room_id: env.room_id,
-                after_cursor: None,
-                limit: Some(10),
-                include_presence: None,
-                include_subscriptions: None,
-                include_peer_manifests: None,
-                include_capability_index: None,
-                now_ms: None,
-            })
-            .await
             .unwrap();
 
-        assert_eq!(replay.events.len(), 1);
-        assert_eq!(replay.events[0].event_id, "evt-1");
+        let publishes = fake.publishes.lock();
+        assert_eq!(publishes[0].from_peer, peer);
+        assert_eq!(publishes[0].from_client, client);
     }
 
     #[tokio::test]
-    async fn replay_passes_lamport_cursor_to_daemon_inbox() {
+    async fn replay_passes_cursor_through_as_ipc_cursor() {
         let fake = Arc::new(FakeDaemonClient::default());
         let env = envelope("evt-1");
         let since_event = EventId::from_u128(0x10);
         let newest_event = EventId::from_u128(0x20);
-        *fake.inbox_newest.lock() = Some(airc_core::TranscriptCursor {
-            lamport: 9,
+        // Daemon hands us an IpcCursor in `newest`; we convert it
+        // back to TranscriptCursor + pack into our AircReplayCursor
+        // via airc#1096's From impls.
+        *fake.inbox_newest.lock() = Some(airc_ipc::IpcCursor {
+            epoch: 0,
+            counter: 9,
             event_id: newest_event,
         });
         let transport = DaemonAircEventTransport::with_client(fake.clone());
@@ -347,13 +397,13 @@ mod tests {
 
         let requests = fake.inbox_requests.lock();
         assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0].since,
-            Some(airc_core::TranscriptCursor {
-                lamport: 4,
-                event_id: since_event
-            })
-        );
+        // TranscriptCursor { lamport: 4, event_id: since_event } →
+        // IpcCursor { epoch: 0, counter: 4, event_id: since_event }
+        // (lamport < COUNTER_MASK so epoch packs as 0).
+        let since = requests[0].since.expect("cursor passed through");
+        assert_eq!(since.epoch, 0);
+        assert_eq!(since.counter, 4);
+        assert_eq!(since.event_id, since_event);
         let cursor = replay.cursor.unwrap();
         assert_eq!(cursor.lamport, 9);
         assert_eq!(cursor.event_id, newest_event.to_string());

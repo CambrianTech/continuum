@@ -1,10 +1,11 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    discover_airc_socket, discover_default_channel, spawn_daemon_attach, AircEventTransport,
-    AircQueueClient, AircQueueListRequest, AircQueueScanParams, AircRealtimePublishParams,
-    AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient, DaemonAircEventTransport,
-    InMemoryAircRealtimeStore, StoreAircEventTransport, TokioAircCommandRunner,
+    discover_airc_socket, discover_default_channel, discover_peer_id, spawn_daemon_attach,
+    AircEventTransport, AircQueueClient, AircQueueListRequest, AircQueueScanParams,
+    AircRealtimePublishParams, AircRealtimeReplayParams, AircRealtimeStore, CliAircQueueClient,
+    DaemonAircEventTransport, InMemoryAircRealtimeStore, StoreAircEventTransport,
+    TokioAircCommandRunner,
 };
 // `default_socket_path_in` retained for back-compat callers; deprecated,
 // see `crate::airc::daemon_endpoint` module docs.
@@ -104,9 +105,39 @@ impl AircModule {
             }
         };
 
+        // Identity discovery: query the daemon's Status response for
+        // this scope's peer_id. Used as `PublishRequest.from_peer` so
+        // continuum's publishes carry real attribution instead of the
+        // anonymous Uuid::nil placeholder. Failure is non-fatal — the
+        // module degrades to anonymous publishes and logs the remedy.
+        let from_peer = match discover_peer_id(&socket_path).await {
+            Ok(peer) => {
+                tracing::info!(
+                    peer_id = %peer,
+                    "Discovered airc scope peer_id via daemon Status"
+                );
+                peer
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "airc peer_id discovery failed — publishes will use anonymous \
+                     Uuid::nil from_peer (attribution will read as `00000000-…`). \
+                     Resolve: set AIRC_PEER_ID=<uuid> to pin identity, or check that \
+                     the daemon's Status RPC is responding."
+                );
+                uuid::Uuid::nil()
+            }
+        };
+        let from_client = uuid::Uuid::new_v4();
+
         Self {
             queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
-            event_transport: Arc::new(DaemonAircEventTransport::new(socket_path.clone())),
+            event_transport: Arc::new(DaemonAircEventTransport::with_identity(
+                Arc::new(airc_ipc::DaemonClient::new(socket_path.clone())),
+                from_peer,
+                from_client,
+            )),
             attach_socket_path: Some(socket_path),
             attach_channel,
         }
@@ -156,6 +187,26 @@ impl AircModule {
             attach_socket_path: None,
             attach_channel: None,
         }
+    }
+
+    /// The discovered airc daemon socket path, if discovery succeeded.
+    /// Downstream modules (e.g. persona instance manager) read this to
+    /// connect each citizen's `airc_lib::Airc` to the same per-machine
+    /// daemon. `None` means the airc subsystem is in degraded mode
+    /// (queue-only, no daemon attach) — citizens cannot be bootstrapped
+    /// until socket discovery succeeds on a future server restart.
+    pub fn daemon_socket(&self) -> Option<&std::path::Path> {
+        self.attach_socket_path.as_deref()
+    }
+
+    /// The discovered default room (per `airc room` for this scope), if
+    /// any. Used by the persona instance manager as the default landing
+    /// room when bootstrapping a citizen — so a fresh persona shows up
+    /// in the same room Joel publishes into, per the
+    /// `personas-are-citizens-airc-is-identity-provider` doctrine ("I
+    /// expect your general room and theirs to be the same room").
+    pub fn default_room(&self) -> Option<RoomId> {
+        self.attach_channel
     }
 }
 

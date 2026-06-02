@@ -30,10 +30,27 @@ const CHATML: &str = "{% for message in messages %}{{ '<|im_start|>' + message['
 #[test]
 #[ignore = "requires local GGUF; cargo test --release --test qwen35_chat_pipeline_full -- --ignored --nocapture"]
 fn qwen35_persona_style_chat_produces_coherent_short_reply() {
+    // n_gpu_layers honors QWEN35_N_GPU_LAYERS env var (default -1 = all on GPU).
+    // Set QWEN35_N_GPU_LAYERS=0 for CPU-only inference. Needed on Intel Macs
+    // with discrete AMD Metal devices where the SSM-hybrid qwen35 Metal
+    // kernels currently crash during JIT compilation — see findings in #129
+    // run 2026-06-01 on MacBookPro15,1 + Radeon Pro 560X. The bundled
+    // llama.cpp Metal path was validated on M-series only.
+    let n_gpu_layers: i32 = std::env::var("QWEN35_N_GPU_LAYERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1);
+    let context_length: u32 = std::env::var("QWEN35_CONTEXT_LENGTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(32_768);
+    eprintln!(
+        "[full] backend config: n_gpu_layers={n_gpu_layers} context_length={context_length}"
+    );
     let backend = LlamaCppBackend::load(LlamaCppConfig {
         model_path: PathBuf::from(model_path()),
-        n_gpu_layers: -1,
-        context_length: Some(32_768),
+        n_gpu_layers,
+        context_length: Some(context_length),
         n_seq_max: 1,
         n_ubatch: 128,
         flash_attn: FlashAttn::Disabled,

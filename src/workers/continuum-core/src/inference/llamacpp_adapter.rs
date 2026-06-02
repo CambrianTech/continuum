@@ -195,6 +195,43 @@ pub struct LlamaCppAdapter {
     /// CpuResident and Idle land with the paging substrate (Phase 3.x).
     /// See docs/architecture/PERSONA-CONTEXT-PAGING.md §16.
     kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy,
+    /// Continuous-batching slot count. `None` = single-seq mode
+    /// (the conservative qwen3.5 default — its recurrent /
+    /// Gated-Delta-Net Metal graph aborts on multi-seq). When set,
+    /// the in-backend scheduler multiplexes N concurrent
+    /// generations through one shared model load via
+    /// `llamacpp_scheduler.rs`'s driver loop.
+    ///
+    /// **Coordinator wiring:** `InferenceCoordinator::open_lane`
+    /// admits up to `lane_budgets.max_concurrency` lanes against
+    /// this adapter; the scheduler's `n_seq_max` MUST match or
+    /// exceed that number, otherwise admission lets in lanes the
+    /// scheduler can't actually serve in parallel. The realistic-
+    /// floor coordinator config (4 concurrent lanes) pairs with
+    /// `with_n_seq_max(4)` on the adapter.
+    ///
+    /// **Per-model safety:** qwen3.5 (and any model with a
+    /// recurrent KV layer that the Metal graph can't multiplex)
+    /// must keep this at None / 1. Standard Llama / Qwen-2.5 /
+    /// Gemma-2 architectures multiplex cleanly.
+    ///
+    /// See [`docs/architecture/INFERENCE-LANES-REALISTIC.md`]
+    /// (Step 4) for the rollout plan.
+    n_seq_max_override: Option<u32>,
+    /// Max ubatch size override — when set, the LlamaCppConfig built at
+    /// `load()` time uses this instead of the hardcoded default. The
+    /// compute graph is reserved for ubatches up to this size, so
+    /// setting it correctly is what avoids the
+    /// `decode: failed to find a memory slot for batch of size N`
+    /// panic when N exceeds the reserved graph (observed #130
+    /// 2026-06-01 with RAG-built persona prompts at 337 tokens).
+    /// Profile-driven via `PersonaInferenceProfile.n_ubatch`.
+    n_ubatch_override: Option<u32>,
+    /// GPU offload depth override. `None` = honor whatever the load
+    /// path decides from tier policy. Set explicitly when the persona
+    /// profile already resolved the right value (e.g., 0 on Compat
+    /// tier while #131's Metal hang fix is pending).
+    n_gpu_layers_override: Option<i32>,
 }
 
 impl LlamaCppAdapter {
@@ -257,6 +294,9 @@ impl LlamaCppAdapter {
             default_model: model.id.clone(),
             context_length_override: None,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
+            n_seq_max_override: None,
+            n_ubatch_override: None,
+            n_gpu_layers_override: None,
         })
     }
 
@@ -285,7 +325,63 @@ impl LlamaCppAdapter {
             default_model: model_id,
             context_length_override: None,
             kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
+            n_seq_max_override: None,
+            n_ubatch_override: None,
+            n_gpu_layers_override: None,
         }
+    }
+
+    /// **The intent-driven constructor** per
+    /// [[intent-driven-api-not-hot-patches]] (Joel, 2026-06-01).
+    /// Replaces the chain of `with_model_id().with_context_length()
+    /// .with_n_seq_max()...` with one call that takes a substrate-
+    /// resolved profile and derives every knob from declared intent.
+    ///
+    /// The profile is produced by `PersonaSpawnerModule` (#121) from
+    /// the persona's (role_template, hw_tier_descriptor, model_meta).
+    /// Callers — chat surface, RAG inspector, future inference command
+    /// hot path — never touch n_ubatch, n_seq_max, n_gpu_layers, etc.
+    /// directly; they're already resolved in the profile.
+    ///
+    /// Returns an error per [[no-fallbacks-ever]] if the profile says
+    /// "local inference" but `gguf_local_path` is None (cloud-only
+    /// profiles route through Anthropic/OpenAI adapters, not here).
+    pub fn for_persona(
+        profile: &crate::persona::inference_profile::PersonaInferenceProfile,
+    ) -> Result<Self, crate::persona::inference_profile::InferenceProfileError> {
+        let gguf_path = profile.gguf_local_path.clone().ok_or_else(|| {
+            crate::persona::inference_profile::InferenceProfileError::NoLocalGguf {
+                model_id: profile.model_id.clone(),
+                gguf_hint: None,
+            }
+        })?;
+        Ok(Self {
+            backend: Arc::new(RwLock::new(None)),
+            model_path: gguf_path,
+            last_throughput_tok_s: Arc::new(RwLock::new(0.0)),
+            default_model: profile.model_id.clone(),
+            context_length_override: Some(profile.context_length),
+            kv_quant_policy: crate::inference::kv_quant::KvQuantPolicy::default(),
+            n_seq_max_override: Some(profile.n_seq_max),
+            n_ubatch_override: Some(profile.n_ubatch),
+            n_gpu_layers_override: Some(profile.n_gpu_layers),
+        })
+    }
+
+    /// Override max ubatch size — typically not needed when using
+    /// `for_persona`; kept for legacy call sites and tests that
+    /// construct ad-hoc adapters without a full profile.
+    pub fn with_n_ubatch(mut self, n: u32) -> Self {
+        self.n_ubatch_override = Some(n);
+        self
+    }
+
+    /// Override GPU offload depth. `-1` = all on GPU; `0` = CPU only;
+    /// N = bottom N layers on GPU. As with `with_n_ubatch`, legacy
+    /// path — production code paths go through `for_persona`.
+    pub fn with_n_gpu_layers(mut self, n: i32) -> Self {
+        self.n_gpu_layers_override = Some(n);
+        self
     }
 
     /// Override the per-sequence context budget. Pass smaller-than-trained
@@ -309,6 +405,34 @@ impl LlamaCppAdapter {
     ) -> Self {
         self.kv_quant_policy = policy;
         self
+    }
+
+    /// Enable multi-seq continuous batching at the in-backend
+    /// scheduler. Sets `LlamaCppConfig::n_seq_max = n`, which sizes
+    /// the shared `Context`'s seq pool. Coordinator wiring at
+    /// `InferenceCoordinator` time SHOULD set this to match (or
+    /// modestly exceed) the lane budget's `max_concurrency` so the
+    /// scheduler can actually serve every admitted lane in parallel.
+    ///
+    /// **WARNING (model-specific):** qwen3.5 (and any model with a
+    /// Gated-Delta-Net or recurrent KV layer that llama.cpp's Metal
+    /// graph can't multiplex) MUST keep n_seq_max=1. Standard Llama,
+    /// Qwen-2.5, Gemma-2, and similar transformer architectures
+    /// multiplex cleanly. Caller verifies model compatibility — the
+    /// adapter doesn't auto-detect today. (Q21 follow-up: probe the
+    /// model architecture at load time and refuse n_seq_max>1 for
+    /// known-incompatible families.)
+    pub fn with_n_seq_max(mut self, n: u32) -> Self {
+        self.n_seq_max_override = Some(n.max(1));
+        self
+    }
+
+    /// Current n_seq_max setting (None = single-seq default).
+    /// Coordinators use this to size their admission budgets — if
+    /// the adapter reports None, max_concurrency is effectively 1
+    /// regardless of what the lane budget says.
+    pub fn n_seq_max(&self) -> Option<u32> {
+        self.n_seq_max_override
     }
 
     /// Size the backend's KV by a recipe's persona budgets. The adapter
@@ -394,10 +518,63 @@ impl LlamaCppAdapter {
         // — n_gpu_layers=0 forces the CPU path. Follow-up: native
         // Rust probe at adapter construction so this doesn't depend
         // on the install-time env-var trust chain (see task tracker).
-        let n_gpu_layers: i32 = match std::env::var("CONTINUUM_TIER").as_deref() {
-            Ok("mac_intel_discrete") => 0,
-            _ => -1,
+        // Profile-driven override wins per [[intent-driven-api-not-hot-
+        // patches]] — the substrate already resolved the right value from
+        // the persona's tier_descriptor. Env var stays as the legacy
+        // operator escape hatch for ad-hoc ad-hoc construction (tests,
+        // smoke binaries that don't carry a profile yet).
+        let n_gpu_layers: i32 = self
+            .n_gpu_layers_override
+            .unwrap_or_else(|| match std::env::var("CONTINUUM_TIER").as_deref() {
+                Ok("mac_intel_discrete") => 0,
+                _ => -1,
+            });
+        // Defense-in-depth (task #110): the realistic-lane work lifted
+        // n_seq_max to a caller-controlled knob, but the substrate
+        // MUST NOT enable multi-seq batching on architectures that
+        // llama.cpp's batched decode aborts on (qwen3 Gated-Delta-Net,
+        // mamba / rwkv / jamba / griffin / recurrentgemma /
+        // falcon_mamba). The probe reads the GGUF's general.architecture
+        // and classifies. Unsafe architectures clamp n_seq_max → 1
+        // regardless of what the caller configured. A `tracing::warn!`
+        // surfaces the clamp so operators see the safety net firing
+        // instead of silent quality loss.
+        let requested_n_seq_max = self.n_seq_max_override.unwrap_or(1);
+        let effective_n_seq_max = if requested_n_seq_max > 1 {
+            match crate::inference::batching_probe::probe_gguf_batching_safety(
+                &self.model_path,
+            ) {
+                Ok(verdict) => {
+                    let clamped = verdict.clamp_n_seq_max(requested_n_seq_max);
+                    if clamped < requested_n_seq_max {
+                        tracing::warn!(
+                            arch = %verdict.arch(),
+                            requested = requested_n_seq_max,
+                            effective = clamped,
+                            "batching_probe: clamped n_seq_max — architecture is not safe for multi-seq batching; \
+                             continuous batching disabled for this adapter. Coordinator lanes \
+                             will queue at the in-backend scheduler instead of running in parallel."
+                        );
+                    }
+                    clamped
+                }
+                Err(err) => {
+                    // Probe failure shouldn't block adapter load — but
+                    // we conservatively clamp to 1 since we can't
+                    // verify safety. Logged so operators chase the
+                    // root cause (malformed GGUF metadata).
+                    tracing::warn!(
+                        error = %err,
+                        requested = requested_n_seq_max,
+                        "batching_probe failed — conservatively clamping n_seq_max to 1"
+                    );
+                    1
+                }
+            }
+        } else {
+            requested_n_seq_max
         };
+
         let config = LlamaCppConfig {
             model_path: self.model_path.clone(),
             mmproj_path,
@@ -406,13 +583,26 @@ impl LlamaCppAdapter {
             // this via with_context_length() to bound the KV cache (24GB
             // at 262K → 500MB at 16K).
             context_length: self.context_length_override,
-            // qwen3.5's recurrent/Gated-Delta-Net Metal graph aborts inside
-            // llama.cpp on the default aggressive graph shape. Keep this path
-            // GPU-only but choose a conservative graph explicitly: single seq,
-            // no FlashAttention auto-upgrade, smaller ubatch. That preserves
-            // Rust-owned local inference while avoiding the known abort path.
-            n_seq_max: 1,
-            n_ubatch: 128,
+            // n_seq_max comes from the adapter's override clamped by
+            // the model-arch probe above. Standard transformers
+            // (Llama, Qwen-2.5, Gemma-2, ...) pass through; recurrent
+            // / state-space / hybrid families (qwen3, mamba, rwkv,
+            // jamba, ...) clamp to 1. See task #110.
+            n_seq_max: effective_n_seq_max,
+            // Profile-driven override wins per [[intent-driven-api-not-
+            // hot-patches]]. Fallback to 512 (not the old 128 default)
+            // because compute-graph reservation matches n_ubatch and a
+            // RAG-built persona prompt arrives at 200-500 tokens — at
+            // n_ubatch=128 the scheduler panicked with "decode: failed
+            // to find a memory slot for batch of size 337" during #130
+            // 2026-06-01 multi-persona LCD chat. 512 covers realistic
+            // persona prompts without ballooning memory (graph nodes
+            // scale with n_ubatch but at ~4 KiB per node × 942 nodes ×
+            // 4 multiplier we're talking ~15 MiB per scheduler — trivial).
+            // Future: derive from `models.toml` row per [[orm-everything-
+            // not-hand-edited-files]] so each model declares its own
+            // realistic batch ceiling.
+            n_ubatch: self.n_ubatch_override.unwrap_or(512),
             flash_attn: FlashAttn::Disabled,
             fused_gdn_ar: false,
             fused_gdn_ch: false,
@@ -902,6 +1092,87 @@ mod tests {
     use crate::model_registry::Model;
     use std::collections::BTreeSet;
 
+    fn lcd_compat_profile()
+    -> crate::persona::inference_profile::PersonaInferenceProfile {
+        use crate::persona::hw_tier_descriptor::HwTierCategory;
+        use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
+        use uuid::Uuid;
+        PersonaInferenceProfile {
+            persona_id: Uuid::nil(),
+            persona_name: "Paige".to_string(),
+            model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            gguf_local_path: Some(PathBuf::from(
+                "/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            )),
+            tier_category: HwTierCategory::Compat,
+            tier_id: "mac_intel_metal_discrete".to_string(),
+            context_length: 2048,
+            n_ubatch: 512,
+            n_batch: 2048,
+            n_seq_max: 1,
+            n_gpu_layers: 0,
+            sampling: SamplingProfile::chat_defaults(),
+            chat_template: None,
+            stop_sequences: vec!["<|im_end|>".to_string()],
+        }
+    }
+
+    /// `for_persona` produces an adapter with every override field set
+    /// from the profile. Without this, the substrate's intent-driven
+    /// guarantee per [[intent-driven-api-not-hot-patches]] breaks:
+    /// hardcoded defaults silently override what the spawner resolved.
+    #[test]
+    fn for_persona_populates_all_overrides_from_profile() {
+        let profile = lcd_compat_profile();
+        let adapter = LlamaCppAdapter::for_persona(&profile).expect("build adapter");
+        assert_eq!(adapter.model_path, PathBuf::from(
+            "/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        ));
+        assert_eq!(adapter.default_model, profile.model_id);
+        assert_eq!(adapter.context_length_override, Some(2048));
+        assert_eq!(adapter.n_seq_max_override, Some(1));
+        assert_eq!(adapter.n_ubatch_override, Some(512));
+        assert_eq!(adapter.n_gpu_layers_override, Some(0));
+    }
+
+    /// A profile with no `gguf_local_path` is invalid for local
+    /// inference. `for_persona` rejects it loud per [[no-fallbacks-
+    /// ever]] — better an error message naming the missing field than
+    /// a silent fallback to a "default" model.
+    #[test]
+    fn for_persona_errors_when_gguf_local_path_missing() {
+        let mut profile = lcd_compat_profile();
+        profile.gguf_local_path = None;
+        // `LlamaCppAdapter` doesn't derive Debug (Arc<RwLock<...>> isn't
+        // straightforward to format), so `expect_err` won't compile.
+        // Match on the result directly.
+        match LlamaCppAdapter::for_persona(&profile) {
+            Ok(_) => panic!("missing gguf_local_path must error per no-fallbacks doctrine"),
+            Err(crate::persona::inference_profile::InferenceProfileError::NoLocalGguf {
+                model_id,
+                ..
+            }) => {
+                assert_eq!(model_id, "continuum-ai/qwen2.5-0.5b-instruct-GGUF");
+            }
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    /// `with_n_ubatch` and `with_n_gpu_layers` setters work for legacy
+    /// call sites + tests that build adapters without a full profile.
+    /// They're the escape hatch; production paths use `for_persona`.
+    #[test]
+    fn with_n_ubatch_and_n_gpu_layers_setters() {
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/x.gguf"),
+            "model".to_string(),
+        )
+        .with_n_ubatch(1024)
+        .with_n_gpu_layers(20);
+        assert_eq!(adapter.n_ubatch_override, Some(1024));
+        assert_eq!(adapter.n_gpu_layers_override, Some(20));
+    }
+
     fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationRequest {
         TextGenerationRequest {
             messages: vec![ChatMessage {
@@ -1008,6 +1279,60 @@ mod tests {
             }
             Ok(_) => panic!("expected NoLocalModelLoadable when no row has gguf_local_path"),
         }
+    }
+
+    // ── n_seq_max coordinator wiring (task #109, step 4) ────────
+
+    #[test]
+    fn n_seq_max_defaults_to_none_for_single_seq_backcompat() {
+        // The adapter without a configured override stays in the
+        // historical single-seq mode. Qwen3.5 + recurrent / GDN
+        // models stay safe; older callers' behavior is unchanged.
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/no-such-file.gguf"),
+            "test-model".to_string(),
+        );
+        assert_eq!(adapter.n_seq_max(), None);
+    }
+
+    #[test]
+    fn n_seq_max_override_round_trips_through_builder() {
+        // Coordinator wiring sets this from
+        // CoordinatorConfig.lane_budgets.max_concurrency.
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/no-such-file.gguf"),
+            "test-model".to_string(),
+        )
+        .with_n_seq_max(4);
+        assert_eq!(adapter.n_seq_max(), Some(4));
+    }
+
+    #[test]
+    fn n_seq_max_zero_clamps_to_one() {
+        // Zero would be a config error — the backend's scheduler
+        // can't serve any seq with n_seq_max=0. Clamping to 1
+        // matches the back-compat default and avoids load-time
+        // panics from inside llama.cpp.
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/no-such-file.gguf"),
+            "test-model".to_string(),
+        )
+        .with_n_seq_max(0);
+        assert_eq!(adapter.n_seq_max(), Some(1));
+    }
+
+    #[test]
+    fn n_seq_max_builder_composes_with_other_overrides() {
+        // Builders should chain — coordinator wiring sets context,
+        // KV quant, AND n_seq_max in one builder pipeline.
+        let adapter = LlamaCppAdapter::with_model_id(
+            PathBuf::from("/tmp/no-such-file.gguf"),
+            "test-model".to_string(),
+        )
+        .with_context_length(16_384)
+        .with_n_seq_max(4)
+        .with_kv_quant_policy(crate::inference::kv_quant::KvQuantPolicy::default());
+        assert_eq!(adapter.n_seq_max(), Some(4));
     }
 
     #[test]

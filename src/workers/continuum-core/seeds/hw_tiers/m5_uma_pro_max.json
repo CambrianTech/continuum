@@ -1,0 +1,10 @@
+{
+  "tierId": "m5_uma_pro_max",
+  "label": "M5 Pro/Max Unified Memory",
+  "category": "mseriespro",
+  "localVideoCapable": true,
+  "minParamsBMeaningful": 7.0,
+  "maxParamsBFits": 30.0,
+  "unifiedMemoryGib": 64,
+  "note": "Pro tier peak (current). Multi-persona at 14B + LoRA paging + live avatars + concurrent grid-inference host. Daily-driver target for the architecture going forward."
+}

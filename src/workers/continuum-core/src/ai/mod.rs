@@ -22,16 +22,27 @@
 
 pub mod adapter;
 pub mod anthropic_adapter;
+// HeuristicInferenceAdapter is gated behind `cfg(any(test, feature =
+// "test-fixtures"))`. Production binaries built without the feature
+// do not contain it at all — the compiler enforces what the doctrine
+// requires per [[no-fallbacks-ever]] and [[no-if-statements-use-llms-
+// for-cognition]]. Joel (2026-06-01): "You mix this fake shit in and
+// it's going live ALL THE TIME. The fake shit is a CHOSEN model
+// adapter no other form. Declaration." cfg gating IS the declaration.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod heuristic_adapter;
 pub mod openai_adapter;
 pub mod registry_bridge;
 pub mod types;
 
 // Re-export commonly used types
 pub use adapter::{
-    AIProviderAdapter, AdapterCapabilities, AdapterConfig, AdapterRegistry, ApiStyle,
-    LoRAAdapterInfo, LoRACapabilities,
+    AIProviderAdapter, AdapterCapabilities, AdapterConfig, AdapterRegistry, AdapterSelectionError,
+    ApiStyle, LoRAAdapterInfo, LoRACapabilities,
 };
 pub use anthropic_adapter::AnthropicAdapter;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use heuristic_adapter::{HeuristicInferenceAdapter, HEURISTIC_DEFAULT_MODEL, HEURISTIC_PROVIDER_ID};
 pub use openai_adapter::OpenAICompatibleAdapter;
 pub use types::{
     ActiveAdapterRequest, ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest,
