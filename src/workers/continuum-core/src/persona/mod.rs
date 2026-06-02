@@ -35,6 +35,7 @@ pub mod hw_tier_descriptor;
 pub mod identity_provider;
 pub mod inbox;
 pub mod inference_profile;
+pub mod profile_builder;
 pub mod inbox_admission;
 pub mod media_policy;
 pub mod message_cache;
