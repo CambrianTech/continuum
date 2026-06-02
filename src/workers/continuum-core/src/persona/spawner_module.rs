@@ -87,40 +87,31 @@ pub fn plan_for_tier(
     hw_capability: HwCapabilityTier,
     tier_category: HwTierCategory,
 ) -> Vec<DesiredRole> {
-    // Slot the substrate's LCD as Helper + Coder on Compat. Per Joel
-    // (#133): "no MacBooks left behind." Even the weakest hardware
-    // gets multi-persona on day one.
+    // Slice 13 ships SINGLE-PERSONA-per-plan. The Coder slot is
+    // deferred to slice 14 because ResumeOrMintProvider's
+    // scan_personas_dir sorts alphabetically (line 200 of
+    // resume_or_mint_provider.rs), so on boot 2 the
+    // position-pairing of [Helper, Coder] against the disk-yielded
+    // alphabetic persona order flips role assignments — Bart
+    // (random-derived from peer_id) becomes Helper when he was
+    // bootstrapped as Coder, etc. PR #1510 review caught this; the
+    // load-bearing fix is role-in-seed.json (slice 14).
+    //
+    // Re-enable [Helper, Coder] (and richer rosters for higher
+    // tiers) when slice 14 lands. Until then the substrate hosts ONE
+    // Helper persona per tier — the demo-binary level of coverage,
+    // but through the substrate-managed path.
     let _ = hw_capability; // currently informational; future per-tier
                            // role_template selection consumes it
-    match tier_category {
-        HwTierCategory::Compat => vec![
-            DesiredRole {
-                role: RoleId::Helper,
-                model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-            },
-            DesiredRole {
-                role: RoleId::Coder,
-                model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-            },
-        ],
-        // Other tiers: Helper + Coder for now, same model selection
-        // pending tier-specific role_template wiring (#123). Slice 8+
-        // will refine — MSeriesPro can fit Qwen2.5-7B; Cuda Sm120 can
-        // fit Qwen2.5-14B + Sentinel + Researcher.
-        HwTierCategory::MSeries
-        | HwTierCategory::MSeriesPro
-        | HwTierCategory::Cuda
-        | HwTierCategory::Cloud => vec![
-            DesiredRole {
-                role: RoleId::Helper,
-                model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-            },
-            DesiredRole {
-                role: RoleId::Coder,
-                model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-            },
-        ],
-    }
+    let _ = tier_category; // all tiers produce the same single-Helper
+                           // plan until slice 14 ships role-aware
+                           // mapping + multi-role-per-tier rosters
+    vec![DesiredRole {
+        role: RoleId::Helper,
+        model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+    }]
+    // TODO #133 slice 14: restore tier-shaped rosters after
+    // RoleAwareProvider + role-in-seed.json land.
 }
 
 /// Substrate ServiceModule that surfaces the spawner's roster plan.
@@ -382,30 +373,31 @@ mod tests {
     /// Compat tier produces the LCD roster: Helper + Coder both on
     /// Qwen2.5-0.5B. The canonical Intel-Mac startup state #133
     /// targets.
+    ///
+    /// Slice 13 update: temporarily single-Helper while ResumeOrMint-
+    /// Provider's alphabetical sort + position-pairing hazard is
+    /// resolved in slice 14. Coder will be re-added once
+    /// role-in-seed.json lands.
     #[test]
-    fn compat_tier_plans_helper_and_coder_on_lcd() {
+    fn compat_tier_plans_single_helper_on_lcd() {
         let plan = plan_for_tier(
             HwCapabilityTier::MacIntelMetalDiscrete,
             HwTierCategory::Compat,
         );
-        assert_eq!(plan.len(), 2);
+        assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].role, RoleId::Helper);
-        assert_eq!(plan[1].role, RoleId::Coder);
         assert_eq!(
             plan[0].model_id,
             "continuum-ai/qwen2.5-0.5b-instruct-GGUF"
         );
-        assert_eq!(
-            plan[1].model_id,
-            "continuum-ai/qwen2.5-0.5b-instruct-GGUF"
-        );
     }
 
-    /// Every tier currently plans Helper + Coder — verifies the
-    /// "no MacBooks (or anyone) left behind" floor that Joel set on
-    /// 2026-06-01. Slice 8+ refines each tier's roster.
+    /// Every tier currently plans exactly one Helper — until slice 14
+    /// lands role-in-seed.json + RoleAwareProvider, multi-role plans
+    /// would mis-pair roles on boot 2 (alphabetic-disk-order vs
+    /// plan-order). Single role per tier is the safe floor for now.
     #[test]
-    fn every_tier_plans_at_least_helper_and_coder() {
+    fn every_tier_plans_single_helper() {
         for (hw, cat) in [
             (HwCapabilityTier::CpuOnly, HwTierCategory::Compat),
             (HwCapabilityTier::M1Uma8Gb, HwTierCategory::MSeries),
@@ -414,16 +406,31 @@ mod tests {
             (HwCapabilityTier::Cloud, HwTierCategory::Cloud),
         ] {
             let plan = plan_for_tier(hw, cat);
-            assert!(plan.len() >= 2, "tier {cat:?} planned only {} roles", plan.len());
-            assert!(
-                plan.iter().any(|r| r.role == RoleId::Helper),
-                "tier {cat:?} missing Helper"
-            );
-            assert!(
-                plan.iter().any(|r| r.role == RoleId::Coder),
-                "tier {cat:?} missing Coder"
+            assert_eq!(plan.len(), 1, "tier {cat:?} planned {} roles, want 1", plan.len());
+            assert_eq!(
+                plan[0].role,
+                RoleId::Helper,
+                "tier {cat:?} first slot must be Helper"
             );
         }
+    }
+
+    /// Regression test for the position-pairing hazard (PR #1510 review
+    /// finding #2). Pinned `#[ignore]` until slice 14 lands role-in-
+    /// seed.json + RoleAwareProvider. The body documents what slice
+    /// 14 must restore: tier-shaped multi-role rosters that survive
+    /// boot 2's alphabetic persona order without flipping roles.
+    #[test]
+    #[ignore = "tracks #133 slice 14 — role-in-seed.json + RoleAwareProvider"]
+    fn slice_14_restores_helper_plus_coder_for_compat() {
+        let plan = plan_for_tier(
+            HwCapabilityTier::MacIntelMetalDiscrete,
+            HwTierCategory::Compat,
+        );
+        // When slice 14 ships, this assertion becomes the live spec:
+        assert_eq!(plan.len(), 2);
+        assert!(plan.iter().any(|r| r.role == RoleId::Helper));
+        assert!(plan.iter().any(|r| r.role == RoleId::Coder));
     }
 
     /// ServiceModule.plan() is the same as the free function with the
@@ -513,7 +520,10 @@ mod tests {
                 assert_eq!(slot_index, 0);
                 assert_eq!(role, RoleId::Helper);
                 assert_eq!(provided, 0);
-                assert_eq!(required, 2);
+                // Slice 13 P2: single-Helper plan until slice 14 lands
+                // role-in-seed.json. `required` reflects the current
+                // plan size; updates to 2 when Coder returns.
+                assert_eq!(required, 1);
             }
             other => panic!("expected IdentityProviderExhausted, got {other:?}"),
         }
