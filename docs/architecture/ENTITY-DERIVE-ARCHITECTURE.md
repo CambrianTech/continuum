@@ -56,9 +56,9 @@ Adding a field to the Rust struct propagates everywhere automatically. Removing 
 - `#[entity(skip)]` — exclude from schema (in-memory only). Pair with `#[serde(skip)]` to also keep out of the wire payload.
 - `#[entity(foreign_key("collection.field", on_delete = "cascade", on_update = "restrict"))]` — declare a real FK reference. Cascade keywords: `"restrict" | "cascade" | "set_null" | "no_action"`. Defaults to `Restrict` on both.
 
-### The two BaseEntity patterns
+### BaseEntity composition (canonical: Pattern A, transitional: Pattern B)
 
-**Pattern A: bare `Uuid id` (Engram's pattern)**
+**Pattern A — CANONICAL — bare `Uuid id` with `#[entity(primary_key)]`:**
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, TS, Entity)]
@@ -67,13 +67,13 @@ Adding a field to the Rust struct propagates everywhere automatically. Removing 
 pub struct Engram {
     #[entity(primary_key)]
     pub id: Uuid,
-    // ... other fields
+    // ... domain fields
 }
 ```
 
-The id IS the BaseEntity.id semantically. Adapter manages createdAt / updatedAt / version transparently.
+The id IS the BaseEntity.id semantically. Adapter manages createdAt / updatedAt / version transparently in `DataRecord.metadata`. This is the **canonical default** for new entities — the entity struct stays small + focused on domain payload, the adapter handles base-entity bookkeeping. Engram migrated to this pattern.
 
-**Pattern B: embedded `BaseEntity` (TS-decorator analogue)**
+**Pattern B — transitional — embedded `BaseEntity` via `#[serde(flatten)]`:**
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, Entity)]
@@ -87,9 +87,9 @@ pub struct ChatMessage {
 }
 ```
 
-The BaseEntity struct is embedded via `#[serde(flatten)]`. The derive recognizes it by type name and adds the base columns. Field access at the Rust level lets you read `message.base.created_at` directly. Use when the entity needs visible BaseEntity fields at the Rust call sites.
+The BaseEntity struct is embedded; the derive recognizes it by type name. Use **only** when the entity has external callers that read `entity.base.created_at` directly at the Rust level. Most entities don't need this — they read timestamps off `DataRecord.metadata` if they need them.
 
-The two patterns are mutually exclusive per entity (the derive enforces this).
+**Per the compression principle**: Pattern A is the default. New entities should use it. Pattern B exists for legacy migrations + the narrow case above. A future audit ticket should walk existing Pattern B users and migrate any that don't have legitimate `entity.base.*` access patterns to Pattern A. The two are mutually exclusive per entity (the derive enforces this).
 
 ## Type inference (Rust type → FieldType)
 
@@ -160,7 +160,31 @@ Because the entity contract is `OrmEntity + Serialize + DeserializeOwned`:
 - **Backend-agnostic** — SQLite today, Postgres tomorrow, future grid-replicated tier. All read the same `CollectionSchema`.
 - **Format-agnostic** — swap `serde_json` for `serde_yaml` / `serde_cbor` / `postcard` to export entities in YAML / CBOR / binary with zero entity changes.
 
-This is the substrate plumbing that makes **persona portability across continuums** structural rather than aspirational. A persona's engrams export as JSON, ship across the grid, import into another continuum's adapter — same shape on the receiving end because the entity definition is the same Rust struct everywhere. The grid-as-distributed-gene-pool from [[persona-breeding-substrate-supports-it]] falls out without redesign.
+This is the substrate plumbing that makes **persona portability across continuums** structural rather than aspirational. A persona's engrams export as JSON, ship across the grid, import into another continuum's adapter — same shape on the receiving end *when the two continuums run compatible entity schemas* (see "Schema evolution" below). The grid-as-distributed-gene-pool from [[persona-breeding-substrate-supports-it]] falls out without redesign once schema-evolution semantics are pinned.
+
+## Schema evolution
+
+The "swap serde_json for serde_yaml" portability claim above only holds when both ends speak the same entity schema. The substrate does NOT solve cross-version schema evolution today; this section names the scope and the open work so future slices don't accidentally break grid-flow portability.
+
+**What works today:**
+
+- **Additive field changes** — adding a new `Option<T>` field to an entity is forward-compatible. Older serialized data has no value for the new field; serde populates `None`; the entity loads cleanly.
+- **Adding enum variants** — only safe if every deserializer either knows the new variant or uses `#[serde(other)]` to catch it. The substrate does NOT currently apply `#[serde(other)]` consistently. **Adding an `EngramKind` variant today breaks deserialization on older substrate versions.**
+- **Field-level renames** — break serde round-trip in both directions unless `#[serde(rename = "...")]` or `#[serde(alias = "...")]` is used. Same caveat: not consistently applied.
+
+**Non-goals for v1:**
+
+- No automatic migration of stored data across breaking changes. If an entity's schema breaks (renamed field, removed field, changed type), the substrate provides no auto-migration path. The OrmStore's `ensure_schema` would happily create the new schema next to the old; existing rows would error on deserialization.
+- No cross-version signature compatibility. When entity chain-of-custody slice 3 lands, the signed content_hash will cover the canonical serde form. Field renames or reorderings would invalidate signatures. The chain head invalidates — by design.
+
+**What needs designing before grid-flow lands** ([entity-chain-of-custody-roadmap](../planning/ENTITY-CHAIN-OF-CUSTODY-ROADMAP.md) slice 5+):
+
+- Schema version field on every entity (`schema_version: u32`?) so receivers can detect mismatch.
+- Per-entity migration registry with idempotent "v1 → v2 → v3" transforms.
+- Catch-all variants on every enum (`#[serde(other)] Unknown(serde_json::Value)`).
+- Explicit "canonical form" definition for content_hash computation so adding optional fields doesn't break signatures.
+
+**Until those are designed, the portability claim is "exports work between continuums on the same SHA"** — a real win for substrate-internal use, not yet a cross-continuum mesh.
 
 ## Concrete adapters: what's migrated
 

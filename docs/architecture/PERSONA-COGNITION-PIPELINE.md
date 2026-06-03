@@ -82,6 +82,8 @@ This is the cognition cycle PER PERSONA, PER TURN. **All verbs already exist** i
 
 `rag_inspect.rs::inspect_persona_rag` (without `_with_inference`) stays — that's the introspection / mechanic's-view function it was named for. It's how AIs answer "what would my RAG look like right now?" Not the production hot path.
 
+**Explicit carve-out for `inspect_persona_rag_with_inference`:** the `_with_inference` variant ships a `{will_respond, response}` JSON contract because it answers a different question — "would the persona respond to this RAG snapshot?" — for introspection probes + adversarial debugging. **This contract is forbidden from being called from `service_loop` or any production cognition path.** The only legitimate callers are the rag-inspect ServiceModule (`modules/persona_rag_inspect.rs`) + tests. The forbidden-moves list in §5 still applies to the production path; this carve-out names the one introspection function allowed to use the shape, so future readers don't have to triangulate it from the import graph. A grep-test or `#[deny]` lint that fires if `service_loop.rs` ever imports `inspect_persona_rag_with_inference` would make the forbid structural.
+
 ---
 
 ## 5. Forbidden Moves (anti-patterns I keep reflex-coding under amnesia)
