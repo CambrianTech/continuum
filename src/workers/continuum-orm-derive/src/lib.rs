@@ -91,10 +91,37 @@
 //!   composite. Repeat the attribute for multiple indexes.
 
 use proc_macro::TokenStream;
+use proc_macro_crate::{crate_name, FoundCrate};
 use quote::quote;
 use syn::{
     parse_macro_input, Data, DeriveInput, Field, Fields, GenericArgument, PathArguments, Type,
 };
+
+/// Resolve the path prefix for `continuum-core` types in the
+/// consumer's Cargo.toml. Per Reviewer 1 #7: emitting absolute
+/// `::continuum_core::*` paths breaks when downstream renames the
+/// dep (`continuum-core = { package = "continuum-core-alt" }`).
+/// `proc-macro-crate` reads the consumer's Cargo.toml at compile
+/// time and tells us what name they chose.
+///
+/// Returns a path prefix like `::continuum_core` or `::renamed_dep`,
+/// or `crate` when the consumer IS continuum-core itself (matches
+/// the `extern crate self as continuum_core;` self-alias).
+fn resolve_continuum_core_path() -> proc_macro2::TokenStream {
+    match crate_name("continuum-core") {
+        Ok(FoundCrate::Itself) => quote!(crate),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+            quote!(::#ident)
+        }
+        // If the consumer's Cargo.toml doesn't list continuum-core
+        // at all, the user is using the derive macro standalone —
+        // not supported, but we fall back to the conventional name
+        // so the diagnostic at compile time is clear ("can't find
+        // continuum_core in the crate root").
+        Err(_) => quote!(::continuum_core),
+    }
+}
 
 /// Derive `impl OrmEntity for #name { ... }` from the struct
 /// definition + `#[entity(...)]` attributes.
@@ -102,6 +129,7 @@ use syn::{
 pub fn derive_entity(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
     let name = &ast.ident;
+    let core = resolve_continuum_core_path();
 
     // Collection name + composite indexes from struct-level
     // #[entity(collection = "...")] and #[entity(index(...))] attrs.
@@ -172,7 +200,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                 .map(|i| i.to_string())
                 .or(Some("<unnamed>".to_string()));
             field_pushes.push(quote! {
-                fields.extend(::continuum_core::orm::base_entity_fields());
+                fields.extend(#core::orm::base_entity_fields());
             });
             // `primary_key` is the "no embedded BaseEntity struct"
             // form — the field is `id: Uuid` directly. We pull in
@@ -189,22 +217,22 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         let nullable = field_info.nullable;
 
         let field_type_tokens = match field_type {
-            InferredFieldType::String => quote!(::continuum_core::orm::FieldType::String),
-            InferredFieldType::Number => quote!(::continuum_core::orm::FieldType::Number),
-            InferredFieldType::Boolean => quote!(::continuum_core::orm::FieldType::Boolean),
-            InferredFieldType::Date => quote!(::continuum_core::orm::FieldType::Date),
-            InferredFieldType::Json => quote!(::continuum_core::orm::FieldType::Json),
-            InferredFieldType::Uuid => quote!(::continuum_core::orm::FieldType::Uuid),
+            InferredFieldType::String => quote!(#core::orm::FieldType::String),
+            InferredFieldType::Number => quote!(#core::orm::FieldType::Number),
+            InferredFieldType::Boolean => quote!(#core::orm::FieldType::Boolean),
+            InferredFieldType::Date => quote!(#core::orm::FieldType::Date),
+            InferredFieldType::Json => quote!(#core::orm::FieldType::Json),
+            InferredFieldType::Uuid => quote!(#core::orm::FieldType::Uuid),
         };
 
         let fk_tokens = match &field_info.foreign_key {
             Some(fk) => {
                 let target_collection = &fk.target_collection;
                 let target_field = &fk.target_field;
-                let on_delete = cascade_rule_tokens(&fk.on_delete);
-                let on_update = cascade_rule_tokens(&fk.on_update);
+                let on_delete = cascade_rule_tokens(&fk.on_delete, &core);
+                let on_update = cascade_rule_tokens(&fk.on_update, &core);
                 quote! {
-                    Some(::continuum_core::orm::ForeignKeyRef {
+                    Some(#core::orm::ForeignKeyRef {
                         collection: #target_collection.to_string(),
                         field: #target_field.to_string(),
                         on_delete: #on_delete,
@@ -216,7 +244,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         };
 
         field_pushes.push(quote! {
-            fields.push(::continuum_core::orm::SchemaField {
+            fields.push(#core::orm::SchemaField {
                 name: #name_str.to_string(),
                 field_type: #field_type_tokens,
                 indexed: #indexed,
@@ -238,7 +266,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         let fields_lit = idx.fields.iter().map(|f| quote!(#f.to_string()));
         let unique = idx.unique;
         index_pushes.push(quote! {
-            indexes.push(::continuum_core::orm::SchemaIndex {
+            indexes.push(#core::orm::SchemaIndex {
                 name: #name.to_string(),
                 fields: ::std::vec![#(#fields_lit),*],
                 unique: #unique,
@@ -247,15 +275,15 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     }
 
     let expanded = quote! {
-        impl ::continuum_core::orm::OrmEntity for #name {
+        impl #core::orm::OrmEntity for #name {
             const COLLECTION: &'static str = #collection;
 
-            fn collection_schema() -> ::continuum_core::orm::CollectionSchema {
+            fn collection_schema() -> #core::orm::CollectionSchema {
                 let mut fields = ::std::vec::Vec::new();
                 #(#field_pushes)*
                 let mut indexes = ::std::vec::Vec::new();
                 #(#index_pushes)*
-                ::continuum_core::orm::CollectionSchema {
+                #core::orm::CollectionSchema {
                     collection: Self::COLLECTION.to_string(),
                     fields,
                     indexes,
@@ -330,12 +358,15 @@ fn parse_cascade_rule(s: &str) -> Option<CascadeRuleAttr> {
     }
 }
 
-fn cascade_rule_tokens(rule: &CascadeRuleAttr) -> proc_macro2::TokenStream {
+fn cascade_rule_tokens(
+    rule: &CascadeRuleAttr,
+    core: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
     match rule {
-        CascadeRuleAttr::Restrict => quote!(::continuum_core::orm::CascadeRule::Restrict),
-        CascadeRuleAttr::Cascade => quote!(::continuum_core::orm::CascadeRule::Cascade),
-        CascadeRuleAttr::SetNull => quote!(::continuum_core::orm::CascadeRule::SetNull),
-        CascadeRuleAttr::NoAction => quote!(::continuum_core::orm::CascadeRule::NoAction),
+        CascadeRuleAttr::Restrict => quote!(#core::orm::CascadeRule::Restrict),
+        CascadeRuleAttr::Cascade => quote!(#core::orm::CascadeRule::Cascade),
+        CascadeRuleAttr::SetNull => quote!(#core::orm::CascadeRule::SetNull),
+        CascadeRuleAttr::NoAction => quote!(#core::orm::CascadeRule::NoAction),
     }
 }
 
@@ -459,6 +490,17 @@ fn parse_composite_index(
             "composite index missing `name = \"...\"`",
         )
     })?;
+    // Per Reviewer 1 #8: empty index name was previously accepted and
+    // would produce `SchemaIndex { name: "".to_string(), … }` —
+    // adapters would later choke on CREATE UNIQUE INDEX `` ON …
+    // with a cryptic SQL error far from the macro span. Catch it at
+    // attribute-parse time.
+    if name.is_empty() {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "composite index `name` must be non-empty",
+        ));
+    }
     if fields.is_empty() {
         return Err(syn::Error::new(
             proc_macro2::Span::call_site(),
@@ -790,11 +832,40 @@ fn is_base_entity_type(ty: &Type) -> bool {
     type_last_segment(ty).as_deref() == Some("BaseEntity")
 }
 
+/// Convert snake_case to camelCase. Matches serde's `rename_all =
+/// "camelCase"` behavior so the schema field name and the
+/// serialized JSON key agree.
+///
+/// Per Reviewer 1 #9: previously mishandled `_leading_underscore`
+/// (produced `Leading…`), `field__double` (silently coalesced
+/// underscores), and `trailing_` (silently dropped). Now:
+/// - Leading underscores are preserved (treated as a single
+///   suppress-uppercase token), matching serde's `_field` → `_field`
+///   convention (no camelization of the leading char).
+/// - Doubled internal underscores collapse to a single capital
+///   bump, matching serde's behavior — `field__double` → `fieldDouble`.
+/// - Trailing underscores are stripped, matching serde — `trailing_`
+///   → `trailing`. The trailing underscore is a Rust ident artifact
+///   (reserved word workaround like `type_` → `type`), not a wire
+///   shape signal.
+///
+/// The substrate's entity authors generally use clean snake_case
+/// without edge characters; these rules exist to match serde's
+/// behavior so attribute-name and JSON-key never disagree, not to
+/// encourage edge-case identifiers.
 fn to_camel_case(snake: &str) -> String {
     let mut out = String::with_capacity(snake.len());
+    // Preserve any run of leading underscores literally (serde does).
+    let mut chars = snake.chars().peekable();
+    while let Some(&'_') = chars.peek() {
+        out.push('_');
+        chars.next();
+    }
     let mut capitalize_next = false;
-    for c in snake.chars() {
+    for c in chars {
         if c == '_' {
+            // Set the flag but don't push — handles internal +
+            // doubled underscores uniformly.
             capitalize_next = true;
         } else if capitalize_next {
             out.push(c.to_ascii_uppercase());
@@ -803,5 +874,46 @@ fn to_camel_case(snake: &str) -> String {
             out.push(c);
         }
     }
+    // If the string ENDED with an underscore (capitalize_next still
+    // true), drop it — matches serde's "trailing _ is a rust
+    // workaround, not a wire signal" semantics.
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What this catches: the `to_camel_case` edge cases Reviewer 1
+    /// flagged in #9. These don't appear in production entity field
+    /// names today, but the macro is used wherever an entity is
+    /// declared — pinning the behavior now means future entity
+    /// authors using these patterns get serde-consistent output.
+    #[test]
+    fn to_camel_case_handles_edge_cases() {
+        // Standard snake_case → camelCase.
+        assert_eq!(to_camel_case("admitted_at_ms"), "admittedAtMs");
+        assert_eq!(to_camel_case("single"), "single");
+        // Leading underscore preserved (matches serde rename_all
+        // behavior — `_field` stays `_field`, not `Field`).
+        assert_eq!(to_camel_case("_internal"), "_internal");
+        assert_eq!(to_camel_case("__double_leading"), "__doubleLeading");
+        // Doubled internal underscores coalesce to a single bump
+        // (matches serde — `field__double` produces `fieldDouble`).
+        assert_eq!(to_camel_case("field__double"), "fieldDouble");
+        assert_eq!(to_camel_case("a___b"), "aB");
+        // Trailing underscore dropped (rust ident workaround like
+        // `type_` → wire-side `type`).
+        assert_eq!(to_camel_case("trailing_"), "trailing");
+        assert_eq!(to_camel_case("type_"), "type");
+    }
+
+    /// What this catches: `to_camel_case` doesn't accidentally
+    /// uppercase characters that weren't preceded by underscore.
+    #[test]
+    fn to_camel_case_preserves_existing_case() {
+        // No underscore to trigger capitalization; lower stays lower.
+        assert_eq!(to_camel_case("alreadycamel"), "alreadycamel");
+        assert_eq!(to_camel_case("Mixed_Case"), "MixedCase");
+    }
 }

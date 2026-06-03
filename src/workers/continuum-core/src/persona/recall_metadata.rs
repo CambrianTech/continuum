@@ -963,6 +963,5 @@ mod tests {
             "ON DELETE CASCADE must wipe the recall-metadata row when its engram is deleted"
         );
 
-        std::mem::forget(tmp);
     }
 }

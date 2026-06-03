@@ -866,8 +866,6 @@ mod tests {
         let all = store.find_all().await.expect("find_all");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].0, original_id);
-        // Keep the tempdir alive until the store is dropped + tests
-        // are done; mem::forget so the path persists past test end.
-        std::mem::forget(tmp);
+        // tmp drops at function end, removing the tempdir cleanly.
     }
 }

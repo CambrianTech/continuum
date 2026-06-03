@@ -13,3 +13,19 @@ proc-macro = true
 syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
+# Detects the consumer's chosen name for `continuum-core` in their
+# Cargo.toml so the macro emits paths that resolve under any rename.
+# Per Reviewer 1 #7: absolute `::continuum_core::*` paths fail when
+# downstream renames the dep — `proc-macro-crate` reads the
+# consumer's Cargo.toml at compile time and gives us the correct
+# crate ident to emit.
+proc-macro-crate = "3"
+
+# NOTE: A `trybuild` dev-dep + `tests/compile_fail/` harness is the
+# canonical way to pin proc-macro error paths (Reviewer 1 #2/#4/#6).
+# Deferred to a follow-up because the test files need
+# `continuum-core` types in scope, which means the harness belongs
+# alongside the existing derive-test fixtures in
+# `continuum-core/tests/compile_fail/` — landing trybuild + .stderr
+# fixtures is a focused follow-up slice, not in scope for #1519's
+# review-fixes pass.
