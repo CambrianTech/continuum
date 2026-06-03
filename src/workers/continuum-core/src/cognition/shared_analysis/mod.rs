@@ -337,6 +337,7 @@ mod tests {
             text: "hello".to_string(),
             recent_history: vec![],
             known_specialties: vec!["code".to_string(), "general".to_string()],
+            model_override: None,
         };
         let k1 = compute_cache_key(&input);
         let k2 = compute_cache_key(&input);
@@ -351,6 +352,7 @@ mod tests {
             text: "hello".to_string(),
             recent_history: vec![],
             known_specialties: vec!["code".to_string()],
+            model_override: None,
         };
         let k1 = compute_cache_key(&a);
         a.text = "goodbye".to_string();
@@ -366,6 +368,7 @@ mod tests {
             text: "hello".to_string(),
             recent_history: vec![],
             known_specialties: vec!["code".to_string(), "general".to_string()],
+            model_override: None,
         };
         let b = AnalysisInput {
             known_specialties: vec!["general".to_string(), "code".to_string()],

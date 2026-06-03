@@ -641,6 +641,7 @@ mod tests {
             text: "current".to_string(),
             recent_history: many,
             known_specialties: vec![],
+            model_override: None,
         };
         let prompt = build_prompt(&input);
         let count = prompt.matches("line-").count();

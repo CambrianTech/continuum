@@ -359,12 +359,38 @@ async fn serve_persona_loop_inner(
             // recall BEFORE admit so this turn's recalled_engrams is
             // "what I knew going in" — the current message isn't
             // recall; it's the trigger.
-            let recalled: Vec<String> = cognition
-                .admission
-                .recall_recent(8)
-                .into_iter()
-                .map(|e| e.content)
-                .collect();
+            //
+            // Algorithm 4 scoring (#165): salience × recency-decay
+            // ranks engrams; record_recall_hit on the returned set
+            // bumps their salience (Hebbian rehearsal — use-it-
+            // keeps-it). Memory that gets used compounds; memory
+            // that doesn't drains toward SALIENCE_FLOOR but doesn't
+            // disappear. PR #91 (RecallMetadata sidecar) + #92
+            // (decay tick) provide the scoring infrastructure;
+            // recall_scored composes them on the read path.
+            let scored = cognition.admission.recall_scored(now_ms, 8);
+
+            // Per-engram introspection: the L2 → prompt seam is
+            // observable, not opaque, per
+            // [[observability-is-half-the-architecture]] + Joel's
+            // 2026-06-03 "introspect all rag" directive. Each line
+            // shows what scored what, so optimization can target
+            // actual scoring behavior, not guesses.
+            for (rank, (engram, salience)) in scored.iter().enumerate() {
+                let preview: String = engram.content.chars().take(80).collect();
+                tracing::info!(
+                    lamport = msg.lamport,
+                    rank,
+                    engram_id = %&engram.id.to_string()[..8],
+                    salience = format!("{:.3}", salience),
+                    content = %preview,
+                    "recall_scored — engram delivered to RespondInput"
+                );
+            }
+
+            let recalled: Vec<String> =
+                scored.into_iter().map(|(e, _score)| e.content).collect();
+
             // Admit now. Errors here are non-fatal — the cognition
             // turn can still run; the engram just doesn't form. Per
             // [[no-fallbacks-ever]] we surface the failure visibly,

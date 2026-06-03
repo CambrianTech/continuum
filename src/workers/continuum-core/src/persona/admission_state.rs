@@ -313,6 +313,62 @@ impl AdmissionState {
         engrams.iter().rev().take(limit).cloned().collect()
     }
 
+    /// Algorithm 4 recall. Returns the top `limit` engrams ranked by
+    /// `salience × recency-decay`, after applying decay to bring each
+    /// engram's salience up to `now_ms`. Records a recall hit on the
+    /// returned engrams (Hebbian rehearsal — use-it-keeps-it).
+    ///
+    /// Per [[source-drain-is-the-universal-pattern]] and the cognition-
+    /// cache-hierarchy doc: salient + protected + recently-used
+    /// engrams stay near the top; novel ones get the protection
+    /// window; everything else drains. The substrate's continual-
+    /// learning property compounds through this scoring — memory
+    /// that gets used keeps coming back; memory that doesn't fades
+    /// (but doesn't disappear — `apply_decay` honors SALIENCE_FLOOR).
+    ///
+    /// Returns engrams paired with their post-decay salience score so
+    /// the caller can introspect what shaped the recall — per
+    /// [[observability-is-half-the-architecture]] the cycle's L2 →
+    /// prompt seam is observable, not opaque.
+    pub fn recall_scored(&self, now_ms: u64, limit: usize) -> Vec<(Engram, f32)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        let engrams = self.engrams.lock().unwrap();
+
+        // 1. Score every engram. apply_decay brings salience up to
+        // `now_ms` for the engram (honors novelty protection +
+        // SALIENCE_FLOOR + skips racing-tick double-decay).
+        let mut scored: Vec<(Engram, f32)> = engrams
+            .iter()
+            .filter_map(|e| {
+                self.recall_metadata.apply_decay(e.id, now_ms);
+                self.recall_metadata
+                    .get(e.id)
+                    .map(|m| (e.clone(), m.salience))
+            })
+            .collect();
+        drop(engrams);
+
+        // 2. Top-N by score, descending. Stable sort so equal-score
+        // engrams keep insertion order (recency tiebreak).
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+
+        // 3. Record recall hits on the returned engrams. Hebbian
+        // rehearsal: each access bumps salience + access_count + the
+        // last_accessed clock. Without this step the scoring would
+        // be one-way: salient memories would only ever decay, never
+        // climb back from being used. record_recall_hit closes the
+        // use-it-keeps-it feedback loop.
+        for (engram, _) in &scored {
+            self.recall_metadata.record_recall_hit(engram.id, now_ms);
+        }
+
+        scored
+    }
+
     /// Recall a specific engram by id. None if not present in the store
     /// (either never admitted, or evicted in a future GC pass).
     pub fn recall_by_id(&self, id: Uuid) -> Option<Engram> {
@@ -736,6 +792,125 @@ mod tests {
         assert_eq!(
             state.recall_recent(99).len(),
             2,
+            "limit > count caps at count"
+        );
+    }
+
+    /// What this catches: recall_scored ranks engrams by salience desc.
+    /// A regression to admission-order or insertion-order would silently
+    /// return whichever was admitted last instead of whichever scored
+    /// highest — defeating the whole point of Algorithm 4 driving recall.
+    #[test]
+    fn recall_scored_ranks_by_salience_desc() {
+        let registry =
+            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let state = AdmissionState::new(Arc::clone(&registry));
+        let ids = admit_n_distinct(
+            &state,
+            &[
+                "alpha observation worth storing",
+                "beta observation worth storing",
+                "gamma observation worth storing",
+            ],
+        );
+        // Pin gamma → salience 1.0, permanent protection. Beta gets a
+        // recall hit → salience uplift. Alpha is left at default (0.5).
+        // Expected order after scoring: gamma > beta > alpha.
+        registry.pin_permanent(ids[2]);
+        registry.record_recall_hit(ids[1], 1_000);
+
+        let now_ms = 10_000;
+        let scored = state.recall_scored(now_ms, 8);
+        assert_eq!(scored.len(), 3);
+        assert_eq!(scored[0].0.id, ids[2], "pinned gamma ranks first");
+        assert_eq!(scored[1].0.id, ids[1], "uplifted beta ranks second");
+        assert_eq!(scored[2].0.id, ids[0], "untouched alpha ranks last");
+        assert!(
+            scored[0].1 >= scored[1].1 && scored[1].1 >= scored[2].1,
+            "score values are monotonically descending: {:?}",
+            scored.iter().map(|(_, s)| *s).collect::<Vec<_>>()
+        );
+    }
+
+    /// What this catches: recall_scored records a recall hit on every
+    /// returned engram (Hebbian rehearsal — use-it-keeps-it). Without
+    /// this, scoring is one-way: salient memories only decay, never
+    /// climb back from being used. The feedback loop closing here is
+    /// what makes the substrate continual-learning, not just continual-
+    /// remembering.
+    #[test]
+    fn recall_scored_records_recall_hit_on_returned_engrams() {
+        let registry =
+            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let state = AdmissionState::new(Arc::clone(&registry));
+        let ids = admit_n_distinct(
+            &state,
+            &[
+                "alpha observation worth storing",
+                "beta observation worth storing",
+            ],
+        );
+        let before_alpha = registry.get(ids[0]).expect("alpha metadata exists");
+        let before_beta = registry.get(ids[1]).expect("beta metadata exists");
+
+        // Score returns both. Both should get a recall hit.
+        let scored = state.recall_scored(5_000, 8);
+        assert_eq!(scored.len(), 2);
+
+        let after_alpha = registry.get(ids[0]).expect("alpha metadata after");
+        let after_beta = registry.get(ids[1]).expect("beta metadata after");
+        assert!(
+            after_alpha.access_count > before_alpha.access_count,
+            "alpha access_count climbed: {} -> {}",
+            before_alpha.access_count,
+            after_alpha.access_count
+        );
+        assert!(
+            after_beta.access_count > before_beta.access_count,
+            "beta access_count climbed"
+        );
+        assert!(
+            after_alpha.last_accessed_ms == 5_000,
+            "alpha last_accessed_ms updated to now_ms (was {}, now {})",
+            before_alpha.last_accessed_ms,
+            after_alpha.last_accessed_ms
+        );
+    }
+
+    /// What this catches: recall_scored honors the limit (caps below
+    /// count, doesn't exceed available) and limit=0 returns empty
+    /// without panicking + without recording spurious hits.
+    #[test]
+    fn recall_scored_respects_limit_and_empty() {
+        let registry =
+            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let state = AdmissionState::new(Arc::clone(&registry));
+        let ids = admit_n_distinct(
+            &state,
+            &[
+                "alpha observation worth storing",
+                "beta observation worth storing",
+                "gamma observation worth storing",
+            ],
+        );
+        let before = registry.get(ids[0]).expect("alpha metadata exists");
+
+        assert_eq!(
+            state.recall_scored(1_000, 0).len(),
+            0,
+            "limit=0 returns empty"
+        );
+
+        let after_zero = registry.get(ids[0]).expect("alpha metadata after limit=0");
+        assert_eq!(
+            after_zero.access_count, before.access_count,
+            "limit=0 records no recall hits"
+        );
+
+        assert_eq!(state.recall_scored(1_000, 1).len(), 1, "limit=1 returns one");
+        assert_eq!(
+            state.recall_scored(1_000, 99).len(),
+            3,
             "limit > count caps at count"
         );
     }
