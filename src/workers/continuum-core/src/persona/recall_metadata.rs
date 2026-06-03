@@ -69,12 +69,20 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::orm::{BaseEntity, Entity};
 
 /// Per-engram volatile recall state. Cloneable + Copy because all
 /// fields are primitives — recall scoring reads a cheap snapshot
 /// without locking.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Serialize/Deserialize added for the persistence boundary. The
+/// keyed-by-engram-id-in-DashMap hot-path shape doesn't carry
+/// engram_id; the `EngramRecallMetadata` persistence sibling type
+/// (below) carries the FK and converts at the boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RecallMetadata {
     pub salience: f32,
     pub access_count: u32,
@@ -150,6 +158,83 @@ impl RecallMetadata {
         // Apply: multiplier = 0.5 ^ (delta / half_life)
         let exponent = (delta_ms as f32) / half_life_ms;
         0.5_f32.powf(exponent)
+    }
+}
+
+// ── Persistence shape ────────────────────────────────────────────
+
+/// Persistence-side representation of an engram's recall metadata.
+///
+/// `RecallMetadata` (above) is the hot-path in-memory value type —
+/// keyed by engram_id in a `DashMap`, lock-free, Copy. For
+/// persistence we need to carry the engram_id with each row, so this
+/// sibling type embeds it as a foreign key. Convert at the
+/// hot-path↔persistence boundary via the `From` impls.
+///
+/// The FK to `engrams.id` with `ON DELETE CASCADE` means: when an
+/// Engram is deleted, its recall metadata row goes with it,
+/// enforced at the DB layer. No application-level cleanup needed.
+/// Per [[no-fallbacks-ever]] extended to relational invariants.
+///
+/// `engram_id` is `UNIQUE` so the 1:1 engram↔metadata invariant is
+/// enforced by the DB. Attempting to insert a second metadata row
+/// for the same engram is a constraint violation.
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "engram_recall_metadata")]
+pub struct EngramRecallMetadata {
+    #[serde(flatten)]
+    pub base: BaseEntity,
+
+    /// FK to engrams.id. UNIQUE so 1:1 engram↔metadata is enforced.
+    /// ON DELETE CASCADE so removing an engram wipes its metadata
+    /// row at the DB layer.
+    #[entity(unique, indexed, foreign_key("engrams.id", on_delete = "cascade"))]
+    pub engram_id: Uuid,
+
+    /// Algorithm 4 salience score in `[0.0, 1.0]`. Indexed: recall
+    /// scoring filters/sorts by salience.
+    #[entity(indexed)]
+    pub salience: f32,
+
+    pub access_count: u32,
+    pub last_accessed_ms: u64,
+    pub protected_until_ms: u64,
+    pub last_decayed_ms: u64,
+}
+
+impl EngramRecallMetadata {
+    /// Lift a hot-path `(engram_id, RecallMetadata)` pair into a
+    /// persistable row. Fresh BaseEntity (new uuid + timestamps) so
+    /// the ORM treats this as a new row.
+    pub fn for_new_row(engram_id: Uuid, metadata: RecallMetadata) -> Self {
+        Self {
+            base: BaseEntity::for_new_record(),
+            engram_id,
+            salience: metadata.salience,
+            access_count: metadata.access_count,
+            last_accessed_ms: metadata.last_accessed_ms,
+            protected_until_ms: metadata.protected_until_ms,
+            last_decayed_ms: metadata.last_decayed_ms,
+        }
+    }
+}
+
+/// Drop the persistence wrapper, give back the (engram_id, hot-path
+/// value) pair. Used at boot when rehydrating the in-memory DashMap
+/// from disk.
+impl From<EngramRecallMetadata> for (Uuid, RecallMetadata) {
+    fn from(row: EngramRecallMetadata) -> Self {
+        (
+            row.engram_id,
+            RecallMetadata {
+                salience: row.salience,
+                access_count: row.access_count,
+                last_accessed_ms: row.last_accessed_ms,
+                protected_until_ms: row.protected_until_ms,
+                last_decayed_ms: row.last_decayed_ms,
+            },
+        )
     }
 }
 
@@ -696,5 +781,188 @@ mod tests {
         for id in &ids {
             assert!(listed.contains(id));
         }
+    }
+
+    // ── EngramRecallMetadata persistence tests (#168) ────────────
+
+    /// What this catches: the round-trip conversion between the
+    /// hot-path `(engram_id, RecallMetadata)` pair and the
+    /// persistence-side `EngramRecallMetadata` preserves every field
+    /// exactly. The boundary is the most likely place for drift —
+    /// a new field on RecallMetadata without a corresponding field on
+    /// the persistence row would silently lose data at flush.
+    #[test]
+    fn engram_recall_metadata_lifts_and_lowers_losslessly() {
+        let engram_id = Uuid::new_v4();
+        let m = RecallMetadata {
+            salience: 0.73,
+            access_count: 9,
+            last_accessed_ms: 1_700_000_000_000,
+            protected_until_ms: 1_700_000_300_000,
+            last_decayed_ms: 1_700_000_010_000,
+        };
+        let row = EngramRecallMetadata::for_new_row(engram_id, m);
+        assert_eq!(row.engram_id, engram_id);
+        assert_eq!(row.salience, m.salience);
+        assert_eq!(row.access_count, m.access_count);
+        assert_eq!(row.last_accessed_ms, m.last_accessed_ms);
+        assert_eq!(row.protected_until_ms, m.protected_until_ms);
+        assert_eq!(row.last_decayed_ms, m.last_decayed_ms);
+
+        let (back_id, back_m): (Uuid, RecallMetadata) = row.into();
+        assert_eq!(back_id, engram_id);
+        assert_eq!(back_m, m);
+    }
+
+    /// What this catches: the derived schema has BaseEntity columns +
+    /// every domain field including engram_id, salience, and the
+    /// timestamp/counter trio. Drift between the Rust struct and the
+    /// schema becomes visible here at the moment a field gets added
+    /// to one but not the other.
+    #[test]
+    fn engram_recall_metadata_schema_has_expected_columns() {
+        use crate::orm::OrmEntity;
+        let schema = EngramRecallMetadata::collection_schema();
+        assert_eq!(schema.collection, "engram_recall_metadata");
+        let names: std::collections::BTreeSet<&str> =
+            schema.fields.iter().map(|f| f.name.as_str()).collect();
+        for required in [
+            "id",
+            "createdAt",
+            "updatedAt",
+            "version",
+            "engramId",
+            "salience",
+            "accessCount",
+            "lastAccessedMs",
+            "protectedUntilMs",
+            "lastDecayedMs",
+        ] {
+            assert!(
+                names.contains(required),
+                "missing column {required:?}; have {names:?}"
+            );
+        }
+    }
+
+    /// What this catches: the engram_id field carries the foreign-key
+    /// reference to engrams.id with ON DELETE CASCADE. If the FK is
+    /// dropped or the cascade rule changes, this test screams. Per
+    /// [[no-fallbacks-ever]] extended to relational invariants —
+    /// the cascade IS the invariant.
+    #[test]
+    fn engram_recall_metadata_carries_fk_to_engrams_with_cascade() {
+        use crate::orm::types::CascadeRule;
+        use crate::orm::OrmEntity;
+        let schema = EngramRecallMetadata::collection_schema();
+        let engram_id_field = schema
+            .fields
+            .iter()
+            .find(|f| f.name == "engramId")
+            .expect("engramId field must be present");
+        let fk = engram_id_field
+            .foreign_key
+            .as_ref()
+            .expect("engramId must carry a foreign_key");
+        assert_eq!(fk.collection, "engrams");
+        assert_eq!(fk.field, "id");
+        assert_eq!(fk.on_delete, CascadeRule::Cascade);
+        assert!(
+            engram_id_field.unique,
+            "engramId must be UNIQUE for the 1:1 invariant"
+        );
+        assert!(engram_id_field.indexed);
+    }
+
+    /// What this catches: end-to-end relational round-trip across
+    /// two derived entities. An Engram parent persists; a child
+    /// EngramRecallMetadata references it via FK; deleting the
+    /// parent CASCADE-wipes the child at the DB layer. The proof
+    /// that the substrate's persistence is now genuinely relational.
+    #[tokio::test]
+    async fn engram_recall_metadata_cascade_deletes_with_engram() {
+        use crate::orm::adapter::{AdapterConfig, StorageAdapter};
+        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::OrmStore;
+        use crate::persona::engram::{
+            AircMessageRef, Engram, EngramKind, EngramOrigin, TrustState,
+        };
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("engrams.sqlite");
+        let mut adapter = SqliteAdapter::new();
+        let mut config = AdapterConfig::default();
+        config.connection_string = path.to_string_lossy().into_owned();
+        adapter.initialize(config).await.expect("adapter init");
+        let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
+
+        let engrams = OrmStore::<Engram>::new(Arc::clone(&adapter))
+            .await
+            .expect("engrams store");
+        let metadata = OrmStore::<EngramRecallMetadata>::new(Arc::clone(&adapter))
+            .await
+            .expect("metadata store");
+
+        let engram = Engram {
+            id: Uuid::new_v4(),
+            kind: EngramKind::Episodic,
+            content: "anchor".to_string(),
+            origin: EngramOrigin::Airc(AircMessageRef {
+                transport: "airc".to_string(),
+                room_id: "general".to_string(),
+                message_id: "msg-cascade".to_string(),
+                sender_id: "airc-test".to_string(),
+                sent_at_ms: 1_000,
+                received_at_ms: 1_000,
+                content_hash: "sha256:cascade".to_string(),
+                signature: "sig-cascade".to_string(),
+                proof_refs: vec![],
+                schema_version: "v1".to_string(),
+                client_name: Some("test".to_string()),
+            }),
+            recall_keys: vec![],
+            admitted_at_ms: 1_000,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: None,
+        };
+        let engram_id = engram.id;
+        engrams.save(engram_id, &engram).await.expect("save engram");
+
+        let row = EngramRecallMetadata::for_new_row(
+            engram_id,
+            RecallMetadata {
+                salience: 0.7,
+                access_count: 1,
+                last_accessed_ms: 1_000,
+                protected_until_ms: 0,
+                last_decayed_ms: 1_000,
+            },
+        );
+        let row_id = Uuid::parse_str(&row.base.id).expect("base id parses");
+        metadata.save(row_id, &row).await.expect("save metadata");
+
+        // Sanity: metadata row is findable.
+        assert!(metadata
+            .find_by_id(row_id)
+            .await
+            .expect("find_by_id pre-delete")
+            .is_some());
+
+        // Delete the engram. SQLite's CASCADE rule must remove the
+        // child metadata row at the DB layer.
+        let deleted = engrams.delete(engram_id).await.expect("delete engram");
+        assert!(deleted);
+
+        let after = metadata
+            .find_by_id(row_id)
+            .await
+            .expect("find_by_id post-delete");
+        assert!(
+            after.is_none(),
+            "ON DELETE CASCADE must wipe the recall-metadata row when its engram is deleted"
+        );
+
+        std::mem::forget(tmp);
     }
 }
