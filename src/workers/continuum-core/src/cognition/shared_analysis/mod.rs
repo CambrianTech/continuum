@@ -180,7 +180,19 @@ async fn run_analysis(
             },
         ],
         system_prompt: None,
-        model: Some(DEFAULT_ANALYSIS_MODEL.to_string()),
+        // Caller's model_override wins per
+        // [[intent-driven-api-not-hot-patches]] + Joel 2026-06-03
+        // "It's up to the model" — the analyzer doesn't know which
+        // base model is loaded on this substrate; the caller does.
+        // Fallback to DEFAULT_ANALYSIS_MODEL only when the caller
+        // didn't supply one (e.g. multi-persona room with the
+        // canonical shared base loaded).
+        model: Some(
+            input
+                .model_override
+                .clone()
+                .unwrap_or_else(|| DEFAULT_ANALYSIS_MODEL.to_string()),
+        ),
         provider: Some(DEFAULT_ANALYSIS_PROVIDER.to_string()),
         temperature: Some(ANALYSIS_TEMPERATURE),
         max_tokens: Some(ANALYSIS_MAX_TOKENS),

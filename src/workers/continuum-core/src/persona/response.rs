@@ -259,6 +259,18 @@ async fn respond_inner(
         // shared_analysis cache key, separate concern.
         recent_history: input.turn_context.recent_history.clone(),
         known_specialties: input.turn_context.known_specialties.clone(),
+        // Pass the responding persona's model as the analyzer's
+        // model override. Per Joel 2026-06-03 ("It's up to the
+        // model"): the analyzer doesn't know what's loaded on this
+        // substrate; the persona's profile does. On multi-persona
+        // rooms where the canonical shared base IS loaded, the
+        // first persona to analyze populates the single-flight
+        // cache and the rest hit-as-cache regardless of override —
+        // so this doesn't break the "ONE inference per message"
+        // optimization. On single-persona substrates (like Joel's
+        // LCD Intel Mac) the override becomes the path that makes
+        // analysis reachable at all.
+        model_override: Some(input.model.clone()),
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -488,12 +500,22 @@ async fn run_render(
     };
 
     // 4. Pick an adapter via the global registry — capability-routed,
-    //    no hardcoded provider name. "local" + Gpu = "best available
-    //    GPU adapter that honestly supports the requested model".
+    //    no hardcoded provider name. "local" + Auto = "best available
+    //    LOCAL adapter that honestly supports the requested model,
+    //    on whatever device class it declares."
+    //
+    //    The previous shape passed `InferenceDevice::Gpu` here, which
+    //    wrongly excluded CPU-only adapters from their OWN persona's
+    //    cognition cycle on Intel Mac (LlamaCppAdapter built with
+    //    `mac-cpu-only` declares Cpu; this select asked for Gpu and
+    //    rejected it). Per Joel 2026-06-03 the cognition layer has
+    //    no opinion on device — the persona's profile + adapter
+    //    declare placement. Same fix in cognition/{generate_response,
+    //    should_respond, validate_response, tool_embedding}.
     let registry_arc = crate::modules::ai_provider::global_registry();
     let registry = registry_arc.read().await;
     let (_provider_id, adapter) = registry
-        .select(Some("local"), Some(&input.model), InferenceDevice::Gpu)
+        .select(Some("local"), Some(&input.model), InferenceDevice::Auto)
         .ok_or_else(|| {
             format!(
                 "no GPU adapter supports model '{}' (registered: {:?}). \

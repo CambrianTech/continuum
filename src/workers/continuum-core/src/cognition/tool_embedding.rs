@@ -294,7 +294,9 @@ pub async fn embed_tools(
     let registry_arc = global_registry();
     let registry = registry_arc.read().await;
     let (_provider_id, adapter) = registry
-        .select(None, Some(&model), InferenceDevice::default())
+        // Device = `Auto`: cognition has no opinion on placement.
+        // See cognition/generate_response.rs:285 doctrine note.
+        .select(None, Some(&model), InferenceDevice::Auto)
         .ok_or_else(|| ToolEmbeddingError::NoAdapter {
             provider: "any".to_string(),
             model: Some(model.clone()),
@@ -386,7 +388,9 @@ pub async fn semantic_search_tools(
     let registry_arc = global_registry();
     let registry = registry_arc.read().await;
     let (_provider_id, adapter) = registry
-        .select(None, Some(&model), InferenceDevice::default())
+        // Device = `Auto`: cognition has no opinion on placement.
+        // See cognition/generate_response.rs:285 doctrine note.
+        .select(None, Some(&model), InferenceDevice::Auto)
         .ok_or_else(|| ToolEmbeddingError::NoAdapter {
             provider: "any".to_string(),
             model: Some(model.clone()),

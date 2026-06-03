@@ -284,11 +284,19 @@ pub async fn evaluate_response(
 
     let registry_arc = global_registry();
     let registry = registry_arc.read().await;
+    // Device = `Auto` — cognition has no opinion on placement; the
+    // model identifier already names what's wanted, and the
+    // registered adapter is the authority on its own device class.
+    // Filtering by `Gpu` here (the old `InferenceDevice::default()`)
+    // wrongly excluded CPU-only adapters even when they were the
+    // only ones claiming the model — observed 2026-06-03 on Intel
+    // Mac CPU build where Paige's LlamaCppAdapter declared Cpu
+    // and was filtered out of her own response cycle.
     let (_provider_id, adapter) = registry
         .select(
             Some(DEFAULT_GENERATE_PROVIDER),
             Some(&model),
-            InferenceDevice::default(),
+            InferenceDevice::Auto,
         )
         .ok_or_else(|| GenerateResponseError::NoAdapter {
             provider: DEFAULT_GENERATE_PROVIDER.to_string(),

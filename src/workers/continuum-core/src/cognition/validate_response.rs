@@ -182,11 +182,13 @@ pub async fn evaluate_validate_response(
 
     let registry_arc = global_registry();
     let registry = registry_arc.read().await;
+    // Device = `Auto` — cognition is model-driven, not device-driven.
+    // See cognition/generate_response.rs:285 doctrine note.
     let (_provider_id, adapter) = registry
         .select(
             Some(VALIDATE_PROVIDER),
             Some(&model),
-            InferenceDevice::default(),
+            InferenceDevice::Auto,
         )
         .ok_or_else(|| ValidateResponseError::NoAdapter {
             provider: VALIDATE_PROVIDER.to_string(),
