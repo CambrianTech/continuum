@@ -75,6 +75,27 @@ if [ -z "$AIRC_DEFAULT_CHANNEL" ] || [ -z "$AIRC_DEFAULT_ROOM_NAME" ]; then
   fi
 fi
 
+# Auto-derive airc daemon socket from the running daemon process if the
+# binary doesn't expose `airc ipc-endpoint` yet (task #79 in flight).
+# Substrate prefers `airc ipc-endpoint` per task #80's discoverer; this is
+# the fallback when the airc binary predates that subcommand.
+if [ -z "$AIRC_DAEMON_SOCKET" ]; then
+  # airc's per-machine persistent daemon socket lives at
+  # ~/.airc/runtime/airc-machine-*-v5.sock. Other airc-*-v5.sock files
+  # are session-scoped (per-Claude-session, etc) and not what the
+  # substrate wants to attach to. Pick the most recently modified
+  # machine socket — that's the live daemon.
+  AIRC_DAEMON_SOCKET="$(
+    ls -1t "$HOME"/.airc/runtime/airc-machine-*-v5.sock 2>/dev/null \
+      | grep -v '\.lock$' \
+      | head -1
+  )"
+  if [ -n "$AIRC_DAEMON_SOCKET" ]; then
+    export AIRC_DAEMON_SOCKET
+    echo "ℹ  AIRC_DAEMON_SOCKET auto-derived: $AIRC_DAEMON_SOCKET" >&2
+  fi
+fi
+
 # ── Socket ───────────────────────────────────────────────────────────
 CONTINUUM_SOCKET="${CONTINUUM_SOCKET:-/tmp/continuum-core.sock}"
 rm -f "$CONTINUUM_SOCKET"
