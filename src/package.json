@@ -128,6 +128,7 @@
     "worker:restart": "npm run worker:stop && npm run worker:start",
     "system:ensure": "npm run signal:check || (npm run system:start && npm run signal:wait)",
     "start": "bash scripts/parallel-start.sh",
+    "start-server": "bash scripts/start-server.sh",
     "start:no-dashboard": "npm run smart-build && npm run system:deploy && npm run worker:start && npm run restart:quick",
     "start:clean": "bash scripts/system-stop.sh && npm run clean:logs && npm run build && npm run worker:start && npx tsx scripts/launch-active-example.ts --verbose && npm run data:seed",
     "start:direct": "bash scripts/system-stop.sh && npm run smart-build && npm run system:deploy && npm run worker:start && npm run system:run",
