@@ -106,6 +106,14 @@ pub struct AdmissionState {
     /// doctrine. Lock-free reads via DashMap; admission-time write
     /// happens inside record_admitted().
     recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
+    /// Persistence sink — observes admissions + metadata updates.
+    /// `NoopSink` by default (preserves test + replay paths); the
+    /// production path uses `OrmPersistenceSink` to fire-and-forget
+    /// writes through OrmStore<Engram> + OrmStore<EngramRecallMetadata>.
+    /// Per [[organization-purity-as-we-migrate]] + adapter-first
+    /// methodology: AdmissionState observes, sink impls choose what
+    /// to do with the observations.
+    persistence: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
 }
 
 impl Default for AdmissionState {
@@ -127,12 +135,59 @@ impl AdmissionState {
     pub fn new(
         recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
     ) -> Self {
+        Self::new_with_persistence(
+            recall_metadata,
+            crate::persona::admission_persistence::NoopSink::arc(),
+        )
+    }
+
+    /// Construct AdmissionState with an explicit persistence sink.
+    /// Production uses `OrmPersistenceSink::arc(engram_store,
+    /// metadata_store)`; tests use `RecordingSink::arc()` or
+    /// `NoopSink::arc()`. The sink observes every admission +
+    /// metadata update and chooses what to do with them
+    /// (fire-and-forget write, buffer, no-op, etc.).
+    pub fn new_with_persistence(
+        recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
+        persistence: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+    ) -> Self {
         Self {
             runner: InboxAdmissionRunner::default_v1(),
             seen_content: Arc::new(InMemorySeenContent::default()),
             seen_events: Arc::new(InMemorySeenEvents::default()),
             engrams: Mutex::new(Vec::new()),
             recall_metadata,
+            persistence,
+        }
+    }
+
+    /// Construct AdmissionState pre-populated with engrams + metadata
+    /// loaded from disk. Used at persona boot — rehydrates the Vec +
+    /// DashMap from the previous lifetime's persistence layer.
+    ///
+    /// Per the substrate's continual-learning property: every admit
+    /// from now on rides on top of the loaded state; recall scoring
+    /// works against the rehydrated salience values; the Hebbian
+    /// rehearsal loop continues across the restart boundary.
+    pub fn new_rehydrated(
+        recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
+        persistence: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+        loaded_engrams: Vec<Engram>,
+        loaded_metadata: Vec<(Uuid, crate::persona::recall_metadata::RecallMetadata)>,
+    ) -> Self {
+        // Populate the metadata registry with the loaded snapshots
+        // BEFORE building the Vec — recall scoring later reads
+        // metadata via the registry, not via Engram fields.
+        for (engram_id, metadata) in loaded_metadata {
+            recall_metadata.admit(engram_id, metadata);
+        }
+        Self {
+            runner: InboxAdmissionRunner::default_v1(),
+            seen_content: Arc::new(InMemorySeenContent::default()),
+            seen_events: Arc::new(InMemorySeenEvents::default()),
+            engrams: Mutex::new(loaded_engrams),
+            recall_metadata,
+            persistence,
         }
     }
 
@@ -185,6 +240,16 @@ impl AdmissionState {
             AdmissionDecision::Admit { engram, .. } => {
                 self.record_admitted(engram);
                 self.engrams.lock().unwrap().push(engram.clone());
+                // Observe the admission through the persistence sink.
+                // NoopSink (default) does nothing; OrmPersistenceSink
+                // fires-and-forgets the disk write through tokio::spawn.
+                // The metadata snapshot reflects the just-admitted
+                // default state (admit_with_defaults above).
+                let metadata = self
+                    .recall_metadata
+                    .get(engram.id)
+                    .unwrap_or_default();
+                self.persistence.observe_admission(engram, metadata);
             }
             AdmissionDecision::Quarantine { engram, .. } => {
                 // Replay-only recording — see method-doc Quarantine note.
@@ -362,8 +427,17 @@ impl AdmissionState {
         // be one-way: salient memories would only ever decay, never
         // climb back from being used. record_recall_hit closes the
         // use-it-keeps-it feedback loop.
+        //
+        // After each in-memory mutation, observe through the
+        // persistence sink so the disk row keeps pace. NoopSink
+        // (default) does nothing; OrmPersistenceSink upserts the
+        // engram_recall_metadata row through tokio::spawn.
         for (engram, _) in &scored {
             self.recall_metadata.record_recall_hit(engram.id, now_ms);
+            if let Some(updated) = self.recall_metadata.get(engram.id) {
+                self.persistence
+                    .observe_metadata_update(engram.id, updated);
+            }
         }
 
         scored
@@ -1060,5 +1134,113 @@ mod tests {
             "airc-origin admit MUST record content_hash"
         );
         assert_eq!(state.engram_count(), 1, "admit MUST add to engram store");
+    }
+
+    // ── Persistence wire-up tests (#168) ──────────────────────────
+
+    /// What this catches: admit observes through the persistence
+    /// sink. The RecordingSink buffers each admission so the test
+    /// can assert it landed.
+    #[test]
+    fn admit_observes_admission_through_persistence_sink() {
+        use crate::persona::admission_persistence::RecordingSink;
+        let registry = Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        );
+        let sink = Arc::new(RecordingSink::new());
+        let state = AdmissionState::new_with_persistence(
+            Arc::clone(&registry),
+            Arc::clone(&sink) as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+        );
+        let msg = synthetic_human_message("watch me persist");
+        state.admit(&msg, None).expect("admit");
+        let seen = sink.admissions_seen();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0.content, "watch me persist");
+    }
+
+    /// What this catches: recall_scored observes metadata updates
+    /// through the persistence sink after each record_recall_hit.
+    /// Hebbian rehearsal IS the disk-write trigger — every recall
+    /// that lifts salience flushes the new value.
+    #[test]
+    fn recall_scored_observes_metadata_updates_through_sink() {
+        use crate::persona::admission_persistence::RecordingSink;
+        let registry = Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        );
+        let sink = Arc::new(RecordingSink::new());
+        let state = AdmissionState::new_with_persistence(
+            Arc::clone(&registry),
+            Arc::clone(&sink) as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+        );
+        // Admit 2 engrams so recall has something to score.
+        admit_n_distinct(
+            &state,
+            &[
+                "first observation worth recall",
+                "second observation worth recall",
+            ],
+        );
+        // Clear the sink's admission buffer before scoring — we
+        // want to assert only the metadata updates that follow.
+        let _ = sink.admissions_seen(); // (just a sanity touch, no clear)
+        let _scored = state.recall_scored(5_000, 8);
+        let updates = sink.metadata_updates_seen();
+        assert_eq!(
+            updates.len(),
+            2,
+            "each recall hit observes a metadata update"
+        );
+    }
+
+    /// What this catches: new_rehydrated populates the engram Vec
+    /// + the metadata DashMap from loaded snapshots. Subsequent
+    /// recall_scored sees those engrams and uses the loaded
+    /// salience values. The proof that boot rehydration works.
+    #[test]
+    fn new_rehydrated_restores_engrams_and_metadata_for_recall() {
+        let registry = Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        );
+        // Synthesize a couple of engrams + their metadata as if they
+        // had been loaded from disk.
+        let alpha_engram = synthetic_engram_with_chat_origin("alpha persisted");
+        let beta_engram = synthetic_engram_with_chat_origin("beta persisted");
+        let loaded_engrams = vec![alpha_engram.clone(), beta_engram.clone()];
+        let high_salience = crate::persona::recall_metadata::RecallMetadata {
+            salience: 0.9,
+            access_count: 5,
+            last_accessed_ms: 1_000,
+            protected_until_ms: 0,
+            last_decayed_ms: 1_000,
+        };
+        let low_salience = crate::persona::recall_metadata::RecallMetadata {
+            salience: 0.2,
+            access_count: 0,
+            last_accessed_ms: 0,
+            protected_until_ms: 0,
+            last_decayed_ms: 1_000,
+        };
+        let loaded_metadata = vec![
+            (alpha_engram.id, low_salience),
+            (beta_engram.id, high_salience),
+        ];
+
+        let state = AdmissionState::new_rehydrated(
+            Arc::clone(&registry),
+            crate::persona::admission_persistence::NoopSink::arc(),
+            loaded_engrams,
+            loaded_metadata,
+        );
+
+        assert_eq!(state.engram_count(), 2, "engrams rehydrated into Vec");
+
+        // recall_scored uses the loaded salience values — beta
+        // (high salience) ranks before alpha (low salience).
+        let scored = state.recall_scored(1_500, 8);
+        assert_eq!(scored.len(), 2);
+        assert_eq!(scored[0].0.id, beta_engram.id, "high-salience first");
+        assert_eq!(scored[1].0.id, alpha_engram.id, "low-salience second");
     }
 }

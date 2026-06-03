@@ -12,6 +12,7 @@
 //!   - channel_registry: Domain-to-queue routing + service_cycle()
 
 pub mod admission;
+pub mod admission_persistence;
 pub mod admission_state;
 pub mod airc_admission;
 pub mod airc_citizen;
