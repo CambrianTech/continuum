@@ -333,6 +333,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    RAG + inference + say cycle. The same call is what slice 12
     //    will fire from headless `continuum-core` boot for every
     //    persona the spawner planned.
+    // Register the persona's adapter in the global provider registry
+    // per task #161 so the cognition layer can reach it via
+    // global_registry(). Same wiring the supervisor does.
+    {
+        let registry_arc = continuum_core::modules::ai_provider::global_registry();
+        let mut registry = registry_arc.write().await;
+        registry.register_arc(adapter.clone(), 0);
+    }
+
     // Build the persona's brain at boot per task #148 + the cognition
     // pipeline doc. compose_for_turn needs engram + airc both bound
     // before the service loop starts iterating.

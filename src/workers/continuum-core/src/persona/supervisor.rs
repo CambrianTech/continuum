@@ -371,6 +371,21 @@ pub async fn materialize_adapters(
             }));
             continue;
         }
+        // Register the persona's adapter in the global provider
+        // registry so the cognition layer (evaluate_response,
+        // analyze, etc.) can reach it via `global_registry()` per
+        // task #161. `ArcAdapterShim` lets the supervisor keep its
+        // `Arc<dyn AIProviderAdapter>` ownership while the registry
+        // (which holds Box<dyn ...>) sees a delegating handle. The
+        // shim's `initialize`/`shutdown` are no-ops because the
+        // factory + warmup above already paid the init cost per
+        // [[init-once-handle-then-lease-zero-copy-refs]].
+        {
+            let registry_arc = crate::modules::ai_provider::global_registry();
+            let mut registry = registry_arc.write().await;
+            registry.register_arc(adapter.clone(), slot_index);
+        }
+
         // Build the persona's brain at boot. Bind airc_source via
         // set_airc_source so compose_for_turn has engram + airc both
         // available the moment her service loop iterates (task #148).

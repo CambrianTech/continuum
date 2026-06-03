@@ -16,6 +16,7 @@
 
 use crate::clog_warn;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 use super::types::{
     EmbeddingRequest, EmbeddingResponse, HealthStatus, ModelCapability, ModelInfo,
@@ -704,6 +705,163 @@ impl AdapterRegistry {
 impl Default for AdapterRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+//==============================================================================
+// ARC-ADAPTER SHIM — register an already-initialized shared adapter
+//==============================================================================
+
+/// Newtype that wraps `Arc<dyn AIProviderAdapter>` and re-implements
+/// the trait by delegating to the inner Arc. The substrate's supervisor
+/// holds the persona's adapter as an Arc (so the service loop, the
+/// cognition layer, and any future shared-base + LoRA paging consumer
+/// can all see the same instance); the global provider registry stores
+/// `Box<dyn AIProviderAdapter>`. This shim is the bridge.
+///
+/// `initialize` and `shutdown` are no-ops because the underlying
+/// adapter's lifecycle is owned by whoever holds the Arc — typically
+/// the supervisor's `materialize_adapters`, which has already called
+/// `build_adapter(...)` (which internally initializes) and `warmup()`
+/// before constructing the shim. Calling `initialize` again on a
+/// shared-Arc adapter would be a duplicate-init bug; calling
+/// `shutdown` would invalidate every other holder of the Arc.
+///
+/// Per [[init-once-handle-then-lease-zero-copy-refs]]: the adapter is
+/// initialized ONCE at boot (by the factory + warmup), then leased
+/// per turn. The shim's no-op lifecycle methods enforce that contract.
+pub struct ArcAdapterShim {
+    inner: Arc<dyn AIProviderAdapter>,
+}
+
+impl ArcAdapterShim {
+    pub fn new(inner: Arc<dyn AIProviderAdapter>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl AIProviderAdapter for ArcAdapterShim {
+    fn provider_id(&self) -> &str {
+        self.inner.provider_id()
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn api_style(&self) -> ApiStyle {
+        self.inner.api_style()
+    }
+
+    fn default_model(&self) -> &str {
+        self.inner.default_model()
+    }
+
+    async fn initialize(&mut self) -> Result<(), String> {
+        // No-op: the underlying adapter is already initialized by its
+        // owner (typically supervisor::materialize_adapters via
+        // PersonaAdapterFactory::build_adapter). Re-initializing a
+        // shared-Arc adapter through the shim would double-init.
+        Ok(())
+    }
+
+    async fn warmup(&self) -> Result<(), String> {
+        // Delegates — but the owner typically already warmed the
+        // adapter at boot per
+        // [[init-once-handle-then-lease-zero-copy-refs]]. Idempotent
+        // on adapters that override warmup correctly.
+        self.inner.warmup().await
+    }
+
+    async fn shutdown(&mut self) -> Result<(), String> {
+        // No-op: shutting down through the shim would invalidate
+        // every other holder of the underlying Arc. The owner runs
+        // the shutdown when the persona is despawned.
+        Ok(())
+    }
+
+    async fn generate_text(
+        &self,
+        request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse, String> {
+        self.inner.generate_text(request).await
+    }
+
+    async fn create_embedding(
+        &self,
+        request: EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, String> {
+        self.inner.create_embedding(request).await
+    }
+
+    async fn health_check(&self) -> HealthStatus {
+        self.inner.health_check().await
+    }
+
+    async fn get_available_models(&self) -> Vec<ModelInfo> {
+        self.inner.get_available_models().await
+    }
+
+    fn model_metadata(&self, model_id: &str) -> Option<ModelInfo> {
+        self.inner.model_metadata(model_id)
+    }
+
+    fn supports(&self, capability: ModelCapability) -> bool {
+        self.inner.supports(capability)
+    }
+
+    fn lora_capabilities(&self) -> LoRACapabilities {
+        self.inner.lora_capabilities()
+    }
+
+    async fn apply_lora(&self, adapter_id: &str) -> Result<(), String> {
+        self.inner.apply_lora(adapter_id).await
+    }
+
+    async fn remove_lora(&self, adapter_id: &str) -> Result<(), String> {
+        self.inner.remove_lora(adapter_id).await
+    }
+
+    fn list_lora_adapters(&self) -> Vec<LoRAAdapterInfo> {
+        self.inner.list_lora_adapters()
+    }
+
+    fn device_type(&self) -> InferenceDevice {
+        self.inner.device_type()
+    }
+
+    fn supported_model_prefixes(&self) -> Vec<&'static str> {
+        self.inner.supported_model_prefixes()
+    }
+
+    fn supports_model(&self, model_name: &str) -> bool {
+        self.inner.supports_model(model_name)
+    }
+
+    fn is_production_capable(&self) -> bool {
+        self.inner.is_production_capable()
+    }
+}
+
+impl AdapterRegistry {
+    /// Register an already-initialized `Arc<dyn AIProviderAdapter>` —
+    /// the persona-supervisor flavor of `register`. Internally wraps
+    /// the Arc in an `ArcAdapterShim` and stores the shim's
+    /// `Box<dyn AIProviderAdapter>`. The owner of the Arc retains
+    /// the lifecycle (init + shutdown); the registry just routes
+    /// inference calls through.
+    ///
+    /// Task #161 wire-up: supervisor `materialize_adapters` calls
+    /// this for every per-persona adapter so the cognition layer
+    /// (`evaluate_response`, `analyze`, etc.) can reach it via
+    /// `global_registry()`.
+    pub fn register_arc(&mut self, adapter: Arc<dyn AIProviderAdapter>, priority: usize) {
+        self.register(Box::new(ArcAdapterShim::new(adapter)), priority);
     }
 }
 
