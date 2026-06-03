@@ -274,6 +274,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             unique: true,
             nullable: false,
             max_length: None,
+            foreign_key: None,
         },
         SchemaField {
             name: "createdAt".to_string(),
@@ -282,6 +283,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             unique: false,
             nullable: false,
             max_length: None,
+            foreign_key: None,
         },
         SchemaField {
             name: "updatedAt".to_string(),
@@ -290,6 +292,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             unique: false,
             nullable: false,
             max_length: None,
+            foreign_key: None,
         },
         SchemaField {
             name: "version".to_string(),
@@ -298,6 +301,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             unique: false,
             nullable: false,
             max_length: None,
+            foreign_key: None,
         },
     ]
 }
@@ -370,6 +374,7 @@ mod tests {
                     unique: true,
                     nullable: false,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             }
@@ -390,6 +395,7 @@ mod tests {
                         unique: true,
                         nullable: false,
                         max_length: None,
+                        foreign_key: None,
                     },
                     SchemaField {
                         name: "value".to_string(),
@@ -398,6 +404,7 @@ mod tests {
                         unique: false,
                         nullable: true,
                         max_length: None,
+                        foreign_key: None,
                     },
                 ],
                 indexes: vec![SchemaIndex {
@@ -424,6 +431,7 @@ mod tests {
                     unique: false,
                     nullable: false,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             }
@@ -564,6 +572,7 @@ mod tests {
                             unique: false,
                             nullable: false,
                             max_length: None,
+                            foreign_key: None,
                         },
                         SchemaField {
                             name: "b".to_string(),
@@ -572,6 +581,7 @@ mod tests {
                             unique: false,
                             nullable: false,
                             max_length: None,
+                            foreign_key: None,
                         },
                     ],
                     indexes: vec![],
@@ -592,6 +602,7 @@ mod tests {
                             unique: false,
                             nullable: false,
                             max_length: None,
+                            foreign_key: None,
                         },
                         SchemaField {
                             name: "a".to_string(),
@@ -600,6 +611,7 @@ mod tests {
                             unique: false,
                             nullable: false,
                             max_length: None,
+                            foreign_key: None,
                         },
                     ],
                     indexes: vec![],

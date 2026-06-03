@@ -2610,6 +2610,7 @@ dependencies = [
  "candle-transformers",
  "chrono",
  "continuum-bridge-protocol",
+ "continuum-orm-derive",
  "crossbeam-channel",
  "csv",
  "dashmap",
@@ -2669,6 +2670,15 @@ dependencies = [
  "uuid",
  "wgpu",
  "wgpu-hal",
+]
+
+[[package]]
+name = "continuum-orm-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

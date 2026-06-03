@@ -47,6 +47,10 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+# Procedural derive macros for ORM entities — #[derive(Entity)].
+# Same crate would be path-deps elsewhere; explicit path makes the
+# dev loop tight (no version juggle while the macro evolves).
+continuum-orm-derive = { path = "../continuum-orm-derive" }
 reqwest = { version = "0.12", features = ["json"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap

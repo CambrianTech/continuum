@@ -38,6 +38,64 @@ pub enum FieldType {
     Uuid,
 }
 
+/// What to do to a referencing row when its target row changes.
+///
+/// SQL-standard semantics. The substrate names these explicitly so
+/// every backend (sqlite, postgres, future grid-replicated) emits
+/// the same intent rather than inheriting whatever default the
+/// backend has.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export, export_to = "../../../shared/generated/orm/CascadeRule.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum CascadeRule {
+    /// Default. If a referenced row goes away, the FK column on the
+    /// referencing side becomes orphaned and the DB rejects the
+    /// delete (`Restrict`/`NoAction` flavor).
+    Restrict,
+    /// Delete this row when the referenced row goes away. Use for
+    /// owned-lifetime relationships (e.g. RecallMetadata when its
+    /// Engram is deleted).
+    Cascade,
+    /// Null this row's FK column when the referenced row goes away.
+    /// Useful for nullable references where loss-of-target is
+    /// recoverable.
+    SetNull,
+    /// No-op at the constraint layer — the application owns the
+    /// cleanup. Generally avoid; named so explicit-choice is
+    /// possible.
+    NoAction,
+}
+
+impl Default for CascadeRule {
+    fn default() -> Self {
+        CascadeRule::Restrict
+    }
+}
+
+/// Foreign-key reference. A typed pointer from `this.field` to
+/// `<collection>.<target_field>`, with cascade semantics for the
+/// referenced row's lifecycle events.
+///
+/// Per Joel 2026-06-03 ("provide a relational db this time"): FK is
+/// a first-class schema concept, not application-level convention.
+/// Both sqlite + postgres adapters emit the constraint at CREATE
+/// TABLE time; queries can JOIN through it; the row-deletion
+/// semantics are enforced by the DB, not by hand-coded cleanup.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export, export_to = "../../../shared/generated/orm/ForeignKeyRef.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignKeyRef {
+    /// Target collection name (e.g. "engrams").
+    pub collection: String,
+    /// Target field on the referenced row. Almost always "id" but
+    /// named so non-id natural-key references are expressible.
+    pub field: String,
+    #[serde(default)]
+    pub on_delete: CascadeRule,
+    #[serde(default)]
+    pub on_update: CascadeRule,
+}
+
 /// Schema field definition
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/orm/SchemaField.ts")]
@@ -53,6 +111,12 @@ pub struct SchemaField {
     pub nullable: bool,
     #[ts(optional)]
     pub max_length: Option<usize>,
+    /// Optional FK reference to another collection's field. Adapters
+    /// emit `FOREIGN KEY (this.name) REFERENCES <collection>(<field>)
+    /// ON DELETE <on_delete> ON UPDATE <on_update>` at CREATE TABLE.
+    #[ts(optional)]
+    #[serde(default)]
+    pub foreign_key: Option<ForeignKeyRef>,
 }
 
 /// Composite index definition

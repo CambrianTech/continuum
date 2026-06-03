@@ -202,6 +202,7 @@ pub fn to_collection_schema(es: &EntitySchema) -> crate::orm::types::CollectionS
                 unique: opts.and_then(|o| o.unique).unwrap_or(false),
                 nullable: opts.and_then(|o| o.nullable).unwrap_or(false),
                 max_length: opts.and_then(|o| o.max_length).map(|n| n as usize),
+                foreign_key: None,
             }
         })
         .collect();

@@ -365,6 +365,18 @@ fn pg_type_from_field_type(ft: &super::types::FieldType) -> &'static str {
     }
 }
 
+/// SQL keyword for a CascadeRule under Postgres semantics. Same
+/// mapping as sqlite — both speak SQL-standard cascade keywords.
+fn pg_cascade_rule_sql(rule: super::types::CascadeRule) -> &'static str {
+    use super::types::CascadeRule;
+    match rule {
+        CascadeRule::Restrict => "RESTRICT",
+        CascadeRule::Cascade => "CASCADE",
+        CascadeRule::SetNull => "SET NULL",
+        CascadeRule::NoAction => "NO ACTION",
+    }
+}
+
 /// Build WHERE clause with $N placeholders and collect parameter values.
 /// When `col_types` is provided, uses type-aware coercion to match actual Postgres
 /// column types — prevents WrongType errors when auto-created columns have unexpected types.
@@ -1323,6 +1335,27 @@ impl StorageAdapter for PostgresAdapter {
             columns.push(col_def);
         }
 
+        // Foreign keys — same shape as sqlite.rs::do_ensure_schema.
+        // Per [[no-fallbacks-ever]] + Joel 2026-06-03 ("provide a
+        // relational db this time"): emit FOREIGN KEY constraints
+        // inside CREATE TABLE so the DB enforces referential
+        // integrity, not application code.
+        for field in &schema.fields {
+            if let Some(fk) = &field.foreign_key {
+                let col_name = naming::to_snake_case(&field.name);
+                let target_table = self.table_ref(&fk.collection);
+                let target_col = naming::to_snake_case(&fk.field);
+                columns.push(format!(
+                    "FOREIGN KEY ({}) REFERENCES {}({}) ON DELETE {} ON UPDATE {}",
+                    col_name,
+                    target_table,
+                    target_col,
+                    pg_cascade_rule_sql(fk.on_delete),
+                    pg_cascade_rule_sql(fk.on_update),
+                ));
+            }
+        }
+
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {} ({})",
             table,
@@ -1667,6 +1700,7 @@ mod tests {
                     unique: false,
                     nullable: false,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })
@@ -1708,6 +1742,7 @@ mod tests {
                         unique: false,
                         nullable: false,
                         max_length: None,
+                        foreign_key: None,
                     },
                     super::super::types::SchemaField {
                         name: "age".to_string(),
@@ -1716,6 +1751,7 @@ mod tests {
                         unique: false,
                         nullable: true,
                         max_length: None,
+                        foreign_key: None,
                     },
                 ],
                 indexes: vec![],
@@ -1785,6 +1821,7 @@ mod tests {
                     unique: false,
                     nullable: false,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })
@@ -1840,6 +1877,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })
@@ -1871,6 +1909,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })
@@ -1924,6 +1963,7 @@ mod tests {
                         unique: false,
                         nullable: true,
                         max_length: None,
+                        foreign_key: None,
                     },
                     super::super::types::SchemaField {
                         name: "tags".to_string(),
@@ -1932,6 +1972,7 @@ mod tests {
                         unique: false,
                         nullable: true,
                         max_length: None,
+                        foreign_key: None,
                     },
                 ],
                 indexes: vec![],
@@ -1978,6 +2019,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })

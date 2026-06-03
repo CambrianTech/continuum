@@ -2315,6 +2315,7 @@ mod tests {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             }],
             indexes: vec![],
         };
@@ -2383,6 +2384,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 },
                 crate::orm::types::SchemaField {
                     name: "embedding".to_string(),
@@ -2391,6 +2393,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 },
             ],
             indexes: vec![],
@@ -2481,6 +2484,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 },
                 crate::orm::types::SchemaField {
                     name: "embedding".to_string(),
@@ -2489,6 +2493,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 },
             ],
             indexes: vec![],
@@ -2568,6 +2573,7 @@ mod tests {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             }],
             indexes: vec![],
         };
@@ -2671,6 +2677,7 @@ mod tests {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             }],
             indexes: vec![],
         };
@@ -2792,6 +2799,7 @@ mod tests {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             }],
             indexes: vec![],
         };
@@ -2854,6 +2862,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 },
                 crate::orm::types::SchemaField {
                     name: "embedding".to_string(),
@@ -2862,6 +2871,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 },
             ],
             indexes: vec![],
@@ -3003,6 +3013,7 @@ mod tests {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             }],
             indexes: vec![],
         };
@@ -3365,6 +3376,7 @@ mod tests {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             }],
             indexes: vec![],
         };

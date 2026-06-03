@@ -300,6 +300,7 @@ mod tests {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             });
             CollectionSchema {
                 collection: Self::COLLECTION.to_string(),

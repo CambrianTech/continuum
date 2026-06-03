@@ -1,0 +1,15 @@
+[package]
+name = "continuum-orm-derive"
+version = "0.1.0"
+edition = "2021"
+description = "Procedural derive macros for continuum-core ORM entities — #[derive(Entity)] + #[entity(...)] field attributes. The Rust analogue of TS decorators."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+# Standard proc-macro toolchain. Same versions as ts-rs uses
+# transitively, so the workspace's resolver picks one copy of each.
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

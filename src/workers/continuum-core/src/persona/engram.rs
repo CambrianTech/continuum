@@ -150,6 +150,7 @@ impl OrmEntity for Engram {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             // The memorable content. Not indexed for full-text yet
             // (FTS landing in a later slice when the substrate's
@@ -162,6 +163,7 @@ impl OrmEntity for Engram {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             // EngramOrigin is a tagged-union enum. JSON column so
             // the variant shape rides intact; queries on inner
@@ -174,6 +176,7 @@ impl OrmEntity for Engram {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             // Free-text recall keys. JSON array column.
             SchemaField {
@@ -183,6 +186,7 @@ impl OrmEntity for Engram {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             // Admission timestamp (epoch ms). Indexed: admission-
             // order is the primary sort for recall_recent and the
@@ -194,6 +198,7 @@ impl OrmEntity for Engram {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             // TrustState at admission time (snapshot, not live).
             // Indexed: "show me everything admitted while the source
@@ -206,6 +211,7 @@ impl OrmEntity for Engram {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             // Optional pointer to the CognitionTrace SEAM record.
             // Nullable string; not indexed (used for forensic
@@ -217,6 +223,7 @@ impl OrmEntity for Engram {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             },
         ]);
         CollectionSchema {
