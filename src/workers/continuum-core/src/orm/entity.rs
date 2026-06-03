@@ -244,6 +244,26 @@ impl std::error::Error for RegistrationError {}
 /// camelCase field names because the existing adapters expect them
 /// (the ORM auto-translates to snake_case at the SQL layer per
 /// `crate::orm::mod.rs` preamble).
+/// True if `snake_case_name` is one of the BaseEntity column names
+/// adapters hardcode in their CREATE TABLE statements (`id`,
+/// `created_at`, `updated_at`, `version`).
+///
+/// Adapters use this to dedupe schema.fields against their hardcoded
+/// BaseEntity column block. Without dedup, a schema produced by
+/// `base_entity_fields()` + domain-specific fields would arrive at
+/// the adapter with `id` declared twice — once hardcoded in the
+/// adapter, once in the iterated schema.fields — and CREATE TABLE
+/// fails on the duplicate. This matches the documented contract
+/// (`base_entity_fields()` declares BaseEntity columns explicitly)
+/// without requiring entities to know how each backend lays out
+/// CREATE TABLE.
+pub fn is_base_entity_column(snake_case_name: &str) -> bool {
+    matches!(
+        snake_case_name,
+        "id" | "created_at" | "updated_at" | "version"
+    )
+}
+
 pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
     use crate::orm::types::{FieldType, SchemaField};
     vec![

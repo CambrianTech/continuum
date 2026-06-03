@@ -27,16 +27,21 @@ pub mod migration;
 pub mod postgres;
 pub mod query;
 pub mod sqlite;
+pub mod store;
 pub mod types;
 pub mod vector;
 
 pub use adapter::StorageAdapter;
 pub use connection_manager::{ConnectionManager, ConnectionManagerConfig};
-pub use entity::{base_entity_fields, BaseEntity, OrmEntity, OrmEntityRegistry, RegistrationError};
+pub use entity::{
+    base_entity_fields, is_base_entity_column, BaseEntity, OrmEntity, OrmEntityRegistry,
+    RegistrationError,
+};
 pub use migration::{MigrationEngine, MigrationHandle};
 pub use postgres::PostgresAdapter;
 pub use query::{QueryBuilder, QueryOperator, SortDirection, StorageQuery};
 pub use sqlite::SqliteAdapter;
+pub use store::{OrmStore, OrmStoreError};
 pub use types::{
     CollectionSchema, DataRecord, FieldType, RecordMetadata, SchemaField, StorageResult,
 };

@@ -532,6 +532,14 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
 
     for field in &schema.fields {
         let col_name = naming::to_snake_case(&field.name);
+        // Skip BaseEntity columns — adapter hardcodes them above to
+        // pin the exact SQL shape (PRIMARY KEY on id, defaults on
+        // created_at, etc.). Schemas authored via base_entity_fields()
+        // re-declare these by design; dedup here so CREATE TABLE
+        // doesn't crash on the duplicate column name.
+        if super::entity::is_base_entity_column(&col_name) {
+            continue;
+        }
         let col_type = match field.field_type {
             super::types::FieldType::String => "TEXT",
             super::types::FieldType::Number => "REAL",
@@ -561,10 +569,17 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
         return StorageResult::err(format!("Create table failed: {}", e));
     }
 
-    // Create single-field indexes from schema
+    // Create single-field indexes from schema. Skip BaseEntity
+    // columns: `id` is the PRIMARY KEY (implicitly indexed); the
+    // timestamp/version columns don't have schema-declared indexes
+    // that adapter code uses, and creating one on a non-existent
+    // column name would error.
     for field in &schema.fields {
         if field.indexed {
             let col_name = naming::to_snake_case(&field.name);
+            if super::entity::is_base_entity_column(&col_name) {
+                continue;
+            }
             let idx_name = format!("idx_{}_{}", table, col_name);
             let idx_sql = format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {} ({})",

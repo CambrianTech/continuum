@@ -1306,6 +1306,11 @@ impl StorageAdapter for PostgresAdapter {
 
         for field in &schema.fields {
             let col_name = naming::to_snake_case(&field.name);
+            // Skip BaseEntity columns — adapter hardcodes them above.
+            // See sqlite.rs::do_ensure_schema for the rationale.
+            if super::entity::is_base_entity_column(&col_name) {
+                continue;
+            }
             let col_type = pg_type_from_field_type(&field.field_type);
 
             let mut col_def = format!("{} {}", col_name, col_type);
