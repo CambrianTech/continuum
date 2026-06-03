@@ -45,6 +45,7 @@ pub mod engram_graph;
 pub mod engram_source;
 pub mod evaluator;
 pub mod genome_paging;
+pub mod home;
 pub mod host;
 pub mod hw_tier_descriptor;
 pub mod identity_provider;

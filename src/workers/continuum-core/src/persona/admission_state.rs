@@ -200,6 +200,88 @@ impl AdmissionState {
         &self.recall_metadata
     }
 
+    /// Construct AdmissionState for a specific persona — opens the
+    /// per-persona SQLite at `<home>/engrams.sqlite`, wires up
+    /// `OrmStore<Engram>` + `OrmStore<EngramRecallMetadata>`, builds
+    /// the production `OrmPersistenceSink`, rehydrates the in-memory
+    /// Vec + DashMap from disk, and returns the configured state.
+    ///
+    /// **The persona-scoped entry point for the chain-of-custody
+    /// architecture.** All future per-persona substrate work that
+    /// needs persistence (signing keys, Merkle chain heads, future
+    /// per-collection databases) hangs off the same `PersonaHome`
+    /// the engrams DB lives in. One home = one citizen's complete
+    /// on-disk surface.
+    ///
+    /// Per [[entity-chain-of-custody-vision]]: this is slice 1 of
+    /// the multi-slice arc. Subsequent slices add author_peer_id +
+    /// content_hash, signing, Merkle chain head caching, and
+    /// airc-native entity envelope emission — all riding on top of
+    /// this same PersonaHome resolution.
+    pub async fn for_persona(
+        home: &crate::persona::home::PersonaHome,
+        recall_metadata: Arc<crate::persona::recall_metadata::RecallMetadataRegistry>,
+    ) -> Result<Self, crate::orm::OrmStoreError> {
+        use crate::orm::adapter::{AdapterConfig, StorageAdapter};
+        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::OrmStore;
+        use crate::persona::admission_persistence::{
+            AdmissionPersistenceLoader, OrmLoader, OrmPersistenceSink,
+        };
+        use crate::persona::engram::Engram;
+        use crate::persona::recall_metadata::EngramRecallMetadata;
+
+        // Ensure the persona's home directory exists. fs::create_dir_all
+        // is idempotent and safe to call on every boot.
+        home.ensure_exists().map_err(|e| {
+            crate::orm::OrmStoreError::AdapterFailed {
+                operation: "ensure_persona_home",
+                collection: "engrams".to_string(),
+                detail: format!(
+                    "failed to ensure persona home dir {}: {}",
+                    home.root().display(),
+                    e
+                ),
+            }
+        })?;
+
+        // Open the per-persona SQLite. The adapter handles WAL + FK
+        // pragmas etc; we just hand it the path.
+        let mut adapter = SqliteAdapter::new();
+        let mut config = AdapterConfig::default();
+        config.connection_string = home.engrams_db().to_string_lossy().into_owned();
+        adapter.initialize(config).await.map_err(|e| {
+            crate::orm::OrmStoreError::AdapterFailed {
+                operation: "initialize",
+                collection: "engrams".to_string(),
+                detail: e,
+            }
+        })?;
+        let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
+
+        // Build the typed stores. Each ensure_schema runs on
+        // construction (idempotent).
+        let engram_store = Arc::new(OrmStore::<Engram>::new(Arc::clone(&adapter)).await?);
+        let metadata_store =
+            Arc::new(OrmStore::<EngramRecallMetadata>::new(Arc::clone(&adapter)).await?);
+
+        // Build the production sink + loader.
+        let sink = OrmPersistenceSink::arc(Arc::clone(&engram_store), Arc::clone(&metadata_store));
+        let loader = OrmLoader::new(engram_store, metadata_store);
+
+        // Rehydrate from disk — engrams + metadata that the previous
+        // lifetime persisted come back into memory before this
+        // AdmissionState handles its first new admit.
+        let (engrams, metadata) = loader.load_admission_state().await?;
+
+        Ok(Self::new_rehydrated(
+            recall_metadata,
+            sink,
+            engrams,
+            metadata,
+        ))
+    }
+
     /// Run the admission pipeline on one inbox message, recording all
     /// side-effects (admitted engram → store + content_hash dedup record;
     /// any signed origin → event_id replay record).
@@ -1242,5 +1324,146 @@ mod tests {
         assert_eq!(scored.len(), 2);
         assert_eq!(scored[0].0.id, beta_engram.id, "high-salience first");
         assert_eq!(scored[1].0.id, alpha_engram.id, "low-salience second");
+    }
+
+    /// What this catches: AdmissionState::for_persona opens a
+    /// per-persona SQLite, admits land in it, and a fresh
+    /// AdmissionState constructed from the SAME PersonaHome
+    /// rehydrates those admissions. Round-trip via real disk +
+    /// per-persona scoping in one test.
+    #[tokio::test]
+    async fn for_persona_round_trips_admissions_via_per_persona_sqlite() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = crate::persona::home::PersonaHome::for_persona(tmp.path(), "Paige");
+
+        // ── Lifetime 1: admit through the persona's home ────────
+        let original_ids: Vec<Uuid> = {
+            let registry = Arc::new(
+                crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            );
+            let state = AdmissionState::for_persona(&home, Arc::clone(&registry))
+                .await
+                .expect("for_persona setup");
+
+            let messages = [
+                "paige learns alpha for real",
+                "paige learns beta for real",
+            ];
+            let mut ids = Vec::new();
+            for content in &messages {
+                let decision = state
+                    .admit(&synthetic_human_message(content), None)
+                    .expect("admit");
+                match decision {
+                    AdmissionDecision::Admit { engram, .. } => ids.push(engram.id),
+                    other => panic!("expected Admit got {other:?}"),
+                }
+            }
+            ids
+            // state dropped here
+        };
+
+        // Wait for fire-and-forget writes to land.
+        let mut tries = 0;
+        let registry2 = Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        );
+        let state2 = loop {
+            let st = AdmissionState::for_persona(&home, Arc::clone(&registry2))
+                .await
+                .expect("for_persona lifetime 2");
+            if st.engram_count() == 2 {
+                break st;
+            }
+            tries += 1;
+            if tries > 100 {
+                panic!("persistent engrams never rehydrated after 100 yields");
+            }
+            tokio::task::yield_now().await;
+        };
+
+        let scored = state2.recall_scored(10_000, 8);
+        let scored_ids: std::collections::BTreeSet<Uuid> =
+            scored.iter().map(|(e, _)| e.id).collect();
+        let original_set: std::collections::BTreeSet<Uuid> =
+            original_ids.iter().copied().collect();
+        assert_eq!(scored_ids, original_set);
+
+        std::mem::forget(tmp);
+    }
+
+    /// What this catches: two personas under the same continuum_root
+    /// get fully isolated stores. An engram admitted by Paige does
+    /// not appear in Niko's recall, and vice-versa. The first
+    /// defense for the chain-of-custody design's per-citizen scoping.
+    #[tokio::test]
+    async fn for_persona_isolates_two_personas_at_the_storage_layer() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paige_home =
+            crate::persona::home::PersonaHome::for_persona(tmp.path(), "Paige");
+        let niko_home =
+            crate::persona::home::PersonaHome::for_persona(tmp.path(), "Niko");
+
+        // Admit through Paige's home only.
+        let paige_id = {
+            let registry = Arc::new(
+                crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            );
+            let state = AdmissionState::for_persona(&paige_home, registry)
+                .await
+                .expect("paige setup");
+            let decision = state
+                .admit(
+                    &synthetic_human_message("only paige sees this engram"),
+                    None,
+                )
+                .expect("paige admit");
+            match decision {
+                AdmissionDecision::Admit { engram, .. } => engram.id,
+                other => panic!("expected Admit got {other:?}"),
+            }
+        };
+
+        // Wait for Paige's fire-and-forget write to land.
+        let mut tries = 0;
+        loop {
+            let paige_registry = Arc::new(
+                crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+            );
+            let paige_state =
+                AdmissionState::for_persona(&paige_home, paige_registry)
+                    .await
+                    .expect("paige reload");
+            if paige_state.engram_count() == 1 {
+                break;
+            }
+            tries += 1;
+            if tries > 100 {
+                panic!("paige's engram never landed");
+            }
+            tokio::task::yield_now().await;
+        }
+
+        // Niko's fresh state must NOT see Paige's engram.
+        let niko_registry = Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        );
+        let niko_state = AdmissionState::for_persona(&niko_home, niko_registry)
+            .await
+            .expect("niko setup");
+        assert_eq!(
+            niko_state.engram_count(),
+            0,
+            "Niko's home is independent of Paige's — no cross-persona engram leak"
+        );
+
+        // And Niko's scored recall returns nothing.
+        let scored = niko_state.recall_scored(10_000, 8);
+        assert!(
+            scored.is_empty(),
+            "Niko's recall is empty: paige's engram {paige_id} stayed scoped to her home"
+        );
+
+        std::mem::forget(tmp);
     }
 }
