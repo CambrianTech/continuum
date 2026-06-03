@@ -333,6 +333,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    RAG + inference + say cycle. The same call is what slice 12
     //    will fire from headless `continuum-core` boot for every
     //    persona the spawner planned.
+    // Build the persona's brain at boot per task #148 + the cognition
+    // pipeline doc. compose_for_turn needs engram + airc both bound
+    // before the service loop starts iterating.
+    let rag_engine = std::sync::Arc::new(continuum_core::rag::RagEngine::new());
+    let mut cognition = continuum_core::persona::unified::PersonaCognition::new(
+        persona_id,
+        agent.clone(),
+        rag_engine,
+    );
+    let airc_source: std::sync::Arc<dyn continuum_core::persona::rag_budget::RagSource> =
+        std::sync::Arc::new(continuum_core::persona::airc_source::AircRagSource::new(
+            persona_id,
+            runtime.clone(),
+        ));
+    cognition.set_airc_source(airc_source);
+
     let hosted = HostedPersona {
         role: RoleId::Helper,
         identity: PersonaInstanceInfo {
@@ -347,6 +363,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         adapter,
         // PersonaAircRuntime impls AircCitizen — Arc auto-coerces.
         runtime: runtime.clone(),
+        cognition: std::sync::Arc::new(tokio::sync::Mutex::new(cognition)),
     };
     let mut conversation = AircPersonaConversation::new(runtime);
 

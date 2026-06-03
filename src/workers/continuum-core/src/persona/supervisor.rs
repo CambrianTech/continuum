@@ -194,6 +194,26 @@ pub struct PersonaContext {
     /// kind-specific extensions (cognition for persona, WebAuthn for
     /// human, session state for browser).
     pub runtime: Arc<dyn AircCitizen>,
+    /// The persona's brain. PER PERSONA, per the SHARED-COGNITION
+    /// doctrine: each AI has its own mind; shared optimizations
+    /// (the `analyze` single-flight cache) sit underneath, not above.
+    ///
+    /// `PersonaCognition` carries every layer the substrate has been
+    /// built for: engine, inbox, rate_limiter, sleep_state,
+    /// adapter_registry, genome_engine (L1-L5 LoRA paging),
+    /// domain_classifier, message_cache, content_dedup, admission
+    /// (hippocampus), recall_metadata (Algorithm 4), engram_source,
+    /// airc_source (bound at boot, task #148), capture_sink.
+    ///
+    /// `Arc<Mutex<...>>` because the cognition cycle mutates state
+    /// across the turn (rate_limiter, content_dedup, genome_engine,
+    /// message_cache). One turn at a time per persona is correct —
+    /// the substrate parallelizes ACROSS personas, not within one.
+    ///
+    /// See `docs/architecture/PERSONA-COGNITION-PIPELINE.md` for the
+    /// cycle service_loop drives through this brain. DO NOT bypass
+    /// it with a chatbot-shaped surface.
+    pub cognition: Arc<tokio::sync::Mutex<crate::persona::unified::PersonaCognition>>,
 }
 
 /// Back-compat alias for the slice-9-era struct name. New code
@@ -351,12 +371,31 @@ pub async fn materialize_adapters(
             }));
             continue;
         }
+        // Build the persona's brain at boot. Bind airc_source via
+        // set_airc_source so compose_for_turn has engram + airc both
+        // available the moment her service loop iterates (task #148).
+        // The runtime IS an AircTranscriptReader by trait bound.
+        let rag_engine = Arc::new(crate::rag::RagEngine::new());
+        let mut cognition = crate::persona::unified::PersonaCognition::new(
+            identity.persona_id,
+            identity.agent_name.clone(),
+            rag_engine,
+        );
+        let airc_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::airc_source::AircRagSource::new(
+                identity.persona_id,
+                runtime.clone(),
+            ),
+        );
+        cognition.set_airc_source(airc_source);
+
         out.push(Ok(PersonaContext {
             role: plan.role,
             identity,
             profile,
             adapter,
             runtime,
+            cognition: Arc::new(tokio::sync::Mutex::new(cognition)),
         }));
     }
     out

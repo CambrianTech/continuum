@@ -495,6 +495,18 @@ mod tests {
             // without standing up a real airc daemon per
             // [[test-fixtures-are-system-primitives]].
             runtime: Arc::new(StubAircCitizen::new(persona_peer_id)),
+            // Brain. Tests construct a default PersonaCognition
+            // and DO NOT bind airc_source — the stub citizen's
+            // page_recent returns empty per the no-fallback doctrine,
+            // so unit tests exercising the loop don't need the
+            // airc-side composition to land items.
+            cognition: Arc::new(tokio::sync::Mutex::new(
+                crate::persona::unified::PersonaCognition::new(
+                    persona_id,
+                    "Paige".to_string(),
+                    Arc::new(crate::rag::RagEngine::new()),
+                ),
+            )),
         }
     }
 
