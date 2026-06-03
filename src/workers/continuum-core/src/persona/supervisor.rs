@@ -383,7 +383,7 @@ pub async fn materialize_adapters(
         {
             let registry_arc = crate::modules::ai_provider::global_registry();
             let mut registry = registry_arc.write().await;
-            registry.register_arc(adapter.clone(), slot_index);
+            registry.register(adapter.clone(), slot_index);
         }
 
         // Build the persona's brain at boot. Bind airc_source via

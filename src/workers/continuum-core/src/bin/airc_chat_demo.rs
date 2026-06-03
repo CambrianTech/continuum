@@ -339,7 +339,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let registry_arc = continuum_core::modules::ai_provider::global_registry();
         let mut registry = registry_arc.write().await;
-        registry.register_arc(adapter.clone(), 0);
+        registry.register(adapter.clone(), 0);
     }
 
     // Build the persona's brain at boot per task #148 + the cognition

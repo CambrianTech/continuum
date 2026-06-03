@@ -157,6 +157,15 @@ impl AIProviderModule {
     /// used by both init-time registration and watchdog re-registration —
     /// the two never produce different-shaped adapters.
     fn build_dmr_adapter(endpoint: &DmrEndpoint) -> Box<dyn AIProviderAdapter> {
+        // Note: returns `Box` because the watchdog re-registration
+        // path needs ownership of a Sized adapter to call
+        // `initialize` on it before wrapping in `Arc`. The
+        // init-then-register caller does:
+        //   let mut a = Self::build_dmr_adapter(...);
+        //   a.initialize().await?;
+        //   registry.register(Arc::from(a), priority);
+        // — `Arc::from(Box<dyn T>)` is a zero-copy ownership flip per
+        // [[init-once-handle-then-lease-zero-copy-refs]].
         let adapter = if let Some(url) = &endpoint.base_url {
             OpenAICompatibleAdapter::from_registry("docker-model-runner")
                 .with_runtime_base_url(url.clone())
@@ -254,60 +263,89 @@ impl AIProviderModule {
         // register it explicitly in their setup code (no global default
         // registration, no silent availability).
 
-        // Only register adapters that have API keys configured
+        // Per task #162's Box→Arc migration: init-then-register
+        // pattern. The registry stores ready-to-serve adapters; we
+        // pay the initialize() cost here BEFORE registration. If an
+        // adapter's initialize fails (e.g. API key validation
+        // failure), we log and skip — per [[no-fallbacks-ever]] we
+        // surface the failure rather than substituting a degraded
+        // adapter, and other providers can still register.
+        //
+        // The pattern: `let mut a = X::new(); a.initialize().await?;
+        // registry.register(Arc::new(a), priority);` — eight repeats
+        // for the cloud-API set below.
+
+        // Only register adapters that have API keys configured.
         if get_secret("DEEPSEEK_API_KEY").is_some() {
             self.log().info("Registering DeepSeek adapter");
-            registry.register(
-                Box::new(OpenAICompatibleAdapter::from_registry("deepseek")),
-                0,
-            );
+            let mut a = OpenAICompatibleAdapter::from_registry("deepseek");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 0),
+                Err(e) => self.log().warn(&format!("DeepSeek initialize failed: {e} — not registered")),
+            }
         }
 
         if get_secret("ANTHROPIC_API_KEY").is_some() {
             self.log().info("Registering Anthropic adapter");
-            registry.register(Box::new(AnthropicAdapter::new()), 1);
+            let mut a = AnthropicAdapter::new();
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 1),
+                Err(e) => self.log().warn(&format!("Anthropic initialize failed: {e} — not registered")),
+            }
         }
 
         if get_secret("OPENAI_API_KEY").is_some() {
             self.log().info("Registering OpenAI adapter");
-            registry.register(
-                Box::new(OpenAICompatibleAdapter::from_registry("openai")),
-                2,
-            );
+            let mut a = OpenAICompatibleAdapter::from_registry("openai");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 2),
+                Err(e) => self.log().warn(&format!("OpenAI initialize failed: {e} — not registered")),
+            }
         }
 
         if get_secret("GROQ_API_KEY").is_some() {
             self.log().info("Registering Groq adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("groq")), 3);
+            let mut a = OpenAICompatibleAdapter::from_registry("groq");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 3),
+                Err(e) => self.log().warn(&format!("Groq initialize failed: {e} — not registered")),
+            }
         }
 
         if get_secret("TOGETHER_API_KEY").is_some() {
             self.log().info("Registering Together adapter");
-            registry.register(
-                Box::new(OpenAICompatibleAdapter::from_registry("together")),
-                4,
-            );
+            let mut a = OpenAICompatibleAdapter::from_registry("together");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 4),
+                Err(e) => self.log().warn(&format!("Together initialize failed: {e} — not registered")),
+            }
         }
 
         if get_secret("FIREWORKS_API_KEY").is_some() {
             self.log().info("Registering Fireworks adapter");
-            registry.register(
-                Box::new(OpenAICompatibleAdapter::from_registry("fireworks")),
-                5,
-            );
+            let mut a = OpenAICompatibleAdapter::from_registry("fireworks");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 5),
+                Err(e) => self.log().warn(&format!("Fireworks initialize failed: {e} — not registered")),
+            }
         }
 
         if get_secret("XAI_API_KEY").is_some() {
             self.log().info("Registering XAI adapter");
-            registry.register(Box::new(OpenAICompatibleAdapter::from_registry("xai")), 6);
+            let mut a = OpenAICompatibleAdapter::from_registry("xai");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 6),
+                Err(e) => self.log().warn(&format!("XAI initialize failed: {e} — not registered")),
+            }
         }
 
         if get_secret("GOOGLE_API_KEY").is_some() {
             self.log().info("Registering Google adapter");
-            registry.register(
-                Box::new(OpenAICompatibleAdapter::from_registry("google")),
-                7,
-            );
+            let mut a = OpenAICompatibleAdapter::from_registry("google");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 7),
+                Err(e) => self.log().warn(&format!("Google initialize failed: {e} — not registered")),
+            }
         }
 
         // In-process llama.cpp adapter — bypasses DMR's container Metal toolchain,
@@ -447,8 +485,20 @@ impl AIProviderModule {
                         adapter_base
                     }
                 };
-                // Priority 0 — wins over DMR for the model ids it claims.
-                registry.register(Box::new(adapter), 0);
+                // Priority 0 — wins over DMR for the model ids it
+                // claims. Init-then-register per #162: the adapter
+                // is built by `build_llamacpp_adapter` already in a
+                // ready state (no separate initialize() call is
+                // wired through the current build flow; the
+                // adapter's constructor handles model load).
+                let mut adapter = adapter;
+                if let Err(e) = adapter.initialize().await {
+                    self.log().warn(&format!(
+                        "in-process llama.cpp initialize failed: {e} — not registered"
+                    ));
+                } else {
+                    registry.register(Arc::new(adapter), 0);
+                }
             }
         } else {
             self.log().info(
@@ -478,16 +528,21 @@ impl AIProviderModule {
                     "Registering Docker Model Runner adapter ({})",
                     desc
                 ));
-                registry.register(
-                    Self::build_dmr_adapter(&endpoint),
-                    // Priority 1 — sits BELOW the in-process llama.cpp adapter
-                    // (priority 0) so DMR only wins for models LlamaCppAdapter
-                    // doesn't claim. Critical on Mac M5 where DMR's container
-                    // Metal toolchain is degraded vs the host-built bundled
-                    // llama.cpp (verified 2026-04-19: 33 tok/s container vs
-                    // 47 tok/s in-process for the same forge model).
-                    1,
-                );
+                // Priority 1 — sits BELOW the in-process llama.cpp
+                // adapter (priority 0) so DMR only wins for models
+                // LlamaCppAdapter doesn't claim. Critical on Mac M5
+                // where DMR's container Metal toolchain is degraded
+                // vs the host-built bundled llama.cpp (verified
+                // 2026-04-19: 33 tok/s container vs 47 tok/s
+                // in-process for the same forge model).
+                let mut dmr = Self::build_dmr_adapter(&endpoint);
+                if let Err(e) = dmr.initialize().await {
+                    self.log().warn(&format!(
+                        "DMR adapter initialize failed: {e} — not registered"
+                    ));
+                } else {
+                    registry.register(Arc::from(dmr), 1);
+                }
             }
             None => {
                 self.log().info(
@@ -512,8 +567,11 @@ impl AIProviderModule {
         // separation of concerns. Training and inference are different activities
         // with different registries.
 
-        // Initialize all registered adapters
-        registry.initialize_all().await?;
+        // Per task #162: no `registry.initialize_all()` here —
+        // each adapter is initialized inline above before being
+        // wrapped in Arc and registered. The registry stores
+        // ready-to-serve adapters; lifecycle is the constructor's
+        // responsibility.
 
         let available = registry.available();
         self.log().info(&format!(
@@ -739,7 +797,9 @@ impl ServiceModule for AIProviderModule {
                 // Priority 1 here mirrors the init-time registration —
                 // DMR sits below the in-process llama.cpp adapter so it
                 // only wins for models LlamaCppAdapter doesn't claim.
-                registry.register(adapter, 1);
+                // Box→Arc via `Arc::from` per task #162's Arc-native
+                // registry — zero-copy ownership flip.
+                registry.register(Arc::from(adapter), 1);
                 self.log().info(&format!(
                     "Docker Model Runner reachable again — re-registered ({}). \
                      Local AI is available.",

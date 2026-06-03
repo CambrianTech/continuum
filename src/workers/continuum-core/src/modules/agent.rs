@@ -20,7 +20,7 @@
 //!
 //! Priority: Normal — agents are long-running background tasks.
 
-use crate::ai::adapter::InferenceDevice;
+use crate::ai::adapter::{AIProviderAdapter, InferenceDevice};
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::runtime::{
@@ -585,34 +585,34 @@ async fn call_llm(
     // Create adapter registry with available providers
     let mut registry = AdapterRegistry::new();
 
-    // Register adapters based on available API keys
+    // Register adapters based on available API keys — init-then-
+    // register per task #162 (registry stores Arc; no
+    // initialize_all on the registry).
     if get_secret("DEEPSEEK_API_KEY").is_some() {
-        registry.register(
-            Box::new(OpenAICompatibleAdapter::from_registry("deepseek")),
-            0,
-        );
+        let mut a = OpenAICompatibleAdapter::from_registry("deepseek");
+        a.initialize().await?;
+        registry.register(std::sync::Arc::new(a), 0);
     }
     if get_secret("ANTHROPIC_API_KEY").is_some() {
-        registry.register(Box::new(AnthropicAdapter::new()), 1);
+        let mut a = AnthropicAdapter::new();
+        a.initialize().await?;
+        registry.register(std::sync::Arc::new(a), 1);
     }
     if get_secret("OPENAI_API_KEY").is_some() {
-        registry.register(
-            Box::new(OpenAICompatibleAdapter::from_registry("openai")),
-            2,
-        );
+        let mut a = OpenAICompatibleAdapter::from_registry("openai");
+        a.initialize().await?;
+        registry.register(std::sync::Arc::new(a), 2);
     }
     if get_secret("GROQ_API_KEY").is_some() {
-        registry.register(Box::new(OpenAICompatibleAdapter::from_registry("groq")), 3);
+        let mut a = OpenAICompatibleAdapter::from_registry("groq");
+        a.initialize().await?;
+        registry.register(std::sync::Arc::new(a), 3);
     }
     if get_secret("TOGETHER_API_KEY").is_some() {
-        registry.register(
-            Box::new(OpenAICompatibleAdapter::from_registry("together")),
-            4,
-        );
+        let mut a = OpenAICompatibleAdapter::from_registry("together");
+        a.initialize().await?;
+        registry.register(std::sync::Arc::new(a), 4);
     }
-
-    // Initialize all registered adapters
-    registry.initialize_all().await?;
 
     // Select adapter based on model
     let (_provider_id, adapter) = registry
