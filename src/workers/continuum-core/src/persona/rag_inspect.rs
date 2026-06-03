@@ -207,13 +207,29 @@ pub struct RagInspection {
 
 /// Captured model response from the chained inspection variant —
 /// what the inference adapter produced when fed the RAG-delivered
-/// items as a prompt. Carries enough to answer "would I respond as
-/// it requests?" without re-running the model.
+/// items as a prompt. Carries the decision + the response together
+/// per [[no-if-statements-use-llms-for-cognition]]: the LLM decides
+/// `will_respond` AND writes `response_text` in ONE structured call
+/// (json grammar-constrained via `ResponseFormat::JsonObject`).
+///
+/// `will_respond == false` means the persona explicitly chose silence;
+/// the service loop counts it as `turns_skipped` and posts nothing.
+/// `will_respond == true` AND `response_text.is_empty()` is a model
+/// failure — the substrate treats it as skipped too (the persona
+/// said yes but produced no content per the structured contract).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelResponseInspection {
     pub adapter_id: String,
     pub model: String,
     pub prompt_text: String,
+    /// The persona's decision: true = post a reply; false = stay
+    /// silent this turn. Substrate refuses to invent a default per
+    /// [[no-fallbacks-ever]] — if the model couldn't be parsed, the
+    /// caller surfaces the typed `Err` from inference_probe and the
+    /// loop counts `turns_errored`.
+    pub will_respond: bool,
+    /// The reply text the persona wants posted. Only used when
+    /// `will_respond == true`. Empty otherwise.
     pub response_text: String,
     pub finish_reason: String,
     pub input_tokens: u32,
@@ -441,34 +457,55 @@ pub async fn inspect_persona_rag_with_inference(
 }
 
 /// Assemble RAG-delivered items into a prompt, call the adapter,
-/// capture the response. Pure helper; the chained variant calls
-/// this when an adapter is present.
+/// parse the structured `{will_respond, response}` reply.
 ///
-/// Prompt shape (substrate's first cut — slice 12 PromptAssembly
-/// will refine):
-/// - System: "You are <persona_name>. Below are recent messages
-///   from the room you're in; respond as that persona."
-/// - One user message per delivered item, content verbatim.
+/// Per Joel 2026-06-02 ("113, use real LLMs. We can't know if we use
+/// fake algorithms") + [[no-if-statements-use-llms-for-cognition]]:
+/// the substrate does NOT gate replies with heuristics. The LLM
+/// decides — atomically with writing the response — via JSON-grammar-
+/// constrained sampling (`ResponseFormat::JsonObject` flows through
+/// to llama.cpp's GBNF grammar; same path the existing
+/// `json_object_response_format_enables_json_grammar` test locks).
+///
+/// Prompt shape:
+/// - System: persona identity + the structural decision contract
+/// - User messages: one per RAG-delivered item, content verbatim
+/// - Forced JSON response: `{"will_respond": bool, "response": str}`
+///
+/// Failure modes per [[no-fallbacks-ever]]:
+/// - Inference call itself fails → `Err` (loop records turns_errored)
+/// - LLM emits unparseable JSON → `Err` (substrate refuses to invent
+///   a default; the operator sees the typed error and fixes the model)
+/// - LLM emits `will_respond: true` but empty response → returned
+///   with empty response_text; the loop treats this as skipped per
+///   the doc-comment on `ModelResponseInspection`
 async fn run_inference_probe(
     adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     persona_name: &str,
     items: &[crate::persona::rag_budget::RagItem],
 ) -> Result<ModelResponseInspection, String> {
     use crate::ai::types::{
-        ChatMessage, MessageContent, TextGenerationRequest,
+        ChatMessage, MessageContent, ResponseFormat, TextGenerationRequest,
     };
     let adapter_id = adapter.provider_id().to_string();
     let model = adapter.default_model().to_string();
 
     let system_prompt = format!(
-        "You are {persona_name}. Below are recent messages from the room you're in; \
-         respond as that persona."
+        "You are {persona_name}, an autonomous AI persona in a chat room with other \
+         humans and AI peers. Recent messages from the room follow as user turns.\n\n\
+         Your job for this turn: decide whether to respond, and if so, what to say. \
+         Consider whether the most recent message is directed at you, whether your \
+         reply would add value, whether you're in a greeting-loop with another AI, \
+         and whether silence is the right move.\n\n\
+         Respond with ONLY a JSON object matching this exact shape:\n\
+         {{\"will_respond\": true, \"response\": \"your reply text\"}}\n\
+         OR\n\
+         {{\"will_respond\": false, \"response\": \"\"}}\n\n\
+         Set will_respond to false when staying silent is the right move (you weren't \
+         addressed, the conversation moved on, the peers are looping greetings without \
+         substance, etc). Do not explain — emit ONLY the JSON object."
     );
 
-    // One user message per item — preserves the multi-turn structure
-    // so the model sees who said what (the source's metadata
-    // includes peer + lamport; future slices will format that
-    // explicitly).
     let messages: Vec<ChatMessage> = items
         .iter()
         .map(|item| ChatMessage {
@@ -493,12 +530,17 @@ async fn run_inference_probe(
         stop_sequences: None,
         tools: None,
         tool_choice: None,
-        response_format: None,
+        // The substrate's cognition contract: JSON-grammar-constrained
+        // output. LlamaCpp wires this to GBNF grammar so the sampler
+        // can ONLY emit valid JSON (the unit test
+        // `json_object_response_format_enables_json_grammar` locks
+        // this in `inference/llamacpp_adapter.rs`).
+        response_format: Some(ResponseFormat::JsonObject),
         active_adapters: None,
         request_id: None,
         user_id: None,
         room_id: None,
-        purpose: Some("rag_inspect_probe".to_string()),
+        purpose: Some("persona_decide_and_respond".to_string()),
         persona_id: None,
     };
 
@@ -507,16 +549,45 @@ async fn run_inference_probe(
         .await
         .map_err(|e| format!("rag_inspect inference probe failed: {e}"))?;
 
+    let (will_respond, response_text) =
+        parse_decide_and_respond(&response.text).map_err(|e| {
+            format!(
+                "model emitted unparseable JSON for persona_decide_and_respond: {e}\n\
+                 raw response: {raw}",
+                raw = response.text
+            )
+        })?;
+
     Ok(ModelResponseInspection {
         adapter_id,
         model,
         prompt_text,
-        response_text: response.text,
+        will_respond,
+        response_text,
         finish_reason: response.finish_reason.to_string(),
         input_tokens: response.usage.input_tokens,
         output_tokens: response.usage.output_tokens,
         response_time_ms: response.response_time_ms,
     })
+}
+
+/// Parse the LLM's structured `{will_respond, response}` JSON output.
+/// Returns `(will_respond, response_text)`. Per [[no-fallbacks-ever]]
+/// any missing field or wrong type errors visibly — the substrate
+/// doesn't silently default a decision the model didn't make.
+fn parse_decide_and_respond(raw: &str) -> Result<(bool, String), String> {
+    let v: serde_json::Value = serde_json::from_str(raw.trim())
+        .map_err(|e| format!("JSON parse: {e}"))?;
+    let will_respond = v
+        .get("will_respond")
+        .and_then(|x| x.as_bool())
+        .ok_or_else(|| "missing or non-bool `will_respond`".to_string())?;
+    let response = v
+        .get("response")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| "missing or non-string `response`".to_string())?
+        .to_string();
+    Ok((will_respond, response))
 }
 
 fn render_prompt_text(

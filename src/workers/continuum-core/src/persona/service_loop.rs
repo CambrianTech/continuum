@@ -348,6 +348,35 @@ async fn serve_persona_loop_inner(
             continue;
         };
 
+        // The persona's own decision per
+        // [[no-if-statements-use-llms-for-cognition]]: the LLM
+        // emitted `will_respond` atomically with the response text
+        // via grammar-constrained JSON. If she chose silence, the
+        // substrate honors it. No heuristic gate, no echo-storm
+        // override — the model decides and the substrate carries
+        // out the decision.
+        if !mr.will_respond {
+            tracing::info!(
+                lamport = msg.lamport,
+                "persona chose silence (will_respond=false) — substrate honors decision"
+            );
+            outcome.turns_skipped += 1;
+            continue;
+        }
+        if mr.response_text.is_empty() {
+            // Structurally inconsistent: said yes, produced nothing.
+            // Per the doc-comment on ModelResponseInspection the loop
+            // treats this as skipped (no garbage post). Logged so
+            // operators can spot LCD-tier cognition collapse.
+            tracing::warn!(
+                lamport = msg.lamport,
+                "persona said will_respond=true but produced empty response_text — \
+                 counting as skipped"
+            );
+            outcome.turns_skipped += 1;
+            continue;
+        }
+
         if let Err(e) = conversation.say(&mr.response_text).await {
             tracing::warn!(
                 lamport = msg.lamport,

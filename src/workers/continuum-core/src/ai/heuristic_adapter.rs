@@ -250,16 +250,43 @@ impl HeuristicInferenceAdapter {
 
     /// Build the response text from the request. Pure function —
     /// no I/O, no clock, no RNG. Replay-safe.
+    ///
+    /// When the request asks for JSON-shaped output
+    /// (`response_format = JsonObject`), the heuristic wraps its
+    /// echo in the substrate's persona-cognition contract:
+    /// `{"will_respond": true, "response": "<echo>"}`. This lets the
+    /// test path through `rag_inspect::run_inference_probe` succeed
+    /// against a heuristic adapter — substrate plumbing still
+    /// validates end-to-end without a real LLM, per the
+    /// system-test-primitives doctrine. The real cognition
+    /// (will_respond chosen by the LLM) requires a real model
+    /// per Joel: "use real LLMs. We can't know if we use fake
+    /// algorithms."
     pub fn build_response_text(req: &TextGenerationRequest) -> String {
         let prefix = Self::determinism_prefix(req);
         let last = Self::last_user_text(&req.messages);
         let echoed: String = last.chars().rev().take(ECHO_CHARS).collect::<String>()
             .chars().rev().collect();
-        if echoed.is_empty() {
+        let plain = if echoed.is_empty() {
             format!("[heuristic:{prefix}] ack: (no user text in prompt)")
         } else {
             format!("[heuristic:{prefix}] ack: \"{echoed}\"")
+        };
+        if matches!(
+            req.response_format,
+            Some(crate::ai::types::ResponseFormat::JsonObject)
+        ) {
+            // Emit the substrate's decide-and-respond JSON shape so
+            // the rag_inspect inference probe's JSON parser is
+            // exercised end-to-end. `will_respond: true` keeps the
+            // happy path going.
+            let inner =
+                serde_json::to_string(&plain).expect("plain string serializes");
+            return format!(
+                "{{\"will_respond\":true,\"response\":{inner}}}"
+            );
         }
+        plain
     }
 }
 
