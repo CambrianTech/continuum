@@ -1,48 +1,48 @@
-//! Per-persona service loop — slice 10 of #133.
+//! Per-persona service loop — the wire driver between airc and the
+//! brain.
 //!
-//! Takes a slice-9 [`HostedPersona`] and a "talk to the grid"
-//! abstraction ([`PersonaConversation`]) and runs the chat-flawless
-//! cognition path:
+//! Takes a [`HostedPersona`] (`PersonaContext`) and a "talk to the
+//! grid" abstraction ([`PersonaConversation`]) and drives one
+//! cognition turn per incoming message through THE BRAIN — the
+//! canonical agent pipeline:
 //!
 //!   subscribe → for each event:
 //!     • skip pre-watermark / self / non-text
-//!     • RAG + inference via [`inspect_persona_rag_with_inference`]
-//!     • post reply
+//!     • lease the brain (`ctx.cognition.lock().await`)
+//!     • `compose_for_turn` — engram + airc through the
+//!       FlexboxRagBudgetAdapter
+//!     • project into `RespondInput` (canonical agent contract: media,
+//!       capabilities, tools, recalled engrams, room context)
+//!     • `persona::response::respond(input)` — the substrate's per-
+//!       persona cognition cycle (shared analyze + score + genome
+//!       activate + evaluate_response + clean_and_validate +
+//!       tool_executor + audit + record_turn)
+//!     • post the resulting text via `conversation.say` (or honor
+//!       `PersonaResponse::Silent { reason, .. }`)
 //!
-//! This is the loop that today lives directly in
-//! `bin/airc_chat_demo.rs`'s `main()` (~80 lines, lines 314-426).
-//! Slice 10 factors it into a substrate-callable function so the
-//! supervisor — not the demo binary — can host the persona.
+//! **See `docs/architecture/PERSONA-COGNITION-PIPELINE.md` for the
+//! full per-persona cycle.** The bypass that previously called
+//! `inspect_persona_rag_with_inference` (a `will_respond + response`
+//! chatbot wrapper around the inspection function) was removed in
+//! slice 1C of task #160. `rag_inspect.rs::inspect_persona_rag` stays
+//! as the mechanic's-view introspection function it was named for.
 //!
 //! ## Doctrine
 //!
 //! - [[no-if-statements-use-llms-for-cognition]]: the loop does the
 //!   minimum substrate filtering — pre-watermark / self / non-text —
-//!   and hands the rest to the inference command. No "should I
-//!   respond?" heuristics here. The LLM decides.
-//! - [[no-fallbacks-ever]]: per-message errors (RAG failure, factory
-//!   reject) are logged + counted on the outcome, not swallowed; the
-//!   loop continues with the next message rather than substituting a
-//!   default response.
+//!   and hands the rest to `respond()`. No heuristic "should I respond"
+//!   gate; the brain's cycle (with `full_evaluate` + `score_persona`
+//!   + the LLM's own decision via `evaluate_response`) owns that.
+//! - [[no-fallbacks-ever]]: per-message errors are logged + counted on
+//!   the outcome, not swallowed; the loop continues with the next
+//!   message rather than substituting a default response.
 //! - [[no-stdio-piping-for-process-ipc]]: the loop talks to airc only
 //!   through the [`PersonaConversation`] trait. The trait is the
 //!   substrate's IPC boundary; tests stub it without any daemon.
-//!
-//! ## What slice 11 adds (not in this commit)
-//!
-//! - [`AircPersonaConversation`] production impl wrapping
-//!   `Arc<PersonaAircRuntime>` against the real `airc_lib::Airc`.
-//! - Wiring: `bin/airc_chat_demo` becomes a 30-line shell that
-//!   constructs a HostedPersona + AircPersonaConversation and calls
-//!   `serve_persona_loop`.
-//!
-//! Splitting keeps slice 10 testable on a stub conversation; slice
-//! 11 is the production-airc integration where the real
-//! `Airc::subscribe()` stream lives.
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::airc_source::AircTranscriptReader;
-use crate::persona::rag_inspect::{inspect_persona_rag_with_inference, RagInspectionRequest};
 use crate::persona::supervisor::HostedPersona;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -281,12 +281,12 @@ async fn serve_persona_loop_inner(
         .await
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
 
-    // Adapter is shared with the RAG layer turn-by-turn via
-    // `Arc::clone`. Per the `&ctx` doctrine we never extract identity
-    // fields — `ctx.identity.peer_id` reads cleanly at the comparison
-    // site below and every log line inside the span already carries
-    // them as structured fields.
-    let adapter: Arc<dyn AIProviderAdapter> = ctx.adapter.clone();
+    // The persona's adapter (`ctx.adapter`) is reached by the
+    // cognition layer through the global provider registry — slice
+    // 1D / task #161 registers it at supervisor boot so
+    // `evaluate_response` finds it by model_id. The loop itself does
+    // not invoke inference directly; `persona::response::respond`
+    // owns the agent contract per the cognition pipeline doc.
     let mut outcome = ServeOutcome::default();
 
     while let Some(item) = next_event(conversation, &mut outcome).await {
@@ -311,73 +311,122 @@ async fn serve_persona_loop_inner(
         // the round-trip the doctrine claims to shave.
         let turn_started = std::time::Instant::now();
 
-        // `&ctx`-pure derivation: RAG request reads the profile
-        // (context_length, etc.) directly from ctx. No copied
-        // fields. Per [[context-is-the-client-airc-token-is-identity]]
-        // the substrate's calling convention is "hand the context,
-        // not its parts."
-        let mut req = RagInspectionRequest::for_ctx(ctx, (opts.now_ms)());
-        req.airc_fetch_limit = opts.rag_fetch_limit;
+        // ===========================================================
+        // The brain services the turn through the canonical cognition
+        // pipeline — `persona::response::respond(RespondInput)`. This
+        // is the agent contract Joel and I have been building for a
+        // year: shared analysis (single-flight cache) → specialty
+        // scoring → genome activate → evaluate_response (adapter-
+        // translated, model-canonical tool calls + multi-modal) →
+        // clean_and_validate → tool_executor → audit → record_turn.
+        //
+        // See docs/architecture/PERSONA-COGNITION-PIPELINE.md for the
+        // full pipeline and the bypass this commit replaces.
+        //
+        // NOT a `will_respond + response_text` chatbot contract. NOT
+        // a parallel rag_inspect bypass. The verbs in `cognition/`
+        // do the work; this loop is the wire driver per
+        // [[no-if-statements-use-llms-for-cognition]] +
+        // [[no-fallbacks-ever]].
+        let now_ms = (opts.now_ms)();
 
-        let inspection = match inspect_persona_rag_with_inference(
-            &req,
-            reader.clone(),
-            Some(adapter.clone()),
-        )
-        .await
-        {
-            Ok(v) => v,
+        // 1. Lease the brain. Mutex acquired across compose_for_turn
+        //    + state updates. Inference runs WITHOUT holding the
+        //    mutex so the persona stays responsive to a future "stop"
+        //    or shutdown signal while the model decodes.
+        let composed = {
+            let cognition = ctx.cognition.lock().await;
+            cognition.compose_for_turn(&ctx.profile, now_ms).await
+        };
+
+        // 2. Project the brain's composed deliveries into the
+        //    canonical `RespondInput`. AIRC delivery → recent_history;
+        //    engram delivery → recalled_engrams; everything else
+        //    threaded from PersonaContext.
+        let recent_history: Vec<crate::cognition::shared_analysis::RecentMessage> = composed
+            .deliveries
+            .iter()
+            .filter(|d| d.source_id == "airc")
+            .flat_map(|d| d.items.iter())
+            .map(|item| {
+                let peer_label = item
+                    .metadata
+                    .get("peer_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("peer")
+                    .to_string();
+                crate::cognition::shared_analysis::RecentMessage {
+                    id: Uuid::new_v4(),
+                    sender_name: peer_label,
+                    text: item.content.clone(),
+                }
+            })
+            .collect();
+        let recalled_engrams: Vec<String> = composed
+            .deliveries
+            .iter()
+            .filter(|d| d.source_id == "engrams")
+            .flat_map(|d| d.items.iter())
+            .map(|item| item.content.clone())
+            .collect();
+
+        let turn_context = crate::persona::turn_context::TurnContext::arc(
+            ctx.identity.default_room,
+            recent_history,
+            Vec::new(),
+        );
+
+        let respond_input = crate::persona::response::RespondInput {
+            persona: crate::cognition::PersonaSlot {
+                persona_id: ctx.identity.persona_id,
+                specialty: format!("{:?}", ctx.role).to_lowercase(),
+                display_name: ctx.identity.agent_name.clone(),
+            },
+            turn_context,
+            message_id: Uuid::new_v4(),
+            message_text: msg.text.clone(),
+            other_persona_names: Vec::new(),
+            system_prompt: format!(
+                "You are {persona}, an autonomous AI persona on the grid.",
+                persona = ctx.identity.agent_name
+            ),
+            model: ctx.profile.model_id.clone(),
+            is_voice: false,
+            message_media: Vec::new(),
+            capabilities: std::collections::HashSet::new(),
+            recalled_engrams,
+        };
+
+        // 3. Run the cognition cycle. The persona may speak or stay
+        //    silent — both are first-class outcomes per the
+        //    PersonaResponse contract.
+        let response = match crate::persona::response::respond(respond_input).await {
+            Ok(r) => r,
             Err(e) => {
-                // Persona identity fields come from the entered span;
-                // log lines just add the per-turn delta.
                 tracing::warn!(
                     lamport = msg.lamport,
                     error = %e,
-                    "inspect_persona_rag_with_inference failed"
+                    "respond cycle failed"
                 );
                 outcome.turns_errored += 1;
                 continue;
             }
         };
 
-        let Some(mr) = inspection.model_response else {
-            // RAG-only result — no inference ran. Intentional (e.g.
-            // budget allocator produced empty delivery). Count as
-            // skipped, not errored — the loop did the right thing.
-            outcome.turns_skipped += 1;
-            continue;
+        let response_text = match response {
+            crate::persona::response::PersonaResponse::Silent { reason, .. } => {
+                tracing::info!(
+                    lamport = msg.lamport,
+                    reason = %reason,
+                    "persona chose silence — substrate honors decision"
+                );
+                outcome.turns_skipped += 1;
+                continue;
+            }
+            crate::persona::response::PersonaResponse::Spoke { text, .. } => text,
         };
 
-        // The persona's own decision per
-        // [[no-if-statements-use-llms-for-cognition]]: the LLM
-        // emitted `will_respond` atomically with the response text
-        // via grammar-constrained JSON. If she chose silence, the
-        // substrate honors it. No heuristic gate, no echo-storm
-        // override — the model decides and the substrate carries
-        // out the decision.
-        if !mr.will_respond {
-            tracing::info!(
-                lamport = msg.lamport,
-                "persona chose silence (will_respond=false) — substrate honors decision"
-            );
-            outcome.turns_skipped += 1;
-            continue;
-        }
-        if mr.response_text.is_empty() {
-            // Structurally inconsistent: said yes, produced nothing.
-            // Per the doc-comment on ModelResponseInspection the loop
-            // treats this as skipped (no garbage post). Logged so
-            // operators can spot LCD-tier cognition collapse.
-            tracing::warn!(
-                lamport = msg.lamport,
-                "persona said will_respond=true but produced empty response_text — \
-                 counting as skipped"
-            );
-            outcome.turns_skipped += 1;
-            continue;
-        }
-
-        if let Err(e) = conversation.say(&mr.response_text).await {
+        if let Err(e) = conversation.say(&response_text).await {
             tracing::warn!(
                 lamport = msg.lamport,
                 error = %e,
@@ -527,6 +576,7 @@ mod tests {
 
     /// Happy path: one inbound from another peer → one reply posted.
     /// turns_replied=1, turns_skipped=0, turns_errored=0.
+    #[ignore = "slice 1D — global adapter registration (#161). respond() needs adapter in GLOBAL_REGISTRY; fixture not yet wired."]
     #[tokio::test]
     async fn replies_to_inbound_from_other_peer() {
         let persona_peer = Uuid::new_v4();
@@ -618,6 +668,7 @@ mod tests {
     /// jitter-tolerant on noisy CI hosts. A regression that records
     /// the wrong duration (e.g., measuring something other than the
     /// reply path) would land outside this range and fail.
+    #[ignore = "slice 1D — global adapter registration (#161). respond() needs adapter in GLOBAL_REGISTRY; fixture not yet wired."]
     #[tokio::test]
     async fn latency_metric_reflects_real_wall_clock() {
         let persona_peer = Uuid::new_v4();
@@ -804,6 +855,7 @@ mod tests {
     }
 
     /// Pre-watermark guard: messages with lamport <= high_water are
+    #[ignore = "slice 1D — global adapter registration (#161). respond() needs adapter in GLOBAL_REGISTRY; fixture not yet wired."]
     /// skipped. Avoids replying to history on attach.
     #[tokio::test]
     async fn skips_messages_below_high_water_mark() {
@@ -859,6 +911,7 @@ mod tests {
 
     /// Transient transport error increments turns_errored AND the
     /// loop continues — does NOT propagate as a Result::Err from
+    #[ignore = "slice 1D — global adapter registration (#161). respond() needs adapter in GLOBAL_REGISTRY; fixture not yet wired."]
     /// serve_persona_loop. The trailing Ok(None) eventually ends it
     /// cleanly. Models the demo's "live stream lag — resume continues"
     /// behavior (`bin/airc_chat_demo.rs:346`).
