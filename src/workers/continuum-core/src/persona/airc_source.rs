@@ -136,34 +136,67 @@ impl AircRagSource {
     /// Pack ranked events into RagItems within budget. Returns
     /// (items, tokens_used, last_lamport_consumed). The last_lamport
     /// is what the continuation cursor carries for resume.
+    /// Pack as many of the newest events as fit in `budget`.
+    ///
+    /// `page_recent(limit)` returns the newest N events in chronological
+    /// (lamport-ascending) order — events[0] is the OLDEST of the N
+    /// newest, events[N-1] is the very newest. If we packed
+    /// oldest-first we'd drop the newest events on budget overflow —
+    /// catastrophic for cognition, which exists to respond to the
+    /// MOST RECENT message. Per [[no-fallbacks-ever]] the substrate
+    /// makes the right choice deterministically: walk backwards from
+    /// the newest accumulating tokens, stop when budget would be
+    /// exceeded, then re-emit in chronological order so the LLM sees
+    /// the conversation as humans wrote it.
+    ///
+    /// `start_rank` is kept for the continuation cursor surface but
+    /// in the cognition hot path (continuation not used) it's 0 →
+    /// the function "tails" the newest budget-worth.
     fn pack_within_budget(
         events: &[TranscriptEvent],
         start_rank: usize,
         budget: u32,
     ) -> (Vec<RagItem>, u32, usize) {
-        let mut items = Vec::new();
+        let scope = &events[start_rank.min(events.len())..];
+
+        // Walk backwards (newest first), collecting indices that fit.
+        let mut keep_indices: Vec<usize> = Vec::new();
         let mut tokens_used: u32 = 0;
-        let mut next_rank = start_rank;
-        for (idx, event) in events.iter().enumerate().skip(start_rank) {
+        let mut oldest_kept = scope.len();
+        for (offset, event) in scope.iter().enumerate().rev() {
             let Some(text) = Self::extract_text(event) else {
-                next_rank = idx + 1;
                 continue;
             };
             let tokens = estimate_tokens(&text);
             if tokens_used.saturating_add(tokens) > budget {
-                next_rank = idx;
                 break;
             }
             tokens_used += tokens;
-            // Recency-only scoring at slice 10.6: each event gets its
-            // 1/(rank+1) score. Salience-like scoring against airc
-            // metadata is a future slice when AircMetadataRegistry
-            // (analog of RecallMetadataRegistry for airc events)
-            // lands.
-            let score = 1.0 / (idx as f32 + 1.0);
-            items.push(Self::format_item(event, text, score));
-            next_rank = idx + 1;
+            keep_indices.push(offset);
+            oldest_kept = offset;
         }
+        // Reverse → chronological order (oldest first within the kept
+        // window). The model's chat-template-built prompt reads the
+        // user turns in order, so this is the order they should be
+        // appended.
+        keep_indices.reverse();
+
+        let mut items = Vec::with_capacity(keep_indices.len());
+        for offset in keep_indices {
+            let event = &scope[offset];
+            let text = Self::extract_text(event).expect("non-text events filtered above");
+            // Recency-only scoring: each event gets its 1/(rank+1)
+            // score where rank is its position in the ORIGINAL
+            // events slice (newer == lower rank == higher score).
+            let absolute_idx = start_rank + offset;
+            let score = 1.0 / (absolute_idx as f32 + 1.0);
+            items.push(Self::format_item(event, text, score));
+        }
+        // `next_rank` is the absolute index of the oldest event we
+        // KEPT. Continuation (when reused) pages backwards from
+        // there — older messages, same persona/source. For the
+        // cognition hot path the continuation cursor is unused.
+        let next_rank = start_rank + oldest_kept;
         (items, tokens_used, next_rank)
     }
 }
@@ -207,6 +240,17 @@ impl RagSource for AircRagSource {
             }
         };
         let (items, tokens_used, next_rank) = Self::pack_within_budget(&events, 0, budget);
+
+        tracing::info!(
+            persona_id = %self.persona_id,
+            fetch_limit = self.fetch_limit,
+            events_returned = events.len(),
+            budget,
+            items_packed = items.len(),
+            tokens_used,
+            "airc_rag: deliver — diagnostic for items_count=0 mystery"
+        );
+
         let continuation = if next_rank < events.len() {
             Some(ContinuationCursor {
                 persona_id: self.persona_id,

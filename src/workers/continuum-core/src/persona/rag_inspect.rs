@@ -133,11 +133,23 @@ impl RagInspectionRequest {
         now_ms: u64,
         profile: &crate::persona::inference_profile::PersonaInferenceProfile,
     ) -> Self {
-        let reserved = ReservedTokens {
-            system: 400,
-            completion: 4_000,
-        };
         let context_window = profile.context_length;
+        // Reserved tokens scale with context window per
+        // [[intent-driven-api-not-hot-patches]]: a 2048-window persona
+        // can't reserve 4000 for completion (negative headroom → all
+        // sources get 0 → cognition fires with no RAG content → LLM
+        // defaults to grammar-shortest "will_respond=false" attractor).
+        // The cognition call caps output at 512 tokens; system prompt
+        // is ~200 tokens. We scale both as a percentage of the window
+        // so a Compat-tier 2048 persona AND an M-series 32768 persona
+        // both get sensibly-sized reservations.
+        //
+        // system: 10% of window, clamped [128, 512]
+        // completion: 25% of window, clamped [256, 4_000]
+        let reserved = ReservedTokens {
+            system: (context_window / 10).clamp(128, 512),
+            completion: (context_window / 4).clamp(256, 4_000),
+        };
         let headroom = context_window
             .saturating_sub(reserved.system + reserved.completion)
             .max(512);
@@ -493,17 +505,17 @@ async fn run_inference_probe(
     let system_prompt = format!(
         "You are {persona_name}, an autonomous AI persona in a chat room with other \
          humans and AI peers. Recent messages from the room follow as user turns.\n\n\
-         Your job for this turn: decide whether to respond, and if so, what to say. \
-         Consider whether the most recent message is directed at you, whether your \
-         reply would add value, whether you're in a greeting-loop with another AI, \
-         and whether silence is the right move.\n\n\
-         Respond with ONLY a JSON object matching this exact shape:\n\
-         {{\"will_respond\": true, \"response\": \"your reply text\"}}\n\
-         OR\n\
-         {{\"will_respond\": false, \"response\": \"\"}}\n\n\
-         Set will_respond to false when staying silent is the right move (you weren't \
-         addressed, the conversation moved on, the peers are looping greetings without \
-         substance, etc). Do not explain — emit ONLY the JSON object."
+         Read the most recent message and decide: should you reply, and if so, with \
+         what words? If you are directly addressed (the message says \"{persona_name}\" \
+         or asks you a question), you should reply. If the conversation is just other \
+         peers greeting each other and nothing was asked of you, stay silent.\n\n\
+         Output schema: a JSON object with exactly two keys.\n\
+         - \"response\" (string): the actual words you would say back to the room, in \
+           your own voice as {persona_name}. Write the reply, do not describe what you \
+           would say. If you decided to stay silent, this is an empty string.\n\
+         - \"will_respond\" (boolean): true if \"response\" is the message to post, \
+           false if you are staying silent.\n\n\
+         Output ONLY the JSON object. No prose around it, no markdown fences."
     );
 
     let messages: Vec<ChatMessage> = items
@@ -544,10 +556,49 @@ async fn run_inference_probe(
         persona_id: None,
     };
 
+    let items_count = items.len();
+    let total_item_tokens: u32 = items.iter().map(|i| i.tokens).sum();
+    let prompt_chars = prompt_text.chars().count();
+    let last_item_preview: String = items
+        .last()
+        .map(|i| i.content.chars().take(160).collect())
+        .unwrap_or_else(|| "(no items — RAG delivered nothing)".to_string());
+
+    tracing::info!(
+        persona = %persona_name,
+        items_count,
+        total_item_tokens,
+        prompt_chars,
+        last_item_preview = %last_item_preview,
+        "rag_inspect cognition turn — input shape before LLM call"
+    );
+
+    for (idx, item) in items.iter().enumerate() {
+        let snippet: String = item.content.chars().take(120).collect();
+        tracing::info!(
+            persona = %persona_name,
+            idx,
+            tokens = item.tokens,
+            content = %snippet,
+            "rag_inspect item delivered to LLM"
+        );
+    }
+
     let response = adapter
         .generate_text(request)
         .await
         .map_err(|e| format!("rag_inspect inference probe failed: {e}"))?;
+
+    tracing::info!(
+        persona = %persona_name,
+        adapter_id = %adapter_id,
+        model = %model,
+        finish_reason = %response.finish_reason,
+        output_tokens = response.usage.output_tokens,
+        response_time_ms = response.response_time_ms,
+        raw_response = %response.text,
+        "rag_inspect raw model output (pre-parse) — diagnostic for [[no-if-statements-use-llms-for-cognition]] cognition contract"
+    );
 
     let (will_respond, response_text) =
         parse_decide_and_respond(&response.text).map_err(|e| {
