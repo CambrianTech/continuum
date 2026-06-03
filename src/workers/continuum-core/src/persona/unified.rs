@@ -15,10 +15,16 @@ use crate::persona::engram_source::EngramSource;
 use crate::persona::evaluator::{RateLimiterState, SleepState};
 use crate::persona::genome_paging::GenomePagingEngine;
 use crate::persona::inbox::PersonaInbox;
+use crate::persona::inference_profile::PersonaInferenceProfile;
 use crate::persona::message_cache::{ContentDeduplicator, RecentMessageCache};
 use crate::persona::model_selection::AdapterRegistry;
-use crate::persona::rag_budget::RagSource;
-use crate::persona::rag_capture::{NoopRagCaptureSink, RagCaptureSink, RecordingRagSource};
+use crate::persona::rag_budget::{
+    BudgetAllocation, FlexboxRagBudgetAdapter, RagBudgetAdapter, RagContext, RagDelivery,
+    RagSource, RagSourceBudget, ReservedTokens, ResolutionPreference,
+};
+use crate::persona::rag_capture::{
+    NoopRagCaptureSink, RagCaptureEvent, RagCaptureSink, RecordingRagSource,
+};
 use crate::persona::recall_metadata::RecallMetadataRegistry;
 use crate::rag::RagEngine;
 use std::sync::Arc;
@@ -59,12 +65,47 @@ pub struct PersonaCognition {
     /// (PromptAssembly in slice 12+) hold this via the
     /// `Arc<dyn RagSource>` type.
     pub engram_source: Arc<dyn RagSource>,
+    /// The persona's live-airc RAG source — paired with
+    /// `engram_source` per [[source-drain-is-the-universal-pattern]]
+    /// and the L1–L5 cognitive cache doctrine. Bound at supervisor
+    /// boot (task #148, "RAG source pre-binding — cache source set
+    /// at boot, lease per inspection") once the persona's
+    /// `AircCitizen` is attached to the grid. `None` during
+    /// pre-attach / unit tests that don't stand up the airc daemon;
+    /// `Some` in production. Construction is decoupled from
+    /// PersonaCognition::new because the airc reader (from
+    /// `runtime.transcript_reader()`) only becomes available after
+    /// PersonaAircRuntime bootstraps.
+    pub airc_source: Option<Arc<dyn RagSource>>,
     /// The capture sink the RecordingRagSource wraps engram_source
     /// against. Default = `NoopRagCaptureSink` (zero overhead, drops
     /// events on the floor). Production callers swap in
     /// `JsonlRagCaptureSink` for on-disk traces or
     /// `InMemoryRagCaptureSink` for in-flight inspection.
     pub capture_sink: Arc<dyn RagCaptureSink>,
+}
+
+/// What [`PersonaCognition::compose_for_turn`] returns — the
+/// substrate's structured handoff between "brain composed a budgeted
+/// multi-source prompt context" and "inference adapter generates a
+/// response." Per the brain doctrine ([[no-fallbacks-ever]],
+/// [[no-if-statements-use-llms-for-cognition]]) this struct carries
+/// the budget allocator's verdict alongside the deliveries, so the
+/// caller (service_loop / introspection) can see exactly what landed
+/// — Satisfied / FloorOnly / Dropped / UnderProvisioned — instead of
+/// having to re-derive that from item counts.
+#[derive(Debug, Clone)]
+pub struct ComposedTurn {
+    /// The budget allocator's per-source verdict, with the rich
+    /// AllocationState telemetry the substrate-is-a-good-citizen
+    /// doctrine requires. Caller can inspect `escalation_needed` to
+    /// know if any required source got under-provisioned.
+    pub allocation: BudgetAllocation,
+    /// One delivery per source the brain composed. Ordering matches
+    /// the order the brain assembled budgets in (engram first, then
+    /// airc, then any future sources). The caller threads these into
+    /// the prompt in the order presented.
+    pub deliveries: Vec<RagDelivery>,
 }
 
 impl PersonaCognition {
@@ -119,8 +160,180 @@ impl PersonaCognition {
             admission,
             recall_metadata,
             engram_source,
+            airc_source: None,
             capture_sink,
         }
+    }
+
+    /// Bind the brain's live-airc RAG source. Called by the
+    /// supervisor once the persona's `AircCitizen` is attached to
+    /// the grid and a `Arc<dyn AircTranscriptReader>` is available.
+    /// Per [[init-once-handle-then-lease-zero-copy-refs]] this is a
+    /// boot-time wire, NOT a per-turn allocation.
+    ///
+    /// Decorating with the brain's existing `capture_sink` keeps
+    /// airc deliveries flowing through the same capture/replay
+    /// pipeline as engrams (per
+    /// [[persona-record-replay-is-a-product-requirement]]).
+    pub fn set_airc_source(&mut self, raw_source: Arc<dyn RagSource>) {
+        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
+            ArcRagSource::new(raw_source),
+            self.capture_sink.clone(),
+        ));
+        self.airc_source = Some(decorated);
+    }
+
+    /// Brain composition for one cognition turn. Walks the brain's
+    /// own bound sources (engram + airc + future) through the
+    /// `FlexboxRagBudgetAdapter` Joel wrote in PR #8 / task #93 —
+    /// the no-clipping doctrine, source-owned-units, full
+    /// telemetry. NOT a separate budget. NOT a parallel allocator.
+    /// THE substrate budgeter, called the way the substrate
+    /// expects.
+    ///
+    /// Budget reservations scale with `profile.context_length` so a
+    /// Compat-tier 2048-window persona AND an M-series 32k+ persona
+    /// both call this same method — the answer differs because the
+    /// profile differs, per
+    /// [[context-is-the-client-airc-token-is-identity]] and
+    /// [[intent-driven-api-not-hot-patches]]. The substrate does
+    /// NOT bake in clamps that handicap capable peers on the grid.
+    ///
+    /// `now_ms` is passed in (not read from `SystemTime`) so the
+    /// brain's composition is replay-deterministic per
+    /// [[persona-record-replay-is-a-product-requirement]].
+    pub async fn compose_for_turn(
+        &self,
+        profile: &PersonaInferenceProfile,
+        now_ms: u64,
+    ) -> ComposedTurn {
+        let persona_id = self.engine.persona_id();
+        let rag_ctx = RagContext::for_persona(persona_id, now_ms);
+
+        // Reserved tokens scale with context window. See doctrine
+        // comment on the constants — these are FALLBACK shapes, NOT
+        // hardcodes pinned to LCD tier. The substrate's real
+        // budgeter logic (driven by profile model characteristics)
+        // can override these later via a richer reservation API.
+        let context_window = profile.context_length;
+        let reserved = ReservedTokens {
+            system: (context_window / 10).clamp(128, 512),
+            completion: (context_window / 4).clamp(256, 4_000),
+        };
+        let headroom = context_window
+            .saturating_sub(reserved.system + reserved.completion)
+            .max(512);
+
+        // Collect the brain's bound sources in deterministic order:
+        // engram first (long-term memory, the L2+ recall layer),
+        // then airc (the L1 conversational floor). Future sources
+        // (code, tool descriptions, identity card) extend this list
+        // in order of long-term-to-immediate.
+        let mut sources: Vec<Arc<dyn RagSource>> = Vec::with_capacity(2);
+        sources.push(self.engram_source.clone());
+        if let Some(ref airc) = self.airc_source {
+            sources.push(airc.clone());
+        }
+
+        // Per-source budget claims. Even split between the two
+        // first-class sources by default — the flex allocator
+        // re-distributes idle headroom toward whoever asks. The
+        // recent-conversation floor lives on airc per the
+        // cognition-cache-hierarchy doc.
+        let per_source_max = ((context_window as u64) * 6 / 10) as u32;
+        let per_source_max = per_source_max.min(headroom);
+        let budgets: Vec<RagSourceBudget> = sources
+            .iter()
+            .map(|s| RagSourceBudget {
+                source_id: s.source_id().to_string(),
+                priority: 10,
+                floor_tokens: 500_u32.min(per_source_max),
+                min_tokens: 500_u32.min(per_source_max),
+                max_tokens: per_source_max,
+                required: false,
+            })
+            .collect();
+
+        // Emit the TurnStart capture so audit/replay sees the
+        // budget the brain actually asked for, not what landed.
+        let turn_id = Uuid::new_v4();
+        self.capture_sink.record(RagCaptureEvent::TurnStart {
+            captured_at_ms: now_ms,
+            persona_id,
+            turn_id: Some(turn_id),
+            context_window,
+            reserved,
+            source_budgets: budgets.clone(),
+            context: rag_ctx.clone(),
+        });
+
+        let adapter = FlexboxRagBudgetAdapter::new();
+        let allocation = adapter.allocate(&rag_ctx, context_window, reserved, &budgets);
+
+        self.capture_sink.record(RagCaptureEvent::BudgetAllocated {
+            captured_at_ms: now_ms,
+            persona_id,
+            turn_id: Some(turn_id),
+            allocation: allocation.clone(),
+        });
+
+        let mut deliveries = Vec::with_capacity(sources.len());
+        for (source, source_alloc) in sources.iter().zip(allocation.allocations.iter()) {
+            let delivery = source
+                .deliver(
+                    &rag_ctx,
+                    source_alloc.allocated_tokens,
+                    ResolutionPreference::Raw,
+                )
+                .await;
+            deliveries.push(delivery);
+        }
+
+        self.capture_sink.record(RagCaptureEvent::TurnEnd {
+            captured_at_ms: now_ms,
+            persona_id,
+            turn_id: Some(turn_id),
+        });
+
+        ComposedTurn {
+            allocation,
+            deliveries,
+        }
+    }
+}
+
+/// Adapter that re-wraps an `Arc<dyn RagSource>` so it can be passed
+/// into `RecordingRagSource::new` (which takes any `RagSource` by
+/// value, not by `Arc`). Trivial delegating wrapper; the underlying
+/// source's `&self` deliver path is unchanged.
+struct ArcRagSource(Arc<dyn RagSource>);
+
+impl ArcRagSource {
+    fn new(inner: Arc<dyn RagSource>) -> Self {
+        Self(inner)
+    }
+}
+
+#[async_trait::async_trait]
+impl RagSource for ArcRagSource {
+    fn source_id(&self) -> &'static str {
+        self.0.source_id()
+    }
+    async fn deliver(
+        &self,
+        ctx: &RagContext,
+        budget: u32,
+        resolution: ResolutionPreference,
+    ) -> RagDelivery {
+        self.0.deliver(ctx, budget, resolution).await
+    }
+    async fn deliver_continuation(
+        &self,
+        ctx: &RagContext,
+        cursor: crate::persona::rag_budget::ContinuationCursor,
+        budget: u32,
+    ) -> Option<RagDelivery> {
+        self.0.deliver_continuation(ctx, cursor, budget).await
     }
 }
 
@@ -303,5 +516,179 @@ mod tests {
     #[allow(dead_code)]
     fn _noop_alive() -> NoopRagCaptureSink {
         NoopRagCaptureSink
+    }
+
+    // ---- Slice A (task #148): brain composes via FlexboxRagBudgetAdapter
+    //      over engram + airc, not via inspect_persona_rag's ad-hoc seam.
+
+    use crate::persona::inference_profile::PersonaInferenceProfile;
+    use crate::persona::rag_budget::{
+        AllocationState, ContinuationCursor, RagDelivery, RagItem,
+    };
+    use async_trait::async_trait;
+
+    /// Test source that returns a fixed budget-aware payload — proves
+    /// the brain wires the budget through to per-source deliver.
+    struct CannedSource {
+        id: &'static str,
+        tokens_per_item: u32,
+        items_offered: usize,
+    }
+
+    #[async_trait]
+    impl RagSource for CannedSource {
+        fn source_id(&self) -> &'static str {
+            self.id
+        }
+        async fn deliver(
+            &self,
+            _ctx: &RagContext,
+            budget: u32,
+            _resolution: ResolutionPreference,
+        ) -> RagDelivery {
+            let mut items = Vec::new();
+            let mut tokens_used = 0u32;
+            for i in 0..self.items_offered {
+                if tokens_used + self.tokens_per_item > budget {
+                    break;
+                }
+                items.push(RagItem {
+                    content: format!("{}: item {}", self.id, i),
+                    tokens: self.tokens_per_item,
+                    metadata: serde_json::Value::Null,
+                });
+                tokens_used += self.tokens_per_item;
+            }
+            RagDelivery {
+                source_id: self.id.to_string(),
+                items,
+                tokens_used,
+                continuation: None,
+                resolution_used: ResolutionPreference::Raw,
+            }
+        }
+        async fn deliver_continuation(
+            &self,
+            _ctx: &RagContext,
+            _cursor: ContinuationCursor,
+            _budget: u32,
+        ) -> Option<RagDelivery> {
+            None
+        }
+    }
+
+    fn lcd_profile() -> PersonaInferenceProfile {
+        use crate::persona::hw_tier_descriptor::HwTierCategory;
+        use crate::persona::inference_profile::SamplingProfile;
+        PersonaInferenceProfile {
+            persona_id: Uuid::nil(),
+            persona_name: "TestBot".to_string(),
+            model_id: "test/qwen-0.5b".to_string(),
+            gguf_local_path: None,
+            tier_category: HwTierCategory::Compat,
+            tier_id: "test_compat".to_string(),
+            context_length: 2048,
+            n_ubatch: 512,
+            n_batch: 2048,
+            n_seq_max: 1,
+            n_gpu_layers: 0,
+            sampling: SamplingProfile::chat_defaults(),
+            chat_template: None,
+            stop_sequences: Vec::new(),
+        }
+    }
+
+    /// With no airc_source bound the brain still composes — just the
+    /// engram source. Proves engram is always-present per the
+    /// substrate-managed-vs-citizen-managed split.
+    #[tokio::test]
+    async fn compose_for_turn_uses_engram_when_airc_unbound() {
+        let id = Uuid::new_v4();
+        let rag = Arc::new(RagEngine::new());
+        let pc = PersonaCognition::new(id, "TestBot".into(), rag);
+
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000).await;
+        assert_eq!(composed.deliveries.len(), 1);
+        assert_eq!(composed.deliveries[0].source_id, "engrams");
+    }
+
+    /// With airc_source bound the brain composes BOTH sources via the
+    /// FlexboxRagBudgetAdapter — the same budgeter (no parallel
+    /// allocator, no second compose path).
+    #[tokio::test]
+    async fn compose_for_turn_threads_airc_through_budgeter() {
+        let id = Uuid::new_v4();
+        let rag = Arc::new(RagEngine::new());
+        let mut pc = PersonaCognition::new(id, "TestBot".into(), rag);
+
+        let airc = Arc::new(CannedSource {
+            id: "airc",
+            tokens_per_item: 50,
+            items_offered: 3,
+        });
+        pc.set_airc_source(airc);
+
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000).await;
+        assert_eq!(composed.deliveries.len(), 2);
+        assert_eq!(composed.deliveries[0].source_id, "engrams");
+        assert_eq!(composed.deliveries[1].source_id, "airc");
+
+        // The flex allocator gave airc enough budget to deliver its
+        // 3 canned items (50 tokens each = 150 total, well under
+        // the per-source max for a 2048-window profile).
+        assert_eq!(composed.deliveries[1].items.len(), 3);
+
+        // Allocation telemetry surfaces — caller can read state per
+        // source. With airc empty of content past the canned items,
+        // there's no UnderProvisioned (required=false on both).
+        assert!(!composed.allocation.escalation_needed);
+        for alloc in &composed.allocation.allocations {
+            assert!(
+                matches!(
+                    alloc.state,
+                    AllocationState::Satisfied | AllocationState::FloorOnly
+                ),
+                "expected Satisfied or FloorOnly, got {:?} for {}",
+                alloc.state,
+                alloc.source_id
+            );
+        }
+    }
+
+    /// The brain's capture sink records the TurnStart / BudgetAllocated
+    /// / TurnEnd events the substrate-replay pipeline expects. Proves
+    /// compose_for_turn participates in the same capture/replay loop
+    /// engram_source already does.
+    #[tokio::test]
+    async fn compose_for_turn_emits_capture_events_for_replay() {
+        let id = Uuid::new_v4();
+        let rag = Arc::new(RagEngine::new());
+        let sink = Arc::new(InMemoryRagCaptureSink::new());
+        let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
+        let mut pc =
+            PersonaCognition::with_capture_sink(id, "TestBot".into(), rag, 200.0, sink_dyn);
+
+        let airc = Arc::new(CannedSource {
+            id: "airc",
+            tokens_per_item: 50,
+            items_offered: 2,
+        });
+        pc.set_airc_source(airc);
+
+        let _composed = pc.compose_for_turn(&lcd_profile(), 1_000_000).await;
+
+        let events = sink.events();
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|e| match e {
+                RagCaptureEvent::TurnStart { .. } => "TurnStart",
+                RagCaptureEvent::BudgetAllocated { .. } => "BudgetAllocated",
+                RagCaptureEvent::SourceDelivered { .. } => "SourceDelivered",
+                RagCaptureEvent::TurnEnd { .. } => "TurnEnd",
+            })
+            .collect();
+        assert!(kinds.contains(&"TurnStart"), "kinds: {kinds:?}");
+        assert!(kinds.contains(&"BudgetAllocated"), "kinds: {kinds:?}");
+        assert!(kinds.contains(&"TurnEnd"), "kinds: {kinds:?}");
     }
 }

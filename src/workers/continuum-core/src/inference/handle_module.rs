@@ -253,14 +253,14 @@ pub struct InspectResult {
 /// at wiring time.
 ///
 /// **Why a local adapter map instead of reading from AdapterRegistry**:
-/// AdapterRegistry stores `Box<dyn AIProviderAdapter>` and uses
-/// `&mut self` methods (initialize / shutdown) — it's the ownership
-/// authority for adapter lifecycle. The handle store needs
-/// `Arc<dyn AIProviderAdapter>` so multiple handles can share a
-/// session-state-free reference. Wiring decides: stateless adapters
-/// (HeuristicAdapter) construct fresh instances for the module;
-/// stateful adapters (LlamaCppAdapter) share an Arc between
-/// registry + module so the model bytes load once.
+/// historically AdapterRegistry stored `Box<dyn AIProviderAdapter>`
+/// which made sharing references awkward. Task #162 fixed that —
+/// the registry now stores `Arc<dyn AIProviderAdapter>` natively
+/// and exposes `get_arc(provider_id)` for callers that need to
+/// hold the reference past the read-lock scope. The handle store
+/// could now read from the registry via `get_arc`; today it keeps a
+/// local adapter map for compatibility with the wiring sites that
+/// pre-dated #162. Migrating to `get_arc` is a follow-up cleanup.
 ///
 /// A future refactor (after task #109 lands) can fold this into a
 /// unified Arc-based registry; for now keeping the two surfaces

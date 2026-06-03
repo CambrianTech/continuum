@@ -1,11 +1,16 @@
 //! Production [`PersonaConversation`] impl wrapping
-//! `Arc<PersonaAircRuntime>` — slice 11 of #133.
+//! `Arc<dyn AircCitizen>` — slice 11 of #133, re-shaped in slice 13.5
+//! around the [`AircCitizen`] trait.
 //!
 //! This is where the substrate's transport-agnostic loop
 //! ([`super::service_loop::serve_persona_loop`]) meets the live airc
-//! daemon. The trait stays the boundary; this struct is the one place
-//! the substrate touches `airc_lib::Airc::subscribe` / `say` /
-//! `page_recent` directly.
+//! daemon. The conversation trait stays the loop's boundary; this
+//! struct is the one place the substrate calls
+//! [`AircCitizen::subscribe`] / [`AircCitizen::say`] /
+//! [`AircTranscriptReader::page_recent`] directly. Holding
+//! `Arc<dyn AircCitizen>` instead of the concrete runtime keeps the
+//! production projection symmetric with whatever stub a future test
+//! plugs in.
 //!
 //! ## Why slice 11 isn't in slice 10
 //!
@@ -37,20 +42,20 @@
 //! persona at boot, before any of them have necessarily attached to
 //! their rooms yet.
 
-use crate::persona::airc_runtime::PersonaAircRuntime;
+use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_lib::EventStream;
 use async_trait::async_trait;
 use futures::StreamExt;
 use std::sync::Arc;
 
-/// Wraps a [`PersonaAircRuntime`] and projects it onto the substrate's
+/// Wraps an [`AircCitizen`] and projects it onto the substrate's
 /// [`PersonaConversation`] contract. Owns the airc subscribe stream
 /// across calls so successive `next_message` invocations are a
 /// continuation (not a fresh resubscription that would drop in-flight
 /// events).
 pub struct AircPersonaConversation {
-    runtime: Arc<PersonaAircRuntime>,
+    runtime: Arc<dyn AircCitizen>,
     /// The persona's own peer_id, captured at construction. Used by
     /// `next_message` to skip self-loop echoes WITHIN the projection
     /// — the service loop ALSO skips by persona's instance peer_id;
@@ -59,15 +64,15 @@ pub struct AircPersonaConversation {
     own_peer_id: uuid::Uuid,
     /// Lazy-initialized subscribe stream. `None` before the first
     /// `next_message`; `Some` once the daemon attach succeeds. Per-
-    /// runtime stream — never shared across personas.
+    /// citizen stream — never shared across personas.
     stream: Option<EventStream>,
 }
 
 impl AircPersonaConversation {
     /// Construct without contacting the daemon. The subscribe stream
     /// is built on first `next_message`; until then this is free.
-    pub fn new(runtime: Arc<PersonaAircRuntime>) -> Self {
-        let own_peer_id = runtime.airc().peer_id().as_uuid();
+    pub fn new(runtime: Arc<dyn AircCitizen>) -> Self {
+        let own_peer_id = runtime.peer_id();
         Self {
             runtime,
             own_peer_id,
@@ -75,21 +80,44 @@ impl AircPersonaConversation {
         }
     }
 
-    /// Borrow the underlying runtime — useful for the supervisor's
+    /// Borrow the underlying citizen — useful for the supervisor's
     /// registry-eviction path (slice 12) where the supervisor needs
-    /// to look up the runtime back from the conversation for graceful
+    /// to look up the citizen back from the conversation for graceful
     /// shutdown.
-    pub fn runtime(&self) -> &Arc<PersonaAircRuntime> {
+    pub fn runtime(&self) -> &Arc<dyn AircCitizen> {
         &self.runtime
     }
 }
 
 #[async_trait]
 impl PersonaConversation for AircPersonaConversation {
+    /// Eagerly opens the airc subscribe stream. Idempotent — calling
+    /// twice is a no-op after the first.
+    ///
+    /// Replaces the slice-11 lazy-on-first-next_message subscribe.
+    /// `serve_persona_loop` calls this once at boot so the daemon
+    /// round-trip lands at startup instead of on the first cognition
+    /// turn. The lazy branch in `next_message` stays as a fallback
+    /// for callers that don't call `prime` first (e.g., direct
+    /// integration tests). Per [[no-fallbacks-ever]] the fallback
+    /// has identical semantics — it's not a degraded path, it's a
+    /// later-binding path.
+    async fn prime(&mut self) -> Result<(), String> {
+        if self.stream.is_some() {
+            return Ok(());
+        }
+        let stream = self
+            .runtime
+            .subscribe()
+            .await
+            .map_err(|e| format!("subscribe failed: {e}"))?;
+        self.stream = Some(stream);
+        Ok(())
+    }
+
     async fn high_water_mark(&self, limit: usize) -> Result<u64, String> {
         let events = self
             .runtime
-            .airc()
             .page_recent(limit)
             .await
             .map_err(|e| format!("page_recent failed: {e}"))?;
@@ -97,19 +125,21 @@ impl PersonaConversation for AircPersonaConversation {
     }
 
     async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
-        // Subscribe on first call. Per the doc-comment, this is
-        // intentional — the constructor must remain free so the
-        // supervisor can build many of these at boot.
-        if self.stream.is_none() {
-            let stream = self
-                .runtime
-                .airc()
-                .subscribe()
-                .await
-                .map_err(|e| format!("subscribe failed: {e}"))?;
-            self.stream = Some(stream);
-        }
-        let stream = self.stream.as_mut().expect("stream initialized above");
+        // Per [[no-fallbacks-ever]]: prime() is the substrate's
+        // single contract for opening the subscribe stream. If a
+        // caller reaches next_message without having primed, the
+        // substrate refuses visibly — never silently lazy-subscribes.
+        // Reviewer-driven fix to PR #1514: the lazy fallback that
+        // used to live here was dead code in production (every caller
+        // goes through serve_persona_loop, which primes at boot) AND
+        // a doctrine violation (soft-language "for future callers"
+        // is exactly the silent-degradation shape we refuse).
+        let stream = self.stream.as_mut().ok_or_else(|| {
+            "AircPersonaConversation::next_message called before prime() — \
+             caller must invoke prime() before iterating (serve_persona_loop \
+             does this automatically at boot)"
+                .to_string()
+        })?;
 
         // Skip self / non-text inline — they're not "next messages"
         // from the loop's perspective. Yielding them with the loop
@@ -152,5 +182,33 @@ impl PersonaConversation for AircPersonaConversation {
             .await
             .map(|_event_id| ())
             .map_err(|e| format!("say failed: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persona::airc_citizen::StubAircCitizen;
+
+    /// Regression test for the slice-13.6 reviewer fix to PR #1514:
+    /// `next_message` MUST refuse if `prime` wasn't called first.
+    /// Per [[no-fallbacks-ever]] the lazy-subscribe fallback that
+    /// used to live in next_message was a soft-language degradation
+    /// path; this test locks the new typed-error contract.
+    ///
+    /// Construction is free; primed state stays false; the first
+    /// `next_message` returns a typed `Err` naming the missing call.
+    #[tokio::test]
+    async fn next_message_without_prime_errors_visibly() {
+        let citizen: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(uuid::Uuid::new_v4()));
+        let mut conversation = AircPersonaConversation::new(citizen);
+        let err = conversation
+            .next_message()
+            .await
+            .expect_err("next_message must error when stream is unprimed");
+        assert!(
+            err.contains("prime"),
+            "error must name the missing call: {err}"
+        );
     }
 }

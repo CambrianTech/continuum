@@ -41,7 +41,7 @@
 //!   declared intent and the adapter materializes that.
 
 use crate::ai::adapter::AIProviderAdapter;
-use crate::persona::airc_runtime::PersonaAircRuntime;
+use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
 use crate::persona::role_template::RoleId;
 use crate::persona::spawner_module::MaterializedPersonaPlan;
@@ -133,10 +133,12 @@ impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
 ///   single source of truth for the persona's compute envelope.
 /// - `adapter` — the inference adapter, hot for generate_text. `Arc`
 ///   so the service loop can clone-share it with the RAG layer.
-/// - `runtime` — the persona's `Arc<PersonaAircRuntime>` (her grid
+/// - `runtime` — the persona's `Arc<dyn AircCitizen>` (her grid
 ///   presence). The service loop subscribes through this; `say()`
-///   posts through this. Cognition reads `runtime.airc().peer_id()`
-///   for self-filtering.
+///   posts through this. Cognition reads `runtime.peer_id()` for
+///   self-filtering. The trait abstraction (per slice 13.5 +
+///   `[[personas-are-citizens-airc-is-identity-provider]]`) means
+///   tests get a typed stub instead of an `Option`.
 ///
 /// ## Type-alias note
 ///
@@ -174,24 +176,73 @@ pub struct PersonaContext {
     /// the same `Arc<dyn ...>` shape — only the concrete adapter
     /// inside changes.
     pub adapter: Arc<dyn AIProviderAdapter>,
-    /// The persona's `Arc<PersonaAircRuntime>` — her grid presence.
-    /// The service loop subscribes through `runtime.airc().subscribe()`
-    /// and posts replies through `runtime.say(text)`. Cognition uses
-    /// `runtime.airc().peer_id()` for self-filtering. Held here so
-    /// `&ctx` is the one handle every layer needs.
+    /// The persona's `Arc<dyn AircCitizen>` — her grid presence.
+    /// The service loop subscribes through `runtime.subscribe()` and
+    /// posts replies through `runtime.say(text)`. Cognition uses
+    /// `runtime.peer_id()` for self-filtering. Held here so `&ctx`
+    /// is the one handle every layer needs.
     ///
-    /// `None` only in tests — production materialize_adapters always
-    /// fills this from the registry post-bootstrap. Cleaner trait
-    /// abstraction (`Arc<dyn AircHandle>`) lands with task #142's
-    /// BaseUser hierarchy; for slice 13 the Option keeps the
-    /// supervisor + service-loop tests building without standing up
-    /// a real airc daemon fixture.
-    pub runtime: Option<Arc<PersonaAircRuntime>>,
+    /// `Arc<dyn AircCitizen>` (not `Arc<PersonaAircRuntime>`) so test
+    /// fixtures can construct a [`StubAircCitizen`](crate::persona::airc_citizen::StubAircCitizen)
+    /// without standing up the airc daemon. Production callers use
+    /// `materialize_adapters`'s `runtime_lookup` to fetch the live
+    /// runtime from the registry post-bootstrap.
+    ///
+    /// Foundation for task #142's BaseUser hierarchy — every BaseUser
+    /// variant (persona/human/browser) will carry an
+    /// `Arc<dyn AircCitizen>` as her live airc handle, and add
+    /// kind-specific extensions (cognition for persona, WebAuthn for
+    /// human, session state for browser).
+    pub runtime: Arc<dyn AircCitizen>,
+    /// The persona's brain. PER PERSONA, per the SHARED-COGNITION
+    /// doctrine: each AI has its own mind; shared optimizations
+    /// (the `analyze` single-flight cache) sit underneath, not above.
+    ///
+    /// `PersonaCognition` carries every layer the substrate has been
+    /// built for: engine, inbox, rate_limiter, sleep_state,
+    /// adapter_registry, genome_engine (L1-L5 LoRA paging),
+    /// domain_classifier, message_cache, content_dedup, admission
+    /// (hippocampus), recall_metadata (Algorithm 4), engram_source,
+    /// airc_source (bound at boot, task #148), capture_sink.
+    ///
+    /// `Arc<Mutex<...>>` because the cognition cycle mutates state
+    /// across the turn (rate_limiter, content_dedup, genome_engine,
+    /// message_cache). One turn at a time per persona is correct —
+    /// the substrate parallelizes ACROSS personas, not within one.
+    ///
+    /// See `docs/architecture/PERSONA-COGNITION-PIPELINE.md` for the
+    /// cycle service_loop drives through this brain. DO NOT bypass
+    /// it with a chatbot-shaped surface.
+    pub cognition: Arc<tokio::sync::Mutex<crate::persona::unified::PersonaCognition>>,
 }
 
 /// Back-compat alias for the slice-9-era struct name. New code
 /// should write `PersonaContext` directly.
 pub type HostedPersona = PersonaContext;
+
+impl PersonaContext {
+    /// Construct a tracing `Span` tagged with this persona's identity
+    /// + role + tier. Every log line emitted inside the span's scope
+    /// inherits these fields automatically — no more
+    /// `tracing::warn!(persona_id = %ctx.identity.persona_id, ...)`
+    /// at every call site.
+    ///
+    /// Per the `&ctx` doctrine: the span derives from the context,
+    /// the loop scopes the span, the substrate's observability stays
+    /// honest about who did what without manual field threading.
+    pub fn span(&self) -> tracing::Span {
+        tracing::info_span!(
+            "persona",
+            persona_id = %self.identity.persona_id,
+            agent_name = %self.identity.agent_name,
+            peer_id = %self.identity.peer_id,
+            role = ?self.role,
+            tier = %self.profile.tier_id,
+            ctx_len = self.profile.context_length,
+            model = %self.profile.model_id,
+        )
+    }
+}
 
 /// Structured error per failed slot. The two failure modes are:
 ///
@@ -219,6 +270,34 @@ pub enum SupervisorError {
         role: RoleId,
         message: String,
     },
+    /// The adapter built fine but failed its warmup decode. Per
+    /// [[init-once-handle-then-lease-zero-copy-refs]] warmup is
+    /// part of init, not a hot-path concern; per [[no-fallbacks-ever]]
+    /// a persona whose adapter can't warm doesn't enter "hosted"
+    /// state. Operator decides whether to retry, swap models, or
+    /// surface the underlying inference-backend error.
+    #[error("slot {slot_index} (role {role:?}): adapter warmup decode failed: {message}")]
+    AdapterWarmup {
+        slot_index: usize,
+        role: RoleId,
+        message: String,
+    },
+    /// The post-bootstrap registry doesn't have a runtime for this
+    /// persona_id. Per [[no-fallbacks-ever]] this is a hard failure —
+    /// the supervisor doesn't fabricate or stub a runtime in
+    /// production. If you see this, the bootstrap → registry → lookup
+    /// chain skipped a registration step; investigate
+    /// `PersonaInstanceManagerModule::bootstrap_one` and the
+    /// `PersonaAircRuntimeRegistry` insert path.
+    #[error(
+        "slot {slot_index} (role {role:?}): no airc runtime registered for persona {persona_id} \
+         — substrate bootstrap chain is broken; per [[no-fallbacks-ever]] no default citizen"
+    )]
+    RuntimeMissing {
+        slot_index: usize,
+        role: RoleId,
+        persona_id: uuid::Uuid,
+    },
 }
 
 /// Materialize a roster of `MaterializedPersonaPlan`s into
@@ -240,7 +319,7 @@ pub enum SupervisorError {
 pub async fn materialize_adapters(
     plans: Vec<MaterializedPersonaPlan>,
     factory: &dyn PersonaAdapterFactory,
-    runtime_lookup: impl Fn(uuid::Uuid) -> Option<Arc<PersonaAircRuntime>>,
+    runtime_lookup: impl Fn(uuid::Uuid) -> Option<Arc<dyn AircCitizen>>,
 ) -> Vec<Result<PersonaContext, SupervisorError>> {
     let mut out = Vec::with_capacity(plans.len());
     for (slot_index, plan) in plans.into_iter().enumerate() {
@@ -256,21 +335,83 @@ pub async fn materialize_adapters(
             }
         };
         let identity = plan.instance;
-        let runtime = runtime_lookup(identity.persona_id);
-        match factory.build_adapter(&profile).await {
-            Ok(adapter) => out.push(Ok(PersonaContext {
-                role: plan.role,
-                identity,
-                profile,
-                adapter,
-                runtime,
-            })),
-            Err(message) => out.push(Err(SupervisorError::AdapterFactory {
+        let runtime = match runtime_lookup(identity.persona_id) {
+            Some(r) => r,
+            None => {
+                out.push(Err(SupervisorError::RuntimeMissing {
+                    slot_index,
+                    role: plan.role,
+                    persona_id: identity.persona_id,
+                }));
+                continue;
+            }
+        };
+        let adapter = match factory.build_adapter(&profile).await {
+            Ok(a) => a,
+            Err(message) => {
+                out.push(Err(SupervisorError::AdapterFactory {
+                    slot_index,
+                    role: plan.role,
+                    message,
+                }));
+                continue;
+            }
+        };
+        // Warm the adapter's KV-cache / kernels BEFORE the persona
+        // enters her service loop. Per [[init-once-handle-then-lease-zero-copy-refs]]
+        // the substrate pays init costs at boot, not on Joel's first
+        // message. Per [[no-fallbacks-ever]] warmup failure surfaces
+        // as a typed slot failure — the persona doesn't reach
+        // "hosted" state if her adapter refuses to warm.
+        if let Err(message) = adapter.warmup().await {
+            out.push(Err(SupervisorError::AdapterWarmup {
                 slot_index,
                 role: plan.role,
                 message,
-            })),
+            }));
+            continue;
         }
+        // Register the persona's adapter in the global provider
+        // registry so the cognition layer (evaluate_response,
+        // analyze, etc.) can reach it via `global_registry()` per
+        // task #161. `ArcAdapterShim` lets the supervisor keep its
+        // `Arc<dyn AIProviderAdapter>` ownership while the registry
+        // (which holds Box<dyn ...>) sees a delegating handle. The
+        // shim's `initialize`/`shutdown` are no-ops because the
+        // factory + warmup above already paid the init cost per
+        // [[init-once-handle-then-lease-zero-copy-refs]].
+        {
+            let registry_arc = crate::modules::ai_provider::global_registry();
+            let mut registry = registry_arc.write().await;
+            registry.register(adapter.clone(), slot_index);
+        }
+
+        // Build the persona's brain at boot. Bind airc_source via
+        // set_airc_source so compose_for_turn has engram + airc both
+        // available the moment her service loop iterates (task #148).
+        // The runtime IS an AircTranscriptReader by trait bound.
+        let rag_engine = Arc::new(crate::rag::RagEngine::new());
+        let mut cognition = crate::persona::unified::PersonaCognition::new(
+            identity.persona_id,
+            identity.agent_name.clone(),
+            rag_engine,
+        );
+        let airc_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
+            crate::persona::airc_source::AircRagSource::new(
+                identity.persona_id,
+                runtime.clone(),
+            ),
+        );
+        cognition.set_airc_source(airc_source);
+
+        out.push(Ok(PersonaContext {
+            role: plan.role,
+            identity,
+            profile,
+            adapter,
+            runtime,
+            cognition: Arc::new(tokio::sync::Mutex::new(cognition)),
+        }));
     }
     out
 }
@@ -278,103 +419,23 @@ pub async fn materialize_adapters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::adapter::{AdapterCapabilities, ApiStyle};
-    use crate::ai::types::{
-        EmbeddingRequest, EmbeddingResponse, HealthStatus, ModelInfo, TextGenerationRequest,
-        TextGenerationResponse,
-    };
     use crate::modules::persona_instance_manager::PersonaInstanceInfo;
+    use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::hw_tier_descriptor::HwTierCategory;
     use crate::persona::identity_provider::PersonaIdentitySource;
     use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
+    use crate::persona::scripted_adapter_factory::ScriptedPersonaAdapterFactory;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use uuid::Uuid;
 
-    /// Minimal fake adapter — implements just enough of the trait to
-    /// satisfy the trait object boundary. None of these methods get
-    /// called from `materialize_adapters` itself, so the bodies are
-    /// the simplest possible.
-    struct FakeAdapter {
-        provider_id: String,
-    }
-
-    #[async_trait]
-    impl AIProviderAdapter for FakeAdapter {
-        fn provider_id(&self) -> &str {
-            &self.provider_id
-        }
-        fn name(&self) -> &str {
-            "fake"
-        }
-        fn capabilities(&self) -> AdapterCapabilities {
-            AdapterCapabilities::default()
-        }
-        fn api_style(&self) -> ApiStyle {
-            ApiStyle::Local
-        }
-        fn default_model(&self) -> &str {
-            "fake-model"
-        }
-        async fn initialize(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn shutdown(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn generate_text(
-            &self,
-            _request: TextGenerationRequest,
-        ) -> Result<TextGenerationResponse, String> {
-            Err("fake adapter does not generate".into())
-        }
-        async fn create_embedding(
-            &self,
-            _request: EmbeddingRequest,
-        ) -> Result<EmbeddingResponse, String> {
-            Err("fake adapter does not embed".into())
-        }
-        async fn health_check(&self) -> HealthStatus {
-            HealthStatus::default()
-        }
-        async fn get_available_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-    }
-
-    /// Always-succeeds factory — returns a `FakeAdapter` tagged with
-    /// the profile's `model_id` so tests can verify each persona got
-    /// its own adapter (not one shared instance leaking).
-    struct OkFactory {
-        builds: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl PersonaAdapterFactory for OkFactory {
-        async fn build_adapter(
-            &self,
-            profile: &PersonaInferenceProfile,
-        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-            self.builds.fetch_add(1, Ordering::SeqCst);
-            Ok(Arc::new(FakeAdapter {
-                provider_id: profile.model_id.clone(),
-            }))
-        }
-    }
-
-    /// Factory that always rejects — verifies AdapterFactory error
-    /// path threading.
-    struct ErrFactory;
-
-    #[async_trait]
-    impl PersonaAdapterFactory for ErrFactory {
-        async fn build_adapter(
-            &self,
-            _profile: &PersonaInferenceProfile,
-        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-            Err("simulated factory rejection".into())
-        }
-    }
+    // Bespoke `FakeAdapter` / `OkFactory` / `ErrFactory` /
+    // `WarmupFailingFactory` / `WarmupFailingAdapter` deleted per
+    // [[test-fixtures-are-system-primitives]] — every test below
+    // leases `ScriptedPersonaAdapterFactory` (built on the
+    // production-runnable `HeuristicInferenceAdapter`) plus
+    // `StubAircCitizen::fresh_lookup`. Adapter behaviors (warmup
+    // success/failure, factory rejection, counter observation) come
+    // from the system primitives' builder methods.
 
     fn fake_instance(name: &str) -> PersonaInstanceInfo {
         PersonaInstanceInfo {
@@ -424,23 +485,28 @@ mod tests {
             },
         ];
 
-        let factory = OkFactory {
-            builds: AtomicUsize::new(0),
-        };
-        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
 
         assert_eq!(hosted.len(), 2);
-        assert_eq!(factory.builds.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.build_count(), 2);
 
         let helper = hosted[0].as_ref().expect("Helper hosted");
         assert_eq!(helper.role, RoleId::Helper);
         assert_eq!(helper.identity.agent_name, "Paige");
-        assert_eq!(helper.adapter.provider_id(), "model-a");
+        assert_eq!(
+            helper.adapter.provider_id(),
+            crate::ai::HEURISTIC_PROVIDER_ID
+        );
 
         let coder = hosted[1].as_ref().expect("Coder hosted");
         assert_eq!(coder.role, RoleId::Coder);
         assert_eq!(coder.identity.agent_name, "Pax");
-        assert_eq!(coder.adapter.provider_id(), "model-b");
+        assert_eq!(
+            coder.adapter.provider_id(),
+            crate::ai::HEURISTIC_PROVIDER_ID
+        );
     }
 
     /// A row that arrives with `Err(profile)` from slice 8 passes
@@ -465,14 +531,13 @@ mod tests {
             },
         ];
 
-        let factory = OkFactory {
-            builds: AtomicUsize::new(0),
-        };
-        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory called exactly once — for the Ok row only.
-        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+        assert_eq!(factory.build_count(), 1);
         assert!(hosted[0].is_ok(), "Helper still materializes");
         match &hosted[1] {
             Err(SupervisorError::Profile {
@@ -500,8 +565,10 @@ mod tests {
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
 
-        let factory = ErrFactory;
-        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+        let factory =
+            ScriptedPersonaAdapterFactory::always_fails("simulated factory rejection");
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -523,11 +590,226 @@ mod tests {
     /// no factory calls fire.
     #[tokio::test]
     async fn empty_plans_yields_empty_hosted() {
-        let factory = OkFactory {
-            builds: AtomicUsize::new(0),
-        };
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
         let hosted = materialize_adapters(vec![], &factory, |_| None).await;
         assert!(hosted.is_empty());
-        assert_eq!(factory.builds.load(Ordering::SeqCst), 0);
+        assert_eq!(factory.build_count(), 0);
+    }
+
+    /// Missing-runtime path: when `runtime_lookup` returns `None` for
+    /// a real plan, the substrate surfaces `SupervisorError::RuntimeMissing`
+    /// with the slot index, role, and persona_id tagged. Per
+    /// [[no-fallbacks-ever]]: the supervisor never fabricates a runtime
+    /// when the registry lookup fails — a missing slot means the
+    /// bootstrap chain skipped a step and the operator needs to see it.
+    ///
+    /// Locks in the contract for the slice-13.5 trait-extraction:
+    /// `runtime_lookup`'s `Option<Arc<dyn AircCitizen>>` return shape
+    /// is honored by `materialize_adapters` as a structured failure,
+    /// NOT as a silent skip or fall-through to a default citizen.
+    #[tokio::test]
+    async fn runtime_lookup_none_surfaces_as_runtime_missing() {
+        let instance = fake_instance("Paige");
+        let expected_persona_id = instance.persona_id;
+        let plans = vec![MaterializedPersonaPlan {
+            role: RoleId::Helper,
+            instance,
+            profile: Ok(fake_profile("Paige", "model-a")),
+        }];
+
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
+        // `|_| None` here is the substrate-bug shape we're locking in:
+        // the registry exists but doesn't contain this persona_id.
+        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+
+        assert_eq!(hosted.len(), 1);
+        // Factory MUST NOT be called when the runtime lookup fails —
+        // adapter construction is expensive (model load), the
+        // substrate refuses early.
+        assert_eq!(
+            factory.build_count(),
+            0,
+            "factory must not run when runtime lookup fails"
+        );
+        match &hosted[0] {
+            Err(SupervisorError::RuntimeMissing {
+                slot_index,
+                role,
+                persona_id,
+            }) => {
+                assert_eq!(*slot_index, 0);
+                assert_eq!(*role, RoleId::Helper);
+                assert_eq!(*persona_id, expected_persona_id);
+            }
+            Err(other) => panic!("expected RuntimeMissing error, got {other:?}"),
+            Ok(_) => panic!("expected RuntimeMissing error, got Ok"),
+        }
+    }
+
+    /// Mixed: slot 0 has a runtime (citizen-stub lookup succeeds),
+    /// slot 1 doesn't (lookup returns None). The supervisor materializes
+    /// the first cleanly and surfaces `RuntimeMissing` for the second —
+    /// proving sibling slots don't cross-affect, matching the
+    /// per-slot error semantics of `Profile` and `AdapterFactory`.
+    #[tokio::test]
+    async fn runtime_missing_only_affects_its_own_slot() {
+        let paige = fake_instance("Paige");
+        let pax = fake_instance("Pax");
+        let pax_persona_id = pax.persona_id;
+        let plans = vec![
+            MaterializedPersonaPlan {
+                role: RoleId::Helper,
+                instance: paige,
+                profile: Ok(fake_profile("Paige", "model-a")),
+            },
+            MaterializedPersonaPlan {
+                role: RoleId::Coder,
+                instance: pax,
+                profile: Ok(fake_profile("Pax", "model-b")),
+            },
+        ];
+
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
+        // Lookup returns Some only for Paige; Pax goes RuntimeMissing.
+        let lookup = move |pid: Uuid| -> Option<Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
+            if pid == pax_persona_id {
+                None
+            } else {
+                Some(Arc::new(StubAircCitizen::new(Uuid::new_v4()))
+                    as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
+            }
+        };
+        let hosted = materialize_adapters(plans, &factory, lookup).await;
+
+        assert_eq!(hosted.len(), 2);
+        // Factory ran exactly once — for Paige, not Pax.
+        assert_eq!(factory.build_count(), 1);
+        assert!(hosted[0].is_ok(), "Paige materializes cleanly");
+        match &hosted[1] {
+            Err(SupervisorError::RuntimeMissing {
+                slot_index,
+                role,
+                persona_id,
+            }) => {
+                assert_eq!(*slot_index, 1);
+                assert_eq!(*role, RoleId::Coder);
+                assert_eq!(*persona_id, pax_persona_id);
+            }
+            Err(other) => panic!("expected RuntimeMissing at slot 1, got {other:?}"),
+            Ok(_) => panic!("expected RuntimeMissing at slot 1, got Ok"),
+        }
+    }
+
+    /// Warmup is called for every successfully-materialized adapter.
+    /// Per [[init-once-handle-then-lease-zero-copy-refs]] the substrate
+    /// pays init costs at boot, not on the user's first message;
+    /// `materialize_adapters` is where that contract gets enforced.
+    /// If a future refactor forgets the warmup call, this test fails
+    /// because the shared counter stays at 0.
+    #[tokio::test]
+    async fn warmup_called_once_per_materialized_adapter() {
+        let plans = vec![
+            MaterializedPersonaPlan {
+                role: RoleId::Helper,
+                instance: fake_instance("Paige"),
+                profile: Ok(fake_profile("Paige", "model-a")),
+            },
+            MaterializedPersonaPlan {
+                role: RoleId::Coder,
+                instance: fake_instance("Pax"),
+                profile: Ok(fake_profile("Pax", "model-b")),
+            },
+        ];
+
+        let (factory, counts) = ScriptedPersonaAdapterFactory::heuristic_with_counters();
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+
+        // Both slots materialize cleanly.
+        assert_eq!(hosted.len(), 2);
+        assert!(hosted.iter().all(|r| r.is_ok()));
+        // Every adapter was built AND warmed.
+        assert_eq!(factory.build_count(), 2);
+        assert_eq!(
+            counts.warmups(),
+            2,
+            "warmup() must be called once per successfully-materialized adapter"
+        );
+    }
+
+    /// Warmup failure surfaces as `SupervisorError::AdapterWarmup` —
+    /// the persona does NOT reach hosted state. Per [[no-fallbacks-ever]]
+    /// an adapter that refuses to warm gets a typed slot failure;
+    /// sibling slots continue.
+    #[tokio::test]
+    async fn warmup_failure_surfaces_as_typed_slot_error() {
+        let plans = vec![MaterializedPersonaPlan {
+            role: RoleId::Helper,
+            instance: fake_instance("Paige"),
+            profile: Ok(fake_profile("Paige", "model-a")),
+        }];
+
+        let factory = ScriptedPersonaAdapterFactory::heuristic_with_warmup_failure(
+            "simulated warmup failure",
+        );
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+
+        assert_eq!(hosted.len(), 1);
+        match &hosted[0] {
+            Err(SupervisorError::AdapterWarmup {
+                slot_index,
+                role,
+                message,
+            }) => {
+                assert_eq!(*slot_index, 0);
+                assert_eq!(*role, RoleId::Helper);
+                assert!(
+                    message.contains("simulated warmup failure"),
+                    "error must propagate underlying cause: {message}"
+                );
+            }
+            Err(other) => panic!("expected AdapterWarmup, got {other:?}"),
+            Ok(_) => panic!("expected AdapterWarmup, got Ok"),
+        }
+    }
+
+    /// Warmup-failed adapters never reach the hosted set, so a
+    /// sibling slot whose adapter warms fine still materializes.
+    /// Locks the per-slot isolation that
+    /// `Profile` / `AdapterFactory` / `RuntimeMissing` already enforce.
+    #[tokio::test]
+    async fn warmup_failure_does_not_taint_sibling_slots() {
+        let (factory_ok, ok_counts) =
+            ScriptedPersonaAdapterFactory::heuristic_with_counters();
+        let ok_plan = vec![MaterializedPersonaPlan {
+            role: RoleId::Helper,
+            instance: fake_instance("Paige"),
+            profile: Ok(fake_profile("Paige", "model-a")),
+        }];
+        let hosted_ok =
+            materialize_adapters(ok_plan, &factory_ok, StubAircCitizen::fresh_lookup())
+                .await;
+        assert!(hosted_ok[0].is_ok(), "ok-warmup adapter materializes");
+        assert_eq!(ok_counts.warmups(), 1);
+
+        let factory_fail = ScriptedPersonaAdapterFactory::heuristic_with_warmup_failure(
+            "simulated warmup failure",
+        );
+        let fail_plan = vec![MaterializedPersonaPlan {
+            role: RoleId::Coder,
+            instance: fake_instance("Pax"),
+            profile: Ok(fake_profile("Pax", "model-b")),
+        }];
+        let hosted_fail = materialize_adapters(
+            fail_plan,
+            &factory_fail,
+            StubAircCitizen::fresh_lookup(),
+        )
+        .await;
+        assert!(
+            matches!(hosted_fail[0], Err(SupervisorError::AdapterWarmup { .. })),
+            "warmup-failing adapter fails its own slot"
+        );
     }
 }

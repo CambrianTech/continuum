@@ -136,6 +136,7 @@ impl OrmEntity for HwTierDescriptor {
                 unique: true,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             SchemaField {
                 name: "label".to_string(),
@@ -144,6 +145,7 @@ impl OrmEntity for HwTierDescriptor {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             // category is indexed for tier-bucket queries
             // ("give me all Pro tiers").
@@ -154,6 +156,7 @@ impl OrmEntity for HwTierDescriptor {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             SchemaField {
                 name: "localVideoCapable".to_string(),
@@ -162,6 +165,7 @@ impl OrmEntity for HwTierDescriptor {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             SchemaField {
                 name: "minParamsBMeaningful".to_string(),
@@ -170,6 +174,7 @@ impl OrmEntity for HwTierDescriptor {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             SchemaField {
                 name: "maxParamsBFits".to_string(),
@@ -178,6 +183,7 @@ impl OrmEntity for HwTierDescriptor {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             SchemaField {
                 name: "unifiedMemoryGib".to_string(),
@@ -186,6 +192,7 @@ impl OrmEntity for HwTierDescriptor {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             },
             SchemaField {
                 name: "discreteVramGib".to_string(),
@@ -194,6 +201,7 @@ impl OrmEntity for HwTierDescriptor {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             },
             SchemaField {
                 name: "note".to_string(),
@@ -202,6 +210,7 @@ impl OrmEntity for HwTierDescriptor {
                 unique: false,
                 nullable: true,
                 max_length: None,
+                foreign_key: None,
             },
         ]);
         CollectionSchema {

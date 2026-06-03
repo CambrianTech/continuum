@@ -16,6 +16,7 @@
 
 use crate::clog_warn;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 use super::types::{
     EmbeddingRequest, EmbeddingResponse, HealthStatus, ModelCapability, ModelInfo,
@@ -164,8 +165,37 @@ pub trait AIProviderAdapter: Send + Sync {
     /// Get default model for this provider
     fn default_model(&self) -> &str;
 
-    /// Initialize the adapter (verify API key, warm up if needed)
+    /// Initialize the adapter (verify API key, load the model file
+    /// off disk). Pays the model-load wall-clock once at boot so
+    /// downstream consumers see the model's real capabilities from
+    /// the first query on.
     async fn initialize(&mut self) -> Result<(), String>;
+
+    /// Warm the adapter's hot path BEFORE the first real `generate_text`
+    /// call. For llama.cpp: run a tiny throwaway decode against a
+    /// minimal prompt so the KV-cache buffers, attention kernels,
+    /// and sampling state are warm-resident in the substrate's working
+    /// set when the first real turn lands.
+    ///
+    /// Per [[init-once-handle-then-lease-zero-copy-refs]]: the
+    /// substrate's latency story is "init once at boot, lease on hot
+    /// path." `warmup` is the inference-layer instance of that
+    /// pattern, paying the JIT / cache-cold cost in the supervisor's
+    /// `materialize_adapters` step instead of on Joel's first message.
+    ///
+    /// Default impl is `Ok(())` — adapters without a meaningful
+    /// warmup contract (cloud providers, heuristic adapter) opt out
+    /// silently. Local model adapters (LlamaCpp, future Candle) MUST
+    /// override.
+    ///
+    /// Returning Err means the adapter couldn't warm — surfaced by
+    /// the supervisor as a typed slot failure per [[no-fallbacks-ever]].
+    /// The persona doesn't reach "hosted" state if her adapter
+    /// refuses to warm; better fail-loud at boot than degrade
+    /// silently at first turn.
+    async fn warmup(&self) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Shutdown the adapter
     async fn shutdown(&mut self) -> Result<(), String>;
@@ -386,10 +416,23 @@ impl std::fmt::Display for AdapterSelectionError {
 
 impl std::error::Error for AdapterSelectionError {}
 
-/// Registry of AI provider adapters
-/// Manages adapter lifecycle and selection
+/// Registry of AI provider adapters.
+///
+/// Stores `Arc<dyn AIProviderAdapter>` so the substrate's shared
+/// adapter ownership (supervisor + service_loop + cognition layer
+/// + future shared-base + LoRA paging #122 all see the same
+/// instance) maps cleanly into the registry.
+///
+/// **The registry is storage + lookup. It is NOT lifecycle.** The
+/// caller initializes adapters BEFORE registering them
+/// (init-then-register pattern). The adapter is "ready" the moment
+/// it reaches the registry. Shutdown happens when the Arc's last
+/// holder drops it; no registry-side `shutdown_all` is needed.
+/// This is the elegant intentional architecture Joel called for
+/// 2026-06-03 — no Box→Arc shim hacks, no &mut self lifecycle
+/// methods accessed through shared handles.
 pub struct AdapterRegistry {
-    adapters: std::collections::HashMap<String, Box<dyn AIProviderAdapter>>,
+    adapters: std::collections::HashMap<String, Arc<dyn AIProviderAdapter>>,
     priority_order: Vec<String>,
 }
 
@@ -401,8 +444,12 @@ impl AdapterRegistry {
         }
     }
 
-    /// Register an adapter with a priority (lower = higher priority)
-    pub fn register(&mut self, adapter: Box<dyn AIProviderAdapter>, priority: usize) {
+    /// Register an already-initialized adapter with a priority (lower
+    /// = higher priority). The caller is responsible for calling
+    /// `adapter.initialize()` BEFORE wrapping in `Arc::new` and
+    /// passing here; the registry trusts that registered adapters
+    /// are ready to serve.
+    pub fn register(&mut self, adapter: Arc<dyn AIProviderAdapter>, priority: usize) {
         let id = self.registration_key(adapter.provider_id());
 
         // Insert into priority order
@@ -469,33 +516,37 @@ impl AdapterRegistry {
             .any(|(key, adapter)| key == provider_id || adapter.provider_id() == provider_id)
     }
 
-    /// Get adapter by provider ID
+    /// Get adapter by provider ID.
     pub fn get(&self, provider_id: &str) -> Option<&dyn AIProviderAdapter> {
         self.adapters
             .get(provider_id)
-            .map(|b| b.as_ref())
+            .map(|a| a.as_ref())
             .or_else(|| {
                 self.priority_order.iter().find_map(|key| {
                     self.adapters
                         .get(key)
                         .filter(|adapter| adapter.provider_id() == provider_id)
-                        .map(|b| b.as_ref())
+                        .map(|a| a.as_ref())
                 })
             })
     }
 
-    /// Get mutable adapter by provider ID
-    pub fn get_mut(&mut self, provider_id: &str) -> Option<&mut Box<dyn AIProviderAdapter>> {
-        if self.adapters.contains_key(provider_id) {
-            return self.adapters.get_mut(provider_id);
-        }
-        let key = self.priority_order.iter().find_map(|key| {
-            self.adapters
-                .get(key)
-                .filter(|adapter| adapter.provider_id() == provider_id)
-                .map(|_| key.clone())
-        })?;
-        self.adapters.get_mut(&key)
+    /// Get adapter by provider ID as `Arc` — for callers that need
+    /// to keep a reference past the registry lock's scope (cognition
+    /// layer's evaluate_response holds the Arc across the inference
+    /// call so the read lock can drop). Cheap reference count bump.
+    pub fn get_arc(&self, provider_id: &str) -> Option<Arc<dyn AIProviderAdapter>> {
+        self.adapters
+            .get(provider_id)
+            .cloned()
+            .or_else(|| {
+                self.priority_order.iter().find_map(|key| {
+                    self.adapters
+                        .get(key)
+                        .filter(|adapter| adapter.provider_id() == provider_id)
+                        .cloned()
+                })
+            })
     }
 
     /// Get available adapters (those that initialized successfully)
@@ -647,29 +698,13 @@ impl AdapterRegistry {
         None
     }
 
-    /// Initialize all registered adapters
-    pub async fn initialize_all(&mut self) -> Result<(), String> {
-        let ids: Vec<_> = self.adapters.keys().cloned().collect();
-        for id in ids {
-            if let Some(adapter) = self.adapters.get_mut(&id) {
-                if let Err(e) = adapter.initialize().await {
-                    clog_warn!("Failed to initialize {} adapter: {}", id, e);
-                    // Don't fail entirely - other adapters may work
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Shutdown all adapters
-    pub async fn shutdown_all(&mut self) -> Result<(), String> {
-        for (id, adapter) in self.adapters.iter_mut() {
-            if let Err(e) = adapter.shutdown().await {
-                clog_warn!("Failed to shutdown {} adapter: {}", id, e);
-            }
-        }
-        Ok(())
-    }
+    // Note: `initialize_all` and `shutdown_all` were removed in task
+    // #162 alongside the Box→Arc registry migration. The registry's
+    // job is storage + lookup, NOT lifecycle. Callers initialize
+    // adapters before registering (init-then-register pattern) and
+    // adapter cleanup happens when the Arc's last holder drops the
+    // adapter. Per [[init-once-handle-then-lease-zero-copy-refs]]:
+    // init at boot, lease per turn, drop at end-of-life.
 }
 
 impl Default for AdapterRegistry {
@@ -677,6 +712,12 @@ impl Default for AdapterRegistry {
         Self::new()
     }
 }
+
+// ArcAdapterShim + register_arc were deleted in task #162's Box→Arc
+// migration. The registry stores Arc natively; callers pass
+// `Arc::new(adapter)` directly to `register`. The shim was a
+// transitional wrapper; the elegant intentional architecture is the
+// Arc-native registry above.
 
 #[cfg(test)]
 mod tests {
@@ -746,15 +787,15 @@ mod tests {
         }
     }
 
-    fn stub(id: &str) -> Box<dyn AIProviderAdapter> {
-        Box::new(StubAdapter {
+    fn stub(id: &str) -> Arc<dyn AIProviderAdapter> {
+        Arc::new(StubAdapter {
             id: id.to_string(),
             model: None,
         })
     }
 
-    fn stub_model(id: &str, model: &str) -> Box<dyn AIProviderAdapter> {
-        Box::new(StubAdapter {
+    fn stub_model(id: &str, model: &str) -> Arc<dyn AIProviderAdapter> {
+        Arc::new(StubAdapter {
             id: id.to_string(),
             model: Some(model.to_string()),
         })

@@ -49,6 +49,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::orm::Entity;
+
 //=============================================================================
 // CORE: ENGRAM
 //=============================================================================
@@ -62,15 +64,24 @@ use uuid::Uuid;
 /// is structural, not decorative — engrams accumulate, decay, get yanked,
 /// and contribute to recall via the same mechanisms a biological memory
 /// store does.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, Entity)]
+#[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../shared/generated/persona/Engram.ts")]
+#[entity(collection = "engrams")]
 pub struct Engram {
     /// Stable engram id. Used for recall keys, deduplication, and as the
     /// referent target for `EngramOrigin::SelfReflection { parent_engram_id }`.
+    /// Marked `primary_key` so the derive pulls in BaseEntity columns
+    /// (id + createdAt + updatedAt + version) and skips emitting this
+    /// field separately — `id` is the BaseEntity column.
     #[ts(type = "string")]
+    #[entity(primary_key)]
     pub id: Uuid,
 
     /// Engram category — episodic vs semantic vs procedural vs meta.
+    /// Indexed: recall by kind ("show me all Episodic engrams") is a
+    /// common filter.
+    #[entity(indexed)]
     pub kind: EngramKind,
 
     /// The memorable content itself. v1 is plain text; later PRs may
@@ -80,21 +91,30 @@ pub struct Engram {
 
     /// What kind of source this engram came from + the protocol-compatible
     /// reference fields needed to verify or re-locate it.
+    /// `EngramOrigin` is a tagged-union enum; persisted as a JSON column
+    /// so the variant rides intact.
+    #[entity(json)]
     pub origin: EngramOrigin,
 
     /// Free-text recall keys / tags. v1 is unstructured strings; recall
     /// (later PR) may add embeddings or structured indexes alongside.
+    #[entity(json)]
     pub recall_keys: Vec<String>,
 
-    /// When this engram was admitted (epoch milliseconds UTC).
+    /// When this engram was admitted (epoch milliseconds UTC). Indexed:
+    /// admission-order is the primary sort for recall_recent + the
+    /// recency tiebreak for Algorithm 4 scoring.
     #[ts(type = "number")]
+    #[entity(indexed)]
     pub admitted_at_ms: u64,
 
     /// The trust tier of the source AT ADMISSION TIME. Snapshot, not live —
     /// later trust changes don't retroactively rewrite this engram's
     /// recorded trust. A trust degradation across the polity creates new
     /// signal in introspection ("engrams admitted from peer X while their
-    /// trust was high but is now low — re-evaluate").
+    /// trust was high but is now low — re-evaluate"). Indexed: forensic
+    /// queries filter by trust tier.
+    #[entity(indexed)]
     pub trust_state_at_admission: TrustState,
 
     /// Optional pointer to the `CognitionTrace` SEAM record that explains
@@ -105,6 +125,12 @@ pub struct Engram {
     /// admissions in PR-2+).
     pub admission_trace_id: Option<String>,
 }
+
+// ORM schema is now derived by `#[derive(Entity)]` on the struct
+// above. The 100-line hand-written `impl OrmEntity for Engram` block
+// previously lived here — deleted in slice #168 once the derive
+// macro + relational features were proven in #166 / #167. Schema
+// IS the struct; drift is structurally impossible.
 
 //=============================================================================
 // CATEGORY: ENGRAM KIND
@@ -722,5 +748,124 @@ mod tests {
     fn export_bindings_trust_state() {
         let cfg = ts_rs::Config::default();
         TrustState::export_all(&cfg).unwrap();
+    }
+
+    // ── ORM entity schema tests (#101 slice A) ──────────────────
+
+    /// What this catches: Engram's OrmEntity schema carries the
+    /// BaseEntity columns + every Engram domain field. If a future
+    /// refactor adds a field to Engram without extending the schema,
+    /// the entity↔record round-trip (when the wire-up lands) silently
+    /// loses that field. This test makes that drift visible.
+    #[test]
+    fn engram_orm_schema_has_base_columns_and_domain_fields() {
+        use crate::orm::OrmEntity;
+        let schema = Engram::collection_schema();
+        assert_eq!(schema.collection, "engrams");
+
+        let field_names: std::collections::BTreeSet<&str> =
+            schema.fields.iter().map(|f| f.name.as_str()).collect();
+
+        // BaseEntity columns must be present.
+        for required in ["id", "createdAt", "updatedAt", "version"] {
+            assert!(
+                field_names.contains(required),
+                "engrams schema missing BaseEntity column {required:?}; have {field_names:?}"
+            );
+        }
+
+        // Domain columns must be present.
+        for required in [
+            "kind",
+            "content",
+            "origin",
+            "recallKeys",
+            "admittedAtMs",
+            "trustStateAtAdmission",
+            "admissionTraceId",
+        ] {
+            assert!(
+                field_names.contains(required),
+                "engrams schema missing domain column {required:?}; have {field_names:?}"
+            );
+        }
+    }
+
+    /// What this catches: the OrmEntity registry accepts an Engram
+    /// schema registration without conflict, and the resolved schema
+    /// matches what `collection_schema()` returns. Smoke test for
+    /// boot-path registration; same shape RoleTemplate slice 1 used.
+    #[test]
+    fn engram_registers_and_resolves_through_orm_registry() {
+        use crate::orm::entity::OrmEntityRegistry;
+        use crate::orm::OrmEntity;
+        let registry = OrmEntityRegistry::new();
+        registry
+            .register::<Engram>()
+            .expect("Engram must register cleanly");
+        let resolved = registry
+            .resolve("engrams")
+            .expect("engrams collection must resolve");
+        assert_eq!(resolved.collection, "engrams");
+        // Same field count as the freshly-built schema — registry
+        // didn't drop or duplicate anything.
+        assert_eq!(
+            resolved.fields.len(),
+            Engram::collection_schema().fields.len()
+        );
+    }
+
+    /// What this catches: end-to-end save / find_by_id / find_all
+    /// round-trip on a real Engram through OrmStore<Engram> over real
+    /// SQLite. The proof point that the derive migration didn't break
+    /// production persistence — Engram is the substrate's most
+    /// load-bearing entity, and this test exercises the full
+    /// derive → OrmStore → adapter → SQLite → adapter → derive chain.
+    #[tokio::test]
+    async fn engram_round_trips_through_orm_store_with_derived_schema() {
+        use crate::orm::adapter::{AdapterConfig, StorageAdapter};
+        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::OrmStore;
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("engrams.sqlite");
+        let mut adapter = SqliteAdapter::new();
+        let mut config = AdapterConfig::default();
+        config.connection_string = path.to_string_lossy().into_owned();
+        adapter.initialize(config).await.expect("adapter init");
+        let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
+
+        let store = OrmStore::<Engram>::new(adapter).await.expect("store");
+
+        let engram = sample_engram();
+        let original_id = engram.id;
+        store.save(engram.id, &engram).await.expect("save engram");
+
+        let loaded = store
+            .find_by_id(engram.id)
+            .await
+            .expect("find_by_id")
+            .expect("engram should be present");
+
+        assert_eq!(loaded.id, original_id);
+        assert_eq!(loaded.content, "Test content");
+        assert_eq!(loaded.kind, EngramKind::Episodic);
+        assert_eq!(loaded.admitted_at_ms, FIXED_TIME_MS);
+        assert_eq!(loaded.trust_state_at_admission, TrustState::ApprovedPeer);
+        assert_eq!(loaded.admission_trace_id.as_deref(), Some("trace-xyz"));
+        assert_eq!(loaded.recall_keys, vec!["test", "engram"]);
+        match loaded.origin {
+            EngramOrigin::Airc(r) => {
+                assert_eq!(r.message_id, "msg-abc-123");
+                assert_eq!(r.transport, "airc");
+            }
+            other => panic!("expected Airc origin, got {other:?}"),
+        }
+
+        let all = store.find_all().await.expect("find_all");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, original_id);
+        // tmp drops at function end, removing the tempdir cleanly.
     }
 }

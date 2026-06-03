@@ -43,4 +43,17 @@ pub struct AnalysisInput {
     /// persona registry. The analyzer is told to produce a
     /// `suggested_angles` entry for each.
     pub known_specialties: Vec<String>,
+    /// Optional model override. `None` → use the substrate's shared
+    /// base analysis model (DEFAULT_ANALYSIS_MODEL); `Some(id)` →
+    /// the caller's preferred model, typically the responding
+    /// persona's own profile.model_id when the substrate's shared
+    /// base isn't loaded.
+    ///
+    /// Per Joel 2026-06-03 ("It's up to the model"): the analyzer
+    /// has no opinion on which model produces the objective ground
+    /// floor. The caller — who knows what's actually loaded on this
+    /// substrate — names the model. The single-flight cache key
+    /// already includes (room, message, specialties) so per-model
+    /// cache splitting is automatic.
+    pub model_override: Option<String>,
 }

@@ -80,12 +80,89 @@ const CHARS_PER_TOKEN: usize = 4;
 
 /// The adapter struct itself. No mutable state, no clock access, no
 /// external resources — instances are cheap and interchangeable.
+///
+/// Configuration knobs are all opt-in via builder methods; production
+/// callers use `HeuristicInferenceAdapter::new()` and pay zero cost
+/// for the unused knobs. Tests, replay rigs, simulated-slow-network
+/// scenarios, and warmup-failure substrate diagnostics set them via
+/// `.with_*` methods.
+///
+/// Per [[test-fixtures-are-system-primitives]]: validation behaviors
+/// (delay injection, warmup failure, etc.) belong on the production
+/// primitive, not as bespoke `#[cfg(test)]` clones. The same struct
+/// powers the CI heuristic path, latency-floor regression tests,
+/// supervisor warmup-error tests, and any future component that
+/// needs a deterministic adapter with controllable timing.
 #[derive(Debug, Default)]
-pub struct HeuristicInferenceAdapter;
+pub struct HeuristicInferenceAdapter {
+    /// Sleep injected before every `generate_text` returns. 0 (default)
+    /// is the production-cheap shape. Setting this is useful for
+    /// latency-floor regression tests + simulating slow-network
+    /// adapters (e.g., a future cross-grid inference adapter that
+    /// pays a real round-trip).
+    inject_delay_ms: u64,
+    /// If Some, `warmup()` returns Err with this reason. Production
+    /// uses None (warmup succeeds with no-op). Tests + diagnostic
+    /// substrate paths use this to exercise the
+    /// `SupervisorError::AdapterWarmup` typed-failure path.
+    warmup_failure: Option<String>,
+    /// Optional counter incremented on every `warmup()` call. Shared
+    /// `Arc<AtomicUsize>` so a test can register the same counter
+    /// across multiple adapters built by a factory and assert "warmup
+    /// was called N times across the substrate." Per
+    /// [[test-fixtures-are-system-primitives]] this is the observer
+    /// hook that lets the supervisor tests verify the
+    /// init-once-handle-then-lease contract without resorting to
+    /// bespoke FakeAdapter types.
+    warmup_observer: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    /// Same shape for `generate_text` — counts substrate-side hot-path
+    /// inference calls so tests can assert per-turn counts.
+    generate_observer: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+}
 
 impl HeuristicInferenceAdapter {
+    /// Zero-config constructor — what production code uses.
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Inject a real `tokio::time::sleep` before every `generate_text`
+    /// returns. Used by per-turn latency tests to verify the metric
+    /// reflects actual wall-clock, and by simulated-network scenarios
+    /// to model adapters that pay real round-trip cost.
+    pub fn with_delay_ms(mut self, ms: u64) -> Self {
+        self.inject_delay_ms = ms;
+        self
+    }
+
+    /// Make `warmup()` return Err with this reason. Used by supervisor
+    /// + service-loop tests to exercise the typed `AdapterWarmup`
+    /// failure path per [[no-fallbacks-ever]].
+    pub fn with_warmup_failure(mut self, reason: impl Into<String>) -> Self {
+        self.warmup_failure = Some(reason.into());
+        self
+    }
+
+    /// Register a shared counter that increments on every `warmup()`
+    /// call. The same `Arc<AtomicUsize>` can be passed to multiple
+    /// adapters so tests can assert substrate-wide warmup invocation
+    /// counts without bespoke factory state.
+    pub fn with_warmup_observer(
+        mut self,
+        counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
+        self.warmup_observer = Some(counter);
+        self
+    }
+
+    /// Register a shared counter that increments on every
+    /// `generate_text()` call.
+    pub fn with_generate_observer(
+        mut self,
+        counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
+        self.generate_observer = Some(counter);
+        self
     }
 
     /// Pull the last user message's text (or "" if absent). Walks
@@ -173,16 +250,43 @@ impl HeuristicInferenceAdapter {
 
     /// Build the response text from the request. Pure function —
     /// no I/O, no clock, no RNG. Replay-safe.
+    ///
+    /// When the request asks for JSON-shaped output
+    /// (`response_format = JsonObject`), the heuristic wraps its
+    /// echo in the substrate's persona-cognition contract:
+    /// `{"will_respond": true, "response": "<echo>"}`. This lets the
+    /// test path through `rag_inspect::run_inference_probe` succeed
+    /// against a heuristic adapter — substrate plumbing still
+    /// validates end-to-end without a real LLM, per the
+    /// system-test-primitives doctrine. The real cognition
+    /// (will_respond chosen by the LLM) requires a real model
+    /// per Joel: "use real LLMs. We can't know if we use fake
+    /// algorithms."
     pub fn build_response_text(req: &TextGenerationRequest) -> String {
         let prefix = Self::determinism_prefix(req);
         let last = Self::last_user_text(&req.messages);
         let echoed: String = last.chars().rev().take(ECHO_CHARS).collect::<String>()
             .chars().rev().collect();
-        if echoed.is_empty() {
+        let plain = if echoed.is_empty() {
             format!("[heuristic:{prefix}] ack: (no user text in prompt)")
         } else {
             format!("[heuristic:{prefix}] ack: \"{echoed}\"")
+        };
+        if matches!(
+            req.response_format,
+            Some(crate::ai::types::ResponseFormat::JsonObject)
+        ) {
+            // Emit the substrate's decide-and-respond JSON shape so
+            // the rag_inspect inference probe's JSON parser is
+            // exercised end-to-end. `will_respond: true` keeps the
+            // happy path going.
+            let inner =
+                serde_json::to_string(&plain).expect("plain string serializes");
+            return format!(
+                "{{\"will_respond\":true,\"response\":{inner}}}"
+            );
         }
+        plain
     }
 }
 
@@ -243,6 +347,22 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         Ok(())
     }
 
+    async fn warmup(&self) -> Result<(), String> {
+        // Observer fires before the failure check so tests can assert
+        // "warmup was attempted" independent of "warmup succeeded."
+        if let Some(c) = &self.warmup_observer {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        // Production: succeeds with no-op (default `warmup_failure: None`).
+        // Test / diagnostic: caller used `.with_warmup_failure(reason)`
+        // — return Err with that reason so the supervisor surfaces
+        // `SupervisorError::AdapterWarmup` per [[no-fallbacks-ever]].
+        if let Some(reason) = &self.warmup_failure {
+            return Err(reason.clone());
+        }
+        Ok(())
+    }
+
     async fn shutdown(&mut self) -> Result<(), String> {
         Ok(())
     }
@@ -251,6 +371,20 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        // Observer fires for substrate-side hot-path inference call
+        // counts.
+        if let Some(c) = &self.generate_observer {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        // Inject real wall-clock if the caller configured a delay. Used
+        // by latency-floor regression tests to verify the substrate's
+        // turn_latency metric reflects actual elapsed time, and by
+        // future simulated-network adapters. Production callers use
+        // `new()` with delay=0 and pay zero overhead.
+        if self.inject_delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms))
+                .await;
+        }
         let model = request
             .model
             .clone()
@@ -517,7 +651,7 @@ mod tests {
     #[tokio::test]
     async fn registers_and_round_trips_through_AdapterRegistry() {
         let mut registry = AdapterRegistry::new();
-        registry.register(Box::new(HeuristicInferenceAdapter::new()), 99);
+        registry.register(std::sync::Arc::new(HeuristicInferenceAdapter::new()), 99);
         assert!(registry.is_registered(HEURISTIC_PROVIDER_ID));
         let available = registry.available();
         assert!(available.contains(&HEURISTIC_PROVIDER_ID));

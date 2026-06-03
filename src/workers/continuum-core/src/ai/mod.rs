@@ -9,14 +9,19 @@
 //! - `openai_adapter.rs` - OpenAI-compatible providers (DeepSeek, Together, Groq, etc.)
 //! - `anthropic_adapter.rs` - Anthropic Claude models
 //!
-//! Usage:
+//! Usage (init-then-register pattern, task #162):
 //! ```rust
 //! let mut registry = AdapterRegistry::new();
-//! registry.register(Box::new(OpenAICompatibleAdapter::from_registry("deepseek")), 0);
-//! registry.register(Box::new(AnthropicAdapter::new()), 1);
-//! registry.initialize_all().await?;
 //!
-//! let (provider_id, adapter) = registry.select(None, Some("deepseek-chat")).unwrap();
+//! let mut deepseek = OpenAICompatibleAdapter::from_registry("deepseek");
+//! deepseek.initialize().await?;
+//! registry.register(Arc::new(deepseek), 0);
+//!
+//! let mut anthropic = AnthropicAdapter::new();
+//! anthropic.initialize().await?;
+//! registry.register(Arc::new(anthropic), 1);
+//!
+//! let (provider_id, adapter) = registry.select(None, Some("deepseek-chat"), InferenceDevice::Auto).unwrap();
 //! let response = adapter.generate_text(request).await?;
 //! ```
 

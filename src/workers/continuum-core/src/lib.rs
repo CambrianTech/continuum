@@ -16,6 +16,14 @@
 #[macro_use]
 extern crate objc;
 
+// Self-alias so the `#[derive(Entity)]` macro's emitted paths
+// (`::continuum_core::orm::*`) resolve when used from within this
+// crate. External consumers reach the same paths through their
+// regular `continuum_core` dependency; this `extern crate self`
+// closes the home-crate loop. Standard pattern for proc-macros that
+// emit absolute paths back into their home crate.
+extern crate self as continuum_core;
+
 pub mod ai;
 pub mod airc;
 pub mod audio_constants;

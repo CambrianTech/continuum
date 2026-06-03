@@ -221,11 +221,16 @@ pub async fn evaluate_gating(
 
     let registry_arc = global_registry();
     let registry = registry_arc.read().await;
+    // Device = `Auto`: cognition has no opinion on placement.
+    // Per task #162 follow-up: the registered adapter is the
+    // authority on its own device class; filtering by Gpu here
+    // wrongly excluded CPU-only adapters even when they were the
+    // only ones claiming the requested model.
     let (_provider_id, adapter) = registry
         .select(
             Some(GATING_PROVIDER),
             Some(&model),
-            InferenceDevice::default(),
+            InferenceDevice::Auto,
         )
         .ok_or_else(|| ShouldRespondError::NoAdapter {
             provider: GATING_PROVIDER.to_string(),

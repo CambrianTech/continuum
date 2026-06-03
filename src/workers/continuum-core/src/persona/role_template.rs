@@ -250,6 +250,7 @@ impl OrmEntity for RoleTemplate {
                 unique: true,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             // SpawnPriority — indexed for "give me all Required roles"
             // queries the spawner runs every tick.
@@ -260,6 +261,7 @@ impl OrmEntity for RoleTemplate {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             // Nested structs live as JSON columns. The adapter
             // serializes serde_json::Value into whatever the backend
@@ -273,6 +275,7 @@ impl OrmEntity for RoleTemplate {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             SchemaField {
                 name: "cognition".to_string(),
@@ -281,6 +284,7 @@ impl OrmEntity for RoleTemplate {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
             SchemaField {
                 name: "modelPerTier".to_string(),
@@ -289,6 +293,7 @@ impl OrmEntity for RoleTemplate {
                 unique: false,
                 nullable: false,
                 max_length: None,
+                foreign_key: None,
             },
         ]);
         CollectionSchema {

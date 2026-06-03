@@ -1,5 +1,15 @@
 # CLAUDE - ESSENTIAL DEVELOPMENT GUIDE
 
+## 🛑 STOP — If You Are About To Edit Persona / Cognition / service_loop
+
+**Required first read** before touching ANY of `src/workers/continuum-core/src/persona/{service_loop,unified,supervisor,rag_inspect}.rs`, anything in `src/workers/continuum-core/src/cognition/`, or `src/workers/continuum-core/src/bin/airc_chat_demo.rs`:
+
+→ **[docs/architecture/PERSONA-COGNITION-PIPELINE.md](docs/architecture/PERSONA-COGNITION-PIPELINE.md)**
+
+It documents what a persona actually IS (embodied, multi-modal, tool-using, continually-learning citizen with genome paging and L1-L5 memory), the per-persona cognition cycle that already exists in `cognition/` (`analyze` → `score_persona` → `genome.activate_skill` → `compose_for_turn` → `evaluate_response` → `clean_and_validate` → `ToolExecutor` → `audit`), the bypass that's being removed (`inspect_persona_rag_with_inference`), the wire layer that IS validated end-to-end, and the forbidden moves the model keeps reflex-coding under amnesia (text-only `TurnInput`, `will_respond + response_text` chatbot contracts, parallel allocators, hardcoded LCD-tier clamps that handicap capable models).
+
+**The cost of skipping this doc and re-inferring the architecture from the bypass is rebuilding a chatbot in place of a year of substrate work.** Don't.
+
 ## 📐 Canonical Substrate Docs (read first)
 
 If you're new to the substrate, or you're picking up runtime/cognition work, read these in order before anything else in this file. They are the precedence-winning truth on substrate-shaped questions:

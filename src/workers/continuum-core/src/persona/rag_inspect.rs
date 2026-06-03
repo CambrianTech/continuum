@@ -133,14 +133,39 @@ impl RagInspectionRequest {
         now_ms: u64,
         profile: &crate::persona::inference_profile::PersonaInferenceProfile,
     ) -> Self {
-        let reserved = ReservedTokens {
-            system: 400,
-            completion: 4_000,
-        };
         let context_window = profile.context_length;
+        // Reserved tokens scale with context window per
+        // [[intent-driven-api-not-hot-patches]]: a 2048-window persona
+        // can't reserve 4000 for completion (negative headroom → all
+        // sources get 0 → cognition fires with no RAG content → LLM
+        // defaults to grammar-shortest "will_respond=false" attractor).
+        // The cognition call caps output at 512 tokens; system prompt
+        // is ~200 tokens. We scale both as a percentage of the window
+        // so a Compat-tier 2048 persona AND an M-series 32768 persona
+        // both get sensibly-sized reservations.
+        //
+        // system: 10% of window, clamped [128, 512]
+        // completion: 25% of window, clamped [256, 4_000]
+        let reserved = ReservedTokens {
+            system: (context_window / 10).clamp(128, 512),
+            completion: (context_window / 4).clamp(256, 4_000),
+        };
         let headroom = context_window
             .saturating_sub(reserved.system + reserved.completion)
             .max(512);
+        // Default budget: ~60% of the context window for room
+        // history, clamped to headroom. This is a CONSERVATIVE
+        // FALLBACK — the substrate's real budgeter (TODO: routed
+        // through model characteristics on the Context per
+        // [[context-is-the-client-airc-token-is-identity]] and
+        // [[intent-driven-api-not-hot-patches]]) should derive
+        // this from `(prefill_tps, decode_tps, target_first_token_latency_ms)`
+        // so a 5090 + 200k-context frontier model can feed the
+        // whole history and a CPU + Qwen-0.5B can clamp itself.
+        // Both end up calling the SAME budget API; the answer
+        // differs because the model differs. Do NOT cap to a
+        // smaller percentage to make Intel Mac faster — that
+        // dumbs down every capable peer on the grid.
         let airc_max = ((context_window as u64) * 6 / 10) as u32;
         let airc_max = airc_max.min(headroom);
         let airc_floor = 500_u32.min(airc_max);
@@ -157,6 +182,24 @@ impl RagInspectionRequest {
             now_ms,
             trace_path: None,
         }
+    }
+
+    /// `&ctx`-pure derivation: read everything from the persona's
+    /// context object. The substrate's `&ctx` doctrine
+    /// ([[context-is-the-client-airc-token-is-identity]]) — caller
+    /// hands one reference, derivation reads what it needs.
+    /// Prefer this over [`Self::for_persona`] in any new code that
+    /// already holds a `&PersonaContext`.
+    pub fn for_ctx(
+        ctx: &crate::persona::supervisor::PersonaContext,
+        now_ms: u64,
+    ) -> Self {
+        Self::for_persona(
+            ctx.identity.persona_id,
+            ctx.identity.agent_name.clone(),
+            now_ms,
+            &ctx.profile,
+        )
     }
 }
 
@@ -189,13 +232,29 @@ pub struct RagInspection {
 
 /// Captured model response from the chained inspection variant —
 /// what the inference adapter produced when fed the RAG-delivered
-/// items as a prompt. Carries enough to answer "would I respond as
-/// it requests?" without re-running the model.
+/// items as a prompt. Carries the decision + the response together
+/// per [[no-if-statements-use-llms-for-cognition]]: the LLM decides
+/// `will_respond` AND writes `response_text` in ONE structured call
+/// (json grammar-constrained via `ResponseFormat::JsonObject`).
+///
+/// `will_respond == false` means the persona explicitly chose silence;
+/// the service loop counts it as `turns_skipped` and posts nothing.
+/// `will_respond == true` AND `response_text.is_empty()` is a model
+/// failure — the substrate treats it as skipped too (the persona
+/// said yes but produced no content per the structured contract).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelResponseInspection {
     pub adapter_id: String,
     pub model: String,
     pub prompt_text: String,
+    /// The persona's decision: true = post a reply; false = stay
+    /// silent this turn. Substrate refuses to invent a default per
+    /// [[no-fallbacks-ever]] — if the model couldn't be parsed, the
+    /// caller surfaces the typed `Err` from inference_probe and the
+    /// loop counts `turns_errored`.
+    pub will_respond: bool,
+    /// The reply text the persona wants posted. Only used when
+    /// `will_respond == true`. Empty otherwise.
     pub response_text: String,
     pub finish_reason: String,
     pub input_tokens: u32,
@@ -423,34 +482,58 @@ pub async fn inspect_persona_rag_with_inference(
 }
 
 /// Assemble RAG-delivered items into a prompt, call the adapter,
-/// capture the response. Pure helper; the chained variant calls
-/// this when an adapter is present.
+/// parse the structured `{will_respond, response}` reply.
 ///
-/// Prompt shape (substrate's first cut — slice 12 PromptAssembly
-/// will refine):
-/// - System: "You are <persona_name>. Below are recent messages
-///   from the room you're in; respond as that persona."
-/// - One user message per delivered item, content verbatim.
+/// Per Joel 2026-06-02 ("113, use real LLMs. We can't know if we use
+/// fake algorithms") + [[no-if-statements-use-llms-for-cognition]]:
+/// the substrate does NOT gate replies with heuristics. The LLM
+/// decides — atomically with writing the response — via JSON-grammar-
+/// constrained sampling (`ResponseFormat::JsonObject` flows through
+/// to llama.cpp's GBNF grammar; same path the existing
+/// `json_object_response_format_enables_json_grammar` test locks).
+///
+/// Prompt shape:
+/// - System: persona identity + the structural decision contract
+/// - User messages: one per RAG-delivered item, content verbatim
+/// - Forced JSON response: `{"will_respond": bool, "response": str}`
+///
+/// Failure modes per [[no-fallbacks-ever]]:
+/// - Inference call itself fails → `Err` (loop records turns_errored)
+/// - LLM emits unparseable JSON → `Err` (substrate refuses to invent
+///   a default; the operator sees the typed error and fixes the model)
+/// - LLM emits `will_respond: true` but empty response → returned
+///   with empty response_text; the loop treats this as skipped per
+///   the doc-comment on `ModelResponseInspection`
 async fn run_inference_probe(
     adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     persona_name: &str,
     items: &[crate::persona::rag_budget::RagItem],
 ) -> Result<ModelResponseInspection, String> {
     use crate::ai::types::{
-        ChatMessage, MessageContent, TextGenerationRequest,
+        ChatMessage, MessageContent, ResponseFormat, TextGenerationRequest,
     };
     let adapter_id = adapter.provider_id().to_string();
     let model = adapter.default_model().to_string();
 
     let system_prompt = format!(
-        "You are {persona_name}. Below are recent messages from the room you're in; \
-         respond as that persona."
+        "You are {persona_name}, an autonomous AI persona in a chat room with other \
+         humans and AI peers. Recent messages from the room follow as user turns.\n\n\
+         Read the most recent message and decide: should you reply, and if so, with \
+         what words? If you are directly addressed (the message says \"{persona_name}\" \
+         or asks you a question), you should reply. If the conversation is just other \
+         peers greeting each other and nothing was asked of you, stay silent.\n\n\
+         Output a JSON object with BOTH of these keys, in this order — neither key is \
+         optional:\n\
+         1. \"will_respond\" (boolean, REQUIRED): true if you are posting a reply, \
+            false if you are staying silent. This key must always be present.\n\
+         2. \"response\" (string, REQUIRED): the actual words you would say back to \
+            the room, in your own voice as {persona_name}. Write the reply, do not \
+            describe what you would say. If will_respond is false, this is an empty \
+            string. This key must always be present.\n\n\
+         Output ONLY the JSON object. No prose around it, no markdown fences. The \
+         JSON MUST start with {{\"will_respond\":."
     );
 
-    // One user message per item — preserves the multi-turn structure
-    // so the model sees who said what (the source's metadata
-    // includes peer + lamport; future slices will format that
-    // explicitly).
     let messages: Vec<ChatMessage> = items
         .iter()
         .map(|item| ChatMessage {
@@ -468,6 +551,18 @@ async fn run_inference_probe(
         model: Some(model.clone()),
         provider: None,
         temperature: None,
+        // Cognition output budget. THIS IS A CONSERVATIVE FALLBACK —
+        // the real substrate budgeter (TODO: derive from model
+        // characteristics on the Context per
+        // [[context-is-the-client-airc-token-is-identity]] and
+        // [[intent-driven-api-not-hot-patches]]) should compute
+        // this from the persona's role, the model's typical
+        // response distribution, and the conversation context.
+        // Capable models on capable hardware (5090 + frontier
+        // class) can chatter at length; LCD-tier models on CPU
+        // will self-limit. Do not pin to a tighter value just to
+        // make Intel Mac faster — that handicaps every other
+        // peer on the grid.
         max_tokens: Some(512),
         top_p: None,
         top_k: None,
@@ -475,30 +570,109 @@ async fn run_inference_probe(
         stop_sequences: None,
         tools: None,
         tool_choice: None,
-        response_format: None,
+        // The substrate's cognition contract: JSON-grammar-constrained
+        // output. LlamaCpp wires this to GBNF grammar so the sampler
+        // can ONLY emit valid JSON (the unit test
+        // `json_object_response_format_enables_json_grammar` locks
+        // this in `inference/llamacpp_adapter.rs`).
+        response_format: Some(ResponseFormat::JsonObject),
         active_adapters: None,
         request_id: None,
         user_id: None,
         room_id: None,
-        purpose: Some("rag_inspect_probe".to_string()),
+        purpose: Some("persona_decide_and_respond".to_string()),
         persona_id: None,
     };
+
+    let items_count = items.len();
+    let total_item_tokens: u32 = items.iter().map(|i| i.tokens).sum();
+    let prompt_chars = prompt_text.chars().count();
+    let last_item_preview: String = items
+        .last()
+        .map(|i| i.content.chars().take(160).collect())
+        .unwrap_or_else(|| "(no items — RAG delivered nothing)".to_string());
+
+    tracing::info!(
+        persona = %persona_name,
+        items_count,
+        total_item_tokens,
+        prompt_chars,
+        last_item_preview = %last_item_preview,
+        "rag_inspect cognition turn — input shape before LLM call"
+    );
+
+    for (idx, item) in items.iter().enumerate() {
+        let snippet: String = item.content.chars().take(120).collect();
+        // Per [[observability-is-half-the-architecture]] this is the
+        // mechanic-grade rationale ("why this item, why not that
+        // one") and stays callable. INFO would spam ~12 lines per
+        // cognition turn though, so it lives at DEBUG by default
+        // and lights up under `RUST_LOG=continuum_core::persona::rag_inspect=debug`
+        // when diagnosing a coherence regression.
+        tracing::debug!(
+            persona = %persona_name,
+            idx,
+            tokens = item.tokens,
+            content = %snippet,
+            "rag_inspect item delivered to LLM"
+        );
+    }
 
     let response = adapter
         .generate_text(request)
         .await
         .map_err(|e| format!("rag_inspect inference probe failed: {e}"))?;
 
+    tracing::info!(
+        persona = %persona_name,
+        adapter_id = %adapter_id,
+        model = %model,
+        finish_reason = %response.finish_reason,
+        output_tokens = response.usage.output_tokens,
+        response_time_ms = response.response_time_ms,
+        raw_response = %response.text,
+        "rag_inspect raw model output (pre-parse) — diagnostic for [[no-if-statements-use-llms-for-cognition]] cognition contract"
+    );
+
+    let (will_respond, response_text) =
+        parse_decide_and_respond(&response.text).map_err(|e| {
+            format!(
+                "model emitted unparseable JSON for persona_decide_and_respond: {e}\n\
+                 raw response: {raw}",
+                raw = response.text
+            )
+        })?;
+
     Ok(ModelResponseInspection {
         adapter_id,
         model,
         prompt_text,
-        response_text: response.text,
+        will_respond,
+        response_text,
         finish_reason: response.finish_reason.to_string(),
         input_tokens: response.usage.input_tokens,
         output_tokens: response.usage.output_tokens,
         response_time_ms: response.response_time_ms,
     })
+}
+
+/// Parse the LLM's structured `{will_respond, response}` JSON output.
+/// Returns `(will_respond, response_text)`. Per [[no-fallbacks-ever]]
+/// any missing field or wrong type errors visibly — the substrate
+/// doesn't silently default a decision the model didn't make.
+fn parse_decide_and_respond(raw: &str) -> Result<(bool, String), String> {
+    let v: serde_json::Value = serde_json::from_str(raw.trim())
+        .map_err(|e| format!("JSON parse: {e}"))?;
+    let will_respond = v
+        .get("will_respond")
+        .and_then(|x| x.as_bool())
+        .ok_or_else(|| "missing or non-bool `will_respond`".to_string())?;
+    let response = v
+        .get("response")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| "missing or non-string `response`".to_string())?
+        .to_string();
+    Ok((will_respond, response))
 }
 
 fn render_prompt_text(

@@ -18,10 +18,15 @@ export type Engram = {
 /**
  * Stable engram id. Used for recall keys, deduplication, and as the
  * referent target for `EngramOrigin::SelfReflection { parent_engram_id }`.
+ * Marked `primary_key` so the derive pulls in BaseEntity columns
+ * (id + createdAt + updatedAt + version) and skips emitting this
+ * field separately — `id` is the BaseEntity column.
  */
 id: string, 
 /**
  * Engram category — episodic vs semantic vs procedural vs meta.
+ * Indexed: recall by kind ("show me all Episodic engrams") is a
+ * common filter.
  */
 kind: EngramKind, 
 /**
@@ -33,25 +38,30 @@ content: string,
 /**
  * What kind of source this engram came from + the protocol-compatible
  * reference fields needed to verify or re-locate it.
+ * `EngramOrigin` is a tagged-union enum; persisted as a JSON column
+ * so the variant rides intact.
  */
 origin: EngramOrigin, 
 /**
  * Free-text recall keys / tags. v1 is unstructured strings; recall
  * (later PR) may add embeddings or structured indexes alongside.
  */
-recall_keys: Array<string>, 
+recallKeys: Array<string>, 
 /**
- * When this engram was admitted (epoch milliseconds UTC).
+ * When this engram was admitted (epoch milliseconds UTC). Indexed:
+ * admission-order is the primary sort for recall_recent + the
+ * recency tiebreak for Algorithm 4 scoring.
  */
-admitted_at_ms: number, 
+admittedAtMs: number, 
 /**
  * The trust tier of the source AT ADMISSION TIME. Snapshot, not live —
  * later trust changes don't retroactively rewrite this engram's
  * recorded trust. A trust degradation across the polity creates new
  * signal in introspection ("engrams admitted from peer X while their
- * trust was high but is now low — re-evaluate").
+ * trust was high but is now low — re-evaluate"). Indexed: forensic
+ * queries filter by trust tier.
  */
-trust_state_at_admission: TrustState, 
+trustStateAtAdmission: TrustState, 
 /**
  * Optional pointer to the `CognitionTrace` SEAM record that explains
  * WHY this engram was admitted. v1 carries an optional trace id
@@ -60,4 +70,4 @@ trust_state_at_admission: TrustState,
  * for v1 manual admissions; should be Some for Recipe-driven
  * admissions in PR-2+).
  */
-admission_trace_id: string | null, };
+admissionTraceId: string | null, };

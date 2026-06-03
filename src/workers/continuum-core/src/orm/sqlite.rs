@@ -64,7 +64,8 @@ fn open_connection(path: &str, flags: OpenFlags) -> Result<Connection, String> {
          PRAGMA busy_timeout=5000;\
          PRAGMA cache_size=-8192;\
          PRAGMA mmap_size=0;\
-         PRAGMA temp_store=MEMORY;",
+         PRAGMA temp_store=MEMORY;\
+         PRAGMA foreign_keys=ON;",
     )
     .map_err(|e| format!("SQLite PRAGMA error: {}", e))?;
 
@@ -520,6 +521,18 @@ fn do_delete(conn: &Connection, collection: &str, id: &UUID) -> StorageResult<bo
     }
 }
 
+/// SQL keyword for a CascadeRule. Same mapping for sqlite + postgres
+/// (both speak SQL-standard cascade keywords).
+fn cascade_rule_sql(rule: super::types::CascadeRule) -> &'static str {
+    use super::types::CascadeRule;
+    match rule {
+        CascadeRule::Restrict => "RESTRICT",
+        CascadeRule::Cascade => "CASCADE",
+        CascadeRule::SetNull => "SET NULL",
+        CascadeRule::NoAction => "NO ACTION",
+    }
+}
+
 fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResult<bool> {
     let table = naming::to_table_name(&schema.collection);
 
@@ -532,9 +545,23 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
 
     for field in &schema.fields {
         let col_name = naming::to_snake_case(&field.name);
+        // Skip BaseEntity columns — adapter hardcodes them above to
+        // pin the exact SQL shape (PRIMARY KEY on id, defaults on
+        // created_at, etc.). Schemas authored via base_entity_fields()
+        // re-declare these by design; dedup here so CREATE TABLE
+        // doesn't crash on the duplicate column name.
+        if super::entity::is_base_entity_column(&col_name) {
+            continue;
+        }
         let col_type = match field.field_type {
             super::types::FieldType::String => "TEXT",
-            super::types::FieldType::Number => "REAL",
+            // NUMERIC affinity preserves the storage class — an
+            // inserted integer reads back as integer, a float as
+            // float. REAL affinity (the prior choice) coerced every
+            // value to REAL, which broke i32/i64 deserialization for
+            // any entity using integer Number columns. SQLite NUMERIC
+            // is the "best of both" affinity for Number.
+            super::types::FieldType::Number => "NUMERIC",
             super::types::FieldType::Boolean => "INTEGER",
             super::types::FieldType::Date => "TEXT",
             super::types::FieldType::Json => "TEXT",
@@ -551,6 +578,28 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
         columns.push(col_def);
     }
 
+    // Foreign keys — emit per-column FOREIGN KEY clauses inside the
+    // CREATE TABLE. Per the [[no-fallbacks-ever]] doctrine + Joel
+    // 2026-06-03 ("provide a relational db this time"): FK is a
+    // first-class schema concept enforced by the DB, not application
+    // convention. Cascade rules are explicit so cross-backend
+    // semantics match.
+    for field in &schema.fields {
+        if let Some(fk) = &field.foreign_key {
+            let col_name = naming::to_snake_case(&field.name);
+            let target_table = naming::to_table_name(&fk.collection);
+            let target_col = naming::to_snake_case(&fk.field);
+            columns.push(format!(
+                "FOREIGN KEY ({}) REFERENCES {}({}) ON DELETE {} ON UPDATE {}",
+                col_name,
+                target_table,
+                target_col,
+                cascade_rule_sql(fk.on_delete),
+                cascade_rule_sql(fk.on_update),
+            ));
+        }
+    }
+
     let sql = format!(
         "CREATE TABLE IF NOT EXISTS {} ({})",
         table,
@@ -561,10 +610,17 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
         return StorageResult::err(format!("Create table failed: {}", e));
     }
 
-    // Create single-field indexes from schema
+    // Create single-field indexes from schema. Skip BaseEntity
+    // columns: `id` is the PRIMARY KEY (implicitly indexed); the
+    // timestamp/version columns don't have schema-declared indexes
+    // that adapter code uses, and creating one on a non-existent
+    // column name would error.
     for field in &schema.fields {
         if field.indexed {
             let col_name = naming::to_snake_case(&field.name);
+            if super::entity::is_base_entity_column(&col_name) {
+                continue;
+            }
             let idx_name = format!("idx_{}_{}", table, col_name);
             let idx_sql = format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
@@ -1252,6 +1308,7 @@ mod tests {
                     unique: false,
                     nullable: false,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })
@@ -1292,6 +1349,7 @@ mod tests {
                     unique: false,
                     nullable: false,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })
@@ -1377,6 +1435,7 @@ mod tests {
                     unique: false,
                     nullable: false,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })

@@ -117,7 +117,9 @@ use continuum_core::persona::airc_runtime::PersonaAircRuntime;
 use continuum_core::persona::airc_source::AircTranscriptReader;
 use continuum_core::persona::identity_provider::PersonaIdentitySource;
 use continuum_core::persona::role_template::RoleId;
-use continuum_core::persona::service_loop::{serve_persona_loop, ServeOptions};
+use continuum_core::persona::service_loop::{
+    serve_persona_loop, PersonaConversation, ServeOptions,
+};
 use continuum_core::persona::supervisor::HostedPersona;
 
 const DEFAULT_AGENT_NAME: &str = "Paige";
@@ -331,6 +333,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    RAG + inference + say cycle. The same call is what slice 12
     //    will fire from headless `continuum-core` boot for every
     //    persona the spawner planned.
+    // Register the persona's adapter in the global provider registry
+    // per task #161 so the cognition layer can reach it via
+    // global_registry(). Same wiring the supervisor does.
+    {
+        let registry_arc = continuum_core::modules::ai_provider::global_registry();
+        let mut registry = registry_arc.write().await;
+        registry.register(adapter.clone(), 0);
+    }
+
+    // Build the persona's brain at boot per task #148 + the cognition
+    // pipeline doc. compose_for_turn needs engram + airc both bound
+    // before the service loop starts iterating.
+    let rag_engine = std::sync::Arc::new(continuum_core::rag::RagEngine::new());
+    let mut cognition = continuum_core::persona::unified::PersonaCognition::new(
+        persona_id,
+        agent.clone(),
+        rag_engine,
+    );
+    let airc_source: std::sync::Arc<dyn continuum_core::persona::rag_budget::RagSource> =
+        std::sync::Arc::new(continuum_core::persona::airc_source::AircRagSource::new(
+            persona_id,
+            runtime.clone(),
+        ));
+    cognition.set_airc_source(airc_source);
+
     let hosted = HostedPersona {
         role: RoleId::Helper,
         identity: PersonaInstanceInfo {
@@ -343,11 +370,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         profile: profile.clone(),
         adapter,
-        runtime: Some(runtime.clone()),
+        // PersonaAircRuntime impls AircCitizen — Arc auto-coerces.
+        runtime: runtime.clone(),
+        cognition: std::sync::Arc::new(tokio::sync::Mutex::new(cognition)),
     };
     let mut conversation = AircPersonaConversation::new(runtime);
 
-    println!("✓ handed off to substrate-managed serve_persona_loop.");
+    // Caller-primes contract per [[no-fallbacks-ever]]: the demo
+    // calls serve_persona_loop directly (no supervisor in between),
+    // so the demo itself is responsible for opening the airc
+    // subscribe stream before iterating. One round-trip, off the
+    // cognition hot path.
+    conversation
+        .prime()
+        .await
+        .map_err(|e| format!("conversation.prime() failed: {e}"))?;
+
+    println!("✓ subscribe stream primed; handed off to substrate-managed serve_persona_loop.");
     println!("  Send a message in the same room to test.");
     println!("  Stop with Ctrl-C.");
     println!();

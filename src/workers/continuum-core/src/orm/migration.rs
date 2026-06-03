@@ -448,6 +448,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })
@@ -513,6 +514,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })
@@ -595,6 +597,7 @@ mod tests {
                     unique: false,
                     nullable: true,
                     max_length: None,
+                    foreign_key: None,
                 }],
                 indexes: vec![],
             })
