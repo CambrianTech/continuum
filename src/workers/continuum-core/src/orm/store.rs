@@ -324,7 +324,7 @@ mod tests {
     /// Build a fresh in-memory adapter. Uses a per-test random
     /// db_path so concurrent cargo tests don't share state through
     /// the SQLite shared-cache :memory: convention.
-    async fn fresh_adapter() -> Arc<dyn StorageAdapter> {
+    async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempDir) {
         let mut adapter = SqliteAdapter::new();
         // Unique random path so parallel tests don't collide on the
         // shared-cache :memory: alias. The tempfile sets up its own
@@ -337,12 +337,11 @@ mod tests {
             .initialize(config)
             .await
             .expect("adapter initialize");
-        // Leak the tempdir for the duration of the test — keeping it
-        // alive prevents the path from being deleted before the
-        // adapter closes. Acceptable in tests; tempdir cleanup runs
-        // at process exit.
-        std::mem::forget(tmp);
-        Arc::new(adapter)
+        // Return the tempdir alongside the adapter so the test
+        // function owns its lifetime. Dropping the returned tuple
+        // at test-end deletes the path cleanly (no /tmp accumulation
+        // the prior `mem::forget` caused, per Reviewer-2 #5).
+        (Arc::new(adapter), tmp)
     }
 
     /// What this catches: save + find_by_id round-trip preserves
@@ -351,7 +350,7 @@ mod tests {
     /// loses data silently.
     #[tokio::test]
     async fn save_then_find_by_id_round_trips_every_field() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _tmp) = fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
 
         let id = Uuid::new_v4();
@@ -371,7 +370,7 @@ mod tests {
     /// failures is what every caller wants.
     #[tokio::test]
     async fn find_by_id_returns_none_for_missing_id() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _tmp) = fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
         let absent = Uuid::new_v4();
         let result = store.find_by_id(absent).await.expect("find_by_id");
@@ -383,7 +382,7 @@ mod tests {
     /// every persona-state-style store needs.
     #[tokio::test]
     async fn find_all_returns_every_saved_row() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _tmp) = fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
 
         let ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
@@ -409,7 +408,7 @@ mod tests {
     /// silently fail to persist.
     #[tokio::test]
     async fn update_then_find_by_id_returns_new_payload() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _tmp) = fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
 
         let id = Uuid::new_v4();
@@ -432,7 +431,7 @@ mod tests {
     /// Models the cleanup paths a persistence layer needs.
     #[tokio::test]
     async fn delete_removes_row_and_signals_idempotently() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _tmp) = fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
 
         let id = Uuid::new_v4();

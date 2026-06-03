@@ -177,7 +177,7 @@ struct DeriveTestWidgetNote {
     note: String,
 }
 
-async fn fresh_adapter() -> Arc<dyn StorageAdapter> {
+async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempDir) {
     let mut adapter = SqliteAdapter::new();
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("derive-test.sqlite");
@@ -187,8 +187,7 @@ async fn fresh_adapter() -> Arc<dyn StorageAdapter> {
         .initialize(config)
         .await
         .expect("adapter initialize");
-    std::mem::forget(tmp);
-    Arc::new(adapter)
+    (Arc::new(adapter), tmp)
 }
 
 /// What this catches: derive emits the collection name from the
@@ -326,7 +325,7 @@ fn option_translates_to_nullable() {
 /// impl — not just type-shape correctness in isolation.
 #[tokio::test]
 async fn round_trip_through_orm_store() {
-    let adapter = fresh_adapter().await;
+    let (adapter, _tmp) = fresh_adapter().await;
     let store = OrmStore::<DeriveTestWidget>::new(adapter)
         .await
         .expect("store construction with derived schema");
@@ -421,7 +420,7 @@ fn foreign_key_attribute_populates_schema_field() {
 /// `PRAGMA foreign_keys=ON` at connection open.
 #[tokio::test]
 async fn foreign_key_cascade_deletes_children_via_db_enforcement() {
-    let adapter = fresh_adapter().await;
+    let (adapter, _tmp) = fresh_adapter().await;
     let widgets = OrmStore::<DeriveTestWidget>::new(Arc::clone(&adapter))
         .await
         .expect("widget store");

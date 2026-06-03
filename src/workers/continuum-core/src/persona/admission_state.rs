@@ -181,6 +181,19 @@ impl AdmissionState {
         for (engram_id, metadata) in loaded_metadata {
             recall_metadata.admit(engram_id, metadata);
         }
+        // Phantom-engram backfill (Slice B fix for review #1519,
+        // task #171): an engram on disk WITHOUT a metadata row would
+        // otherwise be permanently invisible to recall — `recall_scored`
+        // filter_maps it out, so `record_recall_hit` never fires for it,
+        // so the metadata row never gets created. The original inline
+        // comment "next decay tick will resurface this" was wrong (decay
+        // walks the registry, not the engrams table). Now we seed
+        // default metadata for any loaded engram that lacks a row, so
+        // every engram is recall-visible after rehydration regardless
+        // of what crashed mid-write in the prior lifetime.
+        for engram in &loaded_engrams {
+            recall_metadata.admit_with_defaults(engram.id);
+        }
         Self {
             runner: InboxAdmissionRunner::default_v1(),
             seen_content: Arc::new(InMemorySeenContent::default()),
@@ -265,18 +278,30 @@ impl AdmissionState {
         let metadata_store =
             Arc::new(OrmStore::<EngramRecallMetadata>::new(Arc::clone(&adapter)).await?);
 
-        // Build the production sink + loader.
-        let sink = OrmPersistenceSink::arc(Arc::clone(&engram_store), Arc::clone(&metadata_store));
+        // Build the production sink as the concrete type so we can
+        // prime its engram_id → row_id cache BEFORE losing it behind
+        // the trait object. Without the prime, the first
+        // observe_metadata_update for a rehydrated engram would log a
+        // "row not found" miss; with the prime, it's an O(1) typed
+        // update.
+        let sink_concrete = Arc::new(OrmPersistenceSink::new(
+            Arc::clone(&engram_store),
+            Arc::clone(&metadata_store),
+        ));
         let loader = OrmLoader::new(engram_store, metadata_store);
 
         // Rehydrate from disk — engrams + metadata that the previous
         // lifetime persisted come back into memory before this
-        // AdmissionState handles its first new admit.
-        let (engrams, metadata) = loader.load_admission_state().await?;
+        // AdmissionState handles its first new admit. The row_id
+        // pairs prime the sink's cache so post-rehydration metadata
+        // updates use the existing rows (no UNIQUE-race, no full
+        // table scan).
+        let (engrams, metadata, row_id_pairs) = loader.load_with_row_ids().await?;
+        sink_concrete.prime_cache(row_id_pairs);
 
         Ok(Self::new_rehydrated(
             recall_metadata,
-            sink,
+            sink_concrete as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
             engrams,
             metadata,
         ))
@@ -1326,6 +1351,81 @@ mod tests {
         assert_eq!(scored[1].0.id, alpha_engram.id, "low-salience second");
     }
 
+    /// What this catches: the phantom-engram-without-metadata case
+    /// from Reviewer-2 BLOCK finding on PR #1519. If the engram-save
+    /// succeeded but the metadata-save failed (the inline-comment
+    /// claimed self-healing but the original code did NOT), the
+    /// engram on disk would be permanently invisible to recall
+    /// because `recall_scored` filter_maps engrams whose registry
+    /// entry is missing. Slice B's fix: at rehydrate, seed
+    /// `admit_with_defaults` for any loaded engram lacking metadata.
+    ///
+    /// This test simulates the crash by handing `new_rehydrated` a
+    /// Vec with N engrams + a metadata vec with only K < N entries.
+    /// The post-fix invariant: every loaded engram is recall-visible
+    /// (with default metadata if its row was missing).
+    #[test]
+    fn rehydrate_backfills_metadata_for_phantom_engrams() {
+        let registry = Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        );
+        let phantom_engram = synthetic_engram_with_chat_origin("phantom no metadata row");
+        let healthy_engram = synthetic_engram_with_chat_origin("healthy has metadata");
+        let phantom_id = phantom_engram.id;
+        let healthy_id = healthy_engram.id;
+
+        // Only healthy has a metadata entry — simulates the crash
+        // window between engram-save and metadata-save.
+        let metadata_pair = (
+            healthy_id,
+            crate::persona::recall_metadata::RecallMetadata {
+                salience: 0.8,
+                access_count: 2,
+                last_accessed_ms: 1_000,
+                protected_until_ms: 0,
+                last_decayed_ms: 1_000,
+            },
+        );
+
+        let state = AdmissionState::new_rehydrated(
+            Arc::clone(&registry),
+            crate::persona::admission_persistence::NoopSink::arc(),
+            vec![phantom_engram, healthy_engram],
+            vec![metadata_pair],
+        );
+
+        assert_eq!(state.engram_count(), 2, "both engrams in Vec");
+
+        // The phantom MUST appear in scored recall — with default
+        // salience since its row was missing. Without the fix, this
+        // assertion fails because the phantom is permanently
+        // invisible to filter_map.
+        let scored = state.recall_scored(2_000, 8);
+        assert_eq!(scored.len(), 2, "both engrams recall-visible after rehydration");
+
+        let scored_ids: std::collections::BTreeSet<Uuid> =
+            scored.iter().map(|(e, _)| e.id).collect();
+        assert!(
+            scored_ids.contains(&phantom_id),
+            "phantom must be recall-visible (default metadata seeded by backfill)"
+        );
+        assert!(
+            scored_ids.contains(&healthy_id),
+            "healthy must remain recall-visible"
+        );
+
+        // Healthy keeps its loaded high salience; phantom got the
+        // default 0.5 from admit_with_defaults — healthy ranks higher.
+        let healthy_score = scored.iter().find(|(e, _)| e.id == healthy_id).unwrap().1;
+        let phantom_score = scored.iter().find(|(e, _)| e.id == phantom_id).unwrap().1;
+        assert!(
+            healthy_score > phantom_score,
+            "loaded metadata wins over seeded default: healthy {} vs phantom {}",
+            healthy_score,
+            phantom_score
+        );
+    }
+
     /// What this catches: AdmissionState::for_persona opens a
     /// per-persona SQLite, admits land in it, and a fresh
     /// AdmissionState constructed from the SAME PersonaHome
@@ -1389,7 +1489,6 @@ mod tests {
             original_ids.iter().copied().collect();
         assert_eq!(scored_ids, original_set);
 
-        std::mem::forget(tmp);
     }
 
     /// What this catches: two personas under the same continuum_root
@@ -1464,6 +1563,5 @@ mod tests {
             "Niko's recall is empty: paige's engram {paige_id} stayed scoped to her home"
         );
 
-        std::mem::forget(tmp);
     }
 }

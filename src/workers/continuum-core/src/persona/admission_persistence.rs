@@ -39,6 +39,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::orm::{OrmStore, OrmStoreError};
@@ -98,6 +99,13 @@ impl NoopSink {
 pub struct OrmPersistenceSink {
     engram_store: Arc<OrmStore<Engram>>,
     metadata_store: Arc<OrmStore<EngramRecallMetadata>>,
+    /// Maps `engram_id → metadata row_id`. Built on admission (when we
+    /// know both) + populated from `OrmLoader::load_admission_state` at
+    /// boot. Lets `observe_metadata_update` do an O(1) lookup +
+    /// targeted `update()` instead of the O(N) `find_all` scan the
+    /// first iteration used. Fixes the UNIQUE-race the reviewer flagged
+    /// (concurrent recall hits no longer both decide to INSERT).
+    row_id_by_engram: DashMap<Uuid, Uuid>,
 }
 
 impl OrmPersistenceSink {
@@ -108,6 +116,7 @@ impl OrmPersistenceSink {
         Self {
             engram_store,
             metadata_store,
+            row_id_by_engram: DashMap::new(),
         }
     }
 
@@ -116,6 +125,16 @@ impl OrmPersistenceSink {
         metadata_store: Arc<OrmStore<EngramRecallMetadata>>,
     ) -> Arc<dyn AdmissionPersistenceSink> {
         Arc::new(Self::new(engram_store, metadata_store))
+    }
+
+    /// Pre-seed the engram_id → row_id cache from a loaded snapshot.
+    /// Called by `OrmLoader::load_admission_state` (or any boot path
+    /// reading existing rows) so the first `observe_metadata_update`
+    /// after boot already knows which row to update.
+    pub fn prime_cache(&self, pairs: impl IntoIterator<Item = (Uuid, Uuid)>) {
+        for (engram_id, row_id) in pairs {
+            self.row_id_by_engram.insert(engram_id, row_id);
+        }
     }
 }
 
@@ -130,6 +149,13 @@ impl AdmissionPersistenceSink for OrmPersistenceSink {
         let row_id = uuid::Uuid::parse_str(&metadata_row.base.id)
             .expect("BaseEntity::for_new_record always produces a valid UUID");
         let engram_id = engram.id;
+        // Cache the engram_id → row_id mapping NOW (before spawn) so
+        // any concurrent `observe_metadata_update` for this engram_id
+        // finds the cached row_id and does a targeted update instead
+        // of racing on insert. Even if the disk write fails later,
+        // the cache reflects "we intend this row_id"; failure logs
+        // surface the inconsistency.
+        self.row_id_by_engram.insert(engram_id, row_id);
         let engram_store = Arc::clone(&self.engram_store);
         let metadata_store = Arc::clone(&self.metadata_store);
         tokio::spawn(async move {
@@ -146,31 +172,45 @@ impl AdmissionPersistenceSink for OrmPersistenceSink {
                     engram_id = %engram_id,
                     row_id = %row_id,
                     error = %e,
-                    "OrmPersistenceSink: metadata save failed (engram saved, metadata lost — next decay tick will resurface this)"
+                    "OrmPersistenceSink: metadata save failed — engram persisted but its metadata didn't; \
+                     boot rehydration's phantom-engram backfill will seed default metadata on next load"
                 );
             }
         });
     }
 
     fn observe_metadata_update(&self, engram_id: Uuid, metadata: RecallMetadata) {
-        // For metadata updates we don't know the row's BaseEntity id
-        // up front — record_recall_hit / apply_decay mutate the
-        // DashMap by engram_id, not by metadata-row id. Strategy:
-        // find_by_filter on engram_id, update if present.
-        //
-        // The substrate's typical pattern for this is "find or
-        // insert" — but find_by_id-style lookup on a non-PK field
-        // requires a query path. For v1 we'll re-issue a full save
-        // (INSERT OR REPLACE semantics aren't exposed via OrmStore
-        // yet); when the wire-up needs efficiency, we'll add a
-        // typed `upsert` method on OrmStore.
+        // O(1) lookup via the cache populated on admission +
+        // prime_cache. The UNIQUE-race the first iteration had
+        // (two concurrent updates both inserting on the same
+        // engram_id) is gone — we ALWAYS know the row_id, so the
+        // operation is a deterministic `update` against that row_id.
+        // If the cache somehow doesn't have the row_id (e.g.,
+        // observe_metadata_update called before observe_admission
+        // for this engram, which shouldn't happen but we surface
+        // rather than swallow), we log and skip — admit will
+        // eventually fire and seed the cache.
+        let Some(row_id_entry) = self.row_id_by_engram.get(&engram_id) else {
+            tracing::debug!(
+                engram_id = %engram_id,
+                "OrmPersistenceSink: observe_metadata_update before observe_admission — \
+                 skipping; the metadata row will be created when admission fires"
+            );
+            return;
+        };
+        let row_id = *row_id_entry.value();
+        drop(row_id_entry);
         let metadata_store = Arc::clone(&self.metadata_store);
         tokio::spawn(async move {
-            if let Err(e) =
-                upsert_metadata_by_engram_id(metadata_store.as_ref(), engram_id, metadata).await
-            {
+            let updated_row = EngramRecallMetadataPatch {
+                base_id: row_id,
+                engram_id,
+                metadata,
+            };
+            if let Err(e) = update_metadata_row(metadata_store.as_ref(), updated_row).await {
                 tracing::warn!(
                     engram_id = %engram_id,
+                    row_id = %row_id,
                     error = %e,
                     "OrmPersistenceSink: metadata update failed"
                 );
@@ -179,35 +219,43 @@ impl AdmissionPersistenceSink for OrmPersistenceSink {
     }
 }
 
-/// Upsert RecallMetadata for a given engram_id. Looks up the
-/// existing row by engram_id (via query), updates if present,
-/// inserts if absent.
-///
-/// Inefficient for v1 (full query per update). A future
-/// `OrmStore::upsert_by_field` method or a typed cache would
-/// eliminate the lookup. Documented here so the next iteration
-/// has a clear target.
-async fn upsert_metadata_by_engram_id(
-    store: &OrmStore<EngramRecallMetadata>,
+/// Helper struct so the async task can take a tidy bundle of values
+/// without re-deriving them inside the closure.
+struct EngramRecallMetadataPatch {
+    base_id: Uuid,
     engram_id: Uuid,
     metadata: RecallMetadata,
+}
+
+/// Update a known metadata row in place. The row_id is the
+/// BaseEntity.id; we look up the existing record to preserve its
+/// `createdAt` (lookup is O(1) via find_by_id), then update with
+/// the new metadata fields. If the row went missing between the
+/// cache insert and this update — unexpected but possible if a
+/// concurrent delete fires — we fall back to creating a fresh row
+/// with the same row_id and engram_id.
+async fn update_metadata_row(
+    store: &OrmStore<EngramRecallMetadata>,
+    patch: EngramRecallMetadataPatch,
 ) -> Result<(), OrmStoreError> {
-    let all = store.find_all().await?;
-    let existing = all.into_iter().find(|(_, row)| row.engram_id == engram_id);
+    let existing = store.find_by_id(patch.base_id).await?;
     match existing {
-        Some((row_id, mut row)) => {
-            row.salience = metadata.salience;
-            row.access_count = metadata.access_count;
-            row.last_accessed_ms = metadata.last_accessed_ms;
-            row.protected_until_ms = metadata.protected_until_ms;
-            row.last_decayed_ms = metadata.last_decayed_ms;
-            store.update(row_id, &row).await
+        Some(mut row) => {
+            row.salience = patch.metadata.salience;
+            row.access_count = patch.metadata.access_count;
+            row.last_accessed_ms = patch.metadata.last_accessed_ms;
+            row.protected_until_ms = patch.metadata.protected_until_ms;
+            row.last_decayed_ms = patch.metadata.last_decayed_ms;
+            store.update(patch.base_id, &row).await
         }
         None => {
-            let row = EngramRecallMetadata::for_new_row(engram_id, metadata);
-            let row_id = Uuid::parse_str(&row.base.id)
-                .expect("BaseEntity::for_new_record always produces a valid UUID");
-            store.save(row_id, &row).await
+            // Row not found — concurrent delete or never created.
+            // Recreate at the cached row_id to preserve the
+            // engram_id → row_id mapping (otherwise the next update
+            // would orphan the new row).
+            let mut row = EngramRecallMetadata::for_new_row(patch.engram_id, patch.metadata);
+            row.base.id = patch.base_id.to_string();
+            store.save(patch.base_id, &row).await
         }
     }
 }
@@ -310,14 +358,38 @@ impl AdmissionPersistenceLoader for OrmLoader {
     async fn load_admission_state(
         &self,
     ) -> Result<(Vec<Engram>, Vec<(Uuid, RecallMetadata)>), OrmStoreError> {
+        let (engrams, metadata, _) = self.load_with_row_ids().await?;
+        Ok((engrams, metadata))
+    }
+}
+
+impl OrmLoader {
+    /// Same as `load_admission_state` but also returns the
+    /// `engram_id → row_id` pairs so callers can prime the
+    /// OrmPersistenceSink's cache. Skipping this prime would force the
+    /// first observe_metadata_update per engram after boot to log a
+    /// "row not found" miss (now that observe_metadata_update no
+    /// longer scans the whole table).
+    pub async fn load_with_row_ids(
+        &self,
+    ) -> Result<
+        (
+            Vec<Engram>,
+            Vec<(Uuid, RecallMetadata)>,
+            Vec<(Uuid, Uuid)>,
+        ),
+        OrmStoreError,
+    > {
         let engrams_with_ids = self.engram_store.find_all().await?;
         let metadata_with_ids = self.metadata_store.find_all().await?;
         let engrams: Vec<Engram> = engrams_with_ids.into_iter().map(|(_, e)| e).collect();
-        let metadata: Vec<(Uuid, RecallMetadata)> = metadata_with_ids
-            .into_iter()
-            .map(|(_, row)| row.into())
-            .collect();
-        Ok((engrams, metadata))
+        let mut metadata: Vec<(Uuid, RecallMetadata)> = Vec::with_capacity(metadata_with_ids.len());
+        let mut row_id_pairs: Vec<(Uuid, Uuid)> = Vec::with_capacity(metadata_with_ids.len());
+        for (row_id, row) in metadata_with_ids {
+            row_id_pairs.push((row.engram_id, row_id));
+            metadata.push(row.into());
+        }
+        Ok((engrams, metadata, row_id_pairs))
     }
 }
 
@@ -529,7 +601,6 @@ mod tests {
             "recall after restart returns the originally-admitted engram ids"
         );
 
-        std::mem::forget(tmp);
     }
 
     /// What this catches: OrmPersistenceSink + OrmLoader form a
@@ -582,6 +653,5 @@ mod tests {
             tokio::task::yield_now().await;
         }
 
-        std::mem::forget(tmp);
     }
 }
