@@ -398,177 +398,37 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::adapter::{
-        AdapterCapabilities, AIProviderAdapter as _, ApiStyle,
-    };
-    use crate::ai::types::{
-        EmbeddingRequest, EmbeddingResponse, FinishReason, HealthStatus, ModelInfo,
-        TextGenerationRequest, TextGenerationResponse, UsageMetrics,
-    };
+    use crate::ai::HeuristicInferenceAdapter;
     use crate::modules::persona_instance_manager::PersonaInstanceInfo;
+    use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::airc_source::AircTranscriptReader;
     use crate::persona::identity_provider::PersonaIdentitySource;
     use crate::persona::role_template::RoleId;
+    use crate::persona::scripted_conversation::ScriptedConversation;
     use crate::persona::supervisor::HostedPersona;
-    use airc_lib::{AircError, TranscriptEvent};
-    use std::collections::VecDeque;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
 
-    /// Stub conversation: feeds a pre-baked queue of events; records
-    /// every `say` call for assertions. `primed` records whether the
-    /// loop called `prime` at startup — the contract is one call per
-    /// loop invocation.
-    struct StubConversation {
-        high_water: u64,
-        events: Mutex<VecDeque<Result<Option<IncomingMessage>, String>>>,
-        said: Mutex<Vec<String>>,
-        primed: AtomicUsize,
-    }
+    // Bespoke `StubConversation` / `CannedAdapter` / `EmptyReader` /
+    // `fake_hosted` / `fake_hosted_with_delay` deleted per
+    // [[test-fixtures-are-system-primitives]]. The substrate's
+    // ubiquitous primitives now power every test below:
+    //   * `ScriptedConversation` for the `PersonaConversation` impl
+    //     (with `.with_events`, `.with_high_water`,
+    //     `.with_prime_failure`, `.require_prime_before_next_message`)
+    //   * `HeuristicInferenceAdapter` for the adapter (with
+    //     `.with_delay_ms` for the honest-latency test)
+    //   * `StubAircCitizen` for the AircTranscriptReader — citizens
+    //     are also transcript readers via the trait's supertrait
+    //     bound, so it doubles as the empty-transcript reader
+    //   * `hosted_with_adapter` is the local-helper-of-helpers
+    //     wrapping HostedPersona — small, no impls
 
-    #[async_trait]
-    impl PersonaConversation for StubConversation {
-        async fn prime(&mut self) -> Result<(), String> {
-            // No stream to open — the stub yields events from an
-            // in-memory queue. The substrate's prime() contract is
-            // satisfied trivially. Records that prime was called so
-            // tests can assert the loop honors the contract.
-            self.primed.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-        async fn high_water_mark(&self, _limit: usize) -> Result<u64, String> {
-            Ok(self.high_water)
-        }
-        async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
-            self.events
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or(Ok(None))
-        }
-        async fn say(&self, text: &str) -> Result<(), String> {
-            self.said.lock().unwrap().push(text.to_string());
-            Ok(())
-        }
-    }
-
-    /// Stub adapter: every generate_text returns a canned response.
-    /// Used so the inspect_persona_rag_with_inference call has
-    /// something to return without loading a GGUF.
-    ///
-    /// `inject_delay_ms` injects an awaitable sleep so the latency
-    /// metric test can assert that recorded ms reflect REAL elapsed
-    /// time — not just that `record()` is being called with whatever
-    /// happens to fall out of `Instant::elapsed`. Without this, the
-    /// metric test would be fake-demo-shaped (passing on plumbing,
-    /// silent on correctness).
-    struct CannedAdapter {
-        reply: String,
-        calls: AtomicUsize,
-        inject_delay_ms: u64,
-    }
-
-    #[async_trait]
-    impl AIProviderAdapter for CannedAdapter {
-        fn provider_id(&self) -> &str {
-            "canned"
-        }
-        fn name(&self) -> &str {
-            "canned"
-        }
-        fn capabilities(&self) -> AdapterCapabilities {
-            AdapterCapabilities {
-                supports_text_generation: true,
-                supports_chat: true,
-                is_local: true,
-                ..Default::default()
-            }
-        }
-        fn api_style(&self) -> ApiStyle {
-            ApiStyle::Local
-        }
-        fn default_model(&self) -> &str {
-            "canned-model"
-        }
-        async fn initialize(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn shutdown(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn generate_text(
-            &self,
-            _request: TextGenerationRequest,
-        ) -> Result<TextGenerationResponse, String> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            if self.inject_delay_ms > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(self.inject_delay_ms))
-                    .await;
-            }
-            Ok(TextGenerationResponse {
-                text: self.reply.clone(),
-                model: "canned-model".to_string(),
-                provider: "canned".to_string(),
-                finish_reason: FinishReason::Stop,
-                usage: UsageMetrics {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                    total_tokens: 2,
-                    estimated_cost: None,
-                },
-                response_time_ms: 0,
-                request_id: "canned-request".to_string(),
-                content: None,
-                tool_calls: None,
-                routing: None,
-                error: None,
-            })
-        }
-        async fn create_embedding(
-            &self,
-            _request: EmbeddingRequest,
-        ) -> Result<EmbeddingResponse, String> {
-            Err("canned does not embed".into())
-        }
-        async fn health_check(&self) -> HealthStatus {
-            HealthStatus::default()
-        }
-        async fn get_available_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-    }
-
-    /// Stub reader: always returns an empty transcript — RAG layer
-    /// still runs through; the inference adapter still gets called.
-    struct EmptyReader;
-
-    #[async_trait]
-    impl AircTranscriptReader for EmptyReader {
-        async fn page_recent(
-            &self,
-            _limit: usize,
-        ) -> Result<Vec<TranscriptEvent>, AircError> {
-            Ok(vec![])
-        }
-    }
-
-    fn fake_hosted(persona_peer_id: Uuid, reply: &str) -> HostedPersona {
-        fake_hosted_with_delay(persona_peer_id, reply, 0)
-    }
-
-    fn fake_hosted_with_delay(
+    fn hosted_with_adapter(
         persona_peer_id: Uuid,
-        reply: &str,
-        inject_delay_ms: u64,
+        adapter: Arc<dyn AIProviderAdapter>,
     ) -> HostedPersona {
         use crate::persona::hw_tier_descriptor::HwTierCategory;
         use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
-        let adapter = CannedAdapter {
-            reply: reply.to_string(),
-            calls: AtomicUsize::new(0),
-            inject_delay_ms,
-        };
         let persona_id = Uuid::new_v4();
         // Build a profile shaped like the LCD Compat tier — the
         // substrate's lowest common denominator. Test exercises the
@@ -601,17 +461,23 @@ mod tests {
                 source: PersonaIdentitySource::FreshlyMinted,
             },
             profile,
-            adapter: Arc::new(adapter),
-            // Service-loop tests drive the loop through `StubConversation`
-            // directly — the citizen handle is never touched. A
-            // [`StubAircCitizen`] satisfies the type without standing
-            // up a real airc daemon; per [[no-fallbacks-ever]] this
-            // replaces the previous `Option<Arc<PersonaAircRuntime>>`
-            // smell with a typed stub.
-            runtime: Arc::new(
-                crate::persona::airc_citizen::StubAircCitizen::new(persona_peer_id),
-            ),
+            adapter,
+            // System-level `StubAircCitizen` satisfies the trait
+            // without standing up a real airc daemon per
+            // [[test-fixtures-are-system-primitives]].
+            runtime: Arc::new(StubAircCitizen::new(persona_peer_id)),
         }
+    }
+
+    fn hosted_with_heuristic(persona_peer_id: Uuid) -> HostedPersona {
+        hosted_with_adapter(persona_peer_id, Arc::new(HeuristicInferenceAdapter::new()))
+    }
+
+    fn hosted_with_delay_ms(persona_peer_id: Uuid, delay_ms: u64) -> HostedPersona {
+        hosted_with_adapter(
+            persona_peer_id,
+            Arc::new(HeuristicInferenceAdapter::new().with_delay_ms(delay_ms)),
+        )
     }
 
     fn fixed_now() -> u64 {
@@ -624,31 +490,22 @@ mod tests {
     async fn replies_to_inbound_from_other_peer() {
         let persona_peer = Uuid::new_v4();
         let other_peer = Uuid::new_v4();
-        let hosted = fake_hosted(persona_peer, "yes, hi.");
+        let hosted = hosted_with_heuristic(persona_peer);
 
-        let mut conversation = StubConversation {
-            high_water: 0,
-            events: Mutex::new(VecDeque::from(vec![
-                Ok(Some(IncomingMessage {
-                    lamport: 1,
-                    peer_id: other_peer,
-                    text: "hello?".to_string(),
-                })),
-                Ok(None),
-            ])),
-            said: Mutex::new(vec![]),
-            primed: AtomicUsize::new(0),
-        };
+        let mut conversation = ScriptedConversation::new().with_events(vec![
+            Ok(Some(IncomingMessage {
+                lamport: 1,
+                peer_id: other_peer,
+                text: "hello?".to_string(),
+            })),
+            Ok(None),
+        ]);
 
-        // Caller-primes contract: direct callers of serve_persona_loop
-        // (tests, demo binaries) prime explicitly before iterating.
-        // The supervisor's spawn_persona_service path does this at the
-        // supervisor level. Per [[no-fallbacks-ever]] there's only ONE
-        // place that primes per code path; the loop assumes the
-        // contract is honored.
+        // Caller-primes contract per [[no-fallbacks-ever]] — explicit.
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
+        let reader: Arc<dyn AircTranscriptReader> =
+            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let opts = ServeOptions {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
@@ -662,9 +519,18 @@ mod tests {
         assert_eq!(outcome.turns_replied, 1);
         assert_eq!(outcome.turns_skipped, 0);
         assert_eq!(outcome.turns_errored, 0);
-        let said = conversation.said.lock().unwrap();
+        let said = conversation.said();
         assert_eq!(said.len(), 1);
-        assert_eq!(said[0], "yes, hi.");
+        // HeuristicInferenceAdapter responses are shaped
+        // `[heuristic:<hash>] ack: "<echo>"`. Per
+        // [[test-fixtures-are-system-primitives]] we verify the
+        // shape, not the literal text — the substrate's deterministic
+        // adapter wired through cleanly.
+        assert!(
+            said[0].contains("[heuristic:") && said[0].contains("ack:"),
+            "reply must come from HeuristicInferenceAdapter: {}",
+            said[0]
+        );
         // The loop primes the conversation exactly once at boot —
         // before any high_water_mark or next_message call. Per
         // [[persona-webrtc-all-tiers-latency-obsessed]] this is what
@@ -672,7 +538,7 @@ mod tests {
         // path. If a future refactor regresses to lazy subscribe, the
         // primed count drops to 0 and this test fails loudly.
         assert_eq!(
-            conversation.primed.load(Ordering::SeqCst),
+            conversation.primed_count(),
             1,
             "serve_persona_loop must call prime() exactly once at boot"
         );
@@ -715,25 +581,21 @@ mod tests {
     async fn latency_metric_reflects_real_wall_clock() {
         let persona_peer = Uuid::new_v4();
         let other_peer = Uuid::new_v4();
-        let hosted = fake_hosted_with_delay(persona_peer, "ok.", 80);
+        let hosted = hosted_with_delay_ms(persona_peer, 80);
 
-        let mut conversation = StubConversation {
-            high_water: 0,
-            events: Mutex::new(VecDeque::from(vec![
-                Ok(Some(IncomingMessage {
-                    lamport: 1,
-                    peer_id: other_peer,
-                    text: "ping?".to_string(),
-                })),
-                Ok(None),
-            ])),
-            said: Mutex::new(vec![]),
-            primed: AtomicUsize::new(0),
-        };
+        let mut conversation = ScriptedConversation::new().with_events(vec![
+            Ok(Some(IncomingMessage {
+                lamport: 1,
+                peer_id: other_peer,
+                text: "ping?".to_string(),
+            })),
+            Ok(None),
+        ]);
 
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
+        let reader: Arc<dyn AircTranscriptReader> =
+            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let opts = ServeOptions {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
@@ -823,42 +685,24 @@ mod tests {
     async fn loop_without_caller_prime_surfaces_typed_error_per_turn() {
         let persona_peer = Uuid::new_v4();
         let other_peer = Uuid::new_v4();
-        let hosted = fake_hosted(persona_peer, "unused");
+        let hosted = hosted_with_heuristic(persona_peer);
 
-        struct UnprimedConversation {
-            events: Mutex<VecDeque<()>>,
-        }
-        #[async_trait]
-        impl PersonaConversation for UnprimedConversation {
-            async fn prime(&mut self) -> Result<(), String> {
-                // Test deliberately never calls this — we're verifying
-                // the loop does NOT call it implicitly.
-                panic!("test contract: prime must NOT be invoked by the loop");
-            }
-            async fn high_water_mark(&self, _limit: usize) -> Result<u64, String> {
-                Ok(0)
-            }
-            async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String> {
-                // Mimics AircPersonaConversation's typed-err shape when
-                // unprimed. After one error the queue drains and the
-                // loop ends.
-                let mut q = self.events.lock().unwrap();
-                if q.pop_front().is_some() {
-                    Err("called before prime() — caller must invoke prime() first".to_string())
-                } else {
-                    Ok(None)
-                }
-            }
-            async fn say(&self, _text: &str) -> Result<(), String> {
-                panic!("say must not be called when next_message errors");
-            }
-        }
+        // System primitive: `require_prime_before_next_message` makes
+        // `ScriptedConversation` mirror `AircPersonaConversation`'s
+        // caller-primes contract — next_message returns Err if prime
+        // wasn't called first. Substitutes the bespoke
+        // UnprimedConversation per [[test-fixtures-are-system-primitives]].
+        let mut conversation = ScriptedConversation::new()
+            .with_events(vec![Ok(Some(IncomingMessage {
+                lamport: 1,
+                peer_id: other_peer,
+                text: "would-be-message".to_string(),
+            }))])
+            .require_prime_before_next_message();
 
-        let mut conversation = UnprimedConversation {
-            events: Mutex::new(VecDeque::from(vec![()])),
-        };
-        let _ = other_peer;
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
+        // INTENTIONALLY do NOT prime — verify the loop doesn't auto-prime.
+        let reader: Arc<dyn AircTranscriptReader> =
+            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
@@ -885,27 +729,20 @@ mod tests {
     #[tokio::test]
     async fn skips_self_loop_messages() {
         let persona_peer = Uuid::new_v4();
-        let hosted = fake_hosted(persona_peer, "should not be sent.");
+        let hosted = hosted_with_heuristic(persona_peer);
 
-        let mut conversation = StubConversation {
-            high_water: 0,
-            events: Mutex::new(VecDeque::from(vec![
-                Ok(Some(IncomingMessage {
-                    lamport: 1,
-                    peer_id: persona_peer, // SELF
-                    text: "my own echo".to_string(),
-                })),
-                Ok(None),
-            ])),
-            said: Mutex::new(vec![]),
-            primed: AtomicUsize::new(0),
-        };
-
-        // Caller-primes contract per [[no-fallbacks-ever]] — explicit,
-        // not safety-net.
+        let mut conversation = ScriptedConversation::new().with_events(vec![
+            Ok(Some(IncomingMessage {
+                lamport: 1,
+                peer_id: persona_peer, // SELF
+                text: "my own echo".to_string(),
+            })),
+            Ok(None),
+        ]);
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
+        let reader: Arc<dyn AircTranscriptReader> =
+            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
@@ -922,7 +759,7 @@ mod tests {
         assert_eq!(outcome.turns_replied, 0);
         assert_eq!(outcome.turns_skipped, 1);
         assert_eq!(outcome.turns_errored, 0);
-        assert!(conversation.said.lock().unwrap().is_empty());
+        assert!(conversation.said().is_empty());
     }
 
     /// Pre-watermark guard: messages with lamport <= high_water are
@@ -931,11 +768,11 @@ mod tests {
     async fn skips_messages_below_high_water_mark() {
         let persona_peer = Uuid::new_v4();
         let other_peer = Uuid::new_v4();
-        let hosted = fake_hosted(persona_peer, "fresh reply.");
+        let hosted = hosted_with_heuristic(persona_peer);
 
-        let mut conversation = StubConversation {
-            high_water: 100, // pre-attach history was up to lamport=100
-            events: Mutex::new(VecDeque::from(vec![
+        let mut conversation = ScriptedConversation::new()
+            .with_high_water(100) // pre-attach history was up to lamport=100
+            .with_events(vec![
                 Ok(Some(IncomingMessage {
                     lamport: 50, // BEFORE attach
                     peer_id: other_peer,
@@ -952,16 +789,11 @@ mod tests {
                     text: "new".to_string(),
                 })),
                 Ok(None),
-            ])),
-            said: Mutex::new(vec![]),
-            primed: AtomicUsize::new(0),
-        };
-
-        // Caller-primes contract per [[no-fallbacks-ever]] — explicit,
-        // not safety-net.
+            ]);
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
+        let reader: Arc<dyn AircTranscriptReader> =
+            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
@@ -981,7 +813,7 @@ mod tests {
             "lamport=50 and lamport=100 both pre-mark"
         );
         assert_eq!(outcome.turns_errored, 0);
-        assert_eq!(conversation.said.lock().unwrap().len(), 1);
+        assert_eq!(conversation.said().len(), 1);
     }
 
     /// Transient transport error increments turns_errored AND the
@@ -993,28 +825,21 @@ mod tests {
     async fn transient_next_message_error_does_not_kill_loop() {
         let persona_peer = Uuid::new_v4();
         let other_peer = Uuid::new_v4();
-        let hosted = fake_hosted(persona_peer, "ok.");
+        let hosted = hosted_with_heuristic(persona_peer);
 
-        let mut conversation = StubConversation {
-            high_water: 0,
-            events: Mutex::new(VecDeque::from(vec![
-                Err("stream lag".to_string()),
-                Ok(Some(IncomingMessage {
-                    lamport: 1,
-                    peer_id: other_peer,
-                    text: "after lag".to_string(),
-                })),
-                Ok(None),
-            ])),
-            said: Mutex::new(vec![]),
-            primed: AtomicUsize::new(0),
-        };
-
-        // Caller-primes contract per [[no-fallbacks-ever]] — explicit,
-        // not safety-net.
+        let mut conversation = ScriptedConversation::new().with_events(vec![
+            Err("stream lag".to_string()),
+            Ok(Some(IncomingMessage {
+                lamport: 1,
+                peer_id: other_peer,
+                text: "after lag".to_string(),
+            })),
+            Ok(None),
+        ]);
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> = Arc::new(EmptyReader);
+        let reader: Arc<dyn AircTranscriptReader> =
+            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
@@ -1031,6 +856,6 @@ mod tests {
         assert_eq!(outcome.turns_replied, 1);
         assert_eq!(outcome.turns_errored, 1);
         assert_eq!(outcome.turns_skipped, 0);
-        assert_eq!(conversation.said.lock().unwrap().len(), 1);
+        assert_eq!(conversation.said().len(), 1);
     }
 }

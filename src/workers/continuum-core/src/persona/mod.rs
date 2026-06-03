@@ -17,6 +17,17 @@ pub mod airc_admission;
 pub mod airc_citizen;
 pub mod airc_persona_conversation;
 pub mod airc_runtime;
+// `scripted_*` are SYSTEM-level test/replay primitives per
+// [[test-fixtures-are-system-primitives]] — ubiquitous across every
+// test in the substrate, never bespoke per module. They're gated to
+// the SAME cfg as `HeuristicInferenceAdapter` they depend on, because
+// Joel (2026-06-01): "You mix this fake shit in and it's going live
+// ALL THE TIME. The fake shit is a CHOSEN model adapter no other
+// form. Declaration." cfg gating IS the declaration.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod scripted_adapter_factory;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod scripted_conversation;
 pub mod airc_runtime_registry;
 pub mod airc_source;
 pub mod allocator;

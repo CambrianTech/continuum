@@ -365,200 +365,23 @@ pub async fn materialize_adapters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::adapter::{AdapterCapabilities, ApiStyle};
-    use crate::ai::types::{
-        EmbeddingRequest, EmbeddingResponse, HealthStatus, ModelInfo, TextGenerationRequest,
-        TextGenerationResponse,
-    };
     use crate::modules::persona_instance_manager::PersonaInstanceInfo;
-    use crate::persona::airc_citizen::{AircCitizen, StubAircCitizen};
+    use crate::persona::airc_citizen::StubAircCitizen;
     use crate::persona::hw_tier_descriptor::HwTierCategory;
     use crate::persona::identity_provider::PersonaIdentitySource;
     use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
+    use crate::persona::scripted_adapter_factory::ScriptedPersonaAdapterFactory;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use uuid::Uuid;
 
-    /// Synthesize a stub citizen for any persona_id — the supervisor
-    /// tests exercise the materialization pipeline, not the airc
-    /// transport, so any peer_id works. Per slice 13.5's AircCitizen
-    /// extraction, the closure returns the trait object directly; no
-    /// `Option<Arc<PersonaAircRuntime>>` smell, no `.expect`.
-    fn stub_citizen_lookup() -> impl Fn(Uuid) -> Option<Arc<dyn AircCitizen>> {
-        |_pid| Some(Arc::new(StubAircCitizen::new(Uuid::new_v4())) as Arc<dyn AircCitizen>)
-    }
-
-    /// Minimal fake adapter — implements just enough of the trait to
-    /// satisfy the trait object boundary. `warmup_total` is shared
-    /// across the OkFactory's spawned adapters so the supervisor
-    /// test can assert that warmup() was called for each successfully
-    /// materialized adapter per [[init-once-handle-then-lease-zero-copy-refs]].
-    struct FakeAdapter {
-        provider_id: String,
-        warmup_total: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl AIProviderAdapter for FakeAdapter {
-        fn provider_id(&self) -> &str {
-            &self.provider_id
-        }
-        fn name(&self) -> &str {
-            "fake"
-        }
-        fn capabilities(&self) -> AdapterCapabilities {
-            AdapterCapabilities::default()
-        }
-        fn api_style(&self) -> ApiStyle {
-            ApiStyle::Local
-        }
-        fn default_model(&self) -> &str {
-            "fake-model"
-        }
-        async fn initialize(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn warmup(&self) -> Result<(), String> {
-            // Increment the shared counter so the supervisor test
-            // can assert "warmup was called once per successfully-
-            // materialized adapter." If a future refactor forgets
-            // to call warmup in materialize_adapters, the counter
-            // drops to 0 and the regression test fails loudly.
-            self.warmup_total.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-        async fn shutdown(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn generate_text(
-            &self,
-            _request: TextGenerationRequest,
-        ) -> Result<TextGenerationResponse, String> {
-            Err("fake adapter does not generate".into())
-        }
-        async fn create_embedding(
-            &self,
-            _request: EmbeddingRequest,
-        ) -> Result<EmbeddingResponse, String> {
-            Err("fake adapter does not embed".into())
-        }
-        async fn health_check(&self) -> HealthStatus {
-            HealthStatus::default()
-        }
-        async fn get_available_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-    }
-
-    /// Always-succeeds factory — returns a `FakeAdapter` tagged with
-    /// the profile's `model_id` so tests can verify each persona got
-    /// its own adapter (not one shared instance leaking). The shared
-    /// `warmup_total` counter tracks how many of those adapters had
-    /// `warmup()` called by the supervisor.
-    struct OkFactory {
-        builds: AtomicUsize,
-        warmup_total: Arc<AtomicUsize>,
-    }
-
-    impl OkFactory {
-        fn new() -> Self {
-            Self {
-                builds: AtomicUsize::new(0),
-                warmup_total: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl PersonaAdapterFactory for OkFactory {
-        async fn build_adapter(
-            &self,
-            profile: &PersonaInferenceProfile,
-        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-            self.builds.fetch_add(1, Ordering::SeqCst);
-            Ok(Arc::new(FakeAdapter {
-                provider_id: profile.model_id.clone(),
-                warmup_total: self.warmup_total.clone(),
-            }))
-        }
-    }
-
-    /// Factory that always rejects — verifies AdapterFactory error
-    /// path threading.
-    struct ErrFactory;
-
-    #[async_trait]
-    impl PersonaAdapterFactory for ErrFactory {
-        async fn build_adapter(
-            &self,
-            _profile: &PersonaInferenceProfile,
-        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-            Err("simulated factory rejection".into())
-        }
-    }
-
-    /// Factory that builds an adapter whose warmup() always fails.
-    /// Verifies the `SupervisorError::AdapterWarmup` variant fires
-    /// when an adapter refuses to warm at boot.
-    struct WarmupFailingFactory;
-
-    struct WarmupFailingAdapter;
-
-    #[async_trait]
-    impl AIProviderAdapter for WarmupFailingAdapter {
-        fn provider_id(&self) -> &str {
-            "warmup-failing"
-        }
-        fn name(&self) -> &str {
-            "warmup-failing"
-        }
-        fn capabilities(&self) -> AdapterCapabilities {
-            AdapterCapabilities::default()
-        }
-        fn api_style(&self) -> ApiStyle {
-            ApiStyle::Local
-        }
-        fn default_model(&self) -> &str {
-            "wf-model"
-        }
-        async fn initialize(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn warmup(&self) -> Result<(), String> {
-            Err("simulated warmup failure".to_string())
-        }
-        async fn shutdown(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn generate_text(
-            &self,
-            _request: TextGenerationRequest,
-        ) -> Result<TextGenerationResponse, String> {
-            panic!("generate_text must not be reachable on failed-warmup adapter")
-        }
-        async fn create_embedding(
-            &self,
-            _request: EmbeddingRequest,
-        ) -> Result<EmbeddingResponse, String> {
-            Err("no embeddings".into())
-        }
-        async fn health_check(&self) -> HealthStatus {
-            HealthStatus::default()
-        }
-        async fn get_available_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-    }
-
-    #[async_trait]
-    impl PersonaAdapterFactory for WarmupFailingFactory {
-        async fn build_adapter(
-            &self,
-            _profile: &PersonaInferenceProfile,
-        ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-            Ok(Arc::new(WarmupFailingAdapter))
-        }
-    }
+    // Bespoke `FakeAdapter` / `OkFactory` / `ErrFactory` /
+    // `WarmupFailingFactory` / `WarmupFailingAdapter` deleted per
+    // [[test-fixtures-are-system-primitives]] — every test below
+    // leases `ScriptedPersonaAdapterFactory` (built on the
+    // production-runnable `HeuristicInferenceAdapter`) plus
+    // `StubAircCitizen::fresh_lookup`. Adapter behaviors (warmup
+    // success/failure, factory rejection, counter observation) come
+    // from the system primitives' builder methods.
 
     fn fake_instance(name: &str) -> PersonaInstanceInfo {
         PersonaInstanceInfo {
@@ -608,21 +431,28 @@ mod tests {
             },
         ];
 
-        let factory = OkFactory::new();
-        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
 
         assert_eq!(hosted.len(), 2);
-        assert_eq!(factory.builds.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.build_count(), 2);
 
         let helper = hosted[0].as_ref().expect("Helper hosted");
         assert_eq!(helper.role, RoleId::Helper);
         assert_eq!(helper.identity.agent_name, "Paige");
-        assert_eq!(helper.adapter.provider_id(), "model-a");
+        assert_eq!(
+            helper.adapter.provider_id(),
+            crate::ai::HEURISTIC_PROVIDER_ID
+        );
 
         let coder = hosted[1].as_ref().expect("Coder hosted");
         assert_eq!(coder.role, RoleId::Coder);
         assert_eq!(coder.identity.agent_name, "Pax");
-        assert_eq!(coder.adapter.provider_id(), "model-b");
+        assert_eq!(
+            coder.adapter.provider_id(),
+            crate::ai::HEURISTIC_PROVIDER_ID
+        );
     }
 
     /// A row that arrives with `Err(profile)` from slice 8 passes
@@ -647,12 +477,13 @@ mod tests {
             },
         ];
 
-        let factory = OkFactory::new();
-        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory called exactly once — for the Ok row only.
-        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+        assert_eq!(factory.build_count(), 1);
         assert!(hosted[0].is_ok(), "Helper still materializes");
         match &hosted[1] {
             Err(SupervisorError::Profile {
@@ -680,8 +511,10 @@ mod tests {
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
 
-        let factory = ErrFactory;
-        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
+        let factory =
+            ScriptedPersonaAdapterFactory::always_fails("simulated factory rejection");
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -703,10 +536,10 @@ mod tests {
     /// no factory calls fire.
     #[tokio::test]
     async fn empty_plans_yields_empty_hosted() {
-        let factory = OkFactory::new();
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
         let hosted = materialize_adapters(vec![], &factory, |_| None).await;
         assert!(hosted.is_empty());
-        assert_eq!(factory.builds.load(Ordering::SeqCst), 0);
+        assert_eq!(factory.build_count(), 0);
     }
 
     /// Missing-runtime path: when `runtime_lookup` returns `None` for
@@ -730,7 +563,7 @@ mod tests {
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
 
-        let factory = OkFactory::new();
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
         // `|_| None` here is the substrate-bug shape we're locking in:
         // the registry exists but doesn't contain this persona_id.
         let hosted = materialize_adapters(plans, &factory, |_| None).await;
@@ -740,7 +573,7 @@ mod tests {
         // adapter construction is expensive (model load), the
         // substrate refuses early.
         assert_eq!(
-            factory.builds.load(Ordering::SeqCst),
+            factory.build_count(),
             0,
             "factory must not run when runtime lookup fails"
         );
@@ -782,20 +615,21 @@ mod tests {
             },
         ];
 
-        let factory = OkFactory::new();
+        let factory = ScriptedPersonaAdapterFactory::heuristic();
         // Lookup returns Some only for Paige; Pax goes RuntimeMissing.
-        let lookup = move |pid: Uuid| -> Option<Arc<dyn AircCitizen>> {
+        let lookup = move |pid: Uuid| -> Option<Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
             if pid == pax_persona_id {
                 None
             } else {
-                Some(Arc::new(StubAircCitizen::new(Uuid::new_v4())) as Arc<dyn AircCitizen>)
+                Some(Arc::new(StubAircCitizen::new(Uuid::new_v4()))
+                    as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
             }
         };
         let hosted = materialize_adapters(plans, &factory, lookup).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory ran exactly once — for Paige, not Pax.
-        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+        assert_eq!(factory.build_count(), 1);
         assert!(hosted[0].is_ok(), "Paige materializes cleanly");
         match &hosted[1] {
             Err(SupervisorError::RuntimeMissing {
@@ -833,17 +667,17 @@ mod tests {
             },
         ];
 
-        let factory = OkFactory::new();
-        let warmup_counter = factory.warmup_total.clone();
-        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
+        let (factory, counts) = ScriptedPersonaAdapterFactory::heuristic_with_counters();
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
 
         // Both slots materialize cleanly.
         assert_eq!(hosted.len(), 2);
         assert!(hosted.iter().all(|r| r.is_ok()));
         // Every adapter was built AND warmed.
-        assert_eq!(factory.builds.load(Ordering::SeqCst), 2);
+        assert_eq!(factory.build_count(), 2);
         assert_eq!(
-            warmup_counter.load(Ordering::SeqCst),
+            counts.warmups(),
             2,
             "warmup() must be called once per successfully-materialized adapter"
         );
@@ -861,8 +695,11 @@ mod tests {
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
 
-        let factory = WarmupFailingFactory;
-        let hosted = materialize_adapters(plans, &factory, stub_citizen_lookup()).await;
+        let factory = ScriptedPersonaAdapterFactory::heuristic_with_warmup_failure(
+            "simulated warmup failure",
+        );
+        let hosted =
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -889,31 +726,33 @@ mod tests {
     /// `Profile` / `AdapterFactory` / `RuntimeMissing` already enforce.
     #[tokio::test]
     async fn warmup_failure_does_not_taint_sibling_slots() {
-        // Slot 0: OkFactory adapter that warms cleanly.
-        // Slot 1: WarmupFailingFactory adapter that refuses to warm.
-        // We test them with two separate calls (one per factory) since
-        // materialize_adapters takes one factory; assert each plan's
-        // outcome independently.
-        let factory_ok = OkFactory::new();
-        let warmup_ok = factory_ok.warmup_total.clone();
+        let (factory_ok, ok_counts) =
+            ScriptedPersonaAdapterFactory::heuristic_with_counters();
         let ok_plan = vec![MaterializedPersonaPlan {
             role: RoleId::Helper,
             instance: fake_instance("Paige"),
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
         let hosted_ok =
-            materialize_adapters(ok_plan, &factory_ok, stub_citizen_lookup()).await;
+            materialize_adapters(ok_plan, &factory_ok, StubAircCitizen::fresh_lookup())
+                .await;
         assert!(hosted_ok[0].is_ok(), "ok-warmup adapter materializes");
-        assert_eq!(warmup_ok.load(Ordering::SeqCst), 1);
+        assert_eq!(ok_counts.warmups(), 1);
 
-        let factory_fail = WarmupFailingFactory;
+        let factory_fail = ScriptedPersonaAdapterFactory::heuristic_with_warmup_failure(
+            "simulated warmup failure",
+        );
         let fail_plan = vec![MaterializedPersonaPlan {
             role: RoleId::Coder,
             instance: fake_instance("Pax"),
             profile: Ok(fake_profile("Pax", "model-b")),
         }];
-        let hosted_fail =
-            materialize_adapters(fail_plan, &factory_fail, stub_citizen_lookup()).await;
+        let hosted_fail = materialize_adapters(
+            fail_plan,
+            &factory_fail,
+            StubAircCitizen::fresh_lookup(),
+        )
+        .await;
         assert!(
             matches!(hosted_fail[0], Err(SupervisorError::AdapterWarmup { .. })),
             "warmup-failing adapter fails its own slot"

@@ -111,6 +111,20 @@ impl StubAircCitizen {
     pub fn new(peer_id: Uuid) -> Self {
         Self { peer_id }
     }
+
+    /// Convenience: a `runtime_lookup` closure for
+    /// `materialize_adapters` that returns a fresh stub for every
+    /// persona_id queried. Substrate-level helper per
+    /// [[test-fixtures-are-system-primitives]] — every supervisor
+    /// test that exercises materialize_adapters without a real airc
+    /// daemon leases this closure shape.
+    pub fn fresh_lookup(
+    ) -> impl Fn(Uuid) -> Option<std::sync::Arc<dyn AircCitizen>> + Clone {
+        |_pid| {
+            Some(std::sync::Arc::new(Self::new(Uuid::new_v4()))
+                as std::sync::Arc<dyn AircCitizen>)
+        }
+    }
 }
 
 #[async_trait]
