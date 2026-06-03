@@ -712,12 +712,24 @@ impl Default for AdapterRegistry {
 // ARC-ADAPTER SHIM — register an already-initialized shared adapter
 //==============================================================================
 
-/// Newtype that wraps `Arc<dyn AIProviderAdapter>` and re-implements
-/// the trait by delegating to the inner Arc. The substrate's supervisor
-/// holds the persona's adapter as an Arc (so the service loop, the
-/// cognition layer, and any future shared-base + LoRA paging consumer
-/// can all see the same instance); the global provider registry stores
-/// `Box<dyn AIProviderAdapter>`. This shim is the bridge.
+/// **TECHNICAL DEBT — see task #162.** This shim is a wrapped hack,
+/// not the intentional architecture Joel called for ("Elegant
+/// intentional architecture not wrapped hacks", 2026-06-03). The
+/// elegant fix is `AdapterRegistry` storing `Arc<dyn AIProviderAdapter>`
+/// natively, which requires removing `&mut self` from the trait's
+/// vestigial `initialize` / `shutdown` methods (factory pre-inits,
+/// Drop handles cleanup; no production caller relies on the registry
+/// running them after `register`). Task #162 tracks the full refactor:
+/// trait surface, every adapter impl, every registration site,
+/// deletion of this shim.
+///
+/// What this shim does in the meantime: wraps `Arc<dyn AIProviderAdapter>`
+/// and re-implements the trait by delegating to the inner Arc. The
+/// substrate's supervisor holds the persona's adapter as an Arc (so
+/// the service loop, the cognition layer, and any future shared-base
+/// + LoRA paging consumer can all see the same instance); the global
+/// provider registry stores `Box<dyn AIProviderAdapter>`. This shim
+/// is the bridge until #162 makes Arc-native registry storage land.
 ///
 /// `initialize` and `shutdown` are no-ops because the underlying
 /// adapter's lifecycle is owned by whoever holds the Arc — typically
