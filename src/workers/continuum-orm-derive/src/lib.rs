@@ -136,7 +136,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     // columns via `base_entity_fields()` rather than appearing as
     // one big JSON column.
     let mut field_pushes = Vec::new();
-    let mut saw_base = false;
+    let mut saw_base: Option<String> = None;
 
     for field in fields {
         let field_info = match parse_field(field) {
@@ -149,17 +149,28 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         }
 
         if field_info.is_base_entity || field_info.primary_key {
-            if saw_base {
+            if let Some(prior) = &saw_base {
+                let here = field
+                    .ident
+                    .as_ref()
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "<unnamed>".to_string());
                 return syn::Error::new_spanned(
                     field,
-                    "duplicate BaseEntity source — entities use ONE of: \
-                     `#[serde(flatten)] base: BaseEntity` OR \
-                     `#[entity(primary_key)] id: Uuid`. Both are mutually exclusive.",
+                    format!(
+                        "duplicate BaseEntity source on `{here}` — already declared by `{prior}`. \
+                         Entities use ONE of: `#[serde(flatten)] base: BaseEntity` OR \
+                         `#[entity(primary_key)] id: Uuid`. Both are mutually exclusive."
+                    ),
                 )
                 .to_compile_error()
                 .into();
             }
-            saw_base = true;
+            saw_base = field
+                .ident
+                .as_ref()
+                .map(|i| i.to_string())
+                .or(Some("<unnamed>".to_string()));
             field_pushes.push(quote! {
                 fields.extend(::continuum_core::orm::base_entity_fields());
             });
@@ -356,9 +367,21 @@ fn extract_struct_meta(
                 indexes.push(idx);
                 Ok(())
             } else {
-                // Tolerate unknown keys for forward compatibility.
-                let _ = meta.value();
-                Ok(())
+                // Hard-error on unknown keys. A typo like `collecton`
+                // would silently fall through to the "missing
+                // collection" error and confuse the user; better to
+                // call it out at the exact attribute span. Same
+                // doctrine as the field-level parser above.
+                let key = meta
+                    .path
+                    .get_ident()
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                Err(meta.error(format!(
+                    "unknown struct-level entity attribute `{}`. \
+                     Known keys: collection, index.",
+                    key
+                )))
             }
         })?;
     }
@@ -490,8 +513,24 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
                 } else if meta.path.is_ident("foreign_key") {
                     foreign_key = Some(parse_foreign_key(&meta)?);
                 } else {
-                    // Tolerate unknown keys for forward compatibility.
-                    let _ = meta.value();
+                    // Hard-error on unknown keys. Per Joel's no-fallback
+                    // doctrine + the substrate's "schema = struct"
+                    // commitment: a typo like `indexd` or `foriegn_key`
+                    // must surface at compile time, not silently
+                    // produce a wrong schema. Listing known keys in
+                    // the error message helps the user fix their
+                    // attribute fast.
+                    let key = meta
+                        .path
+                        .get_ident()
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    return Err(meta.error(format!(
+                        "unknown field-level entity attribute `{}`. \
+                         Known keys: indexed, unique, nullable, json, skip, \
+                         primary_key, foreign_key.",
+                        key
+                    )));
                 }
                 Ok(())
             })?;
@@ -518,6 +557,22 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
 
     let serde_name = serde_rename.unwrap_or_else(|| to_camel_case(&ident.to_string()));
 
+    // Reject `primary_key + foreign_key` on the same field at compile
+    // time. `primary_key` means "this is the BaseEntity id" — already
+    // UNIQUE + PRIMARY KEY by base_entity_fields(). Adding a FK to
+    // the same field would have to override base_entity_fields()'s
+    // declaration of `id`, which the macro doesn't do. Silently
+    // dropping the FK (the prior behavior) was exactly the kind of
+    // schema-vs-attribute drift the macro is supposed to prevent.
+    if primary_key && foreign_key.is_some() {
+        return Err(syn::Error::new_spanned(
+            ident,
+            "`#[entity(primary_key)]` and `#[entity(foreign_key(...))]` are mutually exclusive — \
+             primary_key implies the BaseEntity id (unique by design). Declare the FK on a \
+             different field, or drop primary_key if this is actually a relational pointer.",
+        ));
+    }
+
     Ok(FieldInfo {
         serde_name,
         field_type,
@@ -541,15 +596,27 @@ fn parse_foreign_key(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Forei
     let content;
     syn::parenthesized!(content in meta.input);
 
-    // First positional argument — required.
+    // First positional argument — required. Format strictly
+    // "collection.field" with EXACTLY one dot — multi-dot inputs
+    // like "engrams.id.too.many.dots" would silently produce a
+    // garbage target_field that fails at runtime with a cryptic
+    // SQL error. Catch it at compile time.
     let target_lit: syn::LitStr = content.parse()?;
     let raw = target_lit.value();
-    let (target_collection, target_field) = match raw.split_once('.') {
-        Some((c, f)) if !c.is_empty() && !f.is_empty() => (c.to_string(), f.to_string()),
+    let parts: Vec<&str> = raw.split('.').collect();
+    let (target_collection, target_field) = match parts.as_slice() {
+        [c, f] if !c.is_empty()
+            && !f.is_empty()
+            && c.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+            && f.chars().all(|ch| ch.is_alphanumeric() || ch == '_') =>
+        {
+            (c.to_string(), f.to_string())
+        }
         _ => {
             return Err(syn::Error::new_spanned(
                 target_lit,
-                "foreign_key target must be \"collection.field\" (e.g. \"engrams.id\")",
+                "foreign_key target must be \"collection.field\" — exactly one dot, both halves \
+                 non-empty alphanumeric+underscore. Example: \"engrams.id\".",
             ))
         }
     };
@@ -593,41 +660,120 @@ fn parse_foreign_key(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Forei
 
 // ─── Type inference helpers ────────────────────────────────────────────
 
+/// Field-type inference from a Rust type expression. Recursive through
+/// transparent wrappers (`Option`, `Box`, `Arc`, `Rc`, `Cow`) — each
+/// strips one level and re-infers from the inner type. The outer
+/// `unwrap_option` separately tracks `nullable` so callers know the
+/// field is optional even after the type system stripped the Option
+/// for inference.
+///
+/// **Recognized types** (post strip-wrappers):
+///
+/// | Rust type                                  | FieldType  |
+/// |--------------------------------------------|------------|
+/// | `String` / `str` / `PathBuf` / `Path`      | `String`   |
+/// | `Uuid`                                     | `Uuid`     |
+/// | `bool`                                     | `Boolean`  |
+/// | `u*` / `i*` / `f32` / `f64`                | `Number`   |
+/// | `DateTime` / `NaiveDateTime` / `Date`      | `Date`     |
+/// | `Vec` / `HashMap` / `BTreeMap` / `HashSet` | `Json`     |
+/// | Any other named type (enum/struct)         | `Json`     |
+///
+/// The "any other → Json" tail is deliberate per
+/// [[orm-everything-not-hand-edited-files]]: domain types serdes-
+/// round-trip through JSON columns reliably. Callers wanting a
+/// different mapping use `#[entity(json)]` (already JSON), or in
+/// the future could add `#[entity(string_enum)]` for enums-as-text.
+///
+/// Tuple types, fixed-size arrays, `Result<T, E>`, and other non-
+/// path types fall through to `Json` (not silently — the doctrine
+/// is "schema = struct"; if you persist a tuple it becomes JSON).
 fn infer_field_type(ty: &Type) -> InferredFieldType {
+    // First strip transparent wrappers (Box, Arc, Rc, Cow) so the
+    // wrapper-name doesn't drive inference. The reviewer's example:
+    // `boxed_name: Box<String>` should be String, not Json.
+    if let Some(inner) = strip_transparent_wrapper(ty) {
+        return infer_field_type(inner);
+    }
+
     let name = type_last_segment(ty);
     match name.as_deref() {
         Some("String" | "str") => InferredFieldType::String,
+        // PathBuf / Path serdes as String; without this branch they
+        // fall to the "any other named type → Json" tail.
+        Some("PathBuf" | "Path") => InferredFieldType::String,
         Some("Uuid") => InferredFieldType::Uuid,
         Some("bool") => InferredFieldType::Boolean,
         Some(
-            "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize"
-            | "f32" | "f64",
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
+            | "i128" | "isize" | "f32" | "f64",
         ) => InferredFieldType::Number,
+        // Timestamp types. chrono's DateTime / NaiveDateTime serdes
+        // as ISO 8601 strings; the substrate's Date FieldType exists
+        // for exactly this. Without this branch every timestamp
+        // becomes a Json column and the existing `created_at` etc.
+        // pattern in BaseEntity loses its semantic.
+        Some("DateTime" | "NaiveDateTime" | "Date" | "NaiveDate" | "SystemTime") => {
+            InferredFieldType::Date
+        }
         Some("Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet") => InferredFieldType::Json,
-        // Any other named type (enum or struct) → Json. Enums that
-        // serialize as plain variant names can be overridden via
-        // a future `#[entity(string_enum)]` attribute, but for v1
-        // Json is the safe default — JSON-tagged unions round-trip
-        // perfectly through serde + a JSON column.
+        // Any other named type (enum or struct) → Json. JSON-tagged
+        // unions + nested structs round-trip perfectly through serde
+        // + a JSON column. Per CLAUDE.md compression: one safe
+        // default for the long tail; overrides via attribute.
         Some(_) => InferredFieldType::Json,
         None => InferredFieldType::Json,
     }
 }
 
-/// Unwraps `Option<T>` once. Returns `(inner_or_self, is_option)`.
+/// Recursively unwrap `Option<T>` (one or more layers). Returns
+/// `(innermost_non_option_ty, is_optional)`. `Option<Option<T>>` is
+/// flattened to `T` + nullable; the outer Option's nullability is
+/// the load-bearing signal (serde collapses double-Option via
+/// `#[serde(default)]` patterns anyway).
 fn unwrap_option(ty: &Type) -> (&Type, bool) {
-    if let Type::Path(tp) = ty {
-        if let Some(seg) = tp.path.segments.last() {
-            if seg.ident == "Option" {
-                if let PathArguments::AngleBracketed(args) = &seg.arguments {
-                    if let Some(GenericArgument::Type(inner)) = args.args.first() {
-                        return (inner, true);
-                    }
-                }
-            }
-        }
+    if let Some(inner) = peel_option_once(ty) {
+        let (innermost, _) = unwrap_option(inner);
+        return (innermost, true);
     }
     (ty, false)
+}
+
+/// Single-step Option peel. None if `ty` isn't `Option<T>`.
+fn peel_option_once(ty: &Type) -> Option<&Type> {
+    let Type::Path(tp) = ty else { return None };
+    let seg = tp.path.segments.last()?;
+    if seg.ident != "Option" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &seg.arguments else { return None };
+    let GenericArgument::Type(inner) = args.args.first()? else { return None };
+    Some(inner)
+}
+
+/// If `ty` is a transparent wrapper (`Box<T>`, `Arc<T>`, `Rc<T>`,
+/// `Cow<'_, T>`), return the inner type. These wrappers don't change
+/// the persisted shape — `Box<String>` is still a String column —
+/// so inference walks through them.
+///
+/// `Option<T>` is NOT considered a transparent wrapper here because
+/// nullability is load-bearing for the schema. `unwrap_option`
+/// handles it separately.
+fn strip_transparent_wrapper(ty: &Type) -> Option<&Type> {
+    let Type::Path(tp) = ty else { return None };
+    let seg = tp.path.segments.last()?;
+    let name = seg.ident.to_string();
+    if !matches!(name.as_str(), "Box" | "Arc" | "Rc" | "Cow") {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &seg.arguments else { return None };
+    // Cow has a lifetime arg first; find the first Type arg.
+    for arg in &args.args {
+        if let GenericArgument::Type(inner) = arg {
+            return Some(inner);
+        }
+    }
+    None
 }
 
 fn type_last_segment(ty: &Type) -> Option<String> {

@@ -114,6 +114,50 @@ fn fresh_widget(name: &str) -> DeriveTestWidget {
     }
 }
 
+/// Type-inference fixture covering branches the round-trip test
+/// can't easily exercise. Tests assert `collection_schema()`'s output
+/// directly with no disk I/O — pure macro-output verification.
+///
+/// Schema-only (no serde derives) because the workspace's `chrono`
+/// crate doesn't enable the `serde` feature, and SystemTime/PathBuf
+/// don't ship serde adapters out of the box either. We're verifying
+/// the macro's TYPE INFERENCE, not round-trip serde behavior.
+///
+/// Added 2026-06-03 per reviewer-1 BLOCK finding on PR #1519: the
+/// prior fixture only exercised types DeriveTestWidget happened to
+/// use; common types like `SystemTime`, `PathBuf`, `Box<T>`, `Arc<T>`
+/// were silently bucketed to `Json` without test coverage.
+#[allow(dead_code)]
+#[derive(Entity)]
+#[entity(collection = "type_inference_probe")]
+struct TypeInferenceProbe {
+    /// BaseEntity id via the primary_key pattern (avoids needing
+    /// serde::flatten which depends on Serialize/Deserialize).
+    #[entity(primary_key)]
+    id: Uuid,
+
+    /// SystemTime → FieldType::Date. Same branch as chrono::DateTime,
+    /// chrono::NaiveDateTime, chrono::Date.
+    when: std::time::SystemTime,
+
+    /// PathBuf → FieldType::String (serdes as string in any
+    /// serializer that handles it; the macro recognizes the type
+    /// name regardless of whether serde has wired it up).
+    config_path: std::path::PathBuf,
+
+    /// Box<String> — transparent wrapper, peels to String.
+    boxed_label: Box<String>,
+
+    /// Arc<u64> — transparent wrapper, peels to Number.
+    shared_counter: std::sync::Arc<u64>,
+
+    /// Option<Option<String>> — flattens to nullable String.
+    double_optional: Option<Option<String>>,
+
+    /// u128 — Number variant we missed in the original list.
+    big_number: u128,
+}
+
 /// Child entity exercising `#[entity(foreign_key(...))]` — references
 /// DeriveTestWidget by widget_id, cascade-deletes on parent removal.
 /// The widget_id column becomes a FOREIGN KEY in CREATE TABLE; the
@@ -417,4 +461,112 @@ async fn foreign_key_cascade_deletes_children_via_db_enforcement() {
         after.is_none(),
         "ON DELETE CASCADE must remove the child row at the DB layer"
     );
+}
+
+// ── Slice A: proc-macro hardening (review fixes for #1519) ────────────
+
+/// What this catches: SystemTime / chrono::DateTime → FieldType::Date,
+/// not Json. Reviewer-1 finding: the original infer_field_type
+/// bucketed any non-listed named type to Json, silently turning
+/// timestamps into JSON columns and never producing the Date variant
+/// the enum declares. Same code path for chrono::DateTime,
+/// NaiveDateTime, Date, NaiveDate — the macro matches by type
+/// last-segment name.
+#[test]
+fn systemtime_infers_as_date() {
+    let schema = TypeInferenceProbe::collection_schema();
+    let when = schema
+        .fields
+        .iter()
+        .find(|f| f.name == "when")
+        .expect("when field present");
+    assert_eq!(when.field_type, FieldType::Date);
+}
+
+/// What this catches: PathBuf → FieldType::String, not Json. Reviewer-1
+/// finding: PathBuf serdes as a string but the macro bucketed it as
+/// Json. Without this branch, any persistence path with a PathBuf
+/// field (logging paths, model paths, persona home derivations) would
+/// land in a JSON column instead of a String column.
+#[test]
+fn pathbuf_infers_as_string() {
+    let schema = TypeInferenceProbe::collection_schema();
+    let config_path = schema
+        .fields
+        .iter()
+        .find(|f| f.name == "configPath")
+        .expect("configPath field present");
+    assert_eq!(config_path.field_type, FieldType::String);
+}
+
+/// What this catches: `Box<String>` / `Arc<u64>` peel through the
+/// transparent wrapper. Reviewer-1 finding: the macro inferred from
+/// the last segment name (`Box` / `Arc`) and bucketed both as Json.
+/// Now the inference walks through and picks String / Number.
+#[test]
+fn box_and_arc_wrappers_peel_to_inner_type() {
+    let schema = TypeInferenceProbe::collection_schema();
+    let boxed = schema
+        .fields
+        .iter()
+        .find(|f| f.name == "boxedLabel")
+        .expect("boxedLabel present");
+    let shared = schema
+        .fields
+        .iter()
+        .find(|f| f.name == "sharedCounter")
+        .expect("sharedCounter present");
+    assert_eq!(boxed.field_type, FieldType::String);
+    assert_eq!(shared.field_type, FieldType::Number);
+}
+
+/// What this catches: `Option<Option<T>>` collapses to nullable inner
+/// type, not a Json column. Reviewer-1 finding: unwrap_option only
+/// peeled one layer; the inner Option fell through to Json. Now
+/// unwrap_option is recursive — double-Option becomes nullable inner.
+#[test]
+fn double_option_collapses_to_nullable_inner_type() {
+    let schema = TypeInferenceProbe::collection_schema();
+    let double = schema
+        .fields
+        .iter()
+        .find(|f| f.name == "doubleOptional")
+        .expect("doubleOptional present");
+    assert_eq!(double.field_type, FieldType::String);
+    assert!(
+        double.nullable,
+        "double-Option must propagate the nullable flag"
+    );
+}
+
+/// What this catches: u128 — Reviewer-1 noted the original number
+/// list was missing u128/i128. They serdes as numeric (within range)
+/// or stringified-numeric (out of range); the schema treats them as
+/// Number columns consistently with the other integer types.
+#[test]
+fn u128_infers_as_number() {
+    let schema = TypeInferenceProbe::collection_schema();
+    let big = schema
+        .fields
+        .iter()
+        .find(|f| f.name == "bigNumber")
+        .expect("bigNumber present");
+    assert_eq!(big.field_type, FieldType::Number);
+}
+
+/// What this catches: the TypeInferenceProbe schema register +
+/// resolve roundtrip cleanly through OrmEntityRegistry. Smoke test
+/// that the new fixture is registry-safe alongside the production
+/// entities.
+#[test]
+fn type_inference_probe_registers_cleanly() {
+    use crate::orm::entity::OrmEntityRegistry;
+    let registry = OrmEntityRegistry::new();
+    registry
+        .register::<TypeInferenceProbe>()
+        .expect("TypeInferenceProbe registers cleanly");
+    let resolved = registry
+        .resolve("type_inference_probe")
+        .expect("type_inference_probe resolves");
+    assert_eq!(resolved.collection, "type_inference_probe");
 }
