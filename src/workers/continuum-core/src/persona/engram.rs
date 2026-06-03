@@ -49,6 +49,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
+use crate::orm::{base_entity_fields, OrmEntity};
+
 //=============================================================================
 // CORE: ENGRAM
 //=============================================================================
@@ -104,6 +107,124 @@ pub struct Engram {
     /// for v1 manual admissions; should be Some for Recipe-driven
     /// admissions in PR-2+).
     pub admission_trace_id: Option<String>,
+}
+
+// ── ORM entity registration (#101 slice A) ────────────────────────
+//
+// Per [[no-sql-everything-through-orm-entities]] + [[orm-everything-
+// not-hand-edited-files]]: engram persistence is the ORM's
+// responsibility, not raw rusqlite in module code. This slice ships
+// the schema-side architectural commitment; the actual save/load
+// wire-up depends on the entity↔record adapter (part of #123) and
+// follows in #101 slice B.
+//
+// Storage shape (per the RoleTemplate precedent in #123 slice 1):
+// flat fields for indexed / queryable values, JSON columns for the
+// nested EngramOrigin enum + recall_keys Vec. BaseEntity columns
+// first (id + createdAt + updatedAt + version) so the ORM's typical
+// machinery (indexes, vector index, exports, round-trip-to-JSON)
+// treats engrams uniformly with every other entity.
+//
+// `kind` and `trust_state_at_admission` are flat strings (enum
+// variants serialize as String) — both are common filter targets
+// ("show me all Episodic engrams"; "filter by trust tier"). `origin`
+// is a tagged-union enum with variant-specific payloads; JSON
+// column lets the variant ride intact and queries on
+// origin.<inner-field> use the adapter's JSON-path support.
+//
+// `admittedAtMs` is indexed because admission-order is the primary
+// sort for recall_recent + recall_scored's tiebreak.
+impl OrmEntity for Engram {
+    const COLLECTION: &'static str = "engrams";
+
+    fn collection_schema() -> CollectionSchema {
+        let mut fields = base_entity_fields();
+        fields.extend(vec![
+            // Engram category (Episodic / Semantic / Procedural /
+            // SelfReflection). Indexed because recall by kind is a
+            // common filter.
+            SchemaField {
+                name: "kind".to_string(),
+                field_type: FieldType::String,
+                indexed: true,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+            // The memorable content. Not indexed for full-text yet
+            // (FTS landing in a later slice when the substrate's
+            // recall pipeline asks for it); plain string column
+            // suffices for v1 round-trip.
+            SchemaField {
+                name: "content".to_string(),
+                field_type: FieldType::String,
+                indexed: false,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+            // EngramOrigin is a tagged-union enum. JSON column so
+            // the variant shape rides intact; queries on inner
+            // fields (e.g. origin.kind = "Airc") use the adapter's
+            // JSON-path support.
+            SchemaField {
+                name: "origin".to_string(),
+                field_type: FieldType::Json,
+                indexed: false,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+            // Free-text recall keys. JSON array column.
+            SchemaField {
+                name: "recallKeys".to_string(),
+                field_type: FieldType::Json,
+                indexed: false,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+            // Admission timestamp (epoch ms). Indexed: admission-
+            // order is the primary sort for recall_recent and the
+            // recency tiebreak for recall_scored.
+            SchemaField {
+                name: "admittedAtMs".to_string(),
+                field_type: FieldType::Number,
+                indexed: true,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+            // TrustState at admission time (snapshot, not live).
+            // Indexed: "show me everything admitted while the source
+            // was trusted at tier X" is a forensic query the
+            // cognitive-immune model needs.
+            SchemaField {
+                name: "trustStateAtAdmission".to_string(),
+                field_type: FieldType::String,
+                indexed: true,
+                unique: false,
+                nullable: false,
+                max_length: None,
+            },
+            // Optional pointer to the CognitionTrace SEAM record.
+            // Nullable string; not indexed (used for forensic
+            // joinin, not querying).
+            SchemaField {
+                name: "admissionTraceId".to_string(),
+                field_type: FieldType::String,
+                indexed: false,
+                unique: false,
+                nullable: true,
+                max_length: None,
+            },
+        ]);
+        CollectionSchema {
+            collection: Self::COLLECTION.to_string(),
+            fields,
+            indexes: vec![],
+        }
+    }
 }
 
 //=============================================================================
@@ -722,5 +843,69 @@ mod tests {
     fn export_bindings_trust_state() {
         let cfg = ts_rs::Config::default();
         TrustState::export_all(&cfg).unwrap();
+    }
+
+    // ── ORM entity schema tests (#101 slice A) ──────────────────
+
+    /// What this catches: Engram's OrmEntity schema carries the
+    /// BaseEntity columns + every Engram domain field. If a future
+    /// refactor adds a field to Engram without extending the schema,
+    /// the entity↔record round-trip (when the wire-up lands) silently
+    /// loses that field. This test makes that drift visible.
+    #[test]
+    fn engram_orm_schema_has_base_columns_and_domain_fields() {
+        use crate::orm::OrmEntity;
+        let schema = Engram::collection_schema();
+        assert_eq!(schema.collection, "engrams");
+
+        let field_names: std::collections::BTreeSet<&str> =
+            schema.fields.iter().map(|f| f.name.as_str()).collect();
+
+        // BaseEntity columns must be present.
+        for required in ["id", "createdAt", "updatedAt", "version"] {
+            assert!(
+                field_names.contains(required),
+                "engrams schema missing BaseEntity column {required:?}; have {field_names:?}"
+            );
+        }
+
+        // Domain columns must be present.
+        for required in [
+            "kind",
+            "content",
+            "origin",
+            "recallKeys",
+            "admittedAtMs",
+            "trustStateAtAdmission",
+            "admissionTraceId",
+        ] {
+            assert!(
+                field_names.contains(required),
+                "engrams schema missing domain column {required:?}; have {field_names:?}"
+            );
+        }
+    }
+
+    /// What this catches: the OrmEntity registry accepts an Engram
+    /// schema registration without conflict, and the resolved schema
+    /// matches what `collection_schema()` returns. Smoke test for
+    /// boot-path registration; same shape RoleTemplate slice 1 used.
+    #[test]
+    fn engram_registers_and_resolves_through_orm_registry() {
+        use crate::orm::entity::OrmEntityRegistry;
+        let registry = OrmEntityRegistry::new();
+        registry
+            .register::<Engram>()
+            .expect("Engram must register cleanly");
+        let resolved = registry
+            .resolve("engrams")
+            .expect("engrams collection must resolve");
+        assert_eq!(resolved.collection, "engrams");
+        // Same field count as the freshly-built schema — registry
+        // didn't drop or duplicate anything.
+        assert_eq!(
+            resolved.fields.len(),
+            Engram::collection_schema().fields.len()
+        );
     }
 }
