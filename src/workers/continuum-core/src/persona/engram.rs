@@ -49,8 +49,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
-use crate::orm::{base_entity_fields, OrmEntity};
+use crate::orm::Entity;
 
 //=============================================================================
 // CORE: ENGRAM
@@ -65,15 +64,24 @@ use crate::orm::{base_entity_fields, OrmEntity};
 /// is structural, not decorative — engrams accumulate, decay, get yanked,
 /// and contribute to recall via the same mechanisms a biological memory
 /// store does.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, Entity)]
+#[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../shared/generated/persona/Engram.ts")]
+#[entity(collection = "engrams")]
 pub struct Engram {
     /// Stable engram id. Used for recall keys, deduplication, and as the
     /// referent target for `EngramOrigin::SelfReflection { parent_engram_id }`.
+    /// Marked `primary_key` so the derive pulls in BaseEntity columns
+    /// (id + createdAt + updatedAt + version) and skips emitting this
+    /// field separately — `id` is the BaseEntity column.
     #[ts(type = "string")]
+    #[entity(primary_key)]
     pub id: Uuid,
 
     /// Engram category — episodic vs semantic vs procedural vs meta.
+    /// Indexed: recall by kind ("show me all Episodic engrams") is a
+    /// common filter.
+    #[entity(indexed)]
     pub kind: EngramKind,
 
     /// The memorable content itself. v1 is plain text; later PRs may
@@ -83,21 +91,30 @@ pub struct Engram {
 
     /// What kind of source this engram came from + the protocol-compatible
     /// reference fields needed to verify or re-locate it.
+    /// `EngramOrigin` is a tagged-union enum; persisted as a JSON column
+    /// so the variant rides intact.
+    #[entity(json)]
     pub origin: EngramOrigin,
 
     /// Free-text recall keys / tags. v1 is unstructured strings; recall
     /// (later PR) may add embeddings or structured indexes alongside.
+    #[entity(json)]
     pub recall_keys: Vec<String>,
 
-    /// When this engram was admitted (epoch milliseconds UTC).
+    /// When this engram was admitted (epoch milliseconds UTC). Indexed:
+    /// admission-order is the primary sort for recall_recent + the
+    /// recency tiebreak for Algorithm 4 scoring.
     #[ts(type = "number")]
+    #[entity(indexed)]
     pub admitted_at_ms: u64,
 
     /// The trust tier of the source AT ADMISSION TIME. Snapshot, not live —
     /// later trust changes don't retroactively rewrite this engram's
     /// recorded trust. A trust degradation across the polity creates new
     /// signal in introspection ("engrams admitted from peer X while their
-    /// trust was high but is now low — re-evaluate").
+    /// trust was high but is now low — re-evaluate"). Indexed: forensic
+    /// queries filter by trust tier.
+    #[entity(indexed)]
     pub trust_state_at_admission: TrustState,
 
     /// Optional pointer to the `CognitionTrace` SEAM record that explains
@@ -109,130 +126,11 @@ pub struct Engram {
     pub admission_trace_id: Option<String>,
 }
 
-// ── ORM entity registration (#101 slice A) ────────────────────────
-//
-// Per [[no-sql-everything-through-orm-entities]] + [[orm-everything-
-// not-hand-edited-files]]: engram persistence is the ORM's
-// responsibility, not raw rusqlite in module code. This slice ships
-// the schema-side architectural commitment; the actual save/load
-// wire-up depends on the entity↔record adapter (part of #123) and
-// follows in #101 slice B.
-//
-// Storage shape (per the RoleTemplate precedent in #123 slice 1):
-// flat fields for indexed / queryable values, JSON columns for the
-// nested EngramOrigin enum + recall_keys Vec. BaseEntity columns
-// first (id + createdAt + updatedAt + version) so the ORM's typical
-// machinery (indexes, vector index, exports, round-trip-to-JSON)
-// treats engrams uniformly with every other entity.
-//
-// `kind` and `trust_state_at_admission` are flat strings (enum
-// variants serialize as String) — both are common filter targets
-// ("show me all Episodic engrams"; "filter by trust tier"). `origin`
-// is a tagged-union enum with variant-specific payloads; JSON
-// column lets the variant ride intact and queries on
-// origin.<inner-field> use the adapter's JSON-path support.
-//
-// `admittedAtMs` is indexed because admission-order is the primary
-// sort for recall_recent + recall_scored's tiebreak.
-impl OrmEntity for Engram {
-    const COLLECTION: &'static str = "engrams";
-
-    fn collection_schema() -> CollectionSchema {
-        let mut fields = base_entity_fields();
-        fields.extend(vec![
-            // Engram category (Episodic / Semantic / Procedural /
-            // SelfReflection). Indexed because recall by kind is a
-            // common filter.
-            SchemaField {
-                name: "kind".to_string(),
-                field_type: FieldType::String,
-                indexed: true,
-                unique: false,
-                nullable: false,
-                max_length: None,
-                foreign_key: None,
-            },
-            // The memorable content. Not indexed for full-text yet
-            // (FTS landing in a later slice when the substrate's
-            // recall pipeline asks for it); plain string column
-            // suffices for v1 round-trip.
-            SchemaField {
-                name: "content".to_string(),
-                field_type: FieldType::String,
-                indexed: false,
-                unique: false,
-                nullable: false,
-                max_length: None,
-                foreign_key: None,
-            },
-            // EngramOrigin is a tagged-union enum. JSON column so
-            // the variant shape rides intact; queries on inner
-            // fields (e.g. origin.kind = "Airc") use the adapter's
-            // JSON-path support.
-            SchemaField {
-                name: "origin".to_string(),
-                field_type: FieldType::Json,
-                indexed: false,
-                unique: false,
-                nullable: false,
-                max_length: None,
-                foreign_key: None,
-            },
-            // Free-text recall keys. JSON array column.
-            SchemaField {
-                name: "recallKeys".to_string(),
-                field_type: FieldType::Json,
-                indexed: false,
-                unique: false,
-                nullable: false,
-                max_length: None,
-                foreign_key: None,
-            },
-            // Admission timestamp (epoch ms). Indexed: admission-
-            // order is the primary sort for recall_recent and the
-            // recency tiebreak for recall_scored.
-            SchemaField {
-                name: "admittedAtMs".to_string(),
-                field_type: FieldType::Number,
-                indexed: true,
-                unique: false,
-                nullable: false,
-                max_length: None,
-                foreign_key: None,
-            },
-            // TrustState at admission time (snapshot, not live).
-            // Indexed: "show me everything admitted while the source
-            // was trusted at tier X" is a forensic query the
-            // cognitive-immune model needs.
-            SchemaField {
-                name: "trustStateAtAdmission".to_string(),
-                field_type: FieldType::String,
-                indexed: true,
-                unique: false,
-                nullable: false,
-                max_length: None,
-                foreign_key: None,
-            },
-            // Optional pointer to the CognitionTrace SEAM record.
-            // Nullable string; not indexed (used for forensic
-            // joinin, not querying).
-            SchemaField {
-                name: "admissionTraceId".to_string(),
-                field_type: FieldType::String,
-                indexed: false,
-                unique: false,
-                nullable: true,
-                max_length: None,
-                foreign_key: None,
-            },
-        ]);
-        CollectionSchema {
-            collection: Self::COLLECTION.to_string(),
-            fields,
-            indexes: vec![],
-        }
-    }
-}
+// ORM schema is now derived by `#[derive(Entity)]` on the struct
+// above. The 100-line hand-written `impl OrmEntity for Engram` block
+// previously lived here — deleted in slice #168 once the derive
+// macro + relational features were proven in #166 / #167. Schema
+// IS the struct; drift is structurally impossible.
 
 //=============================================================================
 // CATEGORY: ENGRAM KIND
@@ -900,6 +798,7 @@ mod tests {
     #[test]
     fn engram_registers_and_resolves_through_orm_registry() {
         use crate::orm::entity::OrmEntityRegistry;
+        use crate::orm::OrmEntity;
         let registry = OrmEntityRegistry::new();
         registry
             .register::<Engram>()
@@ -914,5 +813,61 @@ mod tests {
             resolved.fields.len(),
             Engram::collection_schema().fields.len()
         );
+    }
+
+    /// What this catches: end-to-end save / find_by_id / find_all
+    /// round-trip on a real Engram through OrmStore<Engram> over real
+    /// SQLite. The proof point that the derive migration didn't break
+    /// production persistence — Engram is the substrate's most
+    /// load-bearing entity, and this test exercises the full
+    /// derive → OrmStore → adapter → SQLite → adapter → derive chain.
+    #[tokio::test]
+    async fn engram_round_trips_through_orm_store_with_derived_schema() {
+        use crate::orm::adapter::{AdapterConfig, StorageAdapter};
+        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::OrmStore;
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("engrams.sqlite");
+        let mut adapter = SqliteAdapter::new();
+        let mut config = AdapterConfig::default();
+        config.connection_string = path.to_string_lossy().into_owned();
+        adapter.initialize(config).await.expect("adapter init");
+        let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
+
+        let store = OrmStore::<Engram>::new(adapter).await.expect("store");
+
+        let engram = sample_engram();
+        let original_id = engram.id;
+        store.save(engram.id, &engram).await.expect("save engram");
+
+        let loaded = store
+            .find_by_id(engram.id)
+            .await
+            .expect("find_by_id")
+            .expect("engram should be present");
+
+        assert_eq!(loaded.id, original_id);
+        assert_eq!(loaded.content, "Test content");
+        assert_eq!(loaded.kind, EngramKind::Episodic);
+        assert_eq!(loaded.admitted_at_ms, FIXED_TIME_MS);
+        assert_eq!(loaded.trust_state_at_admission, TrustState::ApprovedPeer);
+        assert_eq!(loaded.admission_trace_id.as_deref(), Some("trace-xyz"));
+        assert_eq!(loaded.recall_keys, vec!["test", "engram"]);
+        match loaded.origin {
+            EngramOrigin::Airc(r) => {
+                assert_eq!(r.message_id, "msg-abc-123");
+                assert_eq!(r.transport, "airc");
+            }
+            other => panic!("expected Airc origin, got {other:?}"),
+        }
+
+        let all = store.find_all().await.expect("find_all");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, original_id);
+        // Keep the tempdir alive until the store is dropped + tests
+        // are done; mem::forget so the path persists past test end.
+        std::mem::forget(tmp);
     }
 }

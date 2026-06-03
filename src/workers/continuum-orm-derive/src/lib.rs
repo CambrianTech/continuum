@@ -65,6 +65,13 @@
 //!
 //! ### Field-level attributes
 //!
+//! - `#[entity(primary_key)]` — declares this field IS the BaseEntity
+//!   id (`id: Uuid`). Pulls in `base_entity_fields()` and skips
+//!   emitting this field separately so the schema doesn't get a
+//!   duplicate `id` column. Use for entities that carry the primary
+//!   key as a bare `Uuid` rather than embedding a `BaseEntity`
+//!   struct via `#[serde(flatten)]`. Mutually exclusive with the
+//!   embedded-BaseEntity form.
 //! - `#[entity(indexed)]` — single-field index
 //! - `#[entity(unique)]` — unique constraint
 //! - `#[entity(nullable)]` — explicit nullable (auto for `Option<T>`)
@@ -141,11 +148,13 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
             continue;
         }
 
-        if field_info.is_base_entity {
+        if field_info.is_base_entity || field_info.primary_key {
             if saw_base {
                 return syn::Error::new_spanned(
                     field,
-                    "duplicate BaseEntity field — only one allowed per entity",
+                    "duplicate BaseEntity source — entities use ONE of: \
+                     `#[serde(flatten)] base: BaseEntity` OR \
+                     `#[entity(primary_key)] id: Uuid`. Both are mutually exclusive.",
                 )
                 .to_compile_error()
                 .into();
@@ -154,6 +163,11 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
             field_pushes.push(quote! {
                 fields.extend(::continuum_core::orm::base_entity_fields());
             });
+            // `primary_key` is the "no embedded BaseEntity struct"
+            // form — the field is `id: Uuid` directly. We pull in
+            // base_entity_fields() (which already declares `id` as
+            // the PK) and skip emitting this field separately so
+            // the schema doesn't get a duplicate `id` column.
             continue;
         }
 
@@ -263,6 +277,12 @@ struct FieldInfo {
     nullable: bool,
     skip: bool,
     is_base_entity: bool,
+    /// True if the field carries `#[entity(primary_key)]`. Treated
+    /// equivalently to `is_base_entity` at codegen — pulls in
+    /// `base_entity_fields()`, skips this field separately. Use
+    /// this form when the entity's primary key is a bare `Uuid`
+    /// field (`id: Uuid`) rather than an embedded BaseEntity struct.
+    primary_key: bool,
     foreign_key: Option<ForeignKeyAttr>,
 }
 
@@ -448,6 +468,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
     let mut nullable_override: Option<bool> = None;
     let mut force_json = false;
     let mut skip = false;
+    let mut primary_key = false;
     let mut serde_rename: Option<String> = None;
     let mut foreign_key: Option<ForeignKeyAttr> = None;
 
@@ -464,6 +485,8 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
                     force_json = true;
                 } else if meta.path.is_ident("skip") {
                     skip = true;
+                } else if meta.path.is_ident("primary_key") {
+                    primary_key = true;
                 } else if meta.path.is_ident("foreign_key") {
                     foreign_key = Some(parse_foreign_key(&meta)?);
                 } else {
@@ -503,6 +526,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
         nullable: nullable_override.unwrap_or(nullable_from_option),
         skip,
         is_base_entity,
+        primary_key,
         foreign_key,
     })
 }
