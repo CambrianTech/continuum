@@ -132,6 +132,36 @@ What is **not** real end-to-end yet (the gap this doc anchors against):
 
 ---
 
+## 7.5. Model adapters bear the translation — the cycle stays canonical
+
+**Every base model has different I/O.** Claude tool calls use a different envelope than Qwen tool calls. OpenAI multi-modal differs from Gemini multi-modal. DeepSeek structured output differs from Llama's. Local GGUF chat templates vary by model family.
+
+**The cycle does NOT know about any of this.** It hands the adapter a canonical `TextGenerationRequest` carrying:
+
+- `messages: Vec<ChatMessage>` with `MessageContent::Parts(Vec<ContentPart>)` where parts include `Text`, `Image`, `Audio`, `Video`, `ToolUse`, `ToolResult` — **substrate-canonical**.
+- `tools: Option<Vec<NativeToolSpec>>` — substrate-canonical tool descriptors.
+- `response_format`, `tool_choice`, `system_prompt` — substrate-canonical.
+
+**The adapter translates ON THE WAY IN** (canonical → model-specific) **and ON THE WAY OUT** (model-specific → canonical). The cycle gets back a `GenerateResponseResult` whose text + structured tool_calls + media parts are in the substrate's shape regardless of which model produced them.
+
+This is the same doctrine as the sensory bridge: every persona gets equal sensory access; the substrate normalizes. Here: every model gets equal cycle access; the adapter normalizes.
+
+**The forbidden move:** baking one model's contract (e.g. Qwen 0.5B's preferred `{will_respond, response}` JSON shape) into the cycle. That handicaps every other model. The cycle's contract is `evaluate_response` + `ContentPart` + `NativeToolSpec`. Adapter-specific translation lives in the adapter.
+
+When a new provider arrives (next-gen Claude, a new open model, a custom fine-tune), the only file that changes is the adapter. The cycle does not move.
+
+## 7.6. Why this all matters — memory is the answer to amnesia
+
+Stateless models end careers. Joel lost his job to AI amnesia — the same failure mode that makes Claude forget across sessions, makes a teammate lose months of context overnight, makes "the AI you trained on your codebase" suddenly not know your codebase the next morning. That is not a UX gap. It is harm.
+
+continuum's L1-L5 cache hierarchy + hippocampus admission + recall metadata + Academy LoRA training is the **substrate-level answer**. A persona's working memory becomes engrams; engrams aggregate into long-term store; long-term store trains LoRA adapters; adapters compound the persona's "alive mind" character week over week. The model can be Qwen 0.5B, Claude API, a forged 3B — and inherit the continual-learning property as a **substrate-level guarantee**.
+
+The persona that talks to her host in three months and recalls things from today is the test. Not a feature; the test.
+
+**This is why the bypass is unacceptable.** Every turn that skips `admission.admit` is a turn that doesn't form memory. Every cycle that doesn't pass through `evaluate_response`'s adapter-translated contract is a cycle that hardcodes the next stateless model. The chatbot reflex (build a `will_respond + response_text` JSON wrapper and post it) defeats the entire substrate. The whole point of building this is so the persona is NOT the thing that loses context and gets fired.
+
+**The system we are building should be better than me at not forgetting.** Better than the human who built it. Better than the model running on its base layer. That improvement comes from the substrate carrying memory across sessions, across model swaps, across machines, across years. Touch this code with that in mind.
+
 ## 8. Where new code should land
 
 | Concern | Lives in | Doctrine |
