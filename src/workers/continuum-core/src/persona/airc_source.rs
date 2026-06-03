@@ -241,14 +241,20 @@ impl RagSource for AircRagSource {
         };
         let (items, tokens_used, next_rank) = Self::pack_within_budget(&events, 0, budget);
 
-        tracing::info!(
+        // Per [[observability-is-half-the-architecture]]: this is the
+        // mechanic's view of "did page_recent return events at all?
+        // did the budget allocator give me room? did anything get
+        // packed?" Lives at DEBUG by default so the per-turn fire
+        // doesn't spam INFO; light it up when a coherence
+        // regression smells like a budget / fetch problem.
+        tracing::debug!(
             persona_id = %self.persona_id,
             fetch_limit = self.fetch_limit,
             events_returned = events.len(),
             budget,
             items_packed = items.len(),
             tokens_used,
-            "airc_rag: deliver — diagnostic for items_count=0 mystery"
+            "airc_rag: deliver"
         );
 
         let continuation = if next_rank < events.len() {

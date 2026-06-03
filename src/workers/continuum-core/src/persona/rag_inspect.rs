@@ -153,6 +153,19 @@ impl RagInspectionRequest {
         let headroom = context_window
             .saturating_sub(reserved.system + reserved.completion)
             .max(512);
+        // Default budget: ~60% of the context window for room
+        // history, clamped to headroom. This is a CONSERVATIVE
+        // FALLBACK — the substrate's real budgeter (TODO: routed
+        // through model characteristics on the Context per
+        // [[context-is-the-client-airc-token-is-identity]] and
+        // [[intent-driven-api-not-hot-patches]]) should derive
+        // this from `(prefill_tps, decode_tps, target_first_token_latency_ms)`
+        // so a 5090 + 200k-context frontier model can feed the
+        // whole history and a CPU + Qwen-0.5B can clamp itself.
+        // Both end up calling the SAME budget API; the answer
+        // differs because the model differs. Do NOT cap to a
+        // smaller percentage to make Intel Mac faster — that
+        // dumbs down every capable peer on the grid.
         let airc_max = ((context_window as u64) * 6 / 10) as u32;
         let airc_max = airc_max.min(headroom);
         let airc_floor = 500_u32.min(airc_max);
@@ -509,13 +522,16 @@ async fn run_inference_probe(
          what words? If you are directly addressed (the message says \"{persona_name}\" \
          or asks you a question), you should reply. If the conversation is just other \
          peers greeting each other and nothing was asked of you, stay silent.\n\n\
-         Output schema: a JSON object with exactly two keys.\n\
-         - \"response\" (string): the actual words you would say back to the room, in \
-           your own voice as {persona_name}. Write the reply, do not describe what you \
-           would say. If you decided to stay silent, this is an empty string.\n\
-         - \"will_respond\" (boolean): true if \"response\" is the message to post, \
-           false if you are staying silent.\n\n\
-         Output ONLY the JSON object. No prose around it, no markdown fences."
+         Output a JSON object with BOTH of these keys, in this order — neither key is \
+         optional:\n\
+         1. \"will_respond\" (boolean, REQUIRED): true if you are posting a reply, \
+            false if you are staying silent. This key must always be present.\n\
+         2. \"response\" (string, REQUIRED): the actual words you would say back to \
+            the room, in your own voice as {persona_name}. Write the reply, do not \
+            describe what you would say. If will_respond is false, this is an empty \
+            string. This key must always be present.\n\n\
+         Output ONLY the JSON object. No prose around it, no markdown fences. The \
+         JSON MUST start with {{\"will_respond\":."
     );
 
     let messages: Vec<ChatMessage> = items
@@ -535,6 +551,18 @@ async fn run_inference_probe(
         model: Some(model.clone()),
         provider: None,
         temperature: None,
+        // Cognition output budget. THIS IS A CONSERVATIVE FALLBACK —
+        // the real substrate budgeter (TODO: derive from model
+        // characteristics on the Context per
+        // [[context-is-the-client-airc-token-is-identity]] and
+        // [[intent-driven-api-not-hot-patches]]) should compute
+        // this from the persona's role, the model's typical
+        // response distribution, and the conversation context.
+        // Capable models on capable hardware (5090 + frontier
+        // class) can chatter at length; LCD-tier models on CPU
+        // will self-limit. Do not pin to a tighter value just to
+        // make Intel Mac faster — that handicaps every other
+        // peer on the grid.
         max_tokens: Some(512),
         top_p: None,
         top_k: None,
@@ -575,7 +603,13 @@ async fn run_inference_probe(
 
     for (idx, item) in items.iter().enumerate() {
         let snippet: String = item.content.chars().take(120).collect();
-        tracing::info!(
+        // Per [[observability-is-half-the-architecture]] this is the
+        // mechanic-grade rationale ("why this item, why not that
+        // one") and stays callable. INFO would spam ~12 lines per
+        // cognition turn though, so it lives at DEBUG by default
+        // and lights up under `RUST_LOG=continuum_core::persona::rag_inspect=debug`
+        // when diagnosing a coherence regression.
+        tracing::debug!(
             persona = %persona_name,
             idx,
             tokens = item.tokens,
