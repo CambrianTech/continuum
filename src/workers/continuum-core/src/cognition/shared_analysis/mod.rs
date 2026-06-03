@@ -82,6 +82,43 @@ const DEFAULT_ANALYSIS_PROVIDER: &str = "local";
 ///   - MissingField / EmptyField: structural shape OK but content gap
 ///   - InferenceFailed: provider-side failure (timeout, API error, etc.)
 pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisError> {
+    // Fast path: shared analysis exists FOR orchestration across
+    // specialties. When there's no orchestration to do (room has
+    // <=1 known specialty, e.g. a single-persona substrate or a
+    // private 1:1 turn), the LLM inference is pure waste — empty
+    // suggested_angles is the right answer and we can synthesize
+    // it without paying ~50s on Intel CPU. Per
+    // [[intent-driven-api-not-hot-patches]] + Joel 2026-06-03
+    // "make this fast and intelligent, even with the dumber llms":
+    // the substrate's job is to skip work that doesn't change the
+    // outcome.
+    //
+    // Multi-persona rooms ALWAYS go through the real inference
+    // path so the orchestrator can score specialties against the
+    // model's actual concept extraction. Single-persona rooms get
+    // the no-op stub. ResponseOrchestrator handles empty
+    // suggested_angles gracefully (one-specialty rooms have no
+    // angle to inject — the render proceeds with system_prompt
+    // alone).
+    if input.known_specialties.len() <= 1 {
+        let now = now_ms();
+        return Ok(SharedAnalysis {
+            message_id: input.message_id,
+            room_id: input.room_id,
+            cache_key: format!("noop-{}", input.message_id),
+            generated_at_ms: now,
+            summary: input.text.clone(),
+            key_concepts: Vec::new(),
+            intent: crate::cognition::types::SharedAnalysisIntent::Other,
+            emotional_tone: None,
+            suggested_angles: std::collections::HashMap::new(),
+            relevant_context: None,
+            duration_ms: 0,
+            model_used: "noop-single-persona".to_string(),
+            from_cache: false,
+        });
+    }
+
     let cache_key = compute_cache_key(&input);
 
     // L1 hit: return immediately, mark from_cache for telemetry.

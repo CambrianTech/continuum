@@ -330,10 +330,67 @@ async fn serve_persona_loop_inner(
         // [[no-fallbacks-ever]].
         let now_ms = (opts.now_ms)();
 
-        // 1. Lease the brain. Mutex acquired across compose_for_turn
-        //    + state updates. Inference runs WITHOUT holding the
-        //    mutex so the persona stays responsive to a future "stop"
-        //    or shutdown signal while the model decodes.
+        // 1. Admit the incoming message into the persona's
+        //    hippocampus. THIS is the L2 store growing — without
+        //    this call, no engram ever forms and recall stays empty
+        //    forever (Paige's "memory" reduces to the live airc
+        //    window, same as a chatbot). The admission gate runs
+        //    deduplication + trust + Algorithm 4 admission scoring
+        //    per [[source-drain-is-the-universal-pattern]]; the
+        //    persona's continual-learning property starts here.
+        //
+        //    Lease the brain → admit → release. The recall query
+        //    in step 2 reads from admission state populated by THIS
+        //    admit. Inference still runs without holding the mutex.
+        let inbox_msg = crate::persona::types::InboxMessage {
+            id: Uuid::new_v4(),
+            room_id: ctx.identity.default_room,
+            sender_id: msg.peer_id,
+            sender_name: format!("peer-{}", &msg.peer_id.to_string()[..8]),
+            sender_type: crate::persona::types::SenderType::Persona,
+            content: msg.text.clone(),
+            timestamp: now_ms,
+            priority: 0.5,
+            source_modality: None,
+            voice_session_id: None,
+        };
+        let recalled_engrams: Vec<String> = {
+            let cognition = ctx.cognition.lock().await;
+            // recall BEFORE admit so this turn's recalled_engrams is
+            // "what I knew going in" — the current message isn't
+            // recall; it's the trigger.
+            let recalled: Vec<String> = cognition
+                .admission
+                .recall_recent(8)
+                .into_iter()
+                .map(|e| e.content)
+                .collect();
+            // Admit now. Errors here are non-fatal — the cognition
+            // turn can still run; the engram just doesn't form. Per
+            // [[no-fallbacks-ever]] we surface the failure visibly,
+            // not silently.
+            if let Err(e) = cognition.admission.admit(&inbox_msg, None) {
+                tracing::warn!(
+                    lamport = msg.lamport,
+                    error = %e,
+                    "admission.admit failed — engram not formed this turn"
+                );
+            } else {
+                tracing::info!(
+                    lamport = msg.lamport,
+                    recalled_count = recalled.len(),
+                    engram_count = cognition.admission.engram_count(),
+                    "admitted incoming → L2 store"
+                );
+            }
+            recalled
+        };
+
+        // 2. Lease the brain again for compose_for_turn — the budget
+        //    + multi-source RAG composition via the
+        //    FlexboxRagBudgetAdapter. Inference runs WITHOUT holding
+        //    the mutex so the persona stays responsive to a future
+        //    "stop" or shutdown signal while the model decodes.
         let composed = {
             let cognition = ctx.cognition.lock().await;
             cognition.compose_for_turn(&ctx.profile, now_ms).await
@@ -362,13 +419,12 @@ async fn serve_persona_loop_inner(
                 }
             })
             .collect();
-        let recalled_engrams: Vec<String> = composed
-            .deliveries
-            .iter()
-            .filter(|d| d.source_id == "engrams")
-            .flat_map(|d| d.items.iter())
-            .map(|item| item.content.clone())
-            .collect();
+        // recalled_engrams is populated above from
+        // admission.recall_recent(8) — substrate-managed memory,
+        // not the airc transcript window. The engram delivery from
+        // compose_for_turn ALSO flows from the same admission store
+        // via engram_source — Algorithm 4 scoring will arbitrate
+        // overlap in a future slice.
 
         let turn_context = crate::persona::turn_context::TurnContext::arc(
             ctx.identity.default_room,
