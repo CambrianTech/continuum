@@ -1,0 +1,63 @@
+# Workspace-level cargo configuration.
+#
+# Per build-time doctrine card 424deb5e (slices 1+2): opt-in compile
+# accelerators. Everything in this file is COMMENTED by default —
+# uncomment after installing the relevant tool. Per
+# [[organization-purity-as-we-migrate]] + [[no-fallbacks-ever]]: we
+# don't ship configuration that silently fails to work better. If a
+# dev hasn't installed sccache, the wrapper line shouldn't break their
+# build by referencing a binary that isn't on PATH.
+#
+# To opt into ALL accelerators on your machine:
+#   1. brew install sccache             (or: cargo install sccache)
+#   2. brew install llvm                (for lld on macOS)
+#      OR sudo apt install mold         (for mold on Linux)
+#   3. Uncomment the relevant blocks below.
+#
+# Verify after opt-in:
+#   - sccache --show-stats
+#   - cargo build -v 2>&1 | grep -E 'sccache|mold|lld'
+
+# ─── Slice 1: sccache (rustc-level distributed cache) ────────────────
+#
+# Caches rustc output keyed by (compiler version, source hash, flags).
+# Biggest win for the airc work claim flow: each worktree has its own
+# target/, but sccache backs them with one shared on-disk cache. Hit
+# rates of 80-95% on common changes; cold target/ feels warm.
+#
+# Default backend is ~/.cache/sccache (local disk). For team-shared
+# cache later: set SCCACHE_BUCKET=<s3-bucket> + standard AWS env vars,
+# OR SCCACHE_GHA_ENABLED=on in CI (uses GitHub Actions cache).
+#
+# Uncomment after `cargo install sccache` or `brew install sccache`:
+# [build]
+# rustc-wrapper = "sccache"
+
+# ─── Slice 2: Linker selection (mold on Linux, lld on macOS) ─────────
+#
+# The final link step is single-threaded by default and burns 30-60s
+# per build on this codebase (vendored llama.cpp + candle + tokio +
+# all the substrate crates). mold (Linux) or lld (macOS / Linux)
+# cut that to 2-5s. Drop-in replacement via -fuse-ld linker flag.
+#
+# Uncomment the block for YOUR platform:
+
+# macOS arm64 (M-series) — lld via brew install llvm
+# [target.aarch64-apple-darwin]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# macOS x86_64 (Intel Mac) — lld via brew install llvm
+# [target.x86_64-apple-darwin]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# Linux x86_64 — mold (best) via apt install mold
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# Linux arm64 — mold via apt install mold
+# [target.aarch64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
