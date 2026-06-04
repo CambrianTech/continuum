@@ -353,41 +353,73 @@ $ ./jtag airc://maya/debug/breakpoint/set?uri=cognition/genome/lora-page-in
 # dispatcher cognition, except the operator is the controller this time
 ```
 
-### Probes — structured measurements as first-class substrate operations
+### Conventional macros stay conventional — `probe!` is added when special features justify it
 
-A previous-generation continuum system had a `probe!` macro that
-worked nicely but was never universally wired — the same coverage
-problem that killed segregated logging. The URI substrate brings
-probes back as first-class operations whose coverage is structurally
-enforced.
+Developers shouldn't be burdened with macro choice during fast
+development. The standard Rust tracing macros stay exactly what
+they already are:
 
-**`debug!` vs `probe!` — the contract distinction:**
+- `debug!`, `info!`, `warn!`, `error!`, `trace!` — conventional
+  `tracing::*` macros, with the substrate-wide bonus that they
+  inherit the URI span tag automatically
+- `println!` / `eprintln!` — stay as-is for quick dev printf
+- `probe!` — **added** specifically because it has features the
+  conventional macros don't have, and ONLY reached for when you
+  want those features
 
-- `debug!` emits freeform messages for human-readable trace tail
-- `probe!` emits structured measurements for ALWAYS-ON dashboards,
-  replay, training signals, SLO breach detection
+When you want a debug log, write `debug!`. When you want a quick
+inspection during dev, write `println!`. When you want a
+**structured probe** with the substrate's probe-stream contract,
+write `probe!`. No mental tax — each tool does its named job.
+
+### What `probe!`'s special features are
+
+Beyond what `debug!` already gives you (URI-tagged span context,
+zero-cost when filtered out), `probe!`:
+
+1. **Routes to per-class probe streams** — `class` field becomes
+   the routing key (`airc://<actor>/debug/probes/<class>/stream`)
+2. **ALWAYS-ON intent** — probes are designed to ship enabled in
+   production at low sample rates; subscribers (sentinels, Ares,
+   foundry) depend on them being live
+3. **Replay-persisted** — every probe in a class is captured to
+   that class's log for offline analysis, training signal
+   extraction, SLO replay
+4. **Sample-rate configurable** — `airc://maya/debug/probes/<class>/sample-rate/set?rate=0.1`
+5. **Aggregation-ready** — `airc://maya/debug/probes/<class>/aggregate?window=5m`
+   returns rolled-up stats over the class's stream
+
+If you only want a log line, `debug!` is the right tool — no
+probe overhead, no class field needed. If you want a structured
+measurement that goes somewhere useful for monitoring / training
+/ debugging, that's when you reach for `probe!`.
+
+### `probe!` ergonomics — same shape as `tracing` structured macros
 
 ```rust
-// Freeform log (default tracing)
-debug!("admitting incoming message lamport={}", lamport);
+// Minimum: just a class and a message
+probe!(class = "latency", "turn complete");
 
-// Structured probe — routes to airc://<actor>/debug/probes/latency/stream
-probe!(latency,  turn_id = id, duration_ms = elapsed);
-
-// Routes to airc://<actor>/debug/probes/decision/stream
-probe!(decision, action = "evict-lora",
+// Typical: class + structured fields
+probe!(class = "latency",   turn_id = id, duration_ms = elapsed,
+       "turn complete");
+probe!(class = "decision",  action = "evict-lora",
        target = "typescript-expertise", reason = "lru");
-
-// Routes to airc://<actor>/debug/probes/state/stream
-probe!(state,    working_set_size = ws.len(),
+probe!(class = "state",     working_set_size = ws.len(),
        recall_candidates = candidates_examined);
-
-// Routes to airc://<actor>/debug/probes/admission/stream
-probe!(admission, lane = 3, verdict = "accepted",
-       caller_uri = %caller);
+probe!(class = "admission", lane = 3, verdict = "accepted",
+       caller_uri = %caller, "admitted");
 ```
 
-The class (first argument) is the routing key. Probe-stream URIs:
+The macro expands to a `tracing::Event` with `class` as a
+structured field plus a custom subscriber filter that routes to
+the probe stream. Zero-cost when the class is disabled or
+sample-rate excludes the event — same property `tracing::debug!`
+already has.
+
+### Per-class routing examples
+
+The `class` field is the routing key. Probe-stream URIs:
 
 ```text
 airc://maya/debug/probes/latency/stream      # live tail
