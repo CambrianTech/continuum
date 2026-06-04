@@ -312,4 +312,138 @@ mod tests {
             );
         }
     }
+
+    /// Slice 4 migration safety claim: when bootstrap is called and
+    /// a pre-Slice-4 layout exists at `<continuum_root>/claudes/<label>/airc/`,
+    /// the substrate REFUSES to silently use it and returns the
+    /// `LegacyLayoutDetected` variant with the exact `mv` paths the
+    /// operator should run. This test fires the detection branch via
+    /// a TempDir-seeded legacy path and pins the error field values.
+    ///
+    /// Per [[no-fallbacks-ever]] + [[every-error-is-an-opportunity-
+    /// to-battle-harden]]: the message is load-bearing safety; this
+    /// is the rigging that catches a regression flipping the path
+    /// components.
+    #[tokio::test]
+    async fn legacy_claude_layout_hard_errors_with_mv_command() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+
+        // Seed the pre-Slice-4 legacy path. This is what an operator
+        // would have on disk after Slice 3 if they bootstrapped Claude
+        // and haven't migrated yet.
+        let legacy = root.join("claudes").join("default").join("airc");
+        tokio::fs::create_dir_all(&legacy)
+            .await
+            .expect("seed legacy path");
+
+        // Bootstrap with provider=claude, label=default — should fire
+        // LegacyLayoutDetected (NOT actually attach to airc; the
+        // error returns before any daemon dependency).
+        let result = AgentContext::bootstrap(
+            root,
+            "claude",
+            "default",
+            PathBuf::from("/nonexistent/daemon.sock"),
+            Uuid::new_v4(),
+            None,
+            AgentMetadata::default(),
+        )
+        .await;
+
+        // `AgentContext` doesn't impl Debug (Arc<dyn ...> fields),
+        // so we destructure without {:?} on the Ok variant.
+        match result {
+            Err(AgentContextError::LegacyLayoutDetected {
+                legacy: l,
+                new,
+                new_parent,
+            }) => {
+                assert_eq!(l, legacy);
+                assert_eq!(
+                    new,
+                    root.join("citizens")
+                        .join("agents")
+                        .join("claude")
+                        .join("default")
+                        .join("airc")
+                );
+                assert_eq!(
+                    new_parent,
+                    root.join("citizens")
+                        .join("agents")
+                        .join("claude")
+                        .join("default")
+                );
+            }
+            Err(other) => panic!(
+                "expected LegacyLayoutDetected, got different error: {other} \
+                 — legacy detection is broken"
+            ),
+            Ok(_) => panic!(
+                "expected LegacyLayoutDetected, bootstrap succeeded — \
+                 legacy detection is broken"
+            ),
+        }
+    }
+
+    /// Symmetry check: codex / gemini / future providers don't have
+    /// a legacy layout (only `claude` did pre-Slice-4 per the
+    /// codices/-doesn't-exist proof). Bootstrap with a non-claude
+    /// provider + a populated legacy `claudes/` dir should NOT fire
+    /// the detection (the legacy is irrelevant to a different
+    /// provider's mint).
+    #[tokio::test]
+    async fn non_claude_provider_ignores_claude_legacy() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        // Seed a Claude legacy dir — it should NOT block a Codex bootstrap.
+        tokio::fs::create_dir_all(root.join("claudes").join("default").join("airc"))
+            .await
+            .expect("seed");
+
+        // We don't actually want airc-attach to fire (no daemon in
+        // tests), so we just check that the function gets PAST the
+        // legacy-detection branch — meaning the legacy check doesn't
+        // false-positive on a Codex bootstrap with a Claude legacy.
+        let result = AgentContext::bootstrap(
+            root,
+            "codex",
+            "default",
+            PathBuf::from("/nonexistent/daemon.sock"),
+            Uuid::new_v4(),
+            None,
+            AgentMetadata::default(),
+        )
+        .await;
+
+        // The bootstrap proceeds past legacy detection and fails on
+        // Attach (no daemon). The KEY assertion is "not
+        // LegacyLayoutDetected" — that would be a false positive
+        // letting Claude's legacy block a different provider.
+        match result {
+            Err(AgentContextError::LegacyLayoutDetected { .. }) => {
+                panic!("false positive: Claude legacy fired for codex provider");
+            }
+            Err(AgentContextError::Attach { .. }) => {
+                // Expected — no daemon at /nonexistent. The legacy
+                // check is correctly skipped.
+            }
+            Err(other) => {
+                // Could be HomeCreate if the new path can't mkdir
+                // for some reason. Acceptable as long as it's not
+                // LegacyLayoutDetected.
+                eprintln!("non-legacy error path: {other}");
+            }
+            Ok(_) => {
+                // Bootstrap shouldn't succeed against a nonexistent
+                // daemon socket. If it did, the test should at least
+                // not panic — but log so it's noticed. AgentContext
+                // doesn't impl Debug; we only note the case.
+                eprintln!("unexpected Ok — daemon mock?");
+            }
+        }
+    }
 }

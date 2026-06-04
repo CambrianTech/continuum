@@ -56,11 +56,18 @@ pub fn kind_slug(kind: IdentityKind) -> &'static str {
 /// - Agent kind:
 ///   `<continuum_root>/citizens/agents/<provider>/<label>/airc/`
 ///
-/// `provider` is REQUIRED when `kind == Agent` and ignored otherwise.
-/// Callers passing `None` with `Agent` get a path that includes an
-/// `unknown/` segment — that's deliberate, the substrate doesn't
-/// invent a provider. Per [[no-fallbacks-ever]] the agent_provider
-/// is operator data, not substrate-defaulted.
+/// `provider` is REQUIRED when `kind == Agent`. Callers passing
+/// `None` with `Agent` trip a panic — that's not operator input,
+/// it's a substrate bug (somewhere a call site forgot to thread
+/// the provider through). Per [[no-fallbacks-ever]] there is no
+/// `unknown/` fallback segment; agents either have a provider or
+/// they're a programming error. The panic surfaces the bug at the
+/// call site rather than silently landing rows under an
+/// `agents/unknown/` directory that downstream operators would
+/// have to chase.
+///
+/// Non-Agent kinds ignore the `provider` parameter regardless of
+/// value.
 pub fn citizen_home_path(
     continuum_root: &Path,
     kind: IdentityKind,
@@ -70,7 +77,13 @@ pub fn citizen_home_path(
     let kind_dir = kind_slug(kind);
     let mut path = continuum_root.join("citizens").join(kind_dir);
     if matches!(kind, IdentityKind::Agent) {
-        path = path.join(provider.unwrap_or("unknown"));
+        let provider = provider.expect(
+            "citizen_home_path: provider is REQUIRED when kind == Agent. \
+             Per [[no-fallbacks-ever]] the substrate refuses to invent an \
+             agent-provider default. Fix the call site to thread the \
+             provider through.",
+        );
+        path = path.join(provider);
     }
     path.join(label).join("airc")
 }
@@ -180,5 +193,23 @@ mod tests {
         assert_eq!(legacy_home_path(&root, IdentityKind::Human, "x"), None);
         assert_eq!(legacy_home_path(&root, IdentityKind::Jtag, "x"), None);
         assert_eq!(legacy_home_path(&root, IdentityKind::Web, "x"), None);
+    }
+
+    /// Per [[no-fallbacks-ever]]: calling `citizen_home_path` with
+    /// `kind=Agent + provider=None` is a SUBSTRATE BUG (a call site
+    /// forgot to thread the provider through). The function panics
+    /// at that point rather than silently routing the agent under
+    /// `agents/unknown/`. This test pins the panic so a future
+    /// refactor that softens it (e.g., reintroduces `unwrap_or`)
+    /// fails loudly here.
+    #[test]
+    #[should_panic(expected = "provider is REQUIRED when kind == Agent")]
+    fn agent_without_provider_panics() {
+        let _ = citizen_home_path(
+            &PathBuf::from("/r"),
+            IdentityKind::Agent,
+            None,
+            "default",
+        );
     }
 }

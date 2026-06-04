@@ -151,8 +151,9 @@ pub fn log_actor_action(ctx: &dyn Context, action: &str) {
 /// now validated across:
 /// - `PersonaContext` (persona kind, transitional synthesizes from
 ///   `PersonaInstanceInfo`, returns `Cow::Owned`)
-/// - `ClaudeContext` (Slice 3, non-persona kind, stores Identity
-///   directly, returns `Cow::Borrowed`)
+/// - `AgentContext` (Slice 4, non-persona kind, parameterized by
+///   provider so Claude/Codex/Gemini/Hermes/future all flow through
+///   ONE shape, stores Identity directly, returns `Cow::Borrowed`)
 /// - `StubContext` (test fixture, stores Identity, returns
 ///   `Cow::Borrowed`)
 /// Three impls with different storage shapes and Cow semantics all
@@ -237,6 +238,7 @@ mod tests {
                 home_path: "/tmp/jtag/airc".to_string(),
                 default_room: Uuid::new_v4(),
                 source: IdentitySource::FreshlyMinted,
+                agent_provider: None,
             },
             Arc::new(StubAircCitizen::new(peer_id)),
         );
