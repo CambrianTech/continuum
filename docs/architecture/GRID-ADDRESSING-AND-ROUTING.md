@@ -353,6 +353,89 @@ $ ./jtag airc://maya/debug/breakpoint/set?uri=cognition/genome/lora-page-in
 # dispatcher cognition, except the operator is the controller this time
 ```
 
+### Probes — structured measurements as first-class substrate operations
+
+A previous-generation continuum system had a `probe!` macro that
+worked nicely but was never universally wired — the same coverage
+problem that killed segregated logging. The URI substrate brings
+probes back as first-class operations whose coverage is structurally
+enforced.
+
+**`debug!` vs `probe!` — the contract distinction:**
+
+- `debug!` emits freeform messages for human-readable trace tail
+- `probe!` emits structured measurements for ALWAYS-ON dashboards,
+  replay, training signals, SLO breach detection
+
+```rust
+// Freeform log (default tracing)
+debug!("admitting incoming message lamport={}", lamport);
+
+// Structured probe — routes to airc://<actor>/debug/probes/latency/stream
+probe!(latency,  turn_id = id, duration_ms = elapsed);
+
+// Routes to airc://<actor>/debug/probes/decision/stream
+probe!(decision, action = "evict-lora",
+       target = "typescript-expertise", reason = "lru");
+
+// Routes to airc://<actor>/debug/probes/state/stream
+probe!(state,    working_set_size = ws.len(),
+       recall_candidates = candidates_examined);
+
+// Routes to airc://<actor>/debug/probes/admission/stream
+probe!(admission, lane = 3, verdict = "accepted",
+       caller_uri = %caller);
+```
+
+The class (first argument) is the routing key. Probe-stream URIs:
+
+```text
+airc://maya/debug/probes/latency/stream      # live tail
+airc://maya/debug/probes/decision/stream     # decision audit
+airc://maya/debug/probes/state/stream        # periodic state snapshots
+airc://maya/debug/probes/admission/stream    # PressureBroker verdicts
+airc://maya/debug/probes/<class>/replay?from=2026-06-04T00:00Z
+airc://maya/debug/probes/<class>/aggregate?window=5m  # rolled-up stats
+```
+
+Independent subscribers consume each class:
+- **Sentinels** subscribe to `latency` for SLO breach detection
+- **Ares** subscribes to `decision` + `admission` as training signal
+  for her dispatcher cognition
+- **Foundry** fitness-loops subscribe to whichever class its current
+  recipe optimizes for
+- **Operator** opens `./jtag airc://maya/debug/probes/decision/stream`
+  during an incident to watch Maya's reasoning live
+
+All independent, all routed through the same dispatcher.
+
+### Configurable, on/off, per-scope — substrate-native, not config-file-driven
+
+Joel's previous continuum had configurable segregated logging
+(per-node, on/off, level), but the configuration system was its own
+parallel surface — and inherited the drift problem. With URIs, every
+log-control operation IS a command on a URI; same dispatcher, same
+auth gate, same observability:
+
+```text
+airc://maya/debug/log/level/set?level=debug              # this persona only
+airc://maya/debug/log/level/get
+airc://5090-rig/debug/log/level/set?level=warn           # whole node
+airc://maya:vr/debug/log/level/set?level=trace           # maya's VR env only
+airc://maya:tty/debug/log/level/get
+airc://maya/debug/probes/latency/enable
+airc://maya/debug/probes/latency/disable
+airc://maya/debug/probes/<class>/sample-rate/set?rate=0.1
+airc://*/debug/log/redirect?sink=file:/tmp/cluster.log   # all actors
+airc://*/debug/probes/decision/redirect?sink=ares://training-corpus
+```
+
+The previous system's "configurable but never universally wired"
+failure mode goes away because there is no separate config surface
+— the URI dispatcher IS the wiring. Adding a new module doesn't
+require remembering to register a logger; the dispatcher does it
+by construction.
+
 ### Why this matters at the substrate level
 
 - Same primitive (the URI) used at THREE consumption points: addressing
@@ -432,7 +515,18 @@ $ ./jtag airc://maya/debug/breakpoint/set?uri=cognition/genome/lora-page-in
     `…/debug/breakpoint/set`. The substrate's `jtag` CLI gets its
     namesake's literal semantics: arbitrary-depth structured access
     to any URI in any persona's address space from any node.
-12. This document, evolved in-place as the design crystallizes.
+12. **`probe!` macro + per-class probe streams** — structured
+    measurements (latency, decision, state, admission) routed to
+    `airc://<actor>/debug/probes/<class>/stream`. Always-on,
+    low-cost, subscribe-able by sentinels, Ares, foundry, operators.
+    Brings back the previous-generation continuum's probe primitive
+    with universal coverage enforced by the URI dispatcher.
+13. **Configurable log levels + probe enables via URIs** —
+    `airc://maya/debug/log/level/set`, `…/probes/<class>/enable`,
+    `…/log/redirect`. The previous system had this configurable
+    but never universally wired; the URI substrate makes the wiring
+    structural.
+14. This document, evolved in-place as the design crystallizes.
 
 ## What does NOT land in Slice P (explicit non-goals)
 
