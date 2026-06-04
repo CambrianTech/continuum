@@ -133,3 +133,128 @@ fn room_failure(e: DiscoveryError) -> DiscoveryFailure {
         other => DiscoveryFailure::RoomCommandFailed(other.to_string()),
     }
 }
+
+#[cfg(test)]
+mod discovery_failure_mapping_tests {
+    //! Lock in the `DiscoveryError → DiscoveryFailure` projection so
+    //! a future refactor that re-routes one variant (e.g.
+    //! `PeerStatusFailed → EndpointCommandFailed`) gets caught
+    //! immediately — that class of silent mismatch would let the
+    //! R2#1 BLOCK return without any test failing.
+    //!
+    //! The aggregator's typed `discover()` output drives operator-
+    //! facing diagnostics; if a single variant maps wrong, the
+    //! operator gets the wrong actionable repair message.
+
+    use super::*;
+
+    #[test]
+    fn install_failed_preserves_message() {
+        let f: DiscoveryFailure =
+            DiscoveryError::InstallFailed("permission denied".into()).into();
+        assert!(matches!(f, DiscoveryFailure::InstallFailed(m) if m == "permission denied"));
+    }
+
+    #[test]
+    fn auto_install_disabled_maps_to_same() {
+        let f: DiscoveryFailure = DiscoveryError::AutoInstallDisabled.into();
+        assert!(matches!(f, DiscoveryFailure::AutoInstallDisabled));
+    }
+
+    #[test]
+    fn endpoint_command_failed_preserves_message() {
+        let f: DiscoveryFailure =
+            DiscoveryError::EndpointCommandFailed("exit 2: unknown subcommand".into()).into();
+        assert!(matches!(
+            f,
+            DiscoveryFailure::EndpointCommandFailed(m) if m.contains("exit 2")
+        ));
+    }
+
+    #[test]
+    fn empty_path_maps_to_empty_path() {
+        let f: DiscoveryFailure = DiscoveryError::EmptyPath.into();
+        assert!(matches!(f, DiscoveryFailure::EmptyPath));
+    }
+
+    #[test]
+    fn room_command_failed_preserves_message() {
+        let f: DiscoveryFailure =
+            DiscoveryError::RoomCommandFailed("no current room".into()).into();
+        assert!(matches!(
+            f,
+            DiscoveryFailure::RoomCommandFailed(m) if m.contains("no current")
+        ));
+    }
+
+    /// `DiscoveryError::UnparseableChannel` → `DiscoveryFailure::UnparseableRoomOutput`.
+    /// This is the variant most likely to be silently re-routed in a
+    /// refactor (their names diverge for historical reasons) — pin it.
+    #[test]
+    fn unparseable_channel_maps_to_unparseable_room_output() {
+        let f: DiscoveryFailure =
+            DiscoveryError::UnparseableChannel("channel: <garbage>".into()).into();
+        assert!(matches!(
+            f,
+            DiscoveryFailure::UnparseableRoomOutput(m) if m.contains("channel:")
+        ));
+    }
+
+    #[test]
+    fn peer_status_failed_preserves_message() {
+        let f: DiscoveryFailure =
+            DiscoveryError::PeerStatusFailed("connection refused".into()).into();
+        assert!(matches!(
+            f,
+            DiscoveryFailure::PeerStatusFailed(m) if m == "connection refused"
+        ));
+    }
+
+    #[test]
+    fn unparseable_peer_id_preserves_raw_and_error() {
+        let uuid_err = "not-a-uuid".parse::<uuid::Uuid>().unwrap_err();
+        let f: DiscoveryFailure =
+            DiscoveryError::UnparseablePeerId("xyz".into(), uuid_err).into();
+        assert!(matches!(
+            f,
+            DiscoveryFailure::UnparseablePeerId(raw, err_msg)
+            if raw == "xyz" && !err_msg.is_empty()
+        ));
+    }
+
+    /// `stale_socket_from_status_err` MUST construct a `StaleSocket`
+    /// variant carrying the path AND the underlying error message.
+    /// This is the structural fix for R2#1: Status RPC failure
+    /// against an env-var-supplied socket no longer collapses to
+    /// `Uuid::nil()` soft-fallback; it produces a typed reason the
+    /// substrate refuses to construct an attribution-less transport
+    /// against (per the from_discovery test).
+    #[test]
+    fn stale_socket_carries_path_and_status_err_message() {
+        let socket = PathBuf::from("/tmp/stale.sock");
+        let underlying = "ECONNREFUSED (connection refused)";
+        let f = stale_socket_from_status_err(
+            &socket,
+            DiscoveryError::PeerStatusFailed(underlying.into()),
+        );
+        match f {
+            DiscoveryFailure::StaleSocket(p, msg) => {
+                assert_eq!(p, socket);
+                assert!(msg.contains("ECONNREFUSED"));
+            }
+            other => panic!("expected StaleSocket, got {other:?}"),
+        }
+    }
+
+    /// `stale_socket_from_status_err` with a non-PeerStatusFailed
+    /// error still produces `StaleSocket` (the function is named for
+    /// its purpose — any error reaching it means the socket isn't
+    /// alive). The underlying message gets the full Display of the
+    /// non-Status variant.
+    #[test]
+    fn stale_socket_handles_non_status_errors() {
+        let socket = PathBuf::from("/tmp/stale.sock");
+        let f = stale_socket_from_status_err(&socket, DiscoveryError::EmptyPath);
+        assert!(matches!(f, DiscoveryFailure::StaleSocket(p, _) if p == socket));
+    }
+}

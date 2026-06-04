@@ -94,46 +94,14 @@ fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static st
     }
 }
 
-/// Install a panic hook that filters ORT's "dlopen failed for
-/// libonnxruntime" stderr trace.
-///
-/// The panic is already caught by `catch_unwind` at every ORT load
-/// site (see `modules/embedding.rs::preload_default_model` +
-/// `modules/embedding.rs::load_model_internal` + the TTS/STT spawn
-/// in `main()`). Each catch arm sets `ORT_UNAVAILABLE` and logs a
-/// clean WARN line. The user-visible noise we're suppressing here is
-/// Rust's DEFAULT panic hook writing the panic to stderr BEFORE
-/// `catch_unwind` catches it — that trace looks like a substrate bug
-/// ("thread 'tokio-rt-worker' panicked at ort-2.0.0-rc.11/src/lib.rs")
-/// but it's really just "voice features not available."
-///
-/// The hook AND-gates on (a) `location().file()` containing `/ort-`
-/// and (b) payload mentioning `"Failed to load ONNX Runtime"`. Other
-/// ORT panics (genuine bugs deeper in inference) fail one of those
-/// predicates and fall through to the default handler.
-fn install_ort_panic_filter() {
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let from_ort = info
-            .location()
-            .map(|loc| loc.file().contains("/ort-"))
-            .unwrap_or(false);
-        let about_dylib = info
-            .payload()
-            .downcast_ref::<String>()
-            .map(|s| s.contains("Failed to load ONNX Runtime"))
-            .or_else(|| {
-                info.payload()
-                    .downcast_ref::<&str>()
-                    .map(|s| s.contains("Failed to load ONNX Runtime"))
-            })
-            .unwrap_or(false);
-        if from_ort && about_dylib {
-            return;
-        }
-        default_hook(info);
-    }));
-}
+// ORT panic-filter intentionally NOT in A.2.1 per reviewer #2's
+// BLOCKING finding: shipping the panic trace muter without the
+// `🔊 Voice: ready / 🔇 Voice: unavailable` indicator leaves the
+// operator with ZERO signal about voice subsystem state on default
+// `FullCitizen` boot. Per [[substrate-is-a-good-citizen-on-the-host]]
+// "speak clearly when degraded," the filter and the indicator
+// must ship together — both land in A.2.2 alongside the
+// `libloading::Library::new("libonnxruntime.dylib")` dlopen probe.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -156,11 +124,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("[continuum-core-server] probes landing at {}", path.display());
     }
 
-    // Suppress the scary "tokio-rt-worker panicked at ort-…" trace
-    // when libonnxruntime is missing. The catch_unwind at every ORT
-    // load site already disables voice cleanly + logs a WARN — this
-    // just removes the misleading panic stack trace from stderr.
-    install_ort_panic_filter();
+    // ORT panic-filter deferred to A.2.2 (lands together with the
+    // libonnxruntime dlopen probe + 🔊/🔇 voice subsystem indicator
+    // per reviewer #2's BLOCKING finding — muting the only signal
+    // without pairing the indicator is the [[substrate-is-a-good-
+    // citizen-on-the-host]] violation we're refusing to ship in
+    // A.2.1).
 
     // Parse command line arguments. argv[1] is the IPC socket path (positional)
     // — but intercept flag-like values FIRST so `--version` and `--help` don't
