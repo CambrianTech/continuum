@@ -190,6 +190,130 @@ env as Maya's VR scene; they live on different actors. The
 `:env` in the URI ALWAYS scopes to the target peer's envs, not the
 caller's.
 
+## RBAC, integrity, and cross-grid hostility — the URI IS the policy unit
+
+The URI grammar isn't only an addressing convenience; it's the
+substrate's security primitive. Joel, 2026-06-04:
+
+> Works so well with RBAC, or any other security measure, because
+> the URI easily defines access. The consistency makes middleware
+> and routing simplistic; uniform conventions prevent mistakes from
+> being made later due to naïveté and ignorance of the human or AI.
+> We know what to expect wherever we are in code, in the system.
+> We know how to debug anywhere. It's so important for integrity.
+
+ONE chokepoint, ONE grammar, N consumers (Ares' dispatch, sentinel
+audit, operator allowlist, cross-grid hostile-traffic filter,
+future cryptographic delegation). RBAC isn't a separate layer with
+its own parser/policy-language drift; the policy is keyed against
+the same `CommandUri` grammar everything else uses.
+
+### Why this is mechanically stronger than per-endpoint guards
+
+In a system where every command surface defines its own
+permission semantics, the next module to land arrives with no
+guard wired by default — and you discover this when an external
+peer abuses it. The URI substrate inverts the default: every
+external request crosses ONE point (Ed25519-verified envelope →
+URI parse → policy match → Verdict), so the new command's URI
+inherits coverage the moment it's registered. "Did we remember
+to check auth?" stops being a question.
+
+### Cryptographic foundation
+
+Every airc envelope is Ed25519-signed by its caller's peer_id
+(the identity primitive per [[personas-are-citizens-airc-is-identity-provider]]).
+The substrate boundary code:
+
+1. Verifies the signature against the caller's known peer_id
+2. Parses the typed `CommandUri`
+3. Consults policy `(caller_peer_id, uri) → Verdict`
+4. CaptureSink records the verdict + URI + caller
+5. Executes if Allowed, refuses with typed reason if Forbidden,
+   prompts via deferred consent if Deferred
+
+The middleware never "trusts" — it verifies and matches. Cross-grid
+traffic from a foreign continuum can call our URIs only if its peer
+is enrolled and its specific identity has policy coverage for the
+URI it's asking for. Unknown peer + unmatched URI = typed refusal
+with audit row.
+
+### Policy shape
+
+```rust
+pub struct PolicyRow {
+    pub caller_pattern: CallerPattern,   // by peer_id, group, anonymous, etc.
+    pub uri_pattern: UriPattern,         // glob-style: airc://maya/cognition/**
+    pub verdict: VerdictRule,
+    pub rationale: String,               // human-readable, observable
+}
+
+pub enum CallerPattern {
+    AnyPeer,
+    SpecificPeer(Uuid),
+    EnrolledMember,                       // any peer in the local trust store
+    AnonymousExternal,                    // cross-grid stranger
+    NamedGroup(String),                   // e.g. "operators", "sentinels"
+}
+
+pub enum UriPattern {
+    Exact(CommandUri),
+    Prefix { peer: PeerMatch, path_prefix: String, env: Option<EnvSelector> },
+    Glob(String),                         // glob over canonical Display form
+}
+
+pub enum VerdictRule {
+    Allow,
+    Deny,
+    AllowWithRateLimit { per_minute: u32 },
+    DeferToTarget,                        // prompt the target's primary env
+    DeferToSentinels { quorum: u32 },     // require N sentinel sign-offs
+}
+```
+
+Policy rows live in the ORM per [[no-sql-everything-through-orm-entities]] —
+editing them is `Commands.execute("data/policy/...")`, audited like
+any other entity mutation. No bespoke YAML/TOML config drift.
+
+### Cross-grid hostile-traffic story
+
+Two continuums interconnect via overlapping airc peers. Our grid
+trusts only the local peer_id roster + explicitly-enrolled cross-
+grid identities; anything else hits the `AnonymousExternal` matcher
+which defaults to Deny. When we DO enroll a cross-grid identity:
+
+- Default scope is the airc-conversation URIs only
+  (`airc://*/event-topic:chat`, `airc://*/inventory/public/**`)
+- Persona-internal address space (`/cognition/`, `/state/`,
+  `/inventory/private/`) requires explicit per-URI grant
+- The `/debug/` namespace requires operator-tier scope — sentinels
+  and operators only by default, never automatically open to
+  external peers
+
+The same primitive used for "render my widget" gates
+"page in my LoRA" — uniform shape, different policy verdict, no
+parallel surface to forget to gate.
+
+### Concrete near-term use: persona latency debugging
+
+Joel, 2026-06-04: "We will be using this to debug our persona,
+especially for latency. And soon."
+
+The URI surface makes this not-just-theoretical. With:
+
+- Automatic span timing on `airc://maya/cognition/turn:*`
+- `airc://maya/debug/profile/flamegraph?window=5m` rolling up
+  the timing stream
+- `airc://maya/debug/probes/timing/stream` for live tail
+- `./jtag airc://maya/debug/spans/active` showing "what's
+  blocking right now"
+- `stack!()` available inside any probe call so a slow event
+  carries its span ancestry
+
+…the substrate gains the introspection it needs to actually
+catch where Maya's first-reply latency goes. This isn't a future
+feature; it's why Slice P lands first.
+
 ## Auth gate — every URI has one
 
 Per [[constitutional-design-always-a-next-step]] and
@@ -582,7 +706,94 @@ The operator running `./jtag airc://maya/debug/spans/active` during
 an incident sees exactly what Maya is doing right now — span tree
 with elapsed times, no manual instrumentation, no log-grepping.
 
-#### Why this is mechanic-grade
+#### Compiler collaboration — macros compile OUT, not down to no-ops
+
+Joel, 2026-06-04: "When macros are always used, debugging can be
+completely removed or turned off, not even a no op, not there. We
+give advantages to compilers if we are consistent with their usage.
+Rust macros are efficient (if used correctly)."
+
+`tracing::debug!` already establishes the pattern via cargo features
+like `release_max_level_off` — `debug!` and `trace!` expand to
+LITERALLY NOTHING (not `if false { ... }`, not a no-op call; the
+text disappears from the binary). Slice P's `probe!` macro extends
+this per-class so production builds can ship with any subset of
+probe classes compiled in:
+
+```toml
+# substrate operator's deployment build — full observability:
+[dependencies]
+continuum-core = {
+    version = "...",
+    features = ["probes-timing", "probes-decision", "probes-admission", "probes-state"]
+}
+
+# substrate edge-device build — minimal observability:
+[dependencies]
+continuum-core = { version = "...", features = [] }
+# all probes expand to () — zero text-segment bytes, zero branch
+# slots, zero anything
+
+# substrate forensic-investigation build — everything on:
+[dependencies]
+continuum-core = { version = "...", features = ["probes-all"] }
+```
+
+Same source tree, three deployment tiers, no runtime cost difference
+because the compiler eliminated the disabled paths at LTO time.
+
+### Design discipline — what makes macros compiler-friendly
+
+The contract that lets rustc strip our macros cleanly:
+
+1. **Always expand to the same shape** — a probe macro either
+   expands to a `tracing::event!` call or to `()`. Never branches
+   on runtime values that could obscure dead-code analysis.
+2. **Gated by compile-time consts only** — `cfg!(feature = "...")`,
+   `const fn` checks, or `#[cfg]` attributes. Never `Atomic<bool>`
+   or other runtime-mutable state in the gate.
+3. **No allocations in the expansion** — formatting happens inside
+   the expanded branch; if the branch is stripped, no format string
+   is materialized, no `String` is allocated.
+4. **No dynamic dispatch in the gate** — no `dyn Trait` calls inside
+   the macro's decision logic. LTO can inline static dispatch
+   through to a constant; dynamic dispatch defeats it.
+5. **Consistent with `tracing::*` shapes** — developers reach for
+   familiar idioms; the compiler optimizer recognizes them.
+
+When macros respect this contract, they're not "low cost" — they're
+**not there**. When they violate it, even simple ones can add
+unmeasurable but real overhead in the substrate's hot paths
+(persona cognition, render frame, inference token loop).
+
+### Macros as misuse-prevention
+
+Joel, 2026-06-04: "Macros are easy and a way of preventing misuse.
+If coding timing or logging is painful it won't happen."
+
+The ergonomic discipline IS the security discipline. If `time!`,
+`probe!`, `stack!`, `debug!` are as cheap to type as `println!`,
+developers actually instrument code; the substrate stays
+observable; the security audit and the latency hunt both have data
+to work with. If those macros are painful, instrumentation doesn't
+get written, the substrate goes blind, and we discover problems
+the way we always did before: by hearing about them from a user.
+
+Slice P treats macro ergonomics as a load-bearing requirement, not
+a quality-of-life nice-to-have. Every macro in the substrate's
+mechanic-grade kit must be:
+
+- No more verbose than its `println!` equivalent
+- Zero-cost when its corresponding sink is disabled
+- Self-explanatory at the call site (one named thing per macro)
+- Consistent with conventional Rust idioms (`tracing::*` shapes)
+
+The previous-generation continuum's "configurable but never
+universally wired" failure isn't recreated here because the
+ergonomics force universal coverage by being the path of least
+resistance.
+
+### Why this is mechanic-grade
 
 A mechanic working on a substrate (whether a human operator, a
 persona debugging itself, or Ares introspecting her own dispatch
