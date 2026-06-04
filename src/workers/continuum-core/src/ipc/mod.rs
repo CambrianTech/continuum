@@ -690,10 +690,17 @@ pub fn start_server(
     rt_handle: tokio::runtime::Handle,
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
     pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,
+    boot_mode: crate::runtime::BootMode,
 ) -> std::io::Result<()> {
     prepare_unix_socket_path(socket_path)?;
 
-    log_info!("ipc", "server", "Starting IPC server on {}", socket_path);
+    log_info!(
+        "ipc",
+        "server",
+        "Starting IPC server on {} (mode={})",
+        socket_path,
+        boot_mode.label()
+    );
 
     // Load the model_registry BEFORE any ServiceModule is constructed.
     // Several adapters (AnthropicAdapter, LlamaCppAdapter, …) read from
@@ -918,30 +925,65 @@ pub fn start_server(
     // finding 6); substrate-is-a-good-citizen "predictable startup"
     // non-negotiable.
     const AIRC_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
-    let airc_module = Arc::new(rt_handle.block_on(async {
-        match tokio::time::timeout(
-            AIRC_DISCOVERY_TIMEOUT,
-            AircModule::discover_and_construct(),
-        )
-        .await
-        {
-            Ok(m) => m,
+    let discovery = rt_handle.block_on(async {
+        match tokio::time::timeout(AIRC_DISCOVERY_TIMEOUT, crate::airc::discover()).await {
+            Ok(d) => d,
             Err(_) => {
                 tracing::error!(
                     timeout_secs = AIRC_DISCOVERY_TIMEOUT.as_secs(),
-                    "AircModule discovery exceeded outer timeout — falling back to degraded module. \
-                     Server will start; AIRC commands degrade until the operator resolves the daemon issue."
+                    "AIRC discovery exceeded outer timeout — promoting to Unreachable."
                 );
-                AircModule::new()
+                crate::airc::AircDiscovery::Unreachable {
+                    reason: crate::airc::DiscoveryFailure::EndpointCommandFailed(format!(
+                        "discovery did not return within {}s — substrate is unresponsive",
+                        AIRC_DISCOVERY_TIMEOUT.as_secs()
+                    )),
+                }
             }
         }
-    }));
+    });
+    tracing::info!(
+        kind = discovery.kind(),
+        reason = ?discovery.reason(),
+        "AIRC discovery complete"
+    );
+    let airc_module = Arc::new(AircModule::from_discovery(&discovery));
     let persona_bootstrap_deps = airc_module
         .daemon_socket()
         .map(|p| p.to_path_buf())
         .zip(airc_module.default_room());
     let persona_bootstrap_room_name = airc_module.default_room_name().map(|s| s.to_string());
     runtime.register(airc_module);
+
+    // A.2 [[no-fallbacks-ever]]: in `FullCitizen` or `FailFast` mode,
+    // the substrate REFUSES to boot if AIRC isn't `Healthy` — there's
+    // no path where degraded discovery silently substitutes
+    // inference-only mode (Slice A's R2#2 violation). Operator must
+    // explicitly opt into `--mode=inference-only` to allow degraded
+    // boot. The seed-presence heuristic Slice A used is gone.
+    if boot_mode.requires_persona_hosting() && !discovery.can_host_personas() {
+        let reason_msg = discovery
+            .reason()
+            .map(|r| format!("{}", r))
+            .unwrap_or_else(|| "AIRC discovery did not produce Healthy state".to_string());
+        tracing::error!(
+            mode = boot_mode.label(),
+            discovery_kind = discovery.kind(),
+            reason = %reason_msg,
+            "Refusing to boot: --mode={} requires AIRC Healthy, but discovery is {}. \
+             Resolve the AIRC issue (see error above) OR re-launch with \
+             --mode=inference-only to opt into degraded operation.",
+            boot_mode.label(),
+            discovery.kind()
+        );
+        return Err(std::io::Error::other(format!(
+            "AIRC discovery {} but --mode={} requires Healthy. \
+             Reason: {}. Resolve AIRC or use --mode=inference-only ([[no-fallbacks-ever]])",
+            discovery.kind(),
+            boot_mode.label(),
+            reason_msg
+        )));
+    }
 
     // PersonaInstanceManagerModule: owns the live PersonaAircRuntime
     // registry — the kernel's roster of citizens in The Grid. Exposes
@@ -1110,10 +1152,19 @@ pub fn start_server(
             );
         });
     } else {
-        tracing::warn!(
-            "PersonaInstanceManagerModule NOT registered — AIRC discovery is degraded \
-             (missing socket or default room). Resolve by installing airc and running \
-             `airc room <name>`, then restart continuum-core."
+        // A.2: by this point the mode-driven gate above has already
+        // returned `Err` if persona hosting was required and discovery
+        // failed. Reaching here means `--mode=inference-only` — the
+        // operator explicitly opted into degraded operation. Single
+        // info-level line tells them what's missing without scaring.
+        tracing::info!(
+            mode = boot_mode.label(),
+            discovery_kind = discovery.kind(),
+            "PersonaInstanceManagerModule not registered (--mode=inference-only, AIRC \
+             discovery {}). Substrate continues for inference / embedding / forge / \
+             cargo / code. Resolve AIRC and re-launch in --mode=full-citizen to host \
+             personas.",
+            discovery.kind()
         );
     }
 
@@ -1183,8 +1234,14 @@ pub fn start_server(
     // Tick loops run as tokio tasks — they're lightweight and don't block the IPC thread.
     let _tick_handles = rt_handle.block_on(async { runtime.start_tick_loops() });
 
-    // Verify all expected modules are registered (fails server if any missing)
-    if let Err(e) = runtime.verify_registration() {
+    // Verify the required-module set for THIS (discovery, mode) pair.
+    // A.2 makes the set conditional — `persona_instance_manager` and
+    // `persona-rag-inspect` are only required when AIRC is `Healthy`
+    // AND mode requires persona hosting. Slice A's flat list put
+    // those in the unconditional set, which broke `--mode=inference-only`
+    // (R1#1 BLOCK). Conditional dispatch eliminates the contradiction
+    // structurally.
+    if let Err(e) = runtime.verify_registration(&discovery, boot_mode) {
         log_error!("ipc", "server", "{}", e);
         return Err(std::io::Error::other(e));
     }

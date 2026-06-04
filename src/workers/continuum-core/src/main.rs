@@ -82,6 +82,59 @@ fn install_shutdown_handlers() {
     });
 }
 
+/// Short human-readable description of each `BootMode` — surfaces
+/// in the boot banner so the operator can see at a glance what the
+/// substrate is expected to support in this run.
+fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static str {
+    use continuum_core::runtime::BootMode;
+    match mode {
+        BootMode::FullCitizen => "hosts personas via AIRC; requires AIRC Healthy",
+        BootMode::InferenceOnly => "no persona hosting; allows degraded AIRC",
+        BootMode::FailFast => "strictest — refuses any degraded capability",
+    }
+}
+
+/// Install a panic hook that filters ORT's "dlopen failed for
+/// libonnxruntime" stderr trace.
+///
+/// The panic is already caught by `catch_unwind` at every ORT load
+/// site (see `modules/embedding.rs::preload_default_model` +
+/// `modules/embedding.rs::load_model_internal` + the TTS/STT spawn
+/// in `main()`). Each catch arm sets `ORT_UNAVAILABLE` and logs a
+/// clean WARN line. The user-visible noise we're suppressing here is
+/// Rust's DEFAULT panic hook writing the panic to stderr BEFORE
+/// `catch_unwind` catches it — that trace looks like a substrate bug
+/// ("thread 'tokio-rt-worker' panicked at ort-2.0.0-rc.11/src/lib.rs")
+/// but it's really just "voice features not available."
+///
+/// The hook AND-gates on (a) `location().file()` containing `/ort-`
+/// and (b) payload mentioning `"Failed to load ONNX Runtime"`. Other
+/// ORT panics (genuine bugs deeper in inference) fail one of those
+/// predicates and fall through to the default handler.
+fn install_ort_panic_filter() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let from_ort = info
+            .location()
+            .map(|loc| loc.file().contains("/ort-"))
+            .unwrap_or(false);
+        let about_dylib = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(|s| s.contains("Failed to load ONNX Runtime"))
+            .or_else(|| {
+                info.payload()
+                    .downcast_ref::<&str>()
+                    .map(|s| s.contains("Failed to load ONNX Runtime"))
+            })
+            .unwrap_or(false);
+        if from_ort && about_dylib {
+            return;
+        }
+        default_hook(info);
+    }));
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Substrate-canonical tracing stack: UriCapture + ProbeRouter +
@@ -103,13 +156,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("[continuum-core-server] probes landing at {}", path.display());
     }
 
+    // Suppress the scary "tokio-rt-worker panicked at ort-…" trace
+    // when libonnxruntime is missing. The catch_unwind at every ORT
+    // load site already disables voice cleanly + logs a WARN — this
+    // just removes the misleading panic stack trace from stderr.
+    install_ort_panic_filter();
+
     // Parse command line arguments. argv[1] is the IPC socket path (positional)
     // — but intercept flag-like values FIRST so `--version` and `--help` don't
     // get treated as a socket path. Without this, `continuum-core-server
     // --version` boots the server with "/--version" as the socket path
     // and prints "IPC Socket: --version" — confusing for anyone trying to
     // verify the binary works (Carl's first instinct after `docker pull`).
-    let args: Vec<String> = env::args().collect();
+    let raw_args: Vec<String> = env::args().collect();
+
+    // A.2: peel off `--mode=<value>` (or `--mode <value>`) BEFORE
+    // positional parsing so it can appear anywhere in argv. The
+    // operator's intent (FullCitizen / InferenceOnly / FailFast)
+    // is now an explicit input instead of a heuristic from disk
+    // contents (Slice A's R2#2 BLOCK).
+    let (boot_mode, args) = match continuum_core::runtime::extract_boot_mode(raw_args) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+
     if args.len() >= 2 {
         match args[1].as_str() {
             "-V" | "--version" | "version" => {
@@ -117,19 +190,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(0);
             }
             "-h" | "--help" | "help" => {
-                println!("Usage: {} <socket-path>", args[0]);
+                println!("Usage: {} [--mode=<MODE>] <socket-path>", args[0]);
                 println!("Example: {} /tmp/continuum-core.sock", args[0]);
                 println!();
                 println!("Flags:");
+                println!("  --mode=<MODE>    Boot mode: full-citizen (default), inference-only, fail-fast");
                 println!("  -V, --version    Print version and exit");
                 println!("  -h, --help       Print this help and exit");
+                println!();
+                println!("Modes:");
+                println!("  full-citizen     (default) hosts personas via AIRC; requires AIRC Healthy");
+                println!("  inference-only   no persona hosting; allows degraded AIRC");
+                println!("  fail-fast        strictest; refuses any degraded capability");
                 std::process::exit(0);
             }
             _ => {}
         }
     }
     if args.len() < 2 {
-        eprintln!("Usage: {} <socket-path>", args[0]);
+        eprintln!("Usage: {} [--mode=<MODE>] <socket-path>", args[0]);
         eprintln!("Example: {} /tmp/continuum-core.sock", args[0]);
         eprintln!("Try `{} --help` for more.", args[0]);
         std::process::exit(1);
@@ -139,6 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🦀 Continuum Core Server starting...");
     info!("   IPC Socket: {socket_path}");
+    info!("   Boot mode:  {} ({})", boot_mode.label(), boot_mode_description(boot_mode));
 
     // Create LiveKit agent manager — routes audio/video through LiveKit WebRTC SFU.
     // Handles speak-in-call, inject-audio, ambient, and video track publishing.
@@ -183,8 +263,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rt_handle,
             ipc_memory_manager,
             ipc_pressure_monitor,
+            boot_mode,
         ) {
             tracing::error!("❌ IPC server error: {}", e);
+            // A.2: a `start_server` Err means the substrate refused
+            // to boot in a degraded state ([[no-fallbacks-ever]]). The
+            // operator's repair is in the error message. Exit non-zero
+            // so init systems / orchestrators see the failure instead
+            // of an idle-but-alive process.
+            unsafe { libc::_exit(1) };
         }
     });
 

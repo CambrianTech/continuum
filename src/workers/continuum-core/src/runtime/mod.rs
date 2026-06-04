@@ -26,6 +26,7 @@ use std::sync::OnceLock;
 
 pub mod airc_interceptor;
 pub mod artifact_handle;
+pub mod boot_mode;
 pub mod brain_region;
 pub mod cell_shapes;
 pub mod command_envelope;
@@ -45,6 +46,8 @@ pub mod registry;
 pub mod runtime;
 pub mod service_module;
 pub mod shared_compute;
+
+pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
 
 pub use artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
 pub use brain_region::{

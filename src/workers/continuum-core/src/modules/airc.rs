@@ -173,6 +173,70 @@ impl AircModule {
         }
     }
 
+    /// Construct an `AircModule` from a typed `AircDiscovery`. This is
+    /// the A.2 entry point: callers call `crate::airc::discover()` once,
+    /// hand the result to `from_discovery()`, and the same `AircDiscovery`
+    /// value drives both module construction AND boot-state checks
+    /// (`verify_registration`, persona-hosting gate).
+    ///
+    /// Why this exists alongside `discover_and_construct`: the latter
+    /// does discovery internally and returns `Self`, losing the typed
+    /// failure REASON. A.2's [[no-fallbacks-ever]] fix requires the
+    /// reason survive long enough for the operator to act on it. After
+    /// A.2 lands fully, `discover_and_construct` becomes a thin wrapper
+    /// (call `discover()` then this constructor); for this slice we
+    /// keep both side-by-side and pick whichever the call site needs.
+    pub fn from_discovery(discovery: &crate::airc::AircDiscovery) -> Self {
+        use crate::airc::AircDiscovery;
+        match discovery {
+            AircDiscovery::Healthy {
+                socket,
+                default_room,
+                room_name,
+                peer_id,
+            } => {
+                let from_client = uuid::Uuid::new_v4();
+                Self {
+                    queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
+                    event_transport: Arc::new(DaemonAircEventTransport::with_identity(
+                        Arc::new(airc_ipc::DaemonClient::new(socket.clone())),
+                        *peer_id,
+                        from_client,
+                    )),
+                    attach_socket_path: Some(socket.clone()),
+                    attach_channel: Some(*default_room),
+                    attach_room_name: Some(room_name.clone()),
+                }
+            }
+            AircDiscovery::Degraded { partial, .. } => {
+                // Partial state — preserve what we DID resolve so the
+                // module degrades gracefully (queue commands still work
+                // even without a live attach).
+                let from_client = uuid::Uuid::new_v4();
+                let peer_id = partial.peer_id.unwrap_or_else(uuid::Uuid::nil);
+                match &partial.socket {
+                    Some(socket) => Self {
+                        queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
+                        event_transport: Arc::new(DaemonAircEventTransport::with_identity(
+                            Arc::new(airc_ipc::DaemonClient::new(socket.clone())),
+                            peer_id,
+                            from_client,
+                        )),
+                        attach_socket_path: Some(socket.clone()),
+                        attach_channel: partial.default_room,
+                        attach_room_name: partial.room_name.clone(),
+                    },
+                    None => Self::with_queue_client(Arc::new(CliAircQueueClient::new(
+                        TokioAircCommandRunner,
+                    ))),
+                }
+            }
+            AircDiscovery::Unreachable { .. } => Self::with_queue_client(Arc::new(
+                CliAircQueueClient::new(TokioAircCommandRunner),
+            )),
+        }
+    }
+
     pub fn with_daemon_home(airc_home: impl Into<std::path::PathBuf>) -> Self {
         let airc_home = airc_home.into();
         let socket_path = default_socket_path_in(&airc_home);
