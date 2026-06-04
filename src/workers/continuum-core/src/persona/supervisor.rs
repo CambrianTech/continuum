@@ -295,6 +295,9 @@ impl crate::context::Context for PersonaContext {
             home_path: self.identity.home.to_string_lossy().into_owned(),
             default_room: self.identity.default_room,
             source,
+            // Personas aren't external AI agents — provider is None
+            // by definition. See Slice-4 IdentityKind doc.
+            agent_provider: None,
         })
     }
 

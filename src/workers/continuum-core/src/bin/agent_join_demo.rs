@@ -1,33 +1,47 @@
-//! claude_join_demo — proves Slice 3 of #142 end-to-end.
+//! agent_join_demo — proves Slice 4 of #142 end-to-end.
 //!
-//! A Claude Code session boots a `ClaudeContext`, gets its OWN
-//! airc identity (keypair under `~/.continuum/claudes/<label>/airc/`),
-//! joins the operator's current room, posts a single "Claude
-//! entered the grid" message signed by THAT keypair, and exits.
+//! An external AI agent session (Claude / Codex / Gemini / future
+//! provider) boots an `AgentContext`, gets its OWN airc identity
+//! (keypair under
+//! `~/.continuum/citizens/agents/<provider>/<label>/airc/`), joins
+//! the operator's current room, posts a "agent entered the grid"
+//! message signed by THAT keypair, and exits.
 //!
-//! After running, the operator can verify via `airc inbox` that the
+//! After running, the operator verifies via `airc inbox` that the
 //! message was authored by a DIFFERENT peer_id than the host's —
-//! the visible payoff of the Identity + Context + Slice-1B work:
-//! every actor instance now has its own substrate identity, not the
-//! host's.
+//! the visible payoff of the Identity + Context + Slice-1B + Slice-4
+//! work: every actor instance has its own substrate identity in a
+//! symmetric directory layout.
 //!
 //! ## Run
 //!
 //! ```bash
-//! cargo run --bin claude_join_demo --features metal,accelerate
+//! # Default: provider=claude, label=default
+//! cargo run --bin agent_join_demo --features metal,accelerate
+//!
+//! # Codex session:
+//! CONTINUUM_AGENT_PROVIDER=codex cargo run --bin agent_join_demo
+//!
+//! # Gemini session named "joel-mac":
+//! CONTINUUM_AGENT_PROVIDER=gemini CONTINUUM_AGENT_LABEL=joel-mac \
+//!   cargo run --bin agent_join_demo
 //! ```
 //!
 //! Env vars:
 //! - `CONTINUUM_ROOT` — defaults to `~/.continuum`
-//! - `CONTINUUM_CLAUDE_LABEL` — instance label (default
-//!   `"default"`). Different labels produce different identities;
-//!   same label across runs resumes the same keypair.
-//! - `CONTINUUM_ROOM` — room to join (default `"continuum"`)
+//! - `CONTINUUM_AGENT_PROVIDER` — provider slug (default `"claude"`).
+//!   Lowercase. Carried as the `agent_provider` field on the
+//!   Identity row.
+//! - `CONTINUUM_AGENT_LABEL` — instance label (default `"default"`).
+//!   Different labels produce different identities; same label
+//!   across runs resumes.
+//! - `CONTINUUM_ROOM` — room to join. If unset, discovered from the
+//!   airc daemon's current default-room name.
 
 use continuum_core::airc::{
     discover_airc_socket, discover_default_channel, discover_default_room_name,
 };
-use continuum_core::context::{ClaudeContext, ClaudeMetadata, Context};
+use continuum_core::context::{AgentContext, AgentMetadata, Context};
 use std::path::PathBuf;
 use std::process;
 
@@ -40,8 +54,12 @@ fn continuum_root() -> PathBuf {
         .join(".continuum")
 }
 
+fn agent_provider() -> String {
+    std::env::var("CONTINUUM_AGENT_PROVIDER").unwrap_or_else(|_| "claude".to_string())
+}
+
 fn instance_label() -> String {
-    std::env::var("CONTINUUM_CLAUDE_LABEL").unwrap_or_else(|_| "default".to_string())
+    std::env::var("CONTINUUM_AGENT_LABEL").unwrap_or_else(|_| "default".to_string())
 }
 
 fn now_ms() -> u64 {
@@ -59,8 +77,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
 
-    println!("=== claude_join_demo ===");
-    println!("Proving Slice 3 of #142: Claude as a first-class substrate citizen.");
+    println!("=== agent_join_demo ===");
+    println!(
+        "Proving Slice 4 of #142: external AI agents (Claude / Codex / Gemini / ...) as"
+    );
+    println!("first-class substrate citizens under the symmetric citizens/agents layout.");
     println!();
 
     // 1. Discover the airc daemon + the operator's current room.
@@ -99,45 +120,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("✓ room name resolved: {room_name}");
 
-    // 2. Bootstrap the Claude context. ClaudeContext::bootstrap does
+    // 2. Bootstrap the Agent context. AgentContext::bootstrap does
     //    the home-mkdir + airc-lib attach_as + Airc::join (by NAME,
     //    not UUID-as-string, per the recurring hazard documented in
     //    PersonaAircRuntime::bootstrap) + Identity construction.
     let root = continuum_root();
+    let provider = agent_provider();
     let label = instance_label();
-    let ctx = match ClaudeContext::bootstrap(
+    let model_id = match provider.as_str() {
+        "claude" => Some("claude-opus-4-7".to_string()),
+        "codex" => Some("gpt-codex".to_string()),
+        "gemini" => Some("gemini-2.5".to_string()),
+        _ => None,
+    };
+    let ctx = match AgentContext::bootstrap(
         &root,
+        &provider,
         &label,
         socket_path.clone(),
         default_channel,
         Some(&room_name),
-        ClaudeMetadata {
-            model_id: Some("claude-opus-4-7".to_string()),
-        },
+        AgentMetadata { model_id },
     )
     .await
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("⚠️  ClaudeContext::bootstrap failed: {e}");
+            eprintln!("⚠️  AgentContext::bootstrap failed: {e}");
             process::exit(2);
         }
     };
     let identity = ctx.identity();
     println!(
-        "✓ ClaudeContext ready: agent_name={} peer_id={} kind={:?} source={:?}",
-        identity.agent_name, identity.id, identity.kind, identity.source
+        "✓ AgentContext ready: provider={} agent_name={} peer_id={} kind={:?} source={:?}",
+        identity.agent_provider.as_deref().unwrap_or("?"),
+        identity.agent_name,
+        identity.id,
+        identity.kind,
+        identity.source
     );
 
     // 3. Bootstrap already joined the room by NAME (correct channel
     //    derivation). Compose + post the message via the Context's
     //    airc handle.
 
-    let claude_short: String = identity.id.to_string().chars().take(8).collect();
+    let peer_short: String = identity.id.to_string().chars().take(8).collect();
     let message = format!(
-        "Claude-Opus-4.7-{ts} entered the grid as {short} (peer_id {full})",
+        "{provider}-{label}-{ts} entered the grid as {short} (peer_id {full})",
         ts = now_ms(),
-        short = claude_short,
+        short = peer_short,
         full = identity.id,
     );
 

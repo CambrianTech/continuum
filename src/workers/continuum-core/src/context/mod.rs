@@ -67,8 +67,11 @@ use std::sync::Arc;
 use crate::identity::Identity;
 use crate::persona::airc_citizen::AircCitizen;
 
-pub mod claude;
-pub use claude::{ClaudeContext, ClaudeContextError, ClaudeMetadata};
+pub mod agent;
+pub mod airc_adapter;
+pub mod citizen_path;
+pub use agent::{AgentContext, AgentContextError, AgentMetadata};
+pub use citizen_path::{citizen_home_path, kind_slug, legacy_home_path};
 
 /// The substrate's universal actor handle.
 ///
@@ -148,8 +151,9 @@ pub fn log_actor_action(ctx: &dyn Context, action: &str) {
 /// now validated across:
 /// - `PersonaContext` (persona kind, transitional synthesizes from
 ///   `PersonaInstanceInfo`, returns `Cow::Owned`)
-/// - `ClaudeContext` (Slice 3, non-persona kind, stores Identity
-///   directly, returns `Cow::Borrowed`)
+/// - `AgentContext` (Slice 4, non-persona kind, parameterized by
+///   provider so Claude/Codex/Gemini/Hermes/future all flow through
+///   ONE shape, stores Identity directly, returns `Cow::Borrowed`)
 /// - `StubContext` (test fixture, stores Identity, returns
 ///   `Cow::Borrowed`)
 /// Three impls with different storage shapes and Cow semantics all
@@ -200,11 +204,12 @@ mod tests {
         let peer_id = Uuid::new_v4();
         let identity = Identity {
             id: peer_id,
-            kind: IdentityKind::Claude,
-            agent_name: "Claude-Opus-4.7-test".to_string(),
+            kind: IdentityKind::Agent,
+            agent_name: "claude-test".to_string(),
             home_path: "/tmp/claude-test/airc".to_string(),
             default_room: Uuid::new_v4(),
             source: IdentitySource::FreshlyMinted,
+            agent_provider: Some("claude".to_string()),
         };
         let citizen: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(peer_id));
         let ctx: Box<dyn Context> = Box::new(StubContext::new(identity.clone(), citizen));
@@ -212,8 +217,8 @@ mod tests {
         let observed = ctx.identity();
         let observed = observed.as_ref();
         assert_eq!(observed.id, peer_id);
-        assert_eq!(observed.kind, IdentityKind::Claude);
-        assert_eq!(observed.agent_name, "Claude-Opus-4.7-test");
+        assert_eq!(observed.kind, IdentityKind::Agent);
+        assert_eq!(observed.agent_name, "claude-test");
         assert_eq!(ctx.airc().peer_id(), peer_id);
     }
 
@@ -233,6 +238,7 @@ mod tests {
                 home_path: "/tmp/jtag/airc".to_string(),
                 default_room: Uuid::new_v4(),
                 source: IdentitySource::FreshlyMinted,
+                agent_provider: None,
             },
             Arc::new(StubAircCitizen::new(peer_id)),
         );
