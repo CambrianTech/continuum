@@ -244,6 +244,73 @@ impl PersonaContext {
     }
 }
 
+// ─── Context trait impl ────────────────────────────────────────────────
+//
+// Per task #142 Slice 2 + [[airc-is-the-session-not-a-feature]]:
+// every actor on the substrate carries an `Identity` and an airc
+// citizen handle, reachable via the `Context` trait. `PersonaContext`
+// is the first concrete implementor; `StubContext`, `ClaudeContext`,
+// `JtagContext`, etc. follow the same shape.
+//
+// ## TRANSITIONAL — ACTIVE SHARP EDGE — READ BEFORE USING
+//
+// `PersonaContext.identity` is still `PersonaInstanceInfo` (the
+// pre-Identity-entity struct). `Context::identity()` SYNTHESIZES an
+// `Identity` on each call, returning `Cow::Owned(synthesized)`.
+// Slice 1B migrates PersonaContext to store `Identity` directly; the
+// impl then becomes `Cow::Borrowed(&self.identity)` at zero cost.
+//
+// **Until Slice 1B lands, `ctx.identity().id` (= `peer_id`, the
+// cryptographic airc identity) is DIFFERENT from
+// `ctx.identity.persona_id` (the continuum-side seed minted before
+// airc bootstrap via `Uuid::new_v4()`).** These are independently-
+// minted Uuids in production code — `PersonaInstanceInfo::persona_id`
+// is the registry key used by `PersonaAircRuntimeRegistry` and looked
+// up in `host.rs`, `service_loop.rs`, `rag_inspect.rs`, and below
+// (`runtime_lookup(identity.persona_id)`).
+//
+// **DO NOT** feed `ctx.identity().id` back into the persona registry
+// or other lookups keyed on `persona_id`. They are different values
+// for the same persona during the transition. Use
+// `ctx.identity.persona_id` (the field, not the trait method) for
+// registry lookups until Slice 1B collapses the redundancy by making
+// `persona_id` and `peer_id` the same Uuid (per
+// [[persona-identity-derives-from-source-id]] the seed IS the
+// keypair Uuid).
+//
+// Per-call synthesis cost is acceptable per
+// [[substrate-overhead-is-1to3ms-LLM-dominates-latency]] — Uuid copy
+// + String clones are not the substrate's latency bottleneck.
+impl crate::context::Context for PersonaContext {
+    fn identity(&self) -> std::borrow::Cow<'_, crate::identity::Identity> {
+        use crate::identity::{Identity, IdentityKind, IdentitySource};
+        use crate::persona::identity_provider::PersonaIdentitySource;
+
+        let source = match self.identity.source {
+            PersonaIdentitySource::ResumedFromDisk => IdentitySource::ResumedFromDisk,
+            PersonaIdentitySource::FreshlyMinted => IdentitySource::FreshlyMinted,
+        };
+
+        // See module-level transitional doc above for the Uuid-
+        // divergence sharp edge. Slice 1B collapses persona_id and
+        // peer_id into one Uuid; until then `id` is peer_id and
+        // callers needing the registry key reach for the
+        // `PersonaInstanceInfo` field directly.
+        std::borrow::Cow::Owned(Identity {
+            id: self.identity.peer_id,
+            kind: IdentityKind::Persona,
+            agent_name: self.identity.agent_name.clone(),
+            home_path: self.identity.home.to_string_lossy().into_owned(),
+            default_room: self.identity.default_room,
+            source,
+        })
+    }
+
+    fn airc(&self) -> &Arc<dyn crate::persona::airc_citizen::AircCitizen> {
+        &self.runtime
+    }
+}
+
 /// Structured error per failed slot. The two failure modes are:
 ///
 /// - The slice-8 profile resolution already failed (bad model_id,
