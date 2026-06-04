@@ -67,6 +67,19 @@ use uuid::Uuid;
 /// forward" doctrine.
 #[derive(Debug, thiserror::Error)]
 pub enum PersonaAircRuntimeError {
+    #[error(
+        "legacy persona home detected at {legacy:?} — Slice 4 of #142 moved \
+         personas under `citizens/personas/<name>/airc/`. To migrate this \
+         persona's identity AND keep its peer_id stable, run:\n\
+         \n  mkdir -p {new_parent:?} && mv {legacy:?} {new:?}\n\n\
+         Then re-run. Per [[no-fallbacks-ever]] the substrate refuses to \
+         silently use the legacy path."
+    )]
+    LegacyLayoutDetected {
+        legacy: PathBuf,
+        new: PathBuf,
+        new_parent: PathBuf,
+    },
     #[error("failed to create persona airc home {0}: {1}")]
     HomeCreate(PathBuf, std::io::Error),
     #[error("airc-lib attach_as failed for persona {agent_name:?} at {home:?}: {source}")]
@@ -138,10 +151,36 @@ impl PersonaAircRuntime {
         source: crate::persona::identity_provider::PersonaIdentitySource,
     ) -> Result<Self, PersonaAircRuntimeError> {
         let agent_name = agent_name.into();
-        let home = continuum_root
-            .join("personas")
-            .join(&agent_name)
-            .join("airc");
+        // Slice 4 of #142: symmetric citizens/<kind>/<label>/airc/
+        // layout. Use the shared helper so every actor kind shares
+        // the same path schema.
+        let home = crate::context::citizen_home_path(
+            continuum_root,
+            crate::identity::IdentityKind::Persona,
+            None,
+            &agent_name,
+        );
+
+        // Migration: refuse to use the pre-Slice-4 layout. Hard-error
+        // with the exact `mv` command per [[no-fallbacks-ever]].
+        if let Some(legacy) = crate::context::legacy_home_path(
+            continuum_root,
+            crate::identity::IdentityKind::Persona,
+            &agent_name,
+        ) {
+            if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
+                let new_parent = home
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| home.clone());
+                return Err(PersonaAircRuntimeError::LegacyLayoutDetected {
+                    legacy,
+                    new: home.clone(),
+                    new_parent,
+                });
+            }
+        }
+
         tokio::fs::create_dir_all(&home)
             .await
             .map_err(|e| PersonaAircRuntimeError::HomeCreate(home.clone(), e))?;
@@ -411,19 +450,22 @@ mod tests {
         // "do NOT nest persona homes inside another scope's airc home"
         // rule at compile-ish time.
         let temp = TempDir::new().expect("tempdir");
-        let expected_home = temp
-            .path()
-            .join("personas")
-            .join("helper-ai-test")
-            .join("airc");
-        // The bootstrap fn computes the same path internally; we
-        // recompute here to prove the layout convention.
+        let expected_home = crate::context::citizen_home_path(
+            temp.path(),
+            crate::identity::IdentityKind::Persona,
+            None,
+            "helper-ai-test",
+        );
+        // Slice 4 of #142: symmetric layout under
+        // citizens/personas/<name>/airc/.
+        assert_eq!(
+            expected_home,
+            temp.path()
+                .join("citizens")
+                .join("personas")
+                .join("helper-ai-test")
+                .join("airc")
+        );
         assert!(!expected_home.exists());
-        let resolved = temp
-            .path()
-            .join("personas")
-            .join("helper-ai-test")
-            .join("airc");
-        assert_eq!(resolved, expected_home);
     }
 }

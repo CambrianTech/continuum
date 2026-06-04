@@ -76,15 +76,15 @@ pub enum IdentityKind {
     /// engrams, optional LoRA genome. Bootstraps via
     /// `PersonaIdentityProvider` at substrate start.
     Persona,
-    /// A Claude Code instance — one row per active session.
-    /// Mints fresh on session start; persists across the session;
-    /// retired when the session closes (or kept as ghost for
-    /// historical audit).
-    Claude,
-    /// A Codex (or other external-AI-agent) session. Same shape
-    /// as `Claude`, separate kind so cognition / tool-use surfaces
-    /// can specialize if needed.
-    Codex,
+    /// An external AI agent session — Claude Code instance, Codex
+    /// session, Gemini, Hermes, OpenClaw, future provider. The
+    /// SPECIFIC provider is carried in `Identity::agent_provider`
+    /// so adding a new agent provider (GPT-5, Claude-5, whatever)
+    /// doesn't churn this enum. Per the Slice-1 reviewer's
+    /// extensibility concern + [[organization-purity-as-we-migrate]]
+    /// + Joel 2026-06-04 ("Codex and Gemini etc. Use always
+    /// lowercase").
+    Agent,
     /// A human at a terminal / IDE — one row per active session
     /// (one Joel-at-laptop, another Joel-at-iMac). Bootstrapped
     /// via human-presence detection (login, IDE attach) or
@@ -92,7 +92,7 @@ pub enum IdentityKind {
     Human,
     /// A jtag CLI invocation. Can be ephemeral (mint on each
     /// `jtag X` call, retire on exit) or long-lived (one identity
-    /// per user, persisted across invocations) — TBD by Slice 3.
+    /// per user, persisted across invocations) — TBD by Slice 5.
     Jtag,
     /// A browser tab / web user. One row per tab session.
     Web,
@@ -177,6 +177,25 @@ pub struct Identity {
     /// meaningful operator question.
     #[entity(indexed)]
     pub source: IdentitySource,
+
+    /// For `IdentityKind::Agent` rows, names the SPECIFIC external
+    /// AI provider — "claude", "codex", "gemini", "hermes",
+    /// "openclaw", future. Lowercase by convention (Joel 2026-06-04
+    /// "Use always lowercase"). `None` for non-Agent kinds.
+    ///
+    /// Why a `String` and not a sub-enum: extensibility. Adding a
+    /// new provider should NOT churn the IdentityKind enum or
+    /// require enum-as-JSON migration. The substrate routes
+    /// agent-provider-specific logic through this string at the
+    /// few sites that need it (tool-use harness, model-tier
+    /// metadata).
+    ///
+    /// The directory layout for Agent kinds carries the provider:
+    /// `citizens/agents/<provider>/<label>/airc/`. Non-Agent kinds
+    /// use `citizens/<kind>/<label>/airc/` (no provider segment).
+    #[entity(indexed)]
+    #[ts(optional)]
+    pub agent_provider: Option<String>,
 }
 
 #[cfg(test)]
@@ -206,6 +225,7 @@ mod tests {
         assert!(field_names.contains(&"homePath"), "homePath missing");
         assert!(field_names.contains(&"defaultRoom"), "defaultRoom missing");
         assert!(field_names.contains(&"source"), "source missing");
+        assert!(field_names.contains(&"agentProvider"), "agentProvider missing");
     }
 
     /// Identity round-trips through OrmStore: save, find-by-id,
@@ -231,14 +251,16 @@ mod tests {
             home_path: "/tmp/test/maya/airc".to_string(),
             default_room: shared_room,
             source: IdentitySource::FreshlyMinted,
+            agent_provider: None,
         };
         let bob = Identity {
             id: Uuid::new_v4(),
-            kind: IdentityKind::Claude,
-            agent_name: "Claude-Opus-4.7-session-X".to_string(),
+            kind: IdentityKind::Agent,
+            agent_name: "claude-session-X".to_string(),
             home_path: "/tmp/test/claude-x/airc".to_string(),
             default_room: shared_room,
             source: IdentitySource::FreshlyMinted,
+            agent_provider: Some("claude".to_string()),
         };
 
         store.save(alice.id, &alice).await.expect("save alice");
@@ -253,6 +275,7 @@ mod tests {
         assert_eq!(loaded_alice.kind, IdentityKind::Persona);
         assert_eq!(loaded_alice.id, alice.id);
         assert_eq!(loaded_alice.default_room, shared_room);
+        assert_eq!(loaded_alice.agent_provider, None);
 
         let all = store.find_all().await.expect("find_all");
         assert_eq!(all.len(), 2, "both identities present");
@@ -266,8 +289,9 @@ mod tests {
         assert_eq!(personas.len(), 1);
         assert_eq!(personas[0].1.agent_name, "Maya");
 
-        let claudes: Vec<_> = all.iter().filter(|(_, i)| i.kind == IdentityKind::Claude).collect();
-        assert_eq!(claudes.len(), 1);
-        assert_eq!(claudes[0].1.agent_name, "Claude-Opus-4.7-session-X");
+        let agents: Vec<_> = all.iter().filter(|(_, i)| i.kind == IdentityKind::Agent).collect();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].1.agent_name, "claude-session-X");
+        assert_eq!(agents[0].1.agent_provider.as_deref(), Some("claude"));
     }
 }
