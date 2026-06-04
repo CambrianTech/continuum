@@ -468,6 +468,134 @@ failure mode goes away because there is no separate config surface
 require remembering to register a logger; the dispatcher does it
 by construction.
 
+### Timing and stack ancestry — mechanic-grade primitives
+
+Joel, 2026-06-04: "Timing is another super nice one. Make it inherent
+and even automatic. Same goes for stacks. Or it's a timing macro
+call. Make it easy. This is what mechanics (you and me, personas)
+want."
+
+The substrate's spans already know both — tracing's span tree carries
+parent/child relationships, and a span's enter/exit timestamps give
+duration. Slice P just exposes them as ergonomic primitives mechanics
+can reach for without thinking about wiring.
+
+#### Automatic span timing
+
+Every `tracing::info_span!(…).entered()` records its start time on
+entry and emits a duration event on exit. The substrate's subscriber
+routes those events to:
+
+```
+airc://<actor>/debug/probes/timing/stream
+```
+
+Carried fields: `{ uri, span_name, duration_ms, parent_uri,
+caller_uri, ... }`. No code at the call site — the span machinery
+already does the bookkeeping; the substrate just wires the emission
+to the timing probe stream when the subscriber's listening (zero-cost
+when nobody is).
+
+```rust
+// AUTOMATIC: timing fires when the span exits, no code at call site needed
+let _span = tracing::info_span!("recall_phase", turn_id = %id).entered();
+let candidates = recall_candidates(&query);
+// at scope end: timing probe emitted
+```
+
+#### `time!` macro for a specific block
+
+When you want to time something tighter than a full span (a single
+expression, a one-liner), reach for `time!`:
+
+```rust
+// Block form:
+time!("recall_phase", {
+    let candidates = recall_candidates(&query);
+    candidates
+});
+
+// Expression form:
+let candidates = time!("recall_phase", || recall_candidates(&query));
+```
+
+Same routing as automatic span timing — emits to
+`airc://<actor>/debug/probes/timing/stream` with the named segment
+as `span_name`. Zero-cost when the timing class is disabled.
+
+#### `stack!` macro for span ancestry
+
+Returns the current span tree from root to here — the substrate's
+"call stack" expressed in URI scopes:
+
+```rust
+let stack = stack!();
+// Vec<SpanFrame>:
+//   [ airc://maya/service_loop,
+//     airc://maya/cognition/turn:144036023249865,
+//     airc://maya/cognition/recall/algorithm-4 ]
+
+// Typical "something failed" pattern:
+probe!(class = "error", stack = %stack!(), "engram lookup failed");
+```
+
+The span ancestry IS the substrate's call stack — the URI tree from
+the root dispatch point to the current code. Mechanics use this to
+answer "how did execution end up here?" without ever touching gdb
+or native stack frames.
+
+For native stack capture (panic forensics, sigsegv investigation),
+the existing Rust `Backtrace::capture()` remains the right tool;
+`stack!` is the substrate's structured equivalent for normal
+execution paths.
+
+#### Derived views: flamegraph + profile
+
+Flamegraphs and CPU profiles aren't separate systems — they're
+renderings of the timing + span-tree data the substrate is already
+emitting. Operator or Ares' cognition requests the URI; the
+substrate aggregates over the recent window:
+
+```text
+airc://maya/debug/profile/flamegraph?window=5m
+airc://maya/debug/profile/flamegraph?window=5m&format=svg
+airc://5090-rig/debug/profile/cpu?window=30s              # pprof
+airc://maya/debug/profile/spans-tree?turn_id=144036023249865
+```
+
+Same dispatcher, same auth gate, same observability. The
+flamegraph URI doesn't introduce a new instrumentation system —
+it just rolls up the existing timing probe stream into a renderable
+shape.
+
+#### URIs for live span introspection
+
+```text
+airc://maya/debug/spans/active                  # currently entered spans + elapsed
+airc://maya/debug/spans/<span_id>/ancestry      # span tree path
+airc://maya/debug/spans/<span_id>/duration
+airc://maya/debug/spans/<span_id>/inspect       # full fields + parent + children
+airc://maya/debug/spans/by-uri?path=cognition/recall  # spans matching URI pattern
+```
+
+The operator running `./jtag airc://maya/debug/spans/active` during
+an incident sees exactly what Maya is doing right now — span tree
+with elapsed times, no manual instrumentation, no log-grepping.
+
+#### Why this is mechanic-grade
+
+A mechanic working on a substrate (whether a human operator, a
+persona debugging itself, or Ares introspecting her own dispatch
+decisions) wants three things first:
+
+1. **How long is this taking?** — answered by automatic span timing
+2. **Where did it come from?** — answered by `stack!` / span ancestry
+3. **What's running right now?** — answered by `/debug/spans/active`
+
+All three should be reachable without instrumenting code. The
+substrate's existing span machinery already knows the answers; Slice
+P just makes the answers addressable.
+
 ### Why this matters at the substrate level
 
 - Same primitive (the URI) used at THREE consumption points: addressing
@@ -547,18 +675,30 @@ by construction.
     `…/debug/breakpoint/set`. The substrate's `jtag` CLI gets its
     namesake's literal semantics: arbitrary-depth structured access
     to any URI in any persona's address space from any node.
-12. **`probe!` macro + per-class probe streams** — structured
-    measurements (latency, decision, state, admission) routed to
-    `airc://<actor>/debug/probes/<class>/stream`. Always-on,
-    low-cost, subscribe-able by sentinels, Ares, foundry, operators.
-    Brings back the previous-generation continuum's probe primitive
-    with universal coverage enforced by the URI dispatcher.
+12. **`probe!` macro + per-class probe streams** — added because of
+    special features (per-class routing, ALWAYS-ON intent, replay
+    persistence, sample-rate, aggregation). Conventional Rust
+    tracing macros stay conventional; `probe!` is reached for ONLY
+    when those features are wanted.
 13. **Configurable log levels + probe enables via URIs** —
     `airc://maya/debug/log/level/set`, `…/probes/<class>/enable`,
-    `…/log/redirect`. The previous system had this configurable
-    but never universally wired; the URI substrate makes the wiring
-    structural.
-14. This document, evolved in-place as the design crystallizes.
+    `…/log/redirect`. Previous system had this configurable but
+    never universally wired; URI substrate makes wiring structural.
+14. **Automatic span timing** — every entered `tracing::Span`
+    records duration on exit, routed to
+    `airc://<actor>/debug/probes/timing/stream`. No code at call
+    site; zero-cost when no subscriber listening. Mechanic-grade.
+15. **`time!` macro** for explicit one-line block / expression
+    timing. Same routing as automatic span timing.
+16. **`stack!` macro** returning span ancestry — the substrate's
+    "call stack" as a Vec<SpanFrame> of URI scopes. The structured
+    equivalent of `Backtrace::capture()` for normal execution paths.
+17. **Derived views**: flamegraph + CPU profile + span-tree
+    rollups, all addressable via URI
+    (`airc://maya/debug/profile/flamegraph?window=5m`). Not
+    separate instrumentation — renderings of the existing
+    timing/span data.
+18. This document, evolved in-place as the design crystallizes.
 
 ## What does NOT land in Slice P (explicit non-goals)
 
