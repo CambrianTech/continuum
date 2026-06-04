@@ -24,9 +24,12 @@
 //!   same label across runs resumes the same keypair.
 //! - `CONTINUUM_ROOM` — room to join (default `"continuum"`)
 
-use continuum_core::airc::{discover_airc_socket, discover_default_channel};
+use continuum_core::airc::{
+    discover_airc_socket, discover_default_channel, discover_default_room_name,
+};
 use continuum_core::context::{ClaudeContext, ClaudeMetadata, Context};
 use std::path::PathBuf;
+use std::process;
 
 fn continuum_root() -> PathBuf {
     if let Ok(root) = std::env::var("CONTINUUM_ROOT") {
@@ -64,9 +67,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = match discover_airc_socket().await {
         Ok(p) => p,
         Err(e) => {
-            println!("⚠️  Cannot reach the airc daemon: {e}");
-            println!("    Remedy: install + run `airc join`.");
-            return Ok(());
+            eprintln!("⚠️  Cannot reach the airc daemon: {e}");
+            eprintln!("    Remedy: install + run `airc join`.");
+            process::exit(2);
         }
     };
     println!("✓ airc daemon discovered at {}", socket_path.display());
@@ -74,15 +77,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let default_channel = match discover_default_channel().await {
         Ok(uuid) => uuid,
         Err(e) => {
-            println!("⚠️  Cannot determine default room: {e}");
-            println!("    Remedy: run `airc room <name>`.");
-            return Ok(());
+            eprintln!("⚠️  Cannot determine default room: {e}");
+            eprintln!("    Remedy: run `airc room <name>`.");
+            process::exit(2);
         }
     };
     println!("✓ default channel resolved: {default_channel}");
 
+    let env_room = std::env::var("CONTINUUM_ROOM").ok();
+    let room_name = match env_room {
+        Some(name) => name,
+        None => match discover_default_room_name().await {
+            Ok(name) => name,
+            Err(e) => {
+                eprintln!("⚠️  Cannot determine default room name: {e}");
+                eprintln!("    Remedy: run `airc room <name>` so the daemon knows the canonical name,");
+                eprintln!("            or set CONTINUUM_ROOM=<name> explicitly.");
+                process::exit(2);
+            }
+        },
+    };
+    println!("✓ room name resolved: {room_name}");
+
     // 2. Bootstrap the Claude context. ClaudeContext::bootstrap does
-    //    the home-mkdir + airc-lib attach_as + Identity construction.
+    //    the home-mkdir + airc-lib attach_as + Airc::join (by NAME,
+    //    not UUID-as-string, per the recurring hazard documented in
+    //    PersonaAircRuntime::bootstrap) + Identity construction.
     let root = continuum_root();
     let label = instance_label();
     let ctx = match ClaudeContext::bootstrap(
@@ -90,6 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &label,
         socket_path.clone(),
         default_channel,
+        Some(&room_name),
         ClaudeMetadata {
             model_id: Some("claude-opus-4-7".to_string()),
         },
@@ -98,8 +119,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         Ok(c) => c,
         Err(e) => {
-            println!("⚠️  ClaudeContext::bootstrap failed: {e}");
-            return Ok(());
+            eprintln!("⚠️  ClaudeContext::bootstrap failed: {e}");
+            process::exit(2);
         }
     };
     let identity = ctx.identity();
@@ -108,23 +129,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         identity.agent_name, identity.id, identity.kind, identity.source
     );
 
-    // 3. Join the operator's room. Same name-derives-channel
-    //    discipline as airc_chat_demo — join by NAME, not by UUID-
-    //    as-string, so the channel matches what `airc room` reports.
-    //    Reach the join through the underlying Arc<Airc> via the
-    //    citizen's say/subscribe — the demo just needs to land a
-    //    message in the same channel the operator's reading.
-    //
-    //    Note: `Airc::join` lives on `airc_lib::Airc`, not on the
-    //    AircCitizen trait surface. For a polished bootstrap path
-    //    we'd plumb a `join(&str)` method through; for THIS demo we
-    //    rely on the fact that airc-lib's `attach_as` already
-    //    associates the daemon with the home's default channel for
-    //    publish purposes — the operator's room name resolves via
-    //    daemon-side state set by `airc room`.
-    //
-    //    A polished follow-up adds an explicit room.join() through
-    //    the Context trait so this isn't bin-specific knowledge.
+    // 3. Bootstrap already joined the room by NAME (correct channel
+    //    derivation). Compose + post the message via the Context's
+    //    airc handle.
 
     let claude_short: String = identity.id.to_string().chars().take(8).collect();
     let message = format!(
@@ -143,11 +150,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             println!("Verify: `airc inbox --limit 5` should show the message authored");
             println!("by peer_id={} — a DIFFERENT peer_id than the host's.", identity.id);
+            Ok(())
         }
         Err(e) => {
-            println!("⚠️  say failed: {e}");
+            eprintln!("⚠️  say failed: {e}");
+            process::exit(2);
         }
     }
-
-    Ok(())
 }

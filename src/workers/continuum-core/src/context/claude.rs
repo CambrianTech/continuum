@@ -81,6 +81,13 @@ pub enum ClaudeContextError {
         #[source]
         source: AircError,
     },
+    #[error("failed to join room {room_name:?} as claude {agent_name:?}: {source}")]
+    Join {
+        agent_name: String,
+        room_name: String,
+        #[source]
+        source: AircError,
+    },
 }
 
 /// Placeholder extension for Claude-kind state. Per the CLAUDE.md
@@ -141,6 +148,7 @@ impl ClaudeContext {
         instance_label: impl Into<String>,
         daemon_socket: PathBuf,
         default_room: Uuid,
+        room_name: Option<&str>,
         metadata: ClaudeMetadata,
     ) -> Result<Self, ClaudeContextError> {
         let instance_label = instance_label.into();
@@ -149,18 +157,23 @@ impl ClaudeContext {
             .join("claudes")
             .join(&instance_label)
             .join("airc");
+
+        // Detect resume vs mint BEFORE create_dir_all by checking the
+        // per-instance_label home dir itself, NOT identity.key. Per
+        // the per-label home convention
+        // (<continuum_root>/claudes/<instance_label>/airc/), the
+        // home dir's existence is a clean proxy for "has this
+        // specific Claude label been bootstrapped before?" — without
+        // the (key_exists, agent_not_stored) edge case that bites
+        // when probing identity.key directly. Edge cases (manually
+        // populated home with no airc state) report as
+        // `ResumedFromDisk` here, which is the more operator-honest
+        // default since SOMEONE staged that directory deliberately.
+        let home_pre_existed = tokio::fs::try_exists(&home).await.unwrap_or(false);
+
         tokio::fs::create_dir_all(&home)
             .await
             .map_err(|e| ClaudeContextError::HomeCreate(home.clone(), e))?;
-
-        // Detect whether the keypair already exists on disk. airc-lib's
-        // attach_as is resume-or-mint either way; we just observe the
-        // outcome for telemetry honesty per
-        // [[substrate-is-a-good-citizen-on-the-host]].
-        let identity_key_path = home.join("identity.key");
-        let pre_existed = tokio::fs::try_exists(&identity_key_path)
-            .await
-            .unwrap_or(false);
 
         let airc = Airc::attach_as(home.clone(), agent_name.clone(), daemon_socket)
             .await
@@ -170,8 +183,26 @@ impl ClaudeContext {
                 source,
             })?;
 
+        // Join the room by NAME (not by UUID-as-string). Per
+        // PersonaAircRuntime::bootstrap's hard-won lesson at
+        // `persona/airc_runtime.rs:170-179` and the empirical catch
+        // in card 800ce5bd: `Airc::join(uuid_str)` DERIVES a fresh
+        // channel uuid from the string, landing the subscription on
+        // a different channel than the operator's. The room_name
+        // path is the canonical one — passing `None` skips the join
+        // for callers that have already joined some other way.
+        if let Some(name) = room_name {
+            airc.join(name)
+                .await
+                .map_err(|source| ClaudeContextError::Join {
+                    agent_name: agent_name.clone(),
+                    room_name: name.to_string(),
+                    source,
+                })?;
+        }
+
         let peer_id = airc.peer_id().as_uuid();
-        let source = if pre_existed {
+        let source = if home_pre_existed {
             IdentitySource::ResumedFromDisk
         } else {
             IdentitySource::FreshlyMinted
