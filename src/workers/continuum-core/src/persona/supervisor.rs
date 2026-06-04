@@ -244,6 +244,55 @@ impl PersonaContext {
     }
 }
 
+// ─── Context trait impl ────────────────────────────────────────────────
+//
+// Per task #142 Slice 2 + [[airc-is-the-session-not-a-feature]]:
+// every actor on the substrate carries an `Identity` and an airc
+// citizen handle, reachable via the `Context` trait. `PersonaContext`
+// is the first concrete implementor; `StubContext`, `ClaudeContext`,
+// `JtagContext`, etc. follow the same shape.
+//
+// Transitional shape: `PersonaContext.identity` is a
+// `PersonaInstanceInfo` (the pre-Identity-entity struct), so
+// `Context::identity()` SYNTHESIZES an `Identity` from the underlying
+// `PersonaInstanceInfo` fields on each call. Slice 1B migrates
+// PersonaContext to store an `Identity` directly, at which point this
+// impl becomes a one-line `&self.identity` borrow. The per-turn
+// synthesis cost is acceptable per
+// [[substrate-overhead-is-1to3ms-LLM-dominates-latency]] —
+// substrate-overhead measurements show LLM dominates; an Uuid copy +
+// String clones are not the bottleneck.
+impl crate::context::Context for PersonaContext {
+    fn identity(&self) -> crate::identity::Identity {
+        use crate::identity::{Identity, IdentityKind, IdentitySource};
+        use crate::persona::identity_provider::PersonaIdentitySource;
+
+        let source = match self.identity.source {
+            PersonaIdentitySource::ResumedFromDisk => IdentitySource::ResumedFromDisk,
+            PersonaIdentitySource::FreshlyMinted => IdentitySource::FreshlyMinted,
+        };
+
+        Identity {
+            // Per [[persona-identity-derives-from-source-id]]:
+            // Identity.id IS the airc peer_id. PersonaInstanceInfo
+            // distinguishes `persona_id` (continuum-side seed) from
+            // `peer_id` (cryptographic identity airc routes on); the
+            // Identity entity unifies on peer_id. Slice 1B will
+            // collapse the redundancy in PersonaInstanceInfo itself.
+            id: self.identity.peer_id,
+            kind: IdentityKind::Persona,
+            agent_name: self.identity.agent_name.clone(),
+            home_path: self.identity.home.to_string_lossy().into_owned(),
+            default_room: self.identity.default_room,
+            source,
+        }
+    }
+
+    fn airc(&self) -> &Arc<dyn crate::persona::airc_citizen::AircCitizen> {
+        &self.runtime
+    }
+}
+
 /// Structured error per failed slot. The two failure modes are:
 ///
 /// - The slice-8 profile resolution already failed (bad model_id,
