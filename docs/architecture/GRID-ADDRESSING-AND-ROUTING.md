@@ -275,6 +275,116 @@ or subscribes via Events.subscribe(`handle:<id>:chunk`) on the
 target peer's substrate. Each chunk is a typed event the
 environments can render as they choose.
 
+## Universal logging + true JTAG (the next compression layer)
+
+The URI grammar isn't only the addressing primitive — it's the
+universal identifier that makes structured logging and live
+debugging compose for free. The same `airc://maya/cognition/turn:...`
+that addresses an operation IS the span tag in `tracing::Span`.
+Joel, 2026-06-04:
+
+> Once you have that you have a universal mapping for logging and
+> debugging. It makes universal macros like `debug!` just wire in,
+> for segregated logging or a true JTAG in every sense.
+
+### Tracing integration
+
+Every URI dispatch establishes a `tracing::Span` with the URI as
+a structured field:
+
+```rust
+let span = tracing::info_span!(
+    "dispatch",
+    uri = %uri,
+    caller = %caller_peer_id,
+).entered();
+
+// All log macros inside this scope inherit the URI tag:
+debug!("admitting incoming");
+info!(turn_id = %id, "turn complete");
+warn!(error = %e, "engram persistence failed");
+```
+
+The `tracing::Subscriber` routes events to URI-segmented log files
+OR exposes them as `Events.subscribe()`-able streams. Per-persona
+log segregation, per-env filtering, cross-grid trace correlation —
+all fall out of one structured field. No special-case "this log
+belongs to Maya, that one belongs to Niko" code; the span context
+carries it.
+
+### Substrate JTAG (the literal meaning, not the metaphor)
+
+Hardware JTAG (Joint Test Action Group, IEEE 1149.1) gives you
+arbitrary-depth structured access to any pin on any chip on a
+shared scan chain — halt, step, scan-in, scan-out. The substrate's
+`jtag` CLI was named after it; with URI addressing in place, the
+namesake's semantics apply literally.
+
+The substrate exposes a `/debug/` namespace under every URI scope:
+
+```text
+airc://maya/debug/spans/active                      # what's executing right now
+airc://maya/debug/trace/stream                      # live trace event stream (subscribe)
+airc://maya/debug/trace/filter?level=debug&path=cognition  # filtered live trace
+airc://maya/debug/breakpoint/set?uri=cognition/working-set/upsert
+airc://maya/debug/breakpoint/list
+airc://maya/debug/handle:h_8a3b.../inspect          # examine a live handle
+airc://maya:vr/debug/render-stats                   # VR env frame budget
+airc://5090-rig/debug/sidecar/inference/lane:3/dump # inspect stuck inference lane
+airc://5090-rig/debug/sidecar/voice/ort-session/dump
+airc://room:cb2e21a1/debug/subscribers              # who's listening on this channel
+airc://*/debug/heartbeat/last                       # any-actor health check
+```
+
+Operator use:
+
+```bash
+$ ./jtag airc://maya/debug/trace/stream
+[2026-06-04T18:39:18Z INFO  airc://maya/cognition/turn:144036023249865] admitting incoming
+[2026-06-04T18:39:18Z DEBUG airc://maya/cognition/recall/algorithm-4] candidates_examined=23
+[2026-06-04T18:39:18Z INFO  airc://maya/cognition/turn:144036023249865] turn complete duration_ms=1697
+
+$ ./jtag airc://5090-rig/debug/sidecar/inference/lane:3/dump
+{ "lane_id": 3, "active_persona": "niko", "tokens_generated": 142, "stuck_at_token": 143, "last_progress": "5s ago", ... }
+
+$ ./jtag airc://maya/debug/breakpoint/set?uri=cognition/genome/lora-page-in
+# Future calls to that URI halt Maya's cognition, surface the call to operator,
+# allow inspect / step / continue — same span context Ares sees in her own
+# dispatcher cognition, except the operator is the controller this time
+```
+
+### Why this matters at the substrate level
+
+- Same primitive (the URI) used at THREE consumption points: addressing
+  (where to dispatch), observability (what to tag), debugging (what to
+  poke). No three drifting representations.
+- Ares-the-dispatcher consumes the SAME trace stream the operator
+  does — when her cognition asks "why did lane 3 stall on the 5090?"
+  she queries `airc://5090-rig/debug/sidecar/inference/lane:3/dump`
+  with the same URI surface a human would. Cognition + operator
+  share the debug primitive.
+- Segregated logs aren't a config decision — they're a structural
+  property of how `tracing` propagates spans through URI-tagged
+  dispatches. Adding a new persona doesn't add a new logger
+  registration; it inherits.
+- Cross-grid debugging just works: span context propagates with the
+  envelope, so a trace started on Joel's laptop carries into the
+  5090's substrate when the URI routes there, and the laptop's
+  `./jtag .../trace/stream` sees the full causal chain.
+
+### Doctrine alignment for this layer
+
+- [[observability-is-half-the-architecture]] — CaptureSink already
+  the substrate-wide convention; URI-tagged spans extend it from
+  command-level capture to log-event-level capture without
+  bespoke wiring
+- [[commands-are-dumb-daemons-are-smart]] — the `/debug/` namespace
+  is just commands with the same dispatcher; smart subscribers
+  (operator, Ares, sentinels) layer on top
+- Joel's compression principle — ONE URI grammar, ONE tagging
+  mechanism, ONE dispatcher, N consumers (addressing, logging,
+  debugging, audit, replay)
+
 ## Composition with existing in-tree primitives
 
 | Existing primitive | How Slice P uses it |
@@ -313,7 +423,16 @@ environments can render as they choose.
    their active envs.
 9. **`event-topic:` URI scheme path** so subscriptions are
    addressable (`airc://maya/event-topic:turn-complete` etc.).
-10. This document, evolved in-place as the design crystallizes.
+10. **Tracing-span URI propagation** — every URI dispatch establishes
+    a `tracing::Span` with the URI as a structured field. `debug!`,
+    `info!`, etc. inherit the tag automatically; per-persona log
+    segregation falls out for free.
+11. **`/debug/` namespace under every URI scope** —
+    `airc://maya/debug/spans/active`, `…/debug/trace/stream`,
+    `…/debug/breakpoint/set`. The substrate's `jtag` CLI gets its
+    namesake's literal semantics: arbitrary-depth structured access
+    to any URI in any persona's address space from any node.
+12. This document, evolved in-place as the design crystallizes.
 
 ## What does NOT land in Slice P (explicit non-goals)
 
