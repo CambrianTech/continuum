@@ -24,5 +24,7 @@
 //! `Context::environment()` accessor.
 
 pub mod command_uri;
+#[macro_use]
+pub mod macros;
 
 pub use command_uri::{CommandUri, EnvSelector, NodeId, PeerRef, UriParseError};

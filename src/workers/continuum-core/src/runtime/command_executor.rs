@@ -162,11 +162,26 @@ impl CommandExecutor {
     /// Routing decision on a [`CommandUri`]. Local URIs go through the
     /// existing chain; non-Local URIs return a typed
     /// not-yet-implemented error pending the transport selector.
+    ///
+    /// Slice P note: this is where the per-dispatch [`tracing::Span`] is
+    /// established. The URI lives in the span as a structured field;
+    /// every `debug!` / `info!` / `probe!` event inside the dispatched
+    /// command inherits the tag automatically. Per-persona log
+    /// segregation, cross-grid trace correlation, and URI-routed
+    /// observability all fall out of this one seam — no
+    /// per-call-site instrumentation needed.
     async fn dispatch(
         &self,
         command: &CommandUri,
         params: Value,
     ) -> Result<CommandResult, String> {
+        let span = tracing::info_span!(
+            "cmd",
+            uri = %command,
+            path = %command.path(),
+        );
+        let _enter = span.enter();
+
         if !command.is_local() {
             return Err(format!(
                 "Remote dispatch for {command} not yet implemented — \
