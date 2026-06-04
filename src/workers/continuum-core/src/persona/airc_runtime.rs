@@ -154,13 +154,47 @@ impl PersonaAircRuntime {
                 source,
             })?;
 
+        // ── Slice 1B of #142: collapse persona_id := peer_id ─────────────
+        //
+        // Per [[persona-identity-derives-from-source-id]] +
+        // [[airc-is-the-session-not-a-feature]]: the substrate has ONE
+        // unique identifier per actor — the airc peer_id (Ed25519
+        // keypair Uuid). The continuum-side `persona_id` originally
+        // minted via `Uuid::new_v4()` pre-bootstrap is the historical
+        // artifact; airc-lib is the source of cryptographic truth.
+        //
+        // Post-bootstrap, the runtime stores `persona_id` as the
+        // peer_id. Callers using `runtime.persona_id()` as a registry
+        // key are then safe to also reach for `ctx.identity().id`
+        // (= peer_id) from the Context trait without divergence.
+        //
+        // The input `persona_id` parameter is retained for API
+        // continuity (callers shouldn't break) but its value is
+        // logged-then-discarded. A future cleanup will drop the
+        // parameter entirely; for now, warn-on-divergence so callers
+        // can spot the now-unused argument and prune.
+        let peer_id_uuid = airc.peer_id().as_uuid();
+        if persona_id != peer_id_uuid {
+            tracing::warn!(
+                input_persona_id = %persona_id,
+                peer_id = %peer_id_uuid,
+                agent_name = %agent_name,
+                "PersonaAircRuntime::bootstrap: persona_id parameter ignored — \
+                 runtime collapses persona_id := peer_id per Slice 1B of #142. \
+                 Future API cleanup will drop the parameter; for now the field \
+                 is reseated from airc-lib's peer_id (the cryptographic ground \
+                 truth)."
+            );
+        }
+        let persona_id = peer_id_uuid;
+
         info!(
             persona_id = %persona_id,
             agent_name = %agent_name,
             peer_id = %airc.peer_id(),
             client_id = %airc.client_id(),
             home = %home.display(),
-            "PersonaAircRuntime bootstrap: identity ready"
+            "PersonaAircRuntime bootstrap: identity ready (persona_id == peer_id post-collapse)"
         );
 
         // Join the default room. From the daemon's perspective the
@@ -239,9 +273,25 @@ impl PersonaAircRuntime {
         default_room: RoomId,
         source: crate::persona::identity_provider::PersonaIdentitySource,
     ) -> Self {
+        // Slice 1B of #142: collapse persona_id := peer_id. Same
+        // rationale as in `bootstrap` above. The input parameter is
+        // retained for API continuity but its value is reseated to
+        // the airc-lib peer_id (cryptographic ground truth).
+        let peer_id_uuid = airc.peer_id().as_uuid();
+        let agent_name = agent_name.into();
+        if persona_id != peer_id_uuid {
+            tracing::warn!(
+                input_persona_id = %persona_id,
+                peer_id = %peer_id_uuid,
+                agent_name = %agent_name,
+                "PersonaAircRuntime::from_attached: persona_id parameter \
+                 ignored — runtime collapses persona_id := peer_id per Slice \
+                 1B of #142."
+            );
+        }
         Self {
-            persona_id,
-            agent_name: agent_name.into(),
+            persona_id: peer_id_uuid,
+            agent_name,
             home,
             airc,
             default_room,
