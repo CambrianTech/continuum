@@ -170,20 +170,23 @@ impl PersonaAircRuntime {
         //
         // The input `persona_id` parameter is retained for API
         // continuity (callers shouldn't break) but its value is
-        // logged-then-discarded. A future cleanup will drop the
-        // parameter entirely; for now, warn-on-divergence so callers
-        // can spot the now-unused argument and prune.
+        // logged-then-discarded. Divergence is at `debug!` level —
+        // for fresh mints the divergence is the NORMAL case
+        // (`ResumeOrMintProvider::mint_fresh_intent` allocates
+        // `Uuid::new_v4()` before the keypair is generated, so the
+        // two Uuids are statistically guaranteed to differ for every
+        // fresh persona). Logging it at `warn!` would spam operators
+        // at every boot. A future API cleanup drops the parameter
+        // entirely and removes this branch.
         let peer_id_uuid = airc.peer_id().as_uuid();
         if persona_id != peer_id_uuid {
-            tracing::warn!(
+            tracing::debug!(
                 input_persona_id = %persona_id,
                 peer_id = %peer_id_uuid,
                 agent_name = %agent_name,
                 "PersonaAircRuntime::bootstrap: persona_id parameter ignored — \
                  runtime collapses persona_id := peer_id per Slice 1B of #142. \
-                 Future API cleanup will drop the parameter; for now the field \
-                 is reseated from airc-lib's peer_id (the cryptographic ground \
-                 truth)."
+                 Expected for fresh mints; a future API cleanup drops the parameter."
             );
         }
         let persona_id = peer_id_uuid;
@@ -280,7 +283,10 @@ impl PersonaAircRuntime {
         let peer_id_uuid = airc.peer_id().as_uuid();
         let agent_name = agent_name.into();
         if persona_id != peer_id_uuid {
-            tracing::warn!(
+            // Expected for fresh mints — see equivalent doc in
+            // `bootstrap` above. `debug!` not `warn!` to avoid log
+            // spam at every boot.
+            tracing::debug!(
                 input_persona_id = %persona_id,
                 peer_id = %peer_id_uuid,
                 agent_name = %agent_name,

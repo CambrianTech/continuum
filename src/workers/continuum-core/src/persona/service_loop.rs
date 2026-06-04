@@ -589,7 +589,12 @@ mod tests {
     ) -> HostedPersona {
         use crate::persona::hw_tier_descriptor::HwTierCategory;
         use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
-        let persona_id = Uuid::new_v4();
+        // Honor the Slice-1B-of-#142 invariant: `persona_id ==
+        // peer_id` for every PersonaInstanceInfo. Test fixtures
+        // that bypass the runtime constructor (where the collapse
+        // would otherwise be enforced) keep both fields equal so the
+        // identity shape matches what production sees.
+        let persona_id = persona_peer_id;
         // Build a profile shaped like the LCD Compat tier — the
         // substrate's lowest common denominator. Test exercises the
         // same `&ctx` derivation path production uses; no hardcoded

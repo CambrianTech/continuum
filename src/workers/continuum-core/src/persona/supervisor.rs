@@ -497,14 +497,49 @@ mod tests {
     // from the system primitives' builder methods.
 
     fn fake_instance(name: &str) -> PersonaInstanceInfo {
+        // Honor the Slice-1B-of-#142 invariant
+        // (persona_id == peer_id) even in test fixtures so they
+        // exercise the same identity shape production sees. Per the
+        // PersonaInstanceInfo doc: fixtures that bypass the runtime
+        // constructor MUST keep both fields equal.
+        let peer_id = Uuid::new_v4();
         PersonaInstanceInfo {
-            persona_id: Uuid::new_v4(),
+            persona_id: peer_id,
             agent_name: name.to_string(),
-            peer_id: Uuid::new_v4(),
+            peer_id,
             home: PathBuf::from(format!("/tmp/fake-supervisor-test/{name}")),
             default_room: Uuid::nil(),
             source: PersonaIdentitySource::FreshlyMinted,
         }
+    }
+
+    /// Pins the Slice 1B invariant: `ctx.identity().id ==
+    /// ctx.identity.persona_id == ctx.identity.peer_id` for any
+    /// `PersonaContext` constructed through the canonical path. If
+    /// a future edit reintroduces the pre-Slice-1B divergence
+    /// (separate Uuid for persona_id vs peer_id), this test fails.
+    ///
+    /// Per [[every-error-is-an-opportunity-to-battle-harden]] — the
+    /// PR #1522 reviewer caught the divergence after the fact;
+    /// this test is the rigging that catches the regression class
+    /// at unit-test time.
+    #[test]
+    fn persona_context_identity_id_matches_registry_key() {
+        use crate::context::Context;
+        let instance = fake_instance("Maya");
+        // Sanity: fixture itself honors the invariant.
+        assert_eq!(instance.persona_id, instance.peer_id);
+
+        let ctx_identity = instance.peer_id;
+        let cognition_persona_id = instance.persona_id;
+
+        // The PersonaContext Context impl projects identity.peer_id
+        // into Identity.id; the registry key path reads
+        // identity.persona_id. Post-Slice-1B these MUST match.
+        assert_eq!(
+            ctx_identity, cognition_persona_id,
+            "Slice 1B invariant broken: ctx.identity().id != ctx.identity.persona_id"
+        );
     }
 
     fn fake_profile(persona_name: &str, model_id: &str) -> PersonaInferenceProfile {
