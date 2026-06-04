@@ -61,6 +61,7 @@
 //! - ORM scope / log scope / capture sink services on Context (added
 //!   when consumers appear, per the outlier-validation discipline)
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::identity::Identity;
@@ -71,25 +72,38 @@ use crate::persona::airc_citizen::AircCitizen;
 /// Every substrate API that produces substrate-visible effect takes
 /// `&dyn Context`. Implementors are: `PersonaContext` (today),
 /// `ClaudeContext` / `JtagContext` / `HumanContext` (Slice 3),
-/// `StubContext` (tests).
+/// `StubContext` (tests + benchmarks).
+///
+/// ### Bounds
+///
+/// `Send + Sync + 'static` so trait objects can be stored in
+/// long-lived registries (session tables, capture sinks, work-card
+/// claim records) — Slice 4 will surface this need; adding `'static`
+/// now while the trait has zero downstream consumers is cheap.
+/// Concrete implementors (`PersonaContext`, `StubContext`, the
+/// upcoming `ClaudeContext` / `JtagContext` / `HumanContext`) are
+/// all `'static` by construction.
 ///
 /// ### Why methods return what they return
 ///
-/// - `identity()` returns by value, NOT by reference, because some
-///   implementations (notably the transitional `PersonaContext` impl)
-///   synthesize the `Identity` from underlying state on each call.
-///   When the persona module migrates to store `Identity` directly
-///   (Slice 1B), this can become `&Identity` cheaply; for now,
-///   by-value is the honest signature.
+/// - `identity()` returns `Cow<'_, Identity>` — implementors that
+///   already store an `Identity` (StubContext today; PersonaContext
+///   post-Slice-1B; ClaudeContext / JtagContext from birth) return
+///   `Cow::Borrowed(&self.identity)` at zero cost. Transitional
+///   implementors that have to synthesize from older state
+///   (PersonaContext's current `PersonaInstanceInfo`-backed impl)
+///   return `Cow::Owned(synthesized)`. Same caller ergonomics via
+///   `cow.as_ref()`; no clone tax baked into the steady-state.
 /// - `airc()` returns `&Arc<dyn AircCitizen>` — every implementor
 ///   already holds the citizen as `Arc<dyn AircCitizen>` (per
 ///   `[[personas-are-citizens-airc-is-identity-provider]]`), so
 ///   borrowing is free.
-pub trait Context: Send + Sync {
+pub trait Context: Send + Sync + 'static {
     /// The actor's identity — peer_id (== `id`), kind, name, home,
-    /// default room, source. By value so transitional implementors
-    /// can synthesize without holding a stored `Identity` field.
-    fn identity(&self) -> Identity;
+    /// default room, source. `Cow` lets storing implementors borrow
+    /// for free; transitional synthesizing implementors return
+    /// `Cow::Owned`.
+    fn identity(&self) -> Cow<'_, Identity>;
 
     /// The actor's live airc citizen handle. Substrate primitives
     /// that need to `say()`, `subscribe()`, get `peer_id()`, or
@@ -110,6 +124,7 @@ pub trait Context: Send + Sync {
 /// function alongside this one).
 pub fn log_actor_action(ctx: &dyn Context, action: &str) {
     let id = ctx.identity();
+    let id = id.as_ref();
     tracing::info!(
         actor.id = %id.id,
         actor.kind = ?id.kind,
@@ -126,11 +141,17 @@ pub fn log_actor_action(ctx: &dyn Context, action: &str) {
 /// every test that needs a `&dyn Context` leases THIS rather than
 /// inventing a bespoke variant.
 ///
-/// Maximally different from `PersonaContext`: no role, no profile,
-/// no adapter, no cognition. If the `Context` trait fits BOTH
-/// (`PersonaContext` and `StubContext`), Outlier-A + Outlier-B
-/// validate the interface for future variants per the CLAUDE.md
-/// build-with-intent discipline.
+/// Note on outlier-validation discipline: `StubContext`'s trait-
+/// surface shape (stored Identity + Arc<dyn AircCitizen>) is the
+/// same shape `PersonaContext` projects post-Slice-1B. The genuine
+/// outlier validation — a Context impl that materially diverges
+/// from "stored identity + stored citizen" — arrives with Slice 3
+/// (`ClaudeContext`, `JtagContext`, etc.) where the citizen handle
+/// may be borrowed from an ambient session or synthesized on
+/// demand from a session token. Until then this struct proves the
+/// trait COMPILES across two impls; it does not yet prove the
+/// interface is right for kinds whose airc handle isn't
+/// long-lived-owned.
 ///
 /// `pub` (not `#[cfg(test)]`) so production code that wants a
 /// no-substrate-effect Context for benchmarks or replay can use it
@@ -152,8 +173,8 @@ impl StubContext {
 }
 
 impl Context for StubContext {
-    fn identity(&self) -> Identity {
-        self.identity.clone()
+    fn identity(&self) -> Cow<'_, Identity> {
+        Cow::Borrowed(&self.identity)
     }
 
     fn airc(&self) -> &Arc<dyn AircCitizen> {
@@ -185,6 +206,7 @@ mod tests {
         let ctx: Box<dyn Context> = Box::new(StubContext::new(identity.clone(), citizen));
 
         let observed = ctx.identity();
+        let observed = observed.as_ref();
         assert_eq!(observed.id, peer_id);
         assert_eq!(observed.kind, IdentityKind::Claude);
         assert_eq!(observed.agent_name, "Claude-Opus-4.7-test");
