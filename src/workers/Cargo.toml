@@ -161,6 +161,33 @@ strip = "symbols"
 # if we ever decide the last 10% is worth it.
 lto = "thin"
 
+# Hot-iter profile — fastest possible compile for inner-loop work
+# (airc work claim → cargo build → test → repeat). Slice 3 of build-time
+# doctrine card 424deb5e: a third lane between `dev` (ergonomic debug)
+# and `release` (production perf). Used when we just need the binary to
+# RUN — running stress baselines, exercising the persona loop, smoke
+# tests — not when we're measuring perf or chasing a panic.
+#
+# Trade-offs vs `dev`:
+# - opt-level = 0 matches dev (already the fastest opt level)
+# - debug = "line-tables-only" keeps panic line numbers but skips full
+#   DWARF (variable names, function args). 30-50% smaller object files,
+#   meaningfully faster link.
+# - codegen-units = 256 lets rustc parallelize across many small units.
+#   Higher numbers cost runtime perf (less cross-unit inlining) but in
+#   dev-fast we don't care — we're not measuring runtime.
+# - incremental = true (already the dev default; explicit here for
+#   discoverability — devs reading this profile shouldn't have to know
+#   the cargo default).
+#
+# Invoke: `cargo build --profile dev-fast` or `cargo test --profile dev-fast`.
+[profile.dev-fast]
+inherits = "dev"
+opt-level = 0
+debug = "line-tables-only"
+incremental = true
+codegen-units = 256
+
 # Override crates.io candle with our fork (Metal memory fix + RoPE NEOX fix).
 #
 # Status (2026-04-15): huggingface/candle PR #3411 — the RoPE NEOX fix
