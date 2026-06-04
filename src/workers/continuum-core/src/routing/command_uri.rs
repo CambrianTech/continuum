@@ -170,11 +170,49 @@ pub enum UriParseError {
 const ROOM_SIGIL: &str = "room:";
 
 impl CommandUri {
+    /// Construct a [`CommandUri::Local`] from a path string —
+    /// infallible, no parsing surprises at the call site.
+    ///
+    /// The common pattern at the migration point:
+    ///
+    /// ```ignore
+    /// // before:
+    /// executor.execute_json("ai/generate", params).await?;
+    /// // after:
+    /// executor.execute_json(CommandUri::local("ai/generate"), params).await?;
+    /// ```
+    pub fn local(path: impl Into<String>) -> Self {
+        CommandUri::Local {
+            path: path.into(),
+            query: None,
+            fragment: None,
+        }
+    }
+
+    /// Borrow the path component of the URI. Every variant carries a
+    /// path; this accessor unifies them so the dispatcher can look up
+    /// the handler without matching on the variant first.
+    pub fn path(&self) -> &str {
+        match self {
+            CommandUri::Local { path, .. }
+            | CommandUri::Peer { path, .. }
+            | CommandUri::Room { path, .. }
+            | CommandUri::Broadcast { path, .. } => path,
+        }
+    }
+
+    /// `true` iff this URI dispatches to the caller's own substrate.
+    /// Used by the executor to short-circuit transport selection for
+    /// the common case.
+    pub fn is_local(&self) -> bool {
+        matches!(self, CommandUri::Local { .. })
+    }
+
     /// Parse a bare path OR a fully-qualified `airc://` URI.
     ///
     /// Bare paths (`"inference/llm/generate"`) parse to
-    /// [`CommandUri::Local`] for backwards compatibility with every
-    /// existing `Commands.execute()` call site.
+    /// [`CommandUri::Local`] — preserves the call-shape used by every
+    /// existing `Commands.execute()` site as the migration lands.
     pub fn parse(input: &str) -> Result<Self, UriParseError> {
         // Empty input is never valid.
         if input.is_empty() {
@@ -533,6 +571,33 @@ impl FromStr for CommandUri {
     }
 }
 
+/// Infallible `&str` -> [`CommandUri`] conversion for backwards-compatible
+/// migration of `execute("path", params)` call sites. Any string that
+/// fails strict URI parsing (e.g. malformed scheme) falls back to
+/// [`CommandUri::Local`] — the dispatcher's downstream handler-not-found
+/// path produces the typed error, not a parse error at the boundary.
+///
+/// Combined with `pub async fn execute(command: impl Into<CommandUri>, ...)`,
+/// every existing `execute("ai/generate", params)` site keeps compiling
+/// AND new code can pass `CommandUri::Peer { ... }` directly.
+impl From<&str> for CommandUri {
+    fn from(s: &str) -> Self {
+        CommandUri::parse(s).unwrap_or_else(|_| CommandUri::local(s))
+    }
+}
+
+impl From<String> for CommandUri {
+    fn from(s: String) -> Self {
+        CommandUri::from(s.as_str())
+    }
+}
+
+impl From<&String> for CommandUri {
+    fn from(s: &String) -> Self {
+        CommandUri::from(s.as_str())
+    }
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -851,6 +916,81 @@ mod tests {
     fn from_str_delegates_to_parse() {
         let uri: CommandUri = "airc://maya/inference/llm/generate".parse().unwrap();
         assert!(matches!(uri, CommandUri::Peer { .. }));
+    }
+
+    /// The migration shim: `From<&str>` accepts the conventional bare
+    /// path AND fully-qualified URIs, falling through to Local on
+    /// parse failure (downstream handler-not-found is the typed
+    /// error). This is what lets every existing `execute("path", ...)`
+    /// call site keep compiling unchanged after `execute()` takes
+    /// `impl Into<CommandUri>`.
+    #[test]
+    fn from_str_shim_accepts_bare_path() {
+        let uri: CommandUri = "inference/llm/generate".into();
+        assert!(matches!(uri, CommandUri::Local { .. }));
+        assert_eq!(uri.path(), "inference/llm/generate");
+    }
+
+    #[test]
+    fn from_str_shim_accepts_full_uri() {
+        let uri: CommandUri = "airc://maya/inference/llm/generate".into();
+        assert!(matches!(uri, CommandUri::Peer { .. }));
+        assert_eq!(uri.path(), "inference/llm/generate");
+    }
+
+    #[test]
+    fn from_str_shim_falls_back_to_local_on_parse_error() {
+        // A malformed URI (unknown scheme) doesn't surface a parse error
+        // at the boundary — it converts to Local so the dispatcher's
+        // handler-not-found path produces the typed error instead.
+        let uri: CommandUri = "https://example.com/foo".into();
+        assert!(matches!(uri, CommandUri::Local { .. }));
+    }
+
+    #[test]
+    fn from_string_shim_works_for_owned_strings() {
+        let owned = String::from("ai/generate");
+        let uri: CommandUri = owned.into();
+        assert!(matches!(uri, CommandUri::Local { .. }));
+        assert_eq!(uri.path(), "ai/generate");
+    }
+
+    #[test]
+    fn local_constructor_is_infallible_and_round_trips() {
+        let uri = CommandUri::local("inference/llm/generate");
+        assert!(uri.is_local());
+        assert_eq!(uri.path(), "inference/llm/generate");
+        assert_eq!(uri.to_string(), "inference/llm/generate");
+    }
+
+    #[test]
+    fn is_local_polarity() {
+        assert!(CommandUri::local("foo").is_local());
+        assert!(!CommandUri::Peer {
+            peer: PeerRef::Name("maya".into()),
+            node: None,
+            env: None,
+            path: "foo".into(),
+            query: None,
+            fragment: None,
+        }
+        .is_local());
+        assert!(!CommandUri::Broadcast {
+            peer: PeerRef::Name("maya".into()),
+            node: None,
+            path: "foo".into(),
+            query: None,
+            fragment: None,
+        }
+        .is_local());
+        assert!(!CommandUri::Room {
+            room_id: Uuid::nil(),
+            env: None,
+            path: "foo".into(),
+            query: None,
+            fragment: None,
+        }
+        .is_local());
     }
 
     // Name-vs-UUID detection

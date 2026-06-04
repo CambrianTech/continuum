@@ -29,6 +29,7 @@ use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::message_bus::MessageBus;
 use super::{CommandResult, ModuleRegistry};
+use crate::routing::CommandUri;
 
 /// Socket path for TypeScript command routing
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
@@ -135,11 +136,45 @@ impl CommandExecutor {
     /// wired. Subscribers consume those events to implement
     /// reactive control flow per the RTOS-brain doctrine
     /// (handlers never block on result polls).
-    pub async fn execute(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+    ///
+    /// Slice P note: the API takes a typed [`CommandUri`]; remote
+    /// variants (Peer/Room/Broadcast) return a typed not-yet-implemented
+    /// error until the transport selector lands in a subsequent commit
+    /// on the Slice P branch. The interceptor chain still operates on
+    /// `&str` paths internally for this commit — the interceptor trait
+    /// migration is a follow-up to minimize blast radius.
+    pub async fn execute(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+    ) -> Result<CommandResult, String> {
+        let command: CommandUri = command.into();
         let start = std::time::Instant::now();
-        let outcome = self.execute_inner(command, params).await;
-        self.emit_command_completed(command, &outcome, start.elapsed().as_millis() as u64);
+        let outcome = self.dispatch(&command, params).await;
+        self.emit_command_completed(
+            command.path(),
+            &outcome,
+            start.elapsed().as_millis() as u64,
+        );
         outcome
+    }
+
+    /// Routing decision on a [`CommandUri`]. Local URIs go through the
+    /// existing chain; non-Local URIs return a typed
+    /// not-yet-implemented error pending the transport selector.
+    async fn dispatch(
+        &self,
+        command: &CommandUri,
+        params: Value,
+    ) -> Result<CommandResult, String> {
+        if !command.is_local() {
+            return Err(format!(
+                "Remote dispatch for {command} not yet implemented — \
+                 transport selector lands in a subsequent Slice P commit. \
+                 Use a Local URI (bare path) for now."
+            ));
+        }
+        self.execute_inner(command.path(), params).await
     }
 
     /// The dispatch chain itself. Extracted so `execute` can wrap it
@@ -230,21 +265,50 @@ impl CommandExecutor {
     /// cell shapes — Json/Binary return their payload, Handle serializes
     /// the HandleRef, Stream/Lambda return their not-yet-wired protocol
     /// error so the caller knows the cell shape requires direct match.
-    pub async fn execute_json(&self, command: &str, params: Value) -> Result<Value, String> {
+    pub async fn execute_json(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+    ) -> Result<Value, String> {
         self.execute(command, params).await?.to_json_value()
     }
 
     /// Execute a command ONLY via TypeScript (bypasses Rust registry).
     /// Use this when a Rust module needs to forward to a TypeScript-implemented
     /// command that shares the same prefix (avoids infinite recursion).
-    pub async fn execute_ts(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        let json = self.execute_ts_command(command, params).await?;
+    ///
+    /// Slice P note: the URI's `path()` is forwarded over the TS bridge
+    /// as the conventional command name. Remote URIs are rejected.
+    pub async fn execute_ts(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+    ) -> Result<CommandResult, String> {
+        let command: CommandUri = command.into();
+        if !command.is_local() {
+            return Err(format!(
+                "Remote dispatch for {command} not supported via execute_ts \
+                 — TS bridge only handles local URIs."
+            ));
+        }
+        let json = self.execute_ts_command(command.path(), params).await?;
         Ok(CommandResult::Json(json))
     }
 
     /// Convenience: execute via TypeScript only and extract JSON directly
-    pub async fn execute_ts_json(&self, command: &str, params: Value) -> Result<Value, String> {
-        self.execute_ts_command(command, params).await
+    pub async fn execute_ts_json(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+    ) -> Result<Value, String> {
+        let command: CommandUri = command.into();
+        if !command.is_local() {
+            return Err(format!(
+                "Remote dispatch for {command} not supported via execute_ts_json \
+                 — TS bridge only handles local URIs."
+            ));
+        }
+        self.execute_ts_command(command.path(), params).await
     }
 
     /// Execute command via TypeScript CommandRouterServer (Unix socket)
@@ -409,29 +473,45 @@ pub fn executor() -> Arc<CommandExecutor> {
 /// Execute a command from anywhere, returning CommandResult
 ///
 /// Usage:
-/// ```rust
+/// ```ignore
 /// use crate::runtime::command_executor;
+/// use crate::routing::CommandUri;
 ///
-/// let result = command_executor::execute("code/edit", params).await?;
+/// let result = command_executor::execute(
+///     CommandUri::local("code/edit"),
+///     params,
+/// ).await?;
 /// ```
-pub async fn execute(command: &str, params: Value) -> Result<CommandResult, String> {
+pub async fn execute(
+    command: impl Into<CommandUri>,
+    params: Value,
+) -> Result<CommandResult, String> {
     executor().execute(command, params).await
 }
 
 /// Execute a command and extract JSON result (convenience for most use cases)
-pub async fn execute_json(command: &str, params: Value) -> Result<Value, String> {
+pub async fn execute_json(
+    command: impl Into<CommandUri>,
+    params: Value,
+) -> Result<Value, String> {
     executor().execute_json(command, params).await
 }
 
 /// Execute a command ONLY via TypeScript, bypassing Rust registry.
 /// Use when a Rust module needs to forward to a TypeScript command
 /// that shares the same prefix (e.g., ai_provider forwarding ai/agent).
-pub async fn execute_ts(command: &str, params: Value) -> Result<CommandResult, String> {
+pub async fn execute_ts(
+    command: impl Into<CommandUri>,
+    params: Value,
+) -> Result<CommandResult, String> {
     executor().execute_ts(command, params).await
 }
 
 /// Execute via TypeScript only and extract JSON (convenience)
-pub async fn execute_ts_json(command: &str, params: Value) -> Result<Value, String> {
+pub async fn execute_ts_json(
+    command: impl Into<CommandUri>,
+    params: Value,
+) -> Result<Value, String> {
     executor().execute_ts_json(command, params).await
 }
 
