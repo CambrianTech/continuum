@@ -67,6 +67,9 @@ use std::sync::Arc;
 use crate::identity::Identity;
 use crate::persona::airc_citizen::AircCitizen;
 
+pub mod claude;
+pub use claude::{ClaudeContext, ClaudeContextError, ClaudeMetadata};
+
 /// The substrate's universal actor handle.
 ///
 /// Every substrate API that produces substrate-visible effect takes
@@ -141,17 +144,18 @@ pub fn log_actor_action(ctx: &dyn Context, action: &str) {
 /// every test that needs a `&dyn Context` leases THIS rather than
 /// inventing a bespoke variant.
 ///
-/// Note on outlier-validation discipline: `StubContext`'s trait-
-/// surface shape (stored Identity + Arc<dyn AircCitizen>) is the
-/// same shape `PersonaContext` projects post-Slice-1B. The genuine
-/// outlier validation — a Context impl that materially diverges
-/// from "stored identity + stored citizen" — arrives with Slice 3
-/// (`ClaudeContext`, `JtagContext`, etc.) where the citizen handle
-/// may be borrowed from an ambient session or synthesized on
-/// demand from a session token. Until then this struct proves the
-/// trait COMPILES across two impls; it does not yet prove the
-/// interface is right for kinds whose airc handle isn't
-/// long-lived-owned.
+/// Outlier-validation status (CLAUDE.md discipline): `Context` is
+/// now validated across:
+/// - `PersonaContext` (persona kind, transitional synthesizes from
+///   `PersonaInstanceInfo`, returns `Cow::Owned`)
+/// - `ClaudeContext` (Slice 3, non-persona kind, stores Identity
+///   directly, returns `Cow::Borrowed`)
+/// - `StubContext` (test fixture, stores Identity, returns
+///   `Cow::Borrowed`)
+/// Three impls with different storage shapes and Cow semantics all
+/// satisfy the trait without forcing — the interface is validated.
+/// Future variants (HumanContext, JtagContext, WebContext) slot
+/// into the same shape.
 ///
 /// `pub` (not `#[cfg(test)]`) so production code that wants a
 /// no-substrate-effect Context for benchmarks or replay can use it
