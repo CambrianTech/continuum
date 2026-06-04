@@ -68,16 +68,38 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 
 /// Compact info about a registered persona — what the IPC surface
 /// returns for list/get/bootstrap responses.
+///
+/// ## INVARIANT (Slice 1B of #142)
+///
+/// `persona_id == peer_id`. Both fields hold the airc Ed25519
+/// keypair's Uuid; the runtime constructor collapses them per
+/// [[persona-identity-derives-from-source-id]] (the cryptographic
+/// keypair IS the substrate identity). The two fields exist
+/// side-by-side for API back-compat; a future cleanup may collapse
+/// to a single `peer_id` field once external consumers no longer
+/// reference `persona_id`.
+///
+/// Test fixtures that bypass `from_runtime` (e.g.
+/// `supervisor::tests::fake_instance`, `service_loop` test fixture)
+/// honor this invariant by convention: `persona_id` and `peer_id`
+/// are set to the same Uuid even when the keypair is stubbed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonaInstanceInfo {
-    /// Continuum-side stable identifier (the seed).
+    /// The persona's airc peer_id (Ed25519 keypair Uuid) — the
+    /// substrate's universal actor identifier per Slice 1B of #142.
+    /// Equals `peer_id` field by invariant.
     pub persona_id: Uuid,
-    /// The airc agent_name derived from the seed.
+    /// The persona's airc agent_name. NOTE: currently derived from
+    /// the historical pre-bootstrap Uuid (before peer_id existed),
+    /// not from peer_id per the doctrine. A future slice routes
+    /// derivation through peer_id; until then, names of fresh
+    /// personas are stable (stored in seed.json + Identity) but do
+    /// not derive from `peer_id`.
     pub agent_name: String,
-    /// The airc peer_id minted by `airc-lib` when the runtime
-    /// bootstrapped. Independent of `persona_id` — this is the
-    /// cryptographic identity airc routes on.
+    /// The persona's airc peer_id. Equals `persona_id` post-
+    /// Slice-1B (same Uuid, named twice for API compatibility).
+    /// The cryptographic identity airc routes on.
     pub peer_id: Uuid,
     /// Absolute path to the persona's airc home dir.
     pub home: PathBuf,
@@ -207,16 +229,24 @@ impl PersonaInstanceManagerModule {
                 .parent()
                 .map(|p| p.join("seed.json"))
                 .unwrap_or_else(|| runtime.home().join("seed.json"));
+            // Slice 1B of #142: write the POST-COLLAPSE persona_id —
+            // i.e. `runtime.persona_id()` (which equals
+            // `runtime.airc().peer_id().as_uuid()`) — to seed.json,
+            // NOT the discarded `intent.persona_id` from the
+            // pre-bootstrap mint. The seed.rs contract says
+            // "Must NOT change across restarts"; honoring it means
+            // the on-disk Uuid IS the substrate identity (peer_id),
+            // not the historical-artifact seed Uuid.
             let seed = PersonaSeedFile::V1 {
-                persona_id: intent.persona_id,
-                agent_name: intent.agent_name.clone(),
+                persona_id: runtime.persona_id(),
+                agent_name: runtime.agent_name().to_string(),
                 created_at_ms: now_ms(),
             };
             if let Err(e) = write_seed_atomic(&seed_path, &seed).await {
                 tracing::warn!(
                     error = %e,
-                    persona_id = %intent.persona_id,
-                    agent_name = %intent.agent_name,
+                    persona_id = %runtime.persona_id(),
+                    agent_name = %runtime.agent_name(),
                     seed_path = %seed_path.display(),
                     "failed to write seed.json — persona is online but won't survive restart. \
                      Resolve disk/permission issue + restart to re-mint, or write the seed \

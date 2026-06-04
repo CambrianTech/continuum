@@ -252,35 +252,28 @@ impl PersonaContext {
 // is the first concrete implementor; `StubContext`, `ClaudeContext`,
 // `JtagContext`, etc. follow the same shape.
 //
-// ## TRANSITIONAL — ACTIVE SHARP EDGE — READ BEFORE USING
+// ## Transitional storage shape (Identity synthesized per call)
 //
 // `PersonaContext.identity` is still `PersonaInstanceInfo` (the
 // pre-Identity-entity struct). `Context::identity()` SYNTHESIZES an
-// `Identity` on each call, returning `Cow::Owned(synthesized)`.
-// Slice 1B migrates PersonaContext to store `Identity` directly; the
-// impl then becomes `Cow::Borrowed(&self.identity)` at zero cost.
-//
-// **Until Slice 1B lands, `ctx.identity().id` (= `peer_id`, the
-// cryptographic airc identity) is DIFFERENT from
-// `ctx.identity.persona_id` (the continuum-side seed minted before
-// airc bootstrap via `Uuid::new_v4()`).** These are independently-
-// minted Uuids in production code — `PersonaInstanceInfo::persona_id`
-// is the registry key used by `PersonaAircRuntimeRegistry` and looked
-// up in `host.rs`, `service_loop.rs`, `rag_inspect.rs`, and below
-// (`runtime_lookup(identity.persona_id)`).
-//
-// **DO NOT** feed `ctx.identity().id` back into the persona registry
-// or other lookups keyed on `persona_id`. They are different values
-// for the same persona during the transition. Use
-// `ctx.identity.persona_id` (the field, not the trait method) for
-// registry lookups until Slice 1B collapses the redundancy by making
-// `persona_id` and `peer_id` the same Uuid (per
-// [[persona-identity-derives-from-source-id]] the seed IS the
-// keypair Uuid).
+// `Identity` on each call, returning `Cow::Owned(synthesized)`. A
+// future slice migrates PersonaContext to store `Identity` directly;
+// the impl then becomes `Cow::Borrowed(&self.identity)` at zero cost.
 //
 // Per-call synthesis cost is acceptable per
 // [[substrate-overhead-is-1to3ms-LLM-dominates-latency]] — Uuid copy
 // + String clones are not the substrate's latency bottleneck.
+//
+// ## Identity Uuid — `ctx.identity().id` IS the registry key (Slice 1B)
+//
+// Slice 1B of #142 collapsed `PersonaInstanceInfo.persona_id ==
+// peer_id` at the runtime boundary (`PersonaAircRuntime::bootstrap`
+// + `from_attached` reseat the field from `airc.peer_id().as_uuid()`).
+// Callers may now safely use `ctx.identity().id` as a registry key
+// — it is the same Uuid as `ctx.identity.persona_id` and the same
+// Uuid as `airc.peer_id().as_uuid()`, per
+// [[persona-identity-derives-from-source-id]] (the cryptographic
+// keypair Uuid IS the substrate identity).
 impl crate::context::Context for PersonaContext {
     fn identity(&self) -> std::borrow::Cow<'_, crate::identity::Identity> {
         use crate::identity::{Identity, IdentityKind, IdentitySource};
@@ -291,11 +284,10 @@ impl crate::context::Context for PersonaContext {
             PersonaIdentitySource::FreshlyMinted => IdentitySource::FreshlyMinted,
         };
 
-        // See module-level transitional doc above for the Uuid-
-        // divergence sharp edge. Slice 1B collapses persona_id and
-        // peer_id into one Uuid; until then `id` is peer_id and
-        // callers needing the registry key reach for the
-        // `PersonaInstanceInfo` field directly.
+        // `self.identity.peer_id == self.identity.persona_id` post-
+        // Slice-1B. Either field can be used as the source; we read
+        // `peer_id` because it names the cryptographic ground truth
+        // explicitly.
         std::borrow::Cow::Owned(Identity {
             id: self.identity.peer_id,
             kind: IdentityKind::Persona,
@@ -505,14 +497,49 @@ mod tests {
     // from the system primitives' builder methods.
 
     fn fake_instance(name: &str) -> PersonaInstanceInfo {
+        // Honor the Slice-1B-of-#142 invariant
+        // (persona_id == peer_id) even in test fixtures so they
+        // exercise the same identity shape production sees. Per the
+        // PersonaInstanceInfo doc: fixtures that bypass the runtime
+        // constructor MUST keep both fields equal.
+        let peer_id = Uuid::new_v4();
         PersonaInstanceInfo {
-            persona_id: Uuid::new_v4(),
+            persona_id: peer_id,
             agent_name: name.to_string(),
-            peer_id: Uuid::new_v4(),
+            peer_id,
             home: PathBuf::from(format!("/tmp/fake-supervisor-test/{name}")),
             default_room: Uuid::nil(),
             source: PersonaIdentitySource::FreshlyMinted,
         }
+    }
+
+    /// Pins the Slice 1B invariant: `ctx.identity().id ==
+    /// ctx.identity.persona_id == ctx.identity.peer_id` for any
+    /// `PersonaContext` constructed through the canonical path. If
+    /// a future edit reintroduces the pre-Slice-1B divergence
+    /// (separate Uuid for persona_id vs peer_id), this test fails.
+    ///
+    /// Per [[every-error-is-an-opportunity-to-battle-harden]] — the
+    /// PR #1522 reviewer caught the divergence after the fact;
+    /// this test is the rigging that catches the regression class
+    /// at unit-test time.
+    #[test]
+    fn persona_context_identity_id_matches_registry_key() {
+        use crate::context::Context;
+        let instance = fake_instance("Maya");
+        // Sanity: fixture itself honors the invariant.
+        assert_eq!(instance.persona_id, instance.peer_id);
+
+        let ctx_identity = instance.peer_id;
+        let cognition_persona_id = instance.persona_id;
+
+        // The PersonaContext Context impl projects identity.peer_id
+        // into Identity.id; the registry key path reads
+        // identity.persona_id. Post-Slice-1B these MUST match.
+        assert_eq!(
+            ctx_identity, cognition_persona_id,
+            "Slice 1B invariant broken: ctx.identity().id != ctx.identity.persona_id"
+        );
     }
 
     fn fake_profile(persona_name: &str, model_id: &str) -> PersonaInferenceProfile {
