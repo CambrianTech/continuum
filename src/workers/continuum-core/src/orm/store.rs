@@ -263,6 +263,35 @@ fn unwrap_storage<T>(
     }
 }
 
+// ─── Shared test fixture (module-level, cfg-test gated) ────────────────
+
+/// Build a fresh in-memory ORM adapter. Lives at module scope (not
+/// inside `mod tests`) so cross-module tests — e.g.,
+/// `crate::identity::tests` — can lease the same helper instead of
+/// re-implementing the 8-line setup. Per
+/// [[test-fixtures-are-system-primitives]]: shared fixtures belong
+/// at the substrate level, not duplicated per test module.
+///
+/// Uses a per-test random db_path so concurrent cargo tests don't
+/// collide via the SQLite shared-cache `:memory:` alias. Return the
+/// `TempDir` alongside the adapter — caller owns its lifetime; drop
+/// at test-end cleans up cleanly (no `/tmp` accumulation).
+#[cfg(test)]
+pub(crate) async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempDir) {
+    use crate::orm::adapter::AdapterConfig;
+    use crate::orm::sqlite::SqliteAdapter;
+    let mut adapter = SqliteAdapter::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("orm-store-test.sqlite");
+    let mut config = AdapterConfig::default();
+    config.connection_string = path.to_string_lossy().into_owned();
+    adapter
+        .initialize(config)
+        .await
+        .expect("adapter initialize");
+    (Arc::new(adapter), tmp)
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -321,28 +350,9 @@ mod tests {
         }
     }
 
-    /// Build a fresh in-memory adapter. Uses a per-test random
-    /// db_path so concurrent cargo tests don't share state through
-    /// the SQLite shared-cache :memory: convention.
-    async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempDir) {
-        let mut adapter = SqliteAdapter::new();
-        // Unique random path so parallel tests don't collide on the
-        // shared-cache :memory: alias. The tempfile sets up its own
-        // unique path; we delete after the test via TempDir Drop.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("orm-store-test.sqlite");
-        let mut config = AdapterConfig::default();
-        config.connection_string = path.to_string_lossy().into_owned();
-        adapter
-            .initialize(config)
-            .await
-            .expect("adapter initialize");
-        // Return the tempdir alongside the adapter so the test
-        // function owns its lifetime. Dropping the returned tuple
-        // at test-end deletes the path cleanly (no /tmp accumulation
-        // the prior `mem::forget` caused, per Reviewer-2 #5).
-        (Arc::new(adapter), tmp)
-    }
+    // `fresh_adapter` was lifted to module scope above so cross-module
+    // tests (`crate::identity::tests`, future siblings) can lease it.
+    // In-mod tests below call it via `super::fresh_adapter()`.
 
     /// What this catches: save + find_by_id round-trip preserves
     /// every entity field. The foundation of the typed-store
@@ -350,7 +360,7 @@ mod tests {
     /// loses data silently.
     #[tokio::test]
     async fn save_then_find_by_id_round_trips_every_field() {
-        let (adapter, _tmp) = fresh_adapter().await;
+        let (adapter, _tmp) = super::fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
 
         let id = Uuid::new_v4();
@@ -370,7 +380,7 @@ mod tests {
     /// failures is what every caller wants.
     #[tokio::test]
     async fn find_by_id_returns_none_for_missing_id() {
-        let (adapter, _tmp) = fresh_adapter().await;
+        let (adapter, _tmp) = super::fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
         let absent = Uuid::new_v4();
         let result = store.find_by_id(absent).await.expect("find_by_id");
@@ -382,7 +392,7 @@ mod tests {
     /// every persona-state-style store needs.
     #[tokio::test]
     async fn find_all_returns_every_saved_row() {
-        let (adapter, _tmp) = fresh_adapter().await;
+        let (adapter, _tmp) = super::fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
 
         let ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
@@ -408,7 +418,7 @@ mod tests {
     /// silently fail to persist.
     #[tokio::test]
     async fn update_then_find_by_id_returns_new_payload() {
-        let (adapter, _tmp) = fresh_adapter().await;
+        let (adapter, _tmp) = super::fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
 
         let id = Uuid::new_v4();
@@ -431,7 +441,7 @@ mod tests {
     /// Models the cleanup paths a persistence layer needs.
     #[tokio::test]
     async fn delete_removes_row_and_signals_idempotently() {
-        let (adapter, _tmp) = fresh_adapter().await;
+        let (adapter, _tmp) = super::fresh_adapter().await;
         let store = OrmStore::<TinyEntity>::new(adapter).await.expect("store");
 
         let id = Uuid::new_v4();
