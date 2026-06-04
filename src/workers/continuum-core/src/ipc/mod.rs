@@ -1110,10 +1110,57 @@ pub fn start_server(
             );
         });
     } else {
+        // [[no-fallbacks-ever]] — if the operator has persona seeds on disk,
+        // the substrate cannot honestly come up in this state (it can't host
+        // those citizens). Detect them and fail boot with the actionable
+        // repair rather than logging a single WARN line and silently leaving
+        // the citizens unhosted while the binary stays alive at idle RSS.
+        // The bug pattern this catches:
+        //   $ ./continuum-core-server …          # exit 0, looks fine
+        //   $ ps -p $! -o rss                    # 1166 MB, "running"
+        //   $ ./jtag persona/list                # no Paige, no error
+        // — the headless "doesn't even RUN" state from 2026-06-04.
+        //
+        // If NO persona seeds exist (fresh install, headless inference-only
+        // mode, test fixture), the substrate continues to boot — there are
+        // no citizens to fail. Boundary intentionally narrow: the substrate
+        // only hard-fails the case it would otherwise lie about.
+        let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        let personas_dir = continuum_root.join("personas");
+        let seed_count =
+            crate::modules::persona_instance_manager::count_persona_seeds(&continuum_root);
+
+        if seed_count > 0 {
+            tracing::error!(
+                personas_dir = %personas_dir.display(),
+                persona_seed_count = seed_count,
+                "Refusing to boot in degraded state: {} persona seed(s) on disk \
+                 but AIRC discovery failed — no PersonaInstanceManagerModule \
+                 registered, so the substrate cannot host these citizens. \
+                 Resolve: install airc, set AIRC_DAEMON_SOCKET, or run \
+                 `airc room <name>` to establish a default room — then restart \
+                 continuum-core. To start anyway (e.g. for inference-only \
+                 headless mode), move or rename {} aside.",
+                seed_count,
+                personas_dir.display()
+            );
+            return Err(std::io::Error::other(format!(
+                "AIRC discovery degraded and {} persona seed(s) present at {} — \
+                 refusing to boot in a state that cannot host the substrate's \
+                 citizens ([[no-fallbacks-ever]])",
+                seed_count,
+                personas_dir.display()
+            )));
+        }
+
         tracing::warn!(
-            "PersonaInstanceManagerModule NOT registered — AIRC discovery is degraded \
-             (missing socket or default room). Resolve by installing airc and running \
-             `airc room <name>`, then restart continuum-core."
+            personas_dir = %personas_dir.display(),
+            "PersonaInstanceManagerModule NOT registered — AIRC discovery is \
+             degraded (missing socket or default room). No persona seeds on \
+             disk, so substrate continues for non-persona use \
+             (inference / embedding / forge / cargo / code). Install airc, \
+             set AIRC_DAEMON_SOCKET, or run `airc room <name>` to enable \
+             persona hosting."
         );
     }
 

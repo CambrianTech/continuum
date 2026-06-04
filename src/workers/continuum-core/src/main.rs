@@ -82,6 +82,56 @@ fn install_shutdown_handlers() {
     });
 }
 
+/// Install a panic hook that suppresses ORT's "dlopen failed for
+/// libonnxruntime" stderr trace while leaving every OTHER panic
+/// printable as before.
+///
+/// Why this isn't a "swallow all errors" anti-pattern: the panic is
+/// already caught by `catch_unwind` at every ORT load site (see
+/// `modules/embedding.rs::preload_default_model` +
+/// `modules/embedding.rs::load_model_internal` + the TTS/STT spawn in
+/// `main()`). Each catch arm sets `ORT_UNAVAILABLE` and logs a clean
+/// WARN line. The user-visible noise we're suppressing is Rust's
+/// DEFAULT panic hook writing the same panic to stderr BEFORE
+/// `catch_unwind` catches it. That trace looks like a substrate bug
+/// ("thread 'tokio-rt-worker' panicked at ort-2.0.0-rc.11/src/lib.rs:191")
+/// but it's really just "voice features not available — install
+/// libonnxruntime."
+///
+/// The hook matches both `location().file()` containing `ort-` (the
+/// crate's source path under `~/.cargo/registry/`) AND the panic
+/// payload mentioning `Failed to load ONNX Runtime`. Other ORT panics
+/// (genuine bugs deep in inference) won't match the dylib-load
+/// substring and fall through to the default handler. Non-ORT panics
+/// always fall through.
+fn install_ort_panic_filter() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let from_ort = info
+            .location()
+            .map(|loc| loc.file().contains("/ort-"))
+            .unwrap_or(false);
+        let about_dylib = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(|s| s.contains("Failed to load ONNX Runtime"))
+            .or_else(|| {
+                info.payload()
+                    .downcast_ref::<&str>()
+                    .map(|s| s.contains("Failed to load ONNX Runtime"))
+            })
+            .unwrap_or(false);
+        if from_ort && about_dylib {
+            // catch_unwind handles flow control; we just suppress
+            // the default-hook's stderr write. The ORT_UNAVAILABLE
+            // flag + clean WARN line at the catch site cover the
+            // user-visible semantics.
+            return;
+        }
+        default_hook(info);
+    }));
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
@@ -90,6 +140,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
+
+    // Suppress the stderr panic trace from ORT's missing-libonnxruntime
+    // case. The panic is already caught by the catch_unwind around every
+    // ORT load site (modules/embedding.rs preload + main.rs TTS/STT spawn),
+    // and the catch sets ORT_UNAVAILABLE + logs a clean WARN line — but
+    // Rust's default panic hook ALSO writes the panic message to stderr
+    // BEFORE catch_unwind catches it, leaving the user staring at a
+    // "thread 'tokio-rt-worker' panicked at ort-2.0.0-rc.11/src/lib.rs:191"
+    // trace that looks like a substrate bug but is just "voice not
+    // available — install libonnxruntime." Per [[no-fallbacks-ever]] +
+    // [[substrate-is-a-good-citizen-on-the-host]], substrate must speak
+    // clearly when degraded; this filter strips ORT's scare trace from
+    // the logs without dropping the catch_unwind safety net.
+    install_ort_panic_filter();
 
     // Parse command line arguments. argv[1] is the IPC socket path (positional)
     // — but intercept flag-like values FIRST so `--version` and `--help` don't

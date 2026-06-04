@@ -20,29 +20,60 @@ use tracing::{error, info, warn};
 /// Expected modules that MUST be registered for a complete runtime.
 /// Adding a module here ensures it cannot be forgotten during registration.
 /// The server will fail to start if any expected module is missing.
+///
+/// The list MUST mirror every `runtime.register(...)` call in `ipc/mod.rs`
+/// that produces a `ServiceModule` in the steady-state boot path. When the
+/// two drift, `verify_registration()` logs spurious "Unexpected module
+/// registered" warnings (registered-but-not-listed) or fails boot with
+/// "Missing required modules" (listed-but-not-registered). Both modes lie
+/// about substrate health — keep this list current per
+/// [[every-error-is-an-opportunity-to-battle-harden]].
 pub const EXPECTED_MODULES: &[&str] = &[
-    "gpu",               // Phase 0: GPU memory management
-    "health",            // Phase 1: stateless health checks
-    "cognition",         // Phase 2: persona cognition engines
-    "channel",           // Phase 2: persona channel registries
-    "models",            // Phase 3: async model discovery
-    "memory",            // Phase 3: persona memory manager
-    "rag",               // Phase 3: batched RAG composition
-    "live",              // Phase 3: live experience (voice, video, transport)
-    "code",              // Phase 3: file engines, shell sessions
-    "data",              // Phase 4: database ORM operations
-    "logger",            // Phase 4a: structured logging
-    "search",            // Phase 4b: BM25, TF-IDF, vector search
-    "embedding",         // Phase 4c: fastembed vector generation
-    "grid",              // Grid transport: inter-node routing (Tailscale, Reticulum)
-    "runtime",           // RuntimeModule: metrics and control
-    "mcp",               // MCP server: dynamic tool discovery
-    "system",            // System resources: CPU, memory, process monitoring
-    "avatar",            // Avatar snapshots: Bevy 3D renders → PNG
-    "dataset",           // Dataset import/management for Academy training
-    "persona_allocator", // Hardware-aware persona allocation decisions
-    "inference-llm",     // Phase 5: local LLM generation (MODULE-CATALOG §II)
-    "vdd",               // Lane C PR-3: VDD report from structured artifacts
+    // Infrastructure / health
+    "health",                   // stateless health checks
+    "auth",                     // permission scope routing
+    "system",                   // CPU, memory, process monitoring
+    "events",                   // command-completed event stream
+    "logger",                   // structured logging
+    "runtime",                  // metrics and control
+    "mcp",                      // MCP server: dynamic tool discovery
+    "data",                     // database ORM operations
+    // Resource governance
+    "gpu",                      // GPU memory management
+    "resource-broker",          // typed resource admission
+    "pressure-broker",          // CPU/RAM/VRAM pressure broadcast
+    // Persona substrate
+    "cognition",                // persona cognition engines
+    "channel",                  // persona channel registries
+    "memory",                   // persona memory manager
+    "rag",                      // batched RAG composition
+    "persona_allocator",        // hardware-aware allocation decisions
+    "persona_instance_manager", // live PersonaAircRuntime registry
+    "persona-rag-inspect",      // RAG introspection callable from any AI
+    "agent",                    // agent participation (chat surface)
+    // AI / inference
+    "inference",                // inference handle store + dispatch
+    "inference-llm",            // local LLM generation
+    "ai_provider",              // unified provider (cloud + local)
+    "embedding",                // fastembed vector generation
+    "search",                   // BM25, TF-IDF, vector search
+    "tool-parsing",             // stateless tool call parsing
+    "vision",                   // content-addressed vision cache
+    "models",                   // async model discovery
+    // Forge / sentinel / plasticity
+    "forge",                    // forge recipe runs
+    "sentinel",                 // build/task execution with isolation
+    "plasticity",               // adaptive plasticity optimization
+    "dataset",                  // training dataset import
+    "vdd",                      // VDD report from structured artifacts
+    "cargo",                    // structured cargo/build, cargo/test
+    "code",                     // file engines, shell sessions
+    // Substrate transports
+    "airc",                     // airc IPC + discovery
+    "grid",                     // inter-node transport (Tailscale, Reticulum)
+    // Live presence (Slice B will split this set off via feature gate)
+    "live",                     // voice/video transport
+    "avatar",                   // Bevy 3D avatar snapshots
 ];
 
 pub struct Runtime {

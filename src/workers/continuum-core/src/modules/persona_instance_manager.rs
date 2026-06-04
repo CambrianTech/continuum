@@ -327,6 +327,29 @@ pub fn resolve_continuum_root() -> PathBuf {
     home.join(".continuum")
 }
 
+/// Count persona seed files at `<continuum_root>/personas/*/seed.json`.
+///
+/// Used by IPC boot to decide whether the substrate can honestly come
+/// up when AIRC discovery fails. If seeds exist on disk but the
+/// PersonaInstanceManagerModule can't register, the substrate refuses
+/// to boot — per [[no-fallbacks-ever]] it would be lying about being
+/// able to host its citizens.
+///
+/// Returns 0 when the personas directory doesn't exist (fresh install,
+/// inference-only mode, test fixture). Returns 0 on read errors as
+/// well — they're effectively "we can't see seeds, so we can't claim
+/// the operator has any."
+pub fn count_persona_seeds(continuum_root: &Path) -> usize {
+    let personas_dir = continuum_root.join("personas");
+    match std::fs::read_dir(&personas_dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().join("seed.json").is_file())
+            .count(),
+        Err(_) => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +375,71 @@ mod tests {
         let root = resolve_continuum_root();
         assert_eq!(root, PathBuf::from("/tmp/test-root-12345"));
         std::env::remove_var("CONTINUUM_ROOT");
+    }
+
+    /// Empty / nonexistent continuum_root → 0 seeds. This is the
+    /// "fresh install or inference-only mode" path: substrate boots
+    /// without persona hosting, no error.
+    #[test]
+    fn count_persona_seeds_returns_zero_for_missing_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // No personas/ subdirectory at all.
+        assert_eq!(count_persona_seeds(tmp.path()), 0);
+    }
+
+    #[test]
+    fn count_persona_seeds_returns_zero_for_empty_personas_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join("personas")).expect("mkdir personas");
+        assert_eq!(count_persona_seeds(tmp.path()), 0);
+    }
+
+    /// One persona dir with seed.json → 1. This is the "Paige
+    /// installed, refuse to boot in degraded mode" path that Slice A
+    /// hard-fails on.
+    #[test]
+    fn count_persona_seeds_counts_one_persona_with_seed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paige = tmp.path().join("personas").join("Paige");
+        std::fs::create_dir_all(&paige).expect("mkdir Paige");
+        std::fs::write(paige.join("seed.json"), b"{}").expect("write seed");
+        assert_eq!(count_persona_seeds(tmp.path()), 1);
+    }
+
+    /// Multiple personas — each with its own seed — count each one.
+    #[test]
+    fn count_persona_seeds_counts_multiple_personas() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for name in &["Paige", "Niko", "Maya"] {
+            let dir = tmp.path().join("personas").join(name);
+            std::fs::create_dir_all(&dir).expect("mkdir persona");
+            std::fs::write(dir.join("seed.json"), b"{}").expect("write seed");
+        }
+        assert_eq!(count_persona_seeds(tmp.path()), 3);
+    }
+
+    /// A persona DIRECTORY with no seed.json is NOT counted —
+    /// in-progress mints, half-deleted personas, scratch dirs all
+    /// fall under this; they don't trigger the substrate's refusal
+    /// because there's no citizen yet to fail.
+    #[test]
+    fn count_persona_seeds_skips_persona_dir_without_seed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("personas").join("HalfMinted");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        // No seed.json inside.
+        assert_eq!(count_persona_seeds(tmp.path()), 0);
+    }
+
+    /// Stray FILES at the personas/ root (not directories) don't
+    /// false-positive as seed dirs.
+    #[test]
+    fn count_persona_seeds_ignores_stray_files_at_personas_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let personas = tmp.path().join("personas");
+        std::fs::create_dir(&personas).expect("mkdir");
+        std::fs::write(personas.join("README.md"), b"hi").expect("write file");
+        assert_eq!(count_persona_seeds(tmp.path()), 0);
     }
 
     #[tokio::test]
