@@ -29,6 +29,6 @@ pub mod environment;
 pub mod macros;
 pub mod verdict;
 
-pub use command_uri::{CommandUri, EnvSelector, NodeId, PeerRef, UriParseError};
+pub use command_uri::{CommandUri, NodeId, PeerRef, UriParseError};
 pub use environment::{EnvironmentId, WellKnownEnv};
 pub use verdict::{DeferredReason, ForbiddenReason, Verdict};

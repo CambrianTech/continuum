@@ -38,6 +38,8 @@ use std::str::FromStr;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::routing::EnvironmentId;
+
 // ─── The typed enum ────────────────────────────────────────────────
 
 /// The substrate's universal addressing primitive.
@@ -57,7 +59,7 @@ pub enum CommandUri {
     Peer {
         peer: PeerRef,
         node: Option<NodeId>,
-        env: Option<EnvSelector>,
+        env: Option<EnvironmentId>,
         path: String,
         query: Option<String>,
         fragment: Option<String>,
@@ -67,14 +69,14 @@ pub enum CommandUri {
     /// env.
     Room {
         room_id: Uuid,
-        env: Option<EnvSelector>,
+        env: Option<EnvironmentId>,
         path: String,
         query: Option<String>,
         fragment: Option<String>,
     },
     /// Broadcast to every active env of a specific peer (`:*`
     /// wildcard). Semantically equivalent to [`CommandUri::Peer`]
-    /// with `env = Some(EnvSelector::Wildcard)`, but kept distinct so
+    /// with `env = Some(EnvironmentId::Wildcard)`, but kept distinct so
     /// the dispatcher can pick a fan-out transport path.
     Broadcast {
         peer: PeerRef,
@@ -101,17 +103,16 @@ pub enum PeerRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeId(pub String);
 
-/// Environment selector — specific name or wildcard.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EnvSelector {
-    /// Specific environment. The parser accepts any non-empty string;
-    /// well-known names (`web`, `tty`, `vr`, `ar`, `cli`, `headless`)
-    /// are validated downstream by the env registry.
-    Named(String),
-    /// Match every active environment of the target. Surfaces as
-    /// `[CommandUri::Broadcast]` when used with a peer authority.
-    Wildcard,
-}
+// The CommandUri's `env` field now references `EnvironmentId`
+// directly (defined in `routing/environment.rs`). The previous
+// `EnvSelector` type was a duplicate — same Named/Wildcard variants,
+// same semantics — and got merged into `EnvironmentId` in this
+// commit so the substrate has ONE typed embodiment primitive
+// instead of two parallel ones.
+//
+// Per the session's compression principle: when two types describe
+// the same concept, they're not "decoupled" — they're drift waiting
+// to happen.
 
 // ─── Typed parse errors ────────────────────────────────────────────
 
@@ -371,7 +372,7 @@ fn parse_peer_authority(
 
     // Wildcard env on a peer authority produces the Broadcast
     // variant.
-    if matches!(env, Some(EnvSelector::Wildcard)) {
+    if matches!(env, Some(EnvironmentId::Wildcard)) {
         return Ok(CommandUri::Broadcast {
             peer,
             node,
@@ -418,12 +419,12 @@ fn looks_like_uuid(s: &str) -> bool {
         && segs[4].len() == 12
 }
 
-fn parse_env_selector(s: &str) -> EnvSelector {
-    if s == "*" {
-        EnvSelector::Wildcard
-    } else {
-        EnvSelector::Named(s.to_string())
-    }
+/// Parse an env component (the part after `:` in URI authority) into
+/// an [`EnvironmentId`]. Delegates to the type's own `From<&str>` impl
+/// so the substrate has ONE place that decides what an env-string
+/// means; the parser doesn't re-implement the wildcard rule.
+fn parse_env_selector(s: &str) -> EnvironmentId {
+    EnvironmentId::from(s)
 }
 
 /// Split a `path?query#fragment` triple. Path is everything before
@@ -555,14 +556,8 @@ impl fmt::Display for NodeId {
     }
 }
 
-impl fmt::Display for EnvSelector {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EnvSelector::Named(n) => write!(f, "{n}"),
-            EnvSelector::Wildcard => write!(f, "*"),
-        }
-    }
-}
+// `Display for EnvironmentId` lives in `routing/environment.rs` — the
+// single source of truth for the embodiment-axis Display contract.
 
 impl FromStr for CommandUri {
     type Err = UriParseError;
@@ -721,7 +716,7 @@ mod tests {
             CommandUri::Peer {
                 peer: PeerRef::Name("maya".into()),
                 node: None,
-                env: Some(EnvSelector::Named("web".into())),
+                env: Some(EnvironmentId::Named("web".into())),
                 path: "widget/show".into(),
                 query: None,
                 fragment: None,
@@ -736,7 +731,7 @@ mod tests {
             CommandUri::Peer {
                 peer: PeerRef::Name("maya".into()),
                 node: Some(NodeId("5090-rig".into())),
-                env: Some(EnvSelector::Named("vr".into())),
+                env: Some(EnvironmentId::Named("vr".into())),
                 path: "scene/spawn".into(),
                 query: None,
                 fragment: None,
@@ -796,7 +791,7 @@ mod tests {
             "airc://room:cb2e21a1-999a-5a03-a184-df06e4ee7097:web/render/start",
             CommandUri::Room {
                 room_id: uuid,
-                env: Some(EnvSelector::Named("web".into())),
+                env: Some(EnvironmentId::Named("web".into())),
                 path: "render/start".into(),
                 query: None,
                 fragment: None,
