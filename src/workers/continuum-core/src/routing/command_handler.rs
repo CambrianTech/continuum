@@ -613,6 +613,74 @@ mod tests {
         }
     }
 
+    /// Reviewer 3 BLOCK: prove `process_request_via` actually threads
+    /// the verified caller_peer_id into the AuthPolicy gate. Closes
+    /// the headline-of-the-PR coverage gap where the
+    /// `execute_with_caller` branch was added but no test asserted
+    /// the caller actually reached the gate.
+    ///
+    /// Builds a ClosureAuthPolicy that captures the caller it
+    /// receives, dispatches via process_request_via, then asserts the
+    /// captured caller matches what we packed into the envelope.
+    #[tokio::test]
+    async fn process_request_via_threads_caller_into_gate() {
+        use crate::routing::{ClosurePolicy, RouteDecision};
+        use std::sync::{Arc as StdArc, Mutex};
+
+        let captured: StdArc<Mutex<Option<crate::routing::CallerIdentity>>> =
+            StdArc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        // Policy that records the caller it receives, then allows.
+        let policy = ClosurePolicy::new(
+            "record-caller",
+            move |_decision: &RouteDecision, caller: Option<&crate::routing::CallerIdentity>| {
+                *captured_clone.lock().unwrap() = caller.cloned();
+                crate::routing::Verdict::Allowed
+            },
+        );
+
+        let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+        let executor =
+            crate::runtime::CommandExecutor::new(registry).with_policy(StdArc::new(policy));
+
+        // Build an envelope with a known sender peer_id; assert
+        // process_request_via threads it into the gate.
+        let sender_peer_id = PeerId::new();
+        let parsed = ParsedEnvelope {
+            caller_peer_id: sender_peer_id,
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircCommandRequest {
+                path: "anything/no-such-command".into(),
+                kind: "peer".into(),
+                env: None,
+                params: serde_json::Value::Null,
+            },
+        };
+
+        // The path doesn't resolve to a module, so execute_with_caller
+        // returns an error from the TS-bridge fallthrough. We don't
+        // care about that — the gate ran FIRST, recorded the caller,
+        // and that's the property under test.
+        let _ = CommandRequestHandler::process_request_via(&executor, &parsed).await;
+
+        let observed = captured.lock().unwrap().clone();
+        let observed = observed.expect(
+            "AuthPolicy::gate must have been invoked with Some(caller) — \
+             process_request_via failed to thread the caller through",
+        );
+        assert_eq!(
+            observed.peer_id, sender_peer_id.0,
+            "caller's peer_id must match the envelope sender — \
+             closes the silent-privilege-escalation seam reviewer 2 flagged"
+        );
+        assert!(
+            matches!(observed.source, crate::routing::CallerSource::Airc),
+            "caller source must be Airc (cross-grid), not Local: {observed:?}"
+        );
+    }
+
     /// Reviewer 1 nit: prove the handler refuses non-Json
     /// CommandResult shapes (Handle / Stream / Lambda) cleanly
     /// rather than silently coercing or panicking. Locks the

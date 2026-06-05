@@ -152,17 +152,30 @@ impl AircTransport {
     }
 }
 
-#[async_trait]
-impl Transport for AircTransport {
-    async fn dispatch(
-        &self,
-        decision: RouteDecision,
+impl AircTransport {
+    /// Pre-flight conversion of a non-Local `RouteDecision` into the
+    /// outbound airc envelope: `(MentionTarget, AircCommandRequest)`.
+    ///
+    /// PR #1529 reviewer 3 fix: factored out as a `pub` free function
+    /// so every error branch (Local-guard, Peer-name not-implemented,
+    /// Room semantics not-implemented, Broadcast silent-fallback
+    /// refusal) is testable WITHOUT an `Airc` handle. The real
+    /// `dispatch` method just delegates here, sends, awaits, decodes —
+    /// leaving only the airc-side IO untested at the unit level
+    /// (which is exactly what the LAN-loopback integration test in
+    /// #188 covers).
+    ///
+    /// Returns `Err(typed_string)` for every documented refusal
+    /// shape. Returns `Ok((target, request))` for the happy path
+    /// (UUID peer dispatch).
+    pub fn resolve_outbound(
+        decision: &RouteDecision,
         params: Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<(MentionTarget, AircCommandRequest), String> {
         // Per Transport::dispatch contract, the dispatcher never
         // routes Local decisions to a remote transport. Surface the
         // invariant breach loudly rather than silently ignore.
-        if let RouteDecision::Local { .. } = &decision {
+        if let RouteDecision::Local { .. } = decision {
             return Err(
                 "BUG: AircTransport received a Local decision — \
                  CommandExecutor::dispatch handles Local inline; \
@@ -173,7 +186,7 @@ impl Transport for AircTransport {
 
         // Resolve the outbound target before doing any serialization.
         // Cheaper error path for the not-yet-supported cases.
-        let target = match &decision {
+        let target = match decision {
             RouteDecision::Peer { peer, .. } => Self::peer_ref_to_target(peer)?,
             RouteDecision::Broadcast { peer, node, path, .. } => {
                 // Per [[no-fallbacks-ever]]: env-wildcard broadcast to a
@@ -216,27 +229,68 @@ impl Transport for AircTransport {
                 ));
             }
             RouteDecision::Local { path, .. } => {
-                // Reviewer 2 caught: `unreachable!()` panics in debug
-                // and is UB-adjacent in release. Return a typed error
-                // instead so a future refactor that breaks the guard
-                // at the top of the function surfaces as an error on
-                // the dispatch hot path, not a process panic.
+                // Belt-and-suspenders: the early-return above handles
+                // this, but if a future refactor breaks that guard, the
+                // error here surfaces as a typed BUG error rather than
+                // an `unreachable!()` panic.
                 return Err(format!(
                     "BUG: AircTransport reached the Local match arm \
-                     (path={path}) — the guard at the top of dispatch() \
+                     (path={path}) — the guard at the top of resolve_outbound \
                      should have caught Local before this point. A future \
-                     refactor must have broken that invariant; the \
-                     dispatcher routes Local inline, never to a remote \
-                     Transport."
+                     refactor must have broken that invariant."
                 ));
             }
         };
 
-        // Build the typed envelope from the routing decision.
-        let request = AircCommandRequest::from_route_decision(&decision, params)
+        let request = AircCommandRequest::from_route_decision(decision, params)
             .ok_or_else(|| {
                 "BUG: from_route_decision returned None for a non-Local decision".to_string()
             })?;
+
+        Ok((target, request))
+    }
+
+    /// Decode an airc reply's body as an `AircCommandResponse` and
+    /// collapse to the canonical `Result<Value, String>` shape.
+    ///
+    /// PR #1529 reviewer 3 fix: factored as a `pub` free function so
+    /// every error branch (no body, Binary body, malformed JSON, Error
+    /// variant) is testable without a real `Airc` reply. The real
+    /// `dispatch` method delegates here after `await_reply`.
+    pub fn decode_reply(reply_body: Option<Body>) -> Result<Value, String> {
+        let reply_body = reply_body.ok_or_else(|| {
+            "AircTransport: reply has no body (peer-side handler must \
+             attach Body::Json(AircCommandResponse))"
+                .to_string()
+        })?;
+
+        let response_value = match reply_body {
+            Body::Json(v) => v,
+            Body::Binary(_) => {
+                return Err("AircTransport: reply body was Binary; expected Json \
+                            (AircCommandResponse is a JSON envelope)"
+                    .to_string());
+            }
+        };
+
+        let response: AircCommandResponse = serde_json::from_value(response_value).map_err(|e| {
+            format!("AircTransport: deserialize reply body as AircCommandResponse: {e}")
+        })?;
+
+        response.into_result()
+    }
+}
+
+#[async_trait]
+impl Transport for AircTransport {
+    async fn dispatch(
+        &self,
+        decision: RouteDecision,
+        params: Value,
+    ) -> Result<CommandResult, String> {
+        // Pre-flight conversion (testable as a free function — see
+        // routing::airc_transport::tests for every error branch).
+        let (target, request) = Self::resolve_outbound(&decision, params)?;
 
         let body_value = serde_json::to_value(&request).map_err(|e| {
             format!("AircTransport: serialize AircCommandRequest to JSON value: {e}")
@@ -261,35 +315,9 @@ impl Transport for AircTransport {
             .await
             .map_err(|e| format!("AircTransport: await_reply failed: {e}"))?;
 
-        // Decode the reply body. The peer-side handler is expected to
-        // attach a `Body::Json` carrying the serialized
-        // AircCommandResponse. A missing body, wrong shape, or
-        // unexpected variant surfaces as a typed error.
-        let reply_body = reply.body.ok_or_else(|| {
-            "AircTransport: reply has no body (peer-side handler must \
-             attach Body::Json(AircCommandResponse))"
-                .to_string()
-        })?;
-
-        let response_value = match reply_body {
-            Body::Json(v) => v,
-            Body::Binary(_) => {
-                return Err("AircTransport: reply body was Binary; expected Json \
-                            (AircCommandResponse is a JSON envelope)"
-                    .to_string());
-            }
-        };
-
-        let response: AircCommandResponse = serde_json::from_value(response_value).map_err(|e| {
-            format!("AircTransport: deserialize reply body as AircCommandResponse: {e}")
-        })?;
-
-        // into_result() collapses Ok{result}/Error{message} to the
-        // canonical substrate Result shape. The CommandExecutor's
-        // local caller can't tell whether the error came from this
-        // substrate or a remote one — uniform shape, uniform error
-        // handling.
-        let value = response.into_result()?;
+        // Decode via the testable free function. Every error path
+        // here is covered by unit tests against `decode_reply`.
+        let value = Self::decode_reply(reply.body)?;
         Ok(CommandResult::Json(value))
     }
 }
@@ -357,57 +385,149 @@ mod tests {
         );
     }
 
-    /// A direct dispatch test against a Local decision must surface
-    /// as a BUG error, even without an active airc handle. Locked so a
-    /// future refactor that changes dispatcher behavior can't silently
-    /// bypass this contract.
-    #[tokio::test]
-    async fn dispatch_with_local_decision_is_a_bug() {
-        // No real airc needed — the dispatcher rejects Local before
-        // touching airc. We can't easily construct an Airc for tests
-        // without a daemon, so the test verifies the BEHAVIOR (rejects
-        // Local) without depending on transport plumbing.
-        //
-        // We use AircTransport::peer_ref_to_target's siblings via
-        // a different path: build the local decision and assert the
-        // dispatcher's Local guard is the bit that fires.
-        //
-        // Since dispatch() needs &self with a real Airc, we use a
-        // syntactic trick: the early-return for Local doesn't need
-        // self.airc, so we can build a "minimal" AircTransport behind
-        // a panic-on-deref via a layout trick.
-        //
-        // Simpler: just assert the error STRING shape matches what the
-        // Local branch produces — proven via static inspection that
-        // the early-return on Local doesn't reach airc. The structure
-        // of the test is locked by the existence of the test file
-        // referencing the BUG message.
-        let local_decision = route(&CommandUri::local("anything"));
-        assert!(matches!(local_decision, RouteDecision::Local { .. }));
-        // The Transport::dispatch impl rejects Local with a BUG error
-        // before touching airc. Verifying that branch requires either
-        // a real Airc instance or a refactor extracting the guard
-        // into a free function. The next commit (which adds an
-        // integration test against two real Airc instances) exercises
-        // every other branch end-to-end.
+    // ─── PR #1529 reviewer 3 fix: real coverage of dispatch's logic ─
+
+    /// Reviewer 3 BLOCK: extracted `resolve_outbound` lets us exercise
+    /// the Local-guard, peer name rejection, broadcast refusal, and
+    /// room not-implemented errors WITHOUT a real `Airc` instance.
+    /// Replaces the prior stub tests.
+
+    #[test]
+    fn resolve_outbound_local_is_a_bug() {
+        let local = route(&CommandUri::local("anything"));
+        let err = AircTransport::resolve_outbound(&local, Value::Null)
+            .expect_err("Local must be rejected at the transport boundary");
+        assert!(
+            err.contains("BUG"),
+            "Local refusal must signal a BUG (the dispatcher routes Local inline; \
+             reaching here means a refactor broke the invariant): {err}"
+        );
     }
 
-    #[tokio::test]
-    async fn dispatch_with_room_decision_returns_typed_error() {
-        // Same constraint as above — we can't easily build an Airc for
-        // a unit test. The behavior the substrate guarantees is that
-        // Room dispatch returns the typed "room semantics need their
-        // own slice" error. The next-commit integration test will
-        // exercise this with a live Airc instance and assert the error
-        // shape directly.
+    #[test]
+    fn resolve_outbound_room_returns_typed_not_implemented_error() {
         let room_id = Uuid::new_v4();
-        let _decision = route(
-            &CommandUri::parse(&format!("airc://room:{room_id}/chat/post"))
-                .expect("parse room URI"),
+        let decision = route(
+            &CommandUri::parse(&format!("airc://room:{room_id}/chat/post")).expect("parse"),
         );
-        // Structural commitment: when this test grows in the
-        // integration-test commit, it asserts the error matches the
-        // "room broadcast routing not yet implemented" text.
+        let err = AircTransport::resolve_outbound(&decision, Value::Null)
+            .expect_err("Room must not silently dispatch");
+        assert!(
+            err.contains("room broadcast routing not yet implemented"),
+            "Room error must name the missing semantics: {err}"
+        );
+        assert!(
+            err.contains(&room_id.to_string()),
+            "Room error must echo the room_id so the operator can correlate: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_outbound_broadcast_refuses_silent_fallback() {
+        let decision =
+            route(&CommandUri::parse("airc://maya:*/notification/send").expect("parse"));
+        let err = AircTransport::resolve_outbound(&decision, Value::Null)
+            .expect_err("Broadcast must not silently map to MentionTarget::All");
+        // PR #1529 reviewer 1 + 2 found the original silent-fallback;
+        // pin the typed-refusal error so a future refactor can't
+        // regress it.
+        assert!(
+            err.contains("env-wildcard broadcast"),
+            "Broadcast error must name the dispatch class: {err}"
+        );
+        assert!(
+            err.contains("[[no-fallbacks-ever]]"),
+            "Broadcast error must cite the doctrine being upheld: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_outbound_peer_name_pending_whois_resolver() {
+        let decision =
+            route(&CommandUri::parse("airc://maya/inference/llm/generate").expect("parse"));
+        let err = AircTransport::resolve_outbound(&decision, Value::Null)
+            .expect_err("Name-only peers cannot resolve until whois slice lands");
+        assert!(err.contains("whois"), "error must name the missing slice: {err}");
+    }
+
+    #[test]
+    fn resolve_outbound_peer_uuid_produces_target_and_request() {
+        let id = Uuid::new_v4();
+        let decision =
+            route(&CommandUri::parse(&format!("airc://{id}/code/exists")).expect("parse"));
+        let (target, request) =
+            AircTransport::resolve_outbound(&decision, serde_json::json!({"path": "foo"}))
+                .expect("UUID peer happy-path");
+        match target {
+            MentionTarget::Peer(peer_id) => assert_eq!(peer_id.0, id),
+            other => panic!("expected Peer target, got {other:?}"),
+        }
+        assert_eq!(request.path, "code/exists");
+        assert_eq!(request.kind, "peer");
+        assert_eq!(request.params, serde_json::json!({"path": "foo"}));
+    }
+
+    /// Reviewer 3 BLOCK: extracted `decode_reply` makes every reply-
+    /// path error testable without a real `Airc` reply.
+
+    #[test]
+    fn decode_reply_none_body_errors_with_actionable_message() {
+        let err = AircTransport::decode_reply(None).expect_err("None body must error");
+        assert!(
+            err.contains("no body"),
+            "error must name the missing body: {err}"
+        );
+        assert!(
+            err.contains("peer-side handler"),
+            "error must point at where to look (handler omitted body): {err}"
+        );
+    }
+
+    #[test]
+    fn decode_reply_binary_body_errors_with_shape_mismatch() {
+        let err = AircTransport::decode_reply(Some(Body::Binary(vec![1, 2, 3])))
+            .expect_err("Binary body must error");
+        assert!(
+            err.contains("Binary"),
+            "error must name the surprising shape: {err}"
+        );
+        assert!(
+            err.contains("Json"),
+            "error must name the expected shape: {err}"
+        );
+    }
+
+    #[test]
+    fn decode_reply_malformed_json_errors_with_decode_context() {
+        // Valid JSON but not the AircCommandResponse shape — should
+        // surface the deserialize error in a way the operator can
+        // correlate.
+        let body = Body::Json(serde_json::json!({"unexpected": "shape"}));
+        let err = AircTransport::decode_reply(Some(body))
+            .expect_err("non-AircCommandResponse JSON must error");
+        assert!(
+            err.contains("deserialize"),
+            "error must name the deserialize failure: {err}"
+        );
+    }
+
+    #[test]
+    fn decode_reply_ok_response_returns_value() {
+        let response = AircCommandResponse::ok(serde_json::json!({"hello": "world"}));
+        let body = Body::Json(serde_json::to_value(&response).unwrap());
+        let value = AircTransport::decode_reply(Some(body)).expect("Ok response decodes");
+        assert_eq!(value, serde_json::json!({"hello": "world"}));
+    }
+
+    #[test]
+    fn decode_reply_error_response_returns_error_propagating_message() {
+        let response = AircCommandResponse::error("forbidden: NoPermissionForUri(\"x/y\")");
+        let body = Body::Json(serde_json::to_value(&response).unwrap());
+        let err = AircTransport::decode_reply(Some(body))
+            .expect_err("Error response must propagate as Err");
+        // The remote peer's error message arrives exactly — uniform
+        // shape across local + remote per the protocol design.
+        assert_eq!(err, "forbidden: NoPermissionForUri(\"x/y\")");
     }
 
     /// AircCommandRequest::from_route_decision is the typed bridge
