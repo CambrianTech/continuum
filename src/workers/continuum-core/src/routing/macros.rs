@@ -109,11 +109,12 @@ macro_rules! time {
 /// Returns the substrate's "call stack" at this point as a
 /// `Vec<String>` of URI frames from the dispatch root to here.
 ///
-/// The substrate's spans form a tree; this macro walks the current
-/// span's ancestry and emits one frame per entered span carrying a
-/// `uri` field. The result is the URI path from the outermost
-/// dispatched command (the dispatch span the executor establishes)
-/// to whatever scope `stack!()` is called from.
+/// The substrate's spans form a tree; the URI-aware tracing
+/// [`UriCaptureLayer`](crate::routing::UriCaptureLayer) walks the
+/// current scope's ancestry and emits one frame per entered span
+/// carrying a `uri` field. The result is the URI path from the
+/// outermost dispatched command (the dispatch span the executor
+/// establishes) to whatever scope `stack!()` is called from.
 ///
 /// ```ignore
 /// use continuum_core::{stack, probe};
@@ -124,44 +125,22 @@ macro_rules! time {
 /// probe!(class = "error", stack = ?stack!(), "engram lookup failed");
 /// ```
 ///
-/// ## Current implementation: single-frame
+/// ## With the Layer installed (the substrate's wired path)
 ///
-/// This commit ships the immediate single-frame form — returns
-/// `vec![current_span_uri]`. The full multi-frame ancestry requires
-/// the substrate's tracing subscriber Layer (the keystone piece that
-/// captures span-field values into a thread-local stack — Joel's
-/// "you can take it to any node" semantics need that layer to walk
-/// across async boundaries). The Layer lands in a follow-up commit
-/// on this branch; the macro shape doesn't change when it does.
+/// Returns the full URI ancestry, outermost first. The Layer must be
+/// installed at boot via
+/// `tracing_subscriber::registry().with(UriCaptureLayer::new()).init()`.
 ///
-/// ## Outside any dispatch span
+/// ## Without the Layer (bootstrap, third-party tools, tests)
 ///
-/// When called from code that's not inside a dispatched command
-/// (e.g. bootstrap, tests), returns an empty `Vec` rather than
-/// fabricating a fake frame. Consumers handle the empty case
-/// (`if stack.is_empty() { /* no parent context */ }`).
+/// Returns an empty `Vec` rather than fabricating a fake frame.
+/// Consumers handle the empty case (`if stack.is_empty() { ... }`).
+/// The substrate refuses to emit invented data — honesty over
+/// convenience, per [[no-fallbacks-ever]].
 #[macro_export]
 macro_rules! stack {
     () => {{
-        let __span = ::tracing::Span::current();
-        // `Span::metadata()` returns Some whenever the span was
-        // created via `info_span!`/`debug_span!`/etc., regardless of
-        // whether a tracing subscriber is currently registered to
-        // RECORD the span. That's the right shape for `stack!()` —
-        // we want to surface the dispatch site even in tests or
-        // tools that haven't initialized a subscriber.
-        //
-        // The metadata's `name` is the span name (e.g. "cmd",
-        // "time", "recall_phase"). The URI itself lives in the span's
-        // recorded fields (e.g. `uri = "airc://maya/inference/llm/generate"`)
-        // and requires the substrate's URI-aware tracing Layer to
-        // extract. Until that lands in a follow-up commit, we emit
-        // the span name as a single frame so callers see SOMETHING
-        // useful rather than a perpetually-empty Vec.
-        __span
-            .metadata()
-            .map(|m| ::std::vec![::std::string::String::from(m.name())])
-            .unwrap_or_default()
+        $crate::routing::current_uri_chain()
     }};
 }
 
@@ -233,35 +212,59 @@ mod tests {
 
     #[test]
     fn stack_returns_vec_of_strings() {
+        // Outside any dispatch span and without a subscriber installed
+        // the substrate returns an empty Vec — honest reporting per
+        // [[no-fallbacks-ever]].
         let s: Vec<String> = crate::stack!();
-        // Outside any dispatch span (in test context) the substrate
-        // returns either the current span's metadata name as a single
-        // frame, or an empty Vec when no span is active. Both are
-        // valid; the test only locks that the macro typechecks AND
-        // returns the expected type.
-        assert!(s.iter().all(|f| !f.is_empty() || s.is_empty()));
+        assert!(s.is_empty(), "expected empty stack with no Layer installed, got {:?}", s);
     }
 
-    /// Without a tracing subscriber attached, `Span::metadata()`
-    /// returns `None` (the span is "disabled") and `stack!()` produces
-    /// an empty Vec. Asserting non-emptiness inside an `info_span!`
-    /// requires either initializing a subscriber for the test, OR
-    /// the URI-aware tracing Layer (the follow-up commit that walks
-    /// the span tree and surfaces recorded URIs).
-    ///
-    /// What's locked here today: `stack!()` returns the expected
-    /// type, integrates with `tracing::Span::current()`, and survives
-    /// the no-subscriber case without panicking. The full-ancestry
-    /// integration test lands with the Layer.
+    /// With the URI-aware tracing Layer installed and a dispatched
+    /// span entered, `stack!()` returns the captured URI as a frame.
+    /// This is the substrate's wired path that every production caller
+    /// will hit.
     #[test]
-    fn stack_inside_a_span_returns_string_vec_safely() {
-        let span = tracing::info_span!("test_span");
-        let _enter = span.enter();
-        let s: Vec<String> = crate::stack!();
-        // No assertion on contents — without a subscriber the span
-        // is disabled and metadata() is None. The integration test
-        // with a real subscriber lands in the Layer commit.
-        let _ = s;
+    fn stack_inside_a_dispatched_span_returns_uri_frame() {
+        use tracing_subscriber::prelude::*;
+
+        let subscriber = tracing_subscriber::registry()
+            .with(crate::routing::UriCaptureLayer::new());
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("cmd", uri = "airc:///inference/llm/generate");
+            let _enter = span.enter();
+            let chain: Vec<String> = crate::stack!();
+            assert_eq!(
+                chain,
+                vec!["airc:///inference/llm/generate".to_string()],
+                "expected captured URI frame from dispatched span"
+            );
+        });
+    }
+
+    /// Multi-frame ancestry — the keystone behavior. Nested dispatched
+    /// spans surface as a chain ordered outermost-to-innermost.
+    #[test]
+    fn stack_walks_nested_dispatched_spans() {
+        use tracing_subscriber::prelude::*;
+
+        let subscriber = tracing_subscriber::registry()
+            .with(crate::routing::UriCaptureLayer::new());
+
+        tracing::subscriber::with_default(subscriber, || {
+            let outer = tracing::info_span!("cmd", uri = "airc:///inference/llm/generate");
+            let _o = outer.enter();
+            let inner = tracing::info_span!("cmd", uri = "airc:///data/list");
+            let _i = inner.enter();
+            let chain: Vec<String> = crate::stack!();
+            assert_eq!(
+                chain,
+                vec![
+                    "airc:///inference/llm/generate".to_string(),
+                    "airc:///data/list".to_string(),
+                ]
+            );
+        });
     }
 
     #[test]

@@ -27,8 +27,10 @@ pub mod command_uri;
 pub mod environment;
 #[macro_use]
 pub mod macros;
+pub mod uri_layer;
 pub mod verdict;
 
 pub use command_uri::{CommandUri, NodeId, PeerRef, UriParseError};
 pub use environment::{EnvironmentId, WellKnownEnv};
+pub use uri_layer::{current_uri_chain, UriCaptureLayer, UriFrame};
 pub use verdict::{DeferredReason, ForbiddenReason, Verdict};

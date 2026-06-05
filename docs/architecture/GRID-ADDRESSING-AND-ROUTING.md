@@ -673,6 +673,65 @@ the existing Rust `Backtrace::capture()` remains the right tool;
 `stack!` is the substrate's structured equivalent for normal
 execution paths.
 
+##### How `stack!` works under the hood — `UriCaptureLayer`
+
+The macro expands to a single function call:
+`crate::routing::current_uri_chain()`. The work happens in a
+`tracing_subscriber::Layer` impl that the substrate installs at boot:
+
+```rust
+use tracing_subscriber::prelude::*;
+use continuum_core::routing::UriCaptureLayer;
+
+tracing_subscriber::registry()
+    .with(UriCaptureLayer::new())
+    // ... operator's other layers (fmt, json, OTel, ...)
+    .init();
+```
+
+The Layer:
+
+1. **On span creation** — pulls the `uri` field out of the span's
+   recorded attributes via a `Visit` impl. Handles both string
+   literals (`uri = "airc:///..."`) and the Display form
+   (`uri = %command_uri`) the dispatch span uses.
+2. **On span entry** — pushes the captured URI onto a per-thread
+   `URI_STACK`.
+3. **On span exit** — pops one frame off the stack.
+
+`current_uri_chain()` clones the thread-local stack as a `Vec<String>`,
+outermost-first.
+
+This is the standard `tracing-subscriber` pattern: cheap on the
+hot path (one thread-local mutation per span enter/exit), composes
+cleanly with operator-chosen subscribers (fmt, json, OTel exporters),
+and produces the URI ancestry every probe consumer needs without
+asking the call site to thread any context.
+
+Without the Layer installed (bootstrap code, third-party callers,
+tests that don't wire the substrate's tracing stack),
+`current_uri_chain()` returns `Vec::new()` — the substrate refuses
+to fabricate fake frames per [[no-fallbacks-ever]]. Consumers that
+care about the absent-Layer case (e.g. bootstrap diagnostics) handle
+the empty `Vec` explicitly.
+
+##### Async caveat — `_enter` across `.await` is broken (by tracing, not us)
+
+The `tracing` crate explicitly warns against holding a
+`let _enter = span.enter()` guard across `.await` in async code: tokio
+moves the task between threads at suspension boundaries, and the
+thread-local `on_enter`/`on_exit` cadence breaks. The correct async
+shape is `future.instrument(span).await`, which trips the Layer's
+push/pop at suspension boundaries.
+
+`CommandExecutor::dispatch` currently uses the broken
+`_enter`-across-`await` shape. That's a substrate bug to fix, not
+something `stack!` should work around — fabricating ancestry from a
+broken span chain is exactly the dishonest behavior
+[[no-fallbacks-ever]] forbids. A follow-up commit on this Slice P
+branch converts dispatch to `Instrument`; the Layer itself doesn't
+change.
+
 #### Derived views: flamegraph + profile
 
 Flamegraphs and CPU profiles aren't separate systems — they're
