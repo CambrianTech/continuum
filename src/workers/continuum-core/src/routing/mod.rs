@@ -24,7 +24,11 @@
 //! `Context::environment()` accessor.
 
 pub mod command_uri;
+pub mod environment;
 #[macro_use]
 pub mod macros;
+pub mod verdict;
 
 pub use command_uri::{CommandUri, EnvSelector, NodeId, PeerRef, UriParseError};
+pub use environment::{EnvironmentId, WellKnownEnv};
+pub use verdict::{DeferredReason, ForbiddenReason, Verdict};
