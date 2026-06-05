@@ -30,7 +30,7 @@ use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::message_bus::MessageBus;
 use super::{CommandResult, ModuleRegistry};
-use crate::routing::{route, CommandUri, RouteDecision};
+use crate::routing::{route, CommandUri, RouteDecision, Verdict};
 
 /// Socket path for TypeScript command routing
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
@@ -80,6 +80,15 @@ pub struct CommandExecutor {
     /// Priority 3: the bus emission is what lets the persona's
     /// autonomous loop stay reactive instead of poll-blocking.
     bus: Option<Arc<MessageBus>>,
+    /// Auth policy consulted between `route()` and the dispatcher's
+    /// variant match. Defaults to [`AllowAllPolicy`] so existing
+    /// callers and tests don't break; operators install an ORM-backed
+    /// or capability-backed impl at boot via
+    /// [`Self::with_policy`].
+    ///
+    /// Per Slice P "every URI has a gate" — the policy is a single
+    /// substrate-wide chokepoint, not a per-module concern.
+    policy: Arc<dyn crate::routing::AuthPolicy>,
 }
 
 impl CommandExecutor {
@@ -88,7 +97,17 @@ impl CommandExecutor {
             registry,
             interceptors: Vec::new(),
             bus: None,
+            policy: Arc::new(crate::routing::AllowAllPolicy),
         }
+    }
+
+    /// Replace the auth policy. Defaults to [`AllowAllPolicy`];
+    /// operators install an ORM-backed or capability-backed impl
+    /// here at boot. Builder-style so it chains with `new()`,
+    /// `with_interceptor()`, `with_message_bus()`.
+    pub fn with_policy(mut self, policy: Arc<dyn crate::routing::AuthPolicy>) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// Add an interceptor to the chain (builder-style). Interceptors are
@@ -193,19 +212,43 @@ impl CommandExecutor {
         params: Value,
     ) -> Result<CommandResult, String> {
         let decision = route(command);
+        // Today's local dispatches pass no caller — substrate's own
+        // code calling itself. The transport layer (follow-up) will
+        // populate `Some(CallerIdentity::airc(sender))` when it
+        // extracts the verified peer_id from the airc envelope.
+        let verdict = self.policy.gate(&decision, None);
         let span = tracing::info_span!(
             "cmd",
             uri = %command,
             path = %command.path(),
             route_kind = decision.kind().as_str(),
+            verdict = verdict.kind(),
         );
         async move {
-            // Slice P note: this match is the substrate's transport
-            // seam. Each non-Local variant returns a typed error
-            // naming the missing transport — when the AircTransport
-            // commit lands, the Peer/Room/Broadcast arms become real
-            // calls and the dispatcher itself doesn't change. That's
-            // the typed-primitive payoff.
+            // Slice P "every URI has a gate" — auth runs BEFORE the
+            // transport match. Forbidden / Deferred short-circuit
+            // with typed errors carrying the reason; only Allowed
+            // proceeds to transport selection.
+            match verdict {
+                Verdict::Forbidden { reason } => {
+                    return Err(format!("forbidden: {reason}"));
+                }
+                Verdict::Deferred {
+                    reason,
+                    prompt_target_env,
+                } => {
+                    return Err(format!(
+                        "deferred: {reason:?} — consent prompt routed to env={prompt_target_env}"
+                    ));
+                }
+                Verdict::Allowed => {}
+            }
+
+            // Slice P transport seam: each non-Local variant returns
+            // a typed error naming the missing transport. When the
+            // AircTransport commit lands, the Peer/Room/Broadcast
+            // arms become real calls and the dispatcher itself
+            // doesn't change.
             match decision {
                 RouteDecision::Local { path, .. } => self.execute_inner(&path, params).await,
                 RouteDecision::Peer { peer, node, env, path, .. } => Err(format!(
@@ -1041,4 +1084,97 @@ mod tests {
     // `crate::routing::uri_layer::tests` where it can run against the
     // Layer directly without the noise of CommandExecutor's other
     // tokio-runtime tests sharing the cargo test process.
+
+    // ─── Slice P: auth policy gate ──────────────────────────────────
+
+    /// The policy gate runs BEFORE the dispatcher's transport match —
+    /// a Forbidden verdict short-circuits to a typed error without
+    /// hitting any interceptor or module. Proves the chokepoint
+    /// behavior the design doc names: "every URI has a gate."
+    #[tokio::test]
+    async fn forbidden_policy_short_circuits_before_local_dispatch() {
+        let later_called = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry)
+            .with_policy(Arc::new(crate::routing::deny_path_prefix("forbidden/")))
+            // An interceptor that would normally short-circuit — the
+            // policy should reject the request BEFORE it gets here.
+            .with_interceptor(Arc::new(RecordingDecliner {
+                name: "should-never-run",
+                seen: later_called.clone(),
+                mark: 42,
+            }));
+
+        let err = executor
+            .execute("forbidden/some-op", Value::Null)
+            .await
+            .expect_err("forbidden policy must reject the dispatch");
+        assert!(
+            err.contains("forbidden"),
+            "error must name the forbidden verdict, got: {err}"
+        );
+        assert!(
+            err.contains("forbidden/some-op"),
+            "error must name the URI path that was denied, got: {err}"
+        );
+        assert_eq!(
+            later_called.load(Ordering::SeqCst),
+            0,
+            "interceptors must NOT be consulted after a Forbidden verdict"
+        );
+    }
+
+    /// A Deferred verdict also short-circuits — the dispatcher's
+    /// error names the prompt target env so the operator knows where
+    /// consent will be routed (once the consent transport lands).
+    #[tokio::test]
+    async fn deferred_policy_short_circuits_with_target_env_in_error() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry).with_policy(Arc::new(
+            crate::routing::defer_path_prefix(
+                "persona/state/",
+                crate::routing::EnvironmentId::Named("web".into()),
+            ),
+        ));
+
+        let err = executor
+            .execute("persona/state/mutate", Value::Null)
+            .await
+            .expect_err("deferred policy returns a typed error");
+        assert!(
+            err.contains("deferred"),
+            "error must name the deferred verdict, got: {err}"
+        );
+        assert!(
+            err.contains("web"),
+            "error must name the consent target env, got: {err}"
+        );
+    }
+
+    /// AllowAllPolicy (the default) is transparent — no behavior
+    /// difference from a substrate without a gate. Proves the
+    /// retrofit doesn't break existing call sites.
+    #[tokio::test]
+    async fn default_policy_lets_dispatch_through() {
+        let later_called = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry)
+            // No with_policy call — AllowAllPolicy is the default
+            .with_interceptor(Arc::new(RecordingDecliner {
+                name: "must-run",
+                seen: later_called.clone(),
+                mark: 99,
+            }))
+            .with_interceptor(Arc::new(AlwaysHandle));
+
+        let _ = executor
+            .execute("anything", Value::Null)
+            .await
+            .expect("default policy allows dispatch");
+        assert_eq!(
+            later_called.load(Ordering::SeqCst),
+            99,
+            "decliner must have been consulted (proves policy was Allow)"
+        );
+    }
 }

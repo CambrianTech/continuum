@@ -23,6 +23,7 @@
 //! `probe!`/`time!`/`stack!` macros, and the env registry +
 //! `Context::environment()` accessor.
 
+pub mod auth_policy;
 pub mod command_uri;
 pub mod environment;
 #[macro_use]
@@ -32,6 +33,10 @@ pub mod route_decision;
 pub mod uri_layer;
 pub mod verdict;
 
+pub use auth_policy::{
+    defer_path_prefix, deny_path_prefix, AllowAllPolicy, AuthPolicy, CallerIdentity, CallerSource,
+    ClosurePolicy,
+};
 pub use command_uri::{CommandUri, NodeId, PeerRef, UriParseError};
 pub use environment::{EnvironmentId, WellKnownEnv};
 pub use probe_router::{ProbeEvent, ProbeRouterLayer, DEFAULT_CHANNEL_CAPACITY};
