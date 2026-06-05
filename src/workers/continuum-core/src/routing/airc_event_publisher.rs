@@ -62,10 +62,12 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use airc_core::{Body, Headers, PeerId, TranscriptEvent};
 use airc_lib::adapter::AdapterError;
-use airc_protocol::{HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
+use airc_lib::Airc;
+use airc_protocol::{FrameKind, HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
 use parking_lot::RwLock;
 use serde_json::Value;
 use uuid::Uuid;
@@ -218,6 +220,166 @@ pub struct MatchedSubscription {
     pub subscription_id: Uuid,
     pub subscriber_peer_id: PeerId,
     pub sequence: u64,
+}
+
+// ─── Public facade ─────────────────────────────────────────────────
+
+/// `AircEventPublisher` is the peer-side event publisher facade.
+///
+/// Composes:
+/// - `Arc<Airc>` for sending Deliver frames over the grid.
+/// - `Arc<EventPublisherState>` for tracking active subscriptions.
+///
+/// Exposes:
+/// - [`state()`](Self::state) — the shared state for adapter
+///   composition (the two `ConsumerAdapter`s in
+///   [`super::airc_event_adapters`] take this Arc).
+/// - [`publish()`](Self::publish) — the fan-out method. Looks up
+///   matching subscriptions, builds an [`AircEventDeliver`] per
+///   match (sequence bumped at lookup), sends each via
+///   `Airc::publish` with the subscription_id header. Returns the
+///   fan-out count for telemetry.
+///
+/// ## Composition at boot
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use continuum_core::routing::{
+///     AircEventPublisher, EventSubscribeAdapter, EventUnsubscribeAdapter,
+/// };
+///
+/// let publisher = Arc::new(AircEventPublisher::new(airc.clone()));
+/// let subscribe = EventSubscribeAdapter::new(airc.clone(), publisher.state().clone());
+/// let unsubscribe = EventUnsubscribeAdapter::new(airc.clone(), publisher.state().clone());
+/// airc.register_consumer_adapter(subscribe).await?;
+/// airc.register_consumer_adapter(unsubscribe).await?;
+///
+/// // Later, when substrate cognition emits an event:
+/// publisher.publish("cognition/analyze/complete", payload).await?;
+/// ```
+pub struct AircEventPublisher {
+    airc: Arc<Airc>,
+    state: Arc<EventPublisherState>,
+}
+
+impl std::fmt::Debug for AircEventPublisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AircEventPublisher")
+            .field("subscriptions", &self.state.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl AircEventPublisher {
+    /// Build a publisher facade with a fresh empty state.
+    pub fn new(airc: Arc<Airc>) -> Self {
+        Self {
+            airc,
+            state: Arc::new(EventPublisherState::new()),
+        }
+    }
+
+    /// Build a publisher facade against an existing state Arc.
+    /// Useful in tests + when the state was created independently
+    /// for inspection.
+    pub fn with_state(airc: Arc<Airc>, state: Arc<EventPublisherState>) -> Self {
+        Self { airc, state }
+    }
+
+    /// Borrow the shared state. The two `ConsumerAdapter`s in
+    /// [`super::airc_event_adapters`] take this Arc so the
+    /// subscribe path populates the same registry the publish path
+    /// reads.
+    pub fn state(&self) -> &Arc<EventPublisherState> {
+        &self.state
+    }
+
+    /// Fan out an event to every matching subscriber.
+    ///
+    /// 1. `lookup_matching(topic, &payload)` collects matched
+    ///    subscriptions (sequence bumped atomically per match).
+    /// 2. For each match, builds an `AircEventDeliver` carrying the
+    ///    captured sequence + the (cloned) payload.
+    /// 3. Sends each via `Airc::publish(CurrentRoom, Event, ..)`
+    ///    with the subscription_id stamped as a header so
+    ///    subscribers demux via
+    ///    `AircEventTransport::matches_subscription`.
+    ///
+    /// Returns the count of fanned-out Deliver frames. Zero
+    /// matches is NOT an error — silent topics + filter
+    /// mismatches are valid steady-state.
+    ///
+    /// ## Failure mode
+    ///
+    /// If a per-subscription `Airc::publish` errors, the call returns
+    /// the typed error immediately with the count of successful
+    /// fanouts so far in the error message. Per
+    /// `[[no-fallbacks-ever]]`: silent partial fanout would mask the
+    /// transport failure.
+    pub async fn publish(&self, topic: &str, payload: Value) -> Result<usize, String> {
+        let envelopes = Self::build_publish_envelopes(&self.state, topic, &payload)?;
+        if envelopes.is_empty() {
+            return Ok(0);
+        }
+
+        let total = envelopes.len();
+        let mut sent = 0usize;
+        for (matched, headers, body) in envelopes {
+            self.airc
+                .publish(
+                    airc_lib::PublishTarget::CurrentRoom,
+                    FrameKind::Event,
+                    body,
+                    headers,
+                )
+                .await
+                .map_err(|e| {
+                    format!(
+                        "AircEventPublisher::publish: airc.publish failed after {sent} \
+                         successful fanouts of {total} (sub={sub_id}): {e}",
+                        sub_id = matched.subscription_id
+                    )
+                })?;
+            sent += 1;
+        }
+        Ok(sent)
+    }
+
+    /// Pure function: collect (matched_subscription, headers, body)
+    /// triples ready to send for a `(topic, payload)` event. Used
+    /// by [`Self::publish`] but exposed `pub` so tests verify the
+    /// composition without airc.
+    ///
+    /// Returns an empty vec when no subscriptions match — silent
+    /// topics + filter mismatches are valid steady-state, not
+    /// errors. Returns `Err` only if `build_deliver_frame` itself
+    /// fails (would only happen on `serde_json` failure of the
+    /// payload, which the substrate's `Value`-typed callers don't
+    /// hit in practice; pinned anyway).
+    pub fn build_publish_envelopes(
+        state: &EventPublisherState,
+        topic: &str,
+        payload: &Value,
+    ) -> Result<Vec<(MatchedSubscription, Headers, Body)>, String> {
+        let matches = state.lookup_matching(topic, payload);
+        let mut out = Vec::with_capacity(matches.len());
+        for matched in matches {
+            let deliver = AircEventDeliver {
+                subscription_id: matched.subscription_id,
+                topic: topic.to_string(),
+                sequence: matched.sequence,
+                payload: payload.clone(),
+            };
+            let (headers, body) = build_deliver_frame(&deliver).map_err(|e| {
+                format!(
+                    "AircEventPublisher::build_publish_envelopes: build_deliver_frame failed for sub={sub_id}: {e}",
+                    sub_id = matched.subscription_id
+                )
+            })?;
+            out.push((matched, headers, body));
+        }
+        Ok(out)
+    }
 }
 
 // ─── Pure free functions (testable seams) ──────────────────────────
@@ -630,6 +792,111 @@ mod tests {
                 assert_eq!(matched.sequence, expected_seq);
             }
         }
+    }
+
+    // ─── build_publish_envelopes (the publish() composition) ────────
+
+    #[test]
+    fn build_publish_envelopes_empty_when_no_subscriptions_match() {
+        let state = EventPublisherState::new();
+        let envs = AircEventPublisher::build_publish_envelopes(
+            &state,
+            "unsubscribed/topic",
+            &Value::Null,
+        )
+        .expect("build");
+        assert!(envs.is_empty(), "no matches → empty vec, not an error");
+    }
+
+    #[test]
+    fn build_publish_envelopes_one_per_match_with_demuxable_headers() {
+        let state = EventPublisherState::new();
+        let sub_a = PeerId::new();
+        let sub_b = PeerId::new();
+        let id_a = state.register(sub_a, "metrics".into(), None).unwrap();
+        let id_b = state.register(sub_b, "metrics".into(), None).unwrap();
+        // unrelated topic — must NOT appear in fanout
+        let _id_other = state.register(PeerId::new(), "other".into(), None).unwrap();
+
+        let payload = serde_json::json!({"cpu": 0.42});
+        let envs = AircEventPublisher::build_publish_envelopes(&state, "metrics", &payload)
+            .expect("build");
+        assert_eq!(envs.len(), 2, "two matches → two envelopes; other topic excluded");
+
+        for (matched, headers, body) in &envs {
+            assert!(
+                matched.subscription_id == id_a || matched.subscription_id == id_b,
+                "envelope's matched id must be one of the registered metrics subs"
+            );
+            assert_eq!(
+                headers.get(HEADER_EVENT_SUBSCRIPTION_ID).map(String::as_str),
+                Some(matched.subscription_id.to_string().as_str()),
+                "subscription_id header demuxes correctly"
+            );
+            assert_eq!(
+                headers.get(HEADER_CONTINUUM_BODY_HINT).map(String::as_str),
+                Some(EVENT_DELIVER_BODY_HINT)
+            );
+
+            // Body round-trips back through the typed envelope.
+            let value = match body {
+                Body::Json(v) => v.clone(),
+                other => panic!("expected Json body, got {other:?}"),
+            };
+            let deliver: AircEventDeliver =
+                serde_json::from_value(value).expect("decode Deliver");
+            assert_eq!(deliver.topic, "metrics");
+            assert_eq!(deliver.subscription_id, matched.subscription_id);
+            assert_eq!(deliver.payload, payload);
+            assert_eq!(deliver.sequence, matched.sequence);
+        }
+    }
+
+    #[test]
+    fn build_publish_envelopes_respects_filter() {
+        // A subscription with a filter `{level: info}` should
+        // match the info payload but not the warn payload — the
+        // server-side filter contract enforced by the publish path.
+        let state = EventPublisherState::new();
+        let _filtered = state
+            .register(
+                PeerId::new(),
+                "events".into(),
+                Some(serde_json::json!({"level": "info"})),
+            )
+            .unwrap();
+
+        let info = serde_json::json!({"level": "info", "msg": "hi"});
+        let warn = serde_json::json!({"level": "warn", "msg": "watch out"});
+
+        let info_envs =
+            AircEventPublisher::build_publish_envelopes(&state, "events", &info).expect("info");
+        let warn_envs =
+            AircEventPublisher::build_publish_envelopes(&state, "events", &warn).expect("warn");
+
+        assert_eq!(info_envs.len(), 1, "info payload matches the filter");
+        assert!(warn_envs.is_empty(), "warn payload filtered out by server-side filter");
+    }
+
+    #[test]
+    fn build_publish_envelopes_bumps_per_subscription_sequence_across_calls() {
+        // The publish path uses `lookup_matching` which bumps the
+        // atomic sequence per subscription. Two successive
+        // build_publish_envelopes calls for the same subscription
+        // must hand back sequence 0 then 1 — the caller-side drop
+        // detector relies on this monotonicity.
+        let state = EventPublisherState::new();
+        let _id = state.register(PeerId::new(), "metrics".into(), None).unwrap();
+
+        let first =
+            AircEventPublisher::build_publish_envelopes(&state, "metrics", &Value::Null).unwrap();
+        let second =
+            AircEventPublisher::build_publish_envelopes(&state, "metrics", &Value::Null).unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].0.sequence, 0);
+        assert_eq!(second[0].0.sequence, 1);
     }
 
     // ─── matches_filter ──────────────────────────────────────────────

@@ -59,7 +59,8 @@ pub use airc_event_adapters::{
 pub use airc_event_publisher::{
     build_deliver_frame, build_subscribe_ack, build_unsubscribe_ack, matches_filter,
     parse_subscribe_envelope, parse_unsubscribe_envelope, ActiveSubscription,
-    EventPublisherState, MatchedSubscription, ParsedSubscribe, ParsedUnsubscribe,
+    AircEventPublisher, EventPublisherState, MatchedSubscription, ParsedSubscribe,
+    ParsedUnsubscribe,
 };
 pub use airc_event_transport::{
     AircEventTransport, EventSubscription, DEFAULT_DELIVERY_QUEUE_CAPACITY,
