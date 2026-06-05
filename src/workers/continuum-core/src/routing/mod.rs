@@ -25,6 +25,7 @@
 
 pub mod airc_command_protocol;
 pub mod airc_event_protocol;
+pub mod airc_event_transport;
 pub mod airc_transport;
 pub mod auth_policy;
 pub mod command_handler;
@@ -48,6 +49,10 @@ pub use airc_event_protocol::{
     AircEventUnsubscribeAck, EVENT_ACK_BODY_HINT, EVENT_DELIVER_BODY_HINT,
     EVENT_SUBSCRIBE_BODY_HINT, EVENT_UNSUBSCRIBE_BODY_HINT, HEADER_EVENT_KIND,
     HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC,
+};
+pub use airc_event_transport::{
+    AircEventTransport, EventSubscription, DEFAULT_DELIVERY_QUEUE_CAPACITY,
+    DEFAULT_EVENT_DEADLINE,
 };
 pub use airc_transport::{AircTransport, DEFAULT_DEADLINE};
 pub use auth_policy::{
