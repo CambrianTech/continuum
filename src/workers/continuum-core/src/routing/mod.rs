@@ -24,6 +24,7 @@
 //! `Context::environment()` accessor.
 
 pub mod airc_command_protocol;
+pub mod airc_transport;
 pub mod auth_policy;
 pub mod command_uri;
 pub mod environment;
@@ -38,8 +39,9 @@ pub mod verdict;
 pub use airc_command_protocol::{
     AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT,
     COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
-    HEADER_COMMAND_STATUS,
+    HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT,
 };
+pub use airc_transport::{AircTransport, DEFAULT_DEADLINE};
 pub use auth_policy::{
     defer_path_prefix, deny_path_prefix, AllowAllPolicy, AuthPolicy, CallerIdentity, CallerSource,
     ClosurePolicy,

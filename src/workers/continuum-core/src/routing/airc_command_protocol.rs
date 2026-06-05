@@ -90,12 +90,22 @@ pub const HEADER_COMMAND_ENV: &str = "continuum.command.env";
 /// filter without parsing the body.
 pub const HEADER_COMMAND_STATUS: &str = "continuum.command.status";
 
-/// airc adapter `body_hint` for request envelopes. The peer-side
-/// handler's adapter subscribes against this.
+/// airc header naming the consumer-namespaced body hint. The
+/// peer-side handler's adapter subscribes to events with this header
+/// set to [`COMMAND_REQUEST_BODY_HINT`]; the caller-side AircTransport
+/// filters reply streams against [`COMMAND_RESPONSE_BODY_HINT`].
+///
+/// Per airc-lib convention each consumer namespace defines its own
+/// body_hint header (forge uses `"forge.body_hint"`, etc.). This is
+/// the continuum-command namespace's equivalent.
+pub const HEADER_CONTINUUM_BODY_HINT: &str = "continuum.body_hint";
+
+/// Value placed in [`HEADER_CONTINUUM_BODY_HINT`] for request
+/// envelopes. The peer-side handler's adapter subscribes against this.
 pub const COMMAND_REQUEST_BODY_HINT: &str = "continuum.command.request.v1";
 
-/// airc adapter `body_hint` for reply envelopes. The caller-side
-/// AircTransport filters reply streams against this.
+/// Value placed in [`HEADER_CONTINUUM_BODY_HINT`] for reply envelopes.
+/// The caller-side AircTransport filters reply streams against this.
 pub const COMMAND_RESPONSE_BODY_HINT: &str = "continuum.command.response.v1";
 
 // ─── Typed envelopes ─────────────────────────────────────────────────
@@ -341,6 +351,7 @@ mod tests {
         assert_eq!(HEADER_COMMAND_KIND, "continuum.command.kind");
         assert_eq!(HEADER_COMMAND_ENV, "continuum.command.env");
         assert_eq!(HEADER_COMMAND_STATUS, "continuum.command.status");
+        assert_eq!(HEADER_CONTINUUM_BODY_HINT, "continuum.body_hint");
         assert_eq!(COMMAND_REQUEST_BODY_HINT, "continuum.command.request.v1");
         assert_eq!(COMMAND_RESPONSE_BODY_HINT, "continuum.command.response.v1");
     }
