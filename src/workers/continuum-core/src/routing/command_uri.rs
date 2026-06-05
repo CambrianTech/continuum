@@ -103,6 +103,18 @@ pub enum PeerRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeId(pub String);
 
+impl From<&str> for NodeId {
+    fn from(s: &str) -> Self {
+        NodeId(s.to_string())
+    }
+}
+
+impl From<String> for NodeId {
+    fn from(s: String) -> Self {
+        NodeId(s)
+    }
+}
+
 // The CommandUri's `env` field now references `EnvironmentId`
 // directly (defined in `routing/environment.rs`). The previous
 // `EnvSelector` type was a duplicate — same Named/Wildcard variants,

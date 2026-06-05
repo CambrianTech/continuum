@@ -30,7 +30,7 @@ use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::message_bus::MessageBus;
 use super::{CommandResult, ModuleRegistry};
-use crate::routing::CommandUri;
+use crate::routing::{route, CommandUri, RouteDecision};
 
 /// Socket path for TypeScript command routing
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
@@ -192,20 +192,38 @@ impl CommandExecutor {
         command: &CommandUri,
         params: Value,
     ) -> Result<CommandResult, String> {
+        let decision = route(command);
         let span = tracing::info_span!(
             "cmd",
             uri = %command,
             path = %command.path(),
+            route_kind = decision.kind().as_str(),
         );
-        async {
-            if !command.is_local() {
-                return Err(format!(
-                    "Remote dispatch for {command} not yet implemented — \
-                     transport selector lands in a subsequent Slice P commit. \
-                     Use a Local URI (bare path) for now."
-                ));
+        async move {
+            // Slice P note: this match is the substrate's transport
+            // seam. Each non-Local variant returns a typed error
+            // naming the missing transport — when the AircTransport
+            // commit lands, the Peer/Room/Broadcast arms become real
+            // calls and the dispatcher itself doesn't change. That's
+            // the typed-primitive payoff.
+            match decision {
+                RouteDecision::Local { path, .. } => self.execute_inner(&path, params).await,
+                RouteDecision::Peer { peer, node, env, path, .. } => Err(format!(
+                    "Peer dispatch not yet implemented — \
+                     AircTransport lands in a subsequent Slice P commit. \
+                     Routing was: peer={peer:?}, node={node:?}, env={env:?}, path={path}"
+                )),
+                RouteDecision::Room { room_id, env, path, .. } => Err(format!(
+                    "Room broadcast not yet implemented — \
+                     AircTransport lands in a subsequent Slice P commit. \
+                     Routing was: room={room_id}, env={env:?}, path={path}"
+                )),
+                RouteDecision::Broadcast { peer, node, path, .. } => Err(format!(
+                    "Env-wildcard broadcast not yet implemented — \
+                     AircTransport lands in a subsequent Slice P commit. \
+                     Routing was: peer={peer:?}, node={node:?}, path={path}"
+                )),
             }
-            self.execute_inner(command.path(), params).await
         }
         .instrument(span)
         .await
