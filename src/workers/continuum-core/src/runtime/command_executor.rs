@@ -299,7 +299,9 @@ impl CommandExecutor {
             // is the only change needed — this match shape doesn't
             // move.
             match decision {
-                RouteDecision::Local { path, .. } => self.execute_inner(&path, params).await,
+                RouteDecision::Local { path, .. } => {
+                    self.execute_inner(&path, params, caller).await
+                }
                 non_local => self.remote_transport.dispatch(non_local, params).await,
             }
         }
@@ -310,10 +312,17 @@ impl CommandExecutor {
     /// The dispatch chain itself. Extracted so `execute` can wrap it
     /// with timing + event emission without burying the routing
     /// logic in instrumentation.
+    ///
+    /// PR #1529 reviewer 2: `caller` threaded through so interceptors
+    /// see the same identity the gate already saw. Closes the silent-
+    /// privilege-escalation seam where a remote `airc://this-peer/...`
+    /// dispatch would reach AircInterceptor/GridInterceptor as if it
+    /// were a local in-process invocation.
     async fn execute_inner(
         &self,
         command: &str,
         params: Value,
+        caller: Option<&crate::routing::CallerIdentity>,
     ) -> Result<CommandResult, String> {
         let log = super::logger("command-executor");
 
@@ -321,7 +330,7 @@ impl CommandExecutor {
         //    moves on. Err propagates immediately — no silent
         //    fallthrough, per the trait contract.
         for interceptor in &self.interceptors {
-            match interceptor.try_route(command, &params).await {
+            match interceptor.try_route(command, &params, caller).await {
                 Ok(InterceptorOutcome::Handled(result)) => {
                     log.debug(&format!(
                         "Routing '{}' via interceptor '{}'",
@@ -697,6 +706,7 @@ mod tests {
             &self,
             _command: &str,
             _params: &Value,
+            _caller: Option<&crate::routing::CallerIdentity>,
         ) -> Result<InterceptorOutcome, String> {
             // Record which slot was consulted. The test asserts the
             // observed counter equals the expected slot, proving order.
@@ -720,6 +730,7 @@ mod tests {
             &self,
             _command: &str,
             _params: &Value,
+            _caller: Option<&crate::routing::CallerIdentity>,
         ) -> Result<InterceptorOutcome, String> {
             Ok(InterceptorOutcome::Handled(CommandResult::Json(
                 serde_json::json!({ "handled": true }),

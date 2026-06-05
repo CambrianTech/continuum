@@ -175,15 +175,32 @@ impl Transport for AircTransport {
         // Cheaper error path for the not-yet-supported cases.
         let target = match &decision {
             RouteDecision::Peer { peer, .. } => Self::peer_ref_to_target(peer)?,
-            RouteDecision::Broadcast { peer, .. } => {
-                // Per design doc §"Capability addressing", a per-peer
-                // env-wildcard broadcast maps to MentionTarget::All
-                // scoped to that peer's room. airc-lib's All target is
-                // room-broadcast; cross-room env-wildcard semantics need
-                // their own slice to design. For now the peer name is
-                // recorded in the envelope but the wire target is All.
-                let _ = peer;
-                MentionTarget::All
+            RouteDecision::Broadcast { peer, node, path, .. } => {
+                // Per [[no-fallbacks-ever]]: env-wildcard broadcast to a
+                // SPECIFIC peer cannot be silently mapped to
+                // `MentionTarget::All` — that would fan out to every
+                // peer in the room, including peers OTHER THAN the
+                // target. The peer-side handler has no peer filter, so
+                // those peers would process the request as if it were
+                // addressed to them. Caught in PR #1529 reviewer 1.
+                //
+                // Per-peer env-fanout needs its own slice to design:
+                // does it require the peer's env registry on the
+                // sender side, or does the receiver filter on the peer
+                // identity in the envelope, or does airc-lib gain a
+                // typed `MentionTarget::PeerEnvWildcard(PeerId)`? Each
+                // shape has different latency + auth implications.
+                // Hard error today so the question gets answered when
+                // someone needs it, not silently substituted.
+                return Err(format!(
+                    "AircTransport: env-wildcard broadcast to a specific peer \
+                     not yet implemented. MentionTarget::All would broadcast \
+                     to every peer in the room (not just env replicas of the \
+                     target peer), which silently changes routing semantics \
+                     and violates [[no-fallbacks-ever]]. Per-peer env-fanout \
+                     semantics need their own slice. \
+                     Routing was: peer={peer:?}, node={node:?}, path={path}"
+                ));
             }
             RouteDecision::Room { room_id, .. } => {
                 // Room broadcast semantics need their own slice: should
@@ -198,7 +215,21 @@ impl Transport for AircTransport {
                      fire-and-forget) need their own slice."
                 ));
             }
-            RouteDecision::Local { .. } => unreachable!("handled above"),
+            RouteDecision::Local { path, .. } => {
+                // Reviewer 2 caught: `unreachable!()` panics in debug
+                // and is UB-adjacent in release. Return a typed error
+                // instead so a future refactor that breaks the guard
+                // at the top of the function surfaces as an error on
+                // the dispatch hot path, not a process panic.
+                return Err(format!(
+                    "BUG: AircTransport reached the Local match arm \
+                     (path={path}) — the guard at the top of dispatch() \
+                     should have caught Local before this point. A future \
+                     refactor must have broken that invariant; the \
+                     dispatcher routes Local inline, never to a remote \
+                     Transport."
+                ));
+            }
         };
 
         // Build the typed envelope from the routing decision.

@@ -180,10 +180,59 @@ impl CommandRequestHandler {
     /// with the caller identity threaded into the policy gate.
     /// Returns the typed response shape the wire carries back.
     ///
-    /// Exposed (`pub`) so tests can exercise the executor-side of
-    /// the handler with a real `CommandExecutor` + CannedModule
-    /// without needing airc plumbing.
+    /// Tests can invoke this via [`Self::process_request_via`] with
+    /// just a `&CommandExecutor` — no Airc handle required — so the
+    /// executor-side of the handler is exercisable without standing
+    /// up real airc plumbing.
     pub async fn process_request(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
+        Self::process_request_via(&self.executor, parsed).await
+    }
+
+    /// Process a request against a borrowed `CommandExecutor` directly.
+    /// Same behavior as [`Self::process_request`] but constructable
+    /// without an `Arc<Airc>` — tests + the `LocalGridTransport`
+    /// fixture lease this.
+    pub async fn process_request_via(
+        executor: &CommandExecutor,
+        parsed: &ParsedEnvelope,
+    ) -> AircCommandResponse {
+        // PR #1529 reviewer 2 BLOCK fix: the request envelope carries
+        // `kind` (peer / room / broadcast) and `env` (the embodiment
+        // filter). The handler MUST honor these — silently routing
+        // everything as Local would discard the routing intent and
+        // violate [[no-fallbacks-ever]].
+        //
+        // Today only `kind="peer"` with `env=None` is supported. Room
+        // and broadcast semantics need their own slice (see
+        // AircTransport::dispatch for the same hard-error rationale).
+        // Env-aware local routing (route an inbound call to a specific
+        // local embodiment service) also needs its own slice — the
+        // substrate has the EnvironmentId typed primitive (Slice P)
+        // but no per-env service registration yet. Until then,
+        // env-targeted calls hard-error so the caller knows the
+        // semantics aren't wired.
+        if parsed.request.kind != "peer" {
+            return AircCommandResponse::error(format!(
+                "remote dispatch kind={:?} not yet implemented — \
+                 only kind=\"peer\" is wired. Room broadcast and \
+                 env-wildcard broadcast need their own slices to define \
+                 fan-out semantics (all-replies-collect vs first-reply-wins \
+                 vs fire-and-forget). Per [[no-fallbacks-ever]] the \
+                 handler refuses to silently substitute Local routing.",
+                parsed.request.kind
+            ));
+        }
+        if let Some(env) = &parsed.request.env {
+            return AircCommandResponse::error(format!(
+                "remote dispatch with env={:?} not yet implemented — \
+                 the substrate has the EnvironmentId typed primitive \
+                 (Slice P) but no per-env service registration yet. \
+                 Until env-aware local routing lands, env-targeted calls \
+                 hard-error so callers know the semantics aren't wired.",
+                env
+            ));
+        }
+
         // The path the remote dispatched maps to a local URI. The
         // local AuthPolicy gate sees the remote caller and decides
         // whether to allow — the gate's verdict variants
@@ -192,8 +241,7 @@ impl CommandRequestHandler {
         let uri = CommandUri::local(&parsed.request.path);
         let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
 
-        match self
-            .executor
+        match executor
             .execute_with_caller(uri, parsed.request.params.clone(), Some(caller))
             .await
         {
@@ -464,5 +512,185 @@ mod tests {
             }
         }
         assert_eq!(Fake.body_hint(), "continuum.command.request.v1");
+    }
+
+    // ─── PR #1529 reviewer fix tests ──────────────────────────────────
+
+    /// Build a request envelope shape suitable for direct
+    /// `process_request` testing. Lets us hit the kind/env rejection
+    /// paths without going through the full envelope parser.
+    fn make_parsed(request: AircCommandRequest) -> ParsedEnvelope {
+        ParsedEnvelope {
+            caller_peer_id: PeerId::new(),
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request,
+        }
+    }
+
+    /// Reviewer 1 + 2 BLOCK: prove `process_request_via` rejects
+    /// `kind="room"` rather than silently substituting Local routing.
+    /// Uses the Airc-free entry point so the executor-side logic is
+    /// exercisable without standing up airc plumbing.
+    #[tokio::test]
+    async fn process_request_rejects_room_kind() {
+        let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry);
+
+        let parsed = make_parsed(AircCommandRequest {
+            path: "chat/post".into(),
+            kind: "room".into(),
+            env: None,
+            params: serde_json::Value::Null,
+        });
+
+        let response = CommandRequestHandler::process_request_via(&executor, &parsed).await;
+        match response {
+            AircCommandResponse::Error { message } => {
+                assert!(
+                    message.contains("kind=\"room\""),
+                    "error must name the rejected kind, got: {message}"
+                );
+                assert!(
+                    message.contains("not yet implemented"),
+                    "error must signal not-yet-implemented, got: {message}"
+                );
+            }
+            AircCommandResponse::Ok { .. } => {
+                panic!("kind=room must be rejected, got Ok");
+            }
+        }
+    }
+
+    /// Reviewer 1 + 2 BLOCK: same shape, prove `kind="broadcast"`
+    /// also rejected.
+    #[tokio::test]
+    async fn process_request_rejects_broadcast_kind() {
+        let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry);
+
+        let parsed = make_parsed(AircCommandRequest {
+            path: "notification/send".into(),
+            kind: "broadcast".into(),
+            env: None,
+            params: serde_json::Value::Null,
+        });
+
+        let response = CommandRequestHandler::process_request_via(&executor, &parsed).await;
+        assert!(matches!(response, AircCommandResponse::Error { .. }));
+    }
+
+    /// Reviewer 2 BLOCK: prove env-targeted dispatch is rejected
+    /// (until env-aware local routing lands) instead of being silently
+    /// dropped.
+    #[tokio::test]
+    async fn process_request_rejects_env_targeted_dispatch() {
+        let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry);
+
+        let parsed = make_parsed(AircCommandRequest {
+            path: "widget/show".into(),
+            kind: "peer".into(),
+            env: Some("vr".into()),
+            params: serde_json::Value::Null,
+        });
+
+        let response = CommandRequestHandler::process_request_via(&executor, &parsed).await;
+        match response {
+            AircCommandResponse::Error { message } => {
+                assert!(
+                    message.contains("env=\"vr\""),
+                    "error must name the rejected env, got: {message}"
+                );
+                assert!(
+                    message.contains("env-aware local routing"),
+                    "error must explain what's missing, got: {message}"
+                );
+            }
+            AircCommandResponse::Ok { .. } => {
+                panic!("env-targeted dispatch must be rejected");
+            }
+        }
+    }
+
+    /// Reviewer 1 nit: prove the handler refuses non-Json
+    /// CommandResult shapes (Handle / Stream / Lambda) cleanly
+    /// rather than silently coercing or panicking. Locks the
+    /// behavior so a future refactor can't start sending HandleRef
+    /// over the wire without a deliberate decision.
+    #[tokio::test]
+    async fn process_request_refuses_non_json_command_result() {
+        use crate::runtime::{CommandResult, HandleRef};
+        use async_trait::async_trait;
+        use std::any::Any;
+
+        // Module that returns a Handle result. The handler must
+        // refuse to wire it across.
+        struct HandleReturningModule;
+        impl HandleReturningModule {
+            const PREFIXES: &'static [&'static str] = &["handle-test/"];
+        }
+        #[async_trait]
+        impl crate::runtime::ServiceModule for HandleReturningModule {
+            fn config(&self) -> crate::runtime::ModuleConfig {
+                crate::runtime::ModuleConfig {
+                    name: "handle-test",
+                    priority: crate::runtime::ModulePriority::Normal,
+                    command_prefixes: Self::PREFIXES,
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(
+                &self,
+                _ctx: &crate::runtime::ModuleContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(
+                &self,
+                _command: &str,
+                _params: serde_json::Value,
+            ) -> Result<CommandResult, String> {
+                Ok(CommandResult::Handle(HandleRef::with_id(
+                    "handle-test",
+                    Uuid::new_v4(),
+                    "handle-test::TestHandle",
+                )))
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        let registry = Arc::new(crate::runtime::ModuleRegistry::new());
+        registry.register(Arc::new(HandleReturningModule));
+        let executor = CommandExecutor::new(registry);
+
+        let parsed = make_parsed(AircCommandRequest {
+            path: "handle-test/mint".into(),
+            kind: "peer".into(),
+            env: None,
+            params: serde_json::Value::Null,
+        });
+
+        let response = CommandRequestHandler::process_request_via(&executor, &parsed).await;
+        match response {
+            AircCommandResponse::Error { message } => {
+                assert!(
+                    message.contains("non-Json"),
+                    "error must name the non-Json variant, got: {message}"
+                );
+                assert!(
+                    message.contains("Handle"),
+                    "error should mention the cell shape, got: {message}"
+                );
+            }
+            AircCommandResponse::Ok { .. } => {
+                panic!("Handle result must not silently wire across as Ok");
+            }
+        }
     }
 }

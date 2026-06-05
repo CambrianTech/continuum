@@ -68,19 +68,32 @@ macro_rules! probe {
     };
 }
 
-/// Explicit-block timing. Wraps a block or expression in an
-/// `info_span!` whose duration becomes a timing probe at scope exit.
+/// Explicit-block timing for **synchronous** code. Wraps a block or
+/// expression in an `info_span!` whose duration becomes a timing
+/// probe at scope exit.
+///
+/// **MUST NOT contain `.await`.** Holding the `_enter` span guard
+/// across `.await` breaks the URI ancestry stack (the same async
+/// anti-pattern the `d1cf19dc5` dispatch fix was specifically about).
+/// For async bodies, use [`time_async!`] instead — it wraps the body
+/// in `.instrument(span).await` which trips span enter/exit at
+/// suspension boundaries correctly.
+///
+/// Per PR #1529 reviewer 2: the original `time!` was a substrate-wide
+/// foot-gun because `time!("infer", run_inference(...).await)` (a
+/// common shape) silently broke `URI_STACK` across the await. Split
+/// into typed sync/async variants per the dispatch fix doctrine.
 ///
 /// ```ignore
-/// use continuum_core::time;
+/// use continuum_core::time_sync;
 ///
 /// // Block form — returns the block's value
-/// let candidates = time!("recall_phase", {
-///     recall_candidates(&query)
+/// let candidates = time_sync!("recall_phase", {
+///     recall_candidates_blocking(&query)
 /// });
 ///
 /// // Single-expression form (the most common shape)
-/// let result = time!("inference_run", run_inference(&model, &prompt));
+/// let result = time_sync!("hash_payload", compute_hash(&payload));
 /// ```
 ///
 /// The span name becomes the `name` field on the timing probe. Same
@@ -89,12 +102,12 @@ macro_rules! probe {
 /// dispatch span the executor establishes is the parent — so the
 /// timing probe's URI context is whatever URI was being dispatched.
 ///
-/// When `time!` is used outside any active dispatch span (e.g. in
-/// bootstrap code before the executor is wired), the span has no
+/// When `time_sync!` is used outside any active dispatch span (e.g.
+/// in bootstrap code before the executor is wired), the span has no
 /// URI parent and the timing probe routes to the substrate's
 /// `bootstrap` virtual actor.
 #[macro_export]
-macro_rules! time {
+macro_rules! time_sync {
     ($name:expr, $body:expr) => {{
         let __span = ::tracing::info_span!(
             "time",
@@ -105,6 +118,28 @@ macro_rules! time {
         $body
     }};
 }
+
+// For **async** timing in the substrate's URI-context-aware shape,
+// use `.instrument(span).await` directly at the call site:
+//
+//   let span = tracing::info_span!("time", name = "phase", probe_class = "timing");
+//   let result = my_future.instrument(span).await;
+//
+// This is the pattern `CommandExecutor::dispatch` uses (per the
+// d1cf19dc5 fix) — `_enter` is never held across an await. A macro
+// for it isn't added at this layer because:
+//   1. `crate::logging::time_async!` already exists with a different
+//      shape (RAII TimingGuard with category/operation, NOT a tracing
+//      span). Reusing the name would collide.
+//   2. The direct `.instrument(span).await` form is two lines and
+//      already idiomatic. The previous `time!` macro silently broke
+//      across `.await` precisely because consumers reached for the
+//      one-liner — making it impossible to misuse here is the goal.
+//
+// Per PR #1529 reviewer 2 fix: removed the substrate-wide foot-gun
+// where `time!("infer", run_inference(...).await)` held `_enter`
+// across the inner await, breaking URI_STACK. The renamed
+// `time_sync!` makes the sync-only contract explicit.
 
 /// Returns the substrate's "call stack" at this point as a
 /// `Vec<String>` of URI frames from the dispatch root to here.
@@ -197,7 +232,7 @@ mod tests {
 
     #[test]
     fn time_block_returns_block_value() {
-        let result = crate::time!("test_phase", {
+        let result = crate::time_sync!("test_phase", {
             let x = 21;
             x * 2
         });
@@ -206,7 +241,7 @@ mod tests {
 
     #[test]
     fn time_expression_returns_expression_value() {
-        let result = crate::time!("test_phase", 21 * 2);
+        let result = crate::time_sync!("test_phase", 21 * 2);
         assert_eq!(result, 42);
     }
 
@@ -272,8 +307,8 @@ mod tests {
         // Mechanic pattern: probe a measurement that itself measures
         // a sub-block. The nested time! span becomes a child of the
         // outer probe's span; the timing flamegraph shows the chain.
-        let total = crate::time!("outer", {
-            let inner_result = crate::time!("inner", {
+        let total = crate::time_sync!("outer", {
+            let inner_result = crate::time_sync!("inner", {
                 21 + 21
             });
             crate::probe!(class = "state", inner = inner_result);
