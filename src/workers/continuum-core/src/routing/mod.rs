@@ -24,6 +24,7 @@
 //! `Context::environment()` accessor.
 
 pub mod airc_command_protocol;
+pub mod airc_event_protocol;
 pub mod airc_transport;
 pub mod auth_policy;
 pub mod command_handler;
@@ -41,6 +42,12 @@ pub use airc_command_protocol::{
     AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT,
     COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
     HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT,
+};
+pub use airc_event_protocol::{
+    AircEventDeliver, AircEventSubscribe, AircEventSubscribeAck, AircEventUnsubscribe,
+    AircEventUnsubscribeAck, EVENT_ACK_BODY_HINT, EVENT_DELIVER_BODY_HINT,
+    EVENT_SUBSCRIBE_BODY_HINT, EVENT_UNSUBSCRIBE_BODY_HINT, HEADER_EVENT_KIND,
+    HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC,
 };
 pub use airc_transport::{AircTransport, DEFAULT_DEADLINE};
 pub use auth_policy::{
