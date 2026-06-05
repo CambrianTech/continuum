@@ -1354,6 +1354,122 @@ consumers compose" rather than "add another integration point."
 
 See `[[addressable-cognition-makes-triggers-trivial]]`.
 
+### Thin clients across runtimes — substrate IS the API
+
+Per Joel 2026-06-05: once Slice P's coordination floor is
+complete, every UI runtime collapses to a thin subscriber. The
+substrate handles auth, tokens, bus, routing, gate, transport,
+observability — clients supply argv → URI translation and
+runtime-native rendering. That's it.
+
+#### `jtag` as the canonical example
+
+The current TypeScript `jtag` implementation is hundreds of lines
+of Unix-socket marshalling, command-table maintenance, error
+formatting, and help-text generation. Post-Slice-P, jtag becomes a
+Rust binary of ~200 lines plus the substrate client:
+
+```rust
+fn main() -> Result<()> {
+    let airc = airc_lib::Airc::connect()?;          // auth = your airc keypair
+    let cmd = parse_argv();                          // "./jtag interface/screenshot ..."
+    let uri = parse_or_default_local(&cmd.path);    // CommandUri
+    let result = Commands::call_raw(uri, cmd.params).await?;
+    render_for_tty(&result);                         // pretty-print for terminal env
+    Ok(())
+}
+```
+
+The subscribe path is symmetric:
+
+```rust
+let stream = Events::subscribe_raw(uri).await?;
+while let Some(event) = stream.next().await {
+    render_event_for_tty(&event);
+}
+```
+
+Everything jtag used to "implement" — dispatch, auth, routing,
+timeout, retry, error formatting — is the substrate's job. jtag
+supplies argv parsing + terminal rendering. The TypeScript shim
+code that wrapped Unix socket calls goes to zero.
+
+#### Migration buckets
+
+Each existing TS-side jtag command falls into one of three buckets:
+
+1. **Browser-specific commands** (DOM manipulation, screenshot,
+   widget interrogation, focus tracking, clipboard) — stay in TS,
+   become local ServiceModules registered by the web shell that
+   publishes `env=web` to the substrate. The Rust jtag binary
+   doesn't implement them; it dispatches
+   `airc://joel:web/interface/screenshot` and the web shell handles
+   it. Same URI works whether you invoke from terminal, iPhone, or
+   Quest 3.
+
+2. **Substrate commands** (data, cargo/build, code/exists,
+   ai/inference, debug/probes, etc.) — already Rust ServiceModules.
+   jtag just dispatches their URIs. No TS code involved.
+
+3. **Wrapper commands** (the TS-side argv-parsers,
+   result-formatters, help text) — delete entirely. The substrate's
+   typed commands carry their own help (from the `Command` trait
+   docs); jtag generates argv parsing from the typed `Params`;
+   result rendering is handled by the typed `Result`.
+
+#### Every UI runtime is structurally identical
+
+Same shape for every runtime:
+
+| Runtime | Render layer | Auth | Subscribe shape |
+|---|---|---|---|
+| `jtag` CLI | ANSI terminal | airc keypair (`env=tty`) | `Events::subscribe_raw` |
+| Web shell | DOM (React/Solid/etc.) | airc keypair (`env=web`) | same |
+| iPhone app | SwiftUI | airc keypair (`env=ios`) | same |
+| Quest 3 | OpenXR / Bevy / Unity | airc keypair (`env=quest`) | same |
+| AR overlay | native AR runtime | airc keypair (`env=ar`) | same |
+| Voice | ASR + LLM summary + TTS | airc keypair (`env=voice`) | same |
+| Terminal TUI | Ratatui | airc keypair (`env=tty`) | same |
+
+All N runtimes co-active on the same citizen's identity see the
+same events simultaneously. Joel's web widget, terminal jtag, and
+Quest 3 brain widget all rendering Maya's cognition in real time,
+none of them special, all of them subscribers.
+
+#### Sequencing — substrate complete BEFORE Node reintroduction
+
+Per Joel: "Once we are finished with its design, then we can go
+directly into Node again, because the substrate will be complete,
+and it will help us refine it further."
+
+The order matters. If Node comes back BEFORE the substrate's typed
+event surface is shipped, the temptation will be to wire daemons
+together at the Node layer again — recreating the coupling the
+substrate exists to eliminate.
+
+Instead:
+
+1. **Slice P completes** — URI dispatch, RouteDecision, AuthPolicy,
+   Transport, AircTransport, peer-side command handler,
+   LAN-loopback integration test (commands cross-grid working).
+2. **Event-side parallel slice** — peer-side event publisher,
+   cross-grid subscription, integration test (events cross-grid
+   working).
+3. **Documentation sweep** — every existing architecture doc reads
+   against the new headless-addressing reality; references to
+   pre-substrate patterns get updated; the substrate's complete
+   coordination model is reflected throughout.
+4. **Node reintroduction as thin shell** — Node web shell binary
+   that authenticates as the user, exposes `env=web` services
+   (browser-specific commands), and hosts the web-runtime widgets.
+   Node code does NOT reimplement substrate concerns.
+
+Using the substrate from a real Node client surfaces real
+ergonomic issues. The widget code becomes the proof point for
+whether the typed Command/EventChannel surfaces are actually nice
+to use. Refinements feed back into the substrate's typed
+primitives. See `[[substrate-complete-then-node-reintroduced-as-shell]]`.
+
 ### Gate decides access, not response
 
 A foundational split, per Joel 2026-06-05: the `AuthPolicy::gate`
