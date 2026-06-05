@@ -27,10 +27,12 @@ pub mod command_uri;
 pub mod environment;
 #[macro_use]
 pub mod macros;
+pub mod probe_router;
 pub mod uri_layer;
 pub mod verdict;
 
 pub use command_uri::{CommandUri, NodeId, PeerRef, UriParseError};
 pub use environment::{EnvironmentId, WellKnownEnv};
+pub use probe_router::{ProbeEvent, ProbeRouterLayer, DEFAULT_CHANNEL_CAPACITY};
 pub use uri_layer::{current_uri_chain, UriCaptureLayer, UriFrame};
 pub use verdict::{DeferredReason, ForbiddenReason, Verdict};
