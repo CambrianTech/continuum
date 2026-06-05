@@ -29,9 +29,25 @@ use crate::modules::docker_tier::DockerTierProbe;
 use crate::paging::{ResourcePool, ResourcePoolEntry};
 use crate::runtime;
 use serde::{Deserialize, Serialize};
-use std::process::Command;
-use std::time::SystemTime;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime};
 use ts_rs::TS;
+
+/// Hard deadline for any single `docker` shell-out. Tuned to be
+/// long enough for a normal prune on a healthy daemon (Docker's own
+/// `prune` operations rarely exceed ~10s for modest reclaim sets)
+/// but short enough that a hung daemon never blocks the
+/// pressure-broker indefinitely. Per
+/// `[[every-error-is-an-opportunity-to-battle-harden]]`: a stuck
+/// Docker daemon is a real failure mode we observed wedging the
+/// test process for 88+ minutes; the broker must surrender and
+/// surface to the operator rather than block.
+const DOCKER_INVOKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Polling interval while waiting on the docker child process.
+/// Short enough to react quickly to completion, long enough that
+/// the wait loop is effectively free.
+const DOCKER_WAIT_POLL: Duration = Duration::from_millis(100);
 
 /// Snapshot returned by the `system/docker-tier-stats` IPC.
 ///
@@ -271,11 +287,55 @@ fn now_ms() -> u64 {
 /// line that `docker system prune` always emits on success. Format is
 /// stable across Docker Desktop versions (verified Docker 24.x + 25.x).
 fn run_docker_prune(args: &[&str]) -> Option<u64> {
-    let output = Command::new("docker").args(args).output().ok()?; // None if `docker` binary not in PATH.
-    if !output.status.success() {
+    // Spawn the child so we can enforce a hard timeout. Plain
+    // `Command::output()` would block on `wait()` forever if the
+    // docker daemon is wedged — observed on canary: a hung daemon
+    // pinned cargo test for 88+ minutes. The broker must surrender
+    // on the timeout and let the operator handle it.
+    let mut child = Command::new("docker")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?; // None if `docker` binary not in PATH.
+
+    let deadline = Instant::now() + DOCKER_INVOKE_TIMEOUT;
+    let exited = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(DOCKER_WAIT_POLL);
+            }
+            Err(_) => return None,
+        }
+    };
+
+    let status = match exited {
+        Some(s) => s,
+        None => {
+            // Timeout — kill the child + reap, then surface as None.
+            let _ = child.kill();
+            let _ = child.wait();
+            runtime::logger("docker-tier").warn(&format!(
+                "DockerTierPool: `docker {}` exceeded {DOCKER_INVOKE_TIMEOUT:?} timeout; killed",
+                args.join(" ")
+            ));
+            return None;
+        }
+    };
+
+    if !status.success() {
         return None; // Daemon down / permission denied / etc.
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    use std::io::Read as _;
+    let mut stdout = String::new();
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_string(&mut stdout);
+    }
     parse_reclaimed_bytes(&stdout)
 }
 
