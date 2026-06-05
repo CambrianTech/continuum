@@ -63,6 +63,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{
     field::{Field, Visit},
@@ -79,7 +80,7 @@ use super::current_uri_chain;
 /// probe fired (empty if no [`UriCaptureLayer`](super::UriCaptureLayer)
 /// is installed). `fields` captures every structured field except
 /// `probe_class` and `message` (which get their own dedicated fields).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProbeEvent {
     /// Routing key, e.g. `"latency"`, `"decision"`, `"state"`,
     /// `"admission"`.
