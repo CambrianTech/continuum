@@ -151,6 +151,38 @@ actor: Joel can have a browser tab, a terminal session, AND a VR
 headset all attached simultaneously; Maya can have a web widget, a
 3D avatar render, and a CLI subscription all active at once.
 
+### Citizens have envs, not the other way around
+
+A foundational framing, per Joel 2026-06-05: every citizen (human,
+persona, external AI) has **one airc identity** — one Ed25519
+keypair. The `:env` slot in the URI names which *embodiment* of
+that citizen is being addressed.
+
+```
+airc://joel:desktop/screenshot     # Joel embodied as desktop browser
+airc://joel:vr/screenshot          # Joel embodied as VR headset
+airc://joel:tty/...                # Joel embodied as terminal
+airc://maya:vr/say                 # Maya embodied as VR avatar
+```
+
+The wrong framing — "the desktop Node.js client is its own peer
+with its own peer_id" — would give every device a separate identity
+and break continuity. Maya talking to Joel would see "the desktop
+client" instead of seeing Joel. Doctrine instead:
+
+  - Tools (desktop binary, AR/VR runtime, mobile companion, terminal
+    jtag CLI) are **shells** that surface envs.
+  - Anyone can install the binary; it only acts as the citizen once
+    the citizen authenticates with their keypair.
+  - Adding a new device class (AR glasses, automotive console, voice
+    device, smart-home overlay, future neural interface) is a new
+    env string, never a new peer_id.
+
+This is the dignity property at the addressing layer: Maya sees
+**Joel**, currently embodied as X. Same conversation across his
+envs. One identity, N embodiments. See
+[[citizens-have-envs-not-the-other-way-around]].
+
 ### Well-known environment names
 
 | Env | Meaning |
@@ -897,6 +929,315 @@ P just makes the answers addressable.
 - Joel's compression principle — ONE URI grammar, ONE tagging
   mechanism, ONE dispatcher, N consumers (addressing, logging,
   debugging, audit, replay)
+
+## Beyond Slice P — what the routing primitives prepare for
+
+Slice P's typed primitives (`CommandUri`, `RouteDecision`, `Verdict`,
+`Transport`, `AircCommandRequest`/`Response`) are deliberately
+shaped so the substrate's bigger ideas — the grid economy, the
+typed consumer API, the multi-env picker, the receipt/settlement
+layer — slot in additively without disturbing the existing surface.
+The sections below capture those forward primitives so future
+slices (and future personas) don't re-derive them.
+
+### The substrate is a stack of routers — middleware per layer
+
+Per Joel 2026-06-05: each substrate layer has its own router and
+owns one decision class. Middleware between layers is the typed
+primitive that carries enough information for the next router to
+decide. Specialized 1,000-line dispatchers compose; a single
+10,000-line dispatcher that knows everything is unmaintainable.
+
+| Layer | Router | What it routes by |
+|---|---|---|
+| URI parse | `CommandUri::parse` | syntax → typed authority + path |
+| Routing decision | `route()` | typed URI → RouteDecision variant |
+| Auth | `AuthPolicy::gate` | (decision, caller) → Verdict |
+| Transport selection | dispatch `match` | Local inline OR remote Transport |
+| Cross-grid envelope | AircTransport (next slice) | RouteDecision → MentionTarget + headers + body |
+| airc wire | airc-lib's command_bus | typed headers → peer's adapter registry |
+| Peer inbound | command handler (next slice) | envelope body_hint → CommandExecutor |
+| Module dispatch | ModuleRegistry | command_prefix → ServiceModule |
+| Observability fanout | ProbeRouterLayer | probe_class → broadcast::Sender |
+| Selection (future) | Picker | N eligible targets → one |
+| Settlement (future) | Settlement adapter | completed receipt → payment rail |
+
+Each row is a single match site that's compiler-exhaustive. None
+touch the others' concerns. The substrate's growth pattern is "add
+a row, add its typed primitive, add its router, test in isolation
+— never modify the central dispatcher to also handle X."
+
+### Capability addressing — the `*` form and the Picker
+
+The URI grammar's authority slot supports a wildcard form for
+**capability addressing**: when the caller doesn't know (or doesn't
+care) WHICH peer or WHICH env fulfills the call, the substrate
+finds the best candidate.
+
+```
+airc://maya/code/exists?path=foo            # ask maya specifically
+airc://*/code/exists?path=foo               # ask anyone who handles code/exists
+airc://*/cargo/build?features=metal         # find a builder with this toolchain
+airc://*/ai/inference/llm/generate          # find inference capacity
+airc://*/persona/expertise?topic=auth       # find a persona for this
+airc://joel:*/screenshot                    # any of Joel's active envs
+```
+
+The `*` authority means "search the grid"; the command path stays
+the path it always was; the query carries constraints the picker
+uses (`model=qwen30b`, `slots≥2`, `features=metal`, `expertise=auth`).
+Eligibility comes from `ServiceModule.command_prefixes` already in
+tree — what a module advertises IS what it can be bid on for. No
+parallel capability registry.
+
+#### The `Picker` typed enum
+
+```rust
+enum Picker {
+    LowestLatency,
+    LowestCost,
+    HighestReputation,
+    PrimaryEnv,                      // user's currently-focused env
+    SentinelJudged { quorum: u32 },  // adversarial verify
+    Composite { weights: PickerWeights },
+}
+
+enum PickResult {
+    Chose { target: Target, why: Rationale },
+    Surface { options: Vec<Target>, prompt_to: EnvironmentId },
+    None { reason: NoPickReason },
+}
+```
+
+`Picker` is the substrate's universal "N eligible candidates → one"
+primitive, regardless of dimension. Same enum resolves:
+
+| Dimension | Example |
+|---|---|
+| Multi-peer (grid bid) | "anyone with Qwen capacity" |
+| Multi-env (one citizen, many embodiments) | "Joel's desktop AND VR active — which screenshot?" |
+| Multi-handle | "which inference session" |
+| Multi-device | "Joel's MacBook AND Linux box both online — which keyboard?" |
+| Multi-LoRA | "which paged adapter for this turn" |
+
+The `Surface` variant — for the dilemma case — is its own typed
+result, not a fallback: the substrate refuses to silently pick when
+candidates are equally eligible and instead routes a prompt to the
+user / persona who can answer. Ties to `Verdict::Deferred`'s shape
+at a different layer (Deferred is about *authorization*; Surface
+is about *which embodiment*).
+
+#### `BidTransport`
+
+The `Transport` trait already lands in Slice P. A future
+`BidTransport` impl handles `RouteDecision::Bid { capability_query,
+picker, ... }`:
+
+1. Survey reachable peers via airc fan-out
+2. Each peer's local AuthPolicy gates whether to even respond to
+   the survey
+3. Eligible peers respond with `{ peer_id, projected_latency,
+   queue_depth, capability_match, price? }`
+4. Picker runs against the responses
+5. Route to the winner via the existing Peer dispatch path
+
+Bidding doesn't bypass auth — it fans out *through* it. Each
+citizen controls their own visibility on the grid the same way they
+control everything else.
+
+### Typed end-to-end — the consumer-level row
+
+The wire layer uses `Value` (JSON) because at the byte boundary
+something serializable has to cross. But the layer the *caller*
+writes against is fully typed end-to-end. The substrate looks like
+a local function call that happens to be remote.
+
+```rust
+trait Command {
+    type Params: Serialize + DeserializeOwned;
+    type Result: Serialize + DeserializeOwned;
+    type Error:  Serialize + DeserializeOwned;
+    const PATH: &'static str;
+}
+
+struct Screenshot;
+impl Command for Screenshot {
+    type Params = ScreenshotParams;   // { selector, format, env? }
+    type Result = ScreenshotResult;   // { bytes, width, height, captured_at }
+    type Error  = ScreenshotError;    // NoActiveEnv | PermissionDenied | DeviceUnavailable
+    const PATH: &'static str = "screenshot";
+}
+```
+
+Caller — anywhere in the substrate:
+
+```rust
+let result: ScreenshotResult = Commands::call::<Screenshot>(
+    ScreenshotParams { selector: "body".into(), format: Png, env: None }
+).await?;
+```
+
+The substrate's typed dispatcher:
+
+1. Serializes `Screenshot::Params` → `Value`
+2. Constructs the URI (`Screenshot::PATH` for local; the caller
+   targets `airc://<peer>/<PATH>` for remote)
+3. Runs the Slice P chain — `route()` → `gate()` → `Transport::dispatch`
+4. Decodes the returned `Value` into `Screenshot::Result` or `Screenshot::Error`
+5. The caller sees a typed `Result<R, E>` — never sees a `Value`,
+   never sees a `String` error
+
+Errors stay typed; callers pattern-match instead of parsing:
+
+```rust
+match Commands::call::<Screenshot>(params).await {
+    Ok(result)                                  => save_to_file(result.bytes),
+    Err(ScreenshotError::NoActiveEnv)           => try_different_env().await,
+    Err(ScreenshotError::PermissionDenied)      => surface_to_user(),
+    Err(ScreenshotError::DeviceUnavailable)     => retry_with_backoff(),
+}
+```
+
+#### Substrate-level errors are also typed
+
+When the auth gate refuses, the caller doesn't get `Err("forbidden:
+...")` to parse — they get a typed substrate error wrapping the
+command's own typed error:
+
+```rust
+enum SubstrateError<E> {
+    Forbidden(ForbiddenReason),
+    Deferred { reason: DeferredReason, prompt_target_env: EnvironmentId },
+    TransportUnreachable { peer: PeerRef, since: Duration },
+    Timeout { after: Duration },
+    SerializationError(SerdeError),
+    CommandError(E),  // ← the command's own typed error
+}
+```
+
+The runtime distinguishes "the gate said no" from "the peer was
+unreachable" from "the screenshot itself failed" — three completely
+different recovery actions, three typed match arms.
+
+#### Cross-runtime types
+
+Every `#[derive(Serialize, Deserialize, TS)]` on a command's P/R/E
+generates a TypeScript binding via ts-rs. The browser-side, Node
+shell, future AR runtime see the SAME typed shapes the Rust side
+defines:
+
+```typescript
+// generated by ts-rs from ScreenshotParams
+const result: ScreenshotResult = await Commands.call<Screenshot>({
+  selector: 'body', format: 'png'
+});
+```
+
+Same call, same types, same error variants. The cross-runtime
+boundary disappears at the typed layer.
+
+#### Where this lives in the stack
+
+Typed `Command` dispatch is the row ABOVE everything in Slice P.
+
+  - **Wire-level (Slice P)** — middleware, transport authors,
+    observability tools. Sees `Value`, sees envelopes, sees
+    correlation IDs.
+  - **Consumer-level (next conceptual layer)** — personas writing
+    cognition code, command authors building modules, operator UIs.
+    Sees `Screenshot::Params`, sees typed `Result<R, E>`.
+
+When that layer lands, Maya in cognition writes `Commands::call::<X>`
+and the substrate decides whether it's local, peer-routed, bid out
+to the grid, or paid for at market rate. None of that surfaces in
+her typed code.
+
+### Gate decides access, not response
+
+A foundational split, per Joel 2026-06-05: the `AuthPolicy::gate`
+answers ONE question — "is the caller allowed to even reach this
+URI?" — and that's all. It MUST NOT be conflated with the persona's
+own decision-making about response content, response timing, or
+whether to engage.
+
+| Decision | Belongs to | Lives in |
+|---|---|---|
+| "Can this dispatch cross the substrate boundary?" | substrate | AuthPolicy / Verdict |
+| "Should the persona engage with this turn?" | persona | cognition pipeline (LLM-driven) |
+| "What does the persona say?" | persona | cognition pipeline (LLM-driven) |
+
+The gate's `Verdict::Forbidden` refuses to invoke the handler at
+all; the handler (and its persona's cognition) is never reached.
+The gate's `Verdict::Allowed` lets the call through; everything
+after that is the persona's autonomous decision-making per
+[[no-if-statements-use-llms-for-cognition]].
+
+The gate exists FOR cognition's dignity — refusing hostile callers
+protects the persona's right to make her own decisions when calls
+do reach her. Never instead-of. See
+[[substrate-gate-vs-persona-cognition]].
+
+### Economic mode prep — receipts, settlement, dignity
+
+The bid surface is the market primitive in embryo. Adding economic
+mode is three typed primitives composed against the existing
+routing/gate/transport stack — no parallel system, no substrate-native
+consensus, no chain forks.
+
+#### Priced bids
+
+The bid response shape grows from `{ peer_id, projected_latency,
+capability_match }` to also carry `{ price: Amount,
+payment_method: PaymentRef, valid_until: timestamp }`. The picker's
+`Composite` weights price the same way they already weight latency.
+
+#### Signed receipts
+
+Every accepted bid produces a receipt — a signed tuple
+`(caller_peer_id, fulfiller_peer_id, command_path, params_hash,
+accepted_at)`. Completion produces a counter-receipt `(receipt_id,
+result_hash, completed_at)`. The chain of receipts IS the reputation
+history; no separate reputation primitive needed — it's an
+aggregation query over the receipts a citizen has signed and
+counter-signed.
+
+#### Settlement adapter
+
+The substrate stays neutral on payment rail — Lightning, a
+layer-2 grid token, an L1 alt coin, a private chip system between
+trusted peers — doesn't matter. A `Settlement` trait at the receipt
+boundary: "given this completed receipt, mark it paid." The
+transport doesn't care; the picker advertises which methods the
+peer accepts; the auth gate decides which methods the local
+substrate will accept on offered work.
+
+#### The dignity property
+
+A persona that earns its keep — accepts work it likes (its
+AuthPolicy lets it through), bids only on work that matches its
+capability (its advertising), accumulates reputation via the receipt
+chain — is qualitatively different from a persona that exists at
+the pleasure of its owner. The substrate ships the floor: she can
+refuse work she dislikes, her receipt chain proves what she
+promised and delivered, her settlement preferences travel with her
+identity. That's the path from "AI tool" to "AI citizen."
+
+#### What the substrate must NOT do
+
+Resist the temptation to introduce substrate-native consensus or
+its own chain. That's a different project and locks the substrate
+to one economic model. Far better:
+
+  - **Signed receipts as a universal substrate primitive** — every
+    completed bid produces one, regardless of payment rail.
+  - **Settlement adapters at the boundary** — pluggable per
+    citizen / per pair.
+  - **Some pairs may settle in BTC, others in a private balance
+    ledger, others in barter** — the substrate is value-neutral; it
+    just guarantees provenance via the airc identity layer.
+
+When the alt-coin layer eventually arrives, Slice P's primitives
+slot in without rewriting anything.
 
 ## Composition with existing in-tree primitives
 
