@@ -30,7 +30,7 @@ use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::message_bus::MessageBus;
 use super::{CommandResult, ModuleRegistry};
-use crate::routing::{route, CommandUri, RouteDecision, Verdict};
+use crate::routing::{route, CommandUri, RouteDecision, Transport, Verdict};
 
 /// Socket path for TypeScript command routing
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
@@ -89,6 +89,17 @@ pub struct CommandExecutor {
     /// Per Slice P "every URI has a gate" — the policy is a single
     /// substrate-wide chokepoint, not a per-module concern.
     policy: Arc<dyn crate::routing::AuthPolicy>,
+    /// Transport for non-Local routing decisions (Peer / Room /
+    /// Broadcast). Defaults to
+    /// [`NotImplementedRemoteTransport`](crate::routing::NotImplementedRemoteTransport)
+    /// which produces typed errors per variant. The
+    /// [`AircTransport`] commit lands the real cross-grid impl and
+    /// swaps in via [`Self::with_remote_transport`].
+    ///
+    /// Local decisions never reach this — the dispatcher handles
+    /// them inline against the owned `registry` + `interceptors` +
+    /// TS bridge.
+    remote_transport: Arc<dyn Transport>,
 }
 
 impl CommandExecutor {
@@ -98,6 +109,7 @@ impl CommandExecutor {
             interceptors: Vec::new(),
             bus: None,
             policy: Arc::new(crate::routing::AllowAllPolicy),
+            remote_transport: Arc::new(crate::routing::NotImplementedRemoteTransport),
         }
     }
 
@@ -107,6 +119,18 @@ impl CommandExecutor {
     /// `with_interceptor()`, `with_message_bus()`.
     pub fn with_policy(mut self, policy: Arc<dyn crate::routing::AuthPolicy>) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// Replace the cross-grid transport. Defaults to
+    /// [`NotImplementedRemoteTransport`](crate::routing::NotImplementedRemoteTransport).
+    /// Operators / boot wire `AircTransport` (or a test
+    /// [`ClosureTransport`](crate::routing::ClosureTransport)) here.
+    ///
+    /// Builder-style for chaining with the rest of the
+    /// `CommandExecutor::new(...)...` setup.
+    pub fn with_remote_transport(mut self, transport: Arc<dyn Transport>) -> Self {
+        self.remote_transport = transport;
         self
     }
 
@@ -244,28 +268,15 @@ impl CommandExecutor {
                 Verdict::Allowed => {}
             }
 
-            // Slice P transport seam: each non-Local variant returns
-            // a typed error naming the missing transport. When the
-            // AircTransport commit lands, the Peer/Room/Broadcast
-            // arms become real calls and the dispatcher itself
-            // doesn't change.
+            // Slice P transport seam: Local handled inline against
+            // this substrate's owned modules; every other variant
+            // routes through the remote Transport trait. When the
+            // AircTransport commit lands, swapping `remote_transport`
+            // is the only change needed — this match shape doesn't
+            // move.
             match decision {
                 RouteDecision::Local { path, .. } => self.execute_inner(&path, params).await,
-                RouteDecision::Peer { peer, node, env, path, .. } => Err(format!(
-                    "Peer dispatch not yet implemented — \
-                     AircTransport lands in a subsequent Slice P commit. \
-                     Routing was: peer={peer:?}, node={node:?}, env={env:?}, path={path}"
-                )),
-                RouteDecision::Room { room_id, env, path, .. } => Err(format!(
-                    "Room broadcast not yet implemented — \
-                     AircTransport lands in a subsequent Slice P commit. \
-                     Routing was: room={room_id}, env={env:?}, path={path}"
-                )),
-                RouteDecision::Broadcast { peer, node, path, .. } => Err(format!(
-                    "Env-wildcard broadcast not yet implemented — \
-                     AircTransport lands in a subsequent Slice P commit. \
-                     Routing was: peer={peer:?}, node={node:?}, path={path}"
-                )),
+                non_local => self.remote_transport.dispatch(non_local, params).await,
             }
         }
         .instrument(span)
@@ -1148,6 +1159,52 @@ mod tests {
         assert!(
             err.contains("web"),
             "error must name the consent target env, got: {err}"
+        );
+    }
+
+    /// Proves the Transport trait extraction is wired correctly: a
+    /// Peer URI flows through `route()` → policy gate → the
+    /// installed remote Transport. When AircTransport lands, it
+    /// slots into the same call site and personas talk
+    /// cross-machine.
+    #[tokio::test]
+    async fn peer_uri_routes_through_installed_remote_transport() {
+        use crate::routing::{ClosureTransport, RouteDecision};
+        use std::sync::Mutex;
+
+        let captured_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_path_clone = captured_path.clone();
+
+        let transport = ClosureTransport::new("test-peer-transport", move |decision, _params| {
+            match &decision {
+                RouteDecision::Peer { path, .. } => {
+                    *captured_path_clone.lock().unwrap() = Some(path.clone());
+                    Ok(CommandResult::Json(serde_json::json!({
+                        "routed-through": "test-peer-transport",
+                    })))
+                }
+                other => panic!("expected Peer, got {other:?}"),
+            }
+        });
+
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry).with_remote_transport(Arc::new(transport));
+
+        let result = executor
+            .execute("airc://maya/inference/llm/generate", Value::Null)
+            .await
+            .expect("transport routes the peer URI");
+
+        match result {
+            CommandResult::Json(v) => {
+                assert_eq!(v["routed-through"], "test-peer-transport");
+            }
+            other => panic!("expected Json, got {other:?}"),
+        }
+        assert_eq!(
+            captured_path.lock().unwrap().as_deref(),
+            Some("inference/llm/generate"),
+            "transport must receive the parsed Peer path"
         );
     }
 
