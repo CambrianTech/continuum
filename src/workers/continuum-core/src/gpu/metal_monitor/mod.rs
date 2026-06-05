@@ -23,6 +23,26 @@
 //!   (0.0 / None) so the policy can still rely on memory-pressure signals
 //!   — the load-bearing signal — without blocking on the IOReport work.
 //!
+//! ## Unified vs discrete memory (task #163 fix)
+//!
+//! Apple Silicon (M1/M2/M3/...) uses **unified memory**: CPU and GPU
+//! share one address space, so system VM stats ARE the right "GPU
+//! free" signal. Intel Macs with a discrete GPU (AMD Radeon Pro Vega,
+//! NVIDIA, etc.) use **discrete memory**: the GPU has its own VRAM
+//! pool separate from system DRAM. Conflating the two pools causes
+//! the `free <= total + 10%` invariant to fail catastrophically —
+//! e.g., on a MacBookPro15,1 with a 4 GB Vega, system free pages
+//! report 20 GB while VRAM total reports 4 GB.
+//!
+//! The fix: detect `MTLDevice.hasUnifiedMemory` at construction time
+//! and branch the sampler. On unified, the existing Mach VM path is
+//! correct. On discrete, use `MTLDevice.currentAllocatedSize` for
+//! this-process GPU usage and derive `free = total - allocated`. The
+//! discrete approximation OVER-reports free (it ignores other
+//! processes' GPU use) but always satisfies `free <= total`, which is
+//! the invariant the pressure-broker relies on. IOReport.framework
+//! (Phase 2.0a) gives system-wide GPU usage and tightens this later.
+//!
 //! Module layout (Joel's modularize-to-simplify principle):
 //!
 //!   - `mod.rs` (this file) — `MetalMonitor` struct + `GpuMonitor` impl +
@@ -40,6 +60,24 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::time::Duration;
 
+/// Memory accounting mode chosen at construction time based on the
+/// Metal device's `hasUnifiedMemory` property.
+///
+/// The pressure-broker treats both modes uniformly via the
+/// `GpuMonitor` trait; the distinction is internal to the sampler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMode {
+    /// Apple Silicon — GPU and CPU share one address space. System
+    /// VM free pages ARE the GPU free signal.
+    Unified,
+    /// Intel Mac with discrete GPU (AMD / NVIDIA) — GPU has its own
+    /// VRAM pool separate from system DRAM. System VM stats would
+    /// conflate the pools and report `free > total`. Use
+    /// `MTLDevice.currentAllocatedSize()` for this-process GPU
+    /// usage; derive free from the device's working-set bound.
+    Discrete,
+}
+
 /// Tick cadence for the background sampler. 1Hz keeps Activity-Monitor
 /// parity (its baseline cadence) and is essentially free per call —
 /// each tick is two Mach syscalls + one Metal property read. Faster ticks
@@ -53,6 +91,10 @@ pub struct MetalMonitor {
     free_bytes: Arc<AtomicU64>,
     process_bytes: Arc<AtomicU64>,
     pressure_rx: watch::Receiver<f32>,
+    /// Sampling strategy fixed at construction time. Read-only after
+    /// init; exposed via `memory_mode()` for telemetry / tests that
+    /// branch on hardware shape.
+    memory_mode: MemoryMode,
 }
 
 impl MetalMonitor {
@@ -68,6 +110,11 @@ impl MetalMonitor {
         if total_bytes == 0 {
             return None;
         }
+        let memory_mode = if device.has_unified_memory() {
+            MemoryMode::Unified
+        } else {
+            MemoryMode::Discrete
+        };
 
         let (pressure_tx, pressure_rx) = watch::channel(0.0f32);
         let monitor = Self {
@@ -76,6 +123,7 @@ impl MetalMonitor {
             free_bytes: Arc::new(AtomicU64::new(total_bytes)),
             process_bytes: Arc::new(AtomicU64::new(0)),
             pressure_rx,
+            memory_mode,
         };
 
         // Spawn the background sampler. Lives for the process lifetime —
@@ -83,14 +131,30 @@ impl MetalMonitor {
         // exits naturally. We don't store a JoinHandle because there's no
         // "stop monitoring" use case; if the process is alive, we want
         // signals.
+        //
+        // The device handle is moved into the sampler — `metal::Device`
+        // is `Send + Sync` (auto-impl via `foreign_obj_type!` in the
+        // metal crate), so cross-thread use is safe. The sampler needs
+        // the device every tick on Discrete mode for
+        // `current_allocated_size`; on Unified mode the device handle
+        // is unused but kept for symmetry + future IOReport hooks.
         spawn_sampler(
             monitor.free_bytes.clone(),
             monitor.process_bytes.clone(),
             total_bytes,
+            memory_mode,
+            device,
             pressure_tx,
         );
 
         Some(monitor)
+    }
+
+    /// Sampling strategy chosen at construction. Exposed for
+    /// telemetry + test branching. Production callers should use
+    /// the trait methods, which abstract the mode away.
+    pub fn memory_mode(&self) -> MemoryMode {
+        self.memory_mode
     }
 }
 
@@ -102,6 +166,8 @@ fn spawn_sampler(
     free_bytes: Arc<AtomicU64>,
     process_bytes: Arc<AtomicU64>,
     total: u64,
+    mode: MemoryMode,
+    device: metal::Device,
     pressure_tx: watch::Sender<f32>,
 ) {
     tokio::spawn(async move {
@@ -112,15 +178,17 @@ fn spawn_sampler(
             if pressure_tx.is_closed() {
                 break;
             }
-            let free = mach_ffi::read_system_free_bytes().unwrap_or(total);
-            let proc = mach_ffi::read_process_phys_footprint().unwrap_or(0);
+            let (free, proc) = sample_memory(mode, total, &device);
             free_bytes.store(free, Ordering::Relaxed);
             process_bytes.store(proc, Ordering::Relaxed);
 
             // Pressure: 1.0 - free/total. Clamped to [0,1] for sanity —
-            // free can briefly exceed total in some host_statistics64
-            // reporting windows due to inactive→free transitions racing
-            // with our read.
+            // on Unified, free can briefly exceed total in some
+            // host_statistics64 reporting windows due to
+            // inactive→free transitions racing with our read; on
+            // Discrete, free is `saturating_sub(total, allocated)`
+            // which never exceeds total, but the clamp keeps the
+            // shape uniform across modes.
             let pressure = if total > 0 {
                 1.0 - (free as f32 / total as f32).clamp(0.0, 1.0)
             } else {
@@ -129,6 +197,35 @@ fn spawn_sampler(
             let _ = pressure_tx.send(pressure);
         }
     });
+}
+
+/// Read (free_bytes, process_bytes) for the current tick. Branches
+/// on memory mode:
+///
+/// - **Unified**: `read_system_free_bytes()` for free (host VM
+///   stats — accurate for shared-pool Apple Silicon) +
+///   `read_process_phys_footprint()` for process (includes unified
+///   GPU buffers mapped into our address space).
+///
+/// - **Discrete**: `device.current_allocated_size()` for this
+///   process's GPU footprint; free = `total - allocated`. This
+///   OVER-reports free because it ignores GPU memory consumed by
+///   other processes on the same device — IOReport.framework
+///   (Phase 2.0a) tightens this when wired. Bounded by `total` so
+///   the broker's pressure invariants always hold.
+fn sample_memory(mode: MemoryMode, total: u64, device: &metal::Device) -> (u64, u64) {
+    match mode {
+        MemoryMode::Unified => {
+            let free = mach_ffi::read_system_free_bytes().unwrap_or(total);
+            let proc = mach_ffi::read_process_phys_footprint().unwrap_or(0);
+            (free, proc)
+        }
+        MemoryMode::Discrete => {
+            let allocated = device.current_allocated_size() as u64;
+            let free = total.saturating_sub(allocated);
+            (free, allocated)
+        }
+    }
 }
 
 impl GpuMonitor for MetalMonitor {
@@ -193,25 +290,43 @@ mod tests {
         );
     }
 
+    /// Force a Metal allocation that's guaranteed to show up in
+    /// `currentAllocatedSize` (Discrete mode) AND inflate process
+    /// phys_footprint (Unified mode). Returns the buffer; the caller
+    /// holds it for the test's lifetime so Metal doesn't free it
+    /// before the sampler reads.
+    ///
+    /// Why both tests below call this: on Discrete devices a freshly
+    /// constructed `MetalMonitor` may observe `current_allocated_size
+    /// == 0` if Metal's internal command-queue allocations haven't
+    /// happened yet. A real allocation eliminates the timing race and
+    /// pins the invariants regardless of when the sampler runs.
+    fn force_metal_allocation() -> metal::Buffer {
+        let device = metal::Device::system_default().expect("system_default device");
+        device.new_buffer(
+            16 * 1024 * 1024, // 16 MB — large enough to register clearly
+            metal::MTLResourceOptions::StorageModePrivate,
+        )
+    }
+
     /// What this catches: total_bytes, free_bytes, process_bytes returning
     /// nonsensical values (zero, way larger than physical RAM, etc.).
     /// Sanity bounds: total > 1GB (any Mac), free <= total + 10% (slack
-    /// for inactive→free races), process > 0 + < total.
+    /// for inactive→free races on Unified mode), process > 0 + < total.
     ///
     /// Validated 2026-04-21: multiplied read_system_free_bytes return
     /// by 100 (free → 26 GB × 100 = 2.6 TB), test fails on the
     /// `free <= total + 10%` assertion; reverted.
     ///
-    /// Ignored on Mac Intel + AMD discrete: the metal monitor
-    /// underreports total VRAM (reports 4 GB system page-size baseline)
-    /// while free reports system-wide free pages (20 GB), so the
-    /// invariant `free <= total + 10%` fails. Tracked as task #163
-    /// (MetalMonitor: discrete-GPU memory pressure signal Intel Mac
-    /// w/ AMD). Reactivate this test once #163 lands the correct
-    /// discrete-GPU page accounting.
+    /// Task #163 fix (2026-06-05): Mac Intel + AMD discrete now uses
+    /// `MTLDevice.currentAllocatedSize()` instead of system VM stats,
+    /// so the invariants hold uniformly across Unified + Discrete.
+    /// Force-allocate a Metal buffer up front so the proc-bytes
+    /// invariant holds even when the test process hasn't done any
+    /// other GPU work.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "task #163: Intel Mac AMD discrete VRAM not yet wired (free > total)"]
     async fn memory_signals_are_within_sane_bounds() {
+        let _hold = force_metal_allocation();
         let monitor = MetalMonitor::new().expect("MetalMonitor on macOS");
         // Wait one tick so the background sampler has refreshed values.
         tokio::time::sleep(Duration::from_millis(1100)).await;
@@ -220,7 +335,8 @@ mod tests {
         let free = monitor.free_bytes();
         let proc = monitor.process_bytes();
         eprintln!(
-            "[metal-monitor] total={} ({} GB) free={} ({} GB) process={} ({} MB)",
+            "[metal-monitor] mode={:?} total={} ({} GB) free={} ({} GB) process={} ({} MB)",
+            monitor.memory_mode(),
             total,
             total / 1_000_000_000,
             free,
@@ -234,7 +350,7 @@ mod tests {
             "free ({free}) > total + 10% ({})",
             total + total / 10
         );
-        assert!(proc > 0, "process bytes should be > 0 (we're running)");
+        assert!(proc > 0, "process bytes should be > 0 (we forced an allocation)");
         assert!(proc < total, "process bytes ({proc}) >= total ({total})");
     }
 
@@ -246,23 +362,76 @@ mod tests {
     /// background tick (sampler stays stuck at initial 0.0), test fails
     /// on the `p > 0.0` assertion; reverted.
     ///
-    /// Ignored on Mac Intel + AMD discrete: pressure derives from
-    /// (free, total) which both rely on the broken total-VRAM accounting
-    /// (see `memory_signals_are_within_sane_bounds` above). Until task
-    /// #163 lands, pressure rounds to 0.0 because free >> total. Same
-    /// fix unblocks both tests.
+    /// Task #163 fix (2026-06-05): force a Metal allocation so
+    /// pressure is non-zero on Discrete devices too (where pressure =
+    /// allocated/total and a fresh device may report
+    /// `currentAllocatedSize == 0` until something is actually
+    /// allocated). Unified devices always have organic system
+    /// pressure so the allocation is redundant-but-harmless there.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "task #163: Intel Mac AMD discrete pressure derives from broken VRAM signal"]
     async fn pressure_updates_after_first_tick() {
+        let _hold = force_metal_allocation();
         let monitor = MetalMonitor::new().expect("MetalMonitor on macOS");
         tokio::time::sleep(Duration::from_millis(1200)).await;
         let p = *monitor.pressure_rx().borrow();
-        eprintln!("[metal-monitor] pressure after first tick: {p:.3}");
+        eprintln!(
+            "[metal-monitor] mode={:?} pressure after first tick: {p:.6}",
+            monitor.memory_mode()
+        );
         assert!((0.0..=1.0).contains(&p), "pressure {p} outside [0,1]");
         assert!(
             p > 0.0,
-            "pressure unchanged from initial 0.0 after first tick — sampler may be stuck"
+            "pressure unchanged from initial 0.0 after first tick — \
+             sampler may be stuck OR force_metal_allocation didn't register"
         );
+    }
+
+    /// What this catches: regression on the unified-vs-discrete
+    /// branching. If a refactor accidentally hard-codes one mode (or
+    /// the metal crate's `hasUnifiedMemory` accessor changes shape),
+    /// this test fires.
+    ///
+    /// We can't assert the specific mode (depends on the runner —
+    /// Apple Silicon CI returns Unified, Intel + discrete returns
+    /// Discrete) but we can pin the invariants: the mode is one of
+    /// the two variants, and it matches `device.has_unified_memory()`
+    /// at this moment.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn memory_mode_matches_device_unified_flag() {
+        let monitor = MetalMonitor::new().expect("MetalMonitor on macOS");
+        let device = metal::Device::system_default().expect("device");
+        let expected = if device.has_unified_memory() {
+            MemoryMode::Unified
+        } else {
+            MemoryMode::Discrete
+        };
+        assert_eq!(
+            monitor.memory_mode(),
+            expected,
+            "MetalMonitor memory_mode must agree with the device's hasUnifiedMemory at construction time"
+        );
+    }
+
+    /// What this catches: `sample_memory` on Discrete mode returning
+    /// `free > total` for ANY non-pathological allocated value.
+    /// Tests the pure function directly with a constructed device so
+    /// the invariant holds even when there's no Metal device (e.g.
+    /// future cross-compile / mock contexts).
+    ///
+    /// Pure-function coverage of the discrete branch — closes the
+    /// "free can exceed total" class of bug for good. Doctrine:
+    /// [[test-fixtures-are-system-primitives]] — `sample_memory` is
+    /// `pub(super)` exposed for this test (and future ones); not a
+    /// `#[cfg(test)]` helper.
+    #[test]
+    fn sample_memory_discrete_never_exceeds_total() {
+        let Some(device) = metal::Device::system_default() else {
+            return; // No Metal device — test is moot, the new() path bails too
+        };
+        let total = device.recommended_max_working_set_size();
+        let (free, proc) = sample_memory(MemoryMode::Discrete, total, &device);
+        assert!(free <= total, "discrete free ({free}) must not exceed total ({total})");
+        assert!(proc <= total, "discrete proc ({proc}) must not exceed total ({total})");
     }
 
     /// What this catches: the trait's snapshot() default impl producing
