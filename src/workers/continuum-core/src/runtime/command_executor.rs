@@ -24,6 +24,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tracing::Instrument;
 
 use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
@@ -170,6 +171,22 @@ impl CommandExecutor {
     /// segregation, cross-grid trace correlation, and URI-routed
     /// observability all fall out of this one seam — no
     /// per-call-site instrumentation needed.
+    ///
+    /// ## Why `.instrument(span).await` and not `let _enter = span.enter()`
+    ///
+    /// `tracing`'s docs explicitly forbid holding a `_enter` guard
+    /// across `.await` in async code: tokio moves the task between
+    /// threads at suspension points, and the thread-local
+    /// `on_enter`/`on_exit` cadence breaks. The
+    /// [`UriCaptureLayer`](crate::routing::UriCaptureLayer) thread-local
+    /// stack goes stale on the post-await thread, and `stack!()` then
+    /// returns either a frame for a span that's already exited
+    /// somewhere else, or the wrong chain entirely.
+    ///
+    /// `.instrument(span)` wraps the future so the span enters and
+    /// exits at suspension boundaries automatically. Slice P's URI
+    /// ancestry guarantee — `stack!()` always returns the correct
+    /// chain inside a dispatched command — depends on this shape.
     async fn dispatch(
         &self,
         command: &CommandUri,
@@ -180,16 +197,18 @@ impl CommandExecutor {
             uri = %command,
             path = %command.path(),
         );
-        let _enter = span.enter();
-
-        if !command.is_local() {
-            return Err(format!(
-                "Remote dispatch for {command} not yet implemented — \
-                 transport selector lands in a subsequent Slice P commit. \
-                 Use a Local URI (bare path) for now."
-            ));
+        async {
+            if !command.is_local() {
+                return Err(format!(
+                    "Remote dispatch for {command} not yet implemented — \
+                     transport selector lands in a subsequent Slice P commit. \
+                     Use a Local URI (bare path) for now."
+                ));
+            }
+            self.execute_inner(command.path(), params).await
         }
-        self.execute_inner(command.path(), params).await
+        .instrument(span)
+        .await
     }
 
     /// The dispatch chain itself. Extracted so `execute` can wrap it
@@ -999,4 +1018,9 @@ mod tests {
             assert!(e.error.is_none());
         }
     }
+
+    // Note: the URI-propagation-across-await assertion lives in
+    // `crate::routing::uri_layer::tests` where it can run against the
+    // Layer directly without the noise of CommandExecutor's other
+    // tokio-runtime tests sharing the cargo test process.
 }

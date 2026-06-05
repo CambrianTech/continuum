@@ -320,4 +320,99 @@ mod tests {
         let _l2 = UriCaptureLayer::new();
         let _l3 = UriCaptureLayer::default();
     }
+
+    /// The Slice P load-bearing assertion: `.instrument(span).await`
+    /// keeps the URI chain correct ACROSS the suspension/resume cycle.
+    ///
+    /// `CommandExecutor::dispatch` uses this exact shape, and every
+    /// `stack!()` call site inside dispatched commands relies on it.
+    /// The test installs the Layer, wraps a future that calls
+    /// `current_uri_chain()` AFTER `tokio::task::yield_now().await`,
+    /// and asserts the chain survives the yield.
+    ///
+    /// We use a current-thread tokio runtime built INSIDE the
+    /// `with_default` scope so the thread-local subscriber stays
+    /// attached for the polled future. This is the substrate's
+    /// expected boot pattern (subscriber installed once at process
+    /// start, runtime polls inside that scope).
+    ///
+    /// Lives here, not in `runtime::command_executor::tests`, because
+    /// that module's other `#[tokio::test]`s spawn multi-thread
+    /// runtimes that share cargo test process state and cause flaky
+    /// thread-local interactions. The load-bearing property is the
+    /// Layer's correctness under `.instrument`, not the dispatch path
+    /// specifically; this is where it belongs.
+    #[test]
+    fn instrument_propagates_chain_across_yield_now() {
+        use tracing::Instrument;
+
+        let subscriber = tracing_subscriber::registry().with(UriCaptureLayer::new());
+        let mut after_yield: Vec<String> = Vec::new();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("current-thread runtime builds");
+            rt.block_on(async {
+                let span = tracing::info_span!("cmd", uri = "airc:///chain-test/op");
+                async {
+                    // Force the suspension/resume cycle.
+                    tokio::task::yield_now().await;
+                    after_yield = current_uri_chain();
+                }
+                .instrument(span)
+                .await;
+            });
+        });
+
+        assert_eq!(
+            after_yield,
+            vec!["airc:///chain-test/op".to_string()],
+            "after tokio::task::yield_now().await, the URI chain must still \
+             carry the instrumented span's URI. A chain of [] here means \
+             tracing's `_enter`-across-`await` anti-pattern crept in — \
+             the substrate's dispatch path MUST use .instrument(span) for \
+             stack!() to be correct."
+        );
+    }
+
+    /// Same property under nested instrumented futures — proves the
+    /// Layer composes correctly across multiple `.instrument` wrappers,
+    /// not just one. Mirror of `chain_walks_nested_spans_in_order` but
+    /// across a yield boundary.
+    #[test]
+    fn instrument_walks_nested_chain_across_yield() {
+        use tracing::Instrument;
+
+        let subscriber = tracing_subscriber::registry().with(UriCaptureLayer::new());
+        let mut after_yield: Vec<String> = Vec::new();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("current-thread runtime builds");
+            rt.block_on(async {
+                let outer_span = tracing::info_span!("cmd", uri = "airc:///outer");
+                async {
+                    let inner_span = tracing::info_span!("cmd", uri = "airc:///inner");
+                    async {
+                        tokio::task::yield_now().await;
+                        after_yield = current_uri_chain();
+                    }
+                    .instrument(inner_span)
+                    .await;
+                }
+                .instrument(outer_span)
+                .await;
+            });
+        });
+
+        assert_eq!(
+            after_yield,
+            vec!["airc:///outer".to_string(), "airc:///inner".to_string()],
+            "nested .instrument() spans must produce ordered ancestry across yield"
+        );
+    }
 }
