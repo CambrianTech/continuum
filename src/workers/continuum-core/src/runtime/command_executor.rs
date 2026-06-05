@@ -192,9 +192,30 @@ impl CommandExecutor {
         command: impl Into<CommandUri>,
         params: Value,
     ) -> Result<CommandResult, String> {
+        self.execute_with_caller(command, params, None).await
+    }
+
+    /// Execute a command on behalf of a specific caller identity.
+    ///
+    /// Local code invoking `execute()` passes `None` — substrate's
+    /// own code is implicitly trusted by the default AuthPolicy.
+    /// Cross-grid handlers (the peer-side `CommandRequestHandler`)
+    /// pass `Some(CallerIdentity::airc(verified_sender))` so the
+    /// local AuthPolicy gate sees who the remote caller actually
+    /// is and applies the right policy.
+    ///
+    /// Same dispatch chain, same observability, same routing
+    /// decision — only the caller identity threaded into the gate
+    /// changes.
+    pub async fn execute_with_caller(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+        caller: Option<crate::routing::CallerIdentity>,
+    ) -> Result<CommandResult, String> {
         let command: CommandUri = command.into();
         let start = std::time::Instant::now();
-        let outcome = self.dispatch(&command, params).await;
+        let outcome = self.dispatch(&command, params, caller.as_ref()).await;
         self.emit_command_completed(
             command.path(),
             &outcome,
@@ -234,13 +255,16 @@ impl CommandExecutor {
         &self,
         command: &CommandUri,
         params: Value,
+        caller: Option<&crate::routing::CallerIdentity>,
     ) -> Result<CommandResult, String> {
         let decision = route(command);
-        // Today's local dispatches pass no caller — substrate's own
-        // code calling itself. The transport layer (follow-up) will
-        // populate `Some(CallerIdentity::airc(sender))` when it
-        // extracts the verified peer_id from the airc envelope.
-        let verdict = self.policy.gate(&decision, None);
+        // Local in-process dispatches pass `None` — substrate's own
+        // code calling itself, implicitly trusted by the default
+        // policy. Cross-grid handlers thread
+        // `Some(CallerIdentity::airc(verified_sender))` through
+        // `execute_with_caller` so the gate sees the real remote
+        // caller.
+        let verdict = self.policy.gate(&decision, caller);
         let span = tracing::info_span!(
             "cmd",
             uri = %command,

@@ -26,6 +26,7 @@
 pub mod airc_command_protocol;
 pub mod airc_transport;
 pub mod auth_policy;
+pub mod command_handler;
 pub mod command_uri;
 pub mod environment;
 #[macro_use]
@@ -46,6 +47,7 @@ pub use auth_policy::{
     defer_path_prefix, deny_path_prefix, AllowAllPolicy, AuthPolicy, CallerIdentity, CallerSource,
     ClosurePolicy,
 };
+pub use command_handler::{CommandRequestHandler, ParsedEnvelope, HANDLER_NAME};
 pub use command_uri::{CommandUri, NodeId, PeerRef, UriParseError};
 pub use environment::{EnvironmentId, WellKnownEnv};
 pub use probe_router::{ProbeEvent, ProbeRouterLayer, DEFAULT_CHANNEL_CAPACITY};
