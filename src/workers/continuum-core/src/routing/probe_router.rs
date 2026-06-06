@@ -67,11 +67,15 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{
     field::{Field, Visit},
-    Event, Subscriber,
+    span::Attributes,
+    Event, Id, Subscriber,
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 use super::current_uri_chain;
+use super::probe_span_meta::{
+    build_timing_event_from_meta, ensure_probe_meta, span_carries_probe_class,
+};
 
 /// A structured probe event the router fans out to subscribers.
 ///
@@ -208,6 +212,61 @@ where
             fields: visitor.fields,
         };
 
+        self.fan_out(probe_event);
+    }
+
+    /// Spans created via `time_sync!` / `time_probe!` carry a
+    /// `probe_class` attribute. We stash a
+    /// [`SpanProbeMeta`](super::probe_span_meta::SpanProbeMeta) in
+    /// the span's extensions so `on_close` can build the timing
+    /// [`ProbeEvent`].
+    ///
+    /// Hot-path discipline: the FIRST thing we do is the cheap
+    /// static check
+    /// [`span_carries_probe_class`](super::probe_span_meta::span_carries_probe_class).
+    /// For the vast majority of spans the substrate emits (tokio
+    /// executor, framework, plain `info_span!`) this short-circuits
+    /// with zero allocation — no visitor constructed, no fields
+    /// walked. R2 of PR #1541's review caught the original shape
+    /// allocating + walking ALL fields per non-probe span.
+    ///
+    /// `ensure_probe_meta` is idempotent: if a sibling Layer
+    /// (e.g. [`JsonlProbeFileSink`](super::probe_file_sink)) has
+    /// already populated the extension for this span, we no-op
+    /// without re-visiting. Same `start: Instant` is read by both
+    /// Layers at `on_close` → identical `duration_ms` in the
+    /// broadcast stream AND on disk.
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        if !span_carries_probe_class(attrs) {
+            return; // cheap static check — no allocation
+        }
+        let Some(span_ref) = ctx.span(id) else {
+            return;
+        };
+        ensure_probe_meta(attrs, &span_ref);
+    }
+
+    /// Span closed — convert its parked `SpanProbeMeta` into a
+    /// `ProbeEvent` with `duration_ms` and fan out. Pair with
+    /// `on_new_span` per task #196.
+    ///
+    /// `on_close` fires when the span's last clone is dropped.
+    /// For `time_sync!` that's the end of the wrapped block; for
+    /// `time_probe!` it's when the Instrumented<F> future is
+    /// dropped (typically right after `.await` completes).
+    ///
+    /// We use [`build_timing_event_from_meta`](super::probe_span_meta::build_timing_event_from_meta)
+    /// — non-destructive — because a sibling Layer also reads the
+    /// same extension at its own `on_close`. The fields clone is
+    /// paid ONCE per probe-carrying span close, orders of
+    /// magnitude rarer than `on_new_span` firing.
+    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+        let Some(span_ref) = ctx.span(&id) else {
+            return;
+        };
+        let Some(probe_event) = build_timing_event_from_meta(&span_ref, current_uri_chain()) else {
+            return; // span didn't carry probe_class — not ours
+        };
         self.fan_out(probe_event);
     }
 }
@@ -375,6 +434,81 @@ mod tests {
             assert_eq!(d1.fields.get("action").map(String::as_str), Some("promote"));
             assert!(decision_rx.try_recv().is_err(), "no more decision events");
             assert!(latency_rx.try_recv().is_err(), "no more latency events");
+        });
+    }
+
+    /// Task #196: `time_sync!` emits a span carrying `probe_class
+    /// = "timing"`. When the span closes the Layer must fan out a
+    /// `ProbeEvent` with the timing class + a `duration_ms` field.
+    /// Before this fix the Layer ignored span close — `time_sync!`
+    /// was theatrical.
+    #[test]
+    fn time_sync_span_close_fans_out_timing_event() {
+        install(|router| {
+            let mut rx = router.subscribe("timing");
+            // Scope so the span is fully dropped (closes) before
+            // we check the channel.
+            {
+                let _result: i32 = crate::time_sync!("test_phase", 21 * 2);
+            }
+            let event = rx
+                .try_recv()
+                .expect("subscribed listener must receive the timing event");
+            assert_eq!(event.class, "timing");
+            assert_eq!(event.fields.get("seam").map(String::as_str), Some("test_phase"));
+            // duration_ms is always set on timing events
+            assert!(
+                event.fields.contains_key("duration_ms"),
+                "fields must contain duration_ms: {:?}",
+                event.fields
+            );
+        });
+    }
+
+    /// Same as the sync test but for `time_probe!` (async). Uses
+    /// the current-thread tokio runtime so the per-thread subscriber
+    /// from `with_default` covers the future's polls.
+    #[test]
+    fn time_probe_span_close_fans_out_timing_event() {
+        install(|router| {
+            let mut rx = router.subscribe("timing");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("current-thread runtime");
+            async fn produces() -> i32 {
+                42
+            }
+            let _result: i32 = runtime.block_on(async {
+                crate::time_probe!("async_test_phase", produces())
+            });
+            let event = rx.try_recv().expect("subscriber must receive timing event");
+            assert_eq!(event.class, "timing");
+            assert_eq!(
+                event.fields.get("seam").map(String::as_str),
+                Some("async_test_phase")
+            );
+            assert!(event.fields.contains_key("duration_ms"));
+        });
+    }
+
+    /// Plain `info_span!` calls (no `probe_class`) must NOT trigger
+    /// timing fanout — only `time_sync!` / `time_probe!` spans
+    /// (which carry `probe_class = "timing"`) count. Pins the
+    /// `[[no-fallbacks-ever]]` doctrine: we don't fabricate timing
+    /// events for spans nobody asked to time.
+    #[test]
+    fn span_without_probe_class_does_not_fanout() {
+        install(|router| {
+            let mut rx = router.subscribe("timing");
+            // info_span! with NO probe_class field
+            let span = tracing::info_span!("plain", some_field = "value");
+            let _enter = span.enter();
+            drop(_enter);
+            drop(span);
+            assert!(
+                rx.try_recv().is_err(),
+                "non-timing spans must not produce timing fanout"
+            );
         });
     }
 

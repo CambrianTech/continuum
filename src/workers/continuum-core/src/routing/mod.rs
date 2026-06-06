@@ -37,6 +37,7 @@ pub mod environment;
 pub mod macros;
 pub mod probe_file_sink;
 pub mod probe_router;
+pub(crate) mod probe_span_meta;
 pub mod route_decision;
 pub mod tracing_init;
 pub mod transport;
