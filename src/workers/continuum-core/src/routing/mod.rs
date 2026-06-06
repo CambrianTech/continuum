@@ -38,6 +38,7 @@ pub mod macros;
 pub mod probe_file_sink;
 pub mod probe_router;
 pub mod route_decision;
+pub mod tracing_init;
 pub mod transport;
 pub mod uri_layer;
 pub mod verdict;
@@ -79,6 +80,7 @@ pub use probe_file_sink::{
     JsonlProbeFileSink, ProbeFileSinkError, ENV_PROBE_CLASSES, ENV_PROBE_FILE,
 };
 pub use probe_router::{ProbeEvent, ProbeRouterLayer, DEFAULT_CHANNEL_CAPACITY};
+pub use tracing_init::{install_probe_tracing, ProbeInstall, ProbeTracingConfig};
 pub use route_decision::{route, RouteDecision, RouteKind};
 pub use transport::{ClosureTransport, NotImplementedRemoteTransport, Transport};
 pub use uri_layer::{current_uri_chain, UriCaptureLayer, UriFrame};
