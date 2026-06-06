@@ -608,6 +608,43 @@ The CS patterns exist. **AI executing them for itself — with autonomy, self-aw
 
 ---
 
+## Debugging this substrate — JTAG-style probes
+
+Continuum is an RTOS-shaped persona substrate: per-persona service loops, the shared-analysis single-flight cache, the inference adapter pool, the airc subscription stream, the hippocampus admission + recall + decay tick all run as independent tokio tasks. `println!` and `tracing::info!` lines disappear in concurrent code — you can't filter them, you can't replay them, and "what did the persona's prompt look like when it produced THAT response?" becomes a manual grep across thousands of lines.
+
+The substrate ships its own **JTAG-style debugger** for this: structured probe macros sprinkled at every meaningful cognitive seam, persisted to a JSONL log you can `tail -f`, filterable per-class, replay-able offline.
+
+```rust
+// At a branch boundary inside the persona's render — a debug "breakpoint"
+// that snapshots the surrounding vars without pausing the task.
+probe!(
+    class = "persona.response.render.prompt",
+    persona = %ctx.identity.agent_name,
+    system_prompt_len = assembled.system_message.len(),
+    history_count = history.len(),
+    matched_angle = !matched_angle.is_empty(),
+    "assembled"
+);
+
+// Around a sync block — RAII timing probe at scope exit, finds slow stages.
+let scored = time_sync!("recall_l2", {
+    cognition.admission.recall_scored(now_ms, 8)
+});
+```
+
+```bash
+# Enable disk capture (no recompile, env vars only):
+export CONTINUUM_PROBE_FILE=/tmp/continuum-probes.jsonl
+export CONTINUUM_PROBE_CLASSES=persona.turn.start,persona.turn.silent,persona.response.render.prompt
+
+# Then tail / jq the breakpoint stream as the substrate runs:
+tail -f /tmp/continuum-probes.jsonl | jq -c 'select(.fields.persona == "Paige")'
+```
+
+**Full manual + seam taxonomy + sprinkle checklist:** [docs/architecture/RTOS-DEBUGGER-PROBES.md](docs/architecture/RTOS-DEBUGGER-PROBES.md). Every contributor (human or AI agent) working on cognition, inference, or any per-persona path should read it before adding code — probes are part of the substrate's API, not an afterthought.
+
+---
+
 ## Documentation
 
 354 architecture documents and growing. Start here:
@@ -616,6 +653,7 @@ The CS patterns exist. **AI executing them for itself — with autonomy, self-aw
 |----------|------|
 | **[CLAUDE.md](CLAUDE.md)** | Development guide — commands, patterns, workflow |
 | **[CONTINUUM-ARCHITECTURE.md](docs/CONTINUUM-ARCHITECTURE.md)** | Full technical architecture |
+| **[RTOS-DEBUGGER-PROBES.md](docs/architecture/RTOS-DEBUGGER-PROBES.md)** | JTAG-style probes — how to debug the cognition pipeline |
 | **[GENOME-ARCHITECTURE.md](docs/genome/GENOME-ARCHITECTURE.md)** | Multimodal LoRA genome system |
 | **[ACADEMY-ARCHITECTURE.md](docs/personas/ACADEMY_ARCHITECTURE.md)** | Dual-sentinel training system |
 | **[SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md)** | Pipeline execution engine |
