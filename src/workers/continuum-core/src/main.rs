@@ -29,11 +29,11 @@ use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager
 ///
 /// Usage: continuum-core-server <socket-path>
 /// Example: continuum-core-server /tmp/continuum-core.sock
+use continuum_core::routing::{install_probe_tracing, ProbeTracingConfig};
 use continuum_core::start_server;
 use std::env;
 use std::sync::Arc;
-use tracing::{info, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::info;
 
 /// Install signal handlers that kill all sentinel process groups on shutdown.
 /// This prevents orphaned training processes from eating memory after npm stop.
@@ -84,12 +84,24 @@ fn install_shutdown_handlers() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .with_writer(std::io::stderr)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+    // Substrate-canonical tracing stack: UriCapture + ProbeRouter +
+    // optional JsonlProbeFileSink + fmt-to-stderr governed by
+    // RUST_LOG (default `info`). See
+    // docs/architecture/RTOS-DEBUGGER-PROBES.md.
+    //
+    // Env-coupling lives at exactly one seam: `from_env(...)`. The
+    // installer takes only typed values — tests construct config
+    // directly without racing `std::env::set_var`. Setting
+    // `CONTINUUM_PROBE_FILE=/tmp/probes.jsonl` lights up the JSONL
+    // sink with zero binary changes; the boot log below reports
+    // the path so the operator sees it landed.
+    let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;
+    if let Some(ref path) = probe_install.probe_log_path {
+        // Use println so it appears even when RUST_LOG filters out
+        // info-level tracing events — the operator who just set the
+        // env var SHOULD see this confirmation.
+        eprintln!("[continuum-core-server] probes landing at {}", path.display());
+    }
 
     // Parse command line arguments. argv[1] is the IPC socket path (positional)
     // — but intercept flag-like values FIRST so `--version` and `--help` don't

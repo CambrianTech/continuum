@@ -97,7 +97,11 @@ export CONTINUUM_PROBE_CLASSES=cognition.analyze.parse,persona.turn,timing
 
   Empty / unset = no filter configured, every class passes. `*` is the explicit "capture all" intent per `[[no-fallbacks-ever]]`.
 
-The sink is installed at process startup via `JsonlProbeFileSink::from_env()` — composes with `ProbeRouterLayer` (broadcast subscribers) and `UriCaptureLayer` (URI ancestry). Both consumers see every probe independently.
+The sink is installed at process startup by `routing::install_probe_tracing(config)`, which composes `UriCaptureLayer` (URI ancestry) + `ProbeRouterLayer` (in-process broadcast) + `JsonlProbeFileSink` (disk, when `config.probe_file` is set) + a fmt layer governed by `RUST_LOG` — all in one call.
+
+The installer takes a typed `ProbeTracingConfig { probe_file, probe_classes, default_filter }` — NOT env vars directly. Env coupling lives at exactly one seam: `ProbeTracingConfig::from_env(default_filter)`. This keeps the library function parallel-test-safe (no `std::env::set_var` racing under `cargo test`) and puts every config source (env, file, CLI flags, hardcoded) on equal footing.
+
+`continuum-core-server`'s `main()` calls `install_probe_tracing(ProbeTracingConfig::from_env("info"))?`. Tests / demos that want a clean per-call probe stack construct `ProbeTracingConfig` directly and pass a tmpdir path — no env mutation, no flakes. The install is idempotent via `try_init` so re-init from multiple sites is safe. When `config.probe_file` is set, the server prints `probes landing at <path>` at boot so the operator sees the env var took effect.
 
 ### Read
 
