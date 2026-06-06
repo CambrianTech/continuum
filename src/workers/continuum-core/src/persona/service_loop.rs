@@ -537,10 +537,16 @@ async fn serve_persona_loop_inner(
             message_id: Uuid::new_v4(),
             message_text: msg.text.clone(),
             other_persona_names: Vec::new(),
-            system_prompt: format!(
-                "You are {persona}, an autonomous AI persona on the grid.",
-                persona = ctx.identity.agent_name
-            ),
+            // #195 slice 2: cached per-session prompt. The
+            // PersonaContext baked this once at construction via
+            // `build_persona_system_prompt`; here we just lease
+            // the Arc and copy the bytes once for the RespondInput
+            // boundary. The variadic format!() call this replaces
+            // was the canonical reinit-on-hot-path waste per
+            // [[init-once-handle-then-lease-zero-copy-refs]].
+            // Task #149 will lift this further by passing the
+            // pre-tokenized form across the boundary too.
+            system_prompt: ctx.system_prompt.as_ref().to_string(),
             model: ctx.profile.model_id.clone(),
             is_voice: false,
             message_media: Vec::new(),
@@ -735,6 +741,11 @@ mod tests {
                     Arc::new(crate::rag::RagEngine::new()),
                 ),
             )),
+            // #195 slice 2: build via the same helper production
+            // uses, NOT a copy-pasted template. If a future PR
+            // adjusts the prompt wording, this fixture stays
+            // honest about what the test exercises.
+            system_prompt: super::super::supervisor::build_persona_system_prompt("Paige"),
         }
     }
 
@@ -955,6 +966,51 @@ mod tests {
         assert_eq!(outcome.say_latency.count, 0);
         assert!(outcome.recall_latency.mean_ms().is_none());
         assert!(outcome.respond_latency.mean_ms().is_none());
+    }
+
+    /// #195 slice 2: pin that `build_persona_system_prompt` (the
+    /// helper used by both production construction and test
+    /// fixtures) produces EXACTLY what the old per-turn
+    /// `format!()` did. A future PR that adjusts the template
+    /// wording must update both the helper AND this expectation
+    /// — the test breaks loudly rather than letting the cache
+    /// drift away from the format!() the merger had previously.
+    #[test]
+    fn cached_system_prompt_matches_legacy_format_template() {
+        let cached = super::super::supervisor::build_persona_system_prompt("Paige");
+        let legacy = format!(
+            "You are {persona}, an autonomous AI persona on the grid.",
+            persona = "Paige"
+        );
+        assert_eq!(
+            cached.as_ref(),
+            legacy,
+            "build_persona_system_prompt must produce the SAME string the \
+             pre-#195-slice-2 per-turn format!() did — otherwise the cache \
+             silently changes the prompt the substrate sends to the model"
+        );
+    }
+
+    /// #195 slice 2: pin that cloning the cached prompt is a
+    /// cheap Arc refcount bump, not a deep copy. Without this,
+    /// a future refactor swapping `Arc<str>` for `String` would
+    /// silently restore the per-turn-allocation cost the slice
+    /// shipped to eliminate.
+    #[test]
+    fn cached_system_prompt_clones_via_arc_refcount() {
+        let original = super::super::supervisor::build_persona_system_prompt("Paige");
+        let cloned = std::sync::Arc::clone(&original);
+        assert_eq!(
+            std::sync::Arc::strong_count(&original),
+            2,
+            "Arc::clone must bump the refcount (cheap pointer copy) — \
+             not deep-copy the underlying str"
+        );
+        // Pointer-equality on the underlying str confirms zero-copy.
+        assert!(
+            std::ptr::eq(original.as_ref() as *const str, cloned.as_ref() as *const str),
+            "cloned Arc must point at the SAME str storage as the original"
+        );
     }
 
     /// Aggregate-math property: each phase aggregate is structurally

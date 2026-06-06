@@ -214,6 +214,25 @@ pub struct PersonaContext {
     /// cycle service_loop drives through this brain. DO NOT bypass
     /// it with a chatbot-shaped surface.
     pub cognition: Arc<tokio::sync::Mutex<crate::persona::unified::PersonaCognition>>,
+    /// Pre-baked persona system prompt — the "You are {persona},
+    /// an autonomous AI persona on the grid." line currently
+    /// `format!()`'d per turn by the service loop. Constructed
+    /// ONCE at PersonaContext construction (the persona name is
+    /// fixed for the session) and leased per turn via `Arc::clone`.
+    ///
+    /// Per `[[init-once-handle-then-lease-zero-copy-refs]]` +
+    /// task #195 slice 2: substrate latency lives in reinit, not
+    /// compute. Reformatting + reallocating the same template per
+    /// turn is the textbook reinit-on-hot-path waste this field
+    /// eliminates.
+    ///
+    /// `Arc<str>` (not `String`) so cloning is a pointer-copy + atomic
+    /// refcount bump. The service loop's per-turn cost becomes
+    /// `Arc::to_string` (one strlen + alloc + memcpy) instead of
+    /// `format!` (variadic macro + locale machinery + alloc + copy).
+    /// Task #149 will replace this with `Arc<[Token]>` to eliminate
+    /// the per-turn tokenization too.
+    pub system_prompt: Arc<str>,
 }
 
 /// Back-compat alias for the slice-9-era struct name. New code
@@ -466,6 +485,8 @@ pub async fn materialize_adapters(
         );
         cognition.set_airc_source(airc_source);
 
+        let system_prompt = build_persona_system_prompt(&identity.agent_name);
+
         out.push(Ok(PersonaContext {
             role: plan.role,
             identity,
@@ -473,9 +494,30 @@ pub async fn materialize_adapters(
             adapter,
             runtime,
             cognition: Arc::new(tokio::sync::Mutex::new(cognition)),
+            system_prompt,
         }));
     }
     out
+}
+
+/// Construct the persona's system prompt as an `Arc<str>` ready
+/// to lease per turn. Per task #195 slice 2: this runs ONCE at
+/// PersonaContext construction; the per-turn `format!()` it
+/// replaces becomes a single `Arc::clone`-then-`to_string` at
+/// the RespondInput boundary.
+///
+/// The template is verbatim what `service_loop_inner` used to
+/// `format!()` per turn — same characters, same order — so the
+/// downstream prompt assembly is unchanged. Task #149 will
+/// replace this with a pre-tokenized form.
+///
+/// Exposed `pub(super)` so the service-loop test fixtures can
+/// build the same string by the same code path the production
+/// path uses; no copy-pasted template.
+pub(super) fn build_persona_system_prompt(agent_name: &str) -> Arc<str> {
+    Arc::from(format!(
+        "You are {agent_name}, an autonomous AI persona on the grid."
+    ))
 }
 
 #[cfg(test)]
