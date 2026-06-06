@@ -166,19 +166,51 @@ macro_rules! time_sync {
 ///
 /// Emits the same `timing` probe class as `time_sync!`. Operators
 /// filter both sync + async timings together via
-/// `CONTINUUM_PROBE_CLASSES=timing` and see one flat timeline of
-/// every instrumented seam.
+/// `CONTINUUM_PROBE_CLASSES=timing` and see one flat timeline.
+///
+/// **Substrate gaps tracked separately:** task #196 (probe Layers
+/// only implement `on_event`, not `on_close` — span-close events
+/// from `time_sync!` + `time_probe!` don't yet reach the JSONL log
+/// or broadcast subscribers; the call shape lands here, the
+/// routing side follows). Task #197 (flat `timing` class vs the
+/// substrate's hierarchical class taxonomy — picking the
+/// convention is its own design decision). Don't rely on the
+/// timing probe being persistable until #196 lands.
+///
+/// ## Cost
+///
+/// Low — but NOT zero. `info_span!` allocates a `Span` struct +
+/// attaches the `name` + `probe_class` fields regardless of
+/// whether a subscriber is registered. `Instrumented<F>` wraps
+/// the future, adding ~24 bytes per call site and one branch on
+/// every `poll`. Tracing's `release_max_level_*` cargo features
+/// compile out the `event!` body, but the `Instrumented<F>`
+/// wrapper persists at runtime even at max-level-off. Acceptable
+/// for cognition seams (Qwen inference dominates wall-clock by
+/// 4-5 orders of magnitude); audit per task #198 if sprinkled
+/// into a hot loop.
+///
+/// ## Field names
+///
+/// The span carries `seam = $name` (the seam identifier as a
+/// dotted path, e.g. `"cognition.analyze.inference"`) and
+/// `probe_class = "timing"`. `seam` is chosen over the more-
+/// natural `name` to avoid field-name collision with other
+/// probes that already use `name` for different purposes
+/// (`probe!(class="state", name="active_persona", ...)`). All
+/// `jq` queries should filter on `.fields.seam`.
 #[macro_export]
 macro_rules! time_probe {
     ($name:expr, $future:expr) => {{
-        use ::tracing::Instrument as _;
-        $future
-            .instrument(::tracing::info_span!(
+        ::tracing::Instrument::instrument(
+            $future,
+            ::tracing::info_span!(
                 "time",
-                name = $name,
+                seam = $name,
                 probe_class = "timing",
-            ))
-            .await
+            ),
+        )
+        .await
     }};
 }
 
@@ -307,6 +339,26 @@ mod tests {
             crate::time_probe!("test_phase", produces_forty_two())
         });
         assert_eq!(result, 42);
+    }
+
+    /// `time_probe!` MUST pass `Result<T, E>` futures through
+    /// unchanged — `.instrument()` preserves the inner future's
+    /// `Output` type, but a test that uses an infallible future
+    /// can't prove that. Pin the error-path explicitly per
+    /// `[[no-fallbacks-ever]]`: substrate refuses to silently
+    /// swallow errors at any seam.
+    #[test]
+    fn time_probe_propagates_error_from_inner_future() {
+        async fn fails() -> Result<i32, &'static str> {
+            Err("intentional")
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime");
+        let result: Result<i32, &str> = runtime.block_on(async {
+            crate::time_probe!("test_error_path", fails())
+        });
+        assert_eq!(result, Err("intentional"));
     }
 
     /// Multiple nested `time_probe!` calls compose — the inner

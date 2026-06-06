@@ -148,9 +148,30 @@ let result = time_sync!("recall_l2", {
     cognition.admission.recall_scored(now_ms, 8)
 });
 
-// Around a timing-critical future (async):
+// Around a timing-critical future (async, substrate probe stream):
+let analysis = time_probe!("cognition.analyze", analyze(input));
+let response = time_probe!("inference.generate", adapter.generate_text(req));
+
+// Around a timing-critical future (logging-crate RAII shape — legacy):
 let analysis = time_async!("cognition", "analyze", analyze(input));
 ```
+
+Both async forms exist for historical reasons: `time_probe!` is the
+substrate's tracing-span shape (composes with `ProbeRouterLayer` +
+`JsonlProbeFileSink`); `time_async!` is the `crate::logging`'s RAII
+TimingGuard shape (logs to the logging crate's own logger). For new
+cognition seams prefer `time_probe!` — that's what the rest of the
+probe pipeline consumes.
+
+> **Persistence caveat:** `time_sync!` and `time_probe!` emit
+> tracing SPANS, not events. The current `ProbeRouterLayer` and
+> `JsonlProbeFileSink` only implement `on_event` — they do NOT yet
+> capture span-close events. Task #196 wires the missing
+> `on_close` so timing spans persist to the JSONL log; until then,
+> the timing macros work for `tracing`-native consumers (e.g.
+> `tracing_subscriber::fmt`) but timings won't appear in the JTAG
+> probe log. The macro lands here so the call shape is stable
+> when the routing side ships.
 
 ### Convention rules
 
