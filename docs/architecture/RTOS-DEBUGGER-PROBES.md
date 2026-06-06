@@ -170,13 +170,13 @@ The infrastructure exists (Slice P, #176/#177): `routing/macros.rs` (macros), `r
 
 What is INCOMPLETE — the sprinkle that turns the JTAG hardware into a working debugger:
 
-- [ ] `persona/service_loop.rs::serve_persona_loop_inner` — turn boundaries, recall + admit + compose + respond + say (with timings)
-- [ ] `persona/response.rs::respond_inner` — entry, analyze result, render output, post-process, exit
-- [ ] `persona/response.rs::run_render` — assembled prompt size + presence of each block, raw model output stats
-- [ ] `persona/prompt_assembly.rs::assemble` — final composition stats (system_message length, message count, est tokens, matched_angle present, engrams count, social_signals present)
-- [ ] `cognition/shared_analysis/mod.rs::analyze` — entry, single-flight join, cache hit/miss, parsed angles per specialty
-- [ ] `cognition/response_orchestrator.rs::score_persona` — per-persona score + matched_angles + decision reason
-- [ ] `ai/llama_cpp_adapter::generate_text` — request fingerprint + raw output + finish_reason
+- [x] `persona/response.rs::respond_inner` — entry, analyze result, raw LLM output (full text), exit-spoke — **wired in this PR**
+- [x] `persona/response.rs::run_render` — assembled prompt verbatim + composition stats — **wired in this PR**
+- [x] `cognition/shared_analysis/mod.rs::analyze` — entry, single-specialty noop, L1 cache hit, parsed angles (empty vs non-empty count) — **wired in this PR**
+- [ ] `persona/service_loop.rs::serve_persona_loop_inner` — turn boundaries, recall + admit + compose + respond + say (with timings) — next PR
+- [ ] `persona/prompt_assembly.rs::assemble` — final composition stats (system_message length, message count, est tokens, matched_angle present, engrams count, social_signals present) — covered indirectly by `persona.response.render.prompt`; standalone probe TBD if assembly logic grows
+- [ ] `cognition/response_orchestrator.rs::score_persona` — per-persona score + matched_angles + decision reason — note: the score_persona gate is currently bypassed (response.rs:288–300); probes go in if/when it's re-wired
+- [ ] `ai/llama_cpp_adapter::generate_text` — request fingerprint + raw output + finish_reason — covered indirectly by `persona.response.render.prompt` (in) + `persona.response.render.raw` (out); adapter-level probe TBD when we need per-batch visibility
 
 Each gets a small commit that adds the probes + updates this manual's checklist. The proof-of-value for each commit: enable the file sink, run the multi-persona scenario, `jq` the relevant class, see the variable snapshots.
 

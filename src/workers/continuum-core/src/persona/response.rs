@@ -236,6 +236,24 @@ async fn respond_inner(
 ) -> Result<PersonaResponse, String> {
     use crate::persona::trace::{SEAM_ANALYZE, SEAM_INFERENCE, SEAM_POST_PROCESS};
 
+    // RTOS-debugger breakpoint: respond cycle entry. Captures who's
+    // responding to what, plus the size of the contextual inputs the
+    // brain will see. See docs/architecture/RTOS-DEBUGGER-PROBES.md
+    // class taxonomy for the stable name.
+    crate::probe!(
+        class = "persona.response.enter",
+        persona = %input.persona.display_name,
+        persona_id = %input.persona.persona_id,
+        room_id = %input.turn_context.room_id,
+        message_id = %input.message_id,
+        message_text_len = input.message_text.len(),
+        history_count = input.turn_context.recent_history.len(),
+        known_specialties = input.turn_context.known_specialties.len(),
+        media_count = input.message_media.len(),
+        recalled_engrams = input.recalled_engrams.len(),
+        "respond_inner entry"
+    );
+
     // 1. Shared analysis (cached per message+room+history fingerprint).
     //    Provides matched-angle hints for the prompt — informational,
     //    NOT gating. The persona's own model is the only thing that
@@ -285,6 +303,30 @@ async fn respond_inner(
         }),
     );
 
+    // RTOS-debugger breakpoint: what the analyze stage gave THIS
+    // persona to work with. The matched-angle is the substrate's
+    // signal that THIS persona's specialty is relevant — empty
+    // string means "no specific perspective for you in this turn",
+    // which materially shapes the render below.
+    let matched_angle_for_probe = analysis
+        .suggested_angles
+        .get(&input.persona.specialty)
+        .cloned()
+        .unwrap_or_default();
+    crate::probe!(
+        class = "persona.response.analyze.result",
+        persona = %input.persona.display_name,
+        specialty = %input.persona.specialty,
+        from_cache = analysis.from_cache,
+        model_used = %analysis.model_used,
+        analyze_duration_ms = now_ms().saturating_sub(analyze_start),
+        suggested_angles_count = analysis.suggested_angles.len(),
+        matched_angle_present = !matched_angle_for_probe.is_empty(),
+        matched_angle_len = matched_angle_for_probe.len(),
+        intent = ?analysis.intent,
+        "analyze result for persona"
+    );
+
     // 2. Render. No external "should this persona respond" gate. Joel
     //    rule (2026-04-22): personas emulate humans — they choose
     //    themselves whether to engage. The earlier `score_persona`
@@ -317,6 +359,25 @@ async fn respond_inner(
         }),
     );
 
+    // RTOS-debugger breakpoint: what came OUT of the LLM. The
+    // single most diagnostic snapshot in the cognition cycle —
+    // every bug report about persona behavior ultimately compares
+    // "what the model produced" against "what it should have
+    // produced." Capture the raw text in full (truncation lives
+    // in the operator's jq query, not here) so a later replay
+    // can reconstruct the model's actual output verbatim. Per
+    // [[jtag-probes-are-rtos-debugger]]: "what's going in and
+    // out of an LLM."
+    crate::probe!(
+        class = "persona.response.render.raw",
+        persona = %input.persona.display_name,
+        model_used = %raw_response.model_used,
+        raw_text_len = raw_response.text.len(),
+        raw_text = %raw_response.text,
+        inference_ms = inference_ms,
+        "LLM produced raw output"
+    );
+
     let post_start = now_ms();
     let (think_stripped_text, think_count) = strip_thinks_emit_events(
         &raw_response.text,
@@ -335,12 +396,31 @@ async fn respond_inner(
         }),
     );
 
+    let total_ms = now_ms().saturating_sub(total_start);
+
+    // RTOS-debugger breakpoint: the persona's final answer to
+    // "what does this turn produce?" Pair with `persona.response.enter`
+    // (same persona_id + message_id) for a complete turn record.
+    crate::probe!(
+        class = "persona.response.exit.spoke",
+        persona = %input.persona.display_name,
+        persona_id = %input.persona.persona_id,
+        message_id = %input.message_id,
+        visible_text_len = visible_text.len(),
+        visible_text = %visible_text,
+        think_blocks = think_count,
+        model_used = %raw_response.model_used,
+        total_ms = total_ms,
+        inference_ms = inference_ms,
+        "spoke"
+    );
+
     Ok(PersonaResponse::Spoke {
         persona_id: input.persona.persona_id,
         text: visible_text,
         model_used: raw_response.model_used,
         inference_ms,
-        total_ms: now_ms().saturating_sub(total_start),
+        total_ms,
         think_blocks_emitted: think_count,
     })
 }
@@ -417,6 +497,12 @@ async fn run_render(
         .map(|m| m.multi_party_strategy.clone())
         .unwrap_or_default();
 
+    // Capture probe signals BEFORE moving matched_angle + history
+    // into PromptAssemblyInput. Bool + usize are Copy; the probe
+    // below reads from these locals after the move.
+    let matched_angle_present_for_probe = !matched_angle.is_empty();
+    let history_count_for_probe = history.len();
+
     let prompt_input = PromptAssemblyInput {
         persona_name: input.persona.display_name.clone(),
         system_prompt: input.system_prompt.clone(),
@@ -437,6 +523,29 @@ async fn run_render(
     };
 
     let assembled = assemble(&prompt_input);
+
+    // RTOS-debugger breakpoint: what's going INTO the LLM. Captures
+    // the assembled prompt verbatim so an operator can read exactly
+    // what the model was asked to do — the most informative single
+    // snapshot for cognition bugs (missing instructions, drifted
+    // template, wrong angle injection, social-block absence). Per
+    // [[jtag-probes-are-rtos-debugger]]: "what's going in and out
+    // of an LLM." Going-in lives here; going-out lives in the
+    // `persona.response.render.raw` probe above.
+    crate::probe!(
+        class = "persona.response.render.prompt",
+        persona = %input.persona.display_name,
+        specialty = %input.persona.specialty,
+        model = %input.model,
+        system_message_len = assembled.system_message.len(),
+        system_message = %assembled.system_message,
+        message_count = assembled.messages.len(),
+        estimated_tokens = assembled.estimated_tokens,
+        matched_angle_present = matched_angle_present_for_probe,
+        engrams_count = input.recalled_engrams.len(),
+        history_count = history_count_for_probe,
+        "prompt assembled for inference"
+    );
 
     // 3. Build the inference request from the assembled prompt.
     //
