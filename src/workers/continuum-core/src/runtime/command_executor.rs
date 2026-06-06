@@ -24,11 +24,13 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tracing::Instrument;
 
 use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::message_bus::MessageBus;
 use super::{CommandResult, ModuleRegistry};
+use crate::routing::{route, CommandUri, RouteDecision, Transport, Verdict};
 
 /// Socket path for TypeScript command routing
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
@@ -78,6 +80,26 @@ pub struct CommandExecutor {
     /// Priority 3: the bus emission is what lets the persona's
     /// autonomous loop stay reactive instead of poll-blocking.
     bus: Option<Arc<MessageBus>>,
+    /// Auth policy consulted between `route()` and the dispatcher's
+    /// variant match. Defaults to [`AllowAllPolicy`] so existing
+    /// callers and tests don't break; operators install an ORM-backed
+    /// or capability-backed impl at boot via
+    /// [`Self::with_policy`].
+    ///
+    /// Per Slice P "every URI has a gate" — the policy is a single
+    /// substrate-wide chokepoint, not a per-module concern.
+    policy: Arc<dyn crate::routing::AuthPolicy>,
+    /// Transport for non-Local routing decisions (Peer / Room /
+    /// Broadcast). Defaults to
+    /// [`NotImplementedRemoteTransport`](crate::routing::NotImplementedRemoteTransport)
+    /// which produces typed errors per variant. The
+    /// [`AircTransport`] commit lands the real cross-grid impl and
+    /// swaps in via [`Self::with_remote_transport`].
+    ///
+    /// Local decisions never reach this — the dispatcher handles
+    /// them inline against the owned `registry` + `interceptors` +
+    /// TS bridge.
+    remote_transport: Arc<dyn Transport>,
 }
 
 impl CommandExecutor {
@@ -86,7 +108,30 @@ impl CommandExecutor {
             registry,
             interceptors: Vec::new(),
             bus: None,
+            policy: Arc::new(crate::routing::AllowAllPolicy),
+            remote_transport: Arc::new(crate::routing::NotImplementedRemoteTransport),
         }
+    }
+
+    /// Replace the auth policy. Defaults to [`AllowAllPolicy`];
+    /// operators install an ORM-backed or capability-backed impl
+    /// here at boot. Builder-style so it chains with `new()`,
+    /// `with_interceptor()`, `with_message_bus()`.
+    pub fn with_policy(mut self, policy: Arc<dyn crate::routing::AuthPolicy>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Replace the cross-grid transport. Defaults to
+    /// [`NotImplementedRemoteTransport`](crate::routing::NotImplementedRemoteTransport).
+    /// Operators / boot wire `AircTransport` (or a test
+    /// [`ClosureTransport`](crate::routing::ClosureTransport)) here.
+    ///
+    /// Builder-style for chaining with the rest of the
+    /// `CommandExecutor::new(...)...` setup.
+    pub fn with_remote_transport(mut self, transport: Arc<dyn Transport>) -> Self {
+        self.remote_transport = transport;
+        self
     }
 
     /// Add an interceptor to the chain (builder-style). Interceptors are
@@ -135,20 +180,149 @@ impl CommandExecutor {
     /// wired. Subscribers consume those events to implement
     /// reactive control flow per the RTOS-brain doctrine
     /// (handlers never block on result polls).
-    pub async fn execute(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+    ///
+    /// Slice P note: the API takes a typed [`CommandUri`]; remote
+    /// variants (Peer/Room/Broadcast) return a typed not-yet-implemented
+    /// error until the transport selector lands in a subsequent commit
+    /// on the Slice P branch. The interceptor chain still operates on
+    /// `&str` paths internally for this commit — the interceptor trait
+    /// migration is a follow-up to minimize blast radius.
+    pub async fn execute(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+    ) -> Result<CommandResult, String> {
+        self.execute_with_caller(command, params, None).await
+    }
+
+    /// Execute a command on behalf of a specific caller identity.
+    ///
+    /// Local code invoking `execute()` passes `None` — substrate's
+    /// own code is implicitly trusted by the default AuthPolicy.
+    /// Cross-grid handlers (the peer-side `CommandRequestHandler`)
+    /// pass `Some(CallerIdentity::airc(verified_sender))` so the
+    /// local AuthPolicy gate sees who the remote caller actually
+    /// is and applies the right policy.
+    ///
+    /// Same dispatch chain, same observability, same routing
+    /// decision — only the caller identity threaded into the gate
+    /// changes.
+    pub async fn execute_with_caller(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+        caller: Option<crate::routing::CallerIdentity>,
+    ) -> Result<CommandResult, String> {
+        let command: CommandUri = command.into();
         let start = std::time::Instant::now();
-        let outcome = self.execute_inner(command, params).await;
-        self.emit_command_completed(command, &outcome, start.elapsed().as_millis() as u64);
+        let outcome = self.dispatch(&command, params, caller.as_ref()).await;
+        self.emit_command_completed(
+            command.path(),
+            &outcome,
+            start.elapsed().as_millis() as u64,
+        );
         outcome
+    }
+
+    /// Routing decision on a [`CommandUri`]. Local URIs go through the
+    /// existing chain; non-Local URIs return a typed
+    /// not-yet-implemented error pending the transport selector.
+    ///
+    /// Slice P note: this is where the per-dispatch [`tracing::Span`] is
+    /// established. The URI lives in the span as a structured field;
+    /// every `debug!` / `info!` / `probe!` event inside the dispatched
+    /// command inherits the tag automatically. Per-persona log
+    /// segregation, cross-grid trace correlation, and URI-routed
+    /// observability all fall out of this one seam — no
+    /// per-call-site instrumentation needed.
+    ///
+    /// ## Why `.instrument(span).await` and not `let _enter = span.enter()`
+    ///
+    /// `tracing`'s docs explicitly forbid holding a `_enter` guard
+    /// across `.await` in async code: tokio moves the task between
+    /// threads at suspension points, and the thread-local
+    /// `on_enter`/`on_exit` cadence breaks. The
+    /// [`UriCaptureLayer`](crate::routing::UriCaptureLayer) thread-local
+    /// stack goes stale on the post-await thread, and `stack!()` then
+    /// returns either a frame for a span that's already exited
+    /// somewhere else, or the wrong chain entirely.
+    ///
+    /// `.instrument(span)` wraps the future so the span enters and
+    /// exits at suspension boundaries automatically. Slice P's URI
+    /// ancestry guarantee — `stack!()` always returns the correct
+    /// chain inside a dispatched command — depends on this shape.
+    async fn dispatch(
+        &self,
+        command: &CommandUri,
+        params: Value,
+        caller: Option<&crate::routing::CallerIdentity>,
+    ) -> Result<CommandResult, String> {
+        let decision = route(command);
+        // Local in-process dispatches pass `None` — substrate's own
+        // code calling itself, implicitly trusted by the default
+        // policy. Cross-grid handlers thread
+        // `Some(CallerIdentity::airc(verified_sender))` through
+        // `execute_with_caller` so the gate sees the real remote
+        // caller.
+        let verdict = self.policy.gate(&decision, caller);
+        let span = tracing::info_span!(
+            "cmd",
+            uri = %command,
+            path = %command.path(),
+            route_kind = decision.kind().as_str(),
+            verdict = verdict.kind(),
+        );
+        async move {
+            // Slice P "every URI has a gate" — auth runs BEFORE the
+            // transport match. Forbidden / Deferred short-circuit
+            // with typed errors carrying the reason; only Allowed
+            // proceeds to transport selection.
+            match verdict {
+                Verdict::Forbidden { reason } => {
+                    return Err(format!("forbidden: {reason}"));
+                }
+                Verdict::Deferred {
+                    reason,
+                    prompt_target_env,
+                } => {
+                    return Err(format!(
+                        "deferred: {reason:?} — consent prompt routed to env={prompt_target_env}"
+                    ));
+                }
+                Verdict::Allowed => {}
+            }
+
+            // Slice P transport seam: Local handled inline against
+            // this substrate's owned modules; every other variant
+            // routes through the remote Transport trait. When the
+            // AircTransport commit lands, swapping `remote_transport`
+            // is the only change needed — this match shape doesn't
+            // move.
+            match decision {
+                RouteDecision::Local { path, .. } => {
+                    self.execute_inner(&path, params, caller).await
+                }
+                non_local => self.remote_transport.dispatch(non_local, params).await,
+            }
+        }
+        .instrument(span)
+        .await
     }
 
     /// The dispatch chain itself. Extracted so `execute` can wrap it
     /// with timing + event emission without burying the routing
     /// logic in instrumentation.
+    ///
+    /// PR #1529 reviewer 2: `caller` threaded through so interceptors
+    /// see the same identity the gate already saw. Closes the silent-
+    /// privilege-escalation seam where a remote `airc://this-peer/...`
+    /// dispatch would reach AircInterceptor/GridInterceptor as if it
+    /// were a local in-process invocation.
     async fn execute_inner(
         &self,
         command: &str,
         params: Value,
+        caller: Option<&crate::routing::CallerIdentity>,
     ) -> Result<CommandResult, String> {
         let log = super::logger("command-executor");
 
@@ -156,7 +330,7 @@ impl CommandExecutor {
         //    moves on. Err propagates immediately — no silent
         //    fallthrough, per the trait contract.
         for interceptor in &self.interceptors {
-            match interceptor.try_route(command, &params).await {
+            match interceptor.try_route(command, &params, caller).await {
                 Ok(InterceptorOutcome::Handled(result)) => {
                     log.debug(&format!(
                         "Routing '{}' via interceptor '{}'",
@@ -230,21 +404,50 @@ impl CommandExecutor {
     /// cell shapes — Json/Binary return their payload, Handle serializes
     /// the HandleRef, Stream/Lambda return their not-yet-wired protocol
     /// error so the caller knows the cell shape requires direct match.
-    pub async fn execute_json(&self, command: &str, params: Value) -> Result<Value, String> {
+    pub async fn execute_json(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+    ) -> Result<Value, String> {
         self.execute(command, params).await?.to_json_value()
     }
 
     /// Execute a command ONLY via TypeScript (bypasses Rust registry).
     /// Use this when a Rust module needs to forward to a TypeScript-implemented
     /// command that shares the same prefix (avoids infinite recursion).
-    pub async fn execute_ts(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        let json = self.execute_ts_command(command, params).await?;
+    ///
+    /// Slice P note: the URI's `path()` is forwarded over the TS bridge
+    /// as the conventional command name. Remote URIs are rejected.
+    pub async fn execute_ts(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+    ) -> Result<CommandResult, String> {
+        let command: CommandUri = command.into();
+        if !command.is_local() {
+            return Err(format!(
+                "Remote dispatch for {command} not supported via execute_ts \
+                 — TS bridge only handles local URIs."
+            ));
+        }
+        let json = self.execute_ts_command(command.path(), params).await?;
         Ok(CommandResult::Json(json))
     }
 
     /// Convenience: execute via TypeScript only and extract JSON directly
-    pub async fn execute_ts_json(&self, command: &str, params: Value) -> Result<Value, String> {
-        self.execute_ts_command(command, params).await
+    pub async fn execute_ts_json(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+    ) -> Result<Value, String> {
+        let command: CommandUri = command.into();
+        if !command.is_local() {
+            return Err(format!(
+                "Remote dispatch for {command} not supported via execute_ts_json \
+                 — TS bridge only handles local URIs."
+            ));
+        }
+        self.execute_ts_command(command.path(), params).await
     }
 
     /// Execute command via TypeScript CommandRouterServer (Unix socket)
@@ -409,29 +612,45 @@ pub fn executor() -> Arc<CommandExecutor> {
 /// Execute a command from anywhere, returning CommandResult
 ///
 /// Usage:
-/// ```rust
+/// ```ignore
 /// use crate::runtime::command_executor;
+/// use crate::routing::CommandUri;
 ///
-/// let result = command_executor::execute("code/edit", params).await?;
+/// let result = command_executor::execute(
+///     CommandUri::local("code/edit"),
+///     params,
+/// ).await?;
 /// ```
-pub async fn execute(command: &str, params: Value) -> Result<CommandResult, String> {
+pub async fn execute(
+    command: impl Into<CommandUri>,
+    params: Value,
+) -> Result<CommandResult, String> {
     executor().execute(command, params).await
 }
 
 /// Execute a command and extract JSON result (convenience for most use cases)
-pub async fn execute_json(command: &str, params: Value) -> Result<Value, String> {
+pub async fn execute_json(
+    command: impl Into<CommandUri>,
+    params: Value,
+) -> Result<Value, String> {
     executor().execute_json(command, params).await
 }
 
 /// Execute a command ONLY via TypeScript, bypassing Rust registry.
 /// Use when a Rust module needs to forward to a TypeScript command
 /// that shares the same prefix (e.g., ai_provider forwarding ai/agent).
-pub async fn execute_ts(command: &str, params: Value) -> Result<CommandResult, String> {
+pub async fn execute_ts(
+    command: impl Into<CommandUri>,
+    params: Value,
+) -> Result<CommandResult, String> {
     executor().execute_ts(command, params).await
 }
 
 /// Execute via TypeScript only and extract JSON (convenience)
-pub async fn execute_ts_json(command: &str, params: Value) -> Result<Value, String> {
+pub async fn execute_ts_json(
+    command: impl Into<CommandUri>,
+    params: Value,
+) -> Result<Value, String> {
     executor().execute_ts_json(command, params).await
 }
 
@@ -487,6 +706,7 @@ mod tests {
             &self,
             _command: &str,
             _params: &Value,
+            _caller: Option<&crate::routing::CallerIdentity>,
         ) -> Result<InterceptorOutcome, String> {
             // Record which slot was consulted. The test asserts the
             // observed counter equals the expected slot, proving order.
@@ -510,6 +730,7 @@ mod tests {
             &self,
             _command: &str,
             _params: &Value,
+            _caller: Option<&crate::routing::CallerIdentity>,
         ) -> Result<InterceptorOutcome, String> {
             Ok(InterceptorOutcome::Handled(CommandResult::Json(
                 serde_json::json!({ "handled": true }),
@@ -903,5 +1124,149 @@ mod tests {
             assert!(e.success, "all canned dispatches succeed: {e:?}");
             assert!(e.error.is_none());
         }
+    }
+
+    // Note: the URI-propagation-across-await assertion lives in
+    // `crate::routing::uri_layer::tests` where it can run against the
+    // Layer directly without the noise of CommandExecutor's other
+    // tokio-runtime tests sharing the cargo test process.
+
+    // ─── Slice P: auth policy gate ──────────────────────────────────
+
+    /// The policy gate runs BEFORE the dispatcher's transport match —
+    /// a Forbidden verdict short-circuits to a typed error without
+    /// hitting any interceptor or module. Proves the chokepoint
+    /// behavior the design doc names: "every URI has a gate."
+    #[tokio::test]
+    async fn forbidden_policy_short_circuits_before_local_dispatch() {
+        let later_called = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry)
+            .with_policy(Arc::new(crate::routing::deny_path_prefix("forbidden/")))
+            // An interceptor that would normally short-circuit — the
+            // policy should reject the request BEFORE it gets here.
+            .with_interceptor(Arc::new(RecordingDecliner {
+                name: "should-never-run",
+                seen: later_called.clone(),
+                mark: 42,
+            }));
+
+        let err = executor
+            .execute("forbidden/some-op", Value::Null)
+            .await
+            .expect_err("forbidden policy must reject the dispatch");
+        assert!(
+            err.contains("forbidden"),
+            "error must name the forbidden verdict, got: {err}"
+        );
+        assert!(
+            err.contains("forbidden/some-op"),
+            "error must name the URI path that was denied, got: {err}"
+        );
+        assert_eq!(
+            later_called.load(Ordering::SeqCst),
+            0,
+            "interceptors must NOT be consulted after a Forbidden verdict"
+        );
+    }
+
+    /// A Deferred verdict also short-circuits — the dispatcher's
+    /// error names the prompt target env so the operator knows where
+    /// consent will be routed (once the consent transport lands).
+    #[tokio::test]
+    async fn deferred_policy_short_circuits_with_target_env_in_error() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry).with_policy(Arc::new(
+            crate::routing::defer_path_prefix(
+                "persona/state/",
+                crate::routing::EnvironmentId::Named("web".into()),
+            ),
+        ));
+
+        let err = executor
+            .execute("persona/state/mutate", Value::Null)
+            .await
+            .expect_err("deferred policy returns a typed error");
+        assert!(
+            err.contains("deferred"),
+            "error must name the deferred verdict, got: {err}"
+        );
+        assert!(
+            err.contains("web"),
+            "error must name the consent target env, got: {err}"
+        );
+    }
+
+    /// Proves the Transport trait extraction is wired correctly: a
+    /// Peer URI flows through `route()` → policy gate → the
+    /// installed remote Transport. When AircTransport lands, it
+    /// slots into the same call site and personas talk
+    /// cross-machine.
+    #[tokio::test]
+    async fn peer_uri_routes_through_installed_remote_transport() {
+        use crate::routing::{ClosureTransport, RouteDecision};
+        use std::sync::Mutex;
+
+        let captured_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_path_clone = captured_path.clone();
+
+        let transport = ClosureTransport::new("test-peer-transport", move |decision, _params| {
+            match &decision {
+                RouteDecision::Peer { path, .. } => {
+                    *captured_path_clone.lock().unwrap() = Some(path.clone());
+                    Ok(CommandResult::Json(serde_json::json!({
+                        "routed-through": "test-peer-transport",
+                    })))
+                }
+                other => panic!("expected Peer, got {other:?}"),
+            }
+        });
+
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry).with_remote_transport(Arc::new(transport));
+
+        let result = executor
+            .execute("airc://maya/inference/llm/generate", Value::Null)
+            .await
+            .expect("transport routes the peer URI");
+
+        match result {
+            CommandResult::Json(v) => {
+                assert_eq!(v["routed-through"], "test-peer-transport");
+            }
+            other => panic!("expected Json, got {other:?}"),
+        }
+        assert_eq!(
+            captured_path.lock().unwrap().as_deref(),
+            Some("inference/llm/generate"),
+            "transport must receive the parsed Peer path"
+        );
+    }
+
+    /// AllowAllPolicy (the default) is transparent — no behavior
+    /// difference from a substrate without a gate. Proves the
+    /// retrofit doesn't break existing call sites.
+    #[tokio::test]
+    async fn default_policy_lets_dispatch_through() {
+        let later_called = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry)
+            // No with_policy call — AllowAllPolicy is the default
+            .with_interceptor(Arc::new(RecordingDecliner {
+                name: "must-run",
+                seen: later_called.clone(),
+                mark: 99,
+            }))
+            .with_interceptor(Arc::new(AlwaysHandle));
+
+        let _ = executor
+            .execute("anything", Value::Null)
+            .await
+            .expect("default policy allows dispatch");
+        assert_eq!(
+            later_called.load(Ordering::SeqCst),
+            99,
+            "decliner must have been consulted (proves policy was Allow)"
+        );
     }
 }

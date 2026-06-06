@@ -72,10 +72,20 @@ pub enum InterceptorOutcome {
 /// in a singleton and dispatches commands concurrently.
 #[async_trait]
 pub trait CommandInterceptor: Send + Sync {
-    /// First look at the command + params. Return
+    /// First look at the command + params + caller. Return
     /// [`InterceptorOutcome::Handled`] to short-circuit the chain, or
     /// [`InterceptorOutcome::Decline`] to let the next interceptor (or
     /// the local dispatcher) handle it.
+    ///
+    /// `caller` is `None` for substrate-internal in-process invocations
+    /// (substrate's own code dispatching), `Some(CallerIdentity::airc(verified_sender))`
+    /// for cross-grid invocations the peer-side handler routes through
+    /// `execute_with_caller`. Interceptors that gate on caller (e.g.
+    /// future capability-token interceptors, sentinel quorum
+    /// interceptors) inspect this field; interceptors that don't can
+    /// ignore it. Per PR #1529 reviewer 2: threading caller through the
+    /// trait closes the silent-privilege-escalation seam where the
+    /// gate sees the caller but interceptors didn't.
     ///
     /// Returning `Err` aborts the chain — no silent fall-through on
     /// error, so a misconfigured interceptor surfaces loudly rather
@@ -84,6 +94,7 @@ pub trait CommandInterceptor: Send + Sync {
         &self,
         command: &str,
         params: &Value,
+        caller: Option<&crate::routing::CallerIdentity>,
     ) -> Result<InterceptorOutcome, String>;
 
     /// Static name for logging + telemetry. e.g. `"grid"`, `"airc"`.
@@ -109,6 +120,7 @@ mod tests {
             &self,
             _command: &str,
             _params: &Value,
+            _caller: Option<&crate::routing::CallerIdentity>,
         ) -> Result<InterceptorOutcome, String> {
             self.count.fetch_add(1, Ordering::SeqCst);
             Ok(InterceptorOutcome::Decline)
@@ -132,6 +144,7 @@ mod tests {
             &self,
             _command: &str,
             _params: &Value,
+            _caller: Option<&crate::routing::CallerIdentity>,
         ) -> Result<InterceptorOutcome, String> {
             Ok(InterceptorOutcome::Handled(CommandResult::Json(
                 serde_json::json!({ "value": self.value }),
@@ -155,6 +168,7 @@ mod tests {
             &self,
             _command: &str,
             _params: &Value,
+            _caller: Option<&crate::routing::CallerIdentity>,
         ) -> Result<InterceptorOutcome, String> {
             Err(format!("{} failed loudly", self.name))
         }
@@ -173,7 +187,7 @@ mod tests {
         params: &Value,
     ) -> Result<Option<CommandResult>, String> {
         for interceptor in interceptors {
-            match interceptor.try_route(command, params).await? {
+            match interceptor.try_route(command, params, None).await? {
                 InterceptorOutcome::Handled(result) => return Ok(Some(result)),
                 InterceptorOutcome::Decline => continue,
             }

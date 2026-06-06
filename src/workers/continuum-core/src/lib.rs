@@ -55,6 +55,7 @@ pub mod paths;
 pub mod persona;
 pub mod rag;
 pub mod resources;
+pub mod routing;
 pub mod runtime;
 pub mod secrets;
 pub mod system_resources;

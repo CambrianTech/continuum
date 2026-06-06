@@ -71,6 +71,7 @@ impl CommandInterceptor for AircInterceptor {
         &self,
         command: &str,
         params: &Value,
+        _caller: Option<&crate::routing::CallerIdentity>,
     ) -> Result<InterceptorOutcome, String> {
         let peer = params.get("aircPeer").and_then(|v| v.as_str());
         let room = params.get("aircRoom").and_then(|v| v.as_str());
@@ -108,7 +109,11 @@ mod tests {
     async fn declines_when_no_airc_target() {
         let interceptor = AircInterceptor::new();
         let outcome = interceptor
-            .try_route("chat/send", &serde_json::json!({ "roomId": "abc", "content": "hi" }))
+            .try_route(
+                "chat/send",
+                &serde_json::json!({ "roomId": "abc", "content": "hi" }),
+                None,
+            )
             .await
             .expect("no-target call must not error");
         assert!(
@@ -128,6 +133,7 @@ mod tests {
                     "aircPeer": "peer-uuid-here",
                     "content": "hi"
                 }),
+                None,
             )
             .await
             .expect_err(
@@ -158,6 +164,7 @@ mod tests {
                     "aircRoom": "room-uuid",
                     "content": "hi"
                 }),
+                None,
             )
             .await
             .expect_err("explicit aircRoom must surface a real error");

@@ -68,6 +68,7 @@ impl CommandInterceptor for GridInterceptor {
         &self,
         command: &str,
         params: &Value,
+        _caller: Option<&crate::routing::CallerIdentity>,
     ) -> Result<InterceptorOutcome, String> {
         match self.state.try_route_remote(command, params).await? {
             Some(result) => Ok(InterceptorOutcome::Handled(result)),
@@ -120,7 +121,7 @@ mod tests {
         let state = make_state();
         let interceptor = GridInterceptor::new(state);
         let outcome = interceptor
-            .try_route("anything", &serde_json::json!({}))
+            .try_route("anything", &serde_json::json!({}), None)
             .await
             .expect("local routing must not error");
         assert!(
@@ -139,6 +140,7 @@ mod tests {
             .try_route(
                 "ai/generate",
                 &serde_json::json!({ "routingHint": "local-only" }),
+                None,
             )
             .await
             .expect("local-only routing must not error");
@@ -159,6 +161,7 @@ mod tests {
             .try_route(
                 "anything",
                 &serde_json::json!({ "nodeId": "nonexistent-node-id" }),
+                None,
             )
             .await
             .expect("unknown-node routing must not error");
