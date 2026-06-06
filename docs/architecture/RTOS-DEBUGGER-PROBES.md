@@ -8,7 +8,8 @@ The **probe macros** are the substrate's RTOS debugger:
 
 - `probe!(class = "...", field = val, ...)` — a non-blocking breakpoint. Snapshots the named variables at the call site, routes by `class` to subscribers + a disk log.
 - `time_sync!("phase_name", { ... })` — RAII timing for a synchronous block. The wrapped block's duration becomes a timing probe at scope exit.
-- `time_async!("category", "operation", future)` — RAII timing for an async future (RAII guard, lives in `crate::logging`).
+- `time_probe!("phase_name", future)` — substrate-tracing timing for an async future. Safe-by-construction (`.instrument(span).await` shape — no `_enter` guard held across `.await`). Emits to the same `timing` probe class as `time_sync!`, so operators see sync + async timings on one flat timeline. Prefer this over the bare `.instrument(info_span!(...))` form when sprinkling async timings — the verbose form gets skipped when adding probes in a hurry.
+- `time_async!("category", "operation", future)` — RAII timing for an async future via `crate::logging::TimingGuard`. Different shape from `time_probe!` (logging crate's own logger vs substrate probe stream). Use `time_probe!` for cognition / substrate timing; use `time_async!` for the legacy logging-crate-bound timing.
 - `stack!()` — the URI ancestry at this point: which dispatched command's context are we in.
 
 Each probe call is **one line at the seam**. Easy enough to add that the cognition code grows probes the way it grows lines — that's the only way debugging concurrent code stays sustainable. Per Joel 2026-06-06: "Easy one liners or it won't happen."
@@ -164,9 +165,30 @@ let result = time_sync!("recall_l2", {
     cognition.admission.recall_scored(now_ms, 8)
 });
 
-// Around a timing-critical future (async):
+// Around a timing-critical future (async, substrate probe stream):
+let analysis = time_probe!("cognition.analyze", analyze(input));
+let response = time_probe!("inference.generate", adapter.generate_text(req));
+
+// Around a timing-critical future (logging-crate RAII shape — legacy):
 let analysis = time_async!("cognition", "analyze", analyze(input));
 ```
+
+Both async forms exist for historical reasons: `time_probe!` is the
+substrate's tracing-span shape (composes with `ProbeRouterLayer` +
+`JsonlProbeFileSink`); `time_async!` is the `crate::logging`'s RAII
+TimingGuard shape (logs to the logging crate's own logger). For new
+cognition seams prefer `time_probe!` — that's what the rest of the
+probe pipeline consumes.
+
+> **Persistence caveat:** `time_sync!` and `time_probe!` emit
+> tracing SPANS, not events. The current `ProbeRouterLayer` and
+> `JsonlProbeFileSink` only implement `on_event` — they do NOT yet
+> capture span-close events. Task #196 wires the missing
+> `on_close` so timing spans persist to the JSONL log; until then,
+> the timing macros work for `tracing`-native consumers (e.g.
+> `tracing_subscriber::fmt`) but timings won't appear in the JTAG
+> probe log. The macro lands here so the call shape is stable
+> when the routing side ships.
 
 ### Convention rules
 

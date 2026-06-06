@@ -119,27 +119,100 @@ macro_rules! time_sync {
     }};
 }
 
-// For **async** timing in the substrate's URI-context-aware shape,
-// use `.instrument(span).await` directly at the call site:
-//
-//   let span = tracing::info_span!("time", name = "phase", probe_class = "timing");
-//   let result = my_future.instrument(span).await;
-//
-// This is the pattern `CommandExecutor::dispatch` uses (per the
-// d1cf19dc5 fix) — `_enter` is never held across an await. A macro
-// for it isn't added at this layer because:
-//   1. `crate::logging::time_async!` already exists with a different
-//      shape (RAII TimingGuard with category/operation, NOT a tracing
-//      span). Reusing the name would collide.
-//   2. The direct `.instrument(span).await` form is two lines and
-//      already idiomatic. The previous `time!` macro silently broke
-//      across `.await` precisely because consumers reached for the
-//      one-liner — making it impossible to misuse here is the goal.
-//
-// Per PR #1529 reviewer 2 fix: removed the substrate-wide foot-gun
-// where `time!("infer", run_inference(...).await)` held `_enter`
-// across the inner await, breaking URI_STACK. The renamed
-// `time_sync!` makes the sync-only contract explicit.
+/// Explicit timing for an **async future** — safe-by-construction
+/// companion to [`time_sync!`].
+///
+/// Per Joel 2026-06-06 `[[refine-tools-as-you-use-them]]`: every
+/// async timing site in the cognition path was an
+/// `.instrument(info_span!("time", name=..., probe_class="timing"))
+/// .await` ceremony. Three lines plus a `use tracing::Instrument`
+/// import. Nobody writes those when adding a new seam in a hurry —
+/// the result was that async cognition stages stayed untimed. This
+/// macro collapses that to one line.
+///
+/// ```ignore
+/// use continuum_core::time_probe;
+///
+/// // Wrap any future expression:
+/// let analysis = time_probe!("cognition.analyze", analyze(input));
+///
+/// // Inline complex expressions just as cleanly:
+/// let response = time_probe!("inference.generate",
+///     adapter.generate_text(request));
+/// ```
+///
+/// ## Why this isn't `time_async!`
+///
+/// The name `time_async!` is taken by `crate::logging::time_async!`
+/// which has a DIFFERENT shape (RAII `TimingGuard` with
+/// `category` + `operation`, NOT a tracing span). The two
+/// macros serve different observability paths — RAII to the
+/// logging crate's own logger vs tracing-span to the substrate's
+/// probe routing. Keeping distinct names prevents accidental
+/// substitution.
+///
+/// ## Why this is safe across `.await`
+///
+/// The previous substrate-wide foot-gun (PR #1529 reviewer 2 fix)
+/// was a `time!` macro that expanded to `let _enter = span.enter();
+/// $body` where `$body` contained `.await`. Holding `_enter` across
+/// `.await` broke `URI_STACK`. THIS macro expands to
+/// `$future.instrument(span).await` — the future itself enters /
+/// exits the span via `Future::poll` boundaries, never holding a
+/// scope guard across an await suspension. Same shape
+/// `CommandExecutor::dispatch` uses (per the `d1cf19dc5` fix).
+///
+/// ## Where it lands
+///
+/// Emits the same `timing` probe class as `time_sync!`. Operators
+/// filter both sync + async timings together via
+/// `CONTINUUM_PROBE_CLASSES=timing` and see one flat timeline.
+///
+/// **Substrate gaps tracked separately:** task #196 (probe Layers
+/// only implement `on_event`, not `on_close` — span-close events
+/// from `time_sync!` + `time_probe!` don't yet reach the JSONL log
+/// or broadcast subscribers; the call shape lands here, the
+/// routing side follows). Task #197 (flat `timing` class vs the
+/// substrate's hierarchical class taxonomy — picking the
+/// convention is its own design decision). Don't rely on the
+/// timing probe being persistable until #196 lands.
+///
+/// ## Cost
+///
+/// Low — but NOT zero. `info_span!` allocates a `Span` struct +
+/// attaches the `name` + `probe_class` fields regardless of
+/// whether a subscriber is registered. `Instrumented<F>` wraps
+/// the future, adding ~24 bytes per call site and one branch on
+/// every `poll`. Tracing's `release_max_level_*` cargo features
+/// compile out the `event!` body, but the `Instrumented<F>`
+/// wrapper persists at runtime even at max-level-off. Acceptable
+/// for cognition seams (Qwen inference dominates wall-clock by
+/// 4-5 orders of magnitude); audit per task #198 if sprinkled
+/// into a hot loop.
+///
+/// ## Field names
+///
+/// The span carries `seam = $name` (the seam identifier as a
+/// dotted path, e.g. `"cognition.analyze.inference"`) and
+/// `probe_class = "timing"`. `seam` is chosen over the more-
+/// natural `name` to avoid field-name collision with other
+/// probes that already use `name` for different purposes
+/// (`probe!(class="state", name="active_persona", ...)`). All
+/// `jq` queries should filter on `.fields.seam`.
+#[macro_export]
+macro_rules! time_probe {
+    ($name:expr, $future:expr) => {{
+        ::tracing::Instrument::instrument(
+            $future,
+            ::tracing::info_span!(
+                "time",
+                seam = $name,
+                probe_class = "timing",
+            ),
+        )
+        .await
+    }};
+}
 
 /// Returns the substrate's "call stack" at this point as a
 /// `Vec<String>` of URI frames from the dispatch root to here.
@@ -242,6 +315,70 @@ mod tests {
     #[test]
     fn time_expression_returns_expression_value() {
         let result = crate::time_sync!("test_phase", 21 * 2);
+        assert_eq!(result, 42);
+    }
+
+    /// `time_probe!` wraps a future and yields the future's value
+    /// at the call site — i.e. the macro is value-transparent so
+    /// switching `expr.await` to `time_probe!("seam", expr)` is a
+    /// pure observability addition with no shape change.
+    ///
+    /// Uses `block_on` rather than `#[tokio::test]` to keep the test
+    /// dep-light — the macro doesn't care about the executor, just
+    /// that the call shape compiles + returns the inner future's
+    /// value.
+    #[test]
+    fn time_probe_returns_inner_future_value() {
+        async fn produces_forty_two() -> i32 {
+            42
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime");
+        let result = runtime.block_on(async {
+            crate::time_probe!("test_phase", produces_forty_two())
+        });
+        assert_eq!(result, 42);
+    }
+
+    /// `time_probe!` MUST pass `Result<T, E>` futures through
+    /// unchanged — `.instrument()` preserves the inner future's
+    /// `Output` type, but a test that uses an infallible future
+    /// can't prove that. Pin the error-path explicitly per
+    /// `[[no-fallbacks-ever]]`: substrate refuses to silently
+    /// swallow errors at any seam.
+    #[test]
+    fn time_probe_propagates_error_from_inner_future() {
+        async fn fails() -> Result<i32, &'static str> {
+            Err("intentional")
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime");
+        let result: Result<i32, &str> = runtime.block_on(async {
+            crate::time_probe!("test_error_path", fails())
+        });
+        assert_eq!(result, Err("intentional"));
+    }
+
+    /// Multiple nested `time_probe!` calls compose — the inner
+    /// span becomes a child of the outer span, same as
+    /// `time_sync!` nesting. Tests the macro's hygiene + that
+    /// the value flows through both layers.
+    #[test]
+    fn time_probe_nested_compose_and_return_inner_value() {
+        async fn doubled(x: i32) -> i32 {
+            x * 2
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime");
+        let result = runtime.block_on(async {
+            let outer = crate::time_probe!("outer", async {
+                crate::time_probe!("inner", doubled(21))
+            });
+            outer
+        });
         assert_eq!(result, 42);
     }
 
