@@ -100,7 +100,35 @@ pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisErr
     // suggested_angles gracefully (one-specialty rooms have no
     // angle to inject — the render proceeds with system_prompt
     // alone).
+    // RTOS-debugger breakpoint: analyze entry. The subconscious
+    // stage gating every persona's "should I weigh in" decision.
+    // Captures the input fingerprint so an operator can correlate
+    // multiple personas hitting the same single-flight cache.
+    // Per docs/architecture/RTOS-DEBUGGER-PROBES.md class taxonomy.
+    crate::probe!(
+        class = "cognition.analyze.enter",
+        message_id = %input.message_id,
+        room_id = %input.room_id,
+        text_len = input.text.len(),
+        history_count = input.recent_history.len(),
+        known_specialties_count = input.known_specialties.len(),
+        "analyze entry"
+    );
+
     if input.known_specialties.len() <= 1 {
+        // RTOS-debugger breakpoint: the substrate skipped the LLM
+        // call because a single-specialty room has nothing for
+        // orchestration to do. The persona's render proceeds with
+        // empty suggested_angles. Critical to distinguish "I chose
+        // silence because no angle matched" vs "I chose silence
+        // because analyze was skipped" — they look identical
+        // downstream without this probe.
+        crate::probe!(
+            class = "cognition.analyze.noop_single_specialty",
+            message_id = %input.message_id,
+            specialties_seen = ?input.known_specialties,
+            "skipped LLM — single-specialty room"
+        );
         let now = now_ms();
         return Ok(SharedAnalysis {
             message_id: input.message_id,
@@ -126,6 +154,19 @@ pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisErr
         if !is_stale(&cached) {
             let mut hit = cached.clone();
             hit.from_cache = true;
+            // RTOS-debugger breakpoint: cache hit means N-1 personas
+            // in this room skip the LLM call entirely — one of the
+            // substrate's biggest correctness/perf wins. If hit-rate
+            // is low across a run, the cache key is too granular
+            // (continuum#1206 history-inclusion bug).
+            crate::probe!(
+                class = "cognition.analyze.cache_hit",
+                message_id = %input.message_id,
+                cache_key = %cache_key,
+                model_used = %hit.model_used,
+                angles_count = hit.suggested_angles.len(),
+                "L1 cache hit"
+            );
             return Ok(hit);
         }
         // Stale: drop and fall through to re-analysis.
@@ -272,6 +313,32 @@ async fn run_analysis(
     let stripped = strip_think_blocks(&response.text);
     let parsed = parse_model_output(&stripped, &input.known_specialties)?;
     let duration_ms = start.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
+
+    // RTOS-debugger breakpoint: the analyze LLM finished and we
+    // parsed its output. Surfaces the per-specialty angle decision
+    // (count of empty vs non-empty angles) — the key signal
+    // shaping which personas the orchestrator picks as responders.
+    // If at LCD tier every angle comes back non-empty for trivial
+    // messages, this probe is where the diagnosis starts.
+    let empty_angles: usize = parsed
+        .suggested_angles
+        .values()
+        .filter(|v| v.is_empty())
+        .count();
+    let non_empty_angles = parsed.suggested_angles.len().saturating_sub(empty_angles);
+    crate::probe!(
+        class = "cognition.analyze.parse",
+        message_id = %input.message_id,
+        model_used = %response.model,
+        analyze_duration_ms = duration_ms,
+        angles_total = parsed.suggested_angles.len(),
+        angles_non_empty = non_empty_angles,
+        angles_empty = empty_angles,
+        intent = ?parsed.intent,
+        summary_len = parsed.summary.len(),
+        key_concepts_count = parsed.key_concepts.len(),
+        "parsed analyze output"
+    );
 
     Ok(SharedAnalysis {
         message_id: input.message_id,
