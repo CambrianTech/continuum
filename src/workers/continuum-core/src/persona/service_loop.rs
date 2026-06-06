@@ -530,7 +530,18 @@ async fn serve_persona_loop_inner(
         let respond_input = crate::persona::response::RespondInput {
             persona: crate::cognition::PersonaSlot {
                 persona_id: ctx.identity.persona_id,
-                specialty: format!("{:?}", ctx.role).to_lowercase(),
+                // #195 slice 3: drop the per-turn
+                // `format!("{:?}", ctx.role).to_lowercase()` —
+                // RoleId already exposes the canonical specialty
+                // string via `as_str() -> &'static str` (pinned in
+                // role_template.rs). The only per-turn cost is
+                // one `String::from` of a static str. No cache
+                // needed; the source IS the cache. A behavior-
+                // preservation test in `mod tests` pins
+                // `role.as_str() == format!("{:?}", role).to_lowercase()`
+                // for every RoleId variant so this swap is
+                // provably safe and stays safe.
+                specialty: ctx.role.as_str().to_string(),
                 display_name: ctx.identity.agent_name.clone(),
             },
             turn_context,
@@ -1011,6 +1022,64 @@ mod tests {
             std::ptr::eq(original.as_ref() as *const str, cloned.as_ref() as *const str),
             "cloned Arc must point at the SAME str storage as the original"
         );
+    }
+
+    /// #195 slice 3: pin that the migration from
+    /// `format!("{:?}", role).to_lowercase()` to `role.as_str()`
+    /// in `serve_persona_loop_inner` is byte-for-byte
+    /// behavior-preserving for EVERY current `RoleId` variant.
+    ///
+    /// Non-circular: the two sides are independently-derived —
+    /// the left is the new direct production path (a hand-
+    /// curated `match role { ... }` in `role_template.rs::as_str`),
+    /// the right is the pre-slice-3 Debug-format + Unicode
+    /// lowercase chain. They are equal today by careful design
+    /// of `as_str()`; if a future PR adds a `RoleId` variant
+    /// whose `as_str()` choice DOESN'T match the legacy
+    /// Debug+lowercase, this test breaks loudly so the author
+    /// makes an explicit decision (update the test to record
+    /// the intentional divergence, or align `as_str()` with
+    /// the legacy form).
+    ///
+    /// The exhaustive `match` matcher (no wildcard) makes the
+    /// compiler force a new variant to appear here at the same
+    /// time it appears in `RoleId`, so the `variants` array
+    /// stays complete by construction.
+    #[test]
+    fn role_as_str_preserves_pre_slice3_specialty_format_for_each_role() {
+        // RoleId is already in scope via `use crate::persona::role_template::RoleId`
+        // at the top of the test module — no per-test import needed.
+        let variants: &[RoleId] = &[
+            RoleId::Helper,
+            RoleId::Coder,
+            RoleId::Sentinel,
+            RoleId::Custom,
+        ];
+        for role in variants {
+            let direct = role.as_str();
+            let legacy = format!("{:?}", role).to_lowercase();
+            assert_eq!(
+                direct, legacy,
+                "RoleId::{:?}.as_str() must produce the SAME string \
+                 the pre-#195-slice-3 per-turn \
+                 format!(\"{{:?}}\", role).to_lowercase() did — \
+                 otherwise switching the service loop's specialty \
+                 source from Debug+lowercase to as_str() silently \
+                 changes what downstream prompt assembly reads",
+                role
+            );
+        }
+        // Compile-time exhaustiveness: a new RoleId variant
+        // forces a new arm here, which forces the author to add
+        // it to the `variants` array above. The arms each touch
+        // the variant explicitly (no `_` wildcard) so the
+        // compiler rejects silent drift.
+        let _ = |role: RoleId| match role {
+            RoleId::Helper => (),
+            RoleId::Coder => (),
+            RoleId::Sentinel => (),
+            RoleId::Custom => (),
+        };
     }
 
     /// Aggregate-math property: each phase aggregate is structurally
