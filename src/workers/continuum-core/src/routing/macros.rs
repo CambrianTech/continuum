@@ -96,7 +96,9 @@ macro_rules! probe {
 /// let result = time_sync!("hash_payload", compute_hash(&payload));
 /// ```
 ///
-/// The span name becomes the `name` field on the timing probe. Same
+/// The span name becomes the `seam` field on the timing probe (the
+/// same field `time_probe!` uses — both macros agree so `jq` queries
+/// like `.fields.seam == "recall_phase"` match either kind). Same
 /// subscriber that routes `probe!` events handles span durations and
 /// routes to `airc://<actor>/debug/probes/timing/stream`. The
 /// dispatch span the executor establishes is the parent — so the
@@ -111,7 +113,7 @@ macro_rules! time_sync {
     ($name:expr, $body:expr) => {{
         let __span = ::tracing::info_span!(
             "time",
-            name = $name,
+            seam = $name,
             probe_class = "timing",
         );
         let __enter = __span.enter();

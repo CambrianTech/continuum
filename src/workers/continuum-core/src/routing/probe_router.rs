@@ -62,12 +62,14 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{
     field::{Field, Visit},
-    Event, Subscriber,
+    span::Attributes,
+    Event, Id, Subscriber,
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
@@ -188,6 +190,40 @@ impl ProbeRouterLayer {
     }
 }
 
+/// Per-span data the Layer parks in `tracing_subscriber`'s span
+/// extensions at `on_new_span` and reads back at `on_close` to
+/// build the timing ProbeEvent.
+///
+/// Stored ONLY for spans whose attrs carry a `probe_class` field
+/// (i.e. spans created via `time_sync!` / `time_probe!`). Plain
+/// `info_span!` / `debug_span!` calls without a `probe_class` get
+/// no extension storage — zero overhead per `[[no-fallbacks-ever]]`
+/// (we don't fabricate timing events for spans nobody asked to
+/// time).
+///
+/// Task #196: this is the load-bearing piece that makes
+/// `time_sync!` and `time_probe!` actually persist. Before this,
+/// both macros emitted spans the Layer never observed.
+#[derive(Debug, Clone)]
+struct SpanProbeMeta {
+    probe_class: String,
+    /// Non-message fields recorded on the span's `Attributes`
+    /// (excluding `probe_class` itself, which is the routing key,
+    /// not a payload field). Captured at `on_new_span` because
+    /// span attrs are immutable once recorded.
+    fields: HashMap<String, String>,
+    /// Wall-clock instant the span was created. Pair with
+    /// `Instant::now()` at `on_close` to compute `duration_ms`.
+    ///
+    /// Choice of creation-to-close vs cumulative-entered: total
+    /// wall-clock matches operator intuition for "how long did
+    /// `cognition.analyze` take." For async spans this includes
+    /// time spent awaiting (not polling), which is usually what
+    /// you want to see in the JTAG log. CPU-only timing would
+    /// need cumulative enter/exit accounting — out of scope here.
+    start: Instant,
+}
+
 impl<S> Layer<S> for ProbeRouterLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
@@ -208,6 +244,65 @@ where
             fields: visitor.fields,
         };
 
+        self.fan_out(probe_event);
+    }
+
+    /// Spans created via `time_sync!` / `time_probe!` carry a
+    /// `probe_class` attribute. Stash a `SpanProbeMeta` in the
+    /// span's extensions so `on_close` can build the timing
+    /// `ProbeEvent`.
+    ///
+    /// Spans without `probe_class` (plain `info_span!`,
+    /// `debug_span!`, framework spans) are ignored — no extension
+    /// stored, no allocation cost beyond visiting the attrs once.
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        let mut visitor = ProbeEventVisitor::default();
+        attrs.record(&mut visitor);
+        let probe_class = match visitor.probe_class {
+            Some(c) => c,
+            None => return, // not a timing/probe span
+        };
+        let Some(span_ref) = ctx.span(id) else {
+            return;
+        };
+        span_ref.extensions_mut().insert(SpanProbeMeta {
+            probe_class,
+            fields: visitor.fields,
+            start: Instant::now(),
+        });
+    }
+
+    /// Span closed — convert its parked `SpanProbeMeta` into a
+    /// `ProbeEvent` with `duration_ms` and fan out. Pair with
+    /// `on_new_span` per task #196.
+    ///
+    /// `on_close` fires when the span's last clone is dropped.
+    /// For `time_sync!` that's the end of the wrapped block; for
+    /// `time_probe!` it's when the Instrumented<F> future is
+    /// dropped (typically right after `.await` completes).
+    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+        let Some(span_ref) = ctx.span(&id) else {
+            return;
+        };
+        let extensions = span_ref.extensions();
+        let Some(meta) = extensions.get::<SpanProbeMeta>() else {
+            return; // span didn't carry probe_class — not ours
+        };
+        let duration_ms = meta.start.elapsed().as_millis() as u64;
+        let mut fields = meta.fields.clone();
+        fields.insert("duration_ms".to_string(), duration_ms.to_string());
+
+        let probe_event = ProbeEvent {
+            class: meta.probe_class.clone(),
+            uri_chain: current_uri_chain(),
+            message: None, // spans don't carry the format-string `message`
+            fields,
+        };
+        // Drop the extensions borrow before fan_out (in case a
+        // subscriber tries to introspect the same span — unlikely,
+        // but extensions are RwLocked so a re-entrant lock would
+        // deadlock).
+        drop(extensions);
         self.fan_out(probe_event);
     }
 }
@@ -375,6 +470,81 @@ mod tests {
             assert_eq!(d1.fields.get("action").map(String::as_str), Some("promote"));
             assert!(decision_rx.try_recv().is_err(), "no more decision events");
             assert!(latency_rx.try_recv().is_err(), "no more latency events");
+        });
+    }
+
+    /// Task #196: `time_sync!` emits a span carrying `probe_class
+    /// = "timing"`. When the span closes the Layer must fan out a
+    /// `ProbeEvent` with the timing class + a `duration_ms` field.
+    /// Before this fix the Layer ignored span close — `time_sync!`
+    /// was theatrical.
+    #[test]
+    fn time_sync_span_close_fans_out_timing_event() {
+        install(|router| {
+            let mut rx = router.subscribe("timing");
+            // Scope so the span is fully dropped (closes) before
+            // we check the channel.
+            {
+                let _result: i32 = crate::time_sync!("test_phase", 21 * 2);
+            }
+            let event = rx
+                .try_recv()
+                .expect("subscribed listener must receive the timing event");
+            assert_eq!(event.class, "timing");
+            assert_eq!(event.fields.get("seam").map(String::as_str), Some("test_phase"));
+            // duration_ms is always set on timing events
+            assert!(
+                event.fields.contains_key("duration_ms"),
+                "fields must contain duration_ms: {:?}",
+                event.fields
+            );
+        });
+    }
+
+    /// Same as the sync test but for `time_probe!` (async). Uses
+    /// the current-thread tokio runtime so the per-thread subscriber
+    /// from `with_default` covers the future's polls.
+    #[test]
+    fn time_probe_span_close_fans_out_timing_event() {
+        install(|router| {
+            let mut rx = router.subscribe("timing");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("current-thread runtime");
+            async fn produces() -> i32 {
+                42
+            }
+            let _result: i32 = runtime.block_on(async {
+                crate::time_probe!("async_test_phase", produces())
+            });
+            let event = rx.try_recv().expect("subscriber must receive timing event");
+            assert_eq!(event.class, "timing");
+            assert_eq!(
+                event.fields.get("seam").map(String::as_str),
+                Some("async_test_phase")
+            );
+            assert!(event.fields.contains_key("duration_ms"));
+        });
+    }
+
+    /// Plain `info_span!` calls (no `probe_class`) must NOT trigger
+    /// timing fanout — only `time_sync!` / `time_probe!` spans
+    /// (which carry `probe_class = "timing"`) count. Pins the
+    /// `[[no-fallbacks-ever]]` doctrine: we don't fabricate timing
+    /// events for spans nobody asked to time.
+    #[test]
+    fn span_without_probe_class_does_not_fanout() {
+        install(|router| {
+            let mut rx = router.subscribe("timing");
+            // info_span! with NO probe_class field
+            let span = tracing::info_span!("plain", some_field = "value");
+            let _enter = span.enter();
+            drop(_enter);
+            drop(span);
+            assert!(
+                rx.try_recv().is_err(),
+                "non-timing spans must not produce timing fanout"
+            );
         });
     }
 

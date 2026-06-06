@@ -62,11 +62,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tracing::field::{Field, Visit};
-use tracing::{Event, Subscriber};
+use tracing::{span::Attributes, Event, Id, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 use super::current_uri_chain;
@@ -232,6 +232,28 @@ impl JsonlProbeFileSink {
     }
 }
 
+/// Per-span data the sink parks in span extensions at
+/// `on_new_span` and reads at `on_close` to build the timing
+/// JSONL record.
+///
+/// Mirrors `ProbeRouterLayer::SpanProbeMeta` — duplicated locally
+/// (rather than exported and shared) so the sink composes
+/// independently per this file's header comment. The shape is
+/// trivial; if a third consumer appears we hoist into
+/// `routing/mod.rs`.
+///
+/// Task #196: this is the load-bearing piece that makes
+/// `time_sync!` and `time_probe!` actually land in the on-disk
+/// JTAG log. Before this, both macros emitted spans the sink
+/// never observed — operators tailing `probes.jsonl` saw zero
+/// timing records no matter how many `time_sync!` calls fired.
+#[derive(Debug, Clone)]
+struct FileSinkSpanMeta {
+    probe_class: String,
+    fields: std::collections::HashMap<String, String>,
+    start: Instant,
+}
+
 impl<S> Layer<S> for JsonlProbeFileSink
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
@@ -262,6 +284,82 @@ where
             message: visitor.message,
             fields: visitor.fields,
         };
+
+        let captured_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        self.write_one(captured_at_ms, &probe_event);
+    }
+
+    /// Spans created via `time_sync!` / `time_probe!` carry a
+    /// `probe_class` attribute. Stash a `FileSinkSpanMeta` so
+    /// `on_close` can build the timing JSONL record.
+    ///
+    /// Spans without `probe_class` (plain `info_span!`,
+    /// framework spans) get no extension stored — zero cost
+    /// beyond visiting the attrs once.
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        let mut visitor = FileSinkVisitor::default();
+        attrs.record(&mut visitor);
+        let probe_class = match visitor.probe_class {
+            Some(c) => c,
+            None => return, // not a timing/probe span
+        };
+        let Some(span_ref) = ctx.span(id) else {
+            return;
+        };
+        span_ref.extensions_mut().insert(FileSinkSpanMeta {
+            probe_class,
+            fields: visitor.fields,
+            start: Instant::now(),
+        });
+    }
+
+    /// Span closed — convert the parked `FileSinkSpanMeta` into a
+    /// JSONL line on disk. Mirrors the router's `on_close`; the
+    /// class filter runs the same check as `on_event` so an
+    /// operator running `CONTINUUM_PROBE_CLASSES=timing` sees
+    /// `time_sync!` / `time_probe!` durations land alongside
+    /// event-shape probes.
+    ///
+    /// `duration_ms` is injected into `fields` before serialization
+    /// so the on-disk record matches the broadcast `ProbeEvent`
+    /// shape — same line whether you consume from
+    /// `ProbeRouterLayer`'s subscriber or `tail -f`.
+    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+        let Some(span_ref) = ctx.span(&id) else {
+            return;
+        };
+        let extensions = span_ref.extensions();
+        let Some(meta) = extensions.get::<FileSinkSpanMeta>() else {
+            return; // span didn't carry probe_class — not ours
+        };
+
+        // Class filter applies to timing spans just as it does to
+        // event-shape probes; an operator filtering to
+        // `persona.render.exit` shouldn't see timing noise.
+        if !self.allowed_classes.is_empty() && !self.allowed_classes.contains(&meta.probe_class) {
+            return;
+        }
+
+        let duration_ms = meta.start.elapsed().as_millis() as u64;
+        let mut fields = meta.fields.clone();
+        fields.insert("duration_ms".to_string(), duration_ms.to_string());
+
+        let probe_event = ProbeEvent {
+            class: meta.probe_class.clone(),
+            uri_chain: current_uri_chain(),
+            message: None, // spans don't carry the format-string `message`
+            fields,
+        };
+
+        // Drop the extensions borrow before write_one — extensions
+        // are RwLocked and write_one acquires the sink's writer
+        // Mutex; releasing the read guard first keeps the lock
+        // hierarchy clean (extensions → writer, never the reverse).
+        drop(extensions);
 
         let captured_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -461,5 +559,124 @@ mod tests {
         let chain = lines[0]["uri_chain"].as_array().unwrap();
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0], "airc:///cognition/respond");
+    }
+
+    /// Task #196: `time_sync!` spans must persist as JSONL timing
+    /// records when the span closes. Before this fix the sink only
+    /// implemented `on_event`, so the entire `time_sync!` /
+    /// `time_probe!` macro family was theatrical on disk —
+    /// operators tailing `probes.jsonl` saw zero timing records.
+    #[test]
+    fn time_sync_span_close_persists_timing_to_jsonl() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("probes.jsonl");
+
+        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let subscriber = tracing_subscriber::registry()
+            .with(crate::routing::UriCaptureLayer::new())
+            .with(sink);
+
+        tracing::subscriber::with_default(subscriber, || {
+            // Scope so the span is fully dropped (closes) before
+            // we read the file.
+            let _result: i32 = crate::time_sync!("test_phase", 21 * 2);
+        });
+
+        let lines = read_jsonl(&path);
+        assert_eq!(lines.len(), 1, "exactly one timing record expected");
+        assert_eq!(lines[0]["class"], "timing");
+        assert_eq!(lines[0]["fields"]["seam"], "test_phase");
+        assert!(
+            lines[0]["fields"]["duration_ms"].is_string(),
+            "duration_ms must be stringified into fields per on-disk shape"
+        );
+    }
+
+    /// Same as the sync test but for `time_probe!` (async). Uses
+    /// the current-thread tokio runtime so the per-thread subscriber
+    /// from `with_default` covers the future's polls.
+    #[test]
+    fn time_probe_span_close_persists_timing_to_jsonl() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("probes.jsonl");
+
+        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let subscriber = tracing_subscriber::registry()
+            .with(crate::routing::UriCaptureLayer::new())
+            .with(sink);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime");
+
+        async fn produces() -> i32 {
+            42
+        }
+
+        tracing::subscriber::with_default(subscriber, || {
+            let _result: i32 =
+                runtime.block_on(async { crate::time_probe!("async_test_phase", produces()) });
+        });
+
+        let lines = read_jsonl(&path);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["class"], "timing");
+        assert_eq!(lines[0]["fields"]["seam"], "async_test_phase");
+        assert!(lines[0]["fields"]["duration_ms"].is_string());
+    }
+
+    /// Plain `info_span!` calls (no `probe_class`) must NOT produce
+    /// JSONL timing records — only `time_sync!` / `time_probe!`
+    /// spans (which carry `probe_class = "timing"`) count. Pins the
+    /// `[[no-fallbacks-ever]]` doctrine to the on-disk layer.
+    #[test]
+    fn plain_span_close_does_not_persist_to_jsonl() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("probes.jsonl");
+
+        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let subscriber = tracing_subscriber::registry()
+            .with(crate::routing::UriCaptureLayer::new())
+            .with(sink);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("plain", some_field = "value");
+            let _enter = span.enter();
+            drop(_enter);
+            drop(span);
+        });
+
+        let lines = read_jsonl(&path);
+        assert!(
+            lines.is_empty(),
+            "non-timing spans must not produce JSONL records: {lines:?}"
+        );
+    }
+
+    /// The class filter applies to timing spans just as it does to
+    /// event-shape probes. An operator running
+    /// `CONTINUUM_PROBE_CLASSES=persona.render.exit` should NOT see
+    /// stray `timing` lines in the log.
+    #[test]
+    fn class_filter_applies_to_timing_spans() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("probes.jsonl");
+
+        let mut allowed = HashSet::new();
+        allowed.insert("persona.render.exit".to_string());
+
+        let sink = JsonlProbeFileSink::new(&path, allowed).unwrap();
+        let subscriber = tracing_subscriber::registry()
+            .with(crate::routing::UriCaptureLayer::new())
+            .with(sink);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let _kept: i32 = crate::time_sync!("dropped_phase", 1);
+            crate::probe!(class = "persona.render.exit", "kept");
+        });
+
+        let lines = read_jsonl(&path);
+        assert_eq!(lines.len(), 1, "timing line must be filtered out");
+        assert_eq!(lines[0]["class"], "persona.render.exit");
     }
 }
