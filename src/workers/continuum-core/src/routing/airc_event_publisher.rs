@@ -1074,6 +1074,49 @@ mod tests {
         }
     }
 
+    /// PR #1529 reviewer 1 BLOCK 3: invalid-UUID arms had no test.
+    /// command_handler establishes the pattern with
+    /// `parse_envelope_rejects_invalid_correlation_uuid`; the event
+    /// side missed it. Mirror coverage for both headers.
+    #[test]
+    fn parse_subscribe_envelope_rejects_invalid_reply_to_uuid() {
+        let request = sample_subscribe();
+        let mut envelope =
+            make_subscribe_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &request);
+        envelope
+            .headers
+            .insert(HEADER_AIRC_REPLY_TO.to_string(), "not-a-uuid".to_string());
+        let err = parse_subscribe_envelope(&envelope)
+            .expect_err("invalid reply_to UUID must fail");
+        match err {
+            AdapterError::Consumer(msg) => {
+                assert!(msg.contains("not a valid UUID"), "must name the parse failure: {msg}");
+                assert!(msg.contains(HEADER_AIRC_REPLY_TO), "must name the header: {msg}");
+            }
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_subscribe_envelope_rejects_invalid_correlation_uuid() {
+        let request = sample_subscribe();
+        let mut envelope =
+            make_subscribe_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &request);
+        envelope.headers.insert(
+            HEADER_AIRC_CORRELATION_ID.to_string(),
+            "also-not-a-uuid".to_string(),
+        );
+        let err = parse_subscribe_envelope(&envelope)
+            .expect_err("invalid correlation_id UUID must fail");
+        match err {
+            AdapterError::Consumer(msg) => {
+                assert!(msg.contains("not a valid UUID"), "must name the parse failure: {msg}");
+                assert!(msg.contains(HEADER_AIRC_CORRELATION_ID), "must name the header: {msg}");
+            }
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
     // ─── parse_unsubscribe_envelope ──────────────────────────────────
 
     fn make_unsubscribe_envelope(
@@ -1133,6 +1176,112 @@ mod tests {
         let err = parse_unsubscribe_envelope(&envelope).expect_err("missing body");
         match err {
             AdapterError::Consumer(msg) => assert!(msg.contains("no body")),
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
+    /// PR #1529 reviewer 1 BLOCK 2: `parse_unsubscribe_envelope`
+    /// has 6 refusal branches; only `missing_body` was tested
+    /// while symmetric `parse_subscribe_envelope` had 5 tests.
+    /// Mirror coverage so the symmetric promise is paid.
+
+    #[test]
+    fn parse_unsubscribe_envelope_rejects_missing_reply_to() {
+        let request = AircEventUnsubscribe {
+            subscription_id: Uuid::new_v4(),
+        };
+        let mut envelope =
+            make_unsubscribe_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &request);
+        envelope.headers.remove(HEADER_AIRC_REPLY_TO);
+        let err = parse_unsubscribe_envelope(&envelope).expect_err("missing reply_to");
+        match err {
+            AdapterError::Consumer(msg) => assert!(msg.contains(HEADER_AIRC_REPLY_TO)),
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unsubscribe_envelope_rejects_missing_correlation_id() {
+        let request = AircEventUnsubscribe {
+            subscription_id: Uuid::new_v4(),
+        };
+        let mut envelope =
+            make_unsubscribe_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &request);
+        envelope.headers.remove(HEADER_AIRC_CORRELATION_ID);
+        let err = parse_unsubscribe_envelope(&envelope).expect_err("missing correlation_id");
+        match err {
+            AdapterError::Consumer(msg) => assert!(msg.contains(HEADER_AIRC_CORRELATION_ID)),
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unsubscribe_envelope_rejects_invalid_reply_to_uuid() {
+        let request = AircEventUnsubscribe {
+            subscription_id: Uuid::new_v4(),
+        };
+        let mut envelope =
+            make_unsubscribe_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &request);
+        envelope
+            .headers
+            .insert(HEADER_AIRC_REPLY_TO.to_string(), "not-a-uuid".to_string());
+        let err = parse_unsubscribe_envelope(&envelope)
+            .expect_err("invalid reply_to UUID must fail");
+        match err {
+            AdapterError::Consumer(msg) => {
+                assert!(msg.contains("not a valid UUID"), "must name the parse failure: {msg}");
+            }
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unsubscribe_envelope_rejects_invalid_correlation_uuid() {
+        let request = AircEventUnsubscribe {
+            subscription_id: Uuid::new_v4(),
+        };
+        let mut envelope =
+            make_unsubscribe_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &request);
+        envelope.headers.insert(
+            HEADER_AIRC_CORRELATION_ID.to_string(),
+            "still-not-a-uuid".to_string(),
+        );
+        let err = parse_unsubscribe_envelope(&envelope)
+            .expect_err("invalid correlation_id UUID must fail");
+        match err {
+            AdapterError::Consumer(msg) => {
+                assert!(msg.contains("not a valid UUID"), "must name the parse failure: {msg}");
+            }
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unsubscribe_envelope_rejects_binary_body() {
+        let request = AircEventUnsubscribe {
+            subscription_id: Uuid::new_v4(),
+        };
+        let mut envelope =
+            make_unsubscribe_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &request);
+        envelope.body = Some(Body::Binary(vec![1, 2, 3]));
+        let err = parse_unsubscribe_envelope(&envelope).expect_err("binary body");
+        match err {
+            AdapterError::Consumer(msg) => assert!(msg.contains("Binary")),
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unsubscribe_envelope_rejects_malformed_body() {
+        let request = AircEventUnsubscribe {
+            subscription_id: Uuid::new_v4(),
+        };
+        let mut envelope =
+            make_unsubscribe_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &request);
+        envelope.body = Some(Body::Json(serde_json::json!({"wrong": "shape"})));
+        let err = parse_unsubscribe_envelope(&envelope).expect_err("malformed body");
+        match err {
+            AdapterError::Consumer(msg) => assert!(msg.contains("decode")),
             other => panic!("expected Consumer error, got {other:?}"),
         }
     }
@@ -1227,17 +1376,27 @@ mod tests {
         assert_eq!(back, deliver);
     }
 
-    // ─── caller-side ↔ peer-side symmetry guard ──────────────────────
+    // ─── caller-side ↔ peer-side symmetry guards ─────────────────────
+    //
+    // These tests pin the cross-boundary contract: every envelope the
+    // peer-side BUILDS must round-trip through the caller-side
+    // DECODE/MATCH functions. Future refactors that break either
+    // side fail loudly here, not silently on the wire.
+    //
+    // PR #1529 reviewer 2 BLOCK 4: prior commit only pinned the
+    // Deliver shape; this set adds subscribe-ack and
+    // unsubscribe-ack symmetry too.
 
     #[test]
     fn build_deliver_frame_passes_caller_side_matches_subscription() {
         // The caller-side filter (AircEventTransport::matches_subscription)
-        // checks the body_hint + subscription_id header. A Deliver
-        // built by build_deliver_frame MUST satisfy that predicate
-        // — otherwise the subscriber never picks it up. This test
-        // pins the contract across the symmetry boundary.
+        // checks publisher peer_id + body_hint + subscription_id
+        // header. A Deliver built by build_deliver_frame MUST
+        // satisfy that predicate — otherwise the subscriber never
+        // picks it up.
         use super::super::AircEventTransport;
 
+        let publisher = PeerId::new();
         let deliver = AircEventDeliver {
             subscription_id: Uuid::new_v4(),
             topic: "x".into(),
@@ -1247,12 +1406,12 @@ mod tests {
         let (headers, body) = build_deliver_frame(&deliver).expect("build");
 
         // Reconstruct a TranscriptEvent shaped exactly like what
-        // `Airc::publish` would deliver: room broadcast frame, our
-        // headers + body intact.
+        // `Airc::publish` would deliver: peer_id is the publisher
+        // airc signed, headers + body intact.
         let event = TranscriptEvent {
             event_id: EventId::new(),
             room_id: RoomId::new(),
-            peer_id: PeerId::new(),
+            peer_id: publisher,
             client_id: ClientId::new(),
             kind: TranscriptKind::Message,
             occurred_at_ms: 1_700_000_000,
@@ -1266,12 +1425,51 @@ mod tests {
         };
 
         assert!(
-            AircEventTransport::matches_subscription(&event, deliver.subscription_id),
+            AircEventTransport::matches_subscription(&event, deliver.subscription_id, publisher),
             "build_deliver_frame must produce a frame caller-side accepts — \
              this is the cross-boundary contract"
         );
         let decoded = AircEventTransport::decode_deliver_frame(&event)
             .expect("decode_deliver_frame must accept frames the peer-side builds");
         assert_eq!(decoded, deliver);
+    }
+
+    #[test]
+    fn build_subscribe_ack_passes_caller_side_decode_subscribe_ack() {
+        use super::super::AircEventTransport;
+        let sub_id = Uuid::new_v4();
+        let topic = "events/test";
+        let (_headers, body) = build_subscribe_ack(sub_id, topic).expect("build");
+        let ack = AircEventTransport::decode_subscribe_ack(Some(body))
+            .expect("decode_subscribe_ack must accept what build_subscribe_ack produces");
+        assert_eq!(ack.subscription_id, sub_id);
+        assert_eq!(ack.topic, topic);
+    }
+
+    #[test]
+    fn build_unsubscribe_ack_active_passes_caller_side_decode() {
+        use super::super::AircEventTransport;
+        let sub_id = Uuid::new_v4();
+        let (_headers, body) = build_unsubscribe_ack(sub_id, true).expect("build");
+        let ack = AircEventTransport::decode_unsubscribe_ack(Some(body))
+            .expect("decode_unsubscribe_ack must accept what build_unsubscribe_ack produces");
+        assert_eq!(ack.subscription_id, sub_id);
+        assert!(ack.closed, "active unsubscribe must round-trip closed=true");
+    }
+
+    #[test]
+    fn build_unsubscribe_ack_idempotent_passes_caller_side_decode() {
+        // Idempotent unsubscribe (closed=false) is a real wire
+        // shape per the protocol commit — the caller branches on
+        // this for telemetry. Pin the cross-boundary contract for
+        // BOTH variants so a future builder change can't silently
+        // collapse the idempotent case to active.
+        use super::super::AircEventTransport;
+        let sub_id = Uuid::new_v4();
+        let (_headers, body) = build_unsubscribe_ack(sub_id, false).expect("build");
+        let ack = AircEventTransport::decode_unsubscribe_ack(Some(body))
+            .expect("decode must accept what build produces, idempotent variant");
+        assert_eq!(ack.subscription_id, sub_id);
+        assert!(!ack.closed, "idempotent unsubscribe must round-trip closed=false");
     }
 }

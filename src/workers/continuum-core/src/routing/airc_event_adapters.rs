@@ -52,7 +52,10 @@ use super::airc_event_publisher::{
     build_subscribe_ack, build_unsubscribe_ack, parse_subscribe_envelope,
     parse_unsubscribe_envelope, EventPublisherState, ParsedSubscribe, ParsedUnsubscribe,
 };
-use super::{EVENT_SUBSCRIBE_BODY_HINT, EVENT_UNSUBSCRIBE_BODY_HINT};
+use super::{
+    AllowAllPolicy, AuthPolicy, CallerIdentity, RouteDecision, Verdict,
+    EVENT_SUBSCRIBE_BODY_HINT, EVENT_UNSUBSCRIBE_BODY_HINT,
+};
 
 /// Stable adapter name for the subscribe path.
 pub const SUBSCRIBE_ADAPTER_NAME: &str = "continuum.event.subscribe";
@@ -63,14 +66,33 @@ pub const UNSUBSCRIBE_ADAPTER_NAME: &str = "continuum.event.unsubscribe";
 /// ConsumerAdapter for the subscribe path. Registered with the
 /// airc adapter registry as claiming
 /// [`EVENT_SUBSCRIBE_BODY_HINT`].
+///
+/// Carries an `Arc<dyn AuthPolicy>` so every inbound subscribe is
+/// gated through the same substrate-wide policy chokepoint the
+/// command path uses. Per PR #1529 reviewer 2 BLOCK 1: without
+/// this, any peer that can reach this airc node could subscribe
+/// to ANY topic (including internal substrate signals like
+/// `cognition/score/persona-scored`), silently leaking cognition
+/// telemetry. Defaults to `AllowAllPolicy` so the wire surface
+/// works out of the box; operators install an ORM-backed or
+/// capability-backed impl at boot via `with_policy()`.
 pub struct EventSubscribeAdapter {
     airc: Arc<Airc>,
     state: Arc<EventPublisherState>,
+    policy: Arc<dyn AuthPolicy>,
 }
 
 /// ConsumerAdapter for the unsubscribe path. Registered with the
 /// airc adapter registry as claiming
 /// [`EVENT_UNSUBSCRIBE_BODY_HINT`].
+///
+/// No policy on this side because unsubscribe is idempotent
+/// (`closed: false` is the already-gone outcome) and we WANT
+/// peers to be able to clean up their own subscriptions even if
+/// the subscribe gate would refuse a fresh request. A peer
+/// gaining temporary access then losing it must still be able to
+/// stop publishing — gating unsubscribe would create stuck
+/// registrations.
 pub struct EventUnsubscribeAdapter {
     airc: Arc<Airc>,
     state: Arc<EventPublisherState>,
@@ -78,24 +100,72 @@ pub struct EventUnsubscribeAdapter {
 
 impl EventSubscribeAdapter {
     /// Build a subscribe adapter against an existing airc handle
-    /// + shared state. Returns `Arc<Self>` because the airc
-    /// adapter registry stores adapters as
-    /// `Arc<dyn ConsumerAdapter>`.
+    /// + shared state, with [`AllowAllPolicy`] as the default
+    /// auth gate. Mirrors `CommandExecutor::new` shape so the
+    /// substrate composition reads uniformly across commands +
+    /// events. Builder-style `with_policy` swaps the gate.
     pub fn new(airc: Arc<Airc>, state: Arc<EventPublisherState>) -> Arc<Self> {
-        Arc::new(Self { airc, state })
+        Arc::new(Self {
+            airc,
+            state,
+            policy: Arc::new(AllowAllPolicy),
+        })
     }
 
-    /// Process a parsed subscribe envelope: register in state,
-    /// build the ack. Pure function — exposed `pub` so tests can
-    /// drive it without going through airc.
+    /// Replace the auth policy. Operators wire their substrate
+    /// gate here at boot. Returns `Arc<Self>` for chaining with
+    /// the airc adapter registry.
+    pub fn with_policy(airc: Arc<Airc>, state: Arc<EventPublisherState>, policy: Arc<dyn AuthPolicy>) -> Arc<Self> {
+        Arc::new(Self { airc, state, policy })
+    }
+
+    /// Process a parsed subscribe envelope: GATE the caller via
+    /// AuthPolicy, then register in state, build the ack. Pure
+    /// function — exposed `pub` so tests can drive it without
+    /// going through airc.
     ///
     /// Returns the ack envelope `(Headers, Body)` ready to send
-    /// via `Airc::reply`, OR a typed error if state registration
-    /// refused.
+    /// via `Airc::reply`, OR a typed `AdapterError::Consumer` if
+    /// the policy refused (`Forbidden`/`Deferred`) or state
+    /// registration refused (e.g. empty topic).
     pub fn process_subscribe(
         state: &EventPublisherState,
+        policy: &dyn AuthPolicy,
         parsed: &ParsedSubscribe,
     ) -> Result<(Headers, Body), AdapterError> {
+        // PR #1529 reviewer 2 BLOCK 1: thread the verified airc
+        // sender into the substrate's auth chokepoint BEFORE we
+        // touch state. The synthetic URI for the decision is
+        // `events/<topic>/subscribe` — policies match on path
+        // prefixes the same way they do for commands, keeping the
+        // gate authoring uniform across the two surfaces.
+        let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
+        let decision = RouteDecision::Local {
+            path: format!("events/{}/subscribe", parsed.request.topic),
+            query: None,
+            fragment: None,
+        };
+        match policy.gate(&decision, Some(&caller)) {
+            Verdict::Allowed => {}
+            Verdict::Forbidden { reason } => {
+                return Err(AdapterError::Consumer(format!(
+                    "EventSubscribeAdapter: forbidden by policy ({reason:?}) — \
+                     caller peer={} topic={:?}",
+                    parsed.caller_peer_id.0, parsed.request.topic
+                )));
+            }
+            Verdict::Deferred {
+                reason,
+                prompt_target_env,
+            } => {
+                return Err(AdapterError::Consumer(format!(
+                    "EventSubscribeAdapter: deferred by policy ({reason:?}, prompt_target_env={prompt_target_env:?}) — \
+                     caller peer={} topic={:?}",
+                    parsed.caller_peer_id.0, parsed.request.topic
+                )));
+            }
+        }
+
         let subscription_id = state
             .register(
                 parsed.caller_peer_id,
@@ -146,7 +216,7 @@ impl ConsumerAdapter for EventSubscribeAdapter {
 
     async fn on_envelope(&self, envelope: TranscriptEvent) -> Result<(), AdapterError> {
         let parsed = parse_subscribe_envelope(&envelope)?;
-        let (headers, body) = Self::process_subscribe(&self.state, &parsed)?;
+        let (headers, body) = Self::process_subscribe(&self.state, &*self.policy, &parsed)?;
         self.airc
             .reply(parsed.reply_to, parsed.correlation_id, headers, body)
             .await
@@ -181,12 +251,19 @@ mod tests {
     use super::*;
     use crate::routing::{
         AircEventSubscribe, AircEventSubscribeAck, AircEventUnsubscribe, AircEventUnsubscribeAck,
-        HEADER_CONTINUUM_BODY_HINT, HEADER_EVENT_KIND, HEADER_EVENT_SUBSCRIPTION_ID,
-        HEADER_EVENT_TOPIC, EVENT_ACK_BODY_HINT,
+        ClosurePolicy, ForbiddenReason, HEADER_CONTINUUM_BODY_HINT, HEADER_EVENT_KIND,
+        HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC, EVENT_ACK_BODY_HINT,
     };
     use airc_core::PeerId;
-    use serde_json::Value;
+    use std::sync::{Arc as StdArc, Mutex};
     use uuid::Uuid;
+
+    /// The "no gate" policy used by all happy-path tests below.
+    /// Avoids repeating `&AllowAllPolicy` inline; readers see the
+    /// intent at a glance.
+    fn allow_all() -> AllowAllPolicy {
+        AllowAllPolicy
+    }
 
     // ─── EventSubscribeAdapter::process_subscribe ────────────────────
 
@@ -205,7 +282,8 @@ mod tests {
         };
 
         let (headers, body) =
-            EventSubscribeAdapter::process_subscribe(&state, &parsed).expect("subscribe");
+            EventSubscribeAdapter::process_subscribe(&state, &allow_all(), &parsed)
+                .expect("subscribe");
 
         // State should have one registered subscription.
         assert_eq!(state.len(), 1);
@@ -247,7 +325,7 @@ mod tests {
             },
         };
 
-        let err = EventSubscribeAdapter::process_subscribe(&state, &parsed)
+        let err = EventSubscribeAdapter::process_subscribe(&state, &allow_all(), &parsed)
             .expect_err("empty topic must refuse");
         match err {
             AdapterError::Consumer(msg) => {
@@ -281,7 +359,8 @@ mod tests {
             },
         };
 
-        let _ = EventSubscribeAdapter::process_subscribe(&state, &parsed).expect("subscribe");
+        let _ = EventSubscribeAdapter::process_subscribe(&state, &allow_all(), &parsed)
+            .expect("subscribe");
 
         // lookup_matching with the info payload should match;
         // with the warn payload should not.
@@ -311,7 +390,8 @@ mod tests {
             },
         };
         let (sub_headers, sub_body) =
-            EventSubscribeAdapter::process_subscribe(&state, &subscribe).expect("subscribe");
+            EventSubscribeAdapter::process_subscribe(&state, &allow_all(), &subscribe)
+                .expect("subscribe");
         let sub_id_header = sub_headers
             .get(HEADER_EVENT_SUBSCRIPTION_ID)
             .expect("subscription_id");
@@ -424,7 +504,8 @@ mod tests {
             },
         };
         let (sub_headers, _) =
-            EventSubscribeAdapter::process_subscribe(&state, &subscribe).expect("subscribe");
+            EventSubscribeAdapter::process_subscribe(&state, &allow_all(), &subscribe)
+                .expect("subscribe");
         let sub_id: Uuid = sub_headers
             .get(HEADER_EVENT_SUBSCRIPTION_ID)
             .expect("sub_id")
@@ -456,9 +537,141 @@ mod tests {
              shared state contract"
         );
         assert_eq!(state.len(), 0, "state cleaned up by unsubscribe");
+    }
 
-        // Suppress unused-Value warning if topic ended up unused;
-        // ensures the test won't bit-rot if we add fields.
-        let _ = Value::Null;
+    // ─── AuthPolicy gate threading (PR #1529 reviewer 2 BLOCK 1) ──────
+
+    /// Mirror of `command_handler.rs::process_request_via_threads_caller_into_gate`.
+    /// Builds a `ClosurePolicy` that captures the caller it
+    /// receives, dispatches `process_subscribe`, then asserts the
+    /// captured caller's peer_id is the envelope sender. Closes
+    /// the silent-privilege-escalation gap the prior reviewer
+    /// caught for commands.
+    #[test]
+    fn process_subscribe_threads_caller_into_gate() {
+        let captured: StdArc<Mutex<Option<CallerIdentity>>> = StdArc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let policy = ClosurePolicy::new(
+            "record-caller-event-subscribe",
+            move |_decision: &RouteDecision, caller: Option<&CallerIdentity>| {
+                *captured_clone.lock().unwrap() = caller.cloned();
+                Verdict::Allowed
+            },
+        );
+
+        let state = EventPublisherState::new();
+        let sender_peer_id = PeerId::new();
+        let parsed = ParsedSubscribe {
+            caller_peer_id: sender_peer_id,
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircEventSubscribe {
+                topic: "cognition/analyze/complete".into(),
+                filter: None,
+            },
+        };
+
+        let _ = EventSubscribeAdapter::process_subscribe(&state, &policy, &parsed)
+            .expect("AllowAllPolicy verdict → process_subscribe succeeds");
+
+        let observed = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("AuthPolicy::gate must have been invoked with Some(caller)");
+        assert_eq!(
+            observed.peer_id, sender_peer_id.0,
+            "caller's peer_id must match the envelope sender — \
+             closes the reviewer 2 BLOCK 1 silent-privilege-escalation seam"
+        );
+        assert!(
+            matches!(observed.source, crate::routing::CallerSource::Airc),
+            "caller source must be Airc (cross-grid), not Local: {observed:?}"
+        );
+    }
+
+    /// Mirror of `command_handler.rs::process_request_via` Forbidden
+    /// path: if the policy refuses, process_subscribe must error
+    /// BEFORE touching state. No subscription persisted on
+    /// refusal — same invariant as `process_subscribe_refuses_empty_topic_with_typed_error`.
+    #[test]
+    fn process_subscribe_refuses_when_policy_forbids() {
+        let policy = ClosurePolicy::new("forbid-everything", |_decision, _caller| {
+            Verdict::Forbidden {
+                reason: ForbiddenReason::NoPermissionForUri(
+                    "events/internal/subscribe".into(),
+                ),
+            }
+        });
+
+        let state = EventPublisherState::new();
+        let parsed = ParsedSubscribe {
+            caller_peer_id: PeerId::new(),
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircEventSubscribe {
+                topic: "events/internal".into(),
+                filter: None,
+            },
+        };
+
+        let err = EventSubscribeAdapter::process_subscribe(&state, &policy, &parsed)
+            .expect_err("Forbidden verdict must refuse");
+        match err {
+            AdapterError::Consumer(msg) => {
+                assert!(
+                    msg.contains("forbidden by policy"),
+                    "error must signal policy refusal: {msg}"
+                );
+                assert!(
+                    msg.contains("NoPermissionForUri"),
+                    "error must include the typed reason: {msg}"
+                );
+            }
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+        assert_eq!(
+            state.len(),
+            0,
+            "no subscription persisted when policy refuses"
+        );
+    }
+
+    /// The synthetic URI shape the gate sees: `events/<topic>/subscribe`.
+    /// Pin this so a future change to `process_subscribe`'s URI
+    /// construction can't silently break policies that match on
+    /// the path prefix (e.g., "events/cognition/" allow-list).
+    #[test]
+    fn process_subscribe_decision_path_is_stable() {
+        let observed: StdArc<Mutex<Option<String>>> = StdArc::new(Mutex::new(None));
+        let observed_clone = observed.clone();
+
+        let policy = ClosurePolicy::new("record-decision-path", move |decision, _caller| {
+            if let RouteDecision::Local { path, .. } = decision {
+                *observed_clone.lock().unwrap() = Some(path.clone());
+            }
+            Verdict::Allowed
+        });
+
+        let state = EventPublisherState::new();
+        let parsed = ParsedSubscribe {
+            caller_peer_id: PeerId::new(),
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircEventSubscribe {
+                topic: "cognition/score/persona-scored".into(),
+                filter: None,
+            },
+        };
+
+        let _ = EventSubscribeAdapter::process_subscribe(&state, &policy, &parsed)
+            .expect("subscribe");
+        let path = observed.lock().unwrap().clone().expect("policy saw a Local decision");
+        assert_eq!(
+            path, "events/cognition/score/persona-scored/subscribe",
+            "URI shape must be events/<topic>/subscribe so policies can match \
+             prefix authoring stays stable across refactors"
+        );
     }
 }

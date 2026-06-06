@@ -134,18 +134,26 @@ impl std::fmt::Debug for AircEventTransport {
 /// Per-subscription handle returned from
 /// [`AircEventTransport::subscribe`]. Carries the
 /// `subscription_id` (used to issue `unsubscribe` and to demux
-/// when the caller holds N subscriptions) and a typed
-/// [`AircEventDeliver`] receiver.
+/// when the caller holds N subscriptions), the verified
+/// `publisher_peer_id` (the peer we trust to source these events),
+/// and a typed [`AircEventDeliver`] receiver.
 ///
-/// Dropping the receiver does NOT unsubscribe on the peer side —
-/// callers SHOULD call
-/// [`AircEventTransport::unsubscribe`] to tear the subscription
-/// down properly. The substrate doesn't auto-unsubscribe on drop
-/// because dropping mid-flight could lose in-transit deliveries
-/// the caller still wants to drain; explicit unsubscribe is the
-/// honest shape.
+/// Dropping the receiver DOES tear down the per-subscription
+/// filter task — the spawned task exits as soon as the channel
+/// closes — but does NOT notify the peer to stop publishing.
+/// Callers SHOULD call [`AircEventTransport::unsubscribe`] to
+/// tear the subscription down properly. The substrate doesn't
+/// auto-unsubscribe on drop because dropping mid-flight could
+/// lose in-transit deliveries the caller still wants to drain;
+/// explicit unsubscribe is the honest shape.
 pub struct EventSubscription {
     pub subscription_id: Uuid,
+    /// The peer we subscribed to — the only peer whose Deliver
+    /// frames the filter task will forward for this subscription.
+    /// Closes the forgery vector where any room peer could stamp
+    /// matching `subscription_id` headers on a forged frame
+    /// (per PR #1529 reviewer 2 BLOCK).
+    pub publisher_peer_id: PeerId,
     pub topic: String,
     pub deliveries: mpsc::Receiver<AircEventDeliver>,
 }
@@ -163,7 +171,7 @@ impl AircEventTransport {
     /// Replace the default deadline. Builder-style.
     pub fn with_deadline(mut self, deadline: Duration) -> Self {
         self.deadline = deadline;
-    self
+        self
     }
 
     // ─── Pure testable seams (per PR #1529 reviewer 3 pattern) ────
@@ -307,19 +315,35 @@ impl AircEventTransport {
     }
 
     /// Pure predicate: does this `TranscriptEvent` belong to the
-    /// given subscription? Matches on:
+    /// given subscription AND come from the expected publisher?
+    /// Matches on (cheapest checks first):
     ///
-    /// 1. `HEADER_CONTINUUM_BODY_HINT == EVENT_DELIVER_BODY_HINT`
-    ///    (drops non-Deliver frames; the airc event stream carries
-    ///    chat, status, command-side events, etc. — all need to be
-    ///    filtered out)
-    /// 2. `HEADER_EVENT_SUBSCRIPTION_ID == subscription_id`
-    ///    (the subscription identity demux)
+    /// 1. `event.peer_id == expected_publisher` — closes the
+    ///    forgery vector (PR #1529 reviewer 2 BLOCK). The airc
+    ///    daemon has already validated the signature on the
+    ///    sender's peer_id field; we trust that, and we trust only
+    ///    the peer we explicitly subscribed to. Without this
+    ///    check, any room peer could re-stamp matching headers on
+    ///    a forged Deliver frame and inject it into our cognition.
+    /// 2. `HEADER_CONTINUUM_BODY_HINT == EVENT_DELIVER_BODY_HINT`
+    ///    — drops non-Deliver frames; the airc event stream
+    ///    carries chat, status, command-side events, etc.
+    /// 3. `HEADER_EVENT_SUBSCRIPTION_ID == subscription_id` — the
+    ///    subscription identity demux for callers holding N
+    ///    active subscriptions concurrently.
     ///
-    /// Used by the per-subscription filter task to drop the
-    /// vast majority of inbound frames cheaply (one HashMap get +
-    /// one string compare) without parsing the body.
-    pub fn matches_subscription(event: &TranscriptEvent, subscription_id: Uuid) -> bool {
+    /// Used by the per-subscription filter task to drop the vast
+    /// majority of inbound frames cheaply (one PeerId equality +
+    /// one HashMap get + one string compare) without parsing the
+    /// body.
+    pub fn matches_subscription(
+        event: &TranscriptEvent,
+        subscription_id: Uuid,
+        expected_publisher: PeerId,
+    ) -> bool {
+        if event.peer_id != expected_publisher {
+            return false;
+        }
         let body_hint_ok = event
             .headers
             .get(HEADER_CONTINUUM_BODY_HINT)
@@ -359,6 +383,27 @@ impl AircEventTransport {
         topic: &str,
         filter: Option<Value>,
     ) -> Result<EventSubscription, String> {
+        // 1. Open the airc event stream FIRST, before any
+        //    peer-side state change. Per PR #1529 reviewer 1 BLOCK:
+        //    spawning the filter task with `airc.subscribe().await`
+        //    inside meant a stream-open failure silently returned
+        //    `Ok(EventSubscription)` to the caller while the
+        //    peer-side held an unobservable subscription. Open
+        //    upfront so failure is reported as a typed `Err` BEFORE
+        //    we touch peer state.
+        //
+        //    airc-lib's request contract guarantees the reply
+        //    stream is armed before the request frame is sent
+        //    (`Airc::request` doc); the analogous discipline here
+        //    is to arm the Deliver stream before the subscribe
+        //    request. No frames can be missed in the window between
+        //    peer ack and filter task spawn.
+        let event_stream = self
+            .airc
+            .subscribe()
+            .await
+            .map_err(|e| format!("AircEventTransport: airc subscribe stream open failed: {e}"))?;
+
         let (target, headers, body) = Self::resolve_subscribe(target_peer, topic, filter)?;
 
         let pending = self
@@ -375,36 +420,62 @@ impl AircEventTransport {
 
         let ack = Self::decode_subscribe_ack(reply.body)?;
         let subscription_id = ack.subscription_id;
+        let publisher_peer_id = target_peer;
 
-        // Spawn the per-subscription filter task: subscribe to
-        // airc's general event stream, forward matching Deliver
-        // frames to the mpsc.
+        // Spawn the per-subscription filter task on the
+        // pre-opened airc stream. Forwards matching Deliver
+        // frames to the mpsc; exits cleanly when the receiver
+        // drops (closes `tx`) via `tokio::select!` so quiet
+        // topics don't leak the task indefinitely (PR #1529
+        // reviewer 2 BLOCK 3).
         let (tx, rx) = mpsc::channel::<AircEventDeliver>(DEFAULT_DELIVERY_QUEUE_CAPACITY);
-        let airc = self.airc.clone();
         tokio::spawn(async move {
-            let mut event_stream = match airc.subscribe().await {
-                Ok(s) => s,
-                Err(_) => return, // can't subscribe → no deliveries; receiver will close on drop
-            };
-
-            // Drive the stream until the receiver drops (tx.send
-            // fails) or airc closes the stream.
             use futures_util::StreamExt as _;
-            while let Some(item) = event_stream.next().await {
-                let event = match item {
-                    Ok(e) => e,
-                    Err(_) => continue, // lag — skip; the substrate's drop signal is sequence gaps
+            let mut event_stream = event_stream;
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    // Receiver dropped → caller doesn't want more
+                    // deliveries. Exit promptly without waiting on
+                    // the next airc frame (quiet topics never
+                    // wake us otherwise — the leak this select
+                    // closes).
+                    _ = tx.closed() => break,
+                    next = event_stream.next() => {
+                        match next {
+                            Some(Ok(e)) => e,
+                            Some(Err(_)) => continue, // lag — skip; sequence gaps are caller-visible
+                            None => break, // airc stream closed
+                        }
+                    }
                 };
-                if !Self::matches_subscription(&event, subscription_id) {
+                if !Self::matches_subscription(&event, subscription_id, publisher_peer_id) {
                     continue;
                 }
                 let deliver = match Self::decode_deliver_frame(&event) {
                     Ok(d) => d,
-                    Err(_) => continue, // malformed frame matching our id — log + skip in production
+                    Err(e) => {
+                        // Frame passed publisher + body_hint +
+                        // subscription_id checks but didn't decode.
+                        // Either the publisher produced a malformed
+                        // frame (protocol violation) OR the wire
+                        // shape changed silently between versions.
+                        // Either way the operator needs to see this
+                        // — silent `continue` would hide the BLOCK
+                        // R2.2 forgery class of bug post-mitigation.
+                        tracing::warn!(
+                            target: "continuum.event.transport",
+                            subscription_id = %subscription_id,
+                            publisher = %publisher_peer_id.0,
+                            error = %e,
+                            "AircEventTransport: malformed Deliver frame matching subscription — skipping"
+                        );
+                        continue;
+                    }
                 };
                 if tx.send(deliver).await.is_err() {
-                    // receiver dropped — caller doesn't want
-                    // more deliveries; tear down the filter task.
+                    // Race: receiver dropped between `tx.closed()`
+                    // check and `send`. Same outcome — exit.
                     break;
                 }
             }
@@ -412,6 +483,7 @@ impl AircEventTransport {
 
         Ok(EventSubscription {
             subscription_id,
+            publisher_peer_id,
             topic: ack.topic,
             deliveries: rx,
         })
@@ -569,6 +641,32 @@ mod tests {
 
     // ─── decode_unsubscribe_ack ─────────────────────────────────────
 
+    // Reviewer 1 BLOCK 4: decode_unsubscribe_ack's three typed
+    // rejection branches were untested while decode_subscribe_ack's
+    // were. Mirror coverage so the symmetric promise is paid.
+
+    #[test]
+    fn decode_unsubscribe_ack_refuses_missing_body() {
+        let err = AircEventTransport::decode_unsubscribe_ack(None)
+            .expect_err("None body must fail");
+        assert!(err.contains("no body"), "must name the missing piece: {err}");
+    }
+
+    #[test]
+    fn decode_unsubscribe_ack_refuses_binary_body() {
+        let err = AircEventTransport::decode_unsubscribe_ack(Some(Body::Binary(vec![1, 2, 3])))
+            .expect_err("Binary body must fail");
+        assert!(err.contains("Binary"), "must name the shape mismatch: {err}");
+    }
+
+    #[test]
+    fn decode_unsubscribe_ack_refuses_malformed_json() {
+        let body = Body::Json(serde_json::json!({"wrong": "shape"}));
+        let err = AircEventTransport::decode_unsubscribe_ack(Some(body))
+            .expect_err("malformed JSON must fail");
+        assert!(err.contains("deserialize"), "must name decode failure: {err}");
+    }
+
     #[test]
     fn decode_unsubscribe_ack_round_trips_active() {
         let ack = AircEventUnsubscribeAck {
@@ -597,7 +695,13 @@ mod tests {
 
     // ─── decode_deliver_frame ───────────────────────────────────────
 
+    /// Build a Deliver-shaped TranscriptEvent. `sender` populates
+    /// the event's `peer_id` field — what airc would have signed
+    /// as the verified source on a real wire. Tests that want a
+    /// specific publisher pass it explicitly; tests that don't
+    /// care (decode-only) pass `PeerId::new()`.
     fn make_deliver_event(
+        sender: PeerId,
         deliver: &AircEventDeliver,
         body_hint: &str,
         sub_id_header: Option<String>,
@@ -611,7 +715,7 @@ mod tests {
         TranscriptEvent {
             event_id: EventId::new(),
             room_id: RoomId::new(),
-            peer_id: PeerId::new(),
+            peer_id: sender,
             client_id: ClientId::new(),
             kind: TranscriptKind::Message,
             occurred_at_ms: 1_700_000_000,
@@ -634,6 +738,7 @@ mod tests {
             payload: serde_json::json!({"confidence": 0.84}),
         };
         let event = make_deliver_event(
+            PeerId::new(),
             &deliver,
             EVENT_DELIVER_BODY_HINT,
             Some(deliver.subscription_id.to_string()),
@@ -650,7 +755,7 @@ mod tests {
             sequence: 0,
             payload: Value::Null,
         };
-        let mut event = make_deliver_event(&deliver, EVENT_DELIVER_BODY_HINT, None);
+        let mut event = make_deliver_event(PeerId::new(), &deliver, EVENT_DELIVER_BODY_HINT, None);
         event.body = None;
         let err = AircEventTransport::decode_deliver_frame(&event).expect_err("None body");
         assert!(err.contains("no body"), "must name missing piece: {err}");
@@ -664,7 +769,7 @@ mod tests {
             sequence: 0,
             payload: Value::Null,
         };
-        let mut event = make_deliver_event(&deliver, EVENT_DELIVER_BODY_HINT, None);
+        let mut event = make_deliver_event(PeerId::new(), &deliver, EVENT_DELIVER_BODY_HINT, None);
         event.body = Some(Body::Binary(vec![1, 2]));
         let err = AircEventTransport::decode_deliver_frame(&event).expect_err("Binary body");
         assert!(err.contains("Binary"), "must name the shape: {err}");
@@ -673,40 +778,9 @@ mod tests {
     // ─── matches_subscription ───────────────────────────────────────
 
     #[test]
-    fn matches_subscription_yes_for_matching_id_and_body_hint() {
+    fn matches_subscription_yes_for_matching_id_body_hint_and_publisher() {
         let sub_id = Uuid::new_v4();
-        let deliver = AircEventDeliver {
-            subscription_id: sub_id,
-            topic: "x".into(),
-            sequence: 0,
-            payload: Value::Null,
-        };
-        let event =
-            make_deliver_event(&deliver, EVENT_DELIVER_BODY_HINT, Some(sub_id.to_string()));
-        assert!(AircEventTransport::matches_subscription(&event, sub_id));
-    }
-
-    #[test]
-    fn matches_subscription_no_for_wrong_subscription_id() {
-        let sub_id_a = Uuid::new_v4();
-        let sub_id_b = Uuid::new_v4();
-        let deliver = AircEventDeliver {
-            subscription_id: sub_id_a,
-            topic: "x".into(),
-            sequence: 0,
-            payload: Value::Null,
-        };
-        let event =
-            make_deliver_event(&deliver, EVENT_DELIVER_BODY_HINT, Some(sub_id_a.to_string()));
-        // matching against a different subscription
-        assert!(!AircEventTransport::matches_subscription(&event, sub_id_b));
-    }
-
-    #[test]
-    fn matches_subscription_no_for_non_deliver_body_hint() {
-        // A command-request envelope is on the same airc stream as
-        // deliver frames. The predicate must drop it.
-        let sub_id = Uuid::new_v4();
+        let publisher = PeerId::new();
         let deliver = AircEventDeliver {
             subscription_id: sub_id,
             topic: "x".into(),
@@ -714,11 +788,60 @@ mod tests {
             payload: Value::Null,
         };
         let event = make_deliver_event(
+            publisher,
+            &deliver,
+            EVENT_DELIVER_BODY_HINT,
+            Some(sub_id.to_string()),
+        );
+        assert!(AircEventTransport::matches_subscription(
+            &event, sub_id, publisher
+        ));
+    }
+
+    #[test]
+    fn matches_subscription_no_for_wrong_subscription_id() {
+        let sub_id_a = Uuid::new_v4();
+        let sub_id_b = Uuid::new_v4();
+        let publisher = PeerId::new();
+        let deliver = AircEventDeliver {
+            subscription_id: sub_id_a,
+            topic: "x".into(),
+            sequence: 0,
+            payload: Value::Null,
+        };
+        let event = make_deliver_event(
+            publisher,
+            &deliver,
+            EVENT_DELIVER_BODY_HINT,
+            Some(sub_id_a.to_string()),
+        );
+        // matching against a different subscription
+        assert!(!AircEventTransport::matches_subscription(
+            &event, sub_id_b, publisher
+        ));
+    }
+
+    #[test]
+    fn matches_subscription_no_for_non_deliver_body_hint() {
+        // A command-request envelope is on the same airc stream as
+        // deliver frames. The predicate must drop it.
+        let sub_id = Uuid::new_v4();
+        let publisher = PeerId::new();
+        let deliver = AircEventDeliver {
+            subscription_id: sub_id,
+            topic: "x".into(),
+            sequence: 0,
+            payload: Value::Null,
+        };
+        let event = make_deliver_event(
+            publisher,
             &deliver,
             "continuum.command.request.v1", // wrong hint
             Some(sub_id.to_string()),
         );
-        assert!(!AircEventTransport::matches_subscription(&event, sub_id));
+        assert!(!AircEventTransport::matches_subscription(
+            &event, sub_id, publisher
+        ));
     }
 
     #[test]
@@ -727,13 +850,53 @@ mod tests {
         // not match anyone. (decode_deliver_frame would also reject
         // it; matches_subscription is the cheap pre-filter.)
         let sub_id = Uuid::new_v4();
+        let publisher = PeerId::new();
         let deliver = AircEventDeliver {
             subscription_id: sub_id,
             topic: "x".into(),
             sequence: 0,
             payload: Value::Null,
         };
-        let event = make_deliver_event(&deliver, EVENT_DELIVER_BODY_HINT, None);
-        assert!(!AircEventTransport::matches_subscription(&event, sub_id));
+        let event =
+            make_deliver_event(publisher, &deliver, EVENT_DELIVER_BODY_HINT, None);
+        assert!(!AircEventTransport::matches_subscription(
+            &event, sub_id, publisher
+        ));
+    }
+
+    /// PR #1529 reviewer 2 BLOCK 2: Deliver-frame forgery defense.
+    /// A Deliver frame from a DIFFERENT peer than the one we
+    /// subscribed to must be rejected even if every other header
+    /// matches. Closes the room-broadcast forgery vector where
+    /// any room peer could re-stamp matching `subscription_id` +
+    /// `body_hint` headers on a forged frame.
+    #[test]
+    fn matches_subscription_no_for_wrong_publisher_forgery_defense() {
+        let sub_id = Uuid::new_v4();
+        let expected_publisher = PeerId::new();
+        let forger = PeerId::new();
+        assert_ne!(expected_publisher, forger, "test setup: distinct peers");
+
+        let deliver = AircEventDeliver {
+            subscription_id: sub_id,
+            topic: "x".into(),
+            sequence: 0,
+            payload: Value::Null,
+        };
+        // Forger stamps every header correctly + uses the right
+        // subscription_id. The ONLY thing that distinguishes is
+        // the verified airc sender (event.peer_id), which the
+        // forger cannot spoof.
+        let forged_event = make_deliver_event(
+            forger,
+            &deliver,
+            EVENT_DELIVER_BODY_HINT,
+            Some(sub_id.to_string()),
+        );
+        assert!(
+            !AircEventTransport::matches_subscription(&forged_event, sub_id, expected_publisher),
+            "forged Deliver frame from non-publisher peer must be rejected — \
+             this is the [[no-fallbacks-ever]] + reviewer 2 BLOCK 2 contract"
+        );
     }
 }
