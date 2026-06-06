@@ -64,7 +64,9 @@ A stable set of `class` values so probes from different files compose into a coh
 - `cognition.analyze.error` — typed AnalysisError variant
 
 **Timing** (any seam):
-- `timing` — emitted by `time_sync!` and `time_async!` spans. Field `name` = the seam name.
+- `timing` — emitted by `time_sync!` and `time_probe!` spans. Field `seam` = the seam identifier (the macro's first argument). Field `duration_ms` = wall-clock duration from span creation to span close.
+
+  > **Field-naming convention**: timing spans MUST use `seam = $name`, NOT `name = $name`. The `name` field collides with both `info_span!`'s built-in span name slot AND with `probe!(class = "state", name = ...)` payloads. `seam` (the noun for "where in the cognition flow this measurement happens") is unique and `jq`-able: `.fields.seam == "cognition.analyze"` matches either macro and never collides with event-shape probes. Convention pinned by PR #1541 review.
 
 **General-purpose** (when no taxonomy fits yet, document the intent in the docstring above the probe):
 - `decision` — branch was taken with reason

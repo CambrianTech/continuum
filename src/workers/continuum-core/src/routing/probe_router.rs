@@ -62,7 +62,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -74,6 +73,9 @@ use tracing::{
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 use super::current_uri_chain;
+use super::probe_span_meta::{
+    build_timing_event_from_meta, ensure_probe_meta, span_carries_probe_class,
+};
 
 /// A structured probe event the router fans out to subscribers.
 ///
@@ -190,40 +192,6 @@ impl ProbeRouterLayer {
     }
 }
 
-/// Per-span data the Layer parks in `tracing_subscriber`'s span
-/// extensions at `on_new_span` and reads back at `on_close` to
-/// build the timing ProbeEvent.
-///
-/// Stored ONLY for spans whose attrs carry a `probe_class` field
-/// (i.e. spans created via `time_sync!` / `time_probe!`). Plain
-/// `info_span!` / `debug_span!` calls without a `probe_class` get
-/// no extension storage — zero overhead per `[[no-fallbacks-ever]]`
-/// (we don't fabricate timing events for spans nobody asked to
-/// time).
-///
-/// Task #196: this is the load-bearing piece that makes
-/// `time_sync!` and `time_probe!` actually persist. Before this,
-/// both macros emitted spans the Layer never observed.
-#[derive(Debug, Clone)]
-struct SpanProbeMeta {
-    probe_class: String,
-    /// Non-message fields recorded on the span's `Attributes`
-    /// (excluding `probe_class` itself, which is the routing key,
-    /// not a payload field). Captured at `on_new_span` because
-    /// span attrs are immutable once recorded.
-    fields: HashMap<String, String>,
-    /// Wall-clock instant the span was created. Pair with
-    /// `Instant::now()` at `on_close` to compute `duration_ms`.
-    ///
-    /// Choice of creation-to-close vs cumulative-entered: total
-    /// wall-clock matches operator intuition for "how long did
-    /// `cognition.analyze` take." For async spans this includes
-    /// time spent awaiting (not polling), which is usually what
-    /// you want to see in the JTAG log. CPU-only timing would
-    /// need cumulative enter/exit accounting — out of scope here.
-    start: Instant,
-}
-
 impl<S> Layer<S> for ProbeRouterLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
@@ -248,28 +216,34 @@ where
     }
 
     /// Spans created via `time_sync!` / `time_probe!` carry a
-    /// `probe_class` attribute. Stash a `SpanProbeMeta` in the
-    /// span's extensions so `on_close` can build the timing
-    /// `ProbeEvent`.
+    /// `probe_class` attribute. We stash a
+    /// [`SpanProbeMeta`](super::probe_span_meta::SpanProbeMeta) in
+    /// the span's extensions so `on_close` can build the timing
+    /// [`ProbeEvent`].
     ///
-    /// Spans without `probe_class` (plain `info_span!`,
-    /// `debug_span!`, framework spans) are ignored — no extension
-    /// stored, no allocation cost beyond visiting the attrs once.
+    /// Hot-path discipline: the FIRST thing we do is the cheap
+    /// static check
+    /// [`span_carries_probe_class`](super::probe_span_meta::span_carries_probe_class).
+    /// For the vast majority of spans the substrate emits (tokio
+    /// executor, framework, plain `info_span!`) this short-circuits
+    /// with zero allocation — no visitor constructed, no fields
+    /// walked. R2 of PR #1541's review caught the original shape
+    /// allocating + walking ALL fields per non-probe span.
+    ///
+    /// `ensure_probe_meta` is idempotent: if a sibling Layer
+    /// (e.g. [`JsonlProbeFileSink`](super::probe_file_sink)) has
+    /// already populated the extension for this span, we no-op
+    /// without re-visiting. Same `start: Instant` is read by both
+    /// Layers at `on_close` → identical `duration_ms` in the
+    /// broadcast stream AND on disk.
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        let mut visitor = ProbeEventVisitor::default();
-        attrs.record(&mut visitor);
-        let probe_class = match visitor.probe_class {
-            Some(c) => c,
-            None => return, // not a timing/probe span
-        };
+        if !span_carries_probe_class(attrs) {
+            return; // cheap static check — no allocation
+        }
         let Some(span_ref) = ctx.span(id) else {
             return;
         };
-        span_ref.extensions_mut().insert(SpanProbeMeta {
-            probe_class,
-            fields: visitor.fields,
-            start: Instant::now(),
-        });
+        ensure_probe_meta(attrs, &span_ref);
     }
 
     /// Span closed — convert its parked `SpanProbeMeta` into a
@@ -280,29 +254,19 @@ where
     /// For `time_sync!` that's the end of the wrapped block; for
     /// `time_probe!` it's when the Instrumented<F> future is
     /// dropped (typically right after `.await` completes).
+    ///
+    /// We use [`build_timing_event_from_meta`](super::probe_span_meta::build_timing_event_from_meta)
+    /// — non-destructive — because a sibling Layer also reads the
+    /// same extension at its own `on_close`. The fields clone is
+    /// paid ONCE per probe-carrying span close, orders of
+    /// magnitude rarer than `on_new_span` firing.
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let Some(span_ref) = ctx.span(&id) else {
             return;
         };
-        let extensions = span_ref.extensions();
-        let Some(meta) = extensions.get::<SpanProbeMeta>() else {
+        let Some(probe_event) = build_timing_event_from_meta(&span_ref, current_uri_chain()) else {
             return; // span didn't carry probe_class — not ours
         };
-        let duration_ms = meta.start.elapsed().as_millis() as u64;
-        let mut fields = meta.fields.clone();
-        fields.insert("duration_ms".to_string(), duration_ms.to_string());
-
-        let probe_event = ProbeEvent {
-            class: meta.probe_class.clone(),
-            uri_chain: current_uri_chain(),
-            message: None, // spans don't carry the format-string `message`
-            fields,
-        };
-        // Drop the extensions borrow before fan_out (in case a
-        // subscriber tries to introspect the same span — unlikely,
-        // but extensions are RwLocked so a re-entrant lock would
-        // deadlock).
-        drop(extensions);
         self.fan_out(probe_event);
     }
 }
