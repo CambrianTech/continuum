@@ -635,7 +635,8 @@ let scored = time_sync!("recall_l2", {
 ```bash
 # Enable disk capture (no recompile, env vars only):
 export CONTINUUM_PROBE_FILE=/tmp/continuum-probes.jsonl
-export CONTINUUM_PROBE_CLASSES=persona.turn.start,persona.turn.silent,persona.response.render.prompt
+export CONTINUUM_PROBE_CLASSES=persona,cognition  # namespace prefixes — captures every persona.* and cognition.*
+# Or `*` for the full firehose, or specific classes like `persona.turn.spoke,cognition.analyze.parse`
 
 # Then tail / jq the breakpoint stream as the substrate runs:
 tail -f /tmp/continuum-probes.jsonl | jq -c 'select(.fields.persona == "Paige")'

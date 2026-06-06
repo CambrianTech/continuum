@@ -77,12 +77,25 @@ A stable set of `class` values so probes from different files compose into a coh
 Two environment variables — no recompile, no config file:
 
 ```bash
+# Capture every persona.* probe + every cognition.* probe to disk
 export CONTINUUM_PROBE_FILE=/tmp/continuum-probes.jsonl
-export CONTINUUM_PROBE_CLASSES=persona.turn.start,persona.turn.silent,persona.turn.spoke,persona.response.render.prompt
+export CONTINUUM_PROBE_CLASSES=persona,cognition
+
+# Or capture EVERYTHING (the firehose):
+export CONTINUUM_PROBE_CLASSES=*
+
+# Or mix exact classes with namespace prefixes:
+export CONTINUUM_PROBE_CLASSES=cognition.analyze.parse,persona.turn,timing
 ```
 
 - `CONTINUUM_PROBE_FILE` (path) — append-only JSONL log. Unset = file sink absent. Directory must exist; the sink errors loudly if not (no silent drop per `[[no-fallbacks-ever]]`).
-- `CONTINUUM_PROBE_CLASSES` (comma-separated) — exact-match class filter. Empty / unset = capture every class. Exact match (no globs) keeps the per-event filter to a single HashSet lookup.
+- `CONTINUUM_PROBE_CLASSES` (comma-separated) — class filter. Each value is matched against each probe's `class` by one of three rules (same convention as `tracing_subscriber`'s `RUST_LOG`):
+
+  1. **`*`** — wildcard; matches every class. Use to capture the firehose and filter offline with `jq`.
+  2. **Exact match** — `cognition.analyze.parse` matches only that one class.
+  3. **Namespace prefix** — `persona` matches `persona.turn.spoke`, `persona.response.enter`, every `persona.*`. Implementation: `class == filter || class.starts_with(filter + ".")` — the `.` guard prevents `persona` from accidentally matching `personality.x`.
+
+  Empty / unset = no filter configured, every class passes. `*` is the explicit "capture all" intent per `[[no-fallbacks-ever]]`.
 
 The sink is installed at process startup via `JsonlProbeFileSink::from_env()` — composes with `ProbeRouterLayer` (broadcast subscribers) and `UriCaptureLayer` (URI ancestry). Both consumers see every probe independently.
 

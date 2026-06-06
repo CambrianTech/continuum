@@ -30,12 +30,24 @@
 //!   Unset = sink absent. The directory must exist (sink errors on
 //!   open if not; honest failure beats silent drop per
 //!   `[[no-fallbacks-ever]]`).
-//! - `CONTINUUM_PROBE_CLASSES=persona.render,persona.analyze,timing`
-//!   — comma-separated allowed-classes filter. Empty / unset = ALL
-//!   classes. Glob/regex deliberately NOT supported in this slice;
-//!   exact-match keeps the filter cheap (single HashSet lookup per
-//!   event) and the conventional class taxonomy in `persona::probes`
-//!   gives operators a discoverable set to choose from.
+//! - `CONTINUUM_PROBE_CLASSES=persona,cognition.analyze` — comma-
+//!   separated allowed-classes filter. Each value is matched against
+//!   each probe's class field by ONE of three rules:
+//!
+//!     1. `*` — wildcard, matches every class. Use when you want to
+//!        capture EVERYTHING and filter offline with `jq`.
+//!     2. Exact match — `cognition.analyze.parse` matches only
+//!        `cognition.analyze.parse`.
+//!     3. Namespace prefix — `persona` matches `persona.turn.spoke`,
+//!        `persona.response.enter`, etc. (the `persona.` prefix), but
+//!        does NOT match a hypothetical `personality.x`. Concretely
+//!        the rule is `class == filter || class.starts_with(filter + ".")`.
+//!
+//!   Same convention as tracing's `RUST_LOG`. Empty / unset = ALL
+//!   classes pass (file sink with no filter = full capture). Per
+//!   `[[no-fallbacks-ever]]`: `*` is the EXPLICIT all-classes
+//!   value; an empty filter set is a deliberate "no filter
+//!   configured."
 //!
 //! ## Output format
 //!
@@ -252,7 +264,9 @@ where
         };
 
         // Class filter — early-out before allocating the envelope.
-        if !self.allowed_classes.is_empty() && !self.allowed_classes.contains(&class) {
+        // Three-rule match per the module docstring: empty set = all
+        // pass, `*` = wildcard, otherwise exact or namespace-prefix.
+        if !class_passes_filter(&class, &self.allowed_classes) {
             return;
         }
 
@@ -270,6 +284,41 @@ where
 
         self.write_one(captured_at_ms, &probe_event);
     }
+}
+
+/// Decide whether a probe's `class` passes the operator-configured
+/// filter set. Pure function — separable for unit testing and so
+/// any future per-event optimization (lower-cased lookup, trie,
+/// etc.) drops in without touching the Layer impl.
+///
+/// Rules (in priority order):
+///
+/// 1. **Empty filter set** = "no filter configured." Every class
+///    passes. Used when `CONTINUUM_PROBE_CLASSES` is unset — full
+///    capture.
+/// 2. **`*` is in the set** = explicit "match every class" wildcard.
+///    Different from rule 1 only in intent: `*` is the deliberate
+///    capture-everything signal an operator types when they want
+///    the firehose. Per `[[no-fallbacks-ever]]` the substrate
+///    distinguishes "no filter" from "explicit `*`" so both are
+///    honest decisions.
+/// 3. **Exact or namespace prefix.** A filter `F` matches a class
+///    `C` if `C == F` (exact) OR `C.starts_with(F.to_string() + ".")`
+///    (namespace prefix — `persona` matches `persona.turn.spoke`
+///    but NOT `personality.x`). Same convention as
+///    `tracing_subscriber::EnvFilter`. Keeps comma-separated env
+///    var values short — `CONTINUUM_PROBE_CLASSES=persona`
+///    captures every `persona.*` class without enumerating.
+pub(crate) fn class_passes_filter(class: &str, filter: &HashSet<String>) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    if filter.contains("*") {
+        return true;
+    }
+    filter.iter().any(|f| {
+        class == f || (class.len() > f.len() + 1 && class.starts_with(f) && class[f.len()..].starts_with('.'))
+    })
 }
 
 /// Visitor that pulls `probe_class`, `message`, and every other
@@ -385,6 +434,132 @@ mod tests {
         assert_eq!(lines[0]["message"], "rendered");
         assert_eq!(lines[0]["fields"]["persona"], "Paige");
         assert!(lines[0]["captured_at_ms"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn class_filter_namespace_prefix_matches_subclasses() {
+        // Prefix `persona` should match every persona.* class but
+        // NOT `personality.foo` (the dot guard prevents partial-
+        // word collisions). Per the docstring's rule 3.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("probes.jsonl");
+
+        let mut allowed = HashSet::new();
+        allowed.insert("persona".to_string());
+
+        let sink = JsonlProbeFileSink::new(&path, allowed).unwrap();
+        let subscriber = tracing_subscriber::registry()
+            .with(crate::routing::UriCaptureLayer::new())
+            .with(sink);
+
+        tracing::subscriber::with_default(subscriber, || {
+            crate::probe!(class = "persona.turn.spoke", "kept");
+            crate::probe!(class = "persona.response.render.prompt", "kept");
+            crate::probe!(class = "personality.something", "dropped");
+            crate::probe!(class = "cognition.analyze.parse", "dropped");
+        });
+
+        let lines = read_jsonl(&path);
+        assert_eq!(lines.len(), 2, "namespace prefix must drop both non-matching classes");
+        let kept_classes: Vec<&str> =
+            lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
+        assert!(kept_classes.contains(&"persona.turn.spoke"));
+        assert!(kept_classes.contains(&"persona.response.render.prompt"));
+    }
+
+    #[test]
+    fn class_filter_wildcard_matches_every_class() {
+        // `*` is the EXPLICIT capture-everything filter — different
+        // intent from "empty set means no filter" per the
+        // [[no-fallbacks-ever]] doctrine, but operationally equivalent
+        // (every class passes). Used when an operator types
+        // `CONTINUUM_PROBE_CLASSES=*` to deliberately request the
+        // firehose.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("probes.jsonl");
+
+        let mut allowed = HashSet::new();
+        allowed.insert("*".to_string());
+
+        let sink = JsonlProbeFileSink::new(&path, allowed).unwrap();
+        let subscriber = tracing_subscriber::registry()
+            .with(crate::routing::UriCaptureLayer::new())
+            .with(sink);
+
+        tracing::subscriber::with_default(subscriber, || {
+            crate::probe!(class = "persona.turn.spoke", "kept");
+            crate::probe!(class = "cognition.analyze.parse", "kept");
+            crate::probe!(class = "timing", "kept");
+        });
+
+        let lines = read_jsonl(&path);
+        assert_eq!(lines.len(), 3, "wildcard must capture every class");
+    }
+
+    #[test]
+    fn class_filter_combines_exact_and_prefix_in_one_set() {
+        // Operator's typical pattern: one specific class for a
+        // hard-to-find probe + a whole namespace for the broad
+        // picture. The filter must support both shapes in the same
+        // HashSet without rule contention.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("probes.jsonl");
+
+        let mut allowed = HashSet::new();
+        allowed.insert("cognition.analyze.parse".to_string()); // exact
+        allowed.insert("persona.turn".to_string()); // namespace
+
+        let sink = JsonlProbeFileSink::new(&path, allowed).unwrap();
+        let subscriber = tracing_subscriber::registry()
+            .with(crate::routing::UriCaptureLayer::new())
+            .with(sink);
+
+        tracing::subscriber::with_default(subscriber, || {
+            crate::probe!(class = "cognition.analyze.parse", "kept exact");
+            crate::probe!(class = "cognition.analyze.cache_hit", "dropped");
+            crate::probe!(class = "persona.turn.spoke", "kept prefix");
+            crate::probe!(class = "persona.turn.start", "kept prefix");
+            crate::probe!(class = "persona.response.enter", "dropped");
+        });
+
+        let lines = read_jsonl(&path);
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn class_passes_filter_pure_function_unit_tests() {
+        // Pure-function spec for the helper. Locks the rules from the
+        // docstring so future refactors of the per-event Layer code
+        // can't drift the matching contract.
+        use super::class_passes_filter;
+
+        // Rule 1: empty filter = all pass
+        let empty = HashSet::new();
+        assert!(class_passes_filter("persona.turn.spoke", &empty));
+        assert!(class_passes_filter("anything.at.all", &empty));
+
+        // Rule 2: wildcard = all pass
+        let mut wild = HashSet::new();
+        wild.insert("*".to_string());
+        assert!(class_passes_filter("persona.turn.spoke", &wild));
+        assert!(class_passes_filter("cognition.analyze.parse", &wild));
+
+        // Rule 3a: exact match
+        let mut exact = HashSet::new();
+        exact.insert("persona.turn.spoke".to_string());
+        assert!(class_passes_filter("persona.turn.spoke", &exact));
+        assert!(!class_passes_filter("persona.turn.silent", &exact));
+
+        // Rule 3b: namespace prefix with dot guard
+        let mut ns = HashSet::new();
+        ns.insert("persona".to_string());
+        assert!(class_passes_filter("persona.turn.spoke", &ns));
+        assert!(class_passes_filter("persona.response.enter", &ns));
+        assert!(!class_passes_filter("personality.foo", &ns));
+        assert!(!class_passes_filter("cognition.analyze.parse", &ns));
+        // Exact match against the prefix itself (a probe with
+        // class="persona") also matches.
+        assert!(class_passes_filter("persona", &ns));
     }
 
     #[test]
