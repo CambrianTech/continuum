@@ -370,6 +370,23 @@ async fn serve_persona_loop_inner(
         // `turn_latency` (sample-set identical).
         let mut phase_timings = PhaseTimings::default();
 
+        // RTOS-debugger breakpoint: turn entry at the service-loop
+        // level. Pair with `persona.turn.spoke` /
+        // `persona.turn.silent` / `persona.turn.error` (same lamport)
+        // for the complete per-turn record. The `respond_inner`-level
+        // probes (`persona.response.enter` etc.) live INSIDE the
+        // cognition; this one names the airc-boundary turn.
+        crate::probe!(
+            class = "persona.turn.start",
+            persona = %ctx.identity.agent_name,
+            persona_id = %ctx.identity.persona_id,
+            room_id = %ctx.identity.default_room,
+            lamport = msg.lamport,
+            peer_id = %msg.peer_id,
+            text_len = msg.text.len(),
+            "turn started"
+        );
+
         // ===========================================================
         // The brain services the turn through the canonical cognition
         // pipeline — `persona::response::respond(RespondInput)`. This
@@ -582,6 +599,18 @@ async fn serve_persona_loop_inner(
                     error = %e,
                     "respond cycle failed"
                 );
+                // RTOS-debugger breakpoint: turn failed somewhere
+                // inside the cognition cycle. Pair with the inner
+                // `persona.response.enter` probe (same persona +
+                // message_id) to find which stage threw.
+                crate::probe!(
+                    class = "persona.turn.error",
+                    persona = %ctx.identity.agent_name,
+                    lamport = msg.lamport,
+                    stage = "respond",
+                    error = %e,
+                    "respond cycle failed"
+                );
                 outcome.turns_errored += 1;
                 continue;
             }
@@ -593,6 +622,21 @@ async fn serve_persona_loop_inner(
                     lamport = msg.lamport,
                     reason = %reason,
                     "persona chose silence — substrate honors decision"
+                );
+                // RTOS-debugger breakpoint: persona chose silence as
+                // its own cognitive output (the canonical
+                // PersonaResponse::Silent path, not the substrate
+                // skipping the turn). The `reason` field is the
+                // persona's own explanation — load-bearing for
+                // diagnosing "why didn't this persona respond?"
+                // vs "why is no persona responding to anything?"
+                // (which is a cognition.analyze.parse signal).
+                crate::probe!(
+                    class = "persona.turn.silent",
+                    persona = %ctx.identity.agent_name,
+                    lamport = msg.lamport,
+                    reason = %reason,
+                    "persona chose silence"
                 );
                 outcome.turns_skipped += 1;
                 continue;
@@ -610,11 +654,43 @@ async fn serve_persona_loop_inner(
                 error = %e,
                 "say failed"
             );
+            // RTOS-debugger breakpoint: cognition succeeded, airc
+            // publish failed. Distinct error stage from
+            // `stage="respond"`.
+            crate::probe!(
+                class = "persona.turn.error",
+                persona = %ctx.identity.agent_name,
+                lamport = msg.lamport,
+                stage = "say",
+                error = %e,
+                "airc publish failed"
+            );
             outcome.turns_errored += 1;
             continue;
         }
         let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
         outcome.turn_latency.record(turn_duration_ms);
+
+        // RTOS-debugger breakpoint: turn completed successfully.
+        // The phase fields below are the per-phase decomposition
+        // from #195 slice 1 — together they let an operator find
+        // bottlenecks (recall is slow? compose is slow?) without
+        // a separate timing probe per stage. Per Joel
+        // [[jtag-probes-are-rtos-debugger]]: "timing of anything,
+        // so we can hunt down bottlenecks."
+        crate::probe!(
+            class = "persona.turn.spoke",
+            persona = %ctx.identity.agent_name,
+            lamport = msg.lamport,
+            response_len = response_text.len(),
+            turn_duration_ms = turn_duration_ms,
+            recall_ms = phase_timings.recall_ms,
+            admit_ms = phase_timings.admit_ms,
+            compose_ms = phase_timings.compose_ms,
+            respond_ms = phase_timings.respond_ms,
+            say_ms = phase_timings.say_ms,
+            "turn complete"
+        );
         // Per #195 slice 1: record the phase decomposition. Same
         // sample set as `turn_latency` — only successful replies
         // reach this point.
