@@ -398,6 +398,42 @@ async fn respond_inner(
 
     let total_ms = now_ms().saturating_sub(total_start);
 
+    // Silence-affordance recognition. `prompt_assembly::assemble`
+    // appends `SILENCE_AFFORDANCE_BLOCK` to every persona's system
+    // prompt, teaching the brain that replying with the single
+    // word "PASS" means "I have nothing valuable to add this turn."
+    // When the brain CHOOSES that signal, the substrate honors it:
+    // PersonaResponse::Silent instead of Spoke. The brain decides;
+    // the substrate just recognizes the documented signal.
+    //
+    // Doctrine `[[no-rust-gates-around-cognition]]`: this is NOT a
+    // Rust-side gate. The condition is whether the brain's own
+    // output matches the documented silence vocabulary — the
+    // decision was made inside the LLM, not by us.
+    if crate::persona::prompt_assembly::looks_like_silence_token(&visible_text) {
+        // RTOS-debugger breakpoint: the persona chose silence via
+        // the PASS affordance. The `reason` is observable so a
+        // training loop can analyze when personas use the signal
+        // (good silences vs unnecessary ones).
+        crate::probe!(
+            class = "persona.response.exit.silent",
+            persona = %input.persona.display_name,
+            persona_id = %input.persona.persona_id,
+            message_id = %input.message_id,
+            raw_text_len = raw_response.text.len(),
+            raw_text = %raw_response.text,
+            model_used = %raw_response.model_used,
+            total_ms = total_ms,
+            inference_ms = inference_ms,
+            "persona chose silence (PASS)"
+        );
+        return Ok(PersonaResponse::Silent {
+            persona_id: input.persona.persona_id,
+            reason: "persona chose silence via PASS affordance".to_string(),
+            relevance_score: 0.0,
+        });
+    }
+
     // RTOS-debugger breakpoint: the persona's final answer to
     // "what does this turn produce?" Pair with `persona.response.enter`
     // (same persona_id + message_id) for a complete turn record.

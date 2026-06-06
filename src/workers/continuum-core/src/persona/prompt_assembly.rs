@@ -10,6 +10,64 @@ use crate::model_registry::types::MultiPartyChatStrategy;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
+/// The single-word reply a persona produces when it chooses NOT to
+/// respond on a given turn. Detection in `persona::response::respond_inner`
+/// matches case-insensitively (see [`looks_like_silence_token`]).
+///
+/// Why "PASS": short (1 token in most BPE vocabularies including
+/// Qwen's), unambiguous, doesn't collide with natural chat openings,
+/// reads as a deliberate choice ("I'll pass on this one") rather
+/// than a malfunction.
+pub const SILENCE_TOKEN: &str = "PASS";
+
+/// The system-prompt block that teaches every persona the silence
+/// vocabulary. Always appended by [`assemble`] regardless of
+/// persona / model / role — silence is a universal output shape,
+/// not a per-tier capability.
+///
+/// Doctrine `[[no-rust-gates-around-cognition]]`: this is not the
+/// substrate deciding for the persona. It's the substrate giving
+/// the persona's brain an EXPLICIT vocabulary for an output that
+/// already exists in `PersonaResponse::Silent`. Without this block,
+/// the brain has no way to signal that choice — every model
+/// defaults to producing text because the prompt implicitly asks
+/// for it.
+///
+/// Tuned for LCD-tier models (Qwen2.5-0.5B): short, concrete,
+/// concrete examples. Capable models (qwen3.5-4b, GPT-4) handle
+/// the same text gracefully because the doctrine is universal.
+pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Silence Option]\n\
+    You are NOT required to respond to every message. If you have nothing \
+    valuable to add, reply with the single word PASS (no other text, no \
+    punctuation). Choose PASS when:\n\
+    - You just spoke and nothing new has been raised.\n\
+    - The message is small-talk that doesn't need your perspective.\n\
+    - Another persona is better suited and already responded.\n\
+    - You're tired or low-confidence on this topic.\n\
+    Silence is a first-class response — it's how you avoid pointless chatter.";
+
+/// Recognize the silence token in a persona's post-processed visible
+/// text. Permissive enough for LCD-tier sloppiness — trims whitespace
+/// and accepts a trailing period — strict enough that any substantive
+/// response (even one containing the word "pass") is treated as a
+/// real reply.
+///
+/// Examples (all true): `"PASS"`, `"pass"`, `"Pass."`, `"  pass  "`,
+/// `"\nPass.\n"`.
+///
+/// Examples (false): `"Pass on the bread please"`, `"I'll pass"` (the
+/// substrate wants the exact token so the brain's intent is
+/// unambiguous), `""` (empty isn't silence — it's a malformed turn).
+pub fn looks_like_silence_token(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Allow one trailing `.` for LCD-tier punctuation habit.
+    let core = trimmed.strip_suffix('.').unwrap_or(trimmed).trim_end();
+    core.eq_ignore_ascii_case(SILENCE_TOKEN)
+}
+
 /// Input to prompt assembly. Carries everything needed to build the
 /// LLM message array for a single persona's render pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +215,15 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         // allocation for callers that have a pre-existing buffer.
         append_social_block(&mut system_prompt, signals);
     }
+
+    // Silence affordance — UNIVERSAL across every turn. See
+    // `SILENCE_AFFORDANCE_BLOCK` docstring above for the doctrine.
+    // The brain decides; this block gives it the vocabulary to
+    // express the silence choice that `PersonaResponse::Silent`
+    // already shapes at the type layer. Without this text, even a
+    // capable model defaults to producing chatter because the
+    // implicit prompt contract is "respond to the message."
+    system_prompt.push_str(SILENCE_AFFORDANCE_BLOCK);
 
     // Voice mode instructions
     if input.is_voice {
@@ -489,6 +556,98 @@ fn append_social_block(buf: &mut String, signals: &SocialSignals) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pin that EVERY assembled prompt includes the silence affordance.
+    /// Without this teaching, even capable models default to producing
+    /// chatter because the implicit contract of an LLM prompt is "produce
+    /// output." Per #151 + Joel's `[[no-rust-gates-around-cognition]]`:
+    /// the brain decides whether to engage — but the brain has to know
+    /// silence is an option, and the option has to be vocabularized in
+    /// the prompt for `PersonaResponse::Silent` to be a reachable
+    /// output shape.
+    ///
+    /// A future PR that wires per-tier prompts or removes the universal
+    /// affordance must update this expectation to reflect the new
+    /// contract — silent removal would re-introduce the echo-storm bug.
+    #[test]
+    fn assembled_prompt_always_carries_silence_affordance() {
+        let input = PromptAssemblyInput {
+            persona_name: "Paige".to_string(),
+            system_prompt: "You are Paige, an autonomous AI persona on the grid.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: Some("Other".to_string()),
+                content: "Hi!".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![],
+        };
+
+        let result = assemble(&input);
+
+        assert!(
+            result.system_message.contains("[Silence Option]"),
+            "system_message missing the silence-option header — the brain has no way to express PersonaResponse::Silent. Got: {}",
+            result.system_message
+        );
+        assert!(
+            result.system_message.contains(SILENCE_TOKEN),
+            "system_message must literally contain the silence token ({}) so the LLM knows the exact reply shape. Got: {}",
+            SILENCE_TOKEN,
+            result.system_message
+        );
+    }
+
+    /// `looks_like_silence_token` permits LCD-tier sloppiness
+    /// (case, whitespace, single trailing period) without admitting
+    /// substantive responses that happen to contain the word "pass".
+    /// Pin both sides of the contract.
+    #[test]
+    fn silence_token_recognizer_contract() {
+        // Positive cases — the brain CHOSE silence.
+        for input in &[
+            "PASS",
+            "pass",
+            "Pass",
+            "  PASS  ",
+            "\nPASS\n",
+            "Pass.",
+            "pass.",
+            "  pass.  ",
+        ] {
+            assert!(
+                looks_like_silence_token(input),
+                "expected {:?} to be recognized as silence",
+                input
+            );
+        }
+
+        // Negative cases — substantive responses, even ones
+        // containing "pass" as a word. The contract is the EXACT
+        // token; ambiguity defeats the affordance.
+        for input in &[
+            "",
+            " ",
+            "Pass on the bread please",
+            "I'll pass on this one",
+            "Hello!",
+            "pass pass",
+            "I PASS the question to you",
+            "PASS:", // trailing colon isn't a period — not the documented shape
+        ] {
+            assert!(
+                !looks_like_silence_token(input),
+                "expected {:?} to be a real response, not silence",
+                input
+            );
+        }
+    }
 
     #[test]
     fn test_basic_assembly() {

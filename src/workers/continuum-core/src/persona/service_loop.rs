@@ -1055,26 +1055,74 @@ mod tests {
         assert!(outcome.respond_latency.mean_ms().is_none());
     }
 
-    /// #195 slice 2: pin that `build_persona_system_prompt` (the
-    /// helper used by both production construction and test
-    /// fixtures) produces EXACTLY what the old per-turn
-    /// `format!()` did. A future PR that adjusts the template
-    /// wording must update both the helper AND this expectation
-    /// — the test breaks loudly rather than letting the cache
-    /// drift away from the format!() the merger had previously.
+    /// #152 LCD identity grounding. Pre-fix prompt was a single
+    /// line ("You are {name}, an autonomous AI persona on the
+    /// grid.") that LCD-tier models (Qwen2.5-0.5B etc.) couldn't
+    /// hold under any pressure — they drifted to training
+    /// defaults (Claude / GPT / Siemens PLC etc).
+    ///
+    /// This test pins the structural contract of the post-fix
+    /// prompt — the SPECIFIC clauses that address known drift
+    /// modes — without pinning prose verbatim (so a future PR
+    /// can tighten wording without churning the test). The pin
+    /// covers:
+    ///
+    /// 1. Name + role anchoring in opening line.
+    /// 2. Explicit "you are NOT" list of common drift targets.
+    /// 3. First-person stability instruction.
+    /// 4. Grid / room context vocabulary.
+    /// 5. Silence-token reference (couples to the silence
+    ///    affordance shipped in the same arc — both prompt
+    ///    blocks are load-bearing for #151 + #152).
+    ///
+    /// A future PR that materially changes any clause must update
+    /// the matching assertion; silent drift would re-introduce the
+    /// identity-drift bug.
     #[test]
-    fn cached_system_prompt_matches_legacy_format_template() {
-        let cached = super::super::supervisor::build_persona_system_prompt("Paige");
-        let legacy = format!(
-            "You are {persona}, an autonomous AI persona on the grid.",
-            persona = "Paige"
+    fn system_prompt_carries_lcd_identity_grounding() {
+        let prompt = super::super::supervisor::build_persona_system_prompt("Paige");
+        let s = prompt.as_ref();
+
+        assert!(
+            s.contains("Paige"),
+            "persona name must appear at least once. Got: {s}"
         );
-        assert_eq!(
-            cached.as_ref(),
-            legacy,
-            "build_persona_system_prompt must produce the SAME string the \
-             pre-#195-slice-2 per-turn format!() did — otherwise the cache \
-             silently changes the prompt the substrate sends to the model"
+        assert!(
+            s.contains("autonomous AI persona"),
+            "role line missing. Got: {s}"
+        );
+        assert!(
+            s.contains("Identity"),
+            "identity block header missing. Got: {s}"
+        );
+        // Drift-target enumeration. Concrete name list is the
+        // operationally effective form on LCD models — abstract
+        // "don't drift" instructions don't stick.
+        for target in &["Claude", "GPT", "Gemini", "Llama", "Qwen", "Siemens PLC"] {
+            assert!(
+                s.contains(target),
+                "drift target {target:?} missing from 'you are NOT' enumeration. Got: {s}"
+            );
+        }
+        // First-person stability. Single most effective LCD anti-
+        // drift instruction per Joel 2026-06-03 testing.
+        assert!(
+            s.contains("first person") || s.contains("first-person"),
+            "first-person stability clause missing. Got: {s}"
+        );
+        // Grid / room context vocabulary.
+        assert!(
+            s.contains("grid"),
+            "'grid' vocabulary missing. Got: {s}"
+        );
+        assert!(
+            s.contains("Room") || s.contains("room"),
+            "'room' vocabulary missing. Got: {s}"
+        );
+        // Couples to the silence affordance.
+        assert!(
+            s.contains("[Silence Option]") || s.contains("silence"),
+            "silence-option reference missing — identity prompt should hint at the affordance assembled downstream. Got: {s}"
         );
     }
 
