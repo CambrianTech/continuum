@@ -35,6 +35,7 @@ pub mod command_uri;
 pub mod environment;
 #[macro_use]
 pub mod macros;
+pub mod probe_file_sink;
 pub mod probe_router;
 pub mod route_decision;
 pub mod transport;
@@ -74,6 +75,9 @@ pub use auth_policy::{
 pub use command_handler::{CommandRequestHandler, ParsedEnvelope, HANDLER_NAME};
 pub use command_uri::{CommandUri, NodeId, PeerRef, UriParseError};
 pub use environment::{EnvironmentId, WellKnownEnv};
+pub use probe_file_sink::{
+    JsonlProbeFileSink, ProbeFileSinkError, ENV_PROBE_CLASSES, ENV_PROBE_FILE,
+};
 pub use probe_router::{ProbeEvent, ProbeRouterLayer, DEFAULT_CHANNEL_CAPACITY};
 pub use route_decision::{route, RouteDecision, RouteKind};
 pub use transport::{ClosureTransport, NotImplementedRemoteTransport, Transport};
