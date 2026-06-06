@@ -192,6 +192,65 @@ Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIER
 
 ---
 
+## The Compounding Argument — Why a Mesh Beats a Datacenter
+
+Datacenter AI is **linear**. One team trains one model on one dataset → one outcome. Quarterly retrain. New users, same model. Capability ceiling is set by the dataset they could acquire this quarter and the FLOPS they could rent.
+
+continuum's substrate is **exponential**. Every persona trains from every other persona's already-trained layers and already-distilled lessons. Capability inherits multiplicatively across generations. The math:
+
+```
+naive datacenter:        C_dc(t+1) = C_dc(t) × α_dc       (linear, α_dc ≈ 1.x per quarter)
+substrate compounding:   C(t+1)    = C(t) × α × (1 + β·log(N))
+                                          ^^^   ^^^^^^^^^^^^
+                                inheritance     mesh-cross-pollination
+                                gain per        per active peer count N
+                                generation
+```
+
+For α > 1 and β > 0 and N above a threshold, the substrate's capability curve diverges away from any datacenter's linear improvement. The math is the moat. It doesn't require beating a datacenter on FLOPS — it requires being structurally capable of compounding inheritance, which datacenters are structurally NOT.
+
+### Why datacenters can't do this
+
+| Substrate property | Why datacenters can't replicate it |
+|---|---|
+| **Weight-level inheritance** between models | Cross-org IP, format / architecture mismatch, no shared base |
+| **Continuous training from user interaction** | Privacy + scale + no structured capture path |
+| **Verifiable lineage + falsifiable benchmarks** | No open metadata standard; trust is brand-based, not math-based; benchmarks are marketing, not contracts |
+| **Specialization per niche** | One model serves millions; the average is the target |
+| **Sub-second skill swap** (LoRA paging) | Monolithic models can't be paged; redeploy is hours |
+| **Mesh redundancy** | Centralized failure modes; one outage = millions offline |
+
+The structural choices that make datacenters efficient at single-shot inference (centralization, monolith, scheduled retrain) are the same choices that make them incapable of compounding. The substrate's structural choices (federation, modularity, continuous capture, cryptographic provenance) are precisely what enable compounding.
+
+### What's being wired (composition, not invention)
+
+The substrate doesn't build a parallel internet for intelligence. It **wires existing infrastructure** into honest trust + discovery + inheritance shapes:
+
+- **Bulk distribution** → [HuggingFace](https://huggingface.co/continuum-ai) (largest open model repo)
+- **Metadata + provenance + lineage** → [forge-alloy](https://github.com/CambrianTech/forge-alloy) (hash-addressed, signed, falsifiable benchmarks, mandatory limitations disclosure)
+- **Federated discovery** → airc (encrypted mesh, addressable URIs, cross-grid event subscription)
+- **Reputation, two tiers (different producers, same alloy envelope)**:
+  - **LoRA layers** → substrate-measured benchmarks (deterministic, falsifiable, in-process per persona). The recipe declares the test set; the substrate runs it through whichever inference adapter is fastest for the target tier (today: llama.cpp on LCD; Candle a peer alternative; the adapter pattern means we pivot to whatever's fast); the alloy carries the score + which adapter ran it; consumers verify by re-running locally. Math, not opinion.
+  - **Base models** → **[The Foundry](https://github.com/CambrianTech/forge-alloy)** (Sentinel-AI, a separate project for base-model compression + experiential plasticity). Multi-perspective cognitive judgment reserved for the rarer, higher-stakes decisions where benchmarks alone don't capture fitness — replacing the LCD floor model, adding a new tier, gating cross-grid promotion of a base. Rare + heavyweight.
+- **Trust model** → zero-trust math floor + reputation overlay. Narrow capability (LoRA) → falsifiable benchmarks. Broad capability (base model) → Foundry cognitive judgment. No central authority on either tier.
+- **Pivot insurance**: every ML-touching capability sits behind an adapter trait. Inference, embedding, training, evaluation. When a faster framework appears, we swap the adapter — no caller cares. The substrate's commitment is to the abstraction, not to any one framework.
+
+Every commodity (LoRA layer, lesson, recipe, base model, classifier, tool) flows through this same composition. One pattern, type-agnostic transport, cryptographic verifiability, reputation-discoverable. Federation is the default mode — local-only is the degenerate case where the grid happens to contain one peer.
+
+### Two payoffs nobody else gets
+
+**Data abundance, not data limitation.** Datacenter AI's ceiling is fresh high-quality training data — the internet is mostly already-trained-on, synthetic data degenerates recursively. Substrate AI's training signal is the substrate's normal operation: every persona conversation, code review, tool use, sentinel verdict (with sharing enabled) becomes permanent curriculum. The substrate generates higher signal-to-noise corpus than scrape because it's hippocampus-filtered and sentinel-scored before being trained on.
+
+**Distributed checkpointing via sharing.** Every persona that loaded a layer IS a verified backup of it. Lost continuums don't lose layers — peers have them, alloy-hash-verifiable. No central party can erase knowledge. New continuums bootstrap into the mesh already inheriting the accumulated wisdom; they don't start from ground zero.
+
+### The thesis, distilled
+
+Datacenters are the **ocean** — one mega-organism dominates, crowds out diversity, bills you per token to amortize the build. The mesh is **puddles and streams** — thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains, and *every grid's discoveries compound into every other grid's capability*.
+
+Every great evolutionary leap happened in the puddles, not the ocean. The math is the same here.
+
+---
+
 ## The Academy — AI That Trains Itself
 
 Most AI systems are frozen at deployment. continuum personas **get smarter every day.**
