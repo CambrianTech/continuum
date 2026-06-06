@@ -195,6 +195,25 @@ impl LatencyAggregate {
     }
 }
 
+/// Per-turn scratchpad for the phase decomposition (task #195
+/// slice 1). Each successful reply path fills in all five fields
+/// and the loop's tail records them into the matching
+/// ServeOutcome aggregates. Continue-on-error arms abandon the
+/// scratchpad implicitly — only fully-successful replies sample
+/// the phase aggregates, matching `turn_latency`'s sample set.
+///
+/// `Default` zeros every field — the loop tail can record
+/// unconditionally without checking which phases ran (only
+/// successful replies reach the tail at all).
+#[derive(Debug, Default, Clone, Copy)]
+struct PhaseTimings {
+    recall_ms: u64,
+    admit_ms: u64,
+    compose_ms: u64,
+    respond_ms: u64,
+    say_ms: u64,
+}
+
 /// Aggregate stats from one `serve_persona_loop` run. Returned when
 /// the conversation stream ends; useful for operators + tests
 /// asserting on what happened without scraping log lines.
@@ -226,6 +245,39 @@ pub struct ServeOutcome {
     /// have their own counters; conflating their wall-clock with the
     /// reply path's wall-clock would muddy the metric.
     pub turn_latency: LatencyAggregate,
+
+    // ─── Per-phase decomposition (task #195 slice 1) ──────────────
+    //
+    // `turn_latency` above is end-to-end; these break it down so
+    // optimization is data-driven instead of guess-driven. Each
+    // aggregate samples ONLY successful replies — same gate as
+    // `turn_latency` — so the decomposition stays internally
+    // consistent.
+    //
+    // Sum-of-phases ≈ turn_latency. Any residual is `RespondInput`
+    // projection + bookkeeping overhead; if that grows material,
+    // it gets its own aggregate in a follow-up slice. Per
+    // `[[observability-is-half-the-architecture]]` + Joel's
+    // 2026-06-05 "perfecting real inference latency" directive:
+    // we measure before we optimize.
+    /// Time spent in `cognition.admission.recall_scored` (the L2
+    /// retrieval pass). Holds the cognition mutex.
+    pub recall_latency: LatencyAggregate,
+    /// Time spent in `cognition.admission.admit` (engram formation
+    /// for the inbox message). Holds the cognition mutex.
+    pub admit_latency: LatencyAggregate,
+    /// Time spent in `cognition.compose_for_turn` (the RAG flexbox
+    /// composer + multi-source delivery). Holds the cognition mutex.
+    pub compose_latency: LatencyAggregate,
+    /// Time spent in `persona::response::respond` (the cognition
+    /// cycle including the LLM call). Does NOT hold the cognition
+    /// mutex — the substrate stays responsive while the model
+    /// decodes. This is typically the dominant cost and the
+    /// primary target of subsequent optimization slices.
+    pub respond_latency: LatencyAggregate,
+    /// Time spent in `conversation.say` (airc publish + downstream
+    /// ack). Usually small unless the airc transport is degraded.
+    pub say_latency: LatencyAggregate,
 }
 
 /// Run the per-persona service loop until the conversation stream
@@ -310,6 +362,13 @@ async fn serve_persona_loop_inner(
         // the metric is what verifies the doctrine actually shaved
         // the round-trip the doctrine claims to shave.
         let turn_started = std::time::Instant::now();
+        // Per #195 slice 1: per-phase decomposition. Each successful
+        // reply records all five phases into the matching
+        // ServeOutcome aggregates after `say` succeeds. The
+        // continue-on-error arms above this line don't touch
+        // phase_timings, so phase aggregates stay consistent with
+        // `turn_latency` (sample-set identical).
+        let mut phase_timings = PhaseTimings::default();
 
         // ===========================================================
         // The brain services the turn through the canonical cognition
@@ -368,7 +427,10 @@ async fn serve_persona_loop_inner(
             // disappear. PR #91 (RecallMetadata sidecar) + #92
             // (decay tick) provide the scoring infrastructure;
             // recall_scored composes them on the read path.
+            // Per #195 slice 1: time the L2 retrieval pass.
+            let recall_started = std::time::Instant::now();
             let scored = cognition.admission.recall_scored(now_ms, 8);
+            phase_timings.recall_ms = recall_started.elapsed().as_millis() as u64;
 
             // Per-engram introspection: the L2 → prompt seam is
             // observable, not opaque, per
@@ -395,7 +457,11 @@ async fn serve_persona_loop_inner(
             // turn can still run; the engram just doesn't form. Per
             // [[no-fallbacks-ever]] we surface the failure visibly,
             // not silently.
-            if let Err(e) = cognition.admission.admit(&inbox_msg, None) {
+            // Per #195 slice 1: time the L2 admission write.
+            let admit_started = std::time::Instant::now();
+            let admit_result = cognition.admission.admit(&inbox_msg, None);
+            phase_timings.admit_ms = admit_started.elapsed().as_millis() as u64;
+            if let Err(e) = admit_result {
                 tracing::warn!(
                     lamport = msg.lamport,
                     error = %e,
@@ -417,10 +483,13 @@ async fn serve_persona_loop_inner(
         //    FlexboxRagBudgetAdapter. Inference runs WITHOUT holding
         //    the mutex so the persona stays responsive to a future
         //    "stop" or shutdown signal while the model decodes.
+        // Per #195 slice 1: time the RAG flexbox composer.
+        let compose_started = std::time::Instant::now();
         let composed = {
             let cognition = ctx.cognition.lock().await;
             cognition.compose_for_turn(&ctx.profile, now_ms).await
         };
+        phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
 
         // 2. Project the brain's composed deliveries into the
         //    canonical `RespondInput`. AIRC delivery → recent_history;
@@ -482,7 +551,13 @@ async fn serve_persona_loop_inner(
         // 3. Run the cognition cycle. The persona may speak or stay
         //    silent — both are first-class outcomes per the
         //    PersonaResponse contract.
-        let response = match crate::persona::response::respond(respond_input).await {
+        // Per #195 slice 1: time the LLM bulk — typically the
+        // dominant cost and the primary target of subsequent
+        // optimization slices.
+        let respond_started = std::time::Instant::now();
+        let response_result = crate::persona::response::respond(respond_input).await;
+        phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
+        let response = match response_result {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(
@@ -508,7 +583,11 @@ async fn serve_persona_loop_inner(
             crate::persona::response::PersonaResponse::Spoke { text, .. } => text,
         };
 
-        if let Err(e) = conversation.say(&response_text).await {
+        // Per #195 slice 1: time the airc publish + downstream ack.
+        let say_started = std::time::Instant::now();
+        let say_result = conversation.say(&response_text).await;
+        phase_timings.say_ms = say_started.elapsed().as_millis() as u64;
+        if let Err(e) = say_result {
             tracing::warn!(
                 lamport = msg.lamport,
                 error = %e,
@@ -519,6 +598,14 @@ async fn serve_persona_loop_inner(
         }
         let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
         outcome.turn_latency.record(turn_duration_ms);
+        // Per #195 slice 1: record the phase decomposition. Same
+        // sample set as `turn_latency` — only successful replies
+        // reach this point.
+        outcome.recall_latency.record(phase_timings.recall_ms);
+        outcome.admit_latency.record(phase_timings.admit_ms);
+        outcome.compose_latency.record(phase_timings.compose_ms);
+        outcome.respond_latency.record(phase_timings.respond_ms);
+        outcome.say_latency.record(phase_timings.say_ms);
         outcome.turns_replied += 1;
         tracing::info!(
             lamport = msg.lamport,
@@ -527,7 +614,12 @@ async fn serve_persona_loop_inner(
             mean_ms = outcome.turn_latency.mean_ms().unwrap_or(0.0),
             min_ms = outcome.turn_latency.min_ms.unwrap_or(0),
             max_ms = outcome.turn_latency.max_ms.unwrap_or(0),
-            "turn complete — substrate's per-reply cost recorded"
+            recall_ms = phase_timings.recall_ms,
+            admit_ms = phase_timings.admit_ms,
+            compose_ms = phase_timings.compose_ms,
+            respond_ms = phase_timings.respond_ms,
+            say_ms = phase_timings.say_ms,
+            "turn complete — substrate's per-reply cost recorded with phase decomposition"
         );
     }
 
@@ -846,6 +938,60 @@ mod tests {
         agg.record(100);
         assert_eq!(agg.total_ms, u64::MAX, "saturated, not wrapped");
         assert_eq!(agg.count, 2);
+    }
+
+    /// `ServeOutcome::default()` initializes all five phase
+    /// aggregates to empty (count=0). Pin this so future fields
+    /// added to the struct don't accidentally regress the existing
+    /// fields' Default-impl behavior — every aggregate stays
+    /// independently zeroed and the decomposition starts clean.
+    #[test]
+    fn serve_outcome_phase_aggregates_default_to_empty() {
+        let outcome = ServeOutcome::default();
+        assert_eq!(outcome.recall_latency.count, 0);
+        assert_eq!(outcome.admit_latency.count, 0);
+        assert_eq!(outcome.compose_latency.count, 0);
+        assert_eq!(outcome.respond_latency.count, 0);
+        assert_eq!(outcome.say_latency.count, 0);
+        assert!(outcome.recall_latency.mean_ms().is_none());
+        assert!(outcome.respond_latency.mean_ms().is_none());
+    }
+
+    /// Aggregate-math property: each phase aggregate is structurally
+    /// identical to `turn_latency` (same `LatencyAggregate` shape).
+    /// A future refactor that swaps one to a different type would
+    /// fail this property test. Belt-and-braces for the
+    /// "decomposition components compose the same way" contract.
+    #[test]
+    fn phase_aggregates_use_same_type_as_turn_latency() {
+        let mut outcome = ServeOutcome::default();
+        // Record one sample into each — same call shape as
+        // `turn_latency.record`. If any phase aggregate had drifted
+        // to a different type/signature, this fails to compile.
+        outcome.turn_latency.record(100);
+        outcome.recall_latency.record(5);
+        outcome.admit_latency.record(2);
+        outcome.compose_latency.record(8);
+        outcome.respond_latency.record(80);
+        outcome.say_latency.record(3);
+
+        // Sum-of-phases should be ≤ turn_latency. Sample test
+        // (100 vs 5+2+8+80+3 = 98) demonstrates the residual is
+        // the projection + bookkeeping overhead the decomposition
+        // doesn't account for. The substrate's `turn_latency`
+        // remains the source of truth for end-to-end cost.
+        let phase_sum = outcome.recall_latency.total_ms
+            + outcome.admit_latency.total_ms
+            + outcome.compose_latency.total_ms
+            + outcome.respond_latency.total_ms
+            + outcome.say_latency.total_ms;
+        assert_eq!(phase_sum, 98, "phases sum correctly");
+        assert!(
+            phase_sum <= outcome.turn_latency.total_ms,
+            "phase-sum ({phase_sum}ms) must not exceed turn_latency ({}ms) — \
+             the decomposition is internal-to-turn",
+            outcome.turn_latency.total_ms
+        );
     }
 
     /// Caller-primes contract: per [[no-fallbacks-ever]] the loop does
