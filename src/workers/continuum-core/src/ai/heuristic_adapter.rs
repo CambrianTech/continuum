@@ -332,6 +332,14 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             is_local: true,
             // Effectively unlimited — we never reject by length.
             max_context_window: u32::MAX,
+
+            // Arc 1 typed descriptors: heuristic is a deterministic
+            // text-only adapter — no protocols beyond text I/O.
+            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::None,
+            structured_output_protocol:
+                crate::ai::adapter::StructuredOutputProtocol::None,
+            modalities: crate::ai::adapter::ModalitySet::TEXT_ONLY,
+            max_output_tokens: 4096,
         }
     }
 

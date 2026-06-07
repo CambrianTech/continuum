@@ -88,7 +88,110 @@ impl Default for AdapterConfig {
     }
 }
 
-/// AI provider adapter capabilities
+/// How the adapter ACCEPTS tool-call requests. This is arc 1's pivot
+/// insurance: cognition asks "can you do tools?" and the substrate
+/// routes accordingly — no special-casing per adapter, no "if openai
+/// then ..." branches. Per `[[adapter-pattern-is-the-pivot-insurance]]`.
+///
+/// The substrate's tool-execution loop reads this and either:
+/// 1. Calls the adapter natively (NativeFunctionCalling, JsonMode) and
+///    parses the structured response, OR
+/// 2. Wraps tool descriptors into the prompt itself (JsonInPrompt,
+///    XmlTags) and parses tool calls out of the text output stream
+///
+/// Adapters declare ONE protocol — the best they natively support.
+/// Bridged protocols (e.g., wrapping JsonInPrompt over a base model that
+/// could do better) belong in cognition's compose phase, not here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolCallProtocol {
+    /// No tool calling at all — caller must implement tool execution
+    /// out-of-band or skip tool use. Pure-text completion adapters
+    /// (HeuristicAdapter, embedding-only models).
+    #[default]
+    None,
+    /// Tools described in the system/user prompt as JSON schema; the
+    /// model emits JSON in its text output, substrate parses. Works on
+    /// any text model with sufficient instruction-following. The
+    /// fallback any prompt-driven model can fulfill.
+    JsonInPrompt,
+    /// Provider's native JSON mode (`response_format = json_object`) —
+    /// the model is constrained at sampling time to emit valid JSON.
+    /// Stronger guarantee than JsonInPrompt; weaker than function calling.
+    JsonMode,
+    /// Native function calling primitives — provider returns structured
+    /// tool_calls in its API response shape (OpenAI tools, Anthropic
+    /// tool_use). The substrate consumes them directly without parsing.
+    NativeFunctionCalling,
+    /// XML-style tool tags inside text output — Anthropic's pre-tool-use
+    /// pattern. Substrate parses `<tool>...</tool>` blocks.
+    XmlTags,
+}
+
+/// How the adapter ACCEPTS structured-output schemas. Same shape as
+/// `ToolCallProtocol` — cognition asks "can you constrain output to
+/// this schema?" and routes accordingly. Independent of tool calling
+/// because some adapters support schemas without tools (and vice versa).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StructuredOutputProtocol {
+    /// No structured-output enforcement. Substrate must validate + retry.
+    #[default]
+    None,
+    /// JSON Schema enforced by the provider (OpenAI structured outputs).
+    /// Strongest guarantee — the API rejects invalid outputs.
+    JsonSchema,
+    /// Grammar-constrained sampling (llama.cpp `--grammar` / GBNF).
+    /// Local-model strength: the sampler refuses tokens that violate
+    /// the grammar.
+    GrammarConstrained,
+    /// Schema described in the prompt; substrate parses + retries on
+    /// invalid. Always-available fallback for text models.
+    PromptOnly,
+}
+
+/// Which modalities the adapter handles. The pivot insurance for
+/// sensory parity per `[[ai-namespace-multimodal-crutches]]`: lesser
+/// models declare `vision_in = false` here; the substrate's
+/// VisionDescriptionService bridges by rendering an image description
+/// into text BEFORE the adapter sees the request. Same for STT (audio
+/// → text) and TTS (text → audio). Capability declared honestly =
+/// bridges applied correctly = LCD personas get the same sensory
+/// experience as Claude.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModalitySet {
+    /// Accepts text input (system + user messages, raw prompts).
+    pub text_in: bool,
+    /// Produces text output (the common case).
+    pub text_out: bool,
+    /// Accepts image input natively (base64 or URL).
+    pub vision_in: bool,
+    /// Accepts audio input natively (audio file or raw samples).
+    pub audio_in: bool,
+    /// Produces audio output natively (TTS-equivalent).
+    pub audio_out: bool,
+}
+
+impl ModalitySet {
+    /// Text-only modality (most LLMs).
+    pub const TEXT_ONLY: Self = Self {
+        text_in: true,
+        text_out: true,
+        vision_in: false,
+        audio_in: false,
+        audio_out: false,
+    };
+}
+
+/// AI provider adapter capabilities — the typed surface the substrate's
+/// coordinator consults when routing a workload to the best-fit adapter.
+///
+/// Arc 1 (card 42bd9367): added typed protocol descriptors
+/// (`tool_call_protocol`, `structured_output_protocol`, `modalities`)
+/// alongside the legacy bool flags. The bool flags are retained for
+/// existing callers; new selectors should consult the typed fields.
+/// Per `[[adapter-pattern-is-the-pivot-insurance]]`: every ML-touching
+/// capability sits behind this trait so the substrate can pivot
+/// (swap framework, swap model, swap provider) by declaration, not
+/// rewrite.
 #[derive(Debug, Clone, Default)]
 pub struct AdapterCapabilities {
     pub supports_text_generation: bool,
@@ -101,6 +204,26 @@ pub struct AdapterCapabilities {
     pub supports_image_generation: bool,
     pub is_local: bool,
     pub max_context_window: u32,
+
+    // ─── Arc 1: typed protocol descriptors (card 42bd9367) ─────────────────
+    /// Tool-calling protocol the adapter NATIVELY supports. Cognition's
+    /// tool loop routes through this. `None` means the substrate either
+    /// skips tools or wraps via prompt-text emulation in compose phase.
+    pub tool_call_protocol: ToolCallProtocol,
+    /// Structured-output protocol the adapter NATIVELY supports.
+    /// Independent of tool calling. `None` means schema validation +
+    /// retry happen in cognition.
+    pub structured_output_protocol: StructuredOutputProtocol,
+    /// Modalities the adapter handles natively. Modalities NOT in this
+    /// set are bridged by the substrate before the adapter sees the
+    /// request (vision → VisionDescriptionService, audio_in → STT,
+    /// audio_out → TTS). LCD personas get sensory parity via bridges
+    /// per `[[ai-namespace-multimodal-crutches]]`.
+    pub modalities: ModalitySet,
+    /// Maximum tokens the adapter will emit in a single response.
+    /// Distinct from `max_context_window` (input + output limit).
+    /// Used by cognition to bound the compose phase.
+    pub max_output_tokens: u32,
 }
 
 /// LoRA capabilities reported by adapters

@@ -500,11 +500,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
+        let supports_tools = self.config.supports_tools;
+        let supports_vision = self.config.supports_vision;
         AdapterCapabilities {
             supports_text_generation: true,
             supports_chat: true,
-            supports_tool_use: self.config.supports_tools,
-            supports_vision: self.config.supports_vision,
+            supports_tool_use: supports_tools,
+            supports_vision,
             supports_streaming: true,
             supports_embeddings: self.config.provider_id == "openai",
             supports_audio: false,
@@ -516,6 +518,29 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 .first()
                 .map(|m| m.context_window)
                 .unwrap_or(128000),
+
+            // Arc 1: OpenAI-compatible providers (OpenAI, DeepSeek, Together,
+            // Fireworks, Groq, xAI, Mistral) support native function calling
+            // when supports_tools is set, and JSON Schema for structured output.
+            // Vision-in when supports_vision is set; rest goes through bridges.
+            tool_call_protocol: if supports_tools {
+                crate::ai::adapter::ToolCallProtocol::NativeFunctionCalling
+            } else {
+                crate::ai::adapter::ToolCallProtocol::None
+            },
+            structured_output_protocol: if supports_tools {
+                crate::ai::adapter::StructuredOutputProtocol::JsonSchema
+            } else {
+                crate::ai::adapter::StructuredOutputProtocol::PromptOnly
+            },
+            modalities: crate::ai::adapter::ModalitySet {
+                text_in: true,
+                text_out: true,
+                vision_in: supports_vision,
+                audio_in: false,
+                audio_out: false,
+            },
+            max_output_tokens: 16_384,
         }
     }
 
