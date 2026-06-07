@@ -2,13 +2,22 @@
 //!
 //! Atomic writes: serialize → write to .tmp → rename.
 //! Storage: ~/.continuum/sentinel/checkpoints/{handle}.json
+//! (or `$CONTINUUM_CHECKPOINT_DIR` when set — tests use this to
+//! redirect writes to a per-process tempdir so `cargo test` never
+//! touches the developer's real home.)
 
 use std::path::PathBuf;
 
 use super::types::{PipelineCheckpoint, PipelineStatus};
 
-/// Base directory for checkpoint storage
+/// Base directory for checkpoint storage.
+///
+/// Production: `~/.continuum/sentinel/checkpoints/`.
+/// Tests / dev tools: set `CONTINUUM_CHECKPOINT_DIR` to redirect.
 fn checkpoints_dir() -> PathBuf {
+    if let Some(override_dir) = std::env::var_os("CONTINUUM_CHECKPOINT_DIR") {
+        return PathBuf::from(override_dir);
+    }
     let home = dirs::home_dir().expect("Failed to resolve home directory");
     home.join(".continuum").join("sentinel").join("checkpoints")
 }
@@ -137,6 +146,25 @@ mod tests {
     use super::*;
     use crate::modules::sentinel::types::*;
     use std::collections::HashMap;
+    use std::sync::OnceLock;
+
+    /// Per-process tempdir installed into `CONTINUUM_CHECKPOINT_DIR` the
+    /// first time any test in this module runs. Kept alive (and unique
+    /// per `cargo test` invocation) by the `OnceLock` — `TempDir`'s
+    /// Drop deletes it when the process exits. Without this isolation
+    /// the tests below polluted `~/.continuum/sentinel/checkpoints/`
+    /// on the developer's real home and flaked on machines where that
+    /// directory was root-owned from prior docker-compose bind-mounts.
+    fn ensure_checkpoint_dir_isolated() {
+        static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+        let dir = DIR.get_or_init(|| {
+            tempfile::tempdir().expect("create checkpoint test tempdir")
+        });
+        // Set every call: cargo runs tests in parallel and any other
+        // test that clears CONTINUUM_CHECKPOINT_DIR could race us;
+        // re-setting per test keeps the contract local.
+        std::env::set_var("CONTINUUM_CHECKPOINT_DIR", dir.path());
+    }
 
     fn make_test_checkpoint(handle: &str) -> PipelineCheckpoint {
         PipelineCheckpoint {
@@ -189,6 +217,7 @@ mod tests {
 
     #[test]
     fn test_save_load_checkpoint() {
+        ensure_checkpoint_dir_isolated();
         let handle = format!(
             "test-ckpt-{}",
             uuid::Uuid::new_v4().to_string()[..8].to_string()
@@ -208,6 +237,7 @@ mod tests {
 
     #[test]
     fn test_list_checkpoints() {
+        ensure_checkpoint_dir_isolated();
         let handle = format!(
             "test-list-{}",
             uuid::Uuid::new_v4().to_string()[..8].to_string()
@@ -223,6 +253,7 @@ mod tests {
 
     #[test]
     fn test_recover_interrupted() {
+        ensure_checkpoint_dir_isolated();
         let handle = format!(
             "test-recover-{}",
             uuid::Uuid::new_v4().to_string()[..8].to_string()
