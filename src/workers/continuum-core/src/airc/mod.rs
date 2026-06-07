@@ -8,6 +8,8 @@ pub mod client;
 pub mod daemon_endpoint;
 pub mod daemon_transport;
 pub mod discovery;
+pub mod discovery_aggregate;
+pub mod discovery_state;
 pub mod event_transport;
 pub mod inbound_attach;
 pub mod process;
@@ -15,6 +17,9 @@ pub mod realtime;
 pub mod realtime_store;
 pub mod realtime_wire;
 pub mod types;
+
+pub use discovery_aggregate::discover;
+pub use discovery_state::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
 
 pub use client::{AircQueueClient, CliAircQueueClient};
 #[allow(deprecated)]

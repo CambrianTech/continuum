@@ -6,44 +6,23 @@
 //! This is the top-level coordinator — like CBAR's RenderingEngine
 //! that owns the CBP_Analyzer pipeline and orchestrates frame flow.
 
+use super::boot_mode::BootMode;
 use super::message_bus::MessageBus;
 use super::module_context::ModuleContext;
 use super::registry::ModuleRegistry;
 use super::service_module::{CommandResult, ServiceModule};
 use super::shared_compute::SharedCompute;
+use crate::airc::AircDiscovery;
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-/// Expected modules that MUST be registered for a complete runtime.
-/// Adding a module here ensures it cannot be forgotten during registration.
-/// The server will fail to start if any expected module is missing.
-pub const EXPECTED_MODULES: &[&str] = &[
-    "gpu",               // Phase 0: GPU memory management
-    "health",            // Phase 1: stateless health checks
-    "cognition",         // Phase 2: persona cognition engines
-    "channel",           // Phase 2: persona channel registries
-    "models",            // Phase 3: async model discovery
-    "memory",            // Phase 3: persona memory manager
-    "rag",               // Phase 3: batched RAG composition
-    "live",              // Phase 3: live experience (voice, video, transport)
-    "code",              // Phase 3: file engines, shell sessions
-    "data",              // Phase 4: database ORM operations
-    "logger",            // Phase 4a: structured logging
-    "search",            // Phase 4b: BM25, TF-IDF, vector search
-    "embedding",         // Phase 4c: fastembed vector generation
-    "grid",              // Grid transport: inter-node routing (Tailscale, Reticulum)
-    "runtime",           // RuntimeModule: metrics and control
-    "mcp",               // MCP server: dynamic tool discovery
-    "system",            // System resources: CPU, memory, process monitoring
-    "avatar",            // Avatar snapshots: Bevy 3D renders → PNG
-    "dataset",           // Dataset import/management for Academy training
-    "persona_allocator", // Hardware-aware persona allocation decisions
-    "inference-llm",     // Phase 5: local LLM generation (MODULE-CATALOG §II)
-    "vdd",               // Lane C PR-3: VDD report from structured artifacts
-];
+// Module manifest lives in the `module_manifest` mod below
+// (MODULES_CORE / MODULES_PERSONA_HOSTING / ALL_KNOWN_MODULES /
+// required_modules) so all module-state truth is in one place
+// and the snapshot test has one anchor point.
 
 pub struct Runtime {
     /// Registry uses interior mutability (DashMap + RwLock).
@@ -367,57 +346,413 @@ impl Runtime {
         info!("All modules shut down");
     }
 
-    /// Verify all expected modules are registered.
-    /// Fails with a clear error if any module is missing.
-    /// Call after all registrations to ensure nothing was forgotten.
-    pub fn verify_registration(&self) -> Result<(), String> {
+    /// Verify all required modules are registered for the given
+    /// `(discovery, mode)` pair.
+    ///
+    /// The required set is CONDITIONAL — not a flat list — because
+    /// modules like `persona_instance_manager` and
+    /// `persona-rag-inspect` are only constructible when AIRC is
+    /// `Healthy`. Slice A's flat list put them in `EXPECTED_MODULES`
+    /// unconditionally, which meant `verify_registration` failed
+    /// boot in the very `InferenceOnly` mode Slice A's PR body
+    /// claimed to support (R1#1 BLOCK). This API takes the typed
+    /// state and computes the expected set at call time, so the
+    /// contradiction is structurally impossible.
+    ///
+    /// The substrate's ONE source of truth for what modules exist is
+    /// the `MODULES: &[(&str, ModuleCategory)]` slice — one entry per
+    /// registered module, tagged with its category. `required_modules`
+    /// filters this list at call time; there is no parallel list to
+    /// drift against. The `expected_modules_snapshot` integration test
+    /// (A.2.2) cross-checks `MODULES` against actual registrations at
+    /// boot. R2#3 + R3#3 BLOCK from Slice A's review is structurally
+    /// closed by the single-source-of-truth design.
+    pub fn verify_registration(
+        &self,
+        discovery: &AircDiscovery,
+        mode: BootMode,
+    ) -> Result<(), String> {
         let registered: Vec<String> = self.registry.module_names();
-        let mut missing: Vec<&str> = Vec::new();
-        let mut unexpected: Vec<String> = Vec::new();
+        let required = required_modules(discovery, mode);
+        let required_count = required.len();
+        let mut missing: Vec<&'static str> = Vec::new();
 
-        // Check for missing expected modules
-        for expected in EXPECTED_MODULES {
-            if !registered.iter().any(|r| r == *expected) {
-                missing.push(expected);
+        for expected in &required {
+            if !registered.iter().any(|r| r == expected) {
+                missing.push(*expected);
             }
         }
 
-        // Check for unexpected registered modules (not necessarily an error, just a warning)
-        for registered_name in &registered {
-            if !EXPECTED_MODULES.contains(&registered_name.as_str()) {
-                unexpected.push(registered_name.clone());
-            }
-        }
-
-        // Log warnings for unexpected modules
-        for name in &unexpected {
-            warn!(
-                "Unexpected module registered (not in EXPECTED_MODULES): {}",
-                name
-            );
-        }
-
-        // Fail if any expected modules are missing
         if !missing.is_empty() {
             let missing_list = missing.join(", ");
-            error!("Missing required modules: {}", missing_list);
+            error!(
+                discovery = ?discovery.kind(),
+                mode = ?mode.label(),
+                "Missing required modules for (discovery={}, mode={}): [{}]",
+                discovery.kind(),
+                mode.label(),
+                missing_list
+            );
             error!(
                 "Expected {} modules, found {}",
-                EXPECTED_MODULES.len(),
+                required_count,
                 registered.len()
             );
-            error!("Add missing module registrations in ipc/mod.rs or update EXPECTED_MODULES in runtime.rs");
+            error!(
+                "Add missing module registrations in ipc/mod.rs (the registration \
+                 site emits the module name; MODULES with its category tag is the \
+                 single source of truth — required_modules() filters it)"
+            );
             return Err(format!(
-                "Module registration incomplete: missing [{}]. Server cannot start.",
+                "Module registration incomplete for (discovery={}, mode={}): \
+                 missing [{}]. Server cannot start.",
+                discovery.kind(),
+                mode.label(),
                 missing_list
             ));
         }
 
         info!(
-            "✅ All {} expected modules registered",
-            EXPECTED_MODULES.len()
+            "✅ All {} required modules registered (discovery={}, mode={})",
+            required_count,
+            discovery.kind(),
+            mode.label()
         );
         Ok(())
+    }
+}
+
+/// Category of a substrate module — load-bearing for `verify_registration`'s
+/// conditional dispatch on `(AircDiscovery, BootMode)`.
+///
+/// Per the compression principle ([[host-the-seemingly-impossible]]): one
+/// list of `(name, category)` pairs replaces what was originally going to
+/// be three drifting constants. The set returned by `required_modules`
+/// is computed by filtering this single list — there is no parallel
+/// list to drift against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleCategory {
+    /// Required by every boot regardless of discovery state or mode.
+    /// Infrastructure, resource governance, transport, AI dispatch.
+    /// Missing → substrate cannot serve commands at all.
+    Core,
+    /// Requires AIRC `Healthy`. Only registered when discovery
+    /// succeeded across all four sub-steps (socket + room + channel +
+    /// Status RPC liveness) AND the boot mode requires persona
+    /// hosting. `--mode=inference-only` operators do not register
+    /// these.
+    PersonaHosting,
+}
+
+/// The substrate's ONE source of truth for "what modules exist + what
+/// category each is in." `required_modules(&discovery, mode)` filters
+/// this list; `ALL_KNOWN_MODULES()` derives the snapshot baseline from
+/// it. There is no second list to drift against — the compression
+/// principle made structural.
+///
+/// When you add a new `runtime.register(NewModule)` call site in
+/// `ipc/mod.rs`, add one row here with its category. The drift catcher
+/// `category_dispatch_consistency` verifies every row appears in the
+/// expected required set for at least one `(discovery, mode)` pair —
+/// so a row that's never reachable surfaces in CI. The
+/// `expected_modules_snapshot` integration test (A.2.2) cross-checks
+/// this list against actual registrations at boot.
+pub const MODULES: &[(&str, ModuleCategory)] = &[
+    // Infrastructure / health
+    ("health", ModuleCategory::Core),
+    ("auth", ModuleCategory::Core),
+    ("system", ModuleCategory::Core),
+    ("events", ModuleCategory::Core),
+    ("logger", ModuleCategory::Core),
+    ("runtime", ModuleCategory::Core),
+    ("mcp", ModuleCategory::Core),
+    ("data", ModuleCategory::Core),
+    // Resource governance
+    ("gpu", ModuleCategory::Core),
+    ("resource-broker", ModuleCategory::Core),
+    ("pressure-broker", ModuleCategory::Core),
+    // AI / inference
+    ("inference", ModuleCategory::Core),
+    ("inference-llm", ModuleCategory::Core),
+    ("ai_provider", ModuleCategory::Core),
+    ("embedding", ModuleCategory::Core),
+    ("search", ModuleCategory::Core),
+    ("tool-parsing", ModuleCategory::Core),
+    ("vision", ModuleCategory::Core),
+    ("models", ModuleCategory::Core),
+    ("memory", ModuleCategory::Core),
+    ("rag", ModuleCategory::Core),
+    // Persona substrate (always-built — cognition/allocator work
+    // without an AIRC daemon)
+    ("cognition", ModuleCategory::Core),
+    ("channel", ModuleCategory::Core),
+    ("persona_allocator", ModuleCategory::Core),
+    ("agent", ModuleCategory::Core),
+    // Persona substrate (AIRC-Healthy-conditional — registers only
+    // when discovery succeeded across all four sub-steps)
+    ("persona_instance_manager", ModuleCategory::PersonaHosting),
+    ("persona-rag-inspect", ModuleCategory::PersonaHosting),
+    // Forge / sentinel / plasticity / training
+    ("forge", ModuleCategory::Core),
+    ("sentinel", ModuleCategory::Core),
+    ("plasticity", ModuleCategory::Core),
+    ("dataset", ModuleCategory::Core),
+    ("vdd", ModuleCategory::Core),
+    ("cargo", ModuleCategory::Core),
+    ("code", ModuleCategory::Core),
+    // Substrate transports
+    ("airc", ModuleCategory::Core),
+    ("grid", ModuleCategory::Core),
+    // Live presence — Slice B' splits these into renderer + voice
+    // sidecars
+    ("live", ModuleCategory::Core),
+    ("avatar", ModuleCategory::Core),
+];
+
+/// Compute the required-module set for a given `(discovery, mode)` —
+/// derived by filtering `MODULES` rather than maintained as a parallel
+/// list.
+///
+/// `InferenceOnly` mode → only `Core` modules (operator opted out of
+/// persona hosting).
+/// `FullCitizen` / `FailFast` mode + `Healthy` AIRC → `Core` +
+/// `PersonaHosting`.
+/// `FullCitizen` / `FailFast` mode + degraded AIRC → the substrate
+/// refuses boot BEFORE reaching `verify_registration` (see
+/// `ipc/mod.rs::start_server`), so this function never sees that
+/// pair in practice. Defensively, it returns the same set as
+/// `(InferenceOnly, *)` so a stray invocation produces a coherent
+/// error message rather than complaining about modules that cannot
+/// be registered.
+pub fn required_modules(discovery: &AircDiscovery, mode: BootMode) -> Vec<&'static str> {
+    let needs_persona_hosting = mode.requires_persona_hosting() && discovery.can_host_personas();
+    MODULES
+        .iter()
+        .filter(|(_, cat)| match cat {
+            ModuleCategory::Core => true,
+            ModuleCategory::PersonaHosting => needs_persona_hosting,
+        })
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// Every module name the substrate knows about — derived from
+/// `MODULES`, not a parallel list. Used by the
+/// `expected_modules_snapshot` integration test (A.2.2) as the
+/// snapshot baseline.
+pub fn all_known_modules() -> Vec<&'static str> {
+    MODULES.iter().map(|(name, _)| *name).collect()
+}
+
+// MODULES is the substrate's ONE source of truth — `required_modules`
+// and `all_known_modules` both derive from it. No parallel list to
+// drift against.
+
+#[cfg(test)]
+mod conditional_modules_tests {
+    use super::*;
+    use crate::airc::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
+    use airc_core::RoomId;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn healthy() -> AircDiscovery {
+        AircDiscovery::Healthy {
+            socket: PathBuf::from("/tmp/x.sock"),
+            default_room: RoomId::from_uuid(Uuid::new_v4()),
+            room_name: "general".into(),
+            peer_id: Uuid::new_v4(),
+        }
+    }
+
+    fn degraded() -> AircDiscovery {
+        AircDiscovery::Degraded {
+            reason: DiscoveryFailure::NoDefaultRoom,
+            partial: PartialDiscovery::default(),
+        }
+    }
+
+    /// FullCitizen + Healthy → must include persona hosting.
+    #[test]
+    fn full_citizen_healthy_requires_persona_hosting_modules() {
+        let req = required_modules(&healthy(), BootMode::FullCitizen);
+        assert!(req.contains(&"persona_instance_manager"));
+        assert!(req.contains(&"persona-rag-inspect"));
+        assert!(req.contains(&"inference"));
+        assert!(req.contains(&"airc"));
+    }
+
+    /// InferenceOnly → must NOT require persona hosting modules.
+    /// This is the case Slice A broke (R1#1).
+    #[test]
+    fn inference_only_does_not_require_persona_hosting_modules() {
+        let req = required_modules(&healthy(), BootMode::InferenceOnly);
+        assert!(!req.contains(&"persona_instance_manager"));
+        assert!(!req.contains(&"persona-rag-inspect"));
+        // Core inference must still be there
+        assert!(req.contains(&"inference"));
+        assert!(req.contains(&"embedding"));
+        // airc module itself stays (it provides queue commands etc.
+        // even when there's no live daemon to attach to)
+        assert!(req.contains(&"airc"));
+    }
+
+    /// FailFast + Healthy → persona hosting required (strictest).
+    #[test]
+    fn fail_fast_healthy_requires_persona_hosting_modules() {
+        let req = required_modules(&healthy(), BootMode::FailFast);
+        assert!(req.contains(&"persona_instance_manager"));
+        assert!(req.contains(&"persona-rag-inspect"));
+    }
+
+    /// FullCitizen + Degraded would normally bail before reaching
+    /// verify_registration. If it somehow does reach, return the
+    /// core-only set (no persona hosting modules required) so the
+    /// resulting error message is coherent instead of complaining
+    /// about modules that couldn't be registered against a
+    /// degraded daemon.
+    #[test]
+    fn full_citizen_degraded_uses_core_only_set() {
+        let req = required_modules(&degraded(), BootMode::FullCitizen);
+        assert!(!req.contains(&"persona_instance_manager"));
+        assert!(!req.contains(&"persona-rag-inspect"));
+    }
+
+    /// Drift catcher: every entry in `MODULES` MUST have a unique
+    /// name. Duplicate registrations would make the conditional
+    /// dispatch ambiguous (which category wins?).
+    #[test]
+    fn modules_list_has_unique_names() {
+        let mut names: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
+        let original_len = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            original_len,
+            "MODULES contains duplicate module names — every name must appear at most once"
+        );
+    }
+
+    /// `required_modules` returns the correct size for each
+    /// `(discovery, mode)` cell.
+    ///
+    /// `Healthy + FullCitizen` should include both Core and
+    /// PersonaHosting categories. Every other cell should include
+    /// only Core. This is the structural test the convergent
+    /// review demanded as a R2#3+R3#3 closer: the dispatch is
+    /// derived from the single source of truth, so any change to
+    /// the category of a row immediately changes what this test
+    /// expects to see, not a parallel list that drifts.
+    #[test]
+    fn required_modules_size_matches_category_dispatch() {
+        let core_count = MODULES
+            .iter()
+            .filter(|(_, c)| matches!(c, ModuleCategory::Core))
+            .count();
+        let hosting_count = MODULES
+            .iter()
+            .filter(|(_, c)| matches!(c, ModuleCategory::PersonaHosting))
+            .count();
+        let all_count = core_count + hosting_count;
+
+        assert_eq!(
+            required_modules(&healthy(), BootMode::FullCitizen).len(),
+            all_count,
+            "FullCitizen + Healthy must include both Core and PersonaHosting"
+        );
+        assert_eq!(
+            required_modules(&healthy(), BootMode::InferenceOnly).len(),
+            core_count,
+            "InferenceOnly must include only Core"
+        );
+        assert_eq!(
+            required_modules(&degraded(), BootMode::FullCitizen).len(),
+            core_count,
+            "Degraded must include only Core regardless of mode"
+        );
+        assert_eq!(
+            required_modules(&degraded(), BootMode::InferenceOnly).len(),
+            core_count,
+        );
+    }
+
+    /// `all_known_modules()` must match the names projected from
+    /// `MODULES`. Derivation correctness — if the projection ever
+    /// diverges (e.g. someone adds a filter the const doesn't have),
+    /// this catches it.
+    #[test]
+    fn all_known_modules_derives_from_modules() {
+        let expected: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
+        assert_eq!(all_known_modules(), expected);
+    }
+
+    /// Every Core module must be present in EVERY required-modules
+    /// result. Catches any future regression where someone
+    /// accidentally categorizes a load-bearing infrastructure
+    /// module as `PersonaHosting`.
+    #[test]
+    fn every_core_module_appears_in_every_required_set() {
+        let cells = [
+            (healthy(), BootMode::FullCitizen),
+            (healthy(), BootMode::InferenceOnly),
+            (healthy(), BootMode::FailFast),
+            (degraded(), BootMode::FullCitizen),
+            (degraded(), BootMode::InferenceOnly),
+            (degraded(), BootMode::FailFast),
+        ];
+        for (discovery, mode) in cells {
+            let req = required_modules(&discovery, mode);
+            for (name, cat) in MODULES {
+                if matches!(cat, ModuleCategory::Core) {
+                    assert!(
+                        req.contains(name),
+                        "Core module {name:?} missing from required set for \
+                         (discovery={}, mode={})",
+                        discovery.kind(),
+                        mode.label()
+                    );
+                }
+            }
+        }
+    }
+
+    /// PersonaHosting modules must appear ONLY when the dispatch
+    /// is `(Healthy, requires_persona_hosting)`. The R1#1 BLOCK
+    /// regression — having them in the required set under
+    /// `--mode=inference-only` — is structurally impossible to
+    /// reintroduce because this test pins both polarities.
+    #[test]
+    fn persona_hosting_modules_appear_only_when_dispatched() {
+        let host_modules: Vec<&str> = MODULES
+            .iter()
+            .filter(|(_, c)| matches!(c, ModuleCategory::PersonaHosting))
+            .map(|(n, _)| *n)
+            .collect();
+
+        for name in &host_modules {
+            assert!(required_modules(&healthy(), BootMode::FullCitizen).contains(name));
+            assert!(required_modules(&healthy(), BootMode::FailFast).contains(name));
+        }
+
+        let must_not_contain = [
+            (healthy(), BootMode::InferenceOnly),
+            (degraded(), BootMode::FullCitizen),
+            (degraded(), BootMode::InferenceOnly),
+            (degraded(), BootMode::FailFast),
+        ];
+        for (discovery, mode) in must_not_contain {
+            let req = required_modules(&discovery, mode);
+            for name in &host_modules {
+                assert!(
+                    !req.contains(name),
+                    "PersonaHosting module {name:?} unexpectedly required for \
+                     (discovery={}, mode={}) — this would reintroduce R1#1",
+                    discovery.kind(),
+                    mode.label()
+                );
+            }
+        }
     }
 }
 

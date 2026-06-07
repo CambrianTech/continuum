@@ -1,7 +1,6 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    discover_airc_socket, discover_default_channel, discover_default_room_name, discover_peer_id,
     spawn_daemon_attach, AircEventTransport, AircQueueClient, AircQueueListRequest,
     AircQueueScanParams, AircRealtimePublishParams, AircRealtimeReplayParams, AircRealtimeStore,
     CliAircQueueClient, DaemonAircEventTransport, InMemoryAircRealtimeStore,
@@ -43,11 +42,11 @@ pub struct AircModule {
 
 impl AircModule {
     /// Construct without discovery — falls back to the deprecated local
-    /// resolver. **Prefer [`AircModule::discover_and_construct`]** for
-    /// any new caller; this `new()` exists only because back-compat
-    /// callers (tests, legacy bootstrap) rely on the sync signature.
-    /// The headless boot path (`ipc::start_server`) is moving to the
-    /// async constructor + canonical socket path.
+    /// resolver. Used by back-compat callers (tests, legacy bootstrap)
+    /// that rely on the sync signature. New callers should call
+    /// `crate::airc::discover()` then `AircModule::from_discovery()`
+    /// so the same typed state drives both module construction AND
+    /// boot-state checks.
     pub fn new() -> Self {
         let airc_home = std::env::current_dir()
             .map(|dir| dir.join(".airc"))
@@ -55,121 +54,63 @@ impl AircModule {
         Self::with_daemon_home(airc_home)
     }
 
-    /// Discover the airc daemon socket via [`discover_airc_socket`] (asks
-    /// `airc ipc-endpoint` per airc#1095; auto-installs airc if missing)
-    /// AND the default channel via [`discover_default_channel`] (parses
-    /// `airc room` for the scope's current room channel — required by
-    /// airc's owner-core router model). On any discovery failure, returns
-    /// a degraded module that responds to `airc/*` commands via the
-    /// in-memory store but performs no daemon attach — so the rest of
-    /// continuum-core boots even when airc is unreachable (e.g. CI
-    /// without network for auto-install) or the scope has no current
-    /// room (fresh install before `airc room <name>`).
-    pub async fn discover_and_construct() -> Self {
-        let socket_path = match discover_airc_socket().await {
-            Ok(path) => {
-                tracing::info!(
-                    socket_path = ?path,
-                    "Discovered airc daemon socket via `airc ipc-endpoint`"
-                );
-                path
+    /// Construct an `AircModule` from a typed `AircDiscovery`. The
+    /// A.2 entry point: callers call `crate::airc::discover()` once
+    /// and hand the result to `from_discovery()`. The same
+    /// `AircDiscovery` value drives both module construction AND
+    /// boot-state checks (`verify_registration`, persona-hosting
+    /// gate), so the substrate has ONE answer to "what state is AIRC
+    /// in" rather than three drifting representations.
+    ///
+    /// ### [[no-fallbacks-ever]] — Degraded ALWAYS collapses to queue-only
+    ///
+    /// Slice A's review caught the soft-fallback this method initially
+    /// retained: a `Degraded { partial: { socket: Some(stale), peer_id:
+    /// None } }` was constructing a real `DaemonAircEventTransport`
+    /// against the stale socket with `Uuid::nil()` substituted for the
+    /// missing peer_id. The substrate then "looked healthy" while
+    /// every realtime publish either ECONNREFUSEd or went out
+    /// unattributed. That IS the silent-substitution pattern
+    /// [[no-fallbacks-ever]] forbids; the failure mode just shifted
+    /// one frame deeper.
+    ///
+    /// After review: `Degraded` ALWAYS collapses to `with_queue_client`,
+    /// regardless of what `partial` carries. The substrate refuses to
+    /// build a real daemon transport against state discovery has
+    /// declared not Healthy. The `partial` field stays on the
+    /// `AircDiscovery::Degraded` variant for operator observability
+    /// (the boot banner / log output can show what was resolved
+    /// before the failure), but the module construction does not
+    /// pretend.
+    pub fn from_discovery(discovery: &crate::airc::AircDiscovery) -> Self {
+        use crate::airc::AircDiscovery;
+        match discovery {
+            AircDiscovery::Healthy {
+                socket,
+                default_room,
+                room_name,
+                peer_id,
+            } => {
+                let from_client = uuid::Uuid::new_v4();
+                Self {
+                    queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
+                    event_transport: Arc::new(DaemonAircEventTransport::with_identity(
+                        Arc::new(airc_ipc::DaemonClient::new(socket.clone())),
+                        *peer_id,
+                        from_client,
+                    )),
+                    attach_socket_path: Some(socket.clone()),
+                    attach_channel: Some(*default_room),
+                    attach_room_name: Some(room_name.clone()),
+                }
             }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "airc socket discovery failed — AIRC inbound attach disabled. Realtime \
-                     commands will use in-memory store; queue commands will fail loudly. \
-                     Resolve: install airc manually or set AIRC_DAEMON_SOCKET; see error \
-                     above for the suggested remedy."
-                );
-                return Self::with_queue_client(Arc::new(CliAircQueueClient::new(
-                    TokioAircCommandRunner,
-                )));
+            // Discovery declared not-Healthy → queue-only, no daemon
+            // transport, no Uuid::nil fallback. Downstream realtime
+            // commands return an actionable error referencing the
+            // discovery reason, not a stale ECONNREFUSED.
+            AircDiscovery::Degraded { .. } | AircDiscovery::Unreachable { .. } => {
+                Self::with_queue_client(Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)))
             }
-        };
-
-        let attach_room_name = match discover_default_room_name().await {
-            Ok(name) => {
-                tracing::info!(
-                    room_name = %name,
-                    "Discovered airc default room name via `airc room`"
-                );
-                Some(name)
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "airc default room-name discovery failed — persona bootstrap will fall \
-                     back to joining by the channel-UUID-as-string, which derives a NEW \
-                     channel that does NOT match the operator's `airc room`. Persona will \
-                     be in the wrong room. Resolve: install/update airc so `airc room` \
-                     prints a `room: <name>` line, or set AIRC_DEFAULT_ROOM_NAME=<name>."
-                );
-                None
-            }
-        };
-
-        let attach_channel = match discover_default_channel().await {
-            Ok(uuid) => {
-                tracing::info!(
-                    channel = %uuid,
-                    "Discovered airc default channel via `airc room`"
-                );
-                Some(RoomId::from_uuid(uuid))
-            }
-            Err(error) => {
-                // Socket reachable but no channel — boot continues with
-                // queue + realtime commands, just no inbound attach. The
-                // common case is "fresh install, scope not yet subscribed
-                // to any room"; the operator runs `airc room <name>` and
-                // restarts to wire up the attach.
-                tracing::warn!(
-                    %error,
-                    "airc default-channel discovery failed — AIRC inbound attach disabled. \
-                     Resolve: run `airc room <name>` to subscribe the scope to a room, \
-                     or set AIRC_DEFAULT_CHANNEL=<uuid> to pin a channel explicitly, then \
-                     restart continuum-core."
-                );
-                None
-            }
-        };
-
-        // Identity discovery: query the daemon's Status response for
-        // this scope's peer_id. Used as `PublishRequest.from_peer` so
-        // continuum's publishes carry real attribution instead of the
-        // anonymous Uuid::nil placeholder. Failure is non-fatal — the
-        // module degrades to anonymous publishes and logs the remedy.
-        let from_peer = match discover_peer_id(&socket_path).await {
-            Ok(peer) => {
-                tracing::info!(
-                    peer_id = %peer,
-                    "Discovered airc scope peer_id via daemon Status"
-                );
-                peer
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "airc peer_id discovery failed — publishes will use anonymous \
-                     Uuid::nil from_peer (attribution will read as `00000000-…`). \
-                     Resolve: set AIRC_PEER_ID=<uuid> to pin identity, or check that \
-                     the daemon's Status RPC is responding."
-                );
-                uuid::Uuid::nil()
-            }
-        };
-        let from_client = uuid::Uuid::new_v4();
-
-        Self {
-            queue_client: Arc::new(CliAircQueueClient::new(TokioAircCommandRunner)),
-            event_transport: Arc::new(DaemonAircEventTransport::with_identity(
-                Arc::new(airc_ipc::DaemonClient::new(socket_path.clone())),
-                from_peer,
-                from_client,
-            )),
-            attach_socket_path: Some(socket_path),
-            attach_channel,
-            attach_room_name,
         }
     }
 
@@ -427,6 +368,186 @@ impl ServiceModule for AircModule {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod from_discovery_tests {
+    //! Lock in the structural invariants of `AircModule::from_discovery`
+    //! that R1+R2 BLOCKed Slice A.2.1's first attempt on.
+    //!
+    //! The R2#1 BLOCK that drove the redesign: `Degraded` constructions
+    //! must NOT build a `DaemonAircEventTransport` against the stale
+    //! socket with a substituted `Uuid::nil()` peer_id. Doctrinally
+    //! [[no-fallbacks-ever]]: the substrate refuses to construct an
+    //! attribution-less daemon transport that would silently send
+    //! ECONNREFUSED-bound or unattributed frames.
+
+    use super::*;
+    use crate::airc::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
+    use airc_core::RoomId;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    /// `Healthy` produces a fully-configured module: socket present,
+    /// channel present, room name present. The substrate has full
+    /// attribution and a live daemon transport.
+    #[test]
+    fn healthy_produces_fully_configured_module() {
+        let socket = PathBuf::from("/tmp/healthy.sock");
+        let room = RoomId::from_uuid(Uuid::new_v4());
+        let peer = Uuid::new_v4();
+        let discovery = AircDiscovery::Healthy {
+            socket: socket.clone(),
+            default_room: room,
+            room_name: "general".into(),
+            peer_id: peer,
+        };
+
+        let module = AircModule::from_discovery(&discovery);
+
+        assert_eq!(
+            module.daemon_socket(),
+            Some(socket.as_path()),
+            "Healthy must preserve the discovered socket"
+        );
+        assert_eq!(
+            module.default_room(),
+            Some(room),
+            "Healthy must preserve the discovered channel"
+        );
+        assert_eq!(
+            module.default_room_name(),
+            Some("general"),
+            "Healthy must preserve the discovered room name"
+        );
+    }
+
+    /// `Degraded` with rich partial state (socket discovered, peer_id
+    /// missing because Status RPC failed) collapses to queue-only.
+    /// This is the explicit fix for R2#1 — the same pre-fix code path
+    /// constructed a real `DaemonAircEventTransport` against the stale
+    /// socket with `Uuid::nil()` substituted for the missing peer_id.
+    /// After the fix the substrate refuses to construct that
+    /// attribution-less transport.
+    #[test]
+    fn degraded_with_partial_socket_collapses_to_queue_only() {
+        let stale_socket = PathBuf::from("/tmp/stale.sock");
+        let discovery = AircDiscovery::Degraded {
+            reason: DiscoveryFailure::StaleSocket(
+                stale_socket.clone(),
+                "ECONNREFUSED".into(),
+            ),
+            partial: PartialDiscovery {
+                socket: Some(stale_socket.clone()),
+                peer_id: None,
+                default_room: None,
+                room_name: None,
+            },
+        };
+
+        let module = AircModule::from_discovery(&discovery);
+
+        assert_eq!(
+            module.daemon_socket(),
+            None,
+            "[[no-fallbacks-ever]] — Degraded MUST NOT expose a daemon \
+             socket; that's the R2#1 stale-socket bug"
+        );
+        assert_eq!(module.default_room(), None);
+        assert_eq!(module.default_room_name(), None);
+    }
+
+    /// `Degraded` with full partial state (everything discovered EXCEPT
+    /// the failed step) ALSO collapses to queue-only. Even if discovery
+    /// got far enough to know the room name, once one sub-step failed
+    /// the substrate refuses to build a daemon transport. Discovery's
+    /// "not Healthy" verdict is the gate.
+    #[test]
+    fn degraded_with_full_partial_state_still_collapses_to_queue_only() {
+        let socket = PathBuf::from("/tmp/maybe.sock");
+        let room = RoomId::from_uuid(Uuid::new_v4());
+        let discovery = AircDiscovery::Degraded {
+            reason: DiscoveryFailure::NoDefaultRoom,
+            partial: PartialDiscovery {
+                socket: Some(socket),
+                peer_id: Some(Uuid::new_v4()),
+                default_room: Some(room),
+                room_name: Some("partial".into()),
+            },
+        };
+
+        let module = AircModule::from_discovery(&discovery);
+
+        assert_eq!(
+            module.daemon_socket(),
+            None,
+            "Degraded verdict is binding even when partial is rich — \
+             the substrate trusts discovery's classification"
+        );
+        assert_eq!(module.default_room(), None);
+        assert_eq!(module.default_room_name(), None);
+    }
+
+    /// `Unreachable` collapses to queue-only. The substrate stays alive
+    /// for non-AIRC commands; `airc/*` realtime commands return
+    /// actionable errors based on `discovery.reason()`.
+    #[test]
+    fn unreachable_collapses_to_queue_only() {
+        let discovery = AircDiscovery::Unreachable {
+            reason: DiscoveryFailure::AutoInstallDisabled,
+        };
+
+        let module = AircModule::from_discovery(&discovery);
+
+        assert_eq!(module.daemon_socket(), None);
+        assert_eq!(module.default_room(), None);
+        assert_eq!(module.default_room_name(), None);
+    }
+
+    /// Cross-variant invariant: `from_discovery` exposes a `daemon_socket()`
+    /// ONLY for `Healthy`. Iterate every variant; only Healthy may
+    /// return Some. This is the R2#1 fix made into a structural test —
+    /// any future refactor that adds a fourth code path returning a
+    /// real socket from a non-Healthy state will fail this test.
+    #[test]
+    fn only_healthy_exposes_a_daemon_socket() {
+        let cases = [
+            (
+                AircDiscovery::Healthy {
+                    socket: PathBuf::from("/tmp/h.sock"),
+                    default_room: RoomId::from_uuid(Uuid::new_v4()),
+                    room_name: "general".into(),
+                    peer_id: Uuid::new_v4(),
+                },
+                true,
+            ),
+            (
+                AircDiscovery::Degraded {
+                    reason: DiscoveryFailure::NoDefaultRoom,
+                    partial: PartialDiscovery {
+                        socket: Some(PathBuf::from("/tmp/d.sock")),
+                        ..Default::default()
+                    },
+                },
+                false,
+            ),
+            (
+                AircDiscovery::Unreachable {
+                    reason: DiscoveryFailure::EmptyPath,
+                },
+                false,
+            ),
+        ];
+        for (discovery, expect_socket_some) in cases {
+            let module = AircModule::from_discovery(&discovery);
+            assert_eq!(
+                module.daemon_socket().is_some(),
+                expect_socket_some,
+                "daemon_socket() polarity wrong for {:?}",
+                discovery.kind()
+            );
+        }
     }
 }
 

@@ -82,6 +82,27 @@ fn install_shutdown_handlers() {
     });
 }
 
+/// Short human-readable description of each `BootMode` — surfaces
+/// in the boot banner so the operator can see at a glance what the
+/// substrate is expected to support in this run.
+fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static str {
+    use continuum_core::runtime::BootMode;
+    match mode {
+        BootMode::FullCitizen => "hosts personas via AIRC; requires AIRC Healthy",
+        BootMode::InferenceOnly => "no persona hosting; allows degraded AIRC",
+        BootMode::FailFast => "strictest — refuses any degraded capability",
+    }
+}
+
+// ORT panic-filter intentionally NOT in A.2.1 per reviewer #2's
+// BLOCKING finding: shipping the panic trace muter without the
+// `🔊 Voice: ready / 🔇 Voice: unavailable` indicator leaves the
+// operator with ZERO signal about voice subsystem state on default
+// `FullCitizen` boot. Per [[substrate-is-a-good-citizen-on-the-host]]
+// "speak clearly when degraded," the filter and the indicator
+// must ship together — both land in A.2.2 alongside the
+// `libloading::Library::new("libonnxruntime.dylib")` dlopen probe.
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Substrate-canonical tracing stack: UriCapture + ProbeRouter +
@@ -103,13 +124,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("[continuum-core-server] probes landing at {}", path.display());
     }
 
+    // ORT panic-filter deferred to A.2.2 (lands together with the
+    // libonnxruntime dlopen probe + 🔊/🔇 voice subsystem indicator
+    // per reviewer #2's BLOCKING finding — muting the only signal
+    // without pairing the indicator is the [[substrate-is-a-good-
+    // citizen-on-the-host]] violation we're refusing to ship in
+    // A.2.1).
+
     // Parse command line arguments. argv[1] is the IPC socket path (positional)
     // — but intercept flag-like values FIRST so `--version` and `--help` don't
     // get treated as a socket path. Without this, `continuum-core-server
     // --version` boots the server with "/--version" as the socket path
     // and prints "IPC Socket: --version" — confusing for anyone trying to
     // verify the binary works (Carl's first instinct after `docker pull`).
-    let args: Vec<String> = env::args().collect();
+    let raw_args: Vec<String> = env::args().collect();
+
+    // A.2: peel off `--mode=<value>` (or `--mode <value>`) BEFORE
+    // positional parsing so it can appear anywhere in argv. The
+    // operator's intent (FullCitizen / InferenceOnly / FailFast)
+    // is now an explicit input instead of a heuristic from disk
+    // contents (Slice A's R2#2 BLOCK).
+    let (boot_mode, args) = match continuum_core::runtime::extract_boot_mode(raw_args) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+
     if args.len() >= 2 {
         match args[1].as_str() {
             "-V" | "--version" | "version" => {
@@ -117,19 +159,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(0);
             }
             "-h" | "--help" | "help" => {
-                println!("Usage: {} <socket-path>", args[0]);
+                println!("Usage: {} [--mode=<MODE>] <socket-path>", args[0]);
                 println!("Example: {} /tmp/continuum-core.sock", args[0]);
                 println!();
                 println!("Flags:");
+                println!("  --mode=<MODE>    Boot mode: full-citizen (default), inference-only, fail-fast");
                 println!("  -V, --version    Print version and exit");
                 println!("  -h, --help       Print this help and exit");
+                println!();
+                println!("Modes:");
+                println!("  full-citizen     (default) hosts personas via AIRC; requires AIRC Healthy");
+                println!("  inference-only   no persona hosting; allows degraded AIRC");
+                println!("  fail-fast        strictest; refuses any degraded capability");
                 std::process::exit(0);
             }
             _ => {}
         }
     }
     if args.len() < 2 {
-        eprintln!("Usage: {} <socket-path>", args[0]);
+        eprintln!("Usage: {} [--mode=<MODE>] <socket-path>", args[0]);
         eprintln!("Example: {} /tmp/continuum-core.sock", args[0]);
         eprintln!("Try `{} --help` for more.", args[0]);
         std::process::exit(1);
@@ -139,6 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🦀 Continuum Core Server starting...");
     info!("   IPC Socket: {socket_path}");
+    info!("   Boot mode:  {} ({})", boot_mode.label(), boot_mode_description(boot_mode));
 
     // Create LiveKit agent manager — routes audio/video through LiveKit WebRTC SFU.
     // Handles speak-in-call, inject-audio, ambient, and video track publishing.
@@ -183,8 +232,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rt_handle,
             ipc_memory_manager,
             ipc_pressure_monitor,
+            boot_mode,
         ) {
             tracing::error!("❌ IPC server error: {}", e);
+            // A.2: a `start_server` Err means the substrate refused
+            // to boot in a degraded state ([[no-fallbacks-ever]]). The
+            // operator's repair is in the error message. Exit non-zero
+            // so init systems / orchestrators see the failure instead
+            // of an idle-but-alive process.
+            unsafe { libc::_exit(1) };
         }
     });
 
