@@ -685,6 +685,17 @@ impl AIProviderAdapter for LlamaCppAdapter {
             supports_image_generation: false,
             is_local: true,
             max_context_window: max_ctx,
+
+            // Arc 1: llama.cpp tools are prompt-driven (no native protocol);
+            // structured output via GBNF grammar-constrained sampling, which
+            // IS native to llama.cpp. Vision-in handled by mmproj adapter
+            // when loaded; not declared here at the text-LLM layer.
+            // Audio bridged via STT (whisper) / TTS in the substrate.
+            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::JsonInPrompt,
+            structured_output_protocol:
+                crate::ai::adapter::StructuredOutputProtocol::GrammarConstrained,
+            modalities: crate::ai::adapter::ModalitySet::TEXT_ONLY,
+            max_output_tokens: 4096,
         }
     }
 

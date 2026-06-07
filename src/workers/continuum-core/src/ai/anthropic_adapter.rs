@@ -268,6 +268,19 @@ impl AIProviderAdapter for AnthropicAdapter {
             supports_image_generation: false,
             is_local: false,
             max_context_window: 200000,
+
+            // Arc 1: Anthropic ships native function calling (tool_use blocks)
+            // + native JSON Schema enforcement. Vision-in native; audio bridged.
+            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::NativeFunctionCalling,
+            structured_output_protocol: crate::ai::adapter::StructuredOutputProtocol::JsonSchema,
+            modalities: crate::ai::adapter::ModalitySet {
+                text_in: true,
+                text_out: true,
+                vision_in: true,
+                audio_in: false,
+                audio_out: false,
+            },
+            max_output_tokens: 8192,
         }
     }
 

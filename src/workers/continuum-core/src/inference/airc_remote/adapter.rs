@@ -96,6 +96,16 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             is_local: false,
             // Unknown; defer to whatever the peer can do.
             max_context_window: u32::MAX,
+
+            // Arc 1: remote peer adapter — without a capability-discovery
+            // handshake (future card), we don't know what protocols the
+            // peer's adapter supports. Defer to None / TEXT_ONLY as the
+            // safe-floor; the substrate refines once the peer reports.
+            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::None,
+            structured_output_protocol:
+                crate::ai::adapter::StructuredOutputProtocol::None,
+            modalities: crate::ai::adapter::ModalitySet::TEXT_ONLY,
+            max_output_tokens: 4096,
         }
     }
 
