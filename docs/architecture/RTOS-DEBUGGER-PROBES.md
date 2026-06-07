@@ -53,7 +53,15 @@ A stable set of `class` values so probes from different files compose into a coh
 - `persona.response.exit` — final PersonaResponse: decision, text length
 
 **Prompt assembly** (`persona/prompt_assembly.rs`):
-- `persona.prompt.assemble` — final composition stats: system_message length, message_count, estimated_tokens
+- `persona.prompt.assemble` — final composition stats: persona, system_message_len, message_count, estimated_tokens, matched_angle_present, engrams_count, social_signals_present, voice_mode, multi_party_strategy
+
+**Inference adapter** (`inference/llamacpp_adapter.rs::generate_text`):
+- `inference.generate.enter` — adapter received request: model, persona_id, msg_count, max_tokens, has_system_prompt, parts_image, parts_audio
+- `inference.generate.exit` — adapter returning: model, tokens_out, text_len, duration_ms, tok_per_sec
+- Timing seams (emit on the `timing` class with `seam` field):
+  - `inference.render_chat` — synchronous chat-template rendering (sub-ms typically, but cumulative)
+  - `inference.forward.text` — pure-text LLM forward pass through the scheduler (the dominant cost on LCD tier — 95%+)
+  - `inference.forward.multimodal` — mtmd single-flight path (text+image / text+audio)
 
 **Cognition: shared analysis** (`cognition/shared_analysis/mod.rs`):
 - `cognition.analyze.enter` — input fingerprint, known_specialties count
@@ -215,9 +223,9 @@ What is INCOMPLETE — the sprinkle that turns the JTAG hardware into a working 
 - [x] `persona/response.rs::run_render` — assembled prompt verbatim + composition stats
 - [x] `cognition/shared_analysis/mod.rs::analyze` — entry, single-specialty noop, L1 cache hit, parsed angles (empty vs non-empty count)
 - [x] `persona/service_loop.rs::serve_persona_loop_inner` — `turn.start` / `turn.spoke` (with full phase decomposition recall+admit+compose+respond+say) / `turn.silent` (with reason) / `turn.error` (with stage=respond|say) — **wired in this PR**
-- [ ] `persona/prompt_assembly.rs::assemble` — final composition stats (system_message length, message count, est tokens, matched_angle present, engrams count, social_signals present) — covered indirectly by `persona.response.render.prompt`; standalone probe TBD if assembly logic grows
+- [x] `persona/prompt_assembly.rs::assemble` — final composition stats wired at the function tail (system_message_len, message_count, estimated_tokens, matched_angle_present, engrams_count, social_signals_present, voice_mode, multi_party_strategy)
 - [ ] `cognition/response_orchestrator.rs::score_persona` — per-persona score + matched_angles + decision reason — note: the score_persona gate is currently bypassed (response.rs:288–300); probes go in if/when it's re-wired
-- [ ] `ai/llama_cpp_adapter::generate_text` — request fingerprint + raw output + finish_reason — covered indirectly by `persona.response.render.prompt` (in) + `persona.response.render.raw` (out); adapter-level probe TBD when we need per-batch visibility
+- [x] `inference/llamacpp_adapter.rs::generate_text` — entry probe (`inference.generate.enter`) + timing probes around `render_chat` and the two `forward.*` spawn_blocking paths + exit probe (`inference.generate.exit`) carrying `tok_per_sec`. This is the dominant-cost seam on LCD tier per the inference-latency campaign (task #195).
 
 Each gets a small commit that adds the probes + updates this manual's checklist. The proof-of-value for each commit: enable the file sink, run the multi-persona scenario, `jq` the relevant class, see the variable snapshots.
 
