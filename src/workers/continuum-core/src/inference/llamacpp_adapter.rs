@@ -862,6 +862,26 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 parts_audio,
                 parts_other,
             ));
+
+            // RTOS probe: inference entry seam. The persona service loop
+            // talks through `adapter.generate_text`; this is where the
+            // wall-clock cost actually accrues. Class taxonomy lives in
+            // docs/architecture/RTOS-DEBUGGER-PROBES.md. Per
+            // [[jtag-probes-are-rtos-debugger]]: name the surrounding
+            // vars so the operator filtering on
+            // `class=="inference.generate.enter"` has the request
+            // fingerprint without grepping logs.
+            crate::probe!(
+                class = "inference.generate.enter",
+                model = request.model.as_deref().unwrap_or("?"),
+                persona_id = request.persona_id.as_deref().unwrap_or(""),
+                msg_count = request.messages.len(),
+                max_tokens = request.max_tokens.unwrap_or(0),
+                has_system_prompt = request.system_prompt.is_some(),
+                parts_image = parts_image,
+                parts_audio = parts_audio,
+                "generate_text entry"
+            );
         }
 
         let mut collected_media: Vec<(llama::MediaKind, Vec<u8>)> = Vec::new();
@@ -917,7 +937,13 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 content,
             });
         }
-        let prompt = llama::render_chat(template.as_deref(), &messages, true)?;
+        // RTOS probe: chat-template rendering is synchronous + small,
+        // but cumulative across thousands of turns it can shadow real
+        // bottlenecks. Bracketing it lets the operator subtract it
+        // from `inference.forward.*` cleanly.
+        let prompt = crate::time_sync!("inference.render_chat", {
+            llama::render_chat(template.as_deref(), &messages, true)
+        })?;
 
         // No hardcoded cap. If the caller didn't specify, the model can
         // decode up to its trained context. Capping silently at 2048 was
@@ -963,7 +989,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
         let result: Result<(String, usize), String> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
-            tokio::task::spawn_blocking(move || {
+            // RTOS timing probe: this is the actual LLM forward pass —
+            // by far the dominant cost (95%+ on LCD tier per
+            // 2026-06-06 baseline). `time_probe!` wraps the JoinHandle
+            // future cleanly across the `.await`.
+            crate::time_probe!("inference.forward.text", tokio::task::spawn_blocking(move || {
                 let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
                 backend_for_blocking.generate_for_persona(
                     persona_id,
@@ -973,8 +1003,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     &stop_refs,
                     &[],
                 )
-            })
-            .await
+            }))
             .map_err(|e| format!("generate task panicked: {e}"))?
         } else {
             // Multimodal path: bypass the scheduler — media tokens have
@@ -998,7 +1027,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 ));
             }
             let (kind, media_bytes) = collected_media.into_iter().next().unwrap();
-            tokio::task::spawn_blocking(move || {
+            // RTOS timing probe: mtmd path runs single-flight (no
+            // scheduler batching for media) so the timing here is
+            // direct end-to-end. Separate seam from the text path so
+            // operators can `jq` text-only vs mtmd cost distinctly.
+            crate::time_probe!("inference.forward.multimodal", tokio::task::spawn_blocking(move || {
                 let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
                 match kind {
                     llama::MediaKind::Image => backend_for_blocking.generate_with_image(
@@ -1016,8 +1049,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         &stop_refs,
                     ),
                 }
-            })
-            .await
+            }))
             .map_err(|e| format!("generate_with_media task panicked: {e}"))?
         };
         let (text, tokens) = result?;
@@ -1029,6 +1061,23 @@ impl AIProviderAdapter for LlamaCppAdapter {
             0.0
         };
         *self.last_throughput_tok_s.write() = tok_per_sec;
+
+        // RTOS probe: inference exit seam. Pair with
+        // `inference.generate.enter` via the same span ancestry. The
+        // critical campaign metric is `tok_per_sec` — every probe
+        // here carries it so a `jq` over `inference.generate.exit`
+        // events is the latency dashboard. `text_len` lets the
+        // operator catch the silent-truncation class of bug where
+        // the model stops short of EOS.
+        crate::probe!(
+            class = "inference.generate.exit",
+            model = backend.model_id(),
+            tokens_out = tokens,
+            text_len = text.len(),
+            duration_ms = elapsed.as_millis() as u64,
+            tok_per_sec = tok_per_sec,
+            "generate_text exit"
+        );
 
         // No tail-strip. Previously this hand-rolled `text.rfind(stop)` and
         // truncated — only existed to clean up the special tokens that

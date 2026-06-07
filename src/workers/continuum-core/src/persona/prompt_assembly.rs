@@ -261,6 +261,27 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
     let msg_tokens: usize = messages.iter().map(|m| m.content.len() / 4).sum();
     let estimated_tokens = system_tokens + msg_tokens;
 
+    // RTOS probe: prompt-assembly seam. Per docs/architecture/
+    // RTOS-DEBUGGER-PROBES.md taxonomy. The system_message length
+    // is the leading indicator for "why is prefill slow" — when
+    // engrams or social signals grow unbounded the prefill cost
+    // grows quadratically with prompt length. Operators filter on
+    // `class == "persona.prompt.assemble"` to see the composition
+    // shape per turn.
+    crate::probe!(
+        class = "persona.prompt.assemble",
+        persona = %input.persona_name,
+        system_message_len = system_prompt.len(),
+        message_count = messages.len(),
+        estimated_tokens = estimated_tokens,
+        matched_angle_present = !input.matched_angle.is_empty(),
+        engrams_count = input.recalled_engrams.len(),
+        social_signals_present = input.social_signals.is_some(),
+        voice_mode = input.is_voice,
+        multi_party_strategy = ?input.multi_party_strategy,
+        "prompt assembled"
+    );
+
     AssembledPrompt {
         system_message: system_prompt,
         messages,
