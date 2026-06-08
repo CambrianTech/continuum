@@ -266,31 +266,42 @@ async fn respond_inner(
     // signature + IPC handler + recorder traces). For now the typed
     // info is preserved in logs via Display.
     let analyze_start = now_ms();
-    let analysis = analyze(AnalysisInput {
-        message_id: input.message_id,
-        room_id: input.turn_context.room_id,
-        text: input.message_text.clone(),
-        // These two are the only field-level clones still on the
-        // analyze path. PR-2 (continuum#1206 follow-up) will rework
-        // AnalysisInput to also accept &TurnContext directly so the
-        // clone goes away here too — but that ripples into the
-        // shared_analysis cache key, separate concern.
-        recent_history: input.turn_context.recent_history.clone(),
-        known_specialties: input.turn_context.known_specialties.clone(),
-        // Pass the responding persona's model as the analyzer's
-        // model override. Per Joel 2026-06-03 ("It's up to the
-        // model"): the analyzer doesn't know what's loaded on this
-        // substrate; the persona's profile does. On multi-persona
-        // rooms where the canonical shared base IS loaded, the
-        // first persona to analyze populates the single-flight
-        // cache and the rest hit-as-cache regardless of override —
-        // so this doesn't break the "ONE inference per message"
-        // optimization. On single-persona substrates (like Joel's
-        // LCD Intel Mac) the override becomes the path that makes
-        // analysis reachable at all.
-        model_override: Some(input.model.clone()),
-    })
-    .await
+    // `time_probe!` wraps the analyze future in an `info_span!` with
+    // `probe_class = "timing", seam = "persona.respond.analyze"` so
+    // operators tailing the JSONL can baseline analyze latency on the
+    // canonical timing channel, alongside the outer `persona.respond`
+    // turn timing and the inner `persona.respond.run_render` LLM call.
+    // The existing `trace.record(SEAM_ANALYZE, ...)` + structured
+    // `probe!(class = "persona.response.analyze.result", ...)` events
+    // stay — they carry semantic data (from_cache, matched_angle,
+    // intent) that the bare timing probe doesn't.
+    let analysis = crate::time_probe!(
+        "persona.respond.analyze",
+        analyze(AnalysisInput {
+            message_id: input.message_id,
+            room_id: input.turn_context.room_id,
+            text: input.message_text.clone(),
+            // These two are the only field-level clones still on the
+            // analyze path. PR-2 (continuum#1206 follow-up) will rework
+            // AnalysisInput to also accept &TurnContext directly so the
+            // clone goes away here too — but that ripples into the
+            // shared_analysis cache key, separate concern.
+            recent_history: input.turn_context.recent_history.clone(),
+            known_specialties: input.turn_context.known_specialties.clone(),
+            // Pass the responding persona's model as the analyzer's
+            // model override. Per Joel 2026-06-03 ("It's up to the
+            // model"): the analyzer doesn't know what's loaded on this
+            // substrate; the persona's profile does. On multi-persona
+            // rooms where the canonical shared base IS loaded, the
+            // first persona to analyze populates the single-flight
+            // cache and the rest hit-as-cache regardless of override —
+            // so this doesn't break the "ONE inference per message"
+            // optimization. On single-persona substrates (like Joel's
+            // LCD Intel Mac) the override becomes the path that makes
+            // analysis reachable at all.
+            model_override: Some(input.model.clone()),
+        })
+    )
     .map_err(|e| e.to_string())?;
     trace.record(
         SEAM_ANALYZE,
@@ -346,7 +357,12 @@ async fn respond_inner(
     //    assembler injects it; if not, the persona just sees the
     //    plain message + history + media, same as a human.
     let inference_start = now_ms();
-    let raw_response = run_render(input, &analysis).await?;
+    // `time_probe!` for the LLM bulk — the dominant cost of most
+    // turns and the primary optimization target (see task #195 +
+    // probe sprinkles #206/#207). Lands on the same JSONL channel as
+    // `persona.respond` / `persona.respond.analyze` for full-stack
+    // turn breakdowns.
+    let raw_response = crate::time_probe!("persona.respond.run_render", run_render(input, &analysis))?;
     let inference_ms = now_ms().saturating_sub(inference_start);
     trace.record(
         SEAM_INFERENCE,
