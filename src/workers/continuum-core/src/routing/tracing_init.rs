@@ -321,57 +321,14 @@ fn build_probe_file_sink(
 mod tests {
     use super::*;
 
-    /// `install_probe_tracing` accepts a typed config and is
-    /// parallel-safe in tests — no env-var mutation, no shared
-    /// global state beyond `tracing`'s own default subscriber
-    /// (which is exactly the thing we're testing the idempotency
-    /// of).
-    #[test]
-    fn install_is_idempotent_with_no_disk_capture() {
-        let config = ProbeTracingConfig {
-            probe_file: None,
-            probe_classes: HashSet::new(),
-            default_filter: "warn".to_string(),
-            log_dir: None,
-        };
-        let first = install_probe_tracing(config.clone());
-        let second = install_probe_tracing(config);
-        assert!(first.is_ok(), "first install must succeed");
-        assert!(second.is_ok(), "second install must no-op cleanly");
-        assert!(first.unwrap().probe_log_path.is_none());
-        assert!(second.unwrap().probe_log_path.is_none());
-    }
-
-    /// Typed-error contract: an unwritable `probe_file` path must
-    /// surface `ProbeFileSinkError::OpenFailed` per
-    /// `[[no-fallbacks-ever]]`. Operators must see the
-    /// configuration problem; substrate refuses to silently drop
-    /// probes.
-    ///
-    /// Parallel-safe because the bad path is passed via typed
-    /// config — no env-var mutation, no racing on
-    /// `CONTINUUM_PROBE_FILE`.
-    #[test]
-    fn install_surfaces_open_failed_for_unwritable_path() {
-        let config = ProbeTracingConfig {
-            probe_file: Some(PathBuf::from(
-                "/this/path/definitely/does/not/exist/probes.jsonl",
-            )),
-            probe_classes: HashSet::new(),
-            default_filter: "warn".to_string(),
-            log_dir: None,
-        };
-        let result = install_probe_tracing(config);
-        // Can't `{:?}` the Ok branch — ProbeInstall holds a
-        // WorkerGuard which isn't Debug. Match the variant
-        // explicitly instead so the assertion error is still
-        // informative.
-        match &result {
-            Err(ProbeFileSinkError::OpenFailed { .. }) => {}
-            Err(other) => panic!("expected OpenFailed, got error {other:?}"),
-            Ok(_) => panic!("expected Err, got Ok(_)"),
-        }
-    }
+    // `install_probe_tracing` install tests moved to
+    // `continuum-core/tests/tracing_install_global.rs` per task #203.
+    // Reason: `install_probe_tracing` calls `try_init()` on the
+    // GLOBAL tracing subscriber registry — within the lib-test binary
+    // that install leaked across tests and broke
+    // `routing::uri_layer::tests::no_subscriber_returns_empty_chain`
+    // (which asserts an empty chain when NO Layer is installed).
+    // Process isolation via integration-test binary is the cure.
 
     /// The env-coupling seam. `from_env` is the ONE function that
     /// touches `std::env`; everything downstream takes typed
