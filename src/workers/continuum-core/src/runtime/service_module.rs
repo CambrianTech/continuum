@@ -373,6 +373,32 @@ pub trait ServiceModule: Send + Sync + Any {
         Ok(())
     }
 
+    /// Ready edge — the canonical "this module has finished initializing
+    /// and is ready to do real work" signal. Modules with internal
+    /// initialization that races with `initialize()` (Bevy renderer
+    /// warming up its render thread; IPC server binding its socket;
+    /// MemoryPressureMonitor publishing its first snapshot) override
+    /// this to expose a `watch::Receiver<bool>` whose value flips from
+    /// `false` to `true` exactly once, when the module is ready.
+    ///
+    /// Default impl returns `None`, which the runtime treats as "ready
+    /// immediately after `initialize()` resolves" — the right semantics
+    /// for the ~30 existing modules whose `initialize` IS the ready edge.
+    ///
+    /// Per [[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]: signals
+    /// replace races. Callers wait on `Runtime::wait_for_ready(name)`
+    /// (forwarded to this method) instead of polling, sleeping, or
+    /// threading bespoke `oneshot::Sender`s through start_server-style
+    /// bootstrap APIs.
+    ///
+    /// Implementations should publish through a `watch::Sender<bool>`
+    /// they own, returning fresh `Receiver` clones on each call — cheap
+    /// (the sender is an Arc internally) and lets multiple consumers
+    /// subscribe independently.
+    fn ready_edge(&self) -> Option<tokio::sync::watch::Receiver<bool>> {
+        None
+    }
+
     /// Downcast support for typed discovery.
     /// Enables registry.module_as::<VoiceModule>() — like CBAR's getAnalyzerOfType<T>().
     fn as_any(&self) -> &dyn Any;
