@@ -26,18 +26,64 @@ jobs:
         sync-labels: true
       continue-on-error: true  # Don't fail the workflow if labeling fails
 
+    # Size labeling is done inline via the GitHub API instead of a
+    # Docker-based action. The previous `codelytv/pr-size-labeler@v1`
+    # built a Docker image from `alpine:3.15` at every workflow run,
+    # which failed whenever Docker Hub rate-limited the anonymous pull
+    # — and `continue-on-error` on the step doesn't catch failures in
+    # GitHub Actions' Docker-image setup phase, so the whole job went
+    # red on transient Docker Hub blips. Pure-JS via actions/github-script
+    # has no external image dependency.
     - name: Add size label
-      uses: codelytv/pr-size-labeler@v1
+      uses: actions/github-script@v7
       with:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        xs_label: 'size: XS'
-        xs_max_size: 10
-        s_label: 'size: S'
-        s_max_size: 50
-        m_label: 'size: M'
-        m_max_size: 250
-        l_label: 'size: L'
-        l_max_size: 500
-        xl_label: 'size: XL'
-        fail_if_xl: false
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          // Size thresholds match the previous codelytv config so existing
+          // labels stay meaningful across the cutover.
+          const THRESHOLDS = [
+            { label: 'size: XS', max: 10 },
+            { label: 'size: S',  max: 50 },
+            { label: 'size: M',  max: 250 },
+            { label: 'size: L',  max: 500 },
+            { label: 'size: XL', max: Infinity },
+          ];
+
+          const { owner, repo } = context.repo;
+          const pr = context.payload.pull_request;
+          if (!pr) {
+            core.info('No pull_request payload — skipping size label.');
+            return;
+          }
+
+          // additions + deletions is what codelytv used; matches the
+          // historical category meaning so a "size: M" today is the same
+          // shape as a "size: M" from last week.
+          const totalChanges = (pr.additions || 0) + (pr.deletions || 0);
+          const chosen = THRESHOLDS.find(t => totalChanges <= t.max).label;
+          core.info(`PR #${pr.number}: ${totalChanges} changes → ${chosen}`);
+
+          // Sync semantics: remove other size labels first, then add the
+          // chosen one. Avoids stale labels lingering on PRs that grow.
+          const sizeLabels = THRESHOLDS.map(t => t.label);
+          const current = (pr.labels || []).map(l => l.name);
+          const toRemove = current.filter(n => sizeLabels.includes(n) && n !== chosen);
+
+          for (const name of toRemove) {
+            try {
+              await github.rest.issues.removeLabel({
+                owner, repo, issue_number: pr.number, name,
+              });
+            } catch (e) {
+              // 404 just means the label was already gone (race with
+              // another labeler) — harmless, don't poison the run.
+              if (e.status !== 404) throw e;
+            }
+          }
+
+          if (!current.includes(chosen)) {
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: pr.number, labels: [chosen],
+            });
+          }
       continue-on-error: true  # Don't fail the workflow if labeling fails
