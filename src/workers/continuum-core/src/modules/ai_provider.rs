@@ -184,6 +184,63 @@ impl AIProviderModule {
 ///
 /// Hoisted out of both `ai/generate` and the convenience `generate_text` so
 /// the two paths report the same diagnosis.
+/// Pure projection of the AdapterRegistry's `available()` set → a
+/// boot-status `(kind, detail)` pair. Card e9f50a36 slice A4.
+///
+/// Mapping:
+/// - **Empty** → `Failed`, `"no inference adapter registered — add API keys to ~/.continuum/config.env or pull a local GGUF"`.
+///   The substrate has zero inference capability; persona cognition
+///   on `FullCitizen` / `FailFast` will refuse to boot downstream.
+/// - **No local llamacpp-* providers** → `Degraded`, `"cloud only:
+///   <names> (no local fallback if cloud is unreachable)"`. The
+///   substrate runs but has no offline path — a single network
+///   outage takes down inference. Operator wants to know.
+/// - **At least one local provider** → `Ok`, `"<names> (N
+///   providers)"`. Mixed cloud + local OR local-only both land
+///   here; the substrate has at least one offline fallback.
+///
+/// The kind ordering matches the rest of the slice A boot lines:
+/// Failed >Degraded > Ok per `BootStatusKind`'s total ordering, so a
+/// sentinel computing "worst kind across boot" with `.max()` reports
+/// the right verdict.
+fn render_adapter_boot_status(
+    available: &[&str],
+) -> (
+    crate::runtime::boot_status::BootStatusKind,
+    String,
+) {
+    use crate::runtime::boot_status::BootStatusKind;
+    if available.is_empty() {
+        return (
+            BootStatusKind::Failed,
+            "no inference adapter registered — add API keys to \
+             ~/.continuum/config.env or pull a local GGUF"
+                .to_string(),
+        );
+    }
+    // The llamacpp-local provider is registered once per GGUF on
+    // disk; it's the offline path. If NONE of the registered
+    // providers start with `llamacpp-`, the substrate has cloud-only
+    // inference — degraded, even though it's "working" right now.
+    let has_local = available
+        .iter()
+        .any(|name| name.starts_with("llamacpp-") || *name == "llamacpp-local");
+    let names_joined = available.join(", ");
+    if has_local {
+        (
+            BootStatusKind::Ok,
+            format!("{names_joined} ({} providers)", available.len()),
+        )
+    } else {
+        (
+            BootStatusKind::Degraded,
+            format!(
+                "cloud only: {names_joined} (no local fallback if cloud unreachable)"
+            ),
+        )
+    }
+}
+
 fn select_failure_message(
     registry: &AdapterRegistry,
     requested_provider: Option<&str>,
@@ -584,6 +641,15 @@ impl AIProviderModule {
             self.log()
                 .warn("No providers available! Add API keys to ~/.continuum/config.env");
         }
+
+        // Boot status report (card e9f50a36 slice A4): a single line
+        // naming the registered adapters so the operator sees what
+        // inference capabilities the substrate actually has, not
+        // what *should* be available. Empty = Failed (no inference
+        // possible). All cloud + no local = Degraded (no offline
+        // path). Mixed or local-only = Ok.
+        let (kind, detail) = render_adapter_boot_status(&available);
+        crate::runtime::boot_status::boot_status("adapter", kind, &detail);
 
         Ok(())
     }
@@ -1119,4 +1185,75 @@ pub async fn generate_text(
     });
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod boot_status_tests {
+    use super::*;
+    use crate::runtime::boot_status::BootStatusKind;
+
+    /// Empty registry = no inference at all. The substrate has
+    /// nothing to route to. Operator action lives in the detail.
+    #[test]
+    fn empty_registry_reports_failed_with_remediation() {
+        let (kind, detail) = render_adapter_boot_status(&[]);
+        assert_eq!(kind, BootStatusKind::Failed);
+        assert!(
+            detail.contains("config.env") && detail.contains("GGUF"),
+            "detail must name both remediation paths: {detail:?}"
+        );
+    }
+
+    /// Cloud-only (no `llamacpp-*` provider registered) = `Degraded`.
+    /// The substrate is "working" but a single network blip kills
+    /// inference for every persona. Operator wants to know.
+    #[test]
+    fn cloud_only_reports_degraded_with_no_local_fallback_note() {
+        let providers = ["anthropic", "openai", "groq"];
+        let (kind, detail) = render_adapter_boot_status(&providers);
+        assert_eq!(kind, BootStatusKind::Degraded);
+        assert!(
+            detail.contains("cloud only"),
+            "detail must say cloud-only: {detail:?}"
+        );
+        assert!(
+            detail.contains("no local fallback"),
+            "detail must call out the missing fallback: {detail:?}"
+        );
+    }
+
+    /// At least one llamacpp-* provider registered = `Ok`. The
+    /// substrate has offline inference even if the WAN goes down.
+    /// The detail names the providers so the operator can verify
+    /// which forge model is loaded without poking the registry.
+    #[test]
+    fn local_present_reports_ok() {
+        let providers = ["anthropic", "llamacpp-qwen3-coder", "openai"];
+        let (kind, detail) = render_adapter_boot_status(&providers);
+        assert_eq!(kind, BootStatusKind::Ok);
+        assert!(
+            detail.contains("llamacpp-qwen3-coder"),
+            "detail must name the local provider so the operator \
+             can spot wrong-model-loaded at a glance: {detail:?}"
+        );
+        assert!(
+            detail.contains("3 providers"),
+            "detail must include count for quick visual scan: {detail:?}"
+        );
+    }
+
+    /// Local-only also reports Ok — a host with no API keys but
+    /// a local GGUF is the "M1 32GB offline" doctrine case Joel's
+    /// canonical workflow targets.
+    #[test]
+    fn local_only_reports_ok_without_cloud_warning() {
+        let providers = ["llamacpp-qwen3-coder"];
+        let (kind, detail) = render_adapter_boot_status(&providers);
+        assert_eq!(kind, BootStatusKind::Ok);
+        assert!(
+            !detail.contains("cloud"),
+            "local-only must not mention cloud in the detail (no \
+             warning to surface): {detail:?}"
+        );
+    }
 }
