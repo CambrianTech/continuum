@@ -10,6 +10,16 @@ It documents what a persona actually IS (embodied, multi-modal, tool-using, cont
 
 **The cost of skipping this doc and re-inferring the architecture from the bypass is rebuilding a chatbot in place of a year of substrate work.** Don't.
 
+## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
+
+**Required first read** before adding ANY new tokio task, watch channel, pressure source, resource pool, brain region, or background tick — or before touching any file under `src/workers/continuum-core/src/{runtime,paging,system_resources}/`:
+
+→ **[docs/architecture/CONCURRENCY-STYLE-GUIDE.md](docs/architecture/CONCURRENCY-STYLE-GUIDE.md)**
+
+It documents the canonical RTOS shape (own task + `tokio::time::interval` + `watch::Sender<Snapshot>` + atomic gate + `spawn_blocking` + 100ms timeout + quarantine), the existing primitives you MUST reuse (`ServiceModule`, `BrainRegion`, `PagedResourcePool`, `PressureBroker`, `MemoryPressureMonitor`), the cadence ladder, and the forbidden-moves list the model keeps reflex-coding under amnesia (synchronous main-thread probes, env-var-tuned substrate thresholds, sleep-loops instead of `interval`, `tracing::info!(target=...)` masquerading as a probe, hot-path pressure interpretation, parallel managers/coordinators, locks across await, `unwrap()` on substrate startup).
+
+**The cost of skipping this doc is reinventing `MemoryPressureMonitor` as a `runtime/disk_guard.rs` with env-tunable thresholds running synchronously on main — which is exactly what happened the day this guide got written.** Don't.
+
 ## 📐 Canonical Substrate Docs (read first)
 
 If you're new to the substrate, or you're picking up runtime/cognition work, read these in order before anything else in this file. They are the precedence-winning truth on substrate-shaped questions:
