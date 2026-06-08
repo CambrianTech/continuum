@@ -834,6 +834,44 @@ pub fn start_server(
         broker.register(
             pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>
         );
+
+        // Register a `FilesystemTierPool` for the probe JSONL
+        // rotation dir — closes the broker → pool → real eviction
+        // loop end-to-end. When disk pressure crosses the broker's
+        // act_above threshold, the broker walks the registered pools
+        // and asks each to free bytes; this pool actually does it
+        // (deletes oldest probe files until want_bytes are freed).
+        //
+        // The probe sink's own `tracing_appender::rolling` handles
+        // the time axis (daily rotation, 7-day retention); this pool
+        // handles the space-pressure axis (broker-driven eviction
+        // when disk is hot). Both bounds active simultaneously.
+        //
+        // Soft cap = 500 MB. Picked to be larger than a typical
+        // 7-day probe window (probably < 100 MB even under heavy
+        // capture) but bounded so a runaway sprinkle / leak gets
+        // visible to the broker before disk fills.
+        const PROBE_POOL_SOFT_CAP_BYTES: u64 = 500 * 1024 * 1024;
+        if let Some(home) = dirs::home_dir() {
+            let probe_dir = home.join(".continuum/jtag/logs/probes");
+            broker.register(Arc::new(crate::paging::FilesystemTierPool::new(
+                "probe-jsonl",
+                probe_dir,
+                PROBE_POOL_SOFT_CAP_BYTES,
+            )) as Arc<dyn crate::paging::pool::ResourcePool>);
+            log_info!(
+                "ipc",
+                "server",
+                "FilesystemTierPool 'probe-jsonl' registered with PressureBroker (soft cap 500 MB)"
+            );
+        } else {
+            log_error!(
+                "ipc",
+                "server",
+                "no HOME — probe-jsonl FilesystemTierPool not registered"
+            );
+        }
+
         log_info!(
             "ipc",
             "server",
