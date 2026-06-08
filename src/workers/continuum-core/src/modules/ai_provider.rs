@@ -182,33 +182,65 @@ impl AIProviderModule {
 ///   - "asked for local but DMR is down" (Docker Desktop needs to be running)
 ///   - "asked for a specific provider/model that isn't here" (existing message)
 ///
-/// Hoisted out of both `ai/generate` and the convenience `generate_text` so
-/// the two paths report the same diagnosis.
+/// The set of provider ids that count as "offline / network-
+/// independent" for the boot-status `adapter:` line. A host with
+/// any of these registered has an inference path that survives a
+/// WAN outage and is reported as `Ok` regardless of which cloud
+/// providers also registered.
+///
+/// Sourced from the substrate's actual provider-id constants — NOT
+/// a hand-rolled prefix match — so a rename in `LLAMACPP_PROVIDER_ID`
+/// or a future `LOCAL_*` constant lands the boot-status check
+/// automatically. PR #1553 round 1 reviewer caught two failure
+/// modes the prefix shape produced:
+///
+/// 1. `"docker-model-runner"` (DMR) didn't start with `llamacpp-`,
+///    so a host running DMR-only got `Degraded: "cloud only ..."` —
+///    factually false. DMR runs against localhost:12434, network-
+///    independent.
+/// 2. The `register_adapters` flow uses the single
+///    `LLAMACPP_PROVIDER_ID = "llamacpp-local"` constant — there is
+///    no per-model `"llamacpp-qwen3-coder"` registered name. The
+///    prefix matched anyway by coincidence; the prior tests pinned
+///    a string shape that production never produces.
+///
+/// Identifier strings, not a trait check on `dyn AIProviderAdapter`,
+/// because the registry's `available()` returns `Vec<&str>` of
+/// provider ids — the trait isn't reachable from the helper without
+/// holding the registry lock. The trait-method refactor
+/// (`AIProviderAdapter::is_offline_path()`) is a follow-up.
+const OFFLINE_PROVIDER_IDS: &[&str] = &[
+    crate::inference::LLAMACPP_PROVIDER_ID,
+    // DMR registers under "docker-model-runner". Localhost via
+    // Docker Desktop's model runner socket — survives a WAN
+    // outage as long as Docker Desktop is running.
+    "docker-model-runner",
+];
+
 /// Pure projection of the AdapterRegistry's `available()` set → a
 /// boot-status `(kind, detail)` pair. Card e9f50a36 slice A4.
 ///
 /// Mapping:
-/// - **Empty** → `Failed`, `"no inference adapter registered — add API keys to ~/.continuum/config.env or pull a local GGUF"`.
-///   The substrate has zero inference capability; persona cognition
-///   on `FullCitizen` / `FailFast` will refuse to boot downstream.
-/// - **No local llamacpp-* providers** → `Degraded`, `"cloud only:
-///   <names> (no local fallback if cloud is unreachable)"`. The
+/// - **Empty** → `Failed`. The substrate has zero inference
+///   capability; persona cognition on `FullCitizen` / `FailFast`
+///   will refuse to boot downstream.
+/// - **No offline provider registered** → `Degraded`, `"cloud only:
+///   <names> (no local fallback if cloud unreachable)"`. The
 ///   substrate runs but has no offline path — a single network
 ///   outage takes down inference. Operator wants to know.
-/// - **At least one local provider** → `Ok`, `"<names> (N
-///   providers)"`. Mixed cloud + local OR local-only both land
-///   here; the substrate has at least one offline fallback.
+/// - **At least one offline provider** (`llamacpp-local`,
+///   `docker-model-runner`, etc — see [`OFFLINE_PROVIDER_IDS`]) →
+///   `Ok`, `"<names> (N providers)"`. Mixed cloud + offline OR
+///   offline-only both land here; substrate has at least one path
+///   that survives WAN loss.
 ///
 /// The kind ordering matches the rest of the slice A boot lines:
-/// Failed >Degraded > Ok per `BootStatusKind`'s total ordering, so a
-/// sentinel computing "worst kind across boot" with `.max()` reports
-/// the right verdict.
+/// `Ok < Degraded < Failed` per `BootStatusKind`'s derived `Ord`,
+/// so a sentinel computing "worst kind across boot" with `.max()`
+/// reports the right verdict.
 fn render_adapter_boot_status(
     available: &[&str],
-) -> (
-    crate::runtime::boot_status::BootStatusKind,
-    String,
-) {
+) -> (crate::runtime::boot_status::BootStatusKind, String) {
     use crate::runtime::boot_status::BootStatusKind;
     if available.is_empty() {
         return (
@@ -218,15 +250,11 @@ fn render_adapter_boot_status(
                 .to_string(),
         );
     }
-    // The llamacpp-local provider is registered once per GGUF on
-    // disk; it's the offline path. If NONE of the registered
-    // providers start with `llamacpp-`, the substrate has cloud-only
-    // inference — degraded, even though it's "working" right now.
-    let has_local = available
+    let has_offline = available
         .iter()
-        .any(|name| name.starts_with("llamacpp-") || *name == "llamacpp-local");
+        .any(|name| OFFLINE_PROVIDER_IDS.contains(name));
     let names_joined = available.join(", ");
-    if has_local {
+    if has_offline {
         (
             BootStatusKind::Ok,
             format!("{names_joined} ({} providers)", available.len()),
@@ -234,9 +262,7 @@ fn render_adapter_boot_status(
     } else {
         (
             BootStatusKind::Degraded,
-            format!(
-                "cloud only: {names_joined} (no local fallback if cloud unreachable)"
-            ),
+            format!("cloud only: {names_joined} (no local fallback if cloud unreachable)"),
         )
     }
 }
@@ -1204,7 +1230,7 @@ mod boot_status_tests {
         );
     }
 
-    /// Cloud-only (no `llamacpp-*` provider registered) = `Degraded`.
+    /// Cloud-only (no offline provider registered) = `Degraded`.
     /// The substrate is "working" but a single network blip kills
     /// inference for every persona. Operator wants to know.
     #[test]
@@ -1222,17 +1248,25 @@ mod boot_status_tests {
         );
     }
 
-    /// At least one llamacpp-* provider registered = `Ok`. The
-    /// substrate has offline inference even if the WAN goes down.
-    /// The detail names the providers so the operator can verify
-    /// which forge model is loaded without poking the registry.
+    /// `LLAMACPP_PROVIDER_ID` registered = `Ok`. PR #1553 round 1
+    /// reviewer caught the prior test using a fictitious
+    /// `"llamacpp-qwen3-coder"` id that production never emits —
+    /// `register_adapters` uses the single `LLAMACPP_PROVIDER_ID`
+    /// constant ("llamacpp-local") and multiplexes models within
+    /// the adapter. Pinning the actual constant here protects
+    /// against a future rename silently changing the boot-status
+    /// classification.
     #[test]
-    fn local_present_reports_ok() {
-        let providers = ["anthropic", "llamacpp-qwen3-coder", "openai"];
+    fn llamacpp_local_reports_ok() {
+        let providers = [
+            "anthropic",
+            crate::inference::LLAMACPP_PROVIDER_ID,
+            "openai",
+        ];
         let (kind, detail) = render_adapter_boot_status(&providers);
         assert_eq!(kind, BootStatusKind::Ok);
         assert!(
-            detail.contains("llamacpp-qwen3-coder"),
+            detail.contains(crate::inference::LLAMACPP_PROVIDER_ID),
             "detail must name the local provider so the operator \
              can spot wrong-model-loaded at a glance: {detail:?}"
         );
@@ -1242,12 +1276,40 @@ mod boot_status_tests {
         );
     }
 
+    /// PR #1553 round 1 reviewer's primary BLOCK: DMR is
+    /// network-independent (runs against `localhost:12434` via
+    /// Docker Desktop's model runner socket). The prior prefix
+    /// match shape misclassified a DMR-only host as `Degraded:
+    /// "cloud only ..."` — a load-bearing observability lie. With
+    /// the `OFFLINE_PROVIDER_IDS` set this case correctly reports
+    /// `Ok`.
+    ///
+    /// Pins the exact production registration id from
+    /// `model_registry/catalog.rs:471` so a future provider-id
+    /// drift fails this test instead of silently misclassifying.
+    #[test]
+    fn dmr_only_reports_ok_not_cloud_only() {
+        let providers = ["docker-model-runner"];
+        let (kind, detail) = render_adapter_boot_status(&providers);
+        assert_eq!(
+            kind,
+            BootStatusKind::Ok,
+            "DMR is localhost-only (network-independent) and must \
+             classify as an offline provider, not as a cloud lie. \
+             Got {kind:?} for detail {detail:?}"
+        );
+        assert!(
+            !detail.contains("cloud"),
+            "DMR-only must not surface a cloud-fallback warning: {detail:?}"
+        );
+    }
+
     /// Local-only also reports Ok — a host with no API keys but
     /// a local GGUF is the "M1 32GB offline" doctrine case Joel's
     /// canonical workflow targets.
     #[test]
     fn local_only_reports_ok_without_cloud_warning() {
-        let providers = ["llamacpp-qwen3-coder"];
+        let providers = [crate::inference::LLAMACPP_PROVIDER_ID];
         let (kind, detail) = render_adapter_boot_status(&providers);
         assert_eq!(kind, BootStatusKind::Ok);
         assert!(
