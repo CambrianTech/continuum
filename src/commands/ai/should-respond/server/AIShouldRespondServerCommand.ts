@@ -17,10 +17,10 @@ import { AIShouldRespondCommand } from '../shared/AIShouldRespondCommand';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIShouldRespondParams, AIShouldRespondResult } from '../shared/AIShouldRespondTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import type {
   AIDecisionContext as RustAIDecisionContext,
-} from '../../../../shared/generated';
+} from '@shared/generated';
 
 export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {

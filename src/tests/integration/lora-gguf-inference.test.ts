@@ -21,7 +21,7 @@
  */
 
 import { InferenceGrpcClient } from '../../system/core/services/InferenceGrpcClient';
-import { RustCoreIPCClient } from '../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../core/continuum-core/bindings/RustCoreIPC';
 import { AdapterStore } from '../../system/genome/server/AdapterStore';
 import * as fs from 'fs';
 import * as path from 'path';

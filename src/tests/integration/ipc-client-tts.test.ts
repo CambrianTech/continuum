@@ -11,7 +11,7 @@
  * Run with: npx tsx tests/integration/ipc-client-tts.test.ts
  */
 
-import { RustCoreIPCClient } from '../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../core/continuum-core/bindings/RustCoreIPC';
 import * as fs from 'fs';
 
 const SOCKET_PATH = '/tmp/continuum-core.sock';

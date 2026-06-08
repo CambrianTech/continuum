@@ -10,7 +10,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { PersonaAllocateParams, PersonaAllocateResult } from '../shared/PersonaAllocateTypes';
 import { createPersonaAllocateResultFromParams } from '../shared/PersonaAllocateTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class PersonaAllocateServerCommand extends CommandBase<PersonaAllocateParams, PersonaAllocateResult> {
   private rustClient: RustCoreIPCClient;

@@ -2,7 +2,7 @@
  * ForgeArtifact Entity — foundry-generated output for a recipe.
  *
  * Persists a `ForgeArtifact` (Rust source of truth at
- * `src/workers/continuum-core/src/forge/artifact.rs`, ts-rs generated
+ * `src/../core/continuum-core/src/forge/artifact.rs`, ts-rs generated
  * type at `shared/generated/forge/ForgeArtifact.ts`) into the Continuum
  * data layer. Phase 3 of continuum#1164.
  *

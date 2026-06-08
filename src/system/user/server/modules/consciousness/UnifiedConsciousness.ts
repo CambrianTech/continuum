@@ -20,7 +20,7 @@ import { PersonaTimeline, type RecordEventParams, type ConsciousnessLogger, type
 import type { ContextType, TimelineEventType } from '../../../../data/entities/TimelineEventEntity';
 import { truncate } from '../../../../../shared/utils/StringUtils';
 import type { RustCognitionBridge } from '../RustCognitionBridge';
-import type { CorpusTimelineEvent } from '../../../../../workers/continuum-core/bindings/CorpusTimelineEvent';
+import type { CorpusTimelineEvent } from '../../../../../../core/continuum-core/bindings/CorpusTimelineEvent';
 
 /**
  * Self-model - the persona's understanding of their own state

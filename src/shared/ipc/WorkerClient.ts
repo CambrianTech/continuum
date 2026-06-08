@@ -30,7 +30,7 @@ import {
   ErrorType
 } from './WorkerMessages.js';
 import { TimingHarness } from '../../system/core/shared/TimingHarness';
-import { connectToSocketPathOrUrl } from '../../workers/continuum-core/bindings/modules/base';
+import { connectToSocketPathOrUrl } from '../../../core/continuum-core/bindings/modules/base';
 
 // IPC types that should NOT be timed (breaks recursive timing loop)
 // log/write → timing → appendFile → blocks event loop

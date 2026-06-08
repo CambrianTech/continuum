@@ -16,12 +16,12 @@ import type { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import type { RAGContext } from '../../rag/shared/RAGTypes';
 import { AIDecisionLogger } from './AIDecisionLogger';
 import { InferenceCoordinator } from '../../coordination/server/InferenceCoordinator';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 import type {
   AIDecisionContext as RustAIDecisionContext,
   RedundancyCheckRequest,
   GenerateResponseRequest,
-} from '../../../shared/generated';
+} from '@shared/generated';
 
 /**
  * AI Gating Decision - Result of "should I respond?" evaluation

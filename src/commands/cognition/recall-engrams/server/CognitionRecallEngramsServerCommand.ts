@@ -5,7 +5,7 @@
  * shipped in #1121 PR-5. Wire format: { personaId, kind?, limit?,
  * id?, keyword?, origin? } → { engrams, count }. All recall logic
  * (recent / by_id / by_keyword / by_origin enumeration) lives in
- * Rust (`workers/continuum-core/src/modules/cognition.rs`).
+ * Rust (`../core/continuum-core/src/modules/cognition.rs`).
  *
  * Per CLAUDE.md "Rust-Backed Commands (IPC Mixin Pattern)" + Joel's
  * "if not UI/UX it is rust" rule: this TS file exists ONLY so the
@@ -27,7 +27,7 @@ import type {
   CognitionRecallEngramsResult,
 } from '../shared/CognitionRecallEngramsTypes';
 import { createCognitionRecallEngramsResultFromParams } from '../shared/CognitionRecallEngramsTypes';
-import type { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 /** Snake-case shape returned by the Rust mixin — matches the IPC payload. */
 type RecallEngramsRustResponse = {

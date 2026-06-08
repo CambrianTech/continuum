@@ -16,13 +16,13 @@ A persona can already read, write, edit, search, and scaffold Rust modules via `
 ## What's in place
 
 ### File ops
-The `code/*` family is the strongest surface today. `code/read`, `code/write`, `code/edit` (search_replace / line_range / insert_at / append), `code/tree`, and `code/search` are all backed by `FileEngine` in Rust (`src/workers/continuum-core/.../file_engine.rs`) with `ChangeNode` undo tracking. `file/load`, `file/save`, `file/append` provide simpler wrappers. The crown jewel is `generate/module` (`src/workers/continuum-core/src/modules/generator/`) — scaffolds a complete ServiceModule (mod.rs + types.rs + DESIGN.md + README.md) with per-name locks against concurrent races. This is the self-replication primitive.
+The `code/*` family is the strongest surface today. `code/read`, `code/write`, `code/edit` (search_replace / line_range / insert_at / append), `code/tree`, and `code/search` are all backed by `FileEngine` in Rust (`core/continuum-core/.../file_engine.rs`) with `ChangeNode` undo tracking. `file/load`, `file/save`, `file/append` provide simpler wrappers. The crown jewel is `generate/module` (`core/continuum-core/src/modules/generator/`) — scaffolds a complete ServiceModule (mod.rs + types.rs + DESIGN.md + README.md) with per-name locks against concurrent races. This is the self-replication primitive.
 
 ### Build + test
 TypeScript has structured surfaces: `development/build` (parses `tsc --noEmit` into `TypeScriptError[]` with line/column/code) and `code/verify` (two-phase: tsc + optional vitest with JSON reporter, ExecutionSandbox-isolated). Rust has no equivalent — personas fall back to `code/shell/execute` (`src/commands/code/shell/execute/`) which is async-by-default returning an `executionId`, paired with `code/shell/watch` and `code/shell/kill`. Security is bifurcated: `development/shell/execute` whitelists 22 safe commands (no cargo/npm), while `code/shell/execute` is unrestricted.
 
 ### Observability
-Two disconnected layers. **Log layer**: `LoggerModule` (`src/workers/continuum-core/src/modules/logger.rs`) sinks structured entries; `logs/list`, `logs/read`, `logs/search`, `logs/stats`, and `sentinel/logs/tail` provide post-hoc inspection. **Execution layer**: `code/shell/status` snapshots active count; `code/shell/watch` blocks-on-poll for `ClassifiedLine[]`. Neither layer emits events on completion — the realtime bus has no `command:executed` signal.
+Two disconnected layers. **Log layer**: `LoggerModule` (`core/continuum-core/src/modules/logger.rs`) sinks structured entries; `logs/list`, `logs/read`, `logs/search`, `logs/stats`, and `sentinel/logs/tail` provide post-hoc inspection. **Execution layer**: `code/shell/status` snapshots active count; `code/shell/watch` blocks-on-poll for `ClassifiedLine[]`. Neither layer emits events on completion — the realtime bus has no `command:executed` signal.
 
 ## Critical missing pieces
 
@@ -103,7 +103,7 @@ Two disconnected layers. **Log layer**: `LoggerModule` (`src/workers/continuum-c
 
 This report is the synthesis of a 4-agent multi-thread workflow (`w14iiocs7`):
 
-- **3 parallel survey agents** (file ops / build+test / observability) — each scanned `src/commands/`, `src/workers/continuum-core/src/modules/`, and `docs/architecture/MODULE-CATALOG.md` and returned structured `{existing_commands, missing_commands, summary}` JSON
+- **3 parallel survey agents** (file ops / build+test / observability) — each scanned `src/commands/`, `core/continuum-core/src/modules/`, and `docs/architecture/MODULE-CATALOG.md` and returned structured `{existing_commands, missing_commands, summary}` JSON
 - **1 synthesis agent** — combined the three surveys with the doctrine (three primitives + alignment economics) into this report
 
 Raw survey data lives in the workflow's transcript directory; this document is the canonical artifact. Update it when new commands land in the substrate (turning a `missing` row into an `existing` row) or when the priority ordering shifts based on the next phase of work.

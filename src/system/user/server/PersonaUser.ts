@@ -87,7 +87,7 @@ import type { QueueItem } from './modules/PersonaInbox';
 import type { FastPathDecision } from './modules/central-nervous-system/CNSTypes';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
 // NOTE: DecisionAdapterChain removed - Rust cognition engine handles fast-path decisions
-// See: workers/continuum-core/src/persona/cognition.rs
+// See: ../core/continuum-core/src/persona/cognition.rs
 import type { DecisionContext } from './modules/cognition/adapters/IDecisionAdapter';
 import { WorkingMemoryManager } from './modules/cognition/memory/WorkingMemoryManager';
 import { PersonaSelfState } from './modules/cognition/PersonaSelfState';
@@ -141,8 +141,8 @@ import { Workspace } from '../../code/server/Workspace';
 import { initShellEventHandler } from './modules/ShellEventHandler';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { DataOpen } from '../../../commands/data/open/shared/DataOpenTypes';
-import type { CorpusMemory } from '../../../workers/continuum-core/bindings/CorpusMemory';
-import type { CorpusTimelineEvent } from '../../../workers/continuum-core/bindings/CorpusTimelineEvent';
+import type { CorpusMemory } from '../../../../core/continuum-core/bindings/CorpusMemory';
+import type { CorpusTimelineEvent } from '../../../../core/continuum-core/bindings/CorpusTimelineEvent';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -309,7 +309,7 @@ export class PersonaUser extends AIUser {
   }
 
   // NOTE: DecisionAdapterChain removed - Rust cognition handles fast-path decisions
-  // See: workers/continuum-core/src/persona/cognition.rs (PersonaCognitionEngine)
+  // See: ../core/continuum-core/src/persona/cognition.rs (PersonaCognitionEngine)
 
   // CNS removed — scheduling inlined into PersonaAutonomousLoop (service loop calls Rust directly)
 
@@ -722,7 +722,7 @@ export class PersonaUser extends AIUser {
     // No catch: if the adapter can't answer, init MUST fail loud. The previous
     // "Non-fatal — Lookup remains" comment was lying — the lookup methods it
     // referred to are themselves what this call replaces.
-    const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+    const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../../core/continuum-core/bindings/RustCoreIPC');
     const ipc = new RustCoreIPCClient(getContinuumCoreSocketPath());
     await ipc.connect();
     const result = await ipc.request({

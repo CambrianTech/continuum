@@ -6,7 +6,7 @@
  * absorbed into continuum-core as DataModule (Phase 4e), which does not write
  * this timing file. This command may need adaptation for the new architecture.
  *
- * For DataModule timing, see workers/continuum-core/src/modules/data.rs which
+ * For DataModule timing, see ../core/continuum-core/src/modules/data.rs which
  * logs slow queries (>50ms) to the standard log output.
  */
 

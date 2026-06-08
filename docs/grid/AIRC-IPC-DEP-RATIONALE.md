@@ -18,7 +18,7 @@ The IPC ABI version (`airc_ipc::IPC_PROTOCOL_VERSION`) pinning is what makes sha
 
 ## What the dependency PR landed
 
-Workspace-level git deps in `src/workers/Cargo.toml`:
+Workspace-level git deps in `core/Cargo.toml`:
 
 ```toml
 airc-core     = { git = "https://github.com/CambrianTech/airc", rev = "428f928…" }

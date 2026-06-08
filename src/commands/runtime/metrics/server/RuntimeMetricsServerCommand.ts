@@ -22,7 +22,7 @@ import type {
   ModuleConfig,
 } from '../shared/RuntimeMetricsTypes';
 import { createRuntimeMetricsResultFromParams } from '../shared/RuntimeMetricsTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class RuntimeMetricsServerCommand extends CommandBase<RuntimeMetricsParams, RuntimeMetricsResult> {
   private rustClient: RustCoreIPCClient;

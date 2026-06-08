@@ -2,7 +2,7 @@
 
 > **Substrate contract:** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime contract every Rust concern inherits. This document specifies the *artifact economy* that flows on top of that contract.
 > **Lane-shaped roadmap:** [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — implementation lands per Lane H (Substrate Governor + Tiered Genome Cache) once the design here is reviewed.
-> **Status:** design proposal. No code in this document; every API shape shown is a proposed Rust trait targeted at `src/workers/continuum-core/src/genome/`, `foundry/`, and `sentinel/`.
+> **Status:** design proposal. No code in this document; every API shape shown is a proposed Rust trait targeted at `core/continuum-core/src/genome/`, `foundry/`, and `sentinel/`.
 
 ## Why This Document Exists
 
@@ -100,7 +100,7 @@ The seventh, transient:
 Every durable artifact carries a typed `Provenance` record. The substrate refuses to accept artifacts without one. Provenance is what makes trust auditable, refinement reversible, and sharing safe.
 
 ```rust
-// PROPOSED — Lane H deliverable, targeted at src/workers/continuum-core/src/genome/provenance.rs
+// PROPOSED — Lane H deliverable, targeted at core/continuum-core/src/genome/provenance.rs
 pub struct Provenance {
     pub artifact_id: ArtifactId,                  // content hash
     pub created_at: SystemTime,
@@ -126,7 +126,7 @@ The cache is a sequence of **tier roles** parameterized by hardware class. Discr
 ### Tier Roles
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/genome/tier.rs
+// PROPOSED — core/continuum-core/src/genome/tier.rs
 pub enum TierRole {
     /// Bytes the accelerator can read at peak bandwidth.
     /// Discrete GPU: VRAM. UMA: the hot portion of unified memory.
@@ -236,7 +236,7 @@ M-Pro/Max are UMA-class with larger pools (still four tiers, bigger numbers). Di
 A persona's `WorkingSet` is the set of pages currently hot in L1+L2 for that persona. Pages can be LoRA layer pages, MoE expert pages, KV cache pages, or engram pages.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/genome/working_set.rs
+// PROPOSED — core/continuum-core/src/genome/working_set.rs
 pub struct WorkingSet {
     pub persona: PersonaId,
     pub pages: HashMap<PageRef, ResidentPage>,
@@ -326,7 +326,7 @@ pub trait WorkingSetManager {
 The foundry is the only substrate component that *imports* artifacts from outside Continuum. It is the JIT in the same sense that Java's HotSpot is a JIT: it compiles the *source* (SOTA model) into the *binary* (our adapted format) that the runtime actually executes.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/foundry/mod.rs
+// PROPOSED — core/continuum-core/src/foundry/mod.rs
 pub trait Foundry: Send + Sync {
     /// Pull a SOTA source and extract useful artifacts.
     /// Runs out-of-band; never blocks any persona's hot path.
@@ -380,7 +380,7 @@ The foundry could in principle be a separate process pulling SOTA models, adapti
 Sentinel-AI is Continuum's **custom experiential model** — distinct from the foundry's imports. It is where lived experience crystallizes into weights. The foundry brings in *what others built*. Sentinel produces *what we lived*.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/sentinel/mod.rs
+// PROPOSED — core/continuum-core/src/sentinel/mod.rs
 pub trait SentinelAI: Send + Sync {
     /// Stream traces into the sentinel for outcome attribution.
     /// Cheap; runs continuously.
@@ -439,7 +439,7 @@ The substrate's *default lookup* is not "load adapter by name." It is "I need he
 ### Trait Surface
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/genome/recall.rs
+// PROPOSED — core/continuum-core/src/genome/recall.rs
 pub trait DemandAlignedRecall: Send + Sync {
     /// The hot-path lookup. Sub-ms target on local L1/L2 hits; grid-aware
     /// budget when results must come from a peer or federation pull.
@@ -506,7 +506,7 @@ pub enum ResidencyHint {
 The combined score is a weighted sum, but the weights are dynamic — governor-tunable per hardware class and sentinel-refined per persona over time. The base function is intentionally simple so its behavior is auditable:
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/genome/recall/scoring.rs
+// PROPOSED — core/continuum-core/src/genome/recall/scoring.rs
 pub fn score(
     artifact: &ArtifactCandidate,
     query:    &CapabilityQuery,
@@ -604,7 +604,7 @@ A recall query touches the layers in order. The first that satisfies the budget 
 A persona doing one turn often issues multiple recalls — initial context-gather, then re-recall after a tool-use, then again for response composition. These should not re-execute the full pipeline:
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/genome/recall/cache.rs
+// PROPOSED — core/continuum-core/src/genome/recall/cache.rs
 pub struct WithinTurnRecallCache {
     persona:    PersonaId,
     turn_id:    TurnId,
@@ -689,7 +689,7 @@ Recall is where the architecture wins or loses on consumer hardware. A naive rec
 A persona's effective model at any moment is a **dynamic composition** of base + tiered LoRA + MoE expert routing + engram-conditioned context. Composition is recomputed when the task / context / pressure shifts; otherwise the substrate caches it.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/genome/composition.rs
+// PROPOSED — core/continuum-core/src/genome/composition.rs
 pub struct CompositionPlan {
     pub base_model: BaseModelRef,
     pub lora_stack: Vec<LoRAComposition>,
@@ -730,7 +730,7 @@ The composition is the **binary** the persona executes. The genome pool is the *
 While a persona's current turn is running, the substrate pre-composes the *likely-next* plan and pre-fetches the *likely-next* pages based on conversation trajectory, persona's historical patterns, recent page faults, and branch hints from the turn frame.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/genome/speculation.rs
+// PROPOSED — core/continuum-core/src/genome/speculation.rs
 pub struct SpeculativeBranch {
     pub trigger: TurnTrajectoryHint,               // "user is about to ask follow-up X"
     pub composition: CompositionPlan,
@@ -762,7 +762,7 @@ On a MacBook Air, the governor sets speculation conservative — only on idle sl
 Sentinel-refined and foundry-adapted artifacts are publishable to the broader hive. Cross-room, cross-instance, optionally cross-user (with consent + provenance). Other personas pull and integrate.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/genome/sharing.rs
+// PROPOSED — core/continuum-core/src/genome/sharing.rs
 pub trait SharingProtocol: Send + Sync {
     /// Publish an artifact to the configured federation scope.
     async fn publish(
@@ -807,7 +807,7 @@ The governor is the DVFS layer for the AI substrate. It is the one Rust subsyste
 ### Trait Surface
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/governor/mod.rs
+// PROPOSED — core/continuum-core/src/governor/mod.rs
 pub trait SubstrateGovernor: Send + Sync {
     /// Current policy. Cheap read: returns Arc to immutable snapshot, so
     /// callers can hold without contention. Policy is rewritten under
@@ -877,7 +877,7 @@ The governor never blocks. Reads (`current_policy()`) are wait-free `Arc` clones
 Boot-time detection runs once and produces a `HardwareClass`. The probe sequence is deterministic and small:
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/governor/detect.rs
+// PROPOSED — core/continuum-core/src/governor/detect.rs
 pub fn detect_hardware() -> HardwareClass {
     HardwareClass {
         silicon:           probe_silicon(),           // platform-specific: Metal / CUDA / ROCm / Vulkan probes
@@ -996,7 +996,7 @@ When `on_pressure_signal()` fires, the governor *may* step the cascade. The casc
 Algorithm:
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/governor/cascade.rs
+// PROPOSED — core/continuum-core/src/governor/cascade.rs
 impl GovernorState {
     pub fn on_pressure_signal(&self, signal: PressureSignal) {
         let next_step = self.evaluate_step(&signal);
@@ -1034,7 +1034,7 @@ impl GovernorState {
 The governor's main loop is small and explicit:
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/governor/runtime.rs
+// PROPOSED — core/continuum-core/src/governor/runtime.rs
 async fn governor_loop(state: Arc<GovernorState>, mut rx: mpsc::Receiver<PressureSignal>) {
     let mut periodic = tokio::time::interval(Duration::from_secs(5));
     loop {

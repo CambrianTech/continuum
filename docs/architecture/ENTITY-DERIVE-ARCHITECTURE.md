@@ -216,10 +216,10 @@ SQLite stored `FieldType::Number` as REAL affinity, coercing integers to floats.
 
 ## Files
 
-- `src/workers/continuum-orm-derive/src/lib.rs` — the proc-macro crate. `#[derive(Entity)]` definition.
-- `src/workers/continuum-core/src/orm/entity.rs` — `BaseEntity` + `OrmEntity` trait + registry + `is_base_entity_column` helper.
-- `src/workers/continuum-core/src/orm/types.rs` — `CollectionSchema` + `SchemaField` + `SchemaIndex` + `ForeignKeyRef` + `CascadeRule`.
-- `src/workers/continuum-core/src/orm/store.rs` — `OrmStore<T>` typed persistence rail.
-- `src/workers/continuum-core/src/orm/sqlite.rs`, `postgres.rs` — adapters. Emit FK constraints + composite indexes + dedupe BaseEntity columns.
-- `src/workers/continuum-core/src/orm/derive_test.rs` — end-to-end derive tests (composite index, FK cascade, round-trip).
-- `src/workers/continuum-core/src/persona/engram.rs` — first production entity migrated to the derive.
+- `core/continuum-orm-derive/src/lib.rs` — the proc-macro crate. `#[derive(Entity)]` definition.
+- `core/continuum-core/src/orm/entity.rs` — `BaseEntity` + `OrmEntity` trait + registry + `is_base_entity_column` helper.
+- `core/continuum-core/src/orm/types.rs` — `CollectionSchema` + `SchemaField` + `SchemaIndex` + `ForeignKeyRef` + `CascadeRule`.
+- `core/continuum-core/src/orm/store.rs` — `OrmStore<T>` typed persistence rail.
+- `core/continuum-core/src/orm/sqlite.rs`, `postgres.rs` — adapters. Emit FK constraints + composite indexes + dedupe BaseEntity columns.
+- `core/continuum-core/src/orm/derive_test.rs` — end-to-end derive tests (composite index, FK cascade, round-trip).
+- `core/continuum-core/src/persona/engram.rs` — first production entity migrated to the derive.

@@ -4,7 +4,7 @@
 >
 > **Status**: HandleRef migration + per-cursor mutex fix shipped in PR #1490.
 >
-> **File**: `src/workers/continuum-core/src/modules/data.rs` (single-file module; cursor surface is one of several concerns)
+> **File**: `core/continuum-core/src/modules/data.rs` (single-file module; cursor surface is one of several concerns)
 >
 > **Canonical reference**: [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md)
 

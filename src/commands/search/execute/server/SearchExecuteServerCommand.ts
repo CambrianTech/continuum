@@ -7,7 +7,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { SearchExecuteParams, SearchExecuteResult } from '../shared/SearchExecuteTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class SearchExecuteServerCommand extends CommandBase<SearchExecuteParams, SearchExecuteResult> {
   private rustClient: RustCoreIPCClient;

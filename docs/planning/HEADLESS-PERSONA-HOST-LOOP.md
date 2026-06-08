@@ -160,7 +160,7 @@ Net-new code in slice 13: ~25 lines of composition. Everything else is composing
 
 ## Cleanup model (REVISED per PR #1510 re-review against pinned `f6ed190`)
 
-PR #1510 re-review #1 caught that the prior revision named the wrong cleanup mechanism. The actual mechanism against the airc rev pinned in `src/workers/Cargo.toml:44-48` (`f6ed190`) is `DaemonAttachGuard`, not the older `ensure_wire_subscriber` / `inner.subscribers` map.
+PR #1510 re-review #1 caught that the prior revision named the wrong cleanup mechanism. The actual mechanism against the airc rev pinned in `core/Cargo.toml:44-48` (`f6ed190`) is `DaemonAttachGuard`, not the older `ensure_wire_subscriber` / `inner.subscribers` map.
 
 ### What actually fires the cleanup
 

@@ -11,7 +11,7 @@ We present a reproducible pipeline for deploying state-of-the-art Mixture-of-Exp
 
 **Published model:** [huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted](https://huggingface.co/continuum-ai/qwen3.5-35b-a3b-compacted)
 **Source code:** [github.com/CambrianTech/continuum](https://github.com/CambrianTech/continuum)
-**Reproduction scripts:** [github.com/CambrianTech/continuum/tree/main/src/scripts/compaction](https://github.com/CambrianTech/continuum/tree/main/src/scripts/compaction)
+**Reproduction scripts:** [github.com/CambrianTech/continuum/tree/main/tools/scripts/compaction](https://github.com/CambrianTech/continuum/tree/main/tools/scripts/compaction)
 
 ---
 
@@ -480,7 +480,7 @@ Note: Expert 131 received only 7 activations out of 17,600 decisions — 0.04% u
 ```bash
 # Clone compaction scripts
 git clone https://github.com/CambrianTech/continuum.git
-cd continuum/src/scripts/compaction
+cd continuum/tools/scripts/compaction
 
 # Step 1: Download original model (67GB, requires HuggingFace account)
 python3 -c "

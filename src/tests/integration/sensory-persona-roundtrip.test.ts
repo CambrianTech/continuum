@@ -38,7 +38,7 @@
  *   - Position 3 Qwen multimodal kernels available on this host
  */
 
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../core/continuum-core/bindings/RustCoreIPC';
 
 // =============================================================================
 // Failure bucket taxonomy — typed so operator can grep

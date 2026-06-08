@@ -6,7 +6,7 @@
 **Branch policy**: every change lands as `PR -> canary -> validation -> PR -> main`
 **Status**: active planning document, shared by humans and agents
 **Operating rule**: Rust owns runtime logic. TypeScript is UI, schema, generated types, and thin command/transport glue.
-**Template-first rule**: new commands must start from `src/generator/specs/*.json` and Continuum's command generator. Manual command scaffolds are not acceptable; hand edits are for post-generation behavior only.
+**Template-first rule**: new commands must start from `tools/generator/specs/*.json` and Continuum's command generator. Manual command scaffolds are not acceptable; hand edits are for post-generation behavior only.
 **Architectural mandate**: Rust-first, GPU-first, replay-tested. No patchwork substitutes for the target architecture.
 **Runtime substrate spec**: [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime/RTOS contract every Rust concern inherits. ALPHA-GAP owns sequencing; CBAR-SUBSTRATE owns the substrate behavior the lanes converge on.
 **Sensory model plan**: [Sensory Model And Experiential Plasticity Plan](../architecture/SENSORY-MODEL-AND-EXPERIENTIAL-PLASTICITY-PLAN.md)
@@ -148,7 +148,7 @@ not what is intended. "Alpha risk" calls out the gap to the alpha gates above.
 | AIRC collaboration | AIRC canary has public `knock` plus forward-secret `approve`/`decrypt-approval` handoff; Continuum PR #1110 pilots repo-local `.airc/` collaboration rules; agent flywheel board #1272 active with codex-main heartbeats | Queue/nudge work tracked in CambrianTech/airc#562; Continuum personas and external agent providers are not yet first-class workers on the shared queue; manager-role transition in progress this session |
 | UI room state | PR #1047 merged to `canary` for stale duplicate General tab recovery | Needs live UI reload validation before `main` promotion |
 | Docker | Phase 1 of Docker tier surface merged (#1297 — `system/docker-tier-stats` IPC + ts-rs DockerTierStats); `scripts/main-promotion-gate.sh` landed (#1399) as the canary->main per-host receipt gate; GPU profile + tier pool eviction (#1238, #1239) still open; historical bulk and mixed responsibility still in the runtime images | Docker can mask failures and slow iteration; tier pool eviction + capability-visible health are the remaining alpha lifts; main promotion still needs linux/amd64 CUDA (#1410) and linux/amd64 Vulkan receipts for the same SHA |
-| Rust core | Substantial gains this session: PressureBroker bootstrap landed (#1307 PR-1 + #1308 PR-2 IPC + #1310 PR-3 status surface); runtime lease broker added (#1313); cognition migrated for `should_respond` (#1284), `rate_proposals` (#1290/#1291/#1293), `generate_recipe` (#1298/#1301/#1303), `vision-describe` (#1292), and `generate_response` (#1398/#1400/#1402/#1407); inference-llm runtime registration landed (#1404); `PersonaTurnFrame` now carries consolidated inbox, RAG seed, response prompt, and replay schema v2 with captured prompt (#1412); ToolRegistry semantic-search oxidizer PR-1 landed (#1413) | Lane D is no longer unstarted, but the alpha-critical `persona/turn-execute` command (#1409) is still in flight; per-module hardcoded concurrency declarations still present across `src/workers/continuum-core/src/modules/*.rs`; universal base trait + derive macro + scaffold generator (the "low-friction inheritance" triplet from CBAR-SUBSTRATE) not yet landed |
+| Rust core | Substantial gains this session: PressureBroker bootstrap landed (#1307 PR-1 + #1308 PR-2 IPC + #1310 PR-3 status surface); runtime lease broker added (#1313); cognition migrated for `should_respond` (#1284), `rate_proposals` (#1290/#1291/#1293), `generate_recipe` (#1298/#1301/#1303), `vision-describe` (#1292), and `generate_response` (#1398/#1400/#1402/#1407); inference-llm runtime registration landed (#1404); `PersonaTurnFrame` now carries consolidated inbox, RAG seed, response prompt, and replay schema v2 with captured prompt (#1412); ToolRegistry semantic-search oxidizer PR-1 landed (#1413) | Lane D is no longer unstarted, but the alpha-critical `persona/turn-execute` command (#1409) is still in flight; per-module hardcoded concurrency declarations still present across `core/continuum-core/src/modules/*.rs`; universal base trait + derive macro + scaffold generator (the "low-friction inheritance" triplet from CBAR-SUBSTRATE) not yet landed |
 | Node/TS | Net-negative trend this week: TS cognition deleted through oxidization stacks; `AIDecisionService.generateResponse` is now a thin Rust IPC shim and no longer owns TS slot coordination (#1402/#1407); Lane F ratchet landed for persona cognition dirs (#1401) and expanded to `src/system/ai/server` (#1406); SQLite default config landed (#1271) | Multiple TS daemons still own runtime logic that belongs in continuum-core; Lane F PR-2 still needs CI/pre-push enforcement beyond the local ratchet, and PR-3 still needs forbidden-provider/fallback scans |
 | Config/secrets | `$HOME/.continuum/config.env` is the local source of truth, but empty placeholders and per-process loading have caused false provider availability | Cloud providers can steal local turns and fail; grid nodes cannot yet receive encrypted config consistently |
 | Tests | Many tests exist; the alpha loop still overuses `npm start`/browser/Docker as proof; `no_cpu_fallback_contract.rs` regression test exists for the llama.cpp/ORT paths only — does not cover the Candle-side device selection where the orpheus + inference-grpc CPU fallbacks lived before #1314 | Slow tests hide root causes and discourage TDD; the no-CPU-fallback contract test needs widening to the whole workers tree, not just three whitelisted files |
@@ -187,7 +187,7 @@ Adjacent active workstream not in the lane table:
 Lane claim updates as of 2026-05-18:
 
 - Lane A has shipped a Rust crate skeleton — `model_registry/` exists in
-  `src/workers/continuum-core/src/`, with curated catalog rows and an
+  `core/continuum-core/src/`, with curated catalog rows and an
   admission resolver — but it is **NOT shipped** in the sense of "alpha
   contract met." Live UI QA on 2026-05-18 19:18Z surfaced the failure
   mode: `Vision AI error: model id 'Qwen/Qwen2-VL-7B-Instruct-GGUF' not
@@ -219,7 +219,7 @@ Lane claim updates as of 2026-05-18:
   scope is paging (KV/LoRA residency, pooled mtmd context, eviction policy)
   and **deletion of pre-broker concurrency hacks** that still bypass the
   broker. Concrete example pinned for deletion:
-  `src/workers/inference-grpc/src/main.rs` — `get_num_workers()` reads
+  `core/inference-grpc/src/main.rs` — `get_num_workers()` reads
   `INFERENCE_WORKERS` from `~/.continuum/config.env` and otherwise picks a
   worker count from system memory at startup. Both branches are exactly the
   "we do not hard code" / "they code in tokio not whatever their fee fees say"
@@ -269,11 +269,11 @@ while no local Qwen model exists and personas silently produce zero replies.
 
 **Owned files/modules**:
 
-- `src/workers/continuum-core/src/model_registry/`
-- `src/workers/continuum-core/src/inference/`
-- `src/workers/continuum-core/src/ai/`
-- `src/workers/continuum-core/src/persona/cognition_io.rs`
-- generated `ts-rs` types under `src/shared/generated/`
+- `core/continuum-core/src/model_registry/`
+- `core/continuum-core/src/inference/`
+- `core/continuum-core/src/ai/`
+- `core/continuum-core/src/persona/cognition_io.rs`
+- generated `ts-rs` types under `protocol/typescript/`
 
 **PR sequence**:
 
@@ -315,12 +315,12 @@ asked for a model that the Rust side's TOML config didn't have.
 
 Inventoried sources of model-definition truth as of 2026-05-18:
 
-1. `src/workers/continuum-core/src/model_registry/` — Rust crate (THE canonical owner)
-2. `src/workers/continuum-core/config/models.toml` — Rust-side config file (DELETE)
+1. `core/continuum-core/src/model_registry/` — Rust crate (THE canonical owner)
+2. `core/continuum-core/config/models.toml` — Rust-side config file (DELETE)
 3. `src/shared/models.json` — TS source (DELETE or auto-generate from #1)
 4. `src/shared/ModelRegistry.ts` — TS source (DELETE or auto-generate from #1)
 5. `src/system/shared/ModelRegistry.ts` — TS variant in some worktrees (DELETE)
-6. `src/shared/generated/inference/ModelRegistry.ts` — generated (regen from #1 only)
+6. `protocol/typescript/inference/ModelRegistry.ts` — generated (regen from #1 only)
 
 The .d.ts files at `src/dist/shared/generated/cognition/ResolvedModel.d.ts`
 and `src/dist/system/user/server/modules/PersonaResponseGenerator.d.ts`
@@ -331,7 +331,7 @@ from the crate, never hand-edited.
 
 Lane A merge gate (hard):
 
-- `src/workers/continuum-core/config/models.toml` is DELETED. Model catalog
+- `core/continuum-core/config/models.toml` is DELETED. Model catalog
   rows live in Rust code under `model_registry/`, not in a config file.
   Model definitions are CODE (a curated catalog the engineer commits to),
   not CONFIG (something an operator edits at runtime).
@@ -355,7 +355,7 @@ Lane A merge gate (hard):
 
 Test for "Lane A is done":
 
-- Grep proves only `src/workers/continuum-core/src/model_registry/` defines
+- Grep proves only `core/continuum-core/src/model_registry/` defines
   model rows in source. No TOML/JSON/YAML/.ts file declares a model.
 - 20 personas, vision call: every one of them gets either a typed response
   or `Unavailable(specific reason)` in the UI — none silently produce zero
@@ -387,7 +387,7 @@ model-ready or failing loud.
 - `setup.sh`, install scripts, and docs install paths
 - `docker-compose*.yml`
 - Docker image build/push scripts
-- `src/workers/continuum-core/src/model_registry/artifacts.rs`
+- `core/continuum-core/src/model_registry/artifacts.rs`
 
 **PR sequence**:
 
@@ -432,10 +432,10 @@ behavior hard to reproduce.
 
 **Owned files/modules**:
 
-- `src/workers/continuum-core/src/persona/trace.rs`
-- `src/workers/continuum-core/src/persona/recorder.rs`
-- `src/workers/continuum-core/src/rag/`
-- `src/workers/continuum-core/src/inference/`
+- `core/continuum-core/src/persona/trace.rs`
+- `core/continuum-core/src/persona/recorder.rs`
+- `core/continuum-core/src/rag/`
+- `core/continuum-core/src/inference/`
 - event bus/logging modules under `continuum-core`
 
 **PR sequence**:
@@ -487,9 +487,9 @@ immutable input, lazy derived outputs, coalesced work, and independent nodes.
 
 **Owned files/modules**:
 
-- `src/workers/continuum-core/src/persona/`
-- `src/workers/continuum-core/src/cognition/`
-- `src/workers/continuum-core/src/rag/`
+- `core/continuum-core/src/persona/`
+- `core/continuum-core/src/cognition/`
+- `core/continuum-core/src/rag/`
 - TS shrink targets under `src/system/user/server/modules/PersonaInbox.ts`,
   `ChatRAGBuilder.ts`, `PersonaResponseGenerator.ts`, and related deciders
 
@@ -539,11 +539,11 @@ all resource types under one policy.
 
 **Owned files/modules**:
 
-- `src/workers/continuum-core/src/gpu/`
-- `src/workers/continuum-core/src/inference/`
-- `src/workers/continuum-core/src/memory/`
-- `src/workers/continuum-core/src/live/`
-- `src/workers/llama/src/mtmd.rs`
+- `core/continuum-core/src/gpu/`
+- `core/continuum-core/src/inference/`
+- `core/continuum-core/src/memory/`
+- `core/continuum-core/src/live/`
+- `core/llama/src/mtmd.rs`
 
 **PR sequence**:
 
@@ -746,7 +746,7 @@ Implementation status:
 - Existing `ai/key/save`, `ai/key/remove`, and `ai/key/test` shared types
   inherit the base. Runtime sync behavior is intentionally not claimed until the
   routed reconciliation path exists.
-- `ai/key/status` is generated from `src/generator/specs/ai-key-status.json`
+- `ai/key/status` is generated from `tools/generator/specs/ai-key-status.json`
   and returns only redacted provider/key/source/configured/fingerprint metadata.
 - `grid/send` is the explicit routed command envelope; `GridInterceptor` is the
   transparent `Commands.execute()` remote path; `grid/route` is the dry-run
@@ -787,10 +787,10 @@ Rules:
 
 Rust targets:
 
-- `src/workers/continuum-core/src/inference/`
-- `src/workers/llama/src/mtmd.rs`
-- `src/workers/continuum-core/src/gpu/`
-- `src/workers/continuum-core/src/live/audio/`
+- `core/continuum-core/src/inference/`
+- `core/llama/src/mtmd.rs`
+- `core/continuum-core/src/gpu/`
+- `core/continuum-core/src/live/audio/`
 
 Do not fix these in TypeScript. TS may display state and call commands; it must not own backend lifecycle.
 
@@ -1018,8 +1018,8 @@ Rules:
 Use these before Docker/browser validation:
 
 ```bash
-cargo test --manifest-path src/workers/continuum-core/Cargo.toml
-cargo test --manifest-path src/workers/llama/Cargo.toml
+cargo test --manifest-path core/continuum-core/Cargo.toml
+cargo test --manifest-path core/llama/Cargo.toml
 ```
 
 Add focused tests for:

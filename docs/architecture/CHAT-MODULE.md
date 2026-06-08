@@ -2,7 +2,7 @@
 
 > **Status**: chat/poll + chat/send shipped in PR #1489 (Rust); chat/analyze + chat/export still on TS pending follow-up migrations.
 >
-> **File**: `src/workers/continuum-core/src/modules/chat/` (mod.rs + types.rs)
+> **File**: `core/continuum-core/src/modules/chat/` (mod.rs + types.rs)
 >
 > **Canonical reference**: [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md)
 

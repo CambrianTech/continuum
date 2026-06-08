@@ -19,7 +19,7 @@ import { Logger } from '../logging/Logger';
 import {
   connectToSocketPathOrUrl,
   resolveCoreEndpointString,
-} from '../../../workers/continuum-core/bindings/modules/base';
+} from '../../../../core/continuum-core/bindings/modules/base';
 
 const log = Logger.create('RustEmbeddingClient', 'embedding');
 

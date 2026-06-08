@@ -8,7 +8,7 @@ Single error surface: `info "Docker not found — installing via get.docker.com�
 - Already uses `info` (colored, prefixed). Acceptable.
 - Action: none. Message is informational, not an error.
 
-## `src/scripts/install.sh` (canonical Dev path, 564 lines)
+## `tools/scripts/install.sh` (canonical Dev path, 564 lines)
 
 Three user-facing paths that use a not-found/ERROR string:
 
@@ -19,7 +19,7 @@ Three user-facing paths that use a not-found/ERROR string:
 3. **L543** — `Rust: $(rustc --version ... || echo 'not found')`.
    - Status line only. Harmless.
 
-## `src/scripts/lib/install-common.sh` (module library, 316 lines — 71951af7c)
+## `tools/scripts/lib/install-common.sh` (module library, 316 lines — 71951af7c)
 
 Uses a strong pattern: `warn()`, `die()`, `module_fail(name, msg)`. Every failure includes a human-readable fix string.
 

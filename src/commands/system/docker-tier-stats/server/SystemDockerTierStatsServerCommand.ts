@@ -19,7 +19,7 @@ import { createSystemDockerTierStatsResultFromParams } from '../shared/SystemDoc
 import {
   RustCoreIPCClient,
   getContinuumCoreSocketPath,
-} from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+} from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class SystemDockerTierStatsServerCommand extends CommandBase<
   SystemDockerTierStatsParams,

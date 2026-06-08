@@ -33,7 +33,7 @@ import type {
   JoinSpec,
 } from '../shared/DataStorageAdapter';
 import type { VectorSearchResult } from '../shared/VectorSearchTypes';
-import { resolveCoreEndpoint, connectToCoreEndpoint, type CoreEndpoint } from '../../../workers/continuum-core/bindings/modules/base';
+import { resolveCoreEndpoint, connectToCoreEndpoint, type CoreEndpoint } from '../../../../core/continuum-core/bindings/modules/base';
 
 // Input type for joins (allows optional properties)
 type JoinSpecInput = Partial<JoinSpec> & Pick<JoinSpec, 'collection' | 'alias' | 'localField' | 'foreignField'>;

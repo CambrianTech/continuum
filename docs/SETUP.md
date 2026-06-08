@@ -43,7 +43,7 @@ Each section: **prereqs → curl install → Docker Desktop initialization → s
 ### Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/src/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/tools/scripts/install.sh | bash
 ```
 
 Pulls images, pulls the forged Qwen3.5 model into Docker Model Runner, starts the support stack, and launches `continuum-core` natively (Metal for Candle, Bevy, vision, audio).
@@ -124,7 +124,7 @@ The installer writes **Enable GPU-backed inference** and **Enable host-side TCP 
 From WSL (Ubuntu):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/src/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/tools/scripts/install.sh | bash
 ```
 
 ### Success check
@@ -173,7 +173,7 @@ While inference runs, you should see GPU utilization spike to 70%+ and memory gr
 ### Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/src/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/tools/scripts/install.sh | bash
 ```
 
 The installer detects CUDA capability and uses `docker-compose.gpu.yml` to wire the `continuum-core-cuda` image with `runtime: nvidia`.
@@ -208,7 +208,7 @@ The Vulkan variant uses `/dev/dri` passthrough for AMD/Intel GPUs and any Linux 
 Every PR build publishes images tagged `:pr-<NUMBER>` to ghcr alongside `:<sha>`. To install a PR's exact images instead of `:latest`:
 
 ```bash
-CONTINUUM_IMAGE_TAG=pr-891 curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/src/scripts/install.sh | bash
+CONTINUUM_IMAGE_TAG=pr-891 curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/tools/scripts/install.sh | bash
 ```
 
 The tag flows through `docker-compose*.yml` for all 7 image variants. Use this to validate a PR end-to-end on real hardware before merge.

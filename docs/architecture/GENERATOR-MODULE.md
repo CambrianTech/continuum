@@ -2,7 +2,7 @@
 
 > **Status**: v1 shipped in PR #1487 (recursive bootstrap); v2 enriched scaffold in PR #1494 (matches Module Design Template).
 >
-> **File**: `src/workers/continuum-core/src/modules/generator/` (mod.rs + types.rs + templates.rs)
+> **File**: `core/continuum-core/src/modules/generator/` (mod.rs + types.rs + templates.rs)
 >
 > **Canonical reference**: [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md)
 

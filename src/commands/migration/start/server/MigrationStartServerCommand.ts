@@ -10,7 +10,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { MigrationStartParams, MigrationStartResult } from '../shared/MigrationStartTypes';
 import { createMigrationStartResultFromParams } from '../shared/MigrationStartTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class MigrationStartServerCommand extends CommandBase<MigrationStartParams, MigrationStartResult> {
 

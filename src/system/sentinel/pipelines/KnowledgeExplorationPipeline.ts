@@ -24,7 +24,7 @@
  * are the two outliers proving the source-agnostic interface.
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type {
   DataSourceConfig,
   GitRepoSourceConfig,

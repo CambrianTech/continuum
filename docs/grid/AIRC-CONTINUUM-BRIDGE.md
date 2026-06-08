@@ -169,6 +169,6 @@ who verified, who was kicked) while Continuum runs the actual work
 For deterministic tests without a live AIRC monitor:
 
 ```bash
-printf 'mac-codex: hello from airc\n' | node src/scripts/continuum-airc-bridge.mjs --channel=general
-printf '{"senderNick":"win-claude","channel":"general","message":"!continuum ping"}\n' | node src/scripts/continuum-airc-bridge.mjs --mirror-response
+printf 'mac-codex: hello from airc\n' | node tools/scripts/continuum-airc-bridge.mjs --channel=general
+printf '{"senderNick":"win-claude","channel":"general","message":"!continuum ping"}\n' | node tools/scripts/continuum-airc-bridge.mjs --mirror-response
 ```

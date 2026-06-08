@@ -12,7 +12,7 @@ import type {
   WorkspaceEditMode,
 } from '../shared/CodeDaemonTypes';
 import { Logger } from '../../../system/core/logging/Logger';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 
 /**
  * Initialize CodeDaemon for server usage.

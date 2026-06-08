@@ -15,7 +15,7 @@ import { UserProfileEntity, type UserSpecialityType } from '../system/data/entit
 import type { UUID } from '../system/core/types/CrossPlatformUUID';
 import { PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel } from '../scripts/seed/personas';
 import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
-import { CONTENT_TYPE_CONFIGS } from '../shared/generated/ContentTypes';
+import { CONTENT_TYPE_CONFIGS } from '@shared/generated/ContentTypes';
 import { DataList } from '../commands/data/list/shared/DataListTypes';
 import { DataCreate } from '../commands/data/create/shared/DataCreateTypes';
 import { DataUpdate } from '../commands/data/update/shared/DataUpdateTypes';

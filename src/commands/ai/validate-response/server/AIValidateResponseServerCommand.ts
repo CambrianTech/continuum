@@ -17,7 +17,7 @@ import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBa
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIValidateResponseParams, AIValidateResponseResult } from '../shared/AIValidateResponseTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class AIValidateResponseServerCommand extends CommandBase<AIValidateResponseParams, AIValidateResponseResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {

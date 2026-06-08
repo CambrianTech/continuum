@@ -2,7 +2,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { VoiceSnapshotParticipantParams, VoiceSnapshotParticipantResult } from '../shared/VoiceSnapshotParticipantTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class VoiceSnapshotParticipantServerCommand extends CommandBase<VoiceSnapshotParticipantParams, VoiceSnapshotParticipantResult> {
   private rustClient: RustCoreIPCClient;

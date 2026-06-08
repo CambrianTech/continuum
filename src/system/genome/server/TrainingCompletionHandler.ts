@@ -15,7 +15,7 @@
  */
 
 import { Events } from '../../core/shared/Events';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 import { AdapterPackage } from './AdapterPackage';
 import type { QuantizationInfo, CompactionManifest } from '../shared/AdapterPackageTypes';
 import { GenomeLayerEntity } from '../entities/GenomeLayerEntity';

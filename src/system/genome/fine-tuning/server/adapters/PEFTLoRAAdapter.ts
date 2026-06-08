@@ -25,7 +25,7 @@ import type {
 } from '../../shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { LOCAL_MODELS } from '@system/shared/Constants';
-import { RustCoreIPCClient } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../../core/continuum-core/bindings/RustCoreIPC';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';

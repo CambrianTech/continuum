@@ -13,7 +13,7 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
 import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
-import { resolveCoreEndpointString } from '../../../workers/continuum-core/bindings/modules/base';
+import { resolveCoreEndpointString } from '../../../../core/continuum-core/bindings/modules/base';
 
 export class ConsoleDaemonServer extends ConsoleDaemon {
   // LoggerModule is now part of continuum-core (Phase 4a).

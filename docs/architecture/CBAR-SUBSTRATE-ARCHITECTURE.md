@@ -59,10 +59,10 @@ the substrate do queueing, lifecycle, logging, and scheduling.
 ## Continuum Translation
 
 Continuum already has the first half of this pattern in
-`src/workers/continuum-core/src/runtime/`. The shipped substrate is:
+`core/continuum-core/src/runtime/`. The shipped substrate is:
 
 ```rust
-// src/workers/continuum-core/src/runtime/service_module.rs
+// core/continuum-core/src/runtime/service_module.rs
 pub trait ServiceModule: Send + Sync + Any {
     fn config(&self) -> ModuleConfig;
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String>;
@@ -190,7 +190,7 @@ just scaffold-module engram-analyzer --lane Background \
     --subscribes "memory.consolidation.window"
 ```
 
-The generator emits `src/workers/continuum-core/src/modules/engram_analyzer.rs`:
+The generator emits `core/continuum-core/src/modules/engram_analyzer.rs`:
 
 ```rust
 //! Engram analyzer — consolidates recent memory writes into compressed
@@ -501,7 +501,7 @@ The genuinely missing pieces, each cross-linked to its lane in
 | 5 | Attach VDD metrics to existing lanes/classes: queue depth, queue time, execution time, coalesced count, deferred count, GPU residency, CPU/GPU utilization, and first-response/all-response latency, fed into the Standard VDD Record schema in this doc. The triplet's derive macro should be what emits these — the module author should not call `vdd_*!` macros by hand for the inherited fields. | Lane C (substrate); Lane D (frame integration)         |
 | 6 | Qwen GPU residency gate for local generation: selected Qwen model, backend, GPU layer count, unsupported layers, residency estimate, and platform backend evidence must be available before the turn runs. Required happy paths: Mac → Metal, NVIDIA → CUDA, AMD/Intel → Vulkan. CPU graph splits or unsupported Qwen layers are blockers unless the turn is explicitly degraded with a visible reason. | Lane A (registry & admission); Lane E (admission gate) |
 | 7 | Sequential consumer migration: persona chat → embeddings → memory consolidation → media/WebRTC → render/avatar output. Each consumer move is its own PR and must show VDD evidence that the post-move path is at least as fast as the pre-move path and emits the Standard VDD Record.                                                                                                                  | Lane D (sequencing); Lanes B/C/E (per-consumer support)|
-| 8 | Pre-broker concurrency-hack deletion. Each module today that picks a worker count from `~/.continuum/config.env` or from system memory at startup (current concrete example: `src/workers/inference-grpc/src/main.rs::get_num_workers()`) is a violation of the "we do not hard code" rule and must be deleted in favor of `PressureBroker` leases.                                                       | Lane E                                                 |
+| 8 | Pre-broker concurrency-hack deletion. Each module today that picks a worker count from `~/.continuum/config.env` or from system memory at startup (current concrete example: `core/inference-grpc/src/main.rs::get_num_workers()`) is a violation of the "we do not hard code" rule and must be deleted in favor of `PressureBroker` leases.                                                       | Lane E                                                 |
 
 ## Acceptance Criteria For Substrate-Done
 
@@ -607,8 +607,8 @@ an engine: predictable, concurrent, observable, fast, and small to extend.
   structure (A–H) there. If the two ever disagree on the substrate contract
   (concurrency, scheduling, memory, pressure, telemetry, artifact handles),
   this document wins per the precedence rule in ALPHA-GAP.
-- `src/workers/continuum-core/src/runtime/` — shipped substrate primitives
+- `core/continuum-core/src/runtime/` — shipped substrate primitives
   this document refines and extends.
-- `src/workers/continuum-core/src/paging/broker.rs` — `PressureBroker`
+- `core/continuum-core/src/paging/broker.rs` — `PressureBroker`
   shipping point. The example in §"For Free Triplet" shows how a new module
   inherits pressure-response from the broker without owning a private hook.

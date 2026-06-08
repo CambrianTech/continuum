@@ -82,7 +82,7 @@ async function getRustClient(): Promise<RustIPCClient> {
 		// Dynamic import so this module stays loadable in browser bundles
 		// (where the import would fail). Browser consumers should only
 		// import types from here, never call the imperative functions.
-		const mod = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+		const mod = await import('../../../../core/continuum-core/bindings/RustCoreIPC');
 		const client = await mod.RustCoreIPCClient.getInstanceAsync();
 		return client as unknown as RustIPCClient;
 	})();

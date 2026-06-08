@@ -22,7 +22,7 @@ import { LoRAAdapter, type LoRAAdapterState } from './LoRAAdapter';
 import { generateUUID } from '../../../core/types/CrossPlatformUUID';
 import type { AIProviderAdapter } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import type { RustCognitionBridge } from './RustCognitionBridge';
-import type { GenomeAdapterInfo } from '../../../../shared/generated';
+import type { GenomeAdapterInfo } from '@shared/generated';
 import { AdapterStore } from '../../../genome/server/AdapterStore';
 
 /**

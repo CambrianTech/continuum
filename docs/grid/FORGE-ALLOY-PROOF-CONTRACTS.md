@@ -43,7 +43,7 @@ This is a generalization of patterns already in the repo:
 - [Lane F deletion + forbidden-strings ratchets](../architecture/TS-PERSONA-COGNITION-RATCHET.md)
   — monotonic mechanical guarantees, no subjective judgment. Contracts
   inherit this discipline.
-- [ts-rs typed wire types](../../src/workers/continuum-core/bindings/)
+- [ts-rs typed wire types](../../sdk/typescript/)
   — contract IS the type. Runtime cannot lie because the type system
   enforces the schema across Rust↔TS.
 - [CognitionTrace SEAM recorder](../architecture/PERSONA-COGNITION-RUST-MIGRATION.md)

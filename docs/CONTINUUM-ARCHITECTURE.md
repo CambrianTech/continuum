@@ -326,7 +326,7 @@ AR/VR Headset
 
 ### 1. RAG Engine
 
-**Status @ 2026-05-16:** shipped in `src/workers/continuum-core/src/rag/engine.rs`. The shipped `RagEngine` is leaner than the sketch below — `sources: Vec<Arc<dyn RagSource>>, default_budget: usize` — and no longer carries `EmbeddingBatcher` / `BudgetManager` as named substructs. Embedding batching and budget allocation are handled in the substrate's shared compute and broker, not as RAG-engine-private members. The performance target in the table near the top of this doc (<500ms RAG composition) is the surviving requirement.
+**Status @ 2026-05-16:** shipped in `core/continuum-core/src/rag/engine.rs`. The shipped `RagEngine` is leaner than the sketch below — `sources: Vec<Arc<dyn RagSource>>, default_budget: usize` — and no longer carries `EmbeddingBatcher` / `BudgetManager` as named substructs. Embedding batching and budget allocation are handled in the substrate's shared compute and broker, not as RAG-engine-private members. The performance target in the table near the top of this doc (<500ms RAG composition) is the surviving requirement.
 
 **Original state (TypeScript — 15-26 seconds):**
 ```typescript
@@ -375,7 +375,7 @@ impl RagEngine {
 
 ### 2. Persona Engine
 
-**Status @ 2026-05-16:** the autonomous persona loop is being migrated into Rust as the 8-PR cognition oxidization stack (`should_respond`, `rate_proposals`, `generate_recipe`, `vision-describe` — see ALPHA-GAP for PR numbers). The `PersonaReputation` / `TrustLevel` shape below remains aspirational; it is not shipped yet and is not on the alpha critical path. The shipped persona surface lives under `src/workers/continuum-core/src/persona/` and `src/workers/continuum-core/src/cognition/`. Lane D (CBAR persona runtime frame) is the next big move — it adds `RuntimeFrame` / `CognitionTurnFrame` so all personas handling one room event share one frame instead of rebuilding RAG/model/prompt context per persona per event.
+**Status @ 2026-05-16:** the autonomous persona loop is being migrated into Rust as the 8-PR cognition oxidization stack (`should_respond`, `rate_proposals`, `generate_recipe`, `vision-describe` — see ALPHA-GAP for PR numbers). The `PersonaReputation` / `TrustLevel` shape below remains aspirational; it is not shipped yet and is not on the alpha critical path. The shipped persona surface lives under `core/continuum-core/src/persona/` and `core/continuum-core/src/cognition/`. Lane D (CBAR persona runtime frame) is the next big move — it adds `RuntimeFrame` / `CognitionTurnFrame` so all personas handling one room event share one frame instead of rebuilding RAG/model/prompt context per persona per event.
 
 **Original state (TypeScript):**
 - `PersonaUser` class with autonomous loop
@@ -447,7 +447,7 @@ impl PersonaEngine {
 
 **Status @ 2026-05-16:** the live audio stack listed below is shipped. TTS-routing-from-TypeScript is partially done; speaker diarization, adaptive jitter buffers, and spatial audio remain post-alpha. Voice engine work is not on the alpha critical path until persona chat + the substrate contract land.
 
-**Shipped today (`src/workers/continuum-core/src/live/`):**
+**Shipped today (`core/continuum-core/src/live/`):**
 - `call_server.rs` — audio mixing, WebSocket handling
 - `mixer.rs` — mix-minus audio routing
 - `stt/` — Whisper transcription
@@ -462,7 +462,7 @@ impl PersonaEngine {
 
 ### 4. Memory Engine
 
-**Status @ 2026-05-16:** memory consolidation (`Hippocampus`) and persona timeline tracking are partially migrated. The shipped surface lives under `src/workers/continuum-core/src/persona/genome_paging.rs` and related modules. The 2–3s semantic-search latency cited in the original draft has been reduced significantly by SQLite-first config (#1271) and shipped embedding paths; specific tokens/sec and ms numbers should be read from VDD reports, not from this doc.
+**Status @ 2026-05-16:** memory consolidation (`Hippocampus`) and persona timeline tracking are partially migrated. The shipped surface lives under `core/continuum-core/src/persona/genome_paging.rs` and related modules. The 2–3s semantic-search latency cited in the original draft has been reduced significantly by SQLite-first config (#1271) and shipped embedding paths; specific tokens/sec and ms numbers should be read from VDD reports, not from this doc.
 
 **Original state (TypeScript):**
 - `Hippocampus` class for consolidation
@@ -500,7 +500,7 @@ impl MemoryEngine {
 
 ### 5. Genome Engine
 
-**Status @ 2026-05-16:** the LoRA adapter loading / paging surface is partially shipped under `src/workers/continuum-core/src/persona/genome_paging.rs` plus the `adapter_registry` module in `inference-grpc`. The "skill marketplace" component (`SkillMarketplace`) is **post-alpha** — not on the alpha critical path and not currently being implemented. Treat the marketplace methods in the sketch below as aspirational.
+**Status @ 2026-05-16:** the LoRA adapter loading / paging surface is partially shipped under `core/continuum-core/src/persona/genome_paging.rs` plus the `adapter_registry` module in `inference-grpc`. The "skill marketplace" component (`SkillMarketplace`) is **post-alpha** — not on the alpha critical path and not currently being implemented. Treat the marketplace methods in the sketch below as aspirational.
 
 **Manages LoRA adapter loading/paging with on-demand acquisition:**
 

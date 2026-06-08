@@ -2,11 +2,11 @@
 
 **Stop. Read this doc end-to-end before editing any of:**
 
-- `src/workers/continuum-core/src/persona/service_loop.rs`
-- `src/workers/continuum-core/src/persona/unified.rs` (the brain — `PersonaCognition`)
-- `src/workers/continuum-core/src/persona/supervisor.rs` (`PersonaContext`)
-- `src/workers/continuum-core/src/persona/rag_inspect.rs` (introspection — **not the hot path**)
-- anything in `src/workers/continuum-core/src/cognition/`
+- `core/continuum-core/src/persona/service_loop.rs`
+- `core/continuum-core/src/persona/unified.rs` (the brain — `PersonaCognition`)
+- `core/continuum-core/src/persona/supervisor.rs` (`PersonaContext`)
+- `core/continuum-core/src/persona/rag_inspect.rs` (introspection — **not the hot path**)
+- anything in `core/continuum-core/src/cognition/`
 
 **Why this doc exists:** because context windows compress, future-me forgets what's been built, and the wrong reflex is to wire a `will_respond + response_text` chatbot into the bypass and call it cognition. That is not what this project is.
 
@@ -31,7 +31,7 @@ Continuum personas are **citizens**, not query handlers. The README has the full
 
 ## 2. The Brain Pipeline — the verbs that exist
 
-This is the cognition cycle PER PERSONA, PER TURN. **All verbs already exist** in `src/workers/continuum-core/src/cognition/` and `src/workers/continuum-core/src/persona/`. Do not re-implement. Do not parallel. Use them.
+This is the cognition cycle PER PERSONA, PER TURN. **All verbs already exist** in `core/continuum-core/src/cognition/` and `core/continuum-core/src/persona/`. Do not re-implement. Do not parallel. Use them.
 
 | # | Verb | Location | Purpose |
 |---|------|----------|---------|
@@ -111,8 +111,8 @@ This is the cognition cycle PER PERSONA, PER TURN. **All verbs already exist** i
 7. `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` — the RTOS contract every Rust module inherits.
 8. `docs/architecture/AI-COMMAND-NAMESPACE.md` — `ai/*` namespace, tool calling protocol.
 9. `docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md` — captures, replay, audit.
-10. `src/workers/continuum-core/src/persona/unified.rs` (the brain struct itself — every field is load-bearing).
-11. `src/workers/continuum-core/src/cognition/mod.rs` (the verb index).
+10. `core/continuum-core/src/persona/unified.rs` (the brain struct itself — every field is load-bearing).
+11. `core/continuum-core/src/cognition/mod.rs` (the verb index).
 
 If a session begins and the model has not read items 1, 2, and at least the verb index (item 11) before editing the brain, the model is operating from stale-memory reflex. Stop and re-read.
 

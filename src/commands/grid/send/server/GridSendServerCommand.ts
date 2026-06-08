@@ -9,7 +9,7 @@
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { CommandScope, JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GridSendParams, GridSendResult } from '../shared/GridSendTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class GridSendServerCommand extends CommandBase<GridSendParams, GridSendResult> {
 	private rustClient: RustCoreIPCClient;

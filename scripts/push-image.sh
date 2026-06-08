@@ -77,7 +77,7 @@ case "$VARIANT" in
                ;;
   livekit-bridge)
                DOCKERFILE="docker/livekit-bridge.Dockerfile"; IMAGE="continuum-livekit-bridge"
-               # WebRTC + LiveKit bridge — separate Rust binary in src/workers/.
+               # WebRTC + LiveKit bridge — separate Rust binary in core/.
                # Same workspace, different Cargo binary. Uses default features
                # (livekit-webrtc enabled) since this IS the livekit-webrtc consumer.
                GPU_FEATURES=""
@@ -125,7 +125,7 @@ if [[ ! -f "$DOCKERFILE" ]]; then
   exit 1
 fi
 
-if [[ ! -f "src/workers/vendor/llama.cpp/CMakeLists.txt" ]]; then
+if [[ ! -f "core/vendor/llama.cpp/CMakeLists.txt" ]]; then
   echo "ERROR: vendor/llama.cpp submodule not initialized." >&2
   echo "       Run: git submodule update --init --recursive" >&2
   exit 1
@@ -218,7 +218,7 @@ esac
 if [[ -n "${NATIVE_FEATURE+x}" ]]; then
   echo ""
   echo "→ Phase 0: cargo test -p llama ${NATIVE_FEATURE:+--features=$NATIVE_FEATURE}"
-  pushd "$REPO_ROOT/src/workers" >/dev/null
+  pushd "$REPO_ROOT/core" >/dev/null
   if [[ -n "$NATIVE_FEATURE" ]]; then
     cargo test -p llama --features="$NATIVE_FEATURE" --release -- --test-threads=1
   else
@@ -281,7 +281,7 @@ docker buildx build \
   --label "org.opencontainers.image.revision=$BUILD_SHA" \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
   --load \
-  src/workers
+  core
 
 echo ""
 echo "→ Phase 2: slice tests"
@@ -306,7 +306,7 @@ docker buildx build \
   --cache-from "type=registry,ref=$REGISTRY/$IMAGE:buildcache" \
   --cache-to   "type=registry,ref=$REGISTRY/$IMAGE:buildcache,mode=max" \
   --push \
-  src/workers
+  core
 
 echo ""
 echo "✓ Pushed: $TAG_SHA"

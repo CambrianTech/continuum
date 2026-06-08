@@ -20,7 +20,7 @@ import {
 import '../../shared/EmptyStateWidget';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
-import { CONTENT_TYPE_CONFIGS, type ContentType } from '../../../shared/generated/ContentTypes';
+import { CONTENT_TYPE_CONFIGS, type ContentType } from '@shared/generated/ContentTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 // No DEFAULT_ROOMS import. Rooms have system-generated UUIDs (uuidv4 at seed
 // time, globally unique — required for grid federation). The active-room

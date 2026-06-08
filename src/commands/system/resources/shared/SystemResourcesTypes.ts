@@ -15,7 +15,7 @@ import type {
 	MemoryStatsInfo,
 	ProcessStatsInfo,
 	TopProcessInfo,
-} from '../../../../workers/continuum-core/bindings/modules/system_resources';
+} from '../../../../../core/continuum-core/bindings/modules/system_resources';
 
 // Re-export for consumers
 export type { CpuStatsInfo, MemoryStatsInfo, ProcessStatsInfo, TopProcessInfo };

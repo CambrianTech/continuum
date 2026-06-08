@@ -5,7 +5,7 @@
  * prompt construction, multimodal `AIProviderDaemon.generateText`
  * dispatch, and response parsing. Per Joel 2026-05-15 ("if not UI/UX
  * it is rust") and the #1248 oxidizer umbrella, all four steps moved
- * to Rust at `workers/continuum-core/src/cognition/vision_describe.rs`
+ * to Rust at `../core/continuum-core/src/cognition/vision_describe.rs`
  * and are exposed via the `cognition/vision-describe` IPC.
  *
  * This file now exists ONLY as a thin TS-side shape preserver so

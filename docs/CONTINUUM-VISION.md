@@ -18,11 +18,11 @@ Where the canonical type lives in Rust today:
 
 | Concept in this doc                       | Canonical Rust location                                                  |
 |-------------------------------------------|--------------------------------------------------------------------------|
-| Persona genome / LoRA adapters            | `src/workers/continuum-core/src/persona/genome_paging.rs`                |
-| Grid node / inference capability          | `src/workers/continuum-core/src/inference_capability/` (GRID-INFERENCE-ROUTING) |
-| Continuum runtime / module registry       | `src/workers/continuum-core/src/runtime/`                                |
-| Resource class / target silicon           | `src/workers/continuum-core/src/cognition/adaptive_throughput.rs`        |
-| Pressure broker                           | `src/workers/continuum-core/src/paging/broker.rs`                        |
+| Persona genome / LoRA adapters            | `core/continuum-core/src/persona/genome_paging.rs`                |
+| Grid node / inference capability          | `core/continuum-core/src/inference_capability/` (GRID-INFERENCE-ROUTING) |
+| Continuum runtime / module registry       | `core/continuum-core/src/runtime/`                                |
+| Resource class / target silicon           | `core/continuum-core/src/cognition/adaptive_throughput.rs`        |
+| Pressure broker                           | `core/continuum-core/src/paging/broker.rs`                        |
 
 The vision-side TypeScript blocks below are kept because they read cleanly. The native-truth side is and stays Rust — per the wider rule: native layer owns the data, performance-critical logic, security-sensitive operations, and the canonical type definitions; higher-level SDKs (TS, ObjC, Kotlin, Python) own ergonomic API for their language and platform integration. They do not carry their own version of the truth.
 
@@ -69,7 +69,7 @@ Personas assemble their capabilities from:
 3. **Novel traits** - Brand new capabilities trained from scratch
 4. **Inherited combinations** - Mixing traits from multiple lineages
 
-> *Illustrative sketch.* Canonical genome / LoRA paging types live in `src/workers/continuum-core/src/persona/genome_paging.rs`.
+> *Illustrative sketch.* Canonical genome / LoRA paging types live in `core/continuum-core/src/persona/genome_paging.rs`.
 
 ```typescript
 // A persona's genome - assembled from the community pool + custom training
@@ -235,7 +235,7 @@ The Grid is the distributed foundation. A P2P mesh network where:
 - **Compute distribution**: Heavy tasks can be shared across nodes
 - **Natural redundancy**: No single point of failure
 
-> *Illustrative sketch.* Canonical Grid node / inference-capability types live in `src/workers/continuum-core/src/inference_capability/` (announcer + probe + registry under GRID-INFERENCE-ROUTING, PR-1 in flight on `feat/grid-inference-routing-pr2-announcer`).
+> *Illustrative sketch.* Canonical Grid node / inference-capability types live in `core/continuum-core/src/inference_capability/` (announcer + probe + registry under GRID-INFERENCE-ROUTING, PR-1 in flight on `feat/grid-inference-routing-pr2-announcer`).
 
 ```typescript
 // A Grid node - the basic building block

@@ -7,7 +7,7 @@
 set -e
 
 # Log primitives (info/ok/warn/fail/die) come from
-# src/scripts/lib/install-common.sh after clone. Until the repo is
+# tools/scripts/lib/install-common.sh after clone. Until the repo is
 # cloned, use these minimal pre-clone versions; they'll be overridden
 # when we source the canonical library below.
 info()  { echo -e "\033[1;36m→\033[0m $*"; }
@@ -689,7 +689,7 @@ PHASE="clone / update repo"
 # default (origin/HEAD). Used by carl-install-smoke CI to validate PR
 # src/ changes — without it, install.sh always cloned origin/main and
 # PR src/ edits never got tested by CI. 2026-05-03: this gap meant
-# every fix to src/jtag, src/scripts/install.sh, etc landed via PR
+# every fix to src/jtag, tools/scripts/install.sh, etc landed via PR
 # but couldn't be validated by carl-install-smoke until merged. Joel:
 # "months of trying to get continuum working out-of-box for Carl."
 # Default ref is canary, NOT origin/HEAD (= main). main is intentionally
@@ -717,15 +717,15 @@ fi
 # ── 4. Shared modules (same code that Dev runs via npm start) ────
 PHASE="shared modules"
 # docs/infrastructure/INSTALL-ARCHITECTURE.md §Module-shape: the canonical
-# module library at src/scripts/lib/install-common.sh defines
+# module library at tools/scripts/lib/install-common.sh defines
 # mod_submodules_init + mod_docker_wsl_integration + log/sudo primitives.
 # Carl and Dev call the SAME functions so there's no drift.
-if [ ! -f "src/scripts/lib/install-common.sh" ]; then
-  fail "Canonical install library missing at src/scripts/lib/install-common.sh — incomplete clone? Try: rm -rf $INSTALL_DIR && re-run this installer."
+if [ ! -f "tools/scripts/lib/install-common.sh" ]; then
+  fail "Canonical install library missing at tools/scripts/lib/install-common.sh — incomplete clone? Try: rm -rf $INSTALL_DIR && re-run this installer."
 fi
 
-# shellcheck source=src/scripts/lib/install-common.sh
-source "src/scripts/lib/install-common.sh"
+# shellcheck source=tools/scripts/lib/install-common.sh
+source "tools/scripts/lib/install-common.sh"
 
 mod_submodules_init
 mod_docker_wsl_integration

@@ -30,7 +30,7 @@
  * protect the infrastructure. Everything else is the AI's decision.
  */
 
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export interface InferenceSlot {
   personaId: string;

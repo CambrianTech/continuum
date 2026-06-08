@@ -6,7 +6,7 @@
  * Rust handles the fast path (filtering, participant lookup).
  */
 
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 import type { UtteranceEvent } from './VoiceOrchestrator';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { UserEntity } from '../../data/entities/UserEntity';

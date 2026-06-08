@@ -15,7 +15,7 @@
  * @see TeamStudentPipeline for per-role student execution
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type { TeamTeacherPipelineConfig } from '../../genome/shared/TeamProjectTypes';
 import { teamEvent, TEAM_EVENTS } from '../../genome/shared/TeamProjectTypes';
 import { resolveTeacherLlmConfig } from '../../genome/shared/AcademyTypes';

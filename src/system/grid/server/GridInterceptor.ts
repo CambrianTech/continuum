@@ -12,7 +12,7 @@
 
 import type { GridRoutingInterceptor } from '@system/core/shared/Commands';
 import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class GridInterceptor implements GridRoutingInterceptor {
 	private rustClient: RustCoreIPCClient;

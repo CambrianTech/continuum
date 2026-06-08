@@ -24,7 +24,7 @@ Qwen3.5-Omni has native audio-token output + vision heads. The `mlx-community` p
 
 ## Architecture
 
-Slot into the existing `ModelBackend` trait at `src/workers/continuum-core/src/inference/backends/mod.rs`. One new file: `backends/mlx_adapter.rs`. Nothing else in the stack should need to know an MLX-backed persona is any different from a llama.cpp-backed one.
+Slot into the existing `ModelBackend` trait at `core/continuum-core/src/inference/backends/mod.rs`. One new file: `backends/mlx_adapter.rs`. Nothing else in the stack should need to know an MLX-backed persona is any different from a llama.cpp-backed one.
 
 ```
 inference/backends/

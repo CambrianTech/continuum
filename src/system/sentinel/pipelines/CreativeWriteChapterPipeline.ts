@@ -25,7 +25,7 @@
  * - Voice coherence is the primary constraint, not API compatibility
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 
 export interface CreativeWriteChapterConfig {
   /** Chapter number */

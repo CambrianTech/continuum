@@ -6,7 +6,7 @@
  */
 
 import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
-import type { GridNode } from '../../../../workers/continuum-core/bindings/modules/grid';
+import type { GridNode } from '../../../../../core/continuum-core/bindings/modules/grid';
 
 export interface GridNodesParams extends CommandParams {
 }

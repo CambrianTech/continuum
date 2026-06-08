@@ -18,7 +18,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIGenerateParams, AIGenerateResult } from './AIGenerateTypes';
 import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
-import type { ChatMessage } from '../../../../shared/generated/ai';
+import type { ChatMessage } from '@shared/generated/ai';
 
 /** Extended message type for preview display - includes optional timestamp from RAG context */
 interface PreviewChatMessage extends ChatMessage {

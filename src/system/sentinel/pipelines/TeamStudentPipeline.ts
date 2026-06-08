@@ -21,7 +21,7 @@
  * @see TeamProjectTypes for event taxonomy
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type { TeamStudentPipelineConfig } from '../../genome/shared/TeamProjectTypes';
 import { teamEvent, TEAM_EVENTS } from '../../genome/shared/TeamProjectTypes';
 import { ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';

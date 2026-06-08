@@ -23,7 +23,7 @@ const mockEventsGetClass = vi.fn();
 const mockEventsListClasses = vi.fn();
 const mockEventsResolveChannel = vi.fn();
 
-vi.mock('../../../workers/continuum-core/bindings/RustCoreIPC', () => {
+vi.mock('../../../../core/continuum-core/bindings/RustCoreIPC', () => {
 	const mockClient = {
 		eventsDeclareClass: mockEventsDeclareClass,
 		eventsGetClass: mockEventsGetClass,

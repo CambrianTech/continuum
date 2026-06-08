@@ -72,7 +72,7 @@ A `cargo replay <turn_id>` invocation:
 5. Compares structured fields bit-equal against the original.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/replay/mod.rs
+// PROPOSED — core/continuum-core/src/cognition/replay/mod.rs
 pub trait CognitionReplayer: Send + Sync {
     /// Replay a recorded turn deterministically. Returns the replayed
     /// record; comparison is the caller's job (the harness layer).

@@ -24,7 +24,7 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import { PromptTier } from '../shared/RAGSource';
-import type { RagSourceRequest, RagSourceResult, ConsciousnessSourceMetadata } from '../../../shared/generated/rag';
+import type { RagSourceRequest, RagSourceResult, ConsciousnessSourceMetadata } from '@shared/generated/rag';
 import type { PersonaUser } from '../../user/server/PersonaUser';
 import { Logger } from '../../core/logging/Logger';
 

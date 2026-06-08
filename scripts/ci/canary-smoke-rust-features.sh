@@ -10,7 +10,7 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-WORKERS_DIR="$ROOT_DIR/src/workers"
+WORKERS_DIR="$ROOT_DIR/core"
 RUN_CARGO_CHECK="${RUN_CARGO_CHECK:-1}"
 SMOKE_VERBOSE="${SMOKE_VERBOSE:-0}"
 

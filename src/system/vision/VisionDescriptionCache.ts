@@ -16,7 +16,7 @@
  */
 
 import { createHash } from 'crypto';
-import { RustCoreIPCClient } from '../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../core/continuum-core/bindings/RustCoreIPC';
 import type { VisionDescription } from './VisionDescriptionService';
 
 interface CachedEntry {

@@ -11,8 +11,8 @@ import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-da
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelCancelParams, SentinelCancelResult, CancelledSentinel } from '../shared/SentinelCancelTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
-import type { SentinelHandle } from '../../../../workers/continuum-core/bindings/modules/sentinel';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
+import type { SentinelHandle } from '../../../../../core/continuum-core/bindings/modules/sentinel';
 
 export class SentinelCancelServerCommand extends CommandBase<SentinelCancelParams, SentinelCancelResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {

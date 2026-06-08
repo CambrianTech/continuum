@@ -12,7 +12,7 @@
  * tracking, this is completely invisible to the memory management system.
  */
 
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import { Logger } from '@system/core/logging/Logger';
 import { Events } from '@system/core/shared/Events';
 

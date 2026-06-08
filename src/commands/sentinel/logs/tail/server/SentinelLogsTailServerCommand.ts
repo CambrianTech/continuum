@@ -9,7 +9,7 @@ import { CommandBase, type ICommandDaemon } from '../../../../../daemons/command
 import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { SentinelLogsTailParams, SentinelLogsTailResult } from '../shared/SentinelLogsTailTypes';
-import { RustCoreIPCClient } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 const DEFAULT_LINES = 20;
 

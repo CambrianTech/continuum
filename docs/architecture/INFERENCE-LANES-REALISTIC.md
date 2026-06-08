@@ -230,7 +230,7 @@ them is the new code. The minimum viable cut:
 ### Step 1 — Lane type + handle binding
 
 ```rust
-// src/workers/continuum-core/src/inference/lane.rs (new)
+// core/continuum-core/src/inference/lane.rs (new)
 pub struct Lane {
     persona: PersonaId,
     task: TaskKind,
@@ -246,7 +246,7 @@ to mint a Lane before constructing the InferenceSession.
 ### Step 2 — Coordinator scaffold
 
 ```rust
-// src/workers/continuum-core/src/inference/coordinator.rs (new)
+// core/continuum-core/src/inference/coordinator.rs (new)
 pub struct InferenceCoordinator {
     lease_registry: Arc<ThroughputLeaseRegistry>,
     footprint_registry: Arc<FootprintRegistry>,

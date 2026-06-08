@@ -87,7 +87,7 @@ Anthropic-compat HTTP at `POST /v1/messages`. Clean pass-through proxy:
 
 **The fix**: Mask calculation, not a fundamental limitation. Proper chunked prefill (256-512 token chunks) turns 60 minutes into 2-3 minutes.
 
-**Location**: `src/workers/continuum-core/` vendored Candle quantized llama implementation.
+**Location**: `core/continuum-core/` vendored Candle quantized llama implementation.
 
 ### 2. Remote Inference (MacBook → 5090)
 

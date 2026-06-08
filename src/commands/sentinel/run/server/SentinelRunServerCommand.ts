@@ -13,8 +13,8 @@ import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTA
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { PipelineSentinelParams, SentinelRunParams, SentinelRunResult } from '../shared/SentinelRunTypes';
 import type { PipelineSentinelDefinition } from '../../../../system/sentinel/SentinelDefinition';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
-import type { Pipeline, PipelineStep, SentinelRunParams as SentinelIPCParams } from '../../../../workers/continuum-core/bindings/modules/sentinel';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
+import type { Pipeline, PipelineStep, SentinelRunParams as SentinelIPCParams } from '../../../../../core/continuum-core/bindings/modules/sentinel';
 import { TemplateRegistry } from '../../../../system/sentinel/pipelines/TemplateRegistry';
 import { sentinelEventBridge } from '../../../../system/sentinel/SentinelEventBridge';
 import { announceSentinelStart } from '../../../../system/sentinel/SentinelChatBridge';

@@ -38,7 +38,7 @@ describe('CodebaseSearchSource activation', () => {
     const source = new CodebaseSearchSource();
 
     expect(source.isApplicable(contextFor('Why does ChatRAGBuilder time out on codebase-search?'))).toBe(true);
-    expect(source.isApplicable(contextFor('Fix workers/continuum-core/src/model_registry/artifacts.rs'))).toBe(true);
+    expect(source.isApplicable(contextFor('Fix ../core/continuum-core/src/model_registry/artifacts.rs'))).toBe(true);
     expect(source.isApplicable(contextFor('The docker build is failing with a Rust compile error.'))).toBe(true);
     expect(source.isApplicable(contextFor('The integration tests are failing after the Docker refactor.'))).toBe(true);
   });

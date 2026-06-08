@@ -11,7 +11,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { GenomeTrainingPipelineParams, GenomeTrainingPipelineResult } from '../shared/GenomeTrainingPipelineTypes';
 import { createGenomeTrainingPipelineResultFromParams } from '../shared/GenomeTrainingPipelineTypes';
 import { buildLoRATrainingPipeline } from '@system/sentinel/pipelines/LoRATrainingPipeline';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class GenomeTrainingPipelineServerCommand extends CommandBase<GenomeTrainingPipelineParams, GenomeTrainingPipelineResult> {
 

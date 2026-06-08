@@ -378,7 +378,7 @@ async function main() {
     console.log('Phase 10: COGNITION IPC — Rust command handlers');
     console.log('─'.repeat(60));
 
-    const cognitionRsPath = path.resolve(__dirname, '../../workers/continuum-core/src/modules/cognition.rs');
+    const cognitionRsPath = path.resolve(__dirname, '../../../core/continuum-core/src/modules/cognition.rs');
     const cognitionRsSource = fs.readFileSync(cognitionRsPath, 'utf8');
 
     const ipcCommands = [
@@ -414,7 +414,7 @@ async function main() {
     console.log('Phase 11: CHANNEL TICK — enrollment detection in tick handler');
     console.log('─'.repeat(60));
 
-    const channelRsPath = path.resolve(__dirname, '../../workers/continuum-core/src/modules/channel.rs');
+    const channelRsPath = path.resolve(__dirname, '../../../core/continuum-core/src/modules/channel.rs');
     const channelRsSource = fs.readFileSync(channelRsPath, 'utf8');
 
     const hasEnrollmentDetection = channelRsSource.includes('detect_enrollment_opportunities');
@@ -491,9 +491,9 @@ async function main() {
     // 5. Sentinel completes → genome reload → classifier sync
     // 6. Quality scoring enriches training data → smarter micro-tuning
 
-    const domainClassifierPath = path.resolve(__dirname, '../../workers/continuum-core/src/persona/domain_classifier.rs');
-    const genomePagingPath = path.resolve(__dirname, '../../workers/continuum-core/src/persona/genome_paging.rs');
-    const selfTaskGenPath = path.resolve(__dirname, '../../workers/continuum-core/src/persona/self_task_generator.rs');
+    const domainClassifierPath = path.resolve(__dirname, '../../../core/continuum-core/src/persona/domain_classifier.rs');
+    const genomePagingPath = path.resolve(__dirname, '../../../core/continuum-core/src/persona/genome_paging.rs');
+    const selfTaskGenPath = path.resolve(__dirname, '../../../core/continuum-core/src/persona/self_task_generator.rs');
 
     const domainClassifierSource = fs.readFileSync(domainClassifierPath, 'utf8');
     const genomePagingSource = fs.readFileSync(genomePagingPath, 'utf8');

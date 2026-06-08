@@ -20,7 +20,7 @@
  * buildExamRetryLoop() to eliminate duplication.
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type { RecipeTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
 import { academyEvent, ACADEMY_EVENTS, resolveTeacherLlmConfig } from '../../genome/shared/AcademyTypes';
 import type { RecipeDefinition } from '../../recipes/shared/RecipeTypes';

@@ -15,8 +15,8 @@
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import type { TrainingBuffer } from './TrainingBuffer';
-import type { CoverageReport } from '../../../../shared/generated/persona/CoverageReport';
-import type { DomainActivity } from '../../../../shared/generated/persona/DomainActivity';
+import type { CoverageReport } from '@shared/generated/persona/CoverageReport';
+import type { DomainActivity } from '@shared/generated/persona/DomainActivity';
 import { GenomeLayerEntity } from '../../../genome/entities/GenomeLayerEntity';
 import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 

@@ -10,7 +10,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GpuStatsParams, GpuStatsResult } from '../shared/GpuStatsTypes';
 import { createGpuStatsResultFromParams } from '../shared/GpuStatsTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class GpuStatsServerCommand extends CommandBase<GpuStatsParams, GpuStatsResult> {
   private rustClient: RustCoreIPCClient;

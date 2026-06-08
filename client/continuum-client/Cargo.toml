@@ -1,0 +1,30 @@
+[package]
+name = "continuum-client"
+version = "0.1.0"
+edition = "2021"
+description = "Shared client library for connecting to a continuum substrate. Consumed by the CLI directly and by per-language SDKs (Flutter, Swift, Kotlin) via FFI."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+futures = "0.3"
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+# Shared substrate wire types — keeps client envelopes byte-stable with
+# the server's command_handler. Path-dep within the workspace.
+continuum-airc-protocol = { path = "../../core/continuum-airc-protocol" }
+
+# airc transport. `airc-lib` is the high-level handle (Airc::request /
+# await_reply / subscribe). `airc-core` ships the typed primitives
+# (Body, MentionTarget, PeerId, Headers) the request signature needs.
+airc-lib = { workspace = true }
+airc-core = { workspace = true }
+
+[features]
+default = []
+# Mock transport for downstream unit tests of consumers (CLI, SDK FFI shims).
+test-fixtures = []

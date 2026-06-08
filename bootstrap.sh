@@ -91,7 +91,7 @@ fi
 
 echo -e "${YELLOW}[1/3] Repository${NC}"
 
-if [ -d "$INSTALL_DIR/src/scripts/install.sh" ] || [ -f "$INSTALL_DIR/src/scripts/install.sh" ]; then
+if [ -d "$INSTALL_DIR/tools/scripts/install.sh" ] || [ -f "$INSTALL_DIR/tools/scripts/install.sh" ]; then
   echo -e "  Existing installation found — pulling latest..."
   cd "$INSTALL_DIR"
   git pull --ff-only 2>/dev/null || {

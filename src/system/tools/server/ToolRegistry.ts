@@ -21,7 +21,7 @@ import type { CommandSignature } from '../../../commands/list/shared/ListTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { MediaItem } from '../../data/entities/ChatMessageEntity';
 import type { CommandParams, CommandResult } from '../../core/types/JTAGTypes';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 import { getSearchWorkerClient } from '../../../shared/ipc/SearchWorkerClient';
 
 import { List } from '../../../commands/list/shared/ListTypes';
