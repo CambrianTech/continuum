@@ -70,7 +70,7 @@
 //! `ProbeRouterLayer` already uses. Not load-bearing today.
 
 use std::collections::HashSet;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -87,12 +87,28 @@ use super::probe_span_meta::{
     build_timing_event_from_meta, ensure_probe_meta, span_carries_probe_class,
 };
 
-/// Env var carrying the JSONL file path. Unset = sink disabled.
+/// Env var carrying a single JSONL file path. **Forensic / single-file
+/// mode.** Append-only, no rotation, grows unbounded. Kept for tests
+/// + operator opt-in when they want one continuous capture across days.
+/// Production should use [`ENV_PROBE_DIR`] instead — see
+/// `[[auto-clean-is-structural-not-operational]]`. When BOTH are set,
+/// `CONTINUUM_PROBE_DIR` wins.
 pub const ENV_PROBE_FILE: &str = "CONTINUUM_PROBE_FILE";
+
+/// Env var carrying a directory path for **rolling** JSONL probe
+/// capture. Daily rotation, last `DEFAULT_MAX_LOG_FILES` retained,
+/// disk usage bounded by design. This is the production default —
+/// per `[[auto-clean-is-structural-not-operational]]`, any substrate
+/// writer that grows incrementally MUST auto-clean structurally.
+pub const ENV_PROBE_DIR: &str = "CONTINUUM_PROBE_DIR";
 
 /// Env var carrying the comma-separated class filter. Empty/unset =
 /// all classes pass through.
 pub const ENV_PROBE_CLASSES: &str = "CONTINUUM_PROBE_CLASSES";
+
+/// Default retention for the rolling-file mode — last 7 days. Matches
+/// the fmt-layer rolling retention so operators learn one number.
+pub const DEFAULT_MAX_LOG_FILES: usize = 7;
 
 /// JSONL-on-disk consumer for `probe!` events.
 ///
@@ -101,8 +117,16 @@ pub const ENV_PROBE_CLASSES: &str = "CONTINUUM_PROBE_CLASSES";
 /// in-process, this one persists to disk. Both visit the same
 /// tracing event independently; neither blocks the other.
 pub struct JsonlProbeFileSink {
-    path: PathBuf,
-    writer: Mutex<BufWriter<File>>,
+    /// On-disk target. In single-file mode this is the file path; in
+    /// rolling mode this is the directory holding dated rotation files.
+    /// Same field surfaces both modes so logging / tests don't need to
+    /// branch on the mode.
+    target: PathBuf,
+    /// `Box<dyn Write + Send>` wraps whichever underlying writer the
+    /// constructor chose — `BufWriter<File>` for single-file mode,
+    /// `BufWriter<RollingFileAppender>` for rolling mode. Identical
+    /// hot-path code regardless of mode.
+    writer: Mutex<Box<dyn Write + Send>>,
     /// Empty set = no filter (all classes pass). Non-empty = only
     /// classes in this set get persisted.
     allowed_classes: HashSet<String>,
@@ -156,7 +180,11 @@ impl std::error::Error for ProbeFileSinkError {
 }
 
 impl JsonlProbeFileSink {
-    /// Construct a sink writing to `path`, filtered to `allowed_classes`.
+    /// Construct a sink writing to a single file at `path`.
+    /// **Single-file / forensic mode** — append-only, no rotation,
+    /// grows unbounded. Use [`new_rolling`](Self::new_rolling) for
+    /// production captures per the
+    /// `[[auto-clean-is-structural-not-operational]]` doctrine.
     ///
     /// Empty `allowed_classes` = all classes pass. File is opened in
     /// append mode (created if missing). Buffer flushes per line via
@@ -177,21 +205,64 @@ impl JsonlProbeFileSink {
                 source,
             })?;
         Ok(Self {
-            path,
-            writer: Mutex::new(BufWriter::new(file)),
+            target: path,
+            writer: Mutex::new(Box::new(BufWriter::new(file))),
             allowed_classes,
         })
     }
 
-    /// Construct from `CONTINUUM_PROBE_FILE` + `CONTINUUM_PROBE_CLASSES`
-    /// env vars.
+    /// Construct a sink writing to a **rotating** JSONL file under
+    /// `dir`. **Rolling / production mode.** Daily rotation, retains
+    /// last `max_log_files` days (default
+    /// [`DEFAULT_MAX_LOG_FILES`] when called via env). Disk usage
+    /// bounded by design.
     ///
-    /// Returns `Err(EnvVarUnset)` if `CONTINUUM_PROBE_FILE` is missing —
-    /// callers treat that as "sink intentionally disabled, install no
-    /// layer." Returns `Err(OpenFailed)` if the path is set but
-    /// unwritable (operator must fix).
+    /// Implements `[[auto-clean-is-structural-not-operational]]`:
+    /// recurring writers MUST auto-clean structurally. Same shape the
+    /// fmt-layer rolling uses (`tracing_appender::rolling::Builder`
+    /// in `routing/tracing_init.rs`).
+    ///
+    /// Files land at `<dir>/continuum-probes.YYYY-MM-DD`. The current
+    /// day's file is the one being written; older days are kept up to
+    /// `max_log_files` and then pruned automatically.
+    pub fn new_rolling<P: AsRef<Path>>(
+        dir: P,
+        allowed_classes: HashSet<String>,
+        max_log_files: usize,
+    ) -> Result<Self, ProbeFileSinkError> {
+        let dir = dir.as_ref().to_path_buf();
+        std::fs::create_dir_all(&dir).map_err(|source| ProbeFileSinkError::OpenFailed {
+            path: dir.clone(),
+            source,
+        })?;
+        let appender = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("continuum-probes")
+            .filename_suffix("jsonl")
+            .max_log_files(max_log_files)
+            .build(&dir)
+            .map_err(|e| ProbeFileSinkError::OpenFailed {
+                path: dir.clone(),
+                // tracing_appender's InitError doesn't impl io::Error;
+                // wrap its Display the same way tracing_init.rs does.
+                source: std::io::Error::other(e.to_string()),
+            })?;
+        Ok(Self {
+            target: dir,
+            writer: Mutex::new(Box::new(BufWriter::new(appender))),
+            allowed_classes,
+        })
+    }
+
+    /// Construct from env vars. Prefers `CONTINUUM_PROBE_DIR` (rolling,
+    /// the production default). Falls back to legacy `CONTINUUM_PROBE_FILE`
+    /// (single-file) with a one-line `tracing::warn!` so operators
+    /// notice the deprecation.
+    ///
+    /// Returns `Err(EnvVarUnset)` if NEITHER is set — callers treat
+    /// that as "sink intentionally disabled, install no layer."
+    /// Returns `Err(OpenFailed)` if the target is set but unwritable.
     pub fn from_env() -> Result<Self, ProbeFileSinkError> {
-        let path = std::env::var(ENV_PROBE_FILE).map_err(|_| ProbeFileSinkError::EnvVarUnset)?;
         let allowed_classes = std::env::var(ENV_PROBE_CLASSES)
             .ok()
             .map(|s| {
@@ -201,13 +272,39 @@ impl JsonlProbeFileSink {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
+        // Preferred: rolling mode via CONTINUUM_PROBE_DIR. Structural
+        // auto-clean, the doctrine the substrate ships.
+        if let Ok(dir) = std::env::var(ENV_PROBE_DIR) {
+            return Self::new_rolling(dir, allowed_classes, DEFAULT_MAX_LOG_FILES);
+        }
+        // Legacy: single-file mode via CONTINUUM_PROBE_FILE. Kept for
+        // forensic single-continuous-capture sessions, but logs a
+        // deprecation warn so operators migrate.
+        let path = std::env::var(ENV_PROBE_FILE).map_err(|_| ProbeFileSinkError::EnvVarUnset)?;
+        tracing::warn!(
+            target = "probe.file_sink",
+            "{} is deprecated for production — single-file mode does not auto-rotate. \
+             Migrate to {}=<dir> for the daily-rotation default ({} files retained). \
+             See doctrine [[auto-clean-is-structural-not-operational]].",
+            ENV_PROBE_FILE,
+            ENV_PROBE_DIR,
+            DEFAULT_MAX_LOG_FILES
+        );
         Self::new(path, allowed_classes)
     }
 
-    /// The on-disk path the sink writes to. Useful for tests + boot
-    /// logging ("probes landing at /tmp/probes.jsonl").
+    /// The on-disk target the sink writes to. In single-file mode this
+    /// is the file path; in rolling mode this is the directory holding
+    /// the dated rotation files. Useful for tests + boot logging.
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    /// Deprecated alias for [`target`](Self::target) kept for
+    /// transitional callers; new code should use `target`.
+    #[deprecated(note = "use `target()` — the field is a directory in rolling mode")]
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.target
     }
 
     /// Write one ProbeEvent as a JSONL line. Flushes immediately so
@@ -422,6 +519,7 @@ impl Visit for FileSinkVisitor {
 mod tests {
     use super::*;
     use serde_json::Value;
+    use std::fs::File;
     use std::io::Read;
     use tempfile::tempdir;
     use tracing_subscriber::prelude::*;
@@ -884,5 +982,56 @@ mod tests {
         let lines = read_jsonl(&path);
         assert_eq!(lines.len(), 1, "timing line must be filtered out");
         assert_eq!(lines[0]["class"], "persona.render.exit");
+    }
+
+    /// What this catches: rolling mode writes events into a dated file
+    /// inside the target directory, and the public surface (`target()`)
+    /// reports the directory not a file. Walks the full lifecycle in
+    /// one test per the "less tests with more coverage" doctrine —
+    /// construction, install, fire event, observe file on disk.
+    ///
+    /// Regression here = the structural auto-clean we shipped to close
+    /// the disk-bomb gap (per
+    /// `[[auto-clean-is-structural-not-operational]]`) silently falls
+    /// back to single-file unbounded growth.
+    #[test]
+    fn new_rolling_writes_to_dated_file_in_target_dir() {
+        let dir = tempdir().unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(dir.path(), HashSet::new(), 7).unwrap();
+        // target() reports the DIRECTORY in rolling mode, not a file.
+        assert_eq!(sink.target(), dir.path());
+
+        let subscriber = tracing_subscriber::registry().with(sink);
+        tracing::subscriber::with_default(subscriber, || {
+            crate::probe!(class = "rolling.test", "hello rolling");
+        });
+
+        // Find the rolled file. tracing_appender names the file
+        // `continuum-probes.YYYY-MM-DD` for daily rotation; just
+        // assert SOMETHING got written with the right prefix, since
+        // the test can't know the exact date stamp without re-deriving
+        // tracing_appender's internal naming.
+        let mut found = None;
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("continuum-probes") {
+                found = Some(entry.path());
+                break;
+            }
+        }
+        let rolled_path = found.expect("rolling sink must write a continuum-probes.* file");
+        let mut content = String::new();
+        File::open(&rolled_path)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        // The line is async via tracing_appender's queue — give it a
+        // moment if necessary. In practice the BufWriter flush per
+        // line happens synchronously here.
+        assert!(
+            content.contains("\"class\":\"rolling.test\""),
+            "expected probe class in rolled file, got: {content:?}"
+        );
     }
 }

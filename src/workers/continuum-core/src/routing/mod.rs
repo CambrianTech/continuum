@@ -78,7 +78,8 @@ pub use command_handler::{CommandRequestHandler, ParsedEnvelope, HANDLER_NAME};
 pub use command_uri::{CommandUri, NodeId, PeerRef, UriParseError};
 pub use environment::{EnvironmentId, WellKnownEnv};
 pub use probe_file_sink::{
-    JsonlProbeFileSink, ProbeFileSinkError, ENV_PROBE_CLASSES, ENV_PROBE_FILE,
+    JsonlProbeFileSink, ProbeFileSinkError, DEFAULT_MAX_LOG_FILES, ENV_PROBE_CLASSES,
+    ENV_PROBE_DIR, ENV_PROBE_FILE,
 };
 pub use probe_router::{ProbeEvent, ProbeRouterLayer, DEFAULT_CHANNEL_CAPACITY};
 pub use tracing_init::{install_probe_tracing, ProbeInstall, ProbeTracingConfig};
