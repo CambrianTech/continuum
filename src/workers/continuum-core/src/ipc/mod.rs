@@ -691,6 +691,13 @@ pub fn start_server(
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
     pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,
     boot_mode: crate::runtime::BootMode,
+    // RTOS-shaped ready signal — fires AFTER the Unix socket is bound and
+    // chmod'd (everything start-workers.sh / process supervisors care about
+    // is true after that point). Replaces the previous 100 ms blind sleep
+    // in main with a real signal. Drop the receiver on the caller side if
+    // you don't care; the send is non-fatal on receiver-gone. See
+    // docs/architecture/CONCURRENCY-STYLE-GUIDE.md § "What lives in code".
+    ipc_ready_tx: tokio::sync::oneshot::Sender<()>,
 ) -> std::io::Result<()> {
     prepare_unix_socket_path(socket_path)?;
 
@@ -1288,6 +1295,12 @@ pub fn start_server(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))?;
     }
+
+    // Socket is bound + world-rw chmod'd. Anything outside this thread that
+    // was waiting for "is the IPC up?" can advance now. Send-fail is fine —
+    // receiver may have been dropped if the caller doesn't care.
+    let _ = ipc_ready_tx.send(());
+
     let state = Arc::new(ServerState::new_with_shared_state(
         rt_handle,
         memory_manager,

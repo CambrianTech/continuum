@@ -240,10 +240,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pressure_monitor =
         continuum_core::system_resources::MemoryPressureMonitor::start(Vec::new());
 
-    // Start IPC server in background thread FIRST (creates socket immediately)
+    // Start IPC server in background thread FIRST (creates socket immediately).
+    // The thread fires `ipc_ready_tx` once the Unix socket is bound + chmod'd,
+    // so main advances on a real signal instead of a 100 ms guess. Per
+    // docs/architecture/CONCURRENCY-STYLE-GUIDE.md: signals replace races.
     let ipc_livekit_manager = livekit_manager.clone();
     let ipc_memory_manager = memory_manager.clone();
     let ipc_pressure_monitor = pressure_monitor.clone();
+    let (ipc_ready_tx, ipc_ready_rx) = tokio::sync::oneshot::channel::<()>();
     let ipc_handle = std::thread::spawn(move || {
         if let Err(e) = start_server(
             &socket_path,
@@ -252,6 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ipc_memory_manager,
             ipc_pressure_monitor,
             boot_mode,
+            ipc_ready_tx,
         ) {
             tracing::error!("❌ IPC server error: {}", e);
             // A.2: a `start_server` Err means the substrate refused
@@ -263,8 +268,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Give IPC server time to create socket (satisfies start-workers.sh check)
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Wait for the Unix socket to be bound + world-rw chmod'd. An Err here
+    // means the IPC thread dropped the sender — that path already calls
+    // libc::_exit(1) on its way down, so this Err is the race where the
+    // process is on its way out. Exit cleanly from main; the exit code is
+    // already set by the IPC thread's libc::_exit.
+    if ipc_ready_rx.await.is_err() {
+        tracing::error!("❌ IPC server failed to bind — see prior error");
+        return Ok(());
+    }
 
     // Delayed reporter registration: wait for Bevy to finish initializing,
     // then register its memory reporter. Retries every 2s for up to 30s.
