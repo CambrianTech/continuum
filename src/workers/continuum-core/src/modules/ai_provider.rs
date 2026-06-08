@@ -217,6 +217,90 @@ const OFFLINE_PROVIDER_IDS: &[&str] = &[
     "docker-model-runner",
 ];
 
+/// Pure projection of the model registry's llamacpp-local rows → a
+/// boot-status `(kind, detail)` pair. Card e9f50a36 slice A5.
+///
+/// Returns `None` for the cloud-only deploy case (no llamacpp rows
+/// declared at all). The substrate has no offline ambition; the
+/// `model:` line would only add boot noise. The `adapter:` line
+/// already surfaces the "no offline path" state when no offline
+/// providers register.
+///
+/// When rows ARE declared, classifies each as **loaded** (its
+/// `gguf_local_path` is set AND the file exists on disk) or
+/// **missing** (path absent or file not on disk). Mapping:
+///
+/// - All loaded → `Ok`, `"<N>/<N> loaded: <names>"`.
+/// - Some missing → `Degraded`, `"<loaded>/<total> loaded; missing:
+///   <id> (pull <hint>), ..."`. Detail names every missing model
+///   with its gguf_hint so the operator has the download URL
+///   inline.
+/// - All missing → `Failed`, `"<N> declared, 0 loaded — pull
+///   <hint1>, <hint2>, ..."`. Substrate refuses the no-fallback
+///   silent-skip; the operator's first-launch path is now visible.
+///
+/// Pure over a slice of `Model` so the test surface doesn't need a
+/// live registry — same shape as `render_adapter_boot_status` /
+/// `render_airc_boot_status`.
+fn render_model_boot_status(
+    models: &[crate::model_registry::types::Model],
+) -> Option<(crate::runtime::boot_status::BootStatusKind, String)> {
+    use crate::runtime::boot_status::BootStatusKind;
+    if models.is_empty() {
+        return None;
+    }
+
+    let mut loaded_ids = Vec::with_capacity(models.len());
+    let mut missing = Vec::with_capacity(models.len());
+    for m in models {
+        let on_disk = m
+            .gguf_local_path
+            .as_ref()
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        if on_disk {
+            loaded_ids.push(m.id.as_str());
+        } else {
+            // Use the hint if present; fall back to the id when the
+            // registry omits gguf_hint (operator-local model paths
+            // that won't appear on a public registry).
+            let hint = m.gguf_hint.as_deref().unwrap_or("<no hint>");
+            missing.push((m.id.as_str(), hint));
+        }
+    }
+
+    let total = models.len();
+    let loaded_count = loaded_ids.len();
+
+    let result = if missing.is_empty() {
+        (
+            BootStatusKind::Ok,
+            format!("{loaded_count}/{total} loaded: {}", loaded_ids.join(", ")),
+        )
+    } else if loaded_count == 0 {
+        let missing_detail = missing
+            .iter()
+            .map(|(id, hint)| format!("{id} ({hint})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        (
+            BootStatusKind::Failed,
+            format!("{total} declared, 0 loaded — pull: {missing_detail}"),
+        )
+    } else {
+        let missing_detail = missing
+            .iter()
+            .map(|(id, hint)| format!("{id} (pull {hint})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        (
+            BootStatusKind::Degraded,
+            format!("{loaded_count}/{total} loaded; missing: {missing_detail}"),
+        )
+    };
+    Some(result)
+}
+
 /// Pure projection of the AdapterRegistry's `available()` set → a
 /// boot-status `(kind, detail)` pair. Card e9f50a36 slice A4.
 ///
@@ -588,6 +672,31 @@ impl AIProviderModule {
                 "In-process llama.cpp adapter NOT registered — model_registry not initialized. \
                  Local chat will route to DMR or cloud only.",
             );
+        }
+
+        // Boot status (card e9f50a36 slice A5): emit a `model:` line
+        // covering every llamacpp-local row declared in the model
+        // registry — independent of which adapters successfully
+        // registered above. The adapter loop logs each skipped row
+        // via `self.log().info(...)`, but a sea of grep'able info
+        // lines is exactly the "where is the signal" friction the
+        // boot-status seam exists to flatten. ONE line, with the
+        // exact gguf_hint of every missing artifact, is what
+        // operators need.
+        //
+        // Cloud-only deploys (no llamacpp rows declared) get NO
+        // emission — `model:` isn't a load-bearing subsystem when
+        // there's nothing to download. The adapter: line already
+        // surfaces the "no offline path" state via `Degraded: cloud
+        // only ...`.
+        if let Some(reg_arc) = crate::model_registry::try_global() {
+            let rows: Vec<crate::model_registry::types::Model> = reg_arc
+                .models_for_provider(crate::inference::LLAMACPP_PROVIDER_ID)
+                .cloned()
+                .collect();
+            if let Some((kind, detail)) = render_model_boot_status(&rows) {
+                crate::runtime::boot_status::boot_status("model", kind, &detail);
+            }
         }
 
         // Docker Model Runner — preferred local provider when reachable. Routes
@@ -1316,6 +1425,177 @@ mod boot_status_tests {
             !detail.contains("cloud"),
             "local-only must not mention cloud in the detail (no \
              warning to surface): {detail:?}"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // model: boot line (card e9f50a36 slice A5)
+    // ────────────────────────────────────────────────────────────────
+
+    use crate::model_registry::types::{Arch, Model, MultiPartyChatStrategy};
+    use std::path::PathBuf;
+
+    /// Build a llamacpp-local `Model` with only the fields the
+    /// boot-status helper consults. Everything else falls through to
+    /// reasonable defaults so the test surface stays focused on the
+    /// classification logic, not on registry plumbing.
+    fn test_model(id: &str, gguf_hint: Option<&str>, gguf_local_path: Option<PathBuf>) -> Model {
+        Model {
+            id: id.to_string(),
+            name: Some(id.to_string()),
+            provider: crate::inference::LLAMACPP_PROVIDER_ID.to_string(),
+            arch: Arch::Llama,
+            context_window: 32_768,
+            max_output_tokens: 2048,
+            tokens_per_second: 40.0,
+            capabilities: Default::default(),
+            cost_input_per_1k: 0.0,
+            cost_output_per_1k: 0.0,
+            gguf_hint: gguf_hint.map(str::to_string),
+            gguf_local_path,
+            mmproj_local_path: None,
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: Vec::new(),
+        }
+    }
+
+    /// Cloud-only deploy (no llamacpp rows in the registry at all)
+    /// must NOT emit a `model:` line. The substrate has no offline
+    /// ambition; emitting `model: ✓ 0/0 loaded` would burn an
+    /// operator line on a state already captured by `adapter: ⚠
+    /// cloud only ...`.
+    #[test]
+    fn no_models_returns_none_so_boot_line_is_skipped() {
+        assert!(
+            render_model_boot_status(&[]).is_none(),
+            "empty registry must skip the model: line entirely so \
+             cloud-only deploys don't get noise"
+        );
+    }
+
+    /// All declared models present on disk → Ok with count + names
+    /// so the operator can spot wrong-model-loaded at a glance.
+    #[test]
+    fn all_loaded_reports_ok_with_count_and_names() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("qwen.gguf");
+        std::fs::write(&p, b"fake").expect("seed");
+        let models = vec![test_model("qwen3-coder", Some("hf.co/qwen"), Some(p))];
+
+        let (kind, detail) =
+            render_model_boot_status(&models).expect("non-empty registry must emit a boot line");
+        assert_eq!(kind, BootStatusKind::Ok);
+        assert!(
+            detail.contains("1/1 loaded"),
+            "detail must include loaded/total ratio: {detail:?}"
+        );
+        assert!(
+            detail.contains("qwen3-coder"),
+            "detail must name loaded models: {detail:?}"
+        );
+    }
+
+    /// Mixed state: some loaded, some missing → Degraded. The
+    /// detail names EVERY missing model with its gguf_hint so the
+    /// operator's download path is inline — no need to grep
+    /// `registry.toml` for the URL.
+    #[test]
+    fn partial_loaded_reports_degraded_with_missing_hints_inline() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("qwen.gguf");
+        std::fs::write(&p, b"fake").expect("seed");
+        let models = vec![
+            test_model("qwen3-coder", Some("hf.co/qwen"), Some(p)),
+            // No gguf_local_path → counted missing
+            test_model("vision-mmproj", Some("hf.co/vision"), None),
+        ];
+
+        let (kind, detail) =
+            render_model_boot_status(&models).expect("registry rows present");
+        assert_eq!(kind, BootStatusKind::Degraded);
+        assert!(
+            detail.contains("1/2 loaded"),
+            "detail must include loaded/total ratio: {detail:?}"
+        );
+        assert!(
+            detail.contains("vision-mmproj"),
+            "detail must name the missing model so operator knows \
+             which row to fix: {detail:?}"
+        );
+        assert!(
+            detail.contains("hf.co/vision"),
+            "detail must include the missing model's gguf_hint as \
+             an inline download URL: {detail:?}"
+        );
+    }
+
+    /// All declared but none on disk → Failed. First-launch parity
+    /// failure mode: registry says "we need these models" but no
+    /// adapter could register. Operator wants the download list
+    /// inline.
+    #[test]
+    fn all_missing_reports_failed_with_pull_list() {
+        let models = vec![
+            test_model("qwen3-coder", Some("hf.co/qwen"), None),
+            test_model("vision-mmproj", Some("hf.co/vision"), None),
+        ];
+
+        let (kind, detail) = render_model_boot_status(&models).expect("registry rows present");
+        assert_eq!(kind, BootStatusKind::Failed);
+        assert!(
+            detail.contains("2 declared, 0 loaded"),
+            "detail must include the (total, loaded) summary: {detail:?}"
+        );
+        assert!(
+            detail.contains("qwen3-coder") && detail.contains("vision-mmproj"),
+            "detail must name every missing model: {detail:?}"
+        );
+        assert!(
+            detail.contains("hf.co/qwen") && detail.contains("hf.co/vision"),
+            "detail must include every gguf_hint as inline download \
+             URLs (operator's first-launch path): {detail:?}"
+        );
+    }
+
+    /// A row with `gguf_local_path` set but the file MISSING on
+    /// disk must classify as missing (not loaded) — the artifact
+    /// resolver populated the path expectantly, but the operator
+    /// never pulled the file. This is the most common failure mode
+    /// after a fresh clone.
+    #[test]
+    fn path_present_but_file_absent_classifies_as_missing() {
+        // Path that definitely doesn't exist.
+        let phantom = PathBuf::from("/definitely/does/not/exist/qwen.gguf");
+        let models = vec![test_model("qwen3-coder", Some("hf.co/qwen"), Some(phantom))];
+
+        let (kind, _detail) = render_model_boot_status(&models).expect("rows present");
+        assert_eq!(
+            kind,
+            BootStatusKind::Failed,
+            "a row whose gguf_local_path doesn't exist on disk MUST \
+             be counted missing — otherwise the substrate lies about \
+             readiness on every fresh clone"
+        );
+    }
+
+    /// A row with NO `gguf_hint` falls back to a placeholder string
+    /// rather than dropping the model from the detail. Operators
+    /// using local-only model paths (not in any public registry)
+    /// still see the model id so they can fix the TOML.
+    #[test]
+    fn missing_model_without_hint_still_named_in_detail() {
+        let models = vec![test_model("custom-local-only", None, None)];
+
+        let (_kind, detail) = render_model_boot_status(&models).expect("rows present");
+        assert!(
+            detail.contains("custom-local-only"),
+            "model id must appear in detail even without a hint: {detail:?}"
+        );
+        assert!(
+            detail.contains("<no hint>"),
+            "missing hint must surface as a visible placeholder so \
+             the operator knows TOML is missing the URL: {detail:?}"
         );
     }
 }
