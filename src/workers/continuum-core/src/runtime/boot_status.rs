@@ -50,13 +50,30 @@
 //!
 //! ## Probe emission
 //!
-//! Every [`boot_status`] call ALSO fires a `tracing::info!` event
-//! tagged with `target = "boot.status"` and three fields:
-//! `subsystem`, `kind`, `detail`. The substrate's `JsonlProbeFileSink`
-//! captures these structured records under the `boot.status` class
-//! when `CONTINUUM_PROBE_CLASSES` includes it. Replay tooling and
-//! sentinel agents can subscribe via `debug/probes/open` per the
-//! Slice P URI plumbing.
+//! Every [`boot_status`] call ALSO fires a substrate-native
+//! [`crate::probe!`](probe) event with `class = "boot.status"` and
+//! three fields: `subsystem`, `kind`, `detail`. The `probe!` macro
+//! expands to a `tracing::event!` with `probe_class` set as a
+//! FIELD (not a tracing `target`) — that's the load-bearing detail
+//! that makes the event reachable by the substrate's structured-
+//! record consumers:
+//!
+//! - `JsonlProbeFileSink` filters per-event on the `probe_class`
+//!   field, so setting `CONTINUUM_PROBE_CLASSES=boot.status`
+//!   captures every boot line into the operator's chosen JSONL
+//!   path.
+//! - `ProbeRouterLayer` fans events per-class to broadcast
+//!   subscribers, which the `debug/probes/{open,next,close}`
+//!   service-module URIs surface to substrate consumers (sentinel
+//!   agents, dashboards, the `boot/status` future module).
+//!
+//! Using a plain `tracing::info!(target: "boot.status", ...)`
+//! would write to the rolling-log file (the fmt layer's sink) but
+//! silently skip BOTH structured-record paths above — PR #1550
+//! reviewer round 1 caught exactly that mistake. The boot line
+//! exists to be subscribed to, not just to be read by humans;
+//! routing through `probe!` is the seam that makes that subscription
+//! actually work.
 //!
 //! ## What this is NOT
 //!
@@ -136,8 +153,8 @@ pub fn format_boot_status_line(subsystem: &str, kind: BootStatusKind, detail: &s
 }
 
 /// Emit a boot status line for `subsystem` with `detail` to stderr
-/// AND as a structured `tracing::info!` event tagged
-/// `target = "boot.status"`. Always returns; callers use the return
+/// AND as a substrate-native `probe!` event with
+/// `class = "boot.status"`. Always returns; callers use the return
 /// `kind` as the "did boot succeed" signal for the subsystem.
 ///
 /// Call this ONCE per subsystem at boot — not as a logging
@@ -145,19 +162,34 @@ pub fn format_boot_status_line(subsystem: &str, kind: BootStatusKind, detail: &s
 /// list.
 pub fn boot_status(subsystem: &str, kind: BootStatusKind, detail: &str) {
     let line = format_boot_status_line(subsystem, kind, detail);
-    // Use stderr directly: the rolling-log sink (PR #1547) ALSO
-    // captures stderr-shaped tracing fmt output via the same
-    // EnvFilter, so this line ends up both on the live console AND
-    // in the daily-rotated log file. The eprintln path also
-    // survives when RUST_LOG silences info, which is the whole
-    // point of a "boot health" channel.
+    // Use stderr directly: the rolling-log sink (PR #1547) writes
+    // to the file via the tracing fmt layer; eprintln goes to the
+    // live stderr stream (terminal / supervisor pipe). Two channels
+    // give the operator both the live readout AND the persisted
+    // record. eprintln also survives `RUST_LOG=warn` quieting,
+    // which is the whole point of a boot-health channel.
     eprintln!("{line}");
-    // Structured probe emission. `target = "boot.status"` lands this
-    // event under the `boot.status` class for any probe consumer
-    // (JsonlProbeFileSink with CONTINUUM_PROBE_CLASSES including
-    // `boot.status`, the `debug/probes/open` URI, etc).
-    tracing::info!(
-        target: "boot.status",
+    // Structured probe emission via the substrate's `probe!` macro
+    // (defined in `routing/macros.rs`). The macro expands to
+    // `tracing::event!(Level::INFO, probe_class = "boot.status", ...)`.
+    //
+    // The `probe_class` FIELD (not the tracing `target`) is what
+    // `JsonlProbeFileSink::on_event` filters on per
+    // `probe_file_sink.rs::class_passes_filter` — so this is the
+    // load-bearing detail that makes the boot.status events
+    // actually reachable by the JSONL sink when
+    // `CONTINUUM_PROBE_CLASSES=boot.status` is set, AND by
+    // `ProbeRouterLayer`'s per-class broadcast that the
+    // `debug/probes/{open,next,close}` URIs surface to substrate
+    // consumers (sentinel agents, dashboards). PR #1550 reviewer
+    // round 1 caught the prior `tracing::info!(target: ...)`
+    // approach silently skipping both consumers — the file got
+    // the line via the fmt layer's rolling sink, but the
+    // structured-record channels were a no-op. Routing through
+    // `probe!` fixes that without changing the operator-facing
+    // stderr line.
+    crate::probe!(
+        class = "boot.status",
         subsystem = subsystem,
         kind = kind.tag(),
         detail = detail,
