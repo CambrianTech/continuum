@@ -14,7 +14,10 @@ use super::service_module::{CommandResult, ServiceModule};
 use super::shared_compute::SharedCompute;
 use crate::airc::AircDiscovery;
 use dashmap::DashMap;
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
@@ -139,9 +142,71 @@ impl Runtime {
         Ok(())
     }
 
+    /// Await a named module's `ready_edge()`. Returns `Ok(())` as soon as
+    /// the module's ready watch publishes `true`. Returns `Err(...)` if
+    /// the named module is not registered, or if the watch sender drops
+    /// before publishing ready (the module's task died before becoming
+    /// healthy — substrate is in trouble; the operator's repair is upstream).
+    ///
+    /// Modules that don't override `ready_edge()` are considered ready
+    /// immediately after `initialize()` completes — `wait_for_ready` for
+    /// those returns `Ok(())` synchronously.
+    ///
+    /// This is the substrate's canonical "wait for X to come up" primitive.
+    /// Replaces ad-hoc `oneshot::Sender` threaded through start_server-style
+    /// APIs, polling loops with sleeps, and bespoke atomic flags. Per
+    /// [[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]: signals replace
+    /// races.
+    pub async fn wait_for_ready(&self, module_name: &str) -> Result<(), String> {
+        let module = self
+            .registry
+            .get_by_name(module_name)
+            .ok_or_else(|| format!("module '{module_name}' not registered"))?;
+        let mut rx = match module.ready_edge() {
+            Some(rx) => rx,
+            None => return Ok(()), // default: ready after initialize
+        };
+        // Already-ready fast path — borrow_and_update marks the value
+        // as seen so the subsequent `changed()` only fires on a NEW change.
+        if *rx.borrow_and_update() {
+            crate::probe!(
+                class = "ready.observed",
+                module = module_name,
+                fast_path = true
+            );
+            return Ok(());
+        }
+        crate::probe!(class = "ready.awaiting", module = module_name);
+        loop {
+            if rx.changed().await.is_err() {
+                let err = format!(
+                    "module '{module_name}' ready watch closed before publishing ready"
+                );
+                crate::probe!(class = "ready.watch_closed", module = module_name);
+                return Err(err);
+            }
+            if *rx.borrow_and_update() {
+                crate::probe!(class = "ready.observed", module = module_name);
+                return Ok(());
+            }
+        }
+    }
+
     /// Start periodic tick loops for modules that declare a tick_interval.
-    /// Each module with a tick_interval gets its own tokio task that calls tick()
-    /// at the specified cadence. This replaces TypeScript's per-persona setIntervals.
+    /// Each module with a tick_interval gets its own tokio task that calls
+    /// `tick()` at the specified cadence.
+    ///
+    /// RTOS guarantees per [[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]:
+    /// - Uses `tokio::time::interval` (not `sleep` in a loop) so cadence
+    ///   does not drift under load.
+    /// - Each tick body is `catch_unwind`'d so a panic in one tick does
+    ///   not silently kill the loop. Counts consecutive panics; a module
+    ///   is quarantined after `TICK_QUARANTINE_AFTER` in a row, same
+    ///   shape `MemoryPressureMonitor` uses for its reporters.
+    /// - Late ticks coalesce (`MissedTickBehavior::Skip`) — a tick body
+    ///   that runs longer than the interval does not stack up backlog.
+    /// - `probe!(class = "tick.…", module = name, …)` emits on every
+    ///   meaningful seam so operators see what's actually happening.
     pub fn start_tick_loops(&self) -> Vec<JoinHandle<()>> {
         let mut handles = Vec::new();
         let modules = self.registry.list_modules();
@@ -156,20 +221,34 @@ impl Runtime {
                         "Starting tick loop for '{}' (interval: {:?})",
                         module_name, initial_interval
                     );
+                    crate::probe!(
+                        class = "tick.spawn",
+                        module = module_name,
+                        interval_ms = initial_interval.as_millis() as u64
+                    );
 
+                    // Outer catch_unwind protects the *runner* itself —
+                    // anything genuinely catastrophic (poisoned lock,
+                    // bad future state) still emits one final event
+                    // before the loop dies.
                     let handle = tokio::spawn(async move {
-                        // Initial delay — don't tick before system is warmed up
-                        tokio::time::sleep(initial_interval).await;
-
-                        loop {
-                            if let Err(e) = module.tick().await {
-                                error!("Tick error in '{}': {}", module_name, e);
-                            }
-                            // Re-read interval from module config each iteration.
-                            // This allows dynamic cadence changes (e.g. via channel/tick-config).
-                            let interval =
-                                module.config().tick_interval.unwrap_or(initial_interval);
-                            tokio::time::sleep(interval).await;
+                        let result = AssertUnwindSafe(run_tick_loop_for(
+                            module,
+                            module_name,
+                            initial_interval,
+                        ))
+                        .catch_unwind()
+                        .await;
+                        if let Err(panic) = result {
+                            error!(
+                                "Tick loop for '{}' aborted with panic in runner: {:?}",
+                                module_name, panic
+                            );
+                            crate::probe!(
+                                class = "tick.aborted",
+                                module = module_name,
+                                reason = "runner_panic"
+                            );
                         }
                     });
 
@@ -419,6 +498,143 @@ impl Runtime {
             mode.label()
         );
         Ok(())
+    }
+}
+
+/// Quarantine threshold for the per-module tick loop. After this many
+/// CONSECUTIVE panics from `tick()`, the loop exits and the module no
+/// longer ticks for the rest of the process lifetime.
+///
+/// Three matches `MemoryPressureMonitor`'s reporter quarantine — one
+/// substrate-wide convention so operators reading probe events don't
+/// have to remember per-module thresholds.
+const TICK_QUARANTINE_AFTER: u32 = 3;
+
+/// Per-module tick loop runner — the body wrapped by `start_tick_loops`.
+///
+/// One tick task per registered module with `tick_interval`. RTOS shape:
+/// `interval` (not sleep-loop), `MissedTickBehavior::Skip` (no backlog),
+/// per-tick `catch_unwind` (one bad tick doesn't kill the loop), panic
+/// counter with quarantine. Each meaningful seam emits a `probe!` so the
+/// JSONL probe sink records what actually happened on each module's tick
+/// — operators (and replay) see tick spans, panics, errors, and cadence
+/// changes without grep-prowling text logs.
+async fn run_tick_loop_for(
+    module: Arc<dyn ServiceModule>,
+    module_name: &'static str,
+    initial_interval: Duration,
+) {
+    // `tokio::time::interval` ticks at fixed wall-clock periods rather
+    // than `now() + period` after each body — cadence does not drift
+    // when the tick body runs longer than expected. `Skip` collapses
+    // missed ticks instead of stacking them up, which is the right
+    // policy for periodic refresh work (next tick uses fresh state,
+    // not a stale snapshot from N ticks ago).
+    let mut current_interval = initial_interval;
+    let mut ticker = tokio::time::interval(current_interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Skip the first immediate tick — modules expect a delay before
+    // their first periodic tick (same shape as the prior `sleep(d)`
+    // before the loop entered).
+    ticker.tick().await;
+
+    let log = crate::runtime::logger(&format!("tick.{module_name}"));
+    let mut consecutive_panics: u32 = 0;
+    let mut ticks_total: u64 = 0;
+
+    loop {
+        ticker.tick().await;
+        ticks_total = ticks_total.saturating_add(1);
+
+        // Each tick body is its own catch_unwind boundary. A panic
+        // inside `tick()` increments the counter; three in a row
+        // quarantines the module (loop exits, task ends). An `Err`
+        // return is a recoverable module-level error and does NOT
+        // count toward quarantine — only panics do.
+        let tick_result = AssertUnwindSafe(module.tick()).catch_unwind().await;
+
+        match tick_result {
+            Ok(Ok(())) => {
+                consecutive_panics = 0;
+            }
+            Ok(Err(e)) => {
+                consecutive_panics = 0;
+                warn!("Tick error in '{}': {}", module_name, e);
+                log.warn_fmt(format_args!("tick error: {e}"));
+                crate::probe!(
+                    class = "tick.error",
+                    module = module_name,
+                    error = %e
+                );
+            }
+            Err(panic) => {
+                consecutive_panics = consecutive_panics.saturating_add(1);
+                let panic_msg = panic_message(&*panic);
+                error!(
+                    "Tick panic in '{}' ({}/{}): {}",
+                    module_name, consecutive_panics, TICK_QUARANTINE_AFTER, panic_msg
+                );
+                log.warn_fmt(format_args!(
+                    "tick panicked ({consecutive_panics}/{TICK_QUARANTINE_AFTER}): {panic_msg}"
+                ));
+                crate::probe!(
+                    class = "tick.panic",
+                    module = module_name,
+                    count = consecutive_panics,
+                    reason = %panic_msg
+                );
+                if consecutive_panics >= TICK_QUARANTINE_AFTER {
+                    error!(
+                        "Module '{}' quarantined after {} consecutive panics; tick loop exits",
+                        module_name, TICK_QUARANTINE_AFTER
+                    );
+                    log.warn_fmt(format_args!(
+                        "module quarantined after {TICK_QUARANTINE_AFTER} consecutive panics; tick loop exits"
+                    ));
+                    crate::probe!(
+                        class = "tick.quarantined",
+                        module = module_name,
+                        ticks_total = ticks_total
+                    );
+                    return;
+                }
+            }
+        }
+
+        // Re-read interval each iteration so modules can dynamically
+        // adjust cadence (e.g. back off under pressure). If the period
+        // changed, rebuild the ticker — `Interval` doesn't expose a
+        // setter for its period, and rebuilding is cheap on the slow
+        // path (not the hot path that the broker tuner would touch).
+        let new_interval = module.config().tick_interval.unwrap_or(initial_interval);
+        if new_interval != current_interval {
+            crate::probe!(
+                class = "tick.cadence_changed",
+                module = module_name,
+                old_ms = current_interval.as_millis() as u64,
+                new_ms = new_interval.as_millis() as u64
+            );
+            current_interval = new_interval;
+            ticker = tokio::time::interval(current_interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Skip immediate first tick so cadence change doesn't
+            // double-fire.
+            ticker.tick().await;
+        }
+    }
+}
+
+/// Best-effort string extraction from a `catch_unwind` payload.
+/// `panic!("...")` payloads land as `&'static str` or `String`; anything
+/// exotic gets a generic placeholder so the probe still carries a label.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
     }
 }
 
@@ -1042,5 +1258,179 @@ mod piece_2_pr3_dispatch_tests {
             .collect();
         assert_eq!(a_keys, vec!["persona/inbox.frame_ready".to_string()]);
         assert_eq!(b_keys, vec!["paging/broker.snapshot".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod ready_edge_tests {
+    //! RTOS Slice A.1 — `ServiceModule::ready_edge` + `Runtime::wait_for_ready`.
+    //!
+    //! Pins the four interesting paths:
+    //!   1. Default impl returns None → wait_for_ready resolves immediately.
+    //!   2. Override returns Some with already-true watch → fast path Ok.
+    //!   3. Override returns Some with false → wait_for_ready awaits the
+    //!      transition to true.
+    //!   4. Override's sender drops without publishing true → wait_for_ready
+    //!      returns Err (substrate is in trouble; the caller decides).
+    //!   5. Unknown module name → Err.
+    use super::*;
+    use crate::runtime::service_module::{
+        CommandResult, ModuleConfig, ModulePriority, ServiceModule,
+    };
+    use async_trait::async_trait;
+    use std::any::Any;
+    use std::sync::Arc;
+    use tokio::sync::watch;
+
+    /// Minimal module fixture. Optionally exposes a ready watch.
+    struct ReadyModule {
+        name: &'static str,
+        ready_rx: Option<watch::Receiver<bool>>,
+    }
+
+    impl ReadyModule {
+        fn without_ready_edge(name: &'static str) -> Arc<Self> {
+            Arc::new(Self {
+                name,
+                ready_rx: None,
+            })
+        }
+
+        /// Construct with a sender the test retains, so the test can
+        /// publish `true` (or drop the sender) at the right moment.
+        fn with_sender(name: &'static str, initial: bool) -> (Arc<Self>, watch::Sender<bool>) {
+            let (tx, rx) = watch::channel(initial);
+            let module = Arc::new(Self {
+                name,
+                ready_rx: Some(rx),
+            });
+            (module, tx)
+        }
+    }
+
+    #[async_trait]
+    impl ServiceModule for ReadyModule {
+        fn config(&self) -> ModuleConfig {
+            ModuleConfig {
+                name: self.name,
+                priority: ModulePriority::Normal,
+                command_prefixes: &[],
+                event_subscriptions: &[],
+                needs_dedicated_thread: false,
+                max_concurrency: 0,
+                tick_interval: None,
+            }
+        }
+        async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+            Ok(())
+        }
+        async fn handle_command(
+            &self,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<CommandResult, String> {
+            Err("not handled".into())
+        }
+        fn ready_edge(&self) -> Option<watch::Receiver<bool>> {
+            self.ready_rx.clone()
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// What this catches: a module without a custom ready_edge falls
+    /// through the runtime's "ready after initialize" semantics
+    /// immediately. Regression here would block the entire substrate
+    /// boot waiting on the ~30 existing modules that take the default.
+    #[tokio::test]
+    async fn default_ready_edge_resolves_immediately() {
+        let runtime = Runtime::new();
+        runtime.register(ReadyModule::without_ready_edge("no-edge"));
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), runtime.wait_for_ready("no-edge"))
+                .await
+                .expect("default ready_edge must NOT block");
+        assert!(result.is_ok());
+    }
+
+    /// What this catches: when the watch is already `true` at the call,
+    /// wait_for_ready returns without calling `.changed()` — the fast
+    /// path. Regression here = spurious wakeup on first poll.
+    #[tokio::test]
+    async fn fast_path_when_already_ready() {
+        let runtime = Runtime::new();
+        let (module, _tx) = ReadyModule::with_sender("already-ready", true);
+        runtime.register(module);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            runtime.wait_for_ready("already-ready"),
+        )
+        .await
+        .expect("fast path must NOT block");
+        assert!(result.is_ok());
+    }
+
+    /// What this catches: wait_for_ready actually awaits the watch's
+    /// transition from false → true. Regression here = it returns
+    /// before the module is actually ready, which is the exact race
+    /// the primitive exists to eliminate.
+    #[tokio::test]
+    async fn awaits_transition_to_true() {
+        let runtime = Runtime::new();
+        let (module, tx) = ReadyModule::with_sender("not-yet", false);
+        runtime.register(module);
+
+        // Publish ready after a short delay; wait_for_ready must observe.
+        let _publisher = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = tx.send(true);
+            // Keep tx alive so wait_for_ready sees the change before drop.
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            runtime.wait_for_ready("not-yet"),
+        )
+        .await
+        .expect("wait_for_ready must observe within timeout");
+        assert!(result.is_ok());
+    }
+
+    /// What this catches: if the module's sender drops without ever
+    /// publishing true, wait_for_ready surfaces the error rather than
+    /// hanging forever. The substrate's job is to refuse to lie about
+    /// readiness; silent hang would mask the actual failure.
+    #[tokio::test]
+    async fn returns_err_when_sender_dropped_before_ready() {
+        let runtime = Runtime::new();
+        let (module, tx) = ReadyModule::with_sender("doomed", false);
+        runtime.register(module);
+
+        // Drop the sender without publishing true.
+        drop(tx);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            runtime.wait_for_ready("doomed"),
+        )
+        .await
+        .expect("must return without hanging");
+        assert!(
+            result.is_err(),
+            "dropped sender before ready → Err, got Ok(()) — substrate just lied"
+        );
+    }
+
+    /// What this catches: an unknown module name returns Err rather
+    /// than hanging forever or panicking. Operators typo module names;
+    /// the failure must be visible.
+    #[tokio::test]
+    async fn unknown_module_returns_err() {
+        let runtime = Runtime::new();
+        let result = runtime.wait_for_ready("does-not-exist").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not registered"));
     }
 }
