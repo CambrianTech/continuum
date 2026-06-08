@@ -71,6 +71,7 @@ use serde_json::Value;
 use airc_core::{Body, MentionTarget, PeerId};
 use airc_lib::Airc;
 
+use super::airc_command_protocol::command_request_from_route_decision;
 use super::{
     AircCommandRequest, AircCommandResponse, PeerRef, RouteDecision, Transport,
     COMMAND_REQUEST_BODY_HINT, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
@@ -242,9 +243,10 @@ impl AircTransport {
             }
         };
 
-        let request = AircCommandRequest::from_route_decision(decision, params)
+        let request = command_request_from_route_decision(decision, params)
             .ok_or_else(|| {
-                "BUG: from_route_decision returned None for a non-Local decision".to_string()
+                "BUG: command_request_from_route_decision returned None for a non-Local decision"
+                    .to_string()
             })?;
 
         Ok((target, request))
@@ -539,7 +541,7 @@ mod tests {
         let decision =
             route(&CommandUri::parse(&format!("airc://{id}/inference/llm/generate")).expect("parse"));
         let request =
-            AircCommandRequest::from_route_decision(&decision, serde_json::json!({"prompt": "hi"}))
+            command_request_from_route_decision(&decision, serde_json::json!({"prompt": "hi"}))
                 .expect("Peer decision packages");
         assert_eq!(request.kind, "peer");
         assert_eq!(request.path, "inference/llm/generate");
@@ -551,7 +553,7 @@ mod tests {
         let decision = route(
             &CommandUri::parse("airc://maya:*/notification/send").expect("parse"),
         );
-        let request = AircCommandRequest::from_route_decision(&decision, Value::Null)
+        let request = command_request_from_route_decision(&decision, Value::Null)
             .expect("Broadcast decision packages");
         assert_eq!(request.kind, "broadcast");
         assert_eq!(request.path, "notification/send");

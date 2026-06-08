@@ -36,6 +36,7 @@ uuid.workspace = true
 # Same crate would be path-deps elsewhere; explicit path makes the
 # dev loop tight (no version juggle while the macro evolves).
 continuum-orm-derive = { path = "../continuum-orm-derive" }
+continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 reqwest = { version = "0.12", features = ["json"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
