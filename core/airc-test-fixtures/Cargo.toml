@@ -1,0 +1,31 @@
+[package]
+name = "airc-test-fixtures"
+version = "0.1.0"
+edition = "2021"
+description = "Shared airc test fixtures — TwoAircLoopback, mock peer registries, etc. Consumed by continuum-core and continuum-client integration tests as [dev-dependencies]. Not shipped in any production binary."
+
+[dependencies]
+# Production wire types so fixtures construct envelopes the substrate
+# (server) and the client (client) both recognize.
+continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+
+# The actual airc-lib + airc-core types the fixture spawns/wraps.
+airc-lib = { workspace = true }
+airc-core = { workspace = true }
+
+# Async + utility deps.
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tempfile = "3"
+
+[dev-dependencies]
+# Smoke tests of the fixture itself need the request/reply primitives
+# plus the typed header constants.
+airc-protocol = { workspace = true }
+futures = "0.3"
+
+[features]
+default = []

@@ -11,6 +11,7 @@
 resolver = "2"
 members = [
     # core/ — rust substrate
+    "core/airc-test-fixtures",
     "core/continuum-airc-protocol",
     "core/archive",
     "core/continuum-core",

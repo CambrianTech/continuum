@@ -297,3 +297,12 @@ unexpected_cfgs = "allow"
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
+
+# Cross-airc integration tests (tests/airc_ipc_roundtrip.rs). The fixture
+# spawns two real Airc peers on LAN loopback; the client crate gives us
+# `Connection` + `AircIpcTransport` so we can exercise the substrate's
+# command_handler against an actual continuum-client request envelope.
+airc-test-fixtures = { path = "../airc-test-fixtures" }
+continuum-client = { path = "../../client/continuum-client" }
+airc-protocol = { workspace = true }
+futures = "0.3"

@@ -206,6 +206,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "airc-test-fixtures"
+version = "0.1.0"
+dependencies = [
+ "airc-core",
+ "airc-lib",
+ "airc-protocol",
+ "async-trait",
+ "continuum-airc-protocol",
+ "futures",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "airc-transport"
 version = "0.1.0"
 source = "git+https://github.com/CambrianTech/airc?rev=f6ed190#f6ed19064f670fa9136e48e7491cf75db876a4bd"
@@ -2607,6 +2624,8 @@ version = "0.1.0"
 dependencies = [
  "airc-core",
  "airc-lib",
+ "airc-protocol",
+ "airc-test-fixtures",
  "async-trait",
  "continuum-airc-protocol",
  "futures",
