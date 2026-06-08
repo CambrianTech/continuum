@@ -58,7 +58,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
 use super::probe_file_sink::{
-    JsonlProbeFileSink, ProbeFileSinkError, ENV_PROBE_CLASSES, ENV_PROBE_FILE,
+    JsonlProbeFileSink, ProbeFileSinkError, ENV_PROBE_CLASSES, ENV_PROBE_DIR,
 };
 use super::probe_router::ProbeRouterLayer;
 use super::uri_layer::UriCaptureLayer;
@@ -118,7 +118,7 @@ impl ProbeTracingConfig {
     /// the fmt layer; this is the fallback when `RUST_LOG` is
     /// unset).
     pub fn from_env(default_filter: &str) -> Self {
-        let probe_file = std::env::var(ENV_PROBE_FILE).ok().map(PathBuf::from);
+        let probe_file = std::env::var(ENV_PROBE_DIR).ok().map(PathBuf::from);
         let probe_classes = std::env::var(ENV_PROBE_CLASSES)
             .ok()
             .map(|s| {
@@ -385,23 +385,23 @@ mod tests {
     /// parallel-safe.
     #[test]
     fn from_env_reads_documented_env_vars() {
-        let prev_file = std::env::var(ENV_PROBE_FILE).ok();
+        let prev_file = std::env::var(ENV_PROBE_DIR).ok();
         let prev_classes = std::env::var(ENV_PROBE_CLASSES).ok();
 
         // Both vars set → populated config.
-        std::env::set_var(ENV_PROBE_FILE, "/tmp/test-probes.jsonl");
+        std::env::set_var(ENV_PROBE_DIR, "/tmp/test-probes-dir");
         std::env::set_var(ENV_PROBE_CLASSES, "persona,cognition.analyze");
         let populated = ProbeTracingConfig::from_env("info");
         assert_eq!(
             populated.probe_file.as_deref(),
-            Some(std::path::Path::new("/tmp/test-probes.jsonl"))
+            Some(std::path::Path::new("/tmp/test-probes-dir"))
         );
         assert!(populated.probe_classes.contains("persona"));
         assert!(populated.probe_classes.contains("cognition.analyze"));
         assert_eq!(populated.default_filter, "info");
 
         // Both vars unset → empty config (NOT an error).
-        std::env::remove_var(ENV_PROBE_FILE);
+        std::env::remove_var(ENV_PROBE_DIR);
         std::env::remove_var(ENV_PROBE_CLASSES);
         let empty = ProbeTracingConfig::from_env("warn");
         assert!(empty.probe_file.is_none());
@@ -425,8 +425,8 @@ mod tests {
         // Restore prior env state so other tests aren't affected
         // by ordering even if cargo's parallel runner interleaves.
         match prev_file {
-            Some(v) => std::env::set_var(ENV_PROBE_FILE, v),
-            None => std::env::remove_var(ENV_PROBE_FILE),
+            Some(v) => std::env::set_var(ENV_PROBE_DIR, v),
+            None => std::env::remove_var(ENV_PROBE_DIR),
         }
         match prev_classes {
             Some(v) => std::env::set_var(ENV_PROBE_CLASSES, v),

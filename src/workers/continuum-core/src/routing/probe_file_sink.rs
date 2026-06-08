@@ -87,19 +87,16 @@ use super::probe_span_meta::{
     build_timing_event_from_meta, ensure_probe_meta, span_carries_probe_class,
 };
 
-/// Env var carrying a single JSONL file path. **Forensic / single-file
-/// mode.** Append-only, no rotation, grows unbounded. Kept for tests
-/// + operator opt-in when they want one continuous capture across days.
-/// Production should use [`ENV_PROBE_DIR`] instead — see
-/// `[[auto-clean-is-structural-not-operational]]`. When BOTH are set,
-/// `CONTINUUM_PROBE_DIR` wins.
-pub const ENV_PROBE_FILE: &str = "CONTINUUM_PROBE_FILE";
-
-/// Env var carrying a directory path for **rolling** JSONL probe
-/// capture. Daily rotation, last `DEFAULT_MAX_LOG_FILES` retained,
-/// disk usage bounded by design. This is the production default —
-/// per `[[auto-clean-is-structural-not-operational]]`, any substrate
-/// writer that grows incrementally MUST auto-clean structurally.
+/// Env var carrying a directory path for rolling JSONL probe capture.
+/// Daily rotation, last `DEFAULT_MAX_LOG_FILES` retained, disk usage
+/// bounded by design. The ONLY env-based entry point — per
+/// `[[auto-clean-is-structural-not-operational]]` any substrate writer
+/// that grows incrementally MUST auto-clean structurally.
+///
+/// Single-file mode is reachable in-code via
+/// [`JsonlProbeFileSink::new`] for tests + explicit forensic capture;
+/// it is deliberately NOT exposed as an env var to keep operators on
+/// the bounded-by-design path.
 pub const ENV_PROBE_DIR: &str = "CONTINUUM_PROBE_DIR";
 
 /// Env var carrying the comma-separated class filter. Empty/unset =
@@ -158,7 +155,7 @@ impl std::fmt::Display for ProbeFileSinkError {
             ProbeFileSinkError::EnvVarUnset => write!(
                 f,
                 "{} is not set — probe file sink not configured",
-                ENV_PROBE_FILE
+                ENV_PROBE_DIR
             ),
             ProbeFileSinkError::OpenFailed { path, source } => write!(
                 f,
@@ -254,15 +251,17 @@ impl JsonlProbeFileSink {
         })
     }
 
-    /// Construct from env vars. Prefers `CONTINUUM_PROBE_DIR` (rolling,
-    /// the production default). Falls back to legacy `CONTINUUM_PROBE_FILE`
-    /// (single-file) with a one-line `tracing::warn!` so operators
-    /// notice the deprecation.
+    /// Construct from `CONTINUUM_PROBE_DIR` + `CONTINUUM_PROBE_CLASSES`.
+    /// The ONLY env-based entry point — rolling mode, structural
+    /// auto-clean, bounded disk usage. Single-file mode is reachable
+    /// only via [`new`](Self::new) in-code for tests + forensic capture.
     ///
-    /// Returns `Err(EnvVarUnset)` if NEITHER is set — callers treat
-    /// that as "sink intentionally disabled, install no layer."
-    /// Returns `Err(OpenFailed)` if the target is set but unwritable.
+    /// Returns `Err(EnvVarUnset)` if `CONTINUUM_PROBE_DIR` is missing —
+    /// callers treat that as "sink intentionally disabled, install no
+    /// layer." Returns `Err(OpenFailed)` if the dir is set but
+    /// unwritable.
     pub fn from_env() -> Result<Self, ProbeFileSinkError> {
+        let dir = std::env::var(ENV_PROBE_DIR).map_err(|_| ProbeFileSinkError::EnvVarUnset)?;
         let allowed_classes = std::env::var(ENV_PROBE_CLASSES)
             .ok()
             .map(|s| {
@@ -272,38 +271,13 @@ impl JsonlProbeFileSink {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
-        // Preferred: rolling mode via CONTINUUM_PROBE_DIR. Structural
-        // auto-clean, the doctrine the substrate ships.
-        if let Ok(dir) = std::env::var(ENV_PROBE_DIR) {
-            return Self::new_rolling(dir, allowed_classes, DEFAULT_MAX_LOG_FILES);
-        }
-        // Legacy: single-file mode via CONTINUUM_PROBE_FILE. Kept for
-        // forensic single-continuous-capture sessions, but logs a
-        // deprecation warn so operators migrate.
-        let path = std::env::var(ENV_PROBE_FILE).map_err(|_| ProbeFileSinkError::EnvVarUnset)?;
-        tracing::warn!(
-            target = "probe.file_sink",
-            "{} is deprecated for production — single-file mode does not auto-rotate. \
-             Migrate to {}=<dir> for the daily-rotation default ({} files retained). \
-             See doctrine [[auto-clean-is-structural-not-operational]].",
-            ENV_PROBE_FILE,
-            ENV_PROBE_DIR,
-            DEFAULT_MAX_LOG_FILES
-        );
-        Self::new(path, allowed_classes)
+        Self::new_rolling(dir, allowed_classes, DEFAULT_MAX_LOG_FILES)
     }
 
     /// The on-disk target the sink writes to. In single-file mode this
     /// is the file path; in rolling mode this is the directory holding
     /// the dated rotation files. Useful for tests + boot logging.
     pub fn target(&self) -> &Path {
-        &self.target
-    }
-
-    /// Deprecated alias for [`target`](Self::target) kept for
-    /// transitional callers; new code should use `target`.
-    #[deprecated(note = "use `target()` — the field is a directory in rolling mode")]
-    pub fn path(&self) -> &Path {
         &self.target
     }
 
@@ -541,20 +515,20 @@ mod tests {
     }
 
     #[test]
-    fn from_env_returns_envvar_unset_when_path_missing() {
+    fn from_env_returns_envvar_unset_when_dir_missing() {
         // Unset both env vars (saved + restored to avoid bleeding
         // into other tests). The substrate refuses to silently
-        // synthesize a default path — Joel's `[[no-fallbacks-ever]]`.
-        let prev_file = std::env::var(ENV_PROBE_FILE).ok();
+        // synthesize a default dir — Joel's `[[no-fallbacks-ever]]`.
+        let prev_dir = std::env::var(ENV_PROBE_DIR).ok();
         let prev_classes = std::env::var(ENV_PROBE_CLASSES).ok();
-        std::env::remove_var(ENV_PROBE_FILE);
+        std::env::remove_var(ENV_PROBE_DIR);
         std::env::remove_var(ENV_PROBE_CLASSES);
 
         let result = JsonlProbeFileSink::from_env();
         assert!(matches!(result, Err(ProbeFileSinkError::EnvVarUnset)));
 
-        if let Some(v) = prev_file {
-            std::env::set_var(ENV_PROBE_FILE, v);
+        if let Some(v) = prev_dir {
+            std::env::set_var(ENV_PROBE_DIR, v);
         }
         if let Some(v) = prev_classes {
             std::env::set_var(ENV_PROBE_CLASSES, v);
