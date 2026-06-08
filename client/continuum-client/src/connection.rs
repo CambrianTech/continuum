@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+use uuid::Uuid;
+
+use crate::airc_ipc::AircIpcTransport;
 use crate::command::CommandClient;
 use crate::error::ClientError;
 use crate::event::EventSubscriber;
@@ -38,5 +41,17 @@ impl<T: Transport> Connection<T> {
     /// subscribe calls return `ClientError::Closed`.
     pub async fn close(self) -> Result<(), ClientError> {
         self.transport.close().await
+    }
+}
+
+impl Connection<AircIpcTransport> {
+    /// Connect to a local continuum-core-server via airc IPC.
+    ///
+    /// `airc` is the caller's airc handle (typically built from
+    /// `airc_lib::Airc::join(home)` or similar). `target_peer` is the
+    /// substrate's peer UUID — operators get it from `airc status` on
+    /// the running server.
+    pub fn connect(airc: Arc<airc_lib::Airc>, target_peer: Uuid) -> Self {
+        Self::new(AircIpcTransport::new(airc, target_peer))
     }
 }

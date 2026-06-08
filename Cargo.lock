@@ -2585,6 +2585,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-airc-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-bridge-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2596,7 +2605,10 @@ dependencies = [
 name = "continuum-client"
 version = "0.1.0"
 dependencies = [
+ "airc-core",
+ "airc-lib",
  "async-trait",
+ "continuum-airc-protocol",
  "futures",
  "serde",
  "serde_json",
@@ -2623,6 +2635,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "chrono",
+ "continuum-airc-protocol",
  "continuum-bridge-protocol",
  "continuum-orm-derive",
  "crossbeam-channel",

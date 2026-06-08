@@ -6,12 +6,14 @@
 //! crate, N language frontends — same connection / command / event API
 //! everywhere.
 
+pub mod airc_ipc;
 pub mod command;
 pub mod connection;
 pub mod error;
 pub mod event;
 pub mod transport;
 
+pub use airc_ipc::AircIpcTransport;
 pub use command::CommandClient;
 pub use connection::Connection;
 pub use error::ClientError;
