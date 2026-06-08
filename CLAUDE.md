@@ -20,6 +20,34 @@ It documents the canonical RTOS shape (own task + `tokio::time::interval` + `wat
 
 **The cost of skipping this doc is reinventing `MemoryPressureMonitor` as a `runtime/disk_guard.rs` with env-tunable thresholds running synchronously on main — which is exactly what happened the day this guide got written.** Don't.
 
+## 🛑 STOP — If You Are About To Add a Test, Fixture, Recorder, Replay, Or Test-Adapter
+
+**Required first read** before adding ANY `#[cfg(test)] mod`, fixture struct, mock adapter, replay scaffold, recording sink, or `MockX`/`StubX`/`FakeX` type to continuum-core:
+
+→ **`continuum-core/Cargo.toml` § "test-fixtures"** + **`continuum-core/Cargo.toml` § "stress-tests"** + **task #154 + #155** in the task list.
+
+We already wrote the test infrastructure. The recurring slop pattern is the model forgetting it exists and reinventing it per-PR:
+
+| You want to… | Use the existing primitive | Where it lives |
+|---|---|---|
+| Stand-in inference adapter (canned responses) | `HeuristicInferenceAdapter` | `ai/heuristic_adapter.rs`, gated `#[cfg(any(test, feature = "test-fixtures"))]` |
+| Capture a live persona turn (input + output + cognition trace) | `persona::recorder` writer + `vdd::turn_replay` reader | `persona/recorder.rs`, `vdd/turn_replay.rs` |
+| Capture / replay a RAG context | `RagCaptureSink` trait + `JsonlRagCaptureSink` + `RecordingRagSource` + `ReplayRagSource` | `rag/sources/recording.rs`, `rag/sources/replay.rs`, PRs #10, #11, #12 |
+| Multi-thread concurrency stress test | New test goes into the **existing `#[cfg(feature = "stress-tests")] mod stress {…}` block** in that file. **Don't add a new test mod.** | `modules/{chat,data,generator}/`, `airc/realtime_store.rs` |
+| Two-airc-peer integration test fixture | `TwoAircLoopback` (in flight, task #187) | when landed: cross-grid integration tests in `tests/` |
+| Bus-recording subscriber that captures events for assertion | `RecordingModule` pattern in `runtime/runtime.rs` test mod — extract via `use crate::runtime::runtime::test_helpers::RecordingModule` (task #155: when this gets pulled out of inline mod into a sibling crate / re-exported helper) | `runtime/runtime.rs::piece_2_pr3_dispatch_tests` |
+
+**The rules going forward (the part the model keeps forgetting under amnesia):**
+
+1. **One `#[cfg(test)] mod tests` per file.** Never add a second test mod to a file. If the file already has one, extend it. If you're tempted to add a new mod for a new theme, use a nested `mod theme_name { use super::*; … }` *inside* the existing tests mod. The 3-mods-in-runtime.rs / 6-mods-in-grid/tests.rs pattern is the slop.
+2. **Stress / multi-thread tests go behind `#[cfg(feature = "stress-tests")] mod stress {…}`.** Compile-time gating, not `#[ignore]`. Sign-off stress harnesses live in the gated block forever; default `cargo test` skips them.
+3. **Mock / Stub / Fake adapters go behind `#[cfg(any(test, feature = "test-fixtures"))]`.** Production binaries physically cannot link them. The cargo feature is the contract; new fixtures inherit the same gate.
+4. **Battle-harden regression tests get added to the relevant existing mod and link the issue / commit they regress** (`// regression for #1519 / commit abc123`). They are not their own file. They are not their own mod. They are one `#[test]` with a one-line `// what this catches:` doc.
+5. **Reusable fixtures live in one place per concern.** `HeuristicInferenceAdapter` is the adapter fixture. `RecordingRagSource` / `ReplayRagSource` are the RAG fixtures. Don't write a parallel `MockInferenceAdapter` in your test file. Per task #155 (still pending): the `CannedModule` in `runtime/command_executor.rs` is the next conversion target — when you need a "canned ServiceModule" in a test, use the upcoming extracted version, not a new mock.
+6. **Tests must justify themselves.** A `// what this catches:` comment naming the invariant or regression is the minimum bar. Tests of trivial getters / constructors / "does the enum still have this variant" get refused at review. The 3,646-tests-in-continuum-core number is the audit Joel is reading; every PR adds to it.
+
+**The cost of skipping this doc is the model rebuilding `RecordingModule` inline in every test file, refusing to gate stress tests, growing the test surface by N tests per PR without curating any of them, and turning `cargo test` into a 14-minute build for tests that were each individually justified at sign-off but collectively duplicate.** Don't.
+
 ## 📐 Canonical Substrate Docs (read first)
 
 If you're new to the substrate, or you're picking up runtime/cognition work, read these in order before anything else in this file. They are the precedence-winning truth on substrate-shaped questions:
