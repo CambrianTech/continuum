@@ -901,6 +901,54 @@ impl MemoryPressureMonitor {
 }
 
 // =============================================================================
+// PressureBroker integration — MemoryPressureMonitor as a signal-only pool
+// =============================================================================
+
+/// Plug `MemoryPressureMonitor` into `PressureBroker` as a `ResourcePool`.
+/// **Signal source**, not a holder of evictable bytes —
+/// `evict_at_least` returns 0 because the monitor doesn't own any RAM
+/// it could free. Concrete RAM consumers (genome cache, recall cache,
+/// fixture replay buffers, Bevy GPU residency) register their own
+/// `ResourcePool` impls and the broker drives eviction against THOSE.
+///
+/// Symmetric with [`DiskPressureMonitor`](super::disk_pressure::DiskPressureMonitor):
+/// both monitors appear on the broker's surface as `"sys-memory"` and
+/// `"disk-root"` tiers. The zero-byte alert is the desired signal:
+/// "memory hot AND nobody owns the eviction on this tier."
+impl crate::paging::pool::ResourcePool for MemoryPressureMonitor {
+    fn tier_name(&self) -> &str {
+        "sys-memory"
+    }
+
+    fn capacity_bytes(&self) -> u64 {
+        self.current().total_bytes
+    }
+
+    fn usage_bytes(&self) -> u64 {
+        let snap = self.current();
+        snap.total_bytes.saturating_sub(snap.available_bytes)
+    }
+
+    fn evict_at_least(&self, _want_bytes: u64) -> u64 {
+        // Signal-only — RAM eviction happens at concrete consumer
+        // pools (genome cache, recall cache, etc.); they register
+        // their own `ResourcePool` impls. The broker still emits a
+        // `PressureAlert` for this tier when pressure crosses the
+        // threshold, so operators see "memory hot AND stuck on the
+        // global tier" exactly because the broker found nothing to
+        // act on at the system level.
+        0
+    }
+
+    fn snapshot(&self) -> Vec<crate::paging::pool::ResourcePoolEntry> {
+        // Per-consumer detail lives on `PressureSnapshot.modules`
+        // (populated by registered `MemoryReporter`s); the broker
+        // surface stays a tier-level summary.
+        Vec::new()
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

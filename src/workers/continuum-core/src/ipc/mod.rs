@@ -794,7 +794,7 @@ pub fn start_server(
     // Phase 1: SystemResourceModule (CPU + memory + process monitoring IPC)
     let system_monitor = Arc::new(SystemResourceMonitor::new());
     let system_resource_module = Arc::new(SystemResourceModule::new(system_monitor));
-    system_resource_module.set_pressure_monitor(pressure_monitor);
+    system_resource_module.set_pressure_monitor(pressure_monitor.clone());
     runtime.register(system_resource_module);
 
     // Phase 2 of #1239 (continuum#1299 PR-1): PressureBrokerModule.
@@ -831,16 +831,19 @@ pub fn start_server(
         broker.register(
             disk_pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>
         );
+        broker.register(
+            pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>
+        );
         log_info!(
             "ipc",
             "server",
-            "DiskPressureMonitor registered as ResourcePool 'disk-root' with PressureBroker"
+            "Disk + Memory pressure monitors registered as ResourcePools ('disk-root', 'sys-memory') with PressureBroker"
         );
     } else {
         log_error!(
             "ipc",
             "server",
-            "PressureBrokerModule not retrievable after registration — disk pressure won't appear on the broker"
+            "PressureBrokerModule not retrievable after registration — pressure monitors won't appear on the broker"
         );
     }
 
