@@ -6,6 +6,20 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// GPU concurrency floor and ceiling — derived from logical CPU count and
+/// clamped to this band. The exact slot count matters less than "enough
+/// parallel slots for the PressureBroker to time-share inference under
+/// multi-persona load without serializing"; the broker's tier-relief plus
+/// AdaptiveThroughputPlanner shape actual concurrency under pressure.
+///
+/// Substrate operational policy is code, never a runtime tunable. See
+/// `docs/architecture/CONCURRENCY-STYLE-GUIDE.md` § "What lives in code,
+/// not env vars". A follow-up slice derives these from
+/// `GpuMemoryManager::detect()` so a 5090 gets more slots than an Intel
+/// iGPU — but that is hardware-tier policy in code, not env.
+const GPU_SLOTS_FLOOR: usize = 4;
+const GPU_SLOTS_CEILING: usize = 8;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceBrokerConfig {
     pub lane_budgets: Vec<ResourceLaneBudget>,
@@ -16,22 +30,7 @@ impl ResourceBrokerConfig {
         let logical_cpus = std::thread::available_parallelism()
             .map(|n| n.get())
             .expect("host must report available parallelism for resource defaults");
-        let gpu_slots = match std::env::var("CONTINUUM_GPU_CONCURRENCY") {
-            Ok(raw) => {
-                let parsed = raw.parse::<usize>().unwrap_or_else(|e| {
-                    panic!("CONTINUUM_GPU_CONCURRENCY must be a positive integer: {e}")
-                });
-                assert!(
-                    parsed > 0,
-                    "CONTINUUM_GPU_CONCURRENCY must be greater than zero"
-                );
-                parsed
-            }
-            Err(std::env::VarError::NotPresent) => logical_cpus.clamp(4, 8),
-            Err(std::env::VarError::NotUnicode(_)) => {
-                panic!("CONTINUUM_GPU_CONCURRENCY must be valid UTF-8")
-            }
-        };
+        let gpu_slots = logical_cpus.clamp(GPU_SLOTS_FLOOR, GPU_SLOTS_CEILING);
         let scaled_cost = |slots: usize| (slots as u32).saturating_mul(100);
 
         Self {
