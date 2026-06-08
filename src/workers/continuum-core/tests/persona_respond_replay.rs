@@ -100,7 +100,7 @@ async fn ensure_llamacpp_registered() {
     );
     let registry_arc = continuum_core::modules::ai_provider::global_registry();
     let mut reg = registry_arc.write().await;
-    reg.register(Box::new(adapter), 0);
+    reg.register(std::sync::Arc::new(adapter), 0);
     drop(reg);
     REGISTER_ONCE.call_once(|| {});
 }

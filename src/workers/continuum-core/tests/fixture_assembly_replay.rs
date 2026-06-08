@@ -506,7 +506,7 @@ async fn ensure_llamacpp_qwen2vl_registered() -> Option<()> {
             .initialize()
             .await
             .unwrap_or_else(|e| panic!("init failed for {}: {e}", m.id));
-        registry_lock.register(adapter, 0);
+        registry_lock.register(std::sync::Arc::from(adapter), 0);
         eprintln!("[fixture-replay-behavior] registered adapter '{}'", m.id);
     }
     Some(())
