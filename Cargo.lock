@@ -211,8 +211,10 @@ version = "0.1.0"
 dependencies = [
  "airc-core",
  "airc-lib",
+ "airc-protocol",
  "async-trait",
  "continuum-airc-protocol",
+ "futures",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2622,6 +2624,8 @@ version = "0.1.0"
 dependencies = [
  "airc-core",
  "airc-lib",
+ "airc-protocol",
+ "airc-test-fixtures",
  "async-trait",
  "continuum-airc-protocol",
  "futures",

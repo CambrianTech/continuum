@@ -21,5 +21,11 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 tempfile = "3"
 
+[dev-dependencies]
+# Smoke tests of the fixture itself need the request/reply primitives
+# plus the typed header constants.
+airc-protocol = { workspace = true }
+futures = "0.3"
+
 [features]
 default = []

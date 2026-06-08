@@ -1,30 +1,33 @@
 //! `TwoAircLoopback` — two `airc_lib::Airc` peers wired over a real
-//! loopback transport, ready for cross-grid integration tests.
+//! LAN loopback transport, ready for cross-grid integration tests.
 //!
-//! ## Status: skeleton
+//! ## What this fixture proves
 //!
-//! This module defines the public API the fixture SHOULD expose. The
-//! method bodies are `todo!()` placeholders pending the airc-lib study
-//! slice that fills them in. Locking the shape here lets consumers
-//! (the substrate's integration tests + continuum-client's roundtrip
-//! tests) write against the final API today and exercise it once the
-//! impl lands.
+//! The substrate's `command_handler` (server side) and
+//! `continuum-client::AircIpcTransport` (client side) speak the same
+//! `continuum-airc-protocol` envelopes. Unit tests of each end exercise
+//! the parsing surface in isolation. They do NOT prove that an envelope
+//! serialized by the client end-to-end deserializes correctly at the
+//! server end after airc-lib's CBOR framing, header rewrites,
+//! correlation_id stamping, deadline negotiation, and LAN-transport
+//! round-trip. That gap was flagged by adversarial reviewer 1 on
+//! PR #1557. This fixture closes it.
 //!
-//! ## What the real impl needs to do
+//! ## Topology
 //!
-//! - Allocate two `tempfile::TempDir` homes (one per peer).
-//! - Spawn or attach two `airc_lib::Airc` instances configured to talk
-//!   to each other. Options under investigation:
-//!     a) Spawn two real `airc` daemon child processes bound to
-//!        distinct unix sockets; have peer A connect to peer B's
-//!        socket as a remote.
-//!     b) Use airc-lib's in-process / loopback test mode if one
-//!        exists (check `airc_lib::Airc::*` test constructors).
-//! - Wait for the peer registration to complete so the test can
-//!   immediately `peer_a.request(MentionTarget::Peer(b_id), ...)` and
-//!   get a reply.
-//! - On `Drop`, tear down both Airc instances cleanly and remove the
-//!   temp homes.
+//! ```text
+//!   peer_a ───── add_peer(b) ─────► peer_b
+//!     │                                │
+//!     │ ◄──── add_peer(a) ─────────────┤
+//!     │                                │
+//!     │ join("...")          join("...")
+//!     │                                │
+//!     │ ── connect_lan(b_addr, b_id) ─►│
+//!     │                                │ ── listen_lan(127.0.0.1:0)
+//! ```
+//!
+//! Both peers live in the same process, in distinct `TempDir` homes.
+//! Drop the fixture and both homes get cleaned up.
 //!
 //! ## Intended consumer shape
 //!
@@ -53,11 +56,21 @@
 //! }
 //! ```
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use airc_lib::Airc;
 use thiserror::Error;
 use uuid::Uuid;
+
+/// Default room both peers join during fixture setup. Callers don't
+/// usually need to know the room — they target the other peer by
+/// `peer_id` directly via `MentionTarget::Peer(...)`.
+const FIXTURE_ROOM: &str = "two-airc-loopback";
+
+/// Default bind address for peer_b's LAN listen. `:0` lets the kernel
+/// pick a free port so parallel test runs don't collide.
+const LOOPBACK_BIND: &str = "127.0.0.1:0";
 
 /// Typed errors the fixture surfaces. Each variant names the specific
 /// piece that failed so a test failure points straight at the issue
@@ -68,26 +81,18 @@ pub enum LoopbackError {
     #[error("temp dir allocation: {0}")]
     TempDir(#[from] std::io::Error),
 
-    /// One of the airc-lib spawn/attach calls returned an error.
+    /// One of the airc-lib spawn/attach calls returned an error. The
+    /// message names which peer + which step (open, peer_spec parse,
+    /// add_peer, join, listen_lan, connect_lan).
     #[error("airc spawn: {0}")]
     AircSpawn(String),
-
-    /// The peers were spun up but didn't discover each other before
-    /// the registration deadline.
-    #[error("peer registration timeout — peers never saw each other")]
-    PeerRegistrationTimeout,
-
-    /// Catch-all for the skeleton phase. Real impl decomposes this
-    /// into more specific variants.
-    #[error("not yet implemented in skeleton: {0}")]
-    NotImplemented(&'static str),
 }
 
-/// Two `airc_lib::Airc` peers wired over a real loopback transport.
+/// Two `airc_lib::Airc` peers wired over a real LAN loopback.
 ///
 /// Clone is intentionally NOT derived; the fixture owns the two Airc
-/// instances and the tempdirs. Consumers `Arc`-clone the peer handles
-/// they want to use.
+/// instances and the temp homes. Consumers `Arc`-clone the peer handles
+/// via `peer_a()` / `peer_b()` for the side(s) they want to use.
 pub struct TwoAircLoopback {
     peer_a: Arc<Airc>,
     peer_b: Arc<Airc>,
@@ -101,12 +106,82 @@ pub struct TwoAircLoopback {
 
 impl TwoAircLoopback {
     /// Build a fresh loopback fixture with two freshly-spawned Airc peers.
-    /// Returns once both peers have registered with each other and are
-    /// ready to round-trip commands.
+    /// Returns once both peers have:
+    /// 1. opened with strict verification on their own temp homes
+    /// 2. learned each other's `PeerSpec` via mutual `add_peer`
+    /// 3. joined the shared fixture room
+    /// 4. wired a LAN transport (peer_b listens; peer_a connects)
+    ///
+    /// After this, `peer_a.request(MentionTarget::Peer(peer_b_id), ...)`
+    /// reaches peer_b's `subscribe()` stream, and vice versa.
     pub async fn new() -> Result<Self, LoopbackError> {
-        Err(LoopbackError::NotImplemented(
-            "TwoAircLoopback::new — spawn airc peers + wire loopback transport",
-        ))
+        let peer_a_home = tempfile::TempDir::new()?;
+        let peer_b_home = tempfile::TempDir::new()?;
+
+        let peer_a = Airc::open(peer_a_home.path())
+            .await
+            .map_err(|e| LoopbackError::AircSpawn(format!("peer_a open: {e}")))?;
+        let peer_b = Airc::open(peer_b_home.path())
+            .await
+            .map_err(|e| LoopbackError::AircSpawn(format!("peer_b open: {e}")))?;
+
+        let peer_a_id = peer_a.peer_id().as_uuid();
+        let peer_b_id = peer_b.peer_id().as_uuid();
+
+        // Mutual trust: each peer parses the other's spec + adds it.
+        let a_spec = peer_a
+            .peer_spec()
+            .parse()
+            .map_err(|e| LoopbackError::AircSpawn(format!("parse peer_a spec: {e:?}")))?;
+        let b_spec = peer_b
+            .peer_spec()
+            .parse()
+            .map_err(|e| LoopbackError::AircSpawn(format!("parse peer_b spec: {e:?}")))?;
+        peer_a
+            .add_peer(b_spec)
+            .await
+            .map_err(|e| LoopbackError::AircSpawn(format!("peer_a trust peer_b: {e}")))?;
+        peer_b
+            .add_peer(a_spec)
+            .await
+            .map_err(|e| LoopbackError::AircSpawn(format!("peer_b trust peer_a: {e}")))?;
+
+        // Join the shared fixture room so room-scoped subscribe lands.
+        peer_a
+            .join(FIXTURE_ROOM)
+            .await
+            .map_err(|e| LoopbackError::AircSpawn(format!("peer_a join({FIXTURE_ROOM}): {e}")))?;
+        peer_b
+            .join(FIXTURE_ROOM)
+            .await
+            .map_err(|e| LoopbackError::AircSpawn(format!("peer_b join({FIXTURE_ROOM}): {e}")))?;
+
+        // Wire the LAN: peer_b listens on a kernel-picked loopback port,
+        // peer_a dials in with peer_b's peer_id for auth.
+        let bind: SocketAddr = LOOPBACK_BIND
+            .parse()
+            .expect("LOOPBACK_BIND is a valid SocketAddr");
+        let peer_b_addr = peer_b
+            .listen_lan(bind)
+            .await
+            .map_err(|e| LoopbackError::AircSpawn(format!("peer_b listen_lan({bind}): {e}")))?;
+        peer_a
+            .connect_lan(peer_b_addr, peer_b.peer_id())
+            .await
+            .map_err(|e| {
+                LoopbackError::AircSpawn(format!(
+                    "peer_a connect_lan({peer_b_addr}, peer_b_id): {e}"
+                ))
+            })?;
+
+        Ok(Self {
+            peer_a: Arc::new(peer_a),
+            peer_b: Arc::new(peer_b),
+            peer_a_id,
+            peer_b_id,
+            _peer_a_home: peer_a_home,
+            _peer_b_home: peer_b_home,
+        })
     }
 
     /// The first peer's `Arc<Airc>` handle. Test code clones this and
@@ -133,22 +208,110 @@ impl TwoAircLoopback {
     pub fn peer_b_id(&self) -> Uuid {
         self.peer_b_id
     }
+
+    /// The room both peers joined during setup. Mostly useful for tests
+    /// that want to publish to a room rather than dispatch a peer-
+    /// targeted command.
+    pub fn shared_room(&self) -> &'static str {
+        FIXTURE_ROOM
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    /// Skeleton-phase smoke test: the constructor surfaces a typed
-    /// NotImplemented error rather than panicking. When the real impl
-    /// lands this test gets replaced by one that asserts a successful
-    /// build + a round-trip.
+    use airc_core::{Body, Headers, MentionTarget, PeerId};
+    use futures::stream::StreamExt;
+
+    /// Bare-airc roundtrip smoke: peer_a sends a request to peer_b,
+    /// peer_b's subscribe stream sees it and replies, peer_a's
+    /// await_reply resolves. Proves the fixture's wire is alive
+    /// end-to-end without any continuum-specific protocol on top.
     #[tokio::test]
-    async fn skeleton_constructor_surfaces_typed_not_implemented() {
-        match TwoAircLoopback::new().await {
-            Err(LoopbackError::NotImplemented(_)) => { /* expected */ }
-            Err(other) => panic!("expected NotImplemented in skeleton phase, got {other:?}"),
-            Ok(_) => panic!("skeleton constructor should not return Ok"),
+    async fn bare_request_reply_round_trips_over_loopback() {
+        let loop_back = TwoAircLoopback::new()
+            .await
+            .expect("fixture setup should succeed");
+
+        let peer_b_handle = Arc::clone(loop_back.peer_b());
+        let peer_b_self_id = peer_b_handle.peer_id();
+        let responder = tokio::spawn(async move {
+            let mut stream = peer_b_handle
+                .subscribe()
+                .await
+                .expect("peer_b subscribe");
+            while let Some(event) = stream.next().await {
+                let event = match event {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                // Skip our own emissions.
+                if event.peer_id == peer_b_self_id {
+                    continue;
+                }
+                let Some(correlation) =
+                    event.headers.get(airc_protocol::HEADER_AIRC_CORRELATION_ID)
+                else {
+                    continue;
+                };
+                let Some(reply_to) = event.headers.get(airc_protocol::HEADER_AIRC_REPLY_TO) else {
+                    continue;
+                };
+                let correlation_id =
+                    Uuid::parse_str(correlation).expect("valid correlation uuid");
+                let reply_to_peer = PeerId::from_uuid(
+                    Uuid::parse_str(reply_to).expect("valid reply_to uuid"),
+                );
+                let mut reply_headers = Headers::new();
+                reply_headers.insert("test.body_hint".into(), "loopback.pong".into());
+                peer_b_handle
+                    .reply(
+                        reply_to_peer,
+                        correlation_id,
+                        reply_headers,
+                        Body::text("pong"),
+                    )
+                    .await
+                    .expect("peer_b reply");
+                return;
+            }
+        });
+
+        // Give peer_b time to install the subscribe filter before peer_a
+        // emits the request. airc_lib's request() arms the reply stream
+        // before sending, but the responder above is in a separate task
+        // that needs to call subscribe first.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut headers = Headers::new();
+        headers.insert("airc.command_kind".into(), "test.loopback.ping".into());
+        let pending = loop_back
+            .peer_a()
+            .request(
+                MentionTarget::Peer(PeerId::from_uuid(loop_back.peer_b_id())),
+                headers,
+                Body::text("ping"),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("peer_a request");
+        let reply = loop_back
+            .peer_a()
+            .await_reply(pending)
+            .await
+            .expect("peer_a await_reply");
+
+        // The body should be our pong. `Body::text("pong")` constructs
+        // `Body::Json({"text": "pong"})` so we extract the `text` field.
+        match reply.body {
+            Some(Body::Json(v)) => {
+                assert_eq!(v["text"], "pong", "got body json {v}");
+            }
+            other => panic!("expected Json pong body, got {other:?}"),
         }
+
+        responder.await.expect("responder task joined");
     }
 }
