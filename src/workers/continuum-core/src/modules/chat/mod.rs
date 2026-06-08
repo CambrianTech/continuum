@@ -1403,7 +1403,15 @@ mod tests {
     }
 
     // ════════════════════════════════════════════════════════════════
-    // Multi-persona concurrency stress tests
+    // Multi-persona concurrency stress tests — gated behind the
+    // `stress-tests` cargo feature so default `cargo test` doesn't
+    // pay the compile cost of the multi-thread runtime + 50-task
+    // futures::join_all bodies. Periodic CI runs:
+    //     cargo test -p continuum-core --features stress-tests
+    //
+    // Per Joel 2026-06-08: "Yes half the battle is tests and we
+    // wrote all this infra. Need to stop forgetting." Same shape as
+    // `test-fixtures` — compile-time gating, not `#[ignore]`.
     // ════════════════════════════════════════════════════════════════
     //
     // Per Joel 2026-05-30: "Each persona exists in its own threads."
@@ -1412,6 +1420,9 @@ mod tests {
     // below PIN the invariants the substrate is designed to uphold
     // under that load — they are not exercising rare paths, they are
     // the production scenario.
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
     //
     // # Runtime flavor
     //
@@ -1757,4 +1768,5 @@ mod tests {
             );
         }
     }
+    } // end mod stress
 }

@@ -3337,8 +3337,15 @@ mod tests {
     }
 
     // ════════════════════════════════════════════════════════════════
-    // Concurrency stress tests for the query-cursor surface
+    // Concurrency stress tests for the query-cursor surface — gated
+    // behind the `stress-tests` cargo feature. Default `cargo test`
+    // skips compilation; periodic CI runs them via
+    //     cargo test -p continuum-core --features stress-tests
+    // See continuum-core/Cargo.toml § "stress-tests" for the doctrine.
     // ════════════════════════════════════════════════════════════════
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
     //
     // Per Joel 2026-05-30: "Each persona exists in its own threads."
     //
@@ -3647,5 +3654,6 @@ mod tests {
             );
         }
     }
+    } // end mod stress
 
 }

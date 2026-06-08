@@ -268,6 +268,26 @@ load-dynamic-ort = ["ort/load-dynamic"]
 #   - Production: heuristic adapter doesn't exist in the binary at all.
 test-fixtures = []
 
+# stress-tests: opts in concurrency / multi-thread / load tests that
+# pin substrate invariants under N-task simultaneous load. Each test
+# uses `#[tokio::test(flavor = "multi_thread", worker_threads = N)]`
+# plus 50-task `futures::join_all` bodies — the compile cost of these
+# is real and they validated their target invariants at sign-off
+# (tasks #64, #65, #66, #67, #68). Default `cargo test` skips them
+# entirely; periodic CI runs them via `--features stress-tests`.
+#
+# Joel 2026-06-08: "Yes half the battle is tests and we wrote all
+# this infra. Need to stop forgetting." Pattern matches the
+# `test-fixtures` doctrine — compile-time gating, not `#[ignore]`,
+# so the binary literally doesn't contain the stress harness when
+# the feature is off.
+#
+# What's gated: the `mod stress { ... }` block inside each module's
+# `#[cfg(test)] mod tests` block (chat, generator, data cursors,
+# airc realtime_store as of this writing). Greppable by:
+#     grep -rln 'cfg(feature = "stress-tests")' src/
+stress-tests = []
+
 [lints.rust]
 # objc 0.2's msg_send! macro uses the deprecated cargo-clippy cfg check.
 # Allow until we migrate to objc2.
