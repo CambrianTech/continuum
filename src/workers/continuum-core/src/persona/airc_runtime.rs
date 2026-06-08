@@ -68,17 +68,31 @@ use uuid::Uuid;
 #[derive(Debug, thiserror::Error)]
 pub enum PersonaAircRuntimeError {
     #[error(
-        "legacy persona home detected at {legacy:?} — Slice 4 of #142 moved \
-         personas under `citizens/personas/<name>/airc/`. To migrate this \
-         persona's identity AND keep its peer_id stable, run:\n\
-         \n  mkdir -p {new_parent:?} && mv {legacy:?} {new:?}\n\n\
-         Then re-run. Per [[no-fallbacks-ever]] the substrate refuses to \
-         silently use the legacy path."
+        "persona-home auto-migration refused for {agent_name:?}: legacy at \
+         {legacy:?} AND a non-empty destination already exists at {new:?}. \
+         Both paths contain state — the substrate refuses to clobber the \
+         destination per [[no-fallbacks-ever]]. Inspect both directories \
+         and either:\n  \
+         (a) keep the destination and `rm -rf {legacy:?}` if the legacy \
+         dir is stale, OR\n  \
+         (b) keep the legacy dir, `rm -rf {new:?}`, and re-run to let the \
+         migration complete."
     )]
-    LegacyLayoutDetected {
+    LegacyMigrationConflict {
+        agent_name: String,
         legacy: PathBuf,
         new: PathBuf,
-        new_parent: PathBuf,
+    },
+    #[error(
+        "persona-home auto-migration failed for {agent_name:?}: could not \
+         move {legacy:?} → {new:?}: {source}"
+    )]
+    LegacyMigrationIoError {
+        agent_name: String,
+        legacy: PathBuf,
+        new: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
     #[error("failed to create persona airc home {0}: {1}")]
     HomeCreate(PathBuf, std::io::Error),
@@ -161,23 +175,44 @@ impl PersonaAircRuntime {
             &agent_name,
         );
 
-        // Migration: refuse to use the pre-Slice-4 layout. Hard-error
-        // with the exact `mv` command per [[no-fallbacks-ever]].
+        // Migration: pre-Slice-4 layout `<root>/personas/<name>/airc/`
+        // → Slice-4+ `<root>/citizens/personas/<name>/airc/`. The
+        // mapping is 1:1 unambiguous and the operation is an atomic
+        // rename on the same filesystem, so the substrate handles it
+        // here instead of refusing to boot.
+        //
+        // The prior behavior was to `return Err(LegacyLayoutDetected
+        // { ... })` with the exact `mv` command in the message; that
+        // surfaces correctly to the operator (Joel hit it earlier
+        // today migrating Paige) but forces the human into the loop
+        // for an operation the substrate already knows how to do.
+        //
+        // Auto-migration is NOT a `[[no-fallbacks-ever]]` violation
+        // — it's not a silent capability fallback; it's an explicit,
+        // logged, idempotent schema migration. The migration is
+        // visible via a `boot_status("persona-home", Degraded,
+        // "migrated <name>: legacy → citizens/")` line so the
+        // operator sees the action.
+        //
+        // The Degraded kind (not Ok) is intentional: the substrate
+        // is reporting that this boot had to fix something. Next
+        // boot — with the migration already done — falls through to
+        // Ok via the persona's normal "home exists, attach" path
+        // without printing anything (no boot_status call when
+        // there's nothing notable to report).
+        //
+        // Safety: if the NEW path already has content (operator did
+        // a partial manual migration), we refuse to clobber and
+        // surface a typed error. Same `[[no-fallbacks-ever]]`
+        // discipline as before; just narrowed to the genuinely
+        // ambiguous case.
         if let Some(legacy) = crate::context::legacy_home_path(
             continuum_root,
             crate::identity::IdentityKind::Persona,
             &agent_name,
         ) {
             if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
-                let new_parent = home
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| home.clone());
-                return Err(PersonaAircRuntimeError::LegacyLayoutDetected {
-                    legacy,
-                    new: home.clone(),
-                    new_parent,
-                });
+                migrate_legacy_persona_home(&legacy, &home, &agent_name).await?;
             }
         }
 
@@ -436,6 +471,126 @@ impl Drop for PersonaAircRuntime {
     }
 }
 
+/// Move a persona's legacy `<root>/personas/<name>/airc/` tree to
+/// the post-Slice-4 `<root>/citizens/personas/<name>/airc/` location.
+///
+/// Idempotency / safety contract:
+///
+/// - Caller has already verified `legacy` exists.
+/// - If `new` already exists AND is empty (or doesn't exist at all),
+///   we create `new`'s parent, then `rename` the legacy dir into
+///   place. This is atomic on the same filesystem and preserves the
+///   persona's identity.key + admission_state.sqlite + every other
+///   piece of airc state intact.
+/// - If `new` already exists AND is non-empty, we refuse — both
+///   paths have content and the substrate can't safely pick a
+///   winner. Surface [`LegacyMigrationConflict`] with the exact
+///   operator-actionable recovery commands.
+///
+/// Emits a `boot_status("persona-home", Degraded, "migrated <name>:
+/// legacy → citizens/")` line so the operator sees the action
+/// happened. Per [[reliable-startup-substrate-refuses-to-lie]]: the
+/// substrate took action AND told the operator; that's the
+/// substrate-purist alternative to the prior "refuse with mv
+/// command in error message" shape.
+///
+/// [`LegacyMigrationConflict`]: PersonaAircRuntimeError::LegacyMigrationConflict
+async fn migrate_legacy_persona_home(
+    legacy: &std::path::Path,
+    new: &std::path::Path,
+    agent_name: &str,
+) -> Result<(), PersonaAircRuntimeError> {
+    use crate::runtime::boot_status::{boot_status, BootStatusKind};
+
+    // Destination check. `new` is `<root>/citizens/personas/<name>/airc/`;
+    // a previous partial migration could have populated it. We only
+    // proceed when the destination is absent OR exists-but-empty.
+    let dest_exists = tokio::fs::try_exists(new).await.unwrap_or(false);
+    if dest_exists {
+        let mut entries = match tokio::fs::read_dir(new).await {
+            Ok(rd) => rd,
+            Err(source) => {
+                return Err(PersonaAircRuntimeError::LegacyMigrationIoError {
+                    agent_name: agent_name.to_string(),
+                    legacy: legacy.to_path_buf(),
+                    new: new.to_path_buf(),
+                    source,
+                });
+            }
+        };
+        let has_content = entries
+            .next_entry()
+            .await
+            .map(|opt| opt.is_some())
+            .unwrap_or(true);
+        if has_content {
+            return Err(PersonaAircRuntimeError::LegacyMigrationConflict {
+                agent_name: agent_name.to_string(),
+                legacy: legacy.to_path_buf(),
+                new: new.to_path_buf(),
+            });
+        }
+        // Empty destination: remove it so `rename` doesn't trip on
+        // "target exists" on platforms that require absent target.
+        tokio::fs::remove_dir(new).await.map_err(|source| {
+            PersonaAircRuntimeError::LegacyMigrationIoError {
+                agent_name: agent_name.to_string(),
+                legacy: legacy.to_path_buf(),
+                new: new.to_path_buf(),
+                source,
+            }
+        })?;
+    }
+
+    // Ensure the destination's parent exists. `new` here is the
+    // `airc/` leaf — its parent is `<root>/citizens/personas/<name>/`,
+    // and that parent's parent is `<root>/citizens/personas/`. The
+    // standard `create_dir_all` walks every missing component.
+    if let Some(parent) = new.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|source| {
+            PersonaAircRuntimeError::LegacyMigrationIoError {
+                agent_name: agent_name.to_string(),
+                legacy: legacy.to_path_buf(),
+                new: new.to_path_buf(),
+                source,
+            }
+        })?;
+    }
+
+    tokio::fs::rename(legacy, new).await.map_err(|source| {
+        PersonaAircRuntimeError::LegacyMigrationIoError {
+            agent_name: agent_name.to_string(),
+            legacy: legacy.to_path_buf(),
+            new: new.to_path_buf(),
+            source,
+        }
+    })?;
+
+    // Best-effort cleanup of the legacy parent directories left
+    // empty after the rename (the persona's old `<root>/personas/<name>/`
+    // wrapper, then `<root>/personas/` itself if it's empty). Both
+    // calls degrade gracefully on "directory not empty" because
+    // remove_dir refuses non-empty dirs — perfect for the "did
+    // anyone else have content here?" check without a stat race.
+    if let Some(old_persona_parent) = legacy.parent() {
+        let _ = tokio::fs::remove_dir(old_persona_parent).await;
+        if let Some(old_kind_dir) = old_persona_parent.parent() {
+            let _ = tokio::fs::remove_dir(old_kind_dir).await;
+        }
+    }
+
+    boot_status(
+        "persona-home",
+        BootStatusKind::Degraded,
+        &format!(
+            "migrated {agent_name}: {legacy} → {new}",
+            legacy = legacy.display(),
+            new = new.display(),
+        ),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,68 +624,149 @@ mod tests {
         assert!(!expected_home.exists());
     }
 
-    /// Slice 4 of #142 migration safety claim: when bootstrap is
-    /// called for a persona whose pre-Slice-4 home
+    /// Card e9f50a36 (slice A2): when a persona's pre-Slice-4 home
     /// (`<root>/personas/<name>/airc/`) exists on disk, the
-    /// substrate REFUSES to silently use it and returns
-    /// `LegacyLayoutDetected` with the exact `mv` paths. This test
-    /// fires the detection branch via a TempDir-seeded legacy path.
+    /// substrate auto-migrates it to the post-Slice-4 layout
+    /// instead of refusing to boot. This test verifies the
+    /// migration result on disk: legacy gone, new exists, the
+    /// persona's seed file moved intact.
     ///
-    /// Per [[no-fallbacks-ever]] + [[every-error-is-an-opportunity-
-    /// to-battle-harden]]: the message is load-bearing safety; this
-    /// is the rigging that catches a regression flipping the path
-    /// components.
+    /// Per [[reliable-startup-substrate-refuses-to-lie]]: the
+    /// substrate took action AND told the operator (boot_status
+    /// `persona-home: ⚠ migrated ...` line). The operator's manual
+    /// `mv` step is no longer load-bearing for a 1:1-unambiguous
+    /// schema migration.
     #[tokio::test]
-    async fn legacy_persona_layout_hard_errors_with_mv_command() {
+    async fn migrate_moves_legacy_persona_home_into_citizens_layout() {
         let tmp = TempDir::new().expect("tempdir");
         let root = tmp.path();
 
-        // Seed the pre-Slice-4 legacy path for a persona named "maya".
         let legacy = root.join("personas").join("maya").join("airc");
+        let new = root
+            .join("citizens")
+            .join("personas")
+            .join("maya")
+            .join("airc");
         tokio::fs::create_dir_all(&legacy)
             .await
             .expect("seed legacy persona path");
+        // Drop a sentinel file so we can assert the rename moved
+        // content, not just created the destination.
+        tokio::fs::write(legacy.join("identity.key"), b"test-key-bytes")
+            .await
+            .expect("seed legacy identity.key");
 
-        // Bootstrap a persona named "maya". The legacy detection
-        // fires BEFORE airc-lib attach, so the test doesn't need a
-        // running daemon.
-        let result = PersonaAircRuntime::bootstrap(
-            Uuid::new_v4(),
-            "maya",
-            root,
-            PathBuf::from("/nonexistent/daemon.sock"),
-            RoomId::from_uuid(Uuid::new_v4()),
-            None,
-            crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
-        )
-        .await;
+        migrate_legacy_persona_home(&legacy, &new, "maya")
+            .await
+            .expect("auto-migration must succeed for the standard case");
 
-        // `PersonaAircRuntime` doesn't impl Debug (Arc<dyn ...>
-        // fields), so we destructure without {:?} on the Ok variant.
+        assert!(!legacy.exists(), "legacy path must be gone after migration");
+        assert!(new.exists(), "new citizens/ path must exist");
+        let migrated_key = tokio::fs::read(new.join("identity.key"))
+            .await
+            .expect("seed file must have moved with the rename");
+        assert_eq!(
+            migrated_key, b"test-key-bytes",
+            "seed file content must be preserved across migration"
+        );
+    }
+
+    /// Safety branch: when BOTH the legacy AND the new paths have
+    /// content (operator did a partial manual migration, or someone
+    /// restored a backup into citizens/ alongside the old layout),
+    /// the substrate refuses to clobber and surfaces a typed
+    /// `LegacyMigrationConflict` with the exact recovery commands.
+    ///
+    /// Per [[no-fallbacks-ever]]: auto-migration is only safe when
+    /// there's exactly one source of truth. Two non-empty paths is
+    /// the genuinely-ambiguous case where human judgment is the only
+    /// correct resolution.
+    #[tokio::test]
+    async fn migrate_refuses_when_both_paths_have_content() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+
+        let legacy = root.join("personas").join("maya").join("airc");
+        let new = root
+            .join("citizens")
+            .join("personas")
+            .join("maya")
+            .join("airc");
+        tokio::fs::create_dir_all(&legacy)
+            .await
+            .expect("seed legacy");
+        tokio::fs::write(legacy.join("identity.key"), b"legacy-key")
+            .await
+            .expect("seed legacy identity");
+        tokio::fs::create_dir_all(&new).await.expect("seed new");
+        tokio::fs::write(new.join("identity.key"), b"new-key")
+            .await
+            .expect("seed new identity");
+
+        let result = migrate_legacy_persona_home(&legacy, &new, "maya").await;
+
         match result {
-            Err(PersonaAircRuntimeError::LegacyLayoutDetected {
-                legacy: l,
-                new,
-                new_parent,
+            Err(PersonaAircRuntimeError::LegacyMigrationConflict {
+                agent_name,
+                legacy: returned_legacy,
+                new: returned_new,
             }) => {
-                assert_eq!(l, legacy);
-                assert_eq!(
-                    new,
-                    root.join("citizens").join("personas").join("maya").join("airc")
-                );
-                assert_eq!(
-                    new_parent,
-                    root.join("citizens").join("personas").join("maya")
-                );
+                assert_eq!(agent_name, "maya");
+                assert_eq!(returned_legacy, legacy);
+                assert_eq!(returned_new, new);
             }
             Err(other) => panic!(
-                "expected LegacyLayoutDetected, got different error: {other} \
-                 — legacy detection is broken"
+                "expected LegacyMigrationConflict, got: {other} — \
+                 the safety branch is broken"
             ),
             Ok(_) => panic!(
-                "expected LegacyLayoutDetected, bootstrap succeeded — \
-                 legacy detection is broken"
+                "expected LegacyMigrationConflict, migration succeeded — \
+                 substrate would have clobbered legitimate state in the new path"
             ),
         }
+
+        // Both source files must still be intact (no clobber).
+        let legacy_content = tokio::fs::read(legacy.join("identity.key"))
+            .await
+            .expect("legacy must be untouched");
+        assert_eq!(legacy_content, b"legacy-key");
+        let new_content = tokio::fs::read(new.join("identity.key"))
+            .await
+            .expect("new must be untouched");
+        assert_eq!(new_content, b"new-key");
+    }
+
+    /// Idempotency branch: when the new path exists but is empty
+    /// (operator created the parent skeleton then ran the substrate
+    /// before any state landed in citizens/), the substrate removes
+    /// the empty placeholder and proceeds with the rename. This
+    /// avoids surprising the operator with a conflict on a path
+    /// they never populated.
+    #[tokio::test]
+    async fn migrate_proceeds_when_new_path_exists_but_is_empty() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+
+        let legacy = root.join("personas").join("maya").join("airc");
+        let new = root
+            .join("citizens")
+            .join("personas")
+            .join("maya")
+            .join("airc");
+        tokio::fs::create_dir_all(&legacy).await.expect("seed legacy");
+        tokio::fs::write(legacy.join("identity.key"), b"keep-me")
+            .await
+            .expect("seed legacy identity");
+        tokio::fs::create_dir_all(&new).await.expect("seed empty new");
+
+        migrate_legacy_persona_home(&legacy, &new, "maya")
+            .await
+            .expect("empty destination must allow migration to proceed");
+
+        assert!(!legacy.exists(), "legacy must be gone");
+        let key = tokio::fs::read(new.join("identity.key"))
+            .await
+            .expect("legacy content must have landed in new");
+        assert_eq!(key, b"keep-me");
     }
 }
