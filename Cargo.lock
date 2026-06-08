@@ -2593,6 +2593,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-core"
 version = "0.1.0"
 dependencies = [

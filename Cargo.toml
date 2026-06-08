@@ -1,19 +1,27 @@
-# JTAG Rust Workers Workspace
+# Continuum Rust Workspace
 #
-# This workspace provides consistent dependency versions across all Rust workers.
-# Add new workers to the members list below.
+# Single workspace spans every Rust crate in the repo, grouped by tier:
+#   core/      — headless substrate (server-side)
+#   client/    — shared client lib (consumed by CLI + mobile FFI bridges)
+#   apps/      — thin app shells (CLI today; mobile/desktop/vr land here)
+#
+# Add new crates to the members list below under their owning tier.
 
 [workspace]
 resolver = "2"
 members = [
-    "archive",
-    "continuum-core",
-    "continuum-orm-derive",
-    "inference-grpc",
-    "jtag-mcp",
-    "livekit-bridge",
-    "livekit-protocol",
-    "llama",
+    # core/ — rust substrate
+    "core/archive",
+    "core/continuum-core",
+    "core/continuum-orm-derive",
+    "core/inference-grpc",
+    "core/jtag-mcp",
+    "core/livekit-bridge",
+    "core/livekit-protocol",
+    "core/llama",
+
+    # client/ — shared client lib (consumed by CLI + mobile SDK FFI)
+    "client/continuum-client",
 ]
 # Shared dependencies - workers inherit these versions
 [workspace.dependencies]
