@@ -714,6 +714,7 @@ pub fn start_server(
     rt_handle: tokio::runtime::Handle,
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
     pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,
+    disk_pressure_monitor: Arc<crate::system_resources::DiskPressureMonitor>,
     boot_mode: crate::runtime::BootMode,
 ) -> std::io::Result<()> {
     prepare_unix_socket_path(socket_path)?;
@@ -809,6 +810,39 @@ pub fn start_server(
     runtime.register(Arc::new(
         crate::modules::pressure_broker_module::PressureBrokerModule::new(),
     ));
+    // Register DiskPressureMonitor with the broker as a signal-only
+    // ResourcePool — `evict_at_least` returns 0 (the monitor doesn't
+    // own files), but the broker emits typed PressureAlert events on
+    // tier transitions, surfacing disk pressure on the same wire +
+    // dashboard as memory + Docker + LoRA + KV pools. Concrete disk
+    // pools (genome cache, probe JSONL rotation, model registry) will
+    // register their own ResourcePool impls in follow-up slices and
+    // the broker will drive eviction against THOSE. Per task #88
+    // "broker pool" half.
+    let broker_arc = runtime
+        .registry()
+        .module_of_type::<crate::modules::pressure_broker_module::PressureBrokerModule>()
+        .and_then(|m| {
+            m.as_any()
+                .downcast_ref::<crate::modules::pressure_broker_module::PressureBrokerModule>()
+                .map(|bm| bm.broker())
+        });
+    if let Some(broker) = broker_arc {
+        broker.register(
+            disk_pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>
+        );
+        log_info!(
+            "ipc",
+            "server",
+            "DiskPressureMonitor registered as ResourcePool 'disk-root' with PressureBroker"
+        );
+    } else {
+        log_error!(
+            "ipc",
+            "server",
+            "PressureBrokerModule not retrievable after registration — disk pressure won't appear on the broker"
+        );
+    }
 
     // Runtime-owned lease ledger for CPU/GPU/memory/disk/network admission.
     // Subsystems ask this broker for capacity instead of keeping private caps.

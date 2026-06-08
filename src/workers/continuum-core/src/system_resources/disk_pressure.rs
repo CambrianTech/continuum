@@ -612,6 +612,56 @@ impl DiskPressureMonitor {
 }
 
 // =============================================================================
+// PressureBroker integration — DiskPressureMonitor as a signal-only pool
+// =============================================================================
+
+/// Plug `DiskPressureMonitor` into `PressureBroker` as a `ResourcePool`.
+/// This is a **signal source**, not a holder of evictable files —
+/// `evict_at_least` returns 0 because the monitor doesn't own any
+/// disk content. Concrete disk-paged resources (genome cache, probe
+/// JSONL spool, model registry, fixture archive) register their own
+/// `ResourcePool` impls and the broker drives eviction against THOSE.
+///
+/// The broker still emits a typed `PressureAlert` for this pool when
+/// disk pressure crosses tier thresholds — operators see "disk-root
+/// at 92 % — freed 0 bytes (stuck)" exactly because the monitor is
+/// signal-only. The zero-byte alert is the desired signal: "disk is
+/// hot AND nobody owns the eviction."
+impl crate::paging::pool::ResourcePool for DiskPressureMonitor {
+    fn tier_name(&self) -> &str {
+        "disk-root"
+    }
+
+    fn capacity_bytes(&self) -> u64 {
+        self.current().total_bytes
+    }
+
+    fn usage_bytes(&self) -> u64 {
+        self.current().used_bytes
+    }
+
+    fn evict_at_least(&self, _want_bytes: u64) -> u64 {
+        // Signal-only pool — the monitor observes disk; it does not
+        // own any path to delete from. Concrete disk pools (genome
+        // cache etc.) register their own ResourcePool impls; the
+        // broker drives eviction against those. Returning 0 surfaces
+        // as a `PressureAlert { bytes_freed: 0, action_taken: true }`
+        // — operator sees "disk hot AND stuck on this tier" exactly
+        // because nothing owns the eviction here.
+        0
+    }
+
+    fn snapshot(&self) -> Vec<crate::paging::pool::ResourcePoolEntry> {
+        // No entries — the broker's snapshot view shows
+        // capacity/usage/pressure for this tier without any per-entry
+        // detail. Per-path detail lives on `DiskPressureSnapshot.paths`
+        // (populated by registered `DiskReporter`s), not on the broker
+        // surface.
+        Vec::new()
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

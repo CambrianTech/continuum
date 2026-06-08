@@ -275,7 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // env-tunable thresholds; this is the right shape (task #88).
     // Future PR: register as a ResourcePool with PressureBroker so disk
     // pressure participates in cross-resource tier-relief.
-    let _disk_pressure_monitor =
+    let disk_pressure_monitor =
         continuum_core::system_resources::DiskPressureMonitor::start(Vec::new());
 
     // Start IPC server in background thread FIRST (creates socket immediately).
@@ -287,6 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ipc_livekit_manager = livekit_manager.clone();
     let ipc_memory_manager = memory_manager.clone();
     let ipc_pressure_monitor = pressure_monitor.clone();
+    let ipc_disk_pressure_monitor = disk_pressure_monitor.clone();
     let mut ipc_ready_rx = continuum_core::ipc::subscribe_ready();
     let ipc_handle = std::thread::spawn(move || {
         if let Err(e) = start_server(
@@ -295,6 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rt_handle,
             ipc_memory_manager,
             ipc_pressure_monitor,
+            ipc_disk_pressure_monitor,
             boot_mode,
         ) {
             tracing::error!("❌ IPC server error: {}", e);
