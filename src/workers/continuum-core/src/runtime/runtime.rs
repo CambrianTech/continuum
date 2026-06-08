@@ -295,8 +295,10 @@ impl Runtime {
             .as_ref()
             .map(|metrics| metrics.start_command(command, queued_at));
 
-        // Execute command
-        let result = module.handle_command(&full_cmd, params).await;
+        // Execute command — wrapped in catch_unwind so a panicking
+        // handler converts to typed Err(String) instead of poisoning
+        // this dispatch task.
+        let result = dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
         drop(permit);
 
         // Record timing (automatic for ALL commands)
@@ -347,7 +349,8 @@ impl Runtime {
                 },
                 None => None,
             };
-            let result = module.handle_command(&full_cmd, params).await;
+            let result =
+                dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
             drop(permit);
             let _ = tx.send(result);
         });
@@ -635,6 +638,53 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         s.clone()
     } else {
         "<non-string panic payload>".to_string()
+    }
+}
+
+/// Dispatch a command to a module's `handle_command`, wrapped in
+/// `AssertUnwindSafe(...).catch_unwind()` so a panic inside the
+/// handler converts to a typed `Err(String)` instead of poisoning
+/// the dispatch task. Same RTOS-safe shape `start_tick_loops`,
+/// `MemoryPressureMonitor`, `DiskPressureMonitor`, and the per-persona
+/// `spawn_persona_service` use.
+///
+/// Why this is at the dispatch seam (not inside `handle_command`):
+/// every module's `handle_command` lives behind the trait, and we
+/// can't legislate `catch_unwind` discipline across the ~30 implementors
+/// individually. Wrapping at the dispatch site protects every existing
+/// module + every future module + the persona tool path that flows
+/// through `Commands.execute` — one fix, blast radius bounded.
+///
+/// Panic events emit `probe!(class = "command.dispatch.panicked",
+/// command, module, reason)` so the JsonlProbeFileSink + ProbeRouterLayer
+/// already in tree surface them to operators on the canonical channel.
+pub(crate) async fn dispatch_with_panic_guard(
+    module: &Arc<dyn ServiceModule>,
+    full_cmd: &str,
+    params: serde_json::Value,
+    module_name: &str,
+) -> Result<CommandResult, String> {
+    let result = AssertUnwindSafe(module.handle_command(full_cmd, params))
+        .catch_unwind()
+        .await;
+    match result {
+        Ok(r) => r,
+        Err(panic) => {
+            let panic_msg = panic_message(&*panic);
+            error!(
+                "Command '{}' panicked in module '{}': {}",
+                full_cmd, module_name, panic_msg
+            );
+            crate::probe!(
+                class = "command.dispatch.panicked",
+                command = full_cmd,
+                module = module_name,
+                reason = %panic_msg
+            );
+            Err(format!(
+                "command '{full_cmd}' panicked in module '{module_name}': {panic_msg}"
+            ))
+        }
     }
 }
 

@@ -355,7 +355,13 @@ impl CommandExecutor {
         // 2. Try the local Rust module registry.
         if let Some((module, cmd)) = self.registry.route_command(command) {
             log.debug(&format!("Routing '{}' to local Rust module", command));
-            return module.handle_command(&cmd, params).await;
+            let module_name = module.config().name;
+            // catch_unwind guard — same shape `Runtime::route_command`
+            // uses. Persona tool execution flows through this path; a
+            // panicking handler converts to typed Err instead of
+            // poisoning the caller's task.
+            return super::runtime::dispatch_with_panic_guard(&module, &cmd, params, module_name)
+                .await;
         }
 
         // 3. Fall through to TypeScript via Unix socket.
