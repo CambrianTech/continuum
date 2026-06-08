@@ -42,6 +42,7 @@ pub mod shared_analysis;
 pub mod should_respond;
 pub mod threat_detector;
 pub mod throughput_lease;
+pub mod tool_discovery;
 pub mod tool_embedding;
 pub mod tool_executor;
 pub mod turn_batch;

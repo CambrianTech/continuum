@@ -141,6 +141,28 @@ pub struct GenerateResponseRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub admission: Option<GenerateResponseAdmissionPolicy>,
+    /// Native tool descriptors visible to the model on this turn. The
+    /// substrate's universal command surface — every citizen sees the
+    /// same set; the model decides what to call. See
+    /// [`crate::cognition::tool_discovery::discoverable_tools`] for the
+    /// canonical producer that walks the `ModuleRegistry` and emits
+    /// one spec per registered command.
+    ///
+    /// `None` (the default) preserves the prior "no tools this turn"
+    /// behavior for chat-only callers and back-compat with every
+    /// existing call site. Cognition-cycle paths that want the
+    /// persona to be able to act populate this from
+    /// `discoverable_tools(registry)`.
+    ///
+    /// Per `[[commands-are-kernel-level-and-compose]]` this is NOT a
+    /// permission gate — it's the model's *disposition surface*. The
+    /// substrate does not restrict which subset of the discovered
+    /// tools a model can call: any citizen calls any command. Role
+    /// templates eventually carry priming-only hints that shape the
+    /// model's decision space, not the substrate's authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tools: Option<Vec<crate::ai::types::NativeToolSpec>>,
 }
 
 /// Per-call local-generation admission policy. This is the contract a
@@ -384,7 +406,16 @@ pub fn build_response_generation_request(
         top_k: None,
         repeat_penalty: None,
         stop_sequences: None,
-        tools: None,
+        // Pass-through from the cognition request. `None` (default)
+        // preserves the prior "no tools this turn" behavior; a
+        // populated `request.tools` (typically from
+        // `crate::cognition::tool_discovery::discoverable_tools`)
+        // hands the model the substrate's full command surface.
+        tools: request.tools.clone(),
+        // tool_choice stays None for now — the substrate doesn't
+        // force a tool. Letting the model decide is consistent with
+        // `[[no-if-statements-use-llms-for-cognition]]`: the brain
+        // owns the decision, not a substrate rule.
         tool_choice: None,
         // Local Qwen takes plain text; no JSON-mode constraint here.
         response_format: Some(ResponseFormat::Text),
@@ -1033,6 +1064,7 @@ mod tests {
             max_tokens: max,
             timeout_ms: timeout,
             admission: None,
+            tools: None,
         }
     }
 
@@ -1047,6 +1079,7 @@ mod tests {
             max_tokens: None,
             timeout_ms: Some(100),
             admission: Some(admission),
+            tools: None,
         }
     }
 
