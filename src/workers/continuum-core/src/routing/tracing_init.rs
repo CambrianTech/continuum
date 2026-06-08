@@ -85,10 +85,26 @@ pub struct ProbeTracingConfig {
     /// set = "no filter, every class passes" per the sink's
     /// [`class_passes_filter`](super::probe_file_sink) rules.
     pub probe_classes: HashSet<String>,
-    /// `EnvFilter` directive applied to the fmt (stderr) layer when
+    /// `EnvFilter` directive applied to the fmt layer when
     /// `RUST_LOG` is unset. `"info"` for production servers; `"warn"`
     /// for noisy tests. Empty string falls back to `"info"`.
     pub default_filter: String,
+    /// Directory the fmt layer's rolling log writer drains to. When
+    /// `Some`, the substrate writes its tracing firehose to a
+    /// `daily`-rotated file under this directory (max 7 files
+    /// retained) — operator never has to redirect stderr, the
+    /// substrate manages its own log persistence.
+    ///
+    /// When `None` (e.g. unit tests where an external subscriber
+    /// already captures events), the fmt layer falls back to stderr.
+    /// Production callers should always set this.
+    ///
+    /// Per `[[never-redirect-substrate-stderr]]` (Joel 2026-06-07):
+    /// the operator-facing `> /tmp/server.log 2>&1` pattern ate a
+    /// host's disk in minutes by capturing the full tracing firehose
+    /// at `RUST_LOG=info`. Substrate owns log persistence; shell
+    /// redirects are forbidden.
+    pub log_dir: Option<PathBuf>,
 }
 
 impl ProbeTracingConfig {
@@ -112,25 +128,62 @@ impl ProbeTracingConfig {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
+        // log_dir: `CONTINUUM_LOG_DIR` env var overrides; otherwise
+        // default to `~/.continuum/logs/`. The substrate owning log
+        // persistence is the doctrine — even on a fresh box where
+        // the env var is unset, npm start writes to a managed file
+        // not stderr-unbounded. Only when neither the env var is set
+        // NOR a home directory resolvable (containerized envs with
+        // HOME unset, certain CI shapes) does this remain `None` and
+        // fmt falls back to stderr — that's an explicit "no managed
+        // log dir for this run" outcome, not a silent default.
+        let log_dir = std::env::var(ENV_LOG_DIR)
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|h| h.join(".continuum").join("logs")));
         Self {
             probe_file,
             probe_classes,
             default_filter: default_filter.to_string(),
+            log_dir,
         }
     }
 }
+
+/// Env var name for the fmt-layer rolling-log directory. Operator
+/// override of the `~/.continuum/logs/` default. Set this in
+/// containerized environments where `$HOME` isn't the right place.
+pub const ENV_LOG_DIR: &str = "CONTINUUM_LOG_DIR";
 
 /// Result of the install — tells the caller whether disk capture is
 /// active so it can be logged at boot ("probes landing at
 /// /tmp/x.jsonl" is the kind of one-line confirmation that prevents
 /// the "I set the env var, where are my probes" confusion).
-#[derive(Debug)]
 pub struct ProbeInstall {
     /// Path the JSONL sink is writing to, if `CONTINUUM_PROBE_FILE`
     /// was set and the file opened successfully. `None` = no disk
     /// capture this run (env var unset, OR test path where a
     /// caller-provided subscriber is already installed).
     pub probe_log_path: Option<PathBuf>,
+    /// Directory the fmt-layer rolling-log writer is draining to,
+    /// when `config.log_dir` was supplied and writable. The substrate
+    /// writes `continuum-core-server.<date>.log` files there with
+    /// `Rotation::DAILY` + `max_log_files(7)` retention. `None` =
+    /// fmt layer fell back to stderr (test path with no managed log
+    /// dir). Use this to print a "logs landing at <path>" line at
+    /// boot.
+    pub log_dir: Option<PathBuf>,
+    /// `WorkerGuard` for the non-blocking rolling-log writer. Must
+    /// be held alive for the process lifetime — dropping it flushes
+    /// + shuts down the background writer thread, so the caller
+    /// (`main.rs`) stashes this in a `let _guard = ...;` binding at
+    /// process scope. Dropping early loses tail-of-process log
+    /// lines.
+    ///
+    /// `None` when fmt fell back to stderr (no rolling writer to
+    /// keep alive). Field deliberately not `Debug` — `WorkerGuard`
+    /// isn't Debug; the `ProbeInstall` derive is gone above.
+    pub fmt_writer_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
 /// Install the substrate's canonical tracing stack on the GLOBAL
@@ -174,39 +227,94 @@ pub fn install_probe_tracing(
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
-    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-
-    // Build the optional file sink BEFORE the registry chain so we
-    // can either include it or skip it cleanly. None = no disk
-    // capture this run (caller didn't ask). Path supplied but
-    // unwritable = typed error surfaced to caller per
-    // `[[no-fallbacks-ever]]`.
-    let (file_sink, probe_log_path) = match config.probe_file {
-        Some(path) => {
-            let sink = JsonlProbeFileSink::new(&path, config.probe_classes)?;
-            (Some(sink), Some(path))
+    // Build the fmt-layer writer. When the operator supplied a
+    // log_dir (production path: `~/.continuum/logs/` from
+    // `ProbeTracingConfig::from_env`), drain through
+    // `tracing_appender::rolling::daily` + `non_blocking`. Rotation
+    // daily, retention 7 files — operator never has to clean up,
+    // disk usage stays bounded. The `WorkerGuard` MUST be held alive
+    // by the caller for the process lifetime; we hand it back in
+    // `ProbeInstall`.
+    //
+    // When log_dir is None (test path), fall back to stderr — the
+    // test harness already captures stderr through `cargo test`
+    // shape, no rolling-file needed.
+    //
+    // Per `[[never-redirect-substrate-stderr]]`: the stderr path
+    // exists ONLY for tests + explicit operator opt-out. Production
+    // boots should always have `log_dir = Some(...)` set so the
+    // substrate manages its own log persistence and any operator
+    // shell redirect captures an empty stream.
+    let (log_dir_out, fmt_writer_guard) = match config.log_dir.as_ref() {
+        Some(dir) => {
+            // Refuse to silently fall back if the configured dir
+            // can't be created. `[[no-fallbacks-ever]]`: surface a
+            // typed error so the operator gets the exact path that
+            // failed.
+            std::fs::create_dir_all(dir).map_err(|e| ProbeFileSinkError::OpenFailed {
+                path: dir.clone(),
+                source: e,
+            })?;
+            let file_appender = tracing_appender::rolling::Builder::new()
+                .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .filename_prefix("continuum-core-server")
+                .filename_suffix("log")
+                .max_log_files(7)
+                .build(dir)
+                .map_err(|e| ProbeFileSinkError::OpenFailed {
+                    path: dir.clone(),
+                    // tracing_appender's InitError doesn't implement
+                    // io::Error directly; wrap its Display.
+                    source: std::io::Error::other(e.to_string()),
+                })?;
+            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+            let fmt_layer = tracing_subscriber::fmt::layer().with_writer(non_blocking);
+            let probe_file_sink = build_probe_file_sink(&config.probe_file, config.probe_classes.clone())?;
+            let registry = tracing_subscriber::registry()
+                .with(UriCaptureLayer::new())
+                .with(ProbeRouterLayer::new())
+                .with(probe_file_sink)
+                .with(fmt_layer.with_filter(env_filter));
+            let _ = registry.try_init();
+            (Some(dir.clone()), Some(guard))
         }
-        None => (None, None),
+        None => {
+            let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+            let probe_file_sink = build_probe_file_sink(&config.probe_file, config.probe_classes.clone())?;
+            let registry = tracing_subscriber::registry()
+                .with(UriCaptureLayer::new())
+                .with(ProbeRouterLayer::new())
+                .with(probe_file_sink)
+                .with(fmt_layer.with_filter(env_filter));
+            let _ = registry.try_init();
+            (None, None)
+        }
     };
 
-    // Compose the registry. The fmt layer wraps the env-filter so
-    // RUST_LOG governs human-facing output; probe layers see EVERY
-    // event regardless of RUST_LOG (probes are structured records,
-    // not text logs — they're filtered by class via
-    // CONTINUUM_PROBE_CLASSES, not by tracing's level system).
-    let registry = tracing_subscriber::registry()
-        .with(UriCaptureLayer::new())
-        .with(ProbeRouterLayer::new())
-        .with(file_sink) // Option<JsonlProbeFileSink>: tracing's Layer impl handles None
-        .with(fmt_layer.with_filter(env_filter));
+    let probe_log_path = config.probe_file;
 
-    // try_init succeeds the first call, no-ops on subsequent calls.
-    // Errors here mean another subscriber was already installed —
-    // benign for repeated init from tests, so we drop the error
-    // intentionally to keep the helper idempotent.
-    let _ = registry.try_init();
+    Ok(ProbeInstall {
+        probe_log_path,
+        log_dir: log_dir_out,
+        fmt_writer_guard,
+    })
+}
 
-    Ok(ProbeInstall { probe_log_path })
+/// Shared helper — both fmt-writer branches need the same probe
+/// file sink built up. Pulled out so the registry-build sites stay
+/// readable and so a future test can swap the sink construction
+/// independently.
+fn build_probe_file_sink(
+    probe_file: &Option<PathBuf>,
+    probe_classes: HashSet<String>,
+) -> Result<Option<JsonlProbeFileSink>, ProbeFileSinkError> {
+    match probe_file.as_ref() {
+        Some(path) => {
+            let sink = JsonlProbeFileSink::new(path, probe_classes)?;
+            Ok(Some(sink))
+        }
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +332,7 @@ mod tests {
             probe_file: None,
             probe_classes: HashSet::new(),
             default_filter: "warn".to_string(),
+            log_dir: None,
         };
         let first = install_probe_tracing(config.clone());
         let second = install_probe_tracing(config);
@@ -250,13 +359,18 @@ mod tests {
             )),
             probe_classes: HashSet::new(),
             default_filter: "warn".to_string(),
+            log_dir: None,
         };
         let result = install_probe_tracing(config);
-        assert!(
-            matches!(result, Err(ProbeFileSinkError::OpenFailed { .. })),
-            "unwritable path must surface typed error, got {:?}",
-            result
-        );
+        // Can't `{:?}` the Ok branch — ProbeInstall holds a
+        // WorkerGuard which isn't Debug. Match the variant
+        // explicitly instead so the assertion error is still
+        // informative.
+        match &result {
+            Err(ProbeFileSinkError::OpenFailed { .. }) => {}
+            Err(other) => panic!("expected OpenFailed, got error {other:?}"),
+            Ok(_) => panic!("expected Err, got Ok(_)"),
+        }
     }
 
     /// The env-coupling seam. `from_env` is the ONE function that
@@ -293,6 +407,20 @@ mod tests {
         assert!(empty.probe_file.is_none());
         assert!(empty.probe_classes.is_empty());
         assert_eq!(empty.default_filter, "warn");
+        // log_dir defaults to `~/.continuum/logs/` when neither
+        // `CONTINUUM_LOG_DIR` nor `dirs::home_dir()` failure forces
+        // None. CI runners always have HOME; the only None case is
+        // truly homeless environments. Pin the default so future
+        // refactors can't silently move logs back to stderr-default.
+        let log_dir = empty
+            .log_dir
+            .as_deref()
+            .expect("CI/dev environments have HOME — default must resolve");
+        assert!(
+            log_dir.ends_with(std::path::PathBuf::from(".continuum/logs")),
+            "default log_dir should end with .continuum/logs, got {}",
+            log_dir.display()
+        );
 
         // Restore prior env state so other tests aren't affected
         // by ordering even if cargo's parallel runner interleaves.

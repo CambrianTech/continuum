@@ -119,6 +119,11 @@ thiserror = "2"
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Rolling-file writer for the fmt layer so operators don't need to
+# remember to `2>/dev/null`. Pinned to 0.2 — Builder::max_log_files
+# (used in routing/tracing_init.rs) requires ≥0.2.4. See
+# `[[never-redirect-substrate-stderr]]` doctrine memory for why.
+tracing-appender = "0.2"
 
 # Embedding (fastembed)
 fastembed = "5"

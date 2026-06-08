@@ -123,6 +123,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // env var SHOULD see this confirmation.
         eprintln!("[continuum-core-server] probes landing at {}", path.display());
     }
+    // Per `[[never-redirect-substrate-stderr]]`: the substrate now
+    // owns its tracing fmt-layer log persistence via a rolling-file
+    // sink under `~/.continuum/logs/` (or `$CONTINUUM_LOG_DIR`).
+    // Surfacing the path at boot prevents the "where are my logs?"
+    // confusion for anyone migrating off the (forbidden)
+    // `npm start 2>&1 | tee /tmp/server.log` pattern.
+    if let Some(ref dir) = probe_install.log_dir {
+        eprintln!(
+            "[continuum-core-server] logs landing at {}/continuum-core-server.YYYY-MM-DD.log (rolling daily, retention 7)",
+            dir.display()
+        );
+    }
+    // CRITICAL: hold the non-blocking writer's WorkerGuard for the
+    // process lifetime. Dropping it flushes + shuts down the
+    // background writer thread; we MUST keep it alive so tail-of-
+    // process log lines reach disk. Underscore-prefixed binding
+    // keeps Rust quiet about "unused" while still binding (vs.
+    // `let _ = ...` which drops immediately).
+    let _log_writer_guard = probe_install.fmt_writer_guard;
 
     // ORT panic-filter deferred to A.2.2 (lands together with the
     // libonnxruntime dlopen probe + 🔊/🔇 voice subsystem indicator

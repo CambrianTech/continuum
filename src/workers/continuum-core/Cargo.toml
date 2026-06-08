@@ -114,6 +114,7 @@ earshot = "0.1"  # Fast VAD (WebRTC-style)
 msedge-tts.workspace = true  # Edge-TTS (free Microsoft TTS API)
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
 
