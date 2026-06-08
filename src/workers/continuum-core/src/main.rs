@@ -30,6 +30,7 @@ use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager
 /// Usage: continuum-core-server <socket-path>
 /// Example: continuum-core-server /tmp/continuum-core.sock
 use continuum_core::routing::{install_probe_tracing, ProbeTracingConfig};
+use continuum_core::runtime::boot_status::{boot_status, BootStatusKind};
 use continuum_core::start_server;
 use std::env;
 use std::sync::Arc;
@@ -117,11 +118,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // sink with zero binary changes; the boot log below reports
     // the path so the operator sees it landed.
     let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;
+    // Boot status lines (substrate refuses to lie at boot per card
+    // `e9f50a36`): every load-bearing subsystem reports one line on
+    // stderr AND as a structured `boot.status` probe. See
+    // `runtime/boot_status.rs` for the contract.
     if let Some(ref path) = probe_install.probe_log_path {
-        // Use println so it appears even when RUST_LOG filters out
-        // info-level tracing events — the operator who just set the
-        // env var SHOULD see this confirmation.
-        eprintln!("[continuum-core-server] probes landing at {}", path.display());
+        boot_status(
+            "probes",
+            BootStatusKind::Ok,
+            &format!("landing at {}", path.display()),
+        );
+    } else {
+        // Operator didn't set CONTINUUM_PROBE_FILE — JSONL disk
+        // capture is OFF. Not a failure; it's an explicit "no probe
+        // file this run." Report as Degraded so the boot summary
+        // makes the off-state visible (the operator who *thought*
+        // they had probes wired up sees it immediately).
+        boot_status(
+            "probes",
+            BootStatusKind::Degraded,
+            "disk capture off — set CONTINUUM_PROBE_FILE=<path>.jsonl to enable",
+        );
     }
     // Per `[[never-redirect-substrate-stderr]]`: the substrate now
     // owns its tracing fmt-layer log persistence via a rolling-file
@@ -130,9 +147,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // confusion for anyone migrating off the (forbidden)
     // `npm start 2>&1 | tee /tmp/server.log` pattern.
     if let Some(ref dir) = probe_install.log_dir {
-        eprintln!(
-            "[continuum-core-server] logs landing at {}/continuum-core-server.YYYY-MM-DD.log (rolling daily, retention 7)",
-            dir.display()
+        boot_status(
+            "logs",
+            BootStatusKind::Ok,
+            &format!(
+                "{}/continuum-core-server.YYYY-MM-DD.log (rolling daily, retention 7)",
+                dir.display()
+            ),
+        );
+    } else {
+        // Truly homeless environments (no HOME, no CONTINUUM_LOG_DIR)
+        // — fmt fell back to stderr. Operator's shell-redirect bomb
+        // risk is back; flag it loudly.
+        boot_status(
+            "logs",
+            BootStatusKind::Degraded,
+            "no managed log dir — fmt falling back to stderr (set CONTINUUM_LOG_DIR=<path>)",
         );
     }
     // CRITICAL: hold the non-blocking writer's WorkerGuard for the
@@ -206,7 +236,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🦀 Continuum Core Server starting...");
     info!("   IPC Socket: {socket_path}");
-    info!("   Boot mode:  {} ({})", boot_mode.label(), boot_mode_description(boot_mode));
+    // Boot mode is load-bearing: it gates whether AIRC degradation
+    // aborts boot (FullCitizen / FailFast) or is allowed (InferenceOnly).
+    // Operators need this line to confirm `--mode=` got parsed; sentinels
+    // subscribed to `boot.status` use it to gate downstream behavior.
+    boot_status(
+        "boot-mode",
+        BootStatusKind::Ok,
+        &format!(
+            "{} ({})",
+            boot_mode.label(),
+            boot_mode_description(boot_mode)
+        ),
+    );
 
     // Create LiveKit agent manager — routes audio/video through LiveKit WebRTC SFU.
     // Handles speak-in-call, inject-audio, ambient, and video track publishing.

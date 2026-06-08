@@ -27,6 +27,7 @@ use std::sync::OnceLock;
 pub mod airc_interceptor;
 pub mod artifact_handle;
 pub mod boot_mode;
+pub mod boot_status;
 pub mod brain_region;
 pub mod cell_shapes;
 pub mod command_envelope;
