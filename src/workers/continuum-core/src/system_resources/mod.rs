@@ -12,11 +12,16 @@
 //! Uses the `sysinfo` crate for cross-platform (macOS/Linux/Windows) monitoring.
 
 pub mod concurrency;
+pub mod disk_pressure;
 pub mod memory_pressure;
 pub mod monitor;
 
 pub use concurrency::local_inference_capacity;
 
+pub use disk_pressure::{
+    is_disk_gate_closed, DiskPathReport, DiskPressureLevel, DiskPressureMonitor,
+    DiskPressureSnapshot, DiskReporter,
+};
 pub use memory_pressure::{
     is_memory_gate_closed, MemoryBudgetAllocation, MemoryBudgetSnapshot, MemoryBudgetSpec,
     MemoryPressureMonitor, MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel,

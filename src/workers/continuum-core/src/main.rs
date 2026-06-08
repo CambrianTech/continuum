@@ -268,6 +268,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pressure_monitor =
         continuum_core::system_resources::MemoryPressureMonitor::start(Vec::new());
 
+    // Start disk pressure monitor — same RTOS shape as memory (own task,
+    // watch channel, atomic gate, 100 ms reporter timeout + quarantine).
+    // Polls every 30 s. The disk-guard slop that triggered the
+    // CONCURRENCY-STYLE-GUIDE was a synchronous main-thread probe with
+    // env-tunable thresholds; this is the right shape (task #88).
+    // Future PR: register as a ResourcePool with PressureBroker so disk
+    // pressure participates in cross-resource tier-relief.
+    let _disk_pressure_monitor =
+        continuum_core::system_resources::DiskPressureMonitor::start(Vec::new());
+
     // Start IPC server in background thread FIRST (creates socket immediately).
     // The thread publishes `ipc::subscribe_ready()`'s watch once the Unix
     // socket is bound + chmod'd, so main advances on a real signal instead
