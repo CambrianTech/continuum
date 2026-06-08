@@ -29,8 +29,3 @@ default = []
 # Mock transport for downstream unit tests of consumers (CLI, SDK FFI shims).
 test-fixtures = []
 
-[dev-dependencies]
-# Loopback fixture for cross-airc integration tests of AircIpcTransport.
-airc-test-fixtures = { path = "../../core/airc-test-fixtures" }
-airc-protocol = { workspace = true }
-futures = "0.3"
