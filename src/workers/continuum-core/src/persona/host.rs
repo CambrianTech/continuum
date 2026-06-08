@@ -99,8 +99,50 @@ pub async fn spawn_persona_service(
         .await
         .map_err(|e| format!("conversation.prime() failed before spawn: {e}"))?;
 
+    // Wrap the per-persona service loop in `catch_unwind` so a panic
+    // inside any single turn (malformed input, adapter bug, RAG store
+    // corruption) doesn't silently kill THIS persona's task — same
+    // RTOS-safe shape `start_tick_loops` uses for every ServiceModule.
+    // Per docs/architecture/CONCURRENCY-STYLE-GUIDE.md: every owned
+    // task wraps its body in `AssertUnwindSafe(...).catch_unwind()`
+    // and surfaces panics through `probe!` + per-module logger.
+    let persona_name = ctx.identity.agent_name.to_string();
+    let persona_id = ctx.identity.persona_id;
     Ok(rt_handle.spawn(async move {
-        serve_persona_loop(&ctx, &mut conversation, reader, opts).await
+        use futures::FutureExt;
+        let outcome = std::panic::AssertUnwindSafe(serve_persona_loop(
+            &ctx,
+            &mut conversation,
+            reader,
+            opts,
+        ))
+        .catch_unwind()
+        .await;
+        match outcome {
+            Ok(r) => r,
+            Err(panic) => {
+                let panic_msg = if let Some(s) = panic.downcast_ref::<&'static str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "<non-string panic payload>".to_string()
+                };
+                tracing::error!(
+                    persona = %persona_name,
+                    persona_id = %persona_id,
+                    "Persona service_loop aborted with panic: {}",
+                    panic_msg
+                );
+                crate::probe!(
+                    class = "persona.service_loop.aborted",
+                    persona = %persona_name,
+                    persona_id = %persona_id,
+                    reason = %panic_msg
+                );
+                Err(format!("persona '{persona_name}' service loop panicked: {panic_msg}"))
+            }
+        }
     }))
 }
 
