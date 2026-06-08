@@ -2,8 +2,38 @@
 //! over airc. See module-level docs on `routing::airc_command_protocol`
 //! in continuum-core for the full transport flow + envelope rationale.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+// ─── Wire-stable route kind constants ────────────────────────────────
+//
+// The wire-shape of a `RouteDecision` boils down to a kind string. The
+// substrate's typed `RouteKind` projects to one of these literals; the
+// client side hardcodes the same string. Hoisting here prevents drift
+// on rename — both ends import from the protocol crate.
+
+/// Substrate-local dispatch. Should never reach the wire (substrate
+/// dispatchers route Local inline), but defined for completeness.
+pub const KIND_LOCAL: &str = "local";
+
+/// A specific peer dispatch (`airc://<peer>/...`).
+pub const KIND_PEER: &str = "peer";
+
+/// A room broadcast (`airc://room:<id>/...`).
+pub const KIND_ROOM: &str = "room";
+
+/// An env-wildcard broadcast (`airc://<peer>:*/...`).
+pub const KIND_BROADCAST: &str = "broadcast";
+
+// ─── Default round-trip deadline ─────────────────────────────────────
+
+/// Default deadline both the substrate's cross-grid `AircTransport`
+/// and the client's `AircIpcTransport` apply when the caller didn't
+/// specify one. Lives here so client and server agree on the
+/// budget; if either bumps it, the other must agree (or override).
+pub const DEFAULT_COMMAND_DEADLINE: Duration = Duration::from_secs(30);
 
 // ─── Header constants ────────────────────────────────────────────────
 

@@ -89,7 +89,7 @@ Two environment variables — no recompile, no config file:
 
 ```bash
 # Capture every persona.* probe + every cognition.* probe to disk
-export CONTINUUM_PROBE_FILE=/tmp/continuum-probes.jsonl
+export CONTINUUM_PROBE_DIR=/tmp/continuum-probes.jsonl
 export CONTINUUM_PROBE_CLASSES=persona,cognition
 
 # Or capture EVERYTHING (the firehose):
@@ -99,7 +99,7 @@ export CONTINUUM_PROBE_CLASSES=*
 export CONTINUUM_PROBE_CLASSES=cognition.analyze.parse,persona.turn,timing
 ```
 
-- `CONTINUUM_PROBE_FILE` (path) — append-only JSONL log. Unset = file sink absent. Directory must exist; the sink errors loudly if not (no silent drop per `[[no-fallbacks-ever]]`).
+- `CONTINUUM_PROBE_DIR` (path) — append-only JSONL log. Unset = file sink absent. Directory must exist; the sink errors loudly if not (no silent drop per `[[no-fallbacks-ever]]`).
 - `CONTINUUM_PROBE_CLASSES` (comma-separated) — class filter. Each value is matched against each probe's `class` by one of three rules (same convention as `tracing_subscriber`'s `RUST_LOG`):
 
   1. **`*`** — wildcard; matches every class. Use to capture the firehose and filter offline with `jq`.

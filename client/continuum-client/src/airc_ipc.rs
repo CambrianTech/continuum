@@ -22,7 +22,7 @@ use airc_core::{Body, MentionTarget, PeerId};
 use airc_lib::Airc;
 use continuum_airc_protocol::command::{
     AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, HEADER_COMMAND_ENV,
-    HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_CONTINUUM_BODY_HINT,
+    HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
 };
 use uuid::Uuid;
 
@@ -30,11 +30,11 @@ use crate::error::ClientError;
 use crate::event::EventStream;
 use crate::transport::Transport;
 
-/// Default round-trip deadline. Matches the substrate's own
-/// `AircTransport::DEFAULT_DEADLINE` so client and server agree on the
-/// budget. Override with [`AircIpcTransport::with_deadline`] for long
-/// LLM generations.
-pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(30);
+/// Default round-trip deadline. Re-export of the shared
+/// `continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE` so client and
+/// substrate agree by import, not literal duplication. Override with
+/// [`AircIpcTransport::with_deadline`] for long LLM generations.
+pub use continuum_airc_protocol::command::DEFAULT_COMMAND_DEADLINE as DEFAULT_DEADLINE;
 
 /// Local substrate transport over airc IPC.
 ///
@@ -123,7 +123,7 @@ impl Transport for AircIpcTransport {
         // Client side always uses the "peer" route kind — we're
         // dispatching at a specific substrate peer over its IPC.
         let request =
-            AircCommandRequest::new(command.to_string(), "peer".to_string(), None, params);
+            AircCommandRequest::new(command.to_string(), KIND_PEER.to_string(), None, params);
 
         let body_value = serde_json::to_value(&request)?;
         let body = Body::Json(body_value);

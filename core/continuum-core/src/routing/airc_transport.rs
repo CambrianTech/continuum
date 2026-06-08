@@ -5,7 +5,7 @@
 //! `CommandExecutor::with_remote_transport(Arc::new(AircTransport::new(airc)))`,
 //! every non-Local [`RouteDecision`] flows through here:
 //!
-//! 1. [`AircCommandRequest::from_route_decision`] packages the typed
+//! 1. [`command_request_from_route_decision`] packages the typed
 //!    decision into the wire envelope
 //! 2. The envelope serializes as a [`Body::Json`]
 //! 3. Headers are stamped (path, kind, env, body_hint) so middleware
@@ -79,11 +79,11 @@ use super::{
 };
 use crate::runtime::CommandResult;
 
-/// Default deadline used when the caller didn't set one. Cross-grid
-/// dispatch is expected to be I/O-bound but not slow on the wire
-/// itself; 30 seconds covers a Qwen 30B generation comfortably while
-/// still bounding accidental indefinite waits.
-pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(30);
+/// Default deadline used when the caller didn't set one. Re-export of
+/// the shared `continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE` so
+/// substrate and client agree by import, not by literal duplication
+/// (per the wire-drift-prevention purpose of the protocol crate).
+pub use continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE as DEFAULT_DEADLINE;
 
 /// The substrate's cross-grid `Transport`.
 ///
@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(err, "forbidden: NoPermissionForUri(\"x/y\")");
     }
 
-    /// AircCommandRequest::from_route_decision is the typed bridge
+    /// command_request_from_route_decision is the typed bridge
     /// from RouteDecision to wire envelope; pin that the transport
     /// uses it correctly for the variants we DO implement.
     #[test]

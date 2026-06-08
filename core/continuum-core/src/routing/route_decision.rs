@@ -165,10 +165,10 @@ impl RouteKind {
     /// stable identifier for telemetry / routing config.
     pub fn as_str(&self) -> &'static str {
         match self {
-            RouteKind::Local => "local",
-            RouteKind::Peer => "peer",
-            RouteKind::Room => "room",
-            RouteKind::Broadcast => "broadcast",
+            RouteKind::Local => continuum_airc_protocol::KIND_LOCAL,
+            RouteKind::Peer => continuum_airc_protocol::KIND_PEER,
+            RouteKind::Room => continuum_airc_protocol::KIND_ROOM,
+            RouteKind::Broadcast => continuum_airc_protocol::KIND_BROADCAST,
         }
     }
 }

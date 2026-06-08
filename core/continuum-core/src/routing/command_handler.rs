@@ -211,7 +211,7 @@ impl CommandRequestHandler {
         // but no per-env service registration yet. Until then,
         // env-targeted calls hard-error so the caller knows the
         // semantics aren't wired.
-        if parsed.request.kind != "peer" {
+        if parsed.request.kind != continuum_airc_protocol::KIND_PEER {
             return AircCommandResponse::error(format!(
                 "remote dispatch kind={:?} not yet implemented — \
                  only kind=\"peer\" is wired. Room broadcast and \

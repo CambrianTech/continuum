@@ -141,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Env-coupling lives at exactly one seam: `from_env(...)`. The
     // installer takes only typed values — tests construct config
     // directly without racing `std::env::set_var`. Setting
-    // `CONTINUUM_PROBE_FILE=/tmp/probes.jsonl` lights up the JSONL
+    // `CONTINUUM_PROBE_DIR=/tmp/probes.jsonl` lights up the JSONL
     // sink with zero binary changes; the boot log below reports
     // the path so the operator sees it landed.
     let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;

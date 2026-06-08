@@ -20,7 +20,7 @@
 //!    broadcast subscribers. The substrate's `debug/probes/*` URI
 //!    consumers read from this.
 //! 3. [`JsonlProbeFileSink`] — append-only JSONL log on disk, gated
-//!    by `CONTINUUM_PROBE_FILE` env var. Optional — if the env var
+//!    by `CONTINUUM_PROBE_DIR` env var. Optional — if the env var
 //!    is unset the sink is silently skipped (the operator
 //!    intentionally didn't ask). Path-open failures are LOUD per
 //!    `[[no-fallbacks-ever]]` — caller decides whether to surface or
@@ -108,7 +108,7 @@ pub struct ProbeTracingConfig {
 }
 
 impl ProbeTracingConfig {
-    /// Read `CONTINUUM_PROBE_FILE` + `CONTINUUM_PROBE_CLASSES` env
+    /// Read `CONTINUUM_PROBE_DIR` + `CONTINUUM_PROBE_CLASSES` env
     /// vars into a typed `ProbeTracingConfig`. This is THE seam
     /// where env coupling lives — every other path through the
     /// substrate constructs the config directly.
@@ -160,7 +160,7 @@ pub const ENV_LOG_DIR: &str = "CONTINUUM_LOG_DIR";
 /// /tmp/x.jsonl" is the kind of one-line confirmation that prevents
 /// the "I set the env var, where are my probes" confusion).
 pub struct ProbeInstall {
-    /// Path the JSONL sink is writing to, if `CONTINUUM_PROBE_FILE`
+    /// Path the JSONL sink is writing to, if `CONTINUUM_PROBE_DIR`
     /// was set and the file opened successfully. `None` = no disk
     /// capture this run (env var unset, OR test path where a
     /// caller-provided subscriber is already installed).
@@ -350,7 +350,7 @@ mod tests {
     ///
     /// Parallel-safe because the bad path is passed via typed
     /// config — no env-var mutation, no racing on
-    /// `CONTINUUM_PROBE_FILE`.
+    /// `CONTINUUM_PROBE_DIR`.
     #[test]
     fn install_surfaces_open_failed_for_unwritable_path() {
         let config = ProbeTracingConfig {

@@ -26,7 +26,7 @@
 //!
 //! Two env vars — operator-friendly, zero-recompile:
 //!
-//! - `CONTINUUM_PROBE_FILE=/path/to/probes.jsonl` — append-only file.
+//! - `CONTINUUM_PROBE_DIR=/path/to/probes.jsonl` — append-only file.
 //!   Unset = sink absent. The directory must exist (sink errors on
 //!   open if not; honest failure beats silent drop per
 //!   `[[no-fallbacks-ever]]`).
@@ -135,11 +135,11 @@ pub struct JsonlProbeFileSink {
 /// the env var.
 #[derive(Debug)]
 pub enum ProbeFileSinkError {
-    /// `CONTINUUM_PROBE_FILE` was not set. NOT an error per se —
+    /// `CONTINUUM_PROBE_DIR` was not set. NOT an error per se —
     /// callers use this to detect "sink isn't configured, skip
     /// installation" and continue silently.
     EnvVarUnset,
-    /// `CONTINUUM_PROBE_FILE` was set but the file couldn't be
+    /// `CONTINUUM_PROBE_DIR` was set but the file couldn't be
     /// opened (directory missing, permissions, etc.). Per
     /// `[[no-fallbacks-ever]]` the substrate refuses to silently
     /// drop probes — operator must fix the path.
