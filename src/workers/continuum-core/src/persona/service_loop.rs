@@ -588,8 +588,21 @@ async fn serve_persona_loop_inner(
         // Per #195 slice 1: time the LLM bulk — typically the
         // dominant cost and the primary target of subsequent
         // optimization slices.
+        //
+        // Wrapped in `time_probe!` so every persona turn emits a
+        // dedicated `class = "timing", seam = "persona.respond"` event
+        // to the JsonlProbeFileSink. Operators tailing the JSONL get
+        // per-turn latency on the canonical timing channel — pair with
+        // the per-stage `persona.response.*` probes inside respond()
+        // for a full breakdown by seam. Doctrine
+        // `[[jtag-probes-are-rtos-debugger]]`: every meaningful seam
+        // should emit timing on the same wire so multi-persona
+        // optimization campaigns work from one probe stream.
         let respond_started = std::time::Instant::now();
-        let response_result = crate::persona::response::respond(respond_input).await;
+        let response_result = crate::time_probe!(
+            "persona.respond",
+            crate::persona::response::respond(respond_input)
+        );
         phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
         let response = match response_result {
             Ok(r) => r,
