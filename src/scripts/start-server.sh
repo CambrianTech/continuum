@@ -108,11 +108,32 @@ if [ -n "$CONTINUUM_RELEASE" ]; then
   PROFILE_LABEL="release"
 fi
 
+# Shared cargo target dir — every continuum invocation across every
+# worktree drains into ONE cache instead of N copies of the same
+# dependency tree. Pre-this-fix a single continuum-core debug build
+# with metal+accelerate produced ~42 GB of target/ artifacts per
+# worktree, with most of the cost being identical compiled deps
+# (llama.cpp, whisper.cpp, candle, bevy). 14 worktrees × duplicate
+# deps == 99% disk at $466 GB.
+#
+# CARGO_TARGET_DIR is the canonical cargo lever for this — setting
+# it env-side means EVERY cargo invocation (build, test, run, check)
+# from this script and anything it spawns picks it up. `~` is not
+# expanded by cargo's [env] config so we set it in the wrapper
+# script where shell expansion runs.
+#
+# Operators can still get per-worktree isolation for a one-shot
+# build by exporting `CARGO_TARGET_DIR=<somewhere>` BEFORE invoking
+# this script; the `:-` fallback below honors that override.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target}"
+mkdir -p "$CARGO_TARGET_DIR"
+
 echo "▶ continuum-core-server starting"
-echo "  profile:  $PROFILE_LABEL"
-echo "  features: $CONTINUUM_FEATURES"
-echo "  socket:   $CONTINUUM_SOCKET"
-echo "  airc:     room=${AIRC_DEFAULT_ROOM_NAME:-?} channel=${AIRC_DEFAULT_CHANNEL:-?}"
+echo "  profile:    $PROFILE_LABEL"
+echo "  features:   $CONTINUUM_FEATURES"
+echo "  socket:     $CONTINUUM_SOCKET"
+echo "  target dir: $CARGO_TARGET_DIR"
+echo "  airc:       room=${AIRC_DEFAULT_ROOM_NAME:-?} channel=${AIRC_DEFAULT_CHANNEL:-?}"
 echo ""
 
 cd "$PROJECT_DIR/workers/continuum-core"

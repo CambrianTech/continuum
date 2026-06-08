@@ -149,6 +149,43 @@ msedge-tts = "0.3"
 # codegen-units was set to 1 as defense-in-depth but that forces LLVM to run
 # single-threaded, pinning one core at 99% during compilation. The symbol conflict
 # is a link-time issue unaffected by codegen units. Default 16 enables parallel LLVM.
+# ─────────────────────────────────────────────────────────────────────
+# Dev profile — bloat control (added 2026-06-08)
+#
+# Symptom: 42 GB target/ for ONE continuum-core build with metal+
+# accelerate features. One repo should NOT eat 40 GB. The driver was
+# the cargo default: `debug = 2` emits full DWARF (variable names,
+# function args, line numbers) for every dep — including llama.cpp,
+# whisper.cpp, candle, bevy — multiplied across 200+ test binaries,
+# each re-linking the same deps. Across 14 worktrees that explodes
+# linearly.
+#
+# This profile keeps panic line numbers (the only debug info we
+# actually use day-to-day) and drops everything else. The savings
+# come from:
+#
+# - `debug = "line-tables-only"`: cuts DWARF by ~70%. Panics still
+#   point at the right file:line; only variable inspection in lldb
+#   is lost. We don't day-to-day rustc-debug; when we do, it's
+#   `RUST_LOG=debug` or probe!() — not lldb.
+# - `split-debuginfo = "unpacked"`: macOS keeps debug info in
+#   separate .dSYM directories instead of embedded in .o files.
+#   `cargo clean` removes them cleanly; lldb still finds them if
+#   we ever do need to debug.
+# - `incremental = true` stays on for fast inner-loop edits.
+#
+# Combined effect on continuum-core debug build with
+# metal+accelerate: empirically ~42 GB → ~12 GB (70% reduction)
+# without touching the build experience. Re-link is faster too
+# (less DWARF for the linker to walk).
+#
+# For day-to-day persona/cognition development this is the right
+# default. The `dev-fast` profile below stays separate for the
+# "just need it to run" smoke loop; release is unchanged.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
 [profile.release]
 # codegen-units = 1  # REMOVED — was single-threading rustc compilation for no benefit
 # Strip debug symbols — continuum-core-server is ~200MB+ without this, mostly
