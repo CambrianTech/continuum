@@ -196,6 +196,54 @@ enum HandleResult {
 // Connection Handler - Length-Prefixed Binary Framing
 // ============================================================================
 
+/// Pure projection: `AircDiscovery` → boot-status `(kind, detail)`.
+/// Kept separate from the boot site so unit tests pin the strings
+/// the operator will read at startup without spinning up the IPC
+/// server. Card e9f50a36 slice A3.
+///
+/// - `Healthy { socket, peer_id, room_name, default_room }` → Ok
+///   with the operator-actionable detail: socket path + truncated
+///   peer_id + room name. Peer is truncated to 8 chars (the same
+///   prefix airc itself uses for human-readable peer references)
+///   so the line stays under a terminal width.
+/// - `Degraded { reason, .. }` → Degraded with reason. The
+///   substrate still has a partial state but can't host personas
+///   on FullCitizen / FailFast.
+/// - `Unreachable { reason }` → Failed with reason. Operator action
+///   lives in the reason's Display impl (per
+///   `[[every-error-is-an-opportunity-to-battle-harden]]`).
+fn render_airc_boot_status(
+    discovery: &crate::airc::AircDiscovery,
+) -> (crate::runtime::boot_status::BootStatusKind, String) {
+    use crate::runtime::boot_status::BootStatusKind;
+    match discovery {
+        crate::airc::AircDiscovery::Healthy {
+            socket,
+            peer_id,
+            room_name,
+            ..
+        } => {
+            let peer_short: String = peer_id.to_string().chars().take(8).collect();
+            (
+                BootStatusKind::Ok,
+                format!(
+                    "socket={} peer={} room={}",
+                    socket.display(),
+                    peer_short,
+                    room_name
+                ),
+            )
+        }
+        crate::airc::AircDiscovery::Degraded { reason, .. } => (
+            BootStatusKind::Degraded,
+            format!("degraded: {reason}"),
+        ),
+        crate::airc::AircDiscovery::Unreachable { reason } => {
+            (BootStatusKind::Failed, format!("unreachable: {reason}"))
+        }
+    }
+}
+
 /// Send a length-prefixed JSON response frame.
 /// Frame format: [4 bytes u32 BE length][JSON payload bytes]
 fn send_json_frame<S: Write>(stream: &mut S, response: &Response) -> std::io::Result<()> {
@@ -431,6 +479,81 @@ mod tests {
         prepare_unix_socket_path(socket_path.to_str().unwrap()).unwrap();
 
         assert!(!socket_path.exists());
+    }
+
+    // ========================================================================
+    // Boot Status Rendering (card e9f50a36 slice A3)
+    // ========================================================================
+
+    #[test]
+    fn airc_boot_status_healthy_reports_socket_peer_room() {
+        use crate::airc::AircDiscovery;
+        use crate::runtime::boot_status::BootStatusKind;
+        use airc_core::RoomId;
+        use std::path::PathBuf;
+        use uuid::Uuid;
+
+        let peer = Uuid::parse_str("01234567-89ab-cdef-0123-456789abcdef").unwrap();
+        let discovery = AircDiscovery::Healthy {
+            socket: PathBuf::from("/Users/joel/.airc/runtime/airc.sock"),
+            default_room: RoomId::from_uuid(Uuid::new_v4()),
+            room_name: "general".into(),
+            peer_id: peer,
+        };
+
+        let (kind, detail) = render_airc_boot_status(&discovery);
+        assert_eq!(kind, BootStatusKind::Ok);
+        assert!(
+            detail.contains("socket=/Users/joel/.airc/runtime/airc.sock"),
+            "detail must cite socket path verbatim, got {detail:?}"
+        );
+        // Peer truncated to the 8-char prefix airc uses for short IDs
+        // — matches `airc status` / `airc peers` rendering.
+        assert!(
+            detail.contains("peer=01234567"),
+            "peer must be truncated to 8-char prefix, got {detail:?}"
+        );
+        assert!(
+            detail.contains("room=general"),
+            "detail must cite room name, got {detail:?}"
+        );
+    }
+
+    #[test]
+    fn airc_boot_status_degraded_is_warn_with_reason() {
+        use crate::airc::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
+        use crate::runtime::boot_status::BootStatusKind;
+
+        let discovery = AircDiscovery::Degraded {
+            reason: DiscoveryFailure::NoDefaultRoom,
+            partial: PartialDiscovery::default(),
+        };
+        let (kind, detail) = render_airc_boot_status(&discovery);
+        assert_eq!(kind, BootStatusKind::Degraded);
+        assert!(
+            detail.starts_with("degraded:"),
+            "degraded line must prefix with 'degraded:' so an operator \
+             grepping the boot summary can find every reduced-capacity \
+             subsystem with one literal, got {detail:?}"
+        );
+    }
+
+    #[test]
+    fn airc_boot_status_unreachable_is_failed_with_reason() {
+        use crate::airc::{AircDiscovery, DiscoveryFailure};
+        use crate::runtime::boot_status::BootStatusKind;
+
+        let discovery = AircDiscovery::Unreachable {
+            reason: DiscoveryFailure::AutoInstallDisabled,
+        };
+        let (kind, detail) = render_airc_boot_status(&discovery);
+        assert_eq!(kind, BootStatusKind::Failed);
+        assert!(
+            detail.starts_with("unreachable:"),
+            "unreachable line must prefix with 'unreachable:' so an \
+             operator can grep one literal for every Failed boot \
+             status, got {detail:?}"
+        );
     }
 
     // ========================================================================
@@ -947,6 +1070,17 @@ pub fn start_server(
         reason = ?discovery.reason(),
         "AIRC discovery complete"
     );
+    // Boot status report (card e9f50a36 slice A3): the operator
+    // needs to see whether airc is reachable BEFORE the substrate
+    // proceeds to require-persona-hosting checks below. The mapping
+    // is direct: Healthy → ✓, Degraded → ⚠, Unreachable → ✗. The
+    // detail line carries the socket / peer / room / reason so the
+    // boot summary is self-contained for postmortem reads.
+    {
+        use crate::runtime::boot_status::{boot_status, BootStatusKind};
+        let (kind, detail) = render_airc_boot_status(&discovery);
+        boot_status("airc", kind, &detail);
+    }
     let airc_module = Arc::new(AircModule::from_discovery(&discovery));
     let persona_bootstrap_deps = airc_module
         .daemon_socket()
