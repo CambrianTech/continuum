@@ -52,7 +52,7 @@ import { DataOpen } from '../../../../../../commands/data/open/shared/DataOpenTy
 import { VectorSearch } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 import { DataList } from '../../../../../../commands/data/list/shared/DataListTypes';
 import { DataCreate } from '../../../../../../commands/data/create/shared/DataCreateTypes';
-import type { CorpusMemory } from '../../../../../../workers/continuum-core/bindings/CorpusMemory';
+import type { CorpusMemory } from '../../../../../../../core/continuum-core/bindings/CorpusMemory';
 
 function selectDefaultConsolidationAdapter(
   persona: PersonaUser,

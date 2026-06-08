@@ -19,7 +19,7 @@ import { PEFTLoRAAdapter } from '@system/genome/fine-tuning/server/adapters/PEFT
 import { AdapterPackage } from '@system/genome/server/AdapterPackage';
 import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import { TrainingMemoryGuard } from '@system/genome/fine-tuning/server/TrainingMemoryGuard';
 import { sentinelEventBridge } from '@system/sentinel/SentinelEventBridge';
 import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';

@@ -9,7 +9,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { MigrationRollbackParams, MigrationRollbackResult } from '../shared/MigrationRollbackTypes';
 import { createMigrationRollbackResultFromParams } from '../shared/MigrationRollbackTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class MigrationRollbackServerCommand extends CommandBase<MigrationRollbackParams, MigrationRollbackResult> {
 

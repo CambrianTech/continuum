@@ -22,9 +22,9 @@
  */
 
 import WebSocket from 'ws';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../core/continuum-core/bindings/RustCoreIPC';
 import { CALL_SERVER_URL } from '../../shared/AudioConstants';
-import type { SttAdapterInfo } from '../../workers/continuum-core/bindings/modules/voice';
+import type { SttAdapterInfo } from '../../../core/continuum-core/bindings/modules/voice';
 import * as fs from 'fs';
 
 // ============================================================================

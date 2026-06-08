@@ -25,7 +25,7 @@ import { DEFAULT_AUDIO_NATIVE_CONFIG, AUDIO_NATIVE_VOICES } from '../shared/Audi
 import { Qwen3OmniRealtimeAdapter } from './adapters/Qwen3OmniRealtimeAdapter';
 import { GeminiLiveAdapter } from './adapters/GeminiLiveAdapter';
 import { GPT4oRealtimeAdapter } from './adapters/GPT4oRealtimeAdapter';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 import { Events } from '../../core/shared/Events';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';

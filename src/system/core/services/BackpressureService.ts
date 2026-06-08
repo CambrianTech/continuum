@@ -19,9 +19,9 @@
  */
 
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
-import type { PressureLevel } from '../../../shared/generated/system';
-import type { PressureSnapshotInfo } from '../../../workers/continuum-core/bindings/modules/system_resources';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
+import type { PressureLevel } from '@shared/generated/system';
+import type { PressureSnapshotInfo } from '../../../../core/continuum-core/bindings/modules/system_resources';
 
 /**
  * Priority levels for operations

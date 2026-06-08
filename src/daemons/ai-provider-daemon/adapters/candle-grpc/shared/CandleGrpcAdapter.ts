@@ -25,7 +25,7 @@ import type {
   UsageMetrics,
   RoutingInfo,
 } from '../../../shared/AIProviderTypesV2';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'candle';

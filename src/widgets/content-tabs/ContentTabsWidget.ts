@@ -38,7 +38,7 @@ export interface TabInfo {
 }
 
 /** Icons from generated content type configs — no hardcoded map needed */
-import { getContentTypeIcon } from '../../shared/generated/ContentTypes';
+import { getContentTypeIcon } from '@shared/generated/ContentTypes';
 
 export class ContentTabsWidget extends ReactiveWidget {
   static override styles = [

@@ -1,7 +1,7 @@
 /**
  * Message types for Archive Worker communication
  *
- * IMPORTANT: Keep in sync with Rust workers/archive/src/messages.rs
+ * IMPORTANT: Keep in sync with Rust ../core/archive/src/messages.rs
  */
 
 // ============================================================================

@@ -15,11 +15,11 @@
  * Rust handles: Fast compute, state tracking, deduplication
  */
 
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
-import type { PersonaRespondRequest } from '../../../../workers/continuum-core/bindings/modules/cognition';
-import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
-import type { RecipeTurnBatchPlan } from '../../../../shared/generated/cognition/RecipeTurnBatchPlan';
-import type { RecipeTurnBatchRequest } from '../../../../shared/generated/cognition/RecipeTurnBatchRequest';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
+import type { PersonaRespondRequest } from '../../../../../core/continuum-core/bindings/modules/cognition';
+import type { PersonaResponse } from '@shared/generated/cognition/PersonaResponse';
+import type { RecipeTurnBatchPlan } from '@shared/generated/cognition/RecipeTurnBatchPlan';
+import type { RecipeTurnBatchRequest } from '@shared/generated/cognition/RecipeTurnBatchRequest';
 import type {
   InboxMessageRequest,
   CognitionDecision,
@@ -47,17 +47,17 @@ import type {
   DomainClassification,
   CoverageReport,
   QualityScore,
-} from '../../../../shared/generated';
+} from '@shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
 
 // Memory subsystem types (Hippocampus in Rust — corpus-based, no SQL)
-import type { CorpusMemory } from '../../../../workers/continuum-core/bindings/CorpusMemory';
-import type { CorpusTimelineEvent } from '../../../../workers/continuum-core/bindings/CorpusTimelineEvent';
-import type { LoadCorpusResponse } from '../../../../workers/continuum-core/bindings/LoadCorpusResponse';
-import type { MemoryRecallResponse } from '../../../../workers/continuum-core/bindings/MemoryRecallResponse';
-import type { MultiLayerRecallRequest } from '../../../../workers/continuum-core/bindings/MultiLayerRecallRequest';
-import type { ConsciousnessContextResponse } from '../../../../workers/continuum-core/bindings/ConsciousnessContextResponse';
+import type { CorpusMemory } from '../../../../../core/continuum-core/bindings/CorpusMemory';
+import type { CorpusTimelineEvent } from '../../../../../core/continuum-core/bindings/CorpusTimelineEvent';
+import type { LoadCorpusResponse } from '../../../../../core/continuum-core/bindings/LoadCorpusResponse';
+import type { MemoryRecallResponse } from '../../../../../core/continuum-core/bindings/MemoryRecallResponse';
+import type { MultiLayerRecallRequest } from '../../../../../core/continuum-core/bindings/MultiLayerRecallRequest';
+import type { ConsciousnessContextResponse } from '../../../../../core/continuum-core/bindings/ConsciousnessContextResponse';
 
 const SOCKET_PATH = getContinuumCoreSocketPath();
 

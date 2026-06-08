@@ -26,8 +26,8 @@
  */
 
 import { Events } from '@system/core/shared/Events';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
-import type { CpuStatsInfo, MemoryStatsInfo } from '../../../workers/continuum-core/bindings/modules/system_resources';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
+import type { CpuStatsInfo, MemoryStatsInfo } from '../../../../core/continuum-core/bindings/modules/system_resources';
 
 // ============================================================================
 // Types

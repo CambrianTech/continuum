@@ -2,7 +2,7 @@
  * ForgeRecipe Entity — authored input for the foundry pipeline.
  *
  * Persists a `ForgeRecipe` (Rust source of truth at
- * `src/workers/continuum-core/src/forge/recipe.rs`, ts-rs generated
+ * `src/../core/continuum-core/src/forge/recipe.rs`, ts-rs generated
  * type at `shared/generated/forge/ForgeRecipe.ts`) into the Continuum
  * data layer so callers can CRUD recipes via standard `data/*`
  * commands. Phase 3 of continuum#1164 (design at

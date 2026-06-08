@@ -174,7 +174,7 @@ export class MetricsCollector {
   /** Enrich GPU data with full stats (called less frequently). */
   private async _enrichGpuStats(): Promise<void> {
     try {
-      const { RustCoreIPCClient } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+      const { RustCoreIPCClient } = await import('../../../../core/continuum-core/bindings/RustCoreIPC');
       const client = await RustCoreIPCClient.getInstanceAsync();
       const stats = await client.gpuStats();
       this._gpuTotalMb = stats.totalVramMb ?? 0;

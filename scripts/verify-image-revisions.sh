@@ -84,7 +84,7 @@ image_relevant_paths() {
   local ref="$1"
   case "$ref" in
     *continuum-core-cuda*|*continuum-core-vulkan*|*continuum-core*|*continuum-livekit-bridge*)
-      echo "src/workers docker/continuum-core.Dockerfile docker/continuum-core-cuda.Dockerfile docker/continuum-core-vulkan.Dockerfile docker/livekit-bridge.Dockerfile docker/livekit-entrypoint.sh docker/livekit.yaml"
+      echo "core docker/continuum-core.Dockerfile docker/continuum-core-cuda.Dockerfile docker/continuum-core-vulkan.Dockerfile docker/livekit-bridge.Dockerfile docker/livekit-entrypoint.sh docker/livekit.yaml"
       ;;
     *continuum-node*)
       # node-server bakes most of src/ + node_modules/ via npm ci. Anything
@@ -96,7 +96,7 @@ image_relevant_paths() {
       echo "src/widgets src/browser src/shared docker/widget-server.Dockerfile"
       ;;
     *continuum-model-init*)
-      echo "src/scripts/install-livekit.sh src/scripts/download-voice-models.sh docker/model-init.Dockerfile"
+      echo "tools/scripts/install-livekit.sh tools/scripts/download-voice-models.sh docker/model-init.Dockerfile"
       ;;
     *)
       # Unknown image — be safe, treat any change as relevant.

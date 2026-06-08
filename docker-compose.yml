@@ -81,7 +81,7 @@ services:
   # docker-compose.mac.yml sets replicas:0 here).
   continuum-core:
     build:
-      context: ./src/workers
+      context: ./core
       dockerfile: ../../docker/continuum-core-vulkan.Dockerfile
       additional_contexts:
         # NOTE: the `avatars: ./src/models/avatars` line was here from
@@ -166,7 +166,7 @@ services:
   livekit-bridge:
     profiles: [live]
     build:
-      context: ./src/workers
+      context: ./core
       dockerfile: ../../docker/livekit-bridge.Dockerfile
     image: ghcr.io/cambriantech/continuum-livekit-bridge:${CONTINUUM_IMAGE_TAG:-latest}
     restart: unless-stopped

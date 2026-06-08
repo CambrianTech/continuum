@@ -11,7 +11,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../shared/VoiceSynthesizeTypes';
 import { AUDIO_SAMPLE_RATE } from '../../../../shared/AudioConstants';
 import { createVoiceSynthesizeResultFromParams } from '../shared/VoiceSynthesizeTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import { generateUUID } from '@system/core/types/CrossPlatformUUID';
 import { Events } from '@system/core/shared/Events';
 import { TTS_MODELS } from '@system/shared/Constants';

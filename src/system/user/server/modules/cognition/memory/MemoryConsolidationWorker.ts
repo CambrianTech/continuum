@@ -15,7 +15,7 @@ import { InboxObserver } from './InboxObserver';
 import { WorkingMemoryObserver } from './WorkingMemoryObserver';
 import type { PersonaInbox, QueueItem } from '../../PersonaInbox';
 import { RustEmbeddingClient } from '../../../../../core/services/RustEmbeddingClient';
-import { RustCoreIPCClient } from '../../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 type LogFn = (message: string) => void;
 

@@ -33,7 +33,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/workers/**'
+      - 'core/**'
       - 'src/examples/widget-ui/**'
       - 'src/**/*.ts'
       - 'docker/**'
@@ -121,9 +121,9 @@ jobs:
           # events, dorny/paths-filter compares HEAD to the PR base.
           filters: |
             docker_relevant:
-              - 'src/workers/continuum-core/**'
-              - 'src/workers/**/Cargo.toml'
-              - 'src/workers/**/Cargo.lock'
+              - 'core/continuum-core/**'
+              - 'core/**/Cargo.toml'
+              - 'core/**/Cargo.lock'
               - 'docker/**'
               - 'docker-compose.yml'
               - 'Dockerfile*'

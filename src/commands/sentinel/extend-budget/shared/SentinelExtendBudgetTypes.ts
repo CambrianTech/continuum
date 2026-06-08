@@ -10,7 +10,7 @@ import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { BudgetLimits } from '../../../../shared/generated/sentinel/BudgetLimits';
+import type { BudgetLimits } from '@shared/generated/sentinel/BudgetLimits';
 
 /**
  * Sentinel Extend Budget Command Parameters

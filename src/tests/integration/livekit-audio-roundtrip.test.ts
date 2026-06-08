@@ -15,9 +15,9 @@
  * Run with: npx tsx tests/integration/livekit-audio-roundtrip.test.ts [--layer=N]
  */
 
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../core/continuum-core/bindings/RustCoreIPC';
 import { LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_PORT, AUDIO_SAMPLE_RATE } from '../../shared/AudioConstants';
-import type { TranscriptionEntry, VoiceParticipant } from '../../workers/continuum-core/bindings/modules/voice';
+import type { TranscriptionEntry, VoiceParticipant } from '../../../core/continuum-core/bindings/modules/voice';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as crypto from 'crypto';

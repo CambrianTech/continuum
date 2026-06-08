@@ -2,7 +2,7 @@
 
 ## 🛑 STOP — If You Are About To Edit Persona / Cognition / service_loop
 
-**Required first read** before touching ANY of `src/workers/continuum-core/src/persona/{service_loop,unified,supervisor,rag_inspect}.rs`, anything in `src/workers/continuum-core/src/cognition/`, or `src/workers/continuum-core/src/bin/airc_chat_demo.rs`:
+**Required first read** before touching ANY of `core/continuum-core/src/persona/{service_loop,unified,supervisor,rag_inspect}.rs`, anything in `core/continuum-core/src/cognition/`, or `core/continuum-core/src/bin/airc_chat_demo.rs`:
 
 → **[docs/architecture/PERSONA-COGNITION-PIPELINE.md](docs/architecture/PERSONA-COGNITION-PIPELINE.md)**
 
@@ -12,7 +12,7 @@ It documents what a persona actually IS (embodied, multi-modal, tool-using, cont
 
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
-**Required first read** before adding ANY new tokio task, watch channel, pressure source, resource pool, brain region, or background tick — or before touching any file under `src/workers/continuum-core/src/{runtime,paging,system_resources}/`:
+**Required first read** before adding ANY new tokio task, watch channel, pressure source, resource pool, brain region, or background tick — or before touching any file under `core/continuum-core/src/{runtime,paging,system_resources}/`:
 
 → **[docs/architecture/CONCURRENCY-STYLE-GUIDE.md](docs/architecture/CONCURRENCY-STYLE-GUIDE.md)**
 
@@ -1630,4 +1630,4 @@ Generators and OOP are intertwined parallel forces:
 - never commit code until you validate it works. deploy and validate first, make sure it compiles, npm run build:ts before that
 - never use `--no-verify` on commit or push. If hooks fail because of a stale worktree, missing submodule, missing generated file, or a bug in the hook itself, fix the underlying problem; never bypass the shared validation path.
 - commit often per logical unit once validated. merging to main is the only step that requires my approval — commits to feature branches do not.
-- **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"` before any cargo invocation so artifacts land in the ONE shared cache, not in a per-invocation ghost workspace `target/` dir. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf src/workers/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `src/workers/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.
+- **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"` before any cargo invocation so artifacts land in the ONE shared cache, not in a per-invocation ghost workspace `target/` dir. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf core/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `core/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.

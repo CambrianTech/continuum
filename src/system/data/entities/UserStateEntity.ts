@@ -10,7 +10,7 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 // Content types generated from recipe JSON files — DO NOT hardcode here
 // Regenerate: npx tsx generator/generate-content-types.ts
-import { type ContentType as GeneratedContentType, isContentType, CONTENT_TYPES, CONTENT_TYPE_CONFIGS } from '../../../shared/generated/ContentTypes';
+import { type ContentType as GeneratedContentType, isContentType, CONTENT_TYPES, CONTENT_TYPE_CONFIGS } from '@shared/generated/ContentTypes';
 export type ContentType = GeneratedContentType;
 export type ContentPriority = 'low' | 'normal' | 'high' | 'urgent';
 

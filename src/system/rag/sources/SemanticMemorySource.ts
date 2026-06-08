@@ -19,7 +19,7 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import { PromptTier } from '../shared/RAGSource';
-import type { RagSourceRequest, RagSourceResult } from '../../../shared/generated/rag';
+import type { RagSourceRequest, RagSourceResult } from '@shared/generated/rag';
 import type { PersonaMemory } from '../shared/RAGTypes';
 import { TieredMemoryCache } from '../cache/TieredMemoryCache';
 import { Logger } from '../../core/logging/Logger';

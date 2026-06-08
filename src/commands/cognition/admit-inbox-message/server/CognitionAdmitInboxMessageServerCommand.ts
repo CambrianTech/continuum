@@ -5,7 +5,7 @@
  * handler shipped in #1121 PR-4. Wire format: { personaId, message } →
  * { decision, engramCount, traceSeamCount }. All admission logic
  * (IsMemorable recipe, trust-boundary check, replay-protection, dedup)
- * lives in Rust (`workers/continuum-core/src/modules/cognition.rs`).
+ * lives in Rust (`../core/continuum-core/src/modules/cognition.rs`).
  *
  * Per CLAUDE.md "Rust-Backed Commands (IPC Mixin Pattern)" + Joel's
  * "if not UI/UX it is rust" rule: this TS file exists ONLY so the
@@ -27,8 +27,8 @@ import type {
   CognitionAdmitInboxMessageResult,
 } from '../shared/CognitionAdmitInboxMessageTypes';
 import { createCognitionAdmitInboxMessageResultFromParams } from '../shared/CognitionAdmitInboxMessageTypes';
-import type { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
-import type { InboxMessageRequest } from '../../../../shared/generated';
+import type { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
+import type { InboxMessageRequest } from '@shared/generated';
 
 /** Snake-case shape returned by the Rust mixin — matches the IPC payload. */
 type AdmitInboxMessageRustResponse = {

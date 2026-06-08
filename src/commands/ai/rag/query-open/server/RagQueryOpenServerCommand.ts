@@ -17,7 +17,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { CodeIndexEntity } from '../../../../../system/data/entities/CodeIndexEntity';
 import type { DataListParams, DataListResult } from '../../../../data/list/shared/DataListTypes';
 import type { BaseEntity } from '../../../../../system/data/entities/BaseEntity';
-import { RustCoreIPCClient } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 import { EmbeddingGenerate } from '../../../embedding/generate/shared/EmbeddingGenerateTypes';
 import { DataList } from '../../../../data/list/shared/DataListTypes';

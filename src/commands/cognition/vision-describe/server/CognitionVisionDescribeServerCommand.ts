@@ -5,7 +5,7 @@
  * shipped in #1276. Wire format: { base64Data, mimeType, options? } →
  * { result: VisionDescription | null }. All vision-model selection,
  * prompt construction, multimodal `ai/generate` dispatch, and response
- * parsing live in Rust (`workers/continuum-core/src/cognition/vision_describe.rs`).
+ * parsing live in Rust (`../core/continuum-core/src/cognition/vision_describe.rs`).
  *
  * Per CLAUDE.md "Rust-Backed Commands (IPC Mixin Pattern)" + Joel's
  * "if not UI/UX it is rust" rule: this TS file exists ONLY so the
@@ -28,7 +28,7 @@ import type {
   CognitionVisionDescribeResult,
 } from '../shared/CognitionVisionDescribeTypes';
 import { createCognitionVisionDescribeResultFromParams } from '../shared/CognitionVisionDescribeTypes';
-import type { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 /** Snake-case shape returned by the Rust mixin — matches the IPC payload. */
 type VisionDescribeRustResponse = VisionDescription | null;

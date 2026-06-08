@@ -19,7 +19,7 @@
  * a benchmark and records BenchmarkResult.
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import { BenchmarkEntity } from '../../data/entities/BenchmarkEntity';
 import { BenchmarkResultEntity } from '../../data/entities/BenchmarkResultEntity';
 

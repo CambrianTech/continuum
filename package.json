@@ -3,11 +3,11 @@
   "private": true,
   "description": "Continuum — headless persona substrate. `npm start` boots the Rust core; `npm run desktop` adds the Node UX shell on top of the same core.",
   "scripts": {
-    "start": "bash src/scripts/start-server.sh",
-    "desktop": "bash src/scripts/parallel-start.sh",
-    "stop": "bash src/scripts/system-stop.sh",
-    "install:continuum": "bash src/scripts/install.sh",
-    "setup:git-hooks": "bash src/scripts/setup-git-hooks.sh"
+    "start": "bash tools/scripts/start-server.sh",
+    "desktop": "bash tools/scripts/parallel-start.sh",
+    "stop": "bash tools/scripts/system-stop.sh",
+    "install:continuum": "bash tools/scripts/install.sh",
+    "setup:git-hooks": "bash tools/scripts/setup-git-hooks.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",

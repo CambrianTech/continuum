@@ -12,7 +12,7 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 // SubsystemInfo and AllocationsByPriorityInfo from IPC mixin (canonical types)
-import type { SubsystemInfo, AllocationsByPriorityInfo } from '../../../../workers/continuum-core/bindings/modules/gpu';
+import type { SubsystemInfo, AllocationsByPriorityInfo } from '../../../../../core/continuum-core/bindings/modules/gpu';
 export type { SubsystemInfo, AllocationsByPriorityInfo };
 
 /**

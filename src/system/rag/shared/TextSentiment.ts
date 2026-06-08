@@ -2,7 +2,7 @@
  * TextSentiment - Fast, deterministic sentiment and gesture extraction from text.
  *
  * TypeScript mirror of the Rust implementation in:
- *   workers/continuum-core/src/live/session/sentiment.rs
+ *   ../core/continuum-core/src/live/session/sentiment.rs
  *
  * Extracts emotional tone and body gesture cues via pattern matching.
  * Sub-millisecond execution — safe for the RAG hot path.

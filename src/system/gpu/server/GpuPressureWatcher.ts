@@ -19,7 +19,7 @@
  */
 
 import { Events } from '@system/core/shared/Events';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 
 // ============================================================================
 // Types

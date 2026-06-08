@@ -39,7 +39,7 @@
  *   await Commands.execute('sentinel/run', { type: 'pipeline', definition: pipeline });
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import { buildPublishSteps, type PublishConfig } from './PublishPipeline';
 
 export interface DevBuildFeatureConfig {

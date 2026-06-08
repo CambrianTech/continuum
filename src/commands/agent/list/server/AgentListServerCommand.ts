@@ -7,7 +7,7 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import type { AgentListParams, AgentListResult } from '../shared/AgentListTypes';
 
 export class AgentListServerCommand extends CommandBase<AgentListParams, AgentListResult> {

@@ -8,7 +8,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { PlasticityTopologyParams, PlasticityTopologyResult } from '../shared/PlasticityTopologyTypes';
 import { createPlasticityTopologyResultFromParams } from '../shared/PlasticityTopologyTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class PlasticityTopologyServerCommand extends CommandBase<PlasticityTopologyParams, PlasticityTopologyResult> {
 

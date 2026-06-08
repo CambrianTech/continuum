@@ -223,7 +223,7 @@ echo "Lane F TS-cognition ratchet FAILED" >&2
 echo "==================================================" >&2
 echo >&2
 echo "The persona-cognition TypeScript layer must shrink, not grow." >&2
-echo "Rust modules in src/workers/continuum-core/src/ should be" >&2
+echo "Rust modules in core/continuum-core/src/ should be" >&2
 echo "absorbing this work — see ALPHA-GAP-ANALYSIS.md Lane F + Lane D." >&2
 echo >&2
 echo "Violations:" >&2

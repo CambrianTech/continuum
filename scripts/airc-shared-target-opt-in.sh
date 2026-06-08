@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # airc-shared-target-opt-in.sh
 #
-# Per build-time doctrine slice 3 (src/workers/.cargo/config.toml):
+# Per build-time doctrine slice 3 (core/.cargo/config.toml):
 # collapse N per-worktree target/ dirs into ONE shared
 # `~/.airc/cargo-target`. Run once on this machine; the policy then
 # travels with every airc worktree this peer claims.
@@ -25,7 +25,7 @@
 #   3. Reports current usage (before/after).
 #
 # WHAT THIS SCRIPT DOES NOT DO:
-#   - Edit src/workers/.cargo/config.toml (that's checked-in opt-in
+#   - Edit core/.cargo/config.toml (that's checked-in opt-in
 #     guidance; not a per-machine action).
 #   - Delete existing per-worktree target/ dirs (operator decision;
 #     see the optional cleanup step below).
@@ -99,7 +99,7 @@ WORKTREE_ROOT="$HOME/.airc/worktrees"
 if [[ -d "$WORKTREE_ROOT" ]]; then
     echo "[3/3] current per-worktree target/ sprawl (reclaimable on next clean build):"
     found_any=false
-    for wt_target in "$WORKTREE_ROOT"/*/src/workers/target; do
+    for wt_target in "$WORKTREE_ROOT"/*/core/target; do
         if [[ -d "$wt_target" ]]; then
             found_any=true
             size=$(du -sh "$wt_target" 2>/dev/null | cut -f1)

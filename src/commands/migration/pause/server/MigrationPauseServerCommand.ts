@@ -8,7 +8,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { MigrationPauseParams, MigrationPauseResult } from '../shared/MigrationPauseTypes';
 import { createMigrationPauseResultFromParams } from '../shared/MigrationPauseTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class MigrationPauseServerCommand extends CommandBase<MigrationPauseParams, MigrationPauseResult> {
 

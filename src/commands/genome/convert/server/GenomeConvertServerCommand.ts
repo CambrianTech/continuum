@@ -16,7 +16,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { GenomeConvertParams, GenomeConvertResult } from '../shared/GenomeConvertTypes';
 import { createGenomeConvertResultFromParams } from '../shared/GenomeConvertTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import { LOCAL_MODELS } from '@system/shared/Constants';
 import { AdapterStore } from '@system/genome/server/AdapterStore';
 import * as fs from 'fs';

@@ -18,7 +18,7 @@ import type {
   CommitInfo,
 } from '../shared/DevActivityTypes';
 import { WorkspaceStrategy } from '../../../../system/code/server/WorkspaceStrategy';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import { promisify } from 'util';
 import { exec } from 'child_process';
 import * as fs from 'fs';

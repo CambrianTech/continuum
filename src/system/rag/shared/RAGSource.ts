@@ -214,7 +214,7 @@ export interface RAGSource {
 }
 
 // Re-export Rust-generated types for batch support
-import type { RagSourceRequest, RagSourceResult } from '../../../shared/generated/rag';
+import type { RagSourceRequest, RagSourceResult } from '@shared/generated/rag';
 
 /**
  * Result of composing all RAG sources

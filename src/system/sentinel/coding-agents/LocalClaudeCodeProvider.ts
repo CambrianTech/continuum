@@ -31,7 +31,7 @@ import type {
   CodingAgentToolCall,
 } from './CodingAgentProvider';
 import { Commands } from '@system/core/shared/Commands';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class LocalClaudeCodeProvider implements CodingAgentProvider {
   readonly providerId = 'local-claude-code';

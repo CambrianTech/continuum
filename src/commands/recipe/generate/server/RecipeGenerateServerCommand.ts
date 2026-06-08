@@ -4,7 +4,7 @@
  * Pre-#1295 this file was 371 LOC owning prompt construction, AI dispatch,
  * JSON parsing, structural validation, and FS I/O. Per the oxidization
  * mission (#1248 umbrella) the prompt+parser+validator moved to Rust at
- * `workers/continuum-core/src/cognition/generate_recipe/` and are exposed
+ * `../core/continuum-core/src/cognition/generate_recipe/` and are exposed
  * via the `cognition/generate-recipe` IPC (#1298 PR-1, #1301 PR-2).
  *
  * What this file owns now (TS-shim concerns only):

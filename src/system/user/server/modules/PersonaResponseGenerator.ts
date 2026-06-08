@@ -66,9 +66,9 @@ import { SentinelDispatchDecider } from '../../../sentinel/SentinelDispatchDecid
 import { SentinelDispatchCoordinator } from '../../../sentinel/SentinelDispatchCoordinator';
 import { Commands } from '../../../core/shared/Commands';
 import type { SentinelRunResult } from '../../../../commands/sentinel/run/shared/SentinelRunTypes';
-import type { SocialSignals } from '../../../../shared/generated';
-import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
-import type { PersonaRespondRequest } from '../../../../workers/continuum-core/bindings/modules/cognition';
+import type { SocialSignals } from '@shared/generated';
+import type { PersonaResponse } from '@shared/generated/cognition/PersonaResponse';
+import type { PersonaRespondRequest } from '../../../../../core/continuum-core/bindings/modules/cognition';
 import { inspect } from 'util';
 import { createHash } from 'crypto';
 import type { LLMMessage } from '../../../rag/shared/RAGTypes';

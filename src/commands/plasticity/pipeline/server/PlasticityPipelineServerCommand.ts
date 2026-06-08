@@ -8,7 +8,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { PlasticityPipelineParams, PlasticityPipelineResult } from '../shared/PlasticityPipelineTypes';
 import { createPlasticityPipelineResultFromParams } from '../shared/PlasticityPipelineTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class PlasticityPipelineServerCommand extends CommandBase<PlasticityPipelineParams, PlasticityPipelineResult> {
 
@@ -29,7 +29,7 @@ export class PlasticityPipelineServerCommand extends CommandBase<PlasticityPipel
       capturePath: params.capturePath,
       modelPath: params.modelPath,
       outputPath: params.outputPath,
-      config: params.config as Record<string, unknown> as import('../../../../workers/continuum-core/bindings/modules/plasticity').PlasticityPipelineParams['config'],
+      config: params.config as Record<string, unknown> as import('../../../../../core/continuum-core/bindings/modules/plasticity').PlasticityPipelineParams['config'],
     });
 
     return createPlasticityPipelineResultFromParams(params, {

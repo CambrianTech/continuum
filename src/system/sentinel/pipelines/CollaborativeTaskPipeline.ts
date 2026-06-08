@@ -22,7 +22,7 @@
  *   await SentinelRun.execute({ type: 'pipeline', definition: JSON.stringify(pipeline) });
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 
 export interface CollaborativeTaskConfig {
   /** The coding task description */

@@ -7,7 +7,7 @@
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GridPairParams, GridPairResult } from '../shared/GridPairTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class GridPairServerCommand extends CommandBase<GridPairParams, GridPairResult> {
 	private rustClient: RustCoreIPCClient;

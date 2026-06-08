@@ -21,8 +21,8 @@
  */
 
 import { Events } from '../core/shared/Events';
-import { RustCoreIPCClient } from '../../workers/continuum-core/bindings/RustCoreIPC';
-import type { SentinelHandle } from '../../workers/continuum-core/bindings/modules/sentinel';
+import { RustCoreIPCClient } from '../../../core/continuum-core/bindings/RustCoreIPC';
+import type { SentinelHandle } from '../../../core/continuum-core/bindings/modules/sentinel';
 import { SentinelWorkspaceManager } from './SentinelWorkspaceManager';
 
 /**

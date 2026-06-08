@@ -12,7 +12,7 @@ import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
-import { RustCoreIPCClient } from '../../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../../../core/continuum-core/bindings/RustCoreIPC';
 import { SystemPaths } from '../../../../../core/config/SystemPaths';
 
 type LogFn = (message: string) => void;

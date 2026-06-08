@@ -39,7 +39,7 @@ const ENTITY_TYPE_COLLECTIONS: Record<string, string> = {
   activity: 'activities',
 };
 
-import { CONTENT_TYPE_CONFIGS } from '../../shared/generated/ContentTypes';
+import { CONTENT_TYPE_CONFIGS } from '@shared/generated/ContentTypes';
 
 function getCollectionForContentType(contentType: string): string | undefined {
   const config = CONTENT_TYPE_CONFIGS[contentType as keyof typeof CONTENT_TYPE_CONFIGS];

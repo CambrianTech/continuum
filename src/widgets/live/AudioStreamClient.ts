@@ -33,8 +33,8 @@ import {
   isVisibleParticipant,
 } from '../../shared/LiveKitTypes';
 
-import type { TileResolution } from '../../shared/generated/voice';
-import type { AvatarState } from '../../shared/generated/AvatarState';
+import type { TileResolution } from '@shared/generated/voice';
+import type { AvatarState } from '@shared/generated/AvatarState';
 
 /** Transcription result from STT pipeline */
 export interface TranscriptionResult {

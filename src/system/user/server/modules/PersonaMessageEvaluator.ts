@@ -35,7 +35,7 @@ import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
 import { getChatCoordinator, type ChatThought } from '../../../coordination/server/ChatCoordinationStream';
 import { calculateMessagePriority } from './PersonaInbox';
 import { toInboxMessageRequest } from './RustCognitionBridge';
-import type { SenderType, FullEvaluateResult, SocialSignals } from '../../../../shared/generated';
+import type { SenderType, FullEvaluateResult, SocialSignals } from '@shared/generated';
 import type { FastPathDecision } from './central-nervous-system/CNSTypes';
 // personaSleepManager no longer needed — sleep mode gating moved to Rust evaluator
 import {

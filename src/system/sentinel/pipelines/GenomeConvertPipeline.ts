@@ -17,7 +17,7 @@
  * and runs each conversion step through the Rust sentinel for process isolation.
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { LOCAL_MODELS } from '@system/shared/Constants';
 import { v4 as uuidv4 } from 'uuid';

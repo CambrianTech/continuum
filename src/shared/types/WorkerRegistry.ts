@@ -5,7 +5,7 @@
  * Generated: 2026-02-09T03:37:57.057Z
  */
 
-import worker0 from '../../workers/archive/worker.config';
+import worker0 from '../../../core/archive/worker.config';
 
 export const WORKER_REGISTRY = [
   worker0

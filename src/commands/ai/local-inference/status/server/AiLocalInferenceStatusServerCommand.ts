@@ -17,7 +17,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { AiLocalInferenceStatusParams, AiLocalInferenceStatusResult } from '../shared/AiLocalInferenceStatusTypes';
 import { createAiLocalInferenceStatusResultFromParams } from '../shared/AiLocalInferenceStatusTypes';
-import { RustCoreIPCClient } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class AiLocalInferenceStatusServerCommand extends CommandBase<AiLocalInferenceStatusParams, AiLocalInferenceStatusResult> {
 
@@ -40,7 +40,7 @@ export class AiLocalInferenceStatusServerCommand extends CommandBase<AiLocalInfe
       running,
       url: running ? (probe.url ?? '') : '',
       port: running ? (probe.port ?? 0) : 0,
-      // Only Anthropic-compat is shipped today (workers/continuum-core/src/http/anthropic_compat.rs).
+      // Only Anthropic-compat is shipped today (../core/continuum-core/src/http/anthropic_compat.rs).
       // Will be 'openai' OR a comma-separated list once openai_compat.rs lands per AGENT-BACKBONE §4.1.
       protocol: 'anthropic',
     });

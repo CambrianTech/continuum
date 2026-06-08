@@ -24,7 +24,7 @@
  *   Steps 1+: Same as original
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type { TeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
 import { academyEvent, ACADEMY_EVENTS, resolveTeacherLlmConfig } from '../../genome/shared/AcademyTypes';
 import { buildKnowledgeExplorationPipeline } from './KnowledgeExplorationPipeline';

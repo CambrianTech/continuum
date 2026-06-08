@@ -14,7 +14,7 @@ import {
     isContentType,
     type ContentType,
     type ContentTypeConfig,
-} from '../../../shared/generated/ContentTypes';
+} from '@shared/generated/ContentTypes';
 
 import type { RightPanelSectionPayload } from '../../../system/core/shared/EventConstants';
 
