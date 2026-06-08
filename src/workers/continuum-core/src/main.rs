@@ -269,13 +269,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         continuum_core::system_resources::MemoryPressureMonitor::start(Vec::new());
 
     // Start IPC server in background thread FIRST (creates socket immediately).
-    // The thread fires `ipc_ready_tx` once the Unix socket is bound + chmod'd,
-    // so main advances on a real signal instead of a 100 ms guess. Per
-    // docs/architecture/CONCURRENCY-STYLE-GUIDE.md: signals replace races.
+    // The thread publishes `ipc::subscribe_ready()`'s watch once the Unix
+    // socket is bound + chmod'd, so main advances on a real signal instead
+    // of a 100 ms guess. Per docs/architecture/CONCURRENCY-STYLE-GUIDE.md:
+    // signals replace races. Same primitive Bevy renderer + every future
+    // ServiceModule's `ready_edge()` uses — one mechanism across the board.
     let ipc_livekit_manager = livekit_manager.clone();
     let ipc_memory_manager = memory_manager.clone();
     let ipc_pressure_monitor = pressure_monitor.clone();
-    let (ipc_ready_tx, ipc_ready_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut ipc_ready_rx = continuum_core::ipc::subscribe_ready();
     let ipc_handle = std::thread::spawn(move || {
         if let Err(e) = start_server(
             &socket_path,
@@ -284,7 +286,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ipc_memory_manager,
             ipc_pressure_monitor,
             boot_mode,
-            ipc_ready_tx,
         ) {
             tracing::error!("❌ IPC server error: {}", e);
             // A.2: a `start_server` Err means the substrate refused
@@ -296,14 +297,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Wait for the Unix socket to be bound + world-rw chmod'd. An Err here
-    // means the IPC thread dropped the sender — that path already calls
-    // libc::_exit(1) on its way down, so this Err is the race where the
-    // process is on its way out. Exit cleanly from main; the exit code is
-    // already set by the IPC thread's libc::_exit.
-    if ipc_ready_rx.await.is_err() {
-        tracing::error!("❌ IPC server failed to bind — see prior error");
-        return Ok(());
+    // Wait for the Unix socket to be bound + world-rw chmod'd. The IPC
+    // thread already libc::_exit(1)s on bind failure, so a watch that
+    // never transitions means the process is on its way down — main's
+    // await will resolve to Err and we fall through to a clean exit
+    // with the IPC thread's exit code already in flight.
+    if *ipc_ready_rx.borrow_and_update() {
+        // fast path
+    } else {
+        loop {
+            if ipc_ready_rx.changed().await.is_err() {
+                tracing::error!("❌ IPC ready watch closed before bind — see prior error");
+                return Ok(());
+            }
+            if *ipc_ready_rx.borrow_and_update() {
+                break;
+            }
+        }
     }
 
     // Delayed reporter registration: subscribe to the Bevy renderer's

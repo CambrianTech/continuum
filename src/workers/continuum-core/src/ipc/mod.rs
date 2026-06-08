@@ -684,6 +684,30 @@ mod tests {
 // Server Main Loop
 // ============================================================================
 
+/// Ready-edge watch for the IPC server — flips `false → true` exactly
+/// once when the Unix socket is bound + chmod'd. Any consumer can
+/// `subscribe_ready()` to get a `watch::Receiver<bool>` and await the
+/// transition; subscribers added after the flip see the current `true`
+/// value on first `borrow_and_update`. Per the substrate concurrency
+/// doctrine: signals replace races. Same shape as
+/// `bevy_renderer::subscribe_ready` and `ServiceModule::ready_edge`.
+static IPC_READY: std::sync::OnceLock<tokio::sync::watch::Sender<bool>> =
+    std::sync::OnceLock::new();
+
+fn ipc_ready_tx() -> &'static tokio::sync::watch::Sender<bool> {
+    IPC_READY.get_or_init(|| tokio::sync::watch::channel(false).0)
+}
+
+/// Subscribe to the IPC server's ready edge. Returns a receiver that
+/// starts at `false` and flips to `true` exactly once when the Unix
+/// socket is bound + world-rw chmod'd. Replaces the prior oneshot
+/// parameter that had to be threaded through `start_server` — now any
+/// number of consumers can await the same edge without coordination
+/// at the call site.
+pub fn subscribe_ready() -> tokio::sync::watch::Receiver<bool> {
+    ipc_ready_tx().subscribe()
+}
+
 pub fn start_server(
     socket_path: &str,
     livekit_manager: Arc<crate::live::transport::bridge_client::LiveKitAgentManager>,
@@ -691,13 +715,6 @@ pub fn start_server(
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
     pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,
     boot_mode: crate::runtime::BootMode,
-    // RTOS-shaped ready signal — fires AFTER the Unix socket is bound and
-    // chmod'd (everything start-workers.sh / process supervisors care about
-    // is true after that point). Replaces the previous 100 ms blind sleep
-    // in main with a real signal. Drop the receiver on the caller side if
-    // you don't care; the send is non-fatal on receiver-gone. See
-    // docs/architecture/CONCURRENCY-STYLE-GUIDE.md § "What lives in code".
-    ipc_ready_tx: tokio::sync::oneshot::Sender<()>,
 ) -> std::io::Result<()> {
     prepare_unix_socket_path(socket_path)?;
 
@@ -1296,10 +1313,17 @@ pub fn start_server(
         std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))?;
     }
 
-    // Socket is bound + world-rw chmod'd. Anything outside this thread that
-    // was waiting for "is the IPC up?" can advance now. Send-fail is fine —
-    // receiver may have been dropped if the caller doesn't care.
-    let _ = ipc_ready_tx.send(());
+    // Socket is bound + world-rw chmod'd. Fire the ready watch so any
+    // consumer (main.rs awaiting boot completion, future subsystems
+    // wanting to know when IPC is up) observes the false→true edge.
+    // The watch supersedes the previous oneshot parameter — any number
+    // of late or eager subscribers can attach via `subscribe_ready()`.
+    let _ = ipc_ready_tx().send(true);
+    crate::probe!(
+        class = "ready.observed",
+        module = "ipc-server",
+        socket = socket_path
+    );
 
     let state = Arc::new(ServerState::new_with_shared_state(
         rt_handle,
