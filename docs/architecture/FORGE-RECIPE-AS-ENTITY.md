@@ -391,7 +391,7 @@ proceed without re-litigating.
 
 7. **Foundry stage executors MUST be Rust.** Existing
    `forge-alloy/python/forge_alloy/types.py` is Python — Phase 2's
-   foundry executor goes in `src/workers/continuum-core/src/foundry/`
+   foundry executor goes in `core/continuum-core/src/foundry/`
    (or new `continuum-foundry` crate) as Rust per the native-truth
    rule. Python types stay as a generated-from-Rust client (or
    hand-maintained thin SDK), NEVER as the authoritative type

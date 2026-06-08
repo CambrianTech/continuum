@@ -33,14 +33,14 @@ These are not values pinned on the wall. They are constraints the type system en
 
 ## Core Surfaces
 
-The contract's typed surfaces. Each is a Rust trait or struct targeting a specific file under `src/workers/continuum-core/src/cognition/`. Names match codex's requested set; expansions and additions are noted.
+The contract's typed surfaces. Each is a Rust trait or struct targeting a specific file under `core/continuum-core/src/cognition/`. Names match codex's requested set; expansions and additions are noted.
 
 ### `RuntimeFrame`
 
 The per-event input every eligible persona receives. **Activity-as-source, not chat-as-source** — chat is one Activity type among many (code review, vision turn, voice utterance, sensor event, scheduled wakeup, peer signal, ...).
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/runtime_frame.rs
+// PROPOSED — core/continuum-core/src/cognition/runtime_frame.rs
 pub struct RuntimeFrame {
     pub frame_id:           FrameId,                  // content hash; deterministic
     pub activity:           ActivitySource,           // Chat | Code | Vision | Voice | Sensor | Schedule | Peer | ...
@@ -72,7 +72,7 @@ The frame is **immutable** once published. Personas receive a snapshot; no perso
 One inbox per persona. Per the CBAR-SUBSTRATE "Persona-cognition invariants": two personas in one room do not share inbox state.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/inbox.rs
+// PROPOSED — core/continuum-core/src/cognition/inbox.rs
 pub struct PersonaInbox {
     pub persona:           PersonaId,
     pub frames:            VecDeque<InboxedFrame>,    // ordered, per-persona, never shared
@@ -103,7 +103,7 @@ Cross-persona signaling goes through the message bus + `RuntimeFrame`, not throu
 What the persona pulls together when it decides to consider a frame. Not pre-baked by the substrate; assembled by the persona under its own budget.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/working_memory.rs
+// PROPOSED — core/continuum-core/src/cognition/working_memory.rs
 pub struct WorkingMemoryAssembly {
     pub persona:               PersonaId,
     pub frame:                 Arc<RuntimeFrame>,
@@ -136,7 +136,7 @@ The assembly is **per-persona, per-turn, never shared**. Two personas in the sam
 The persona's typed budget for assembly. Real numbers, real units, real ceilings the substrate enforces.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/recall_budget.rs
+// PROPOSED — core/continuum-core/src/cognition/recall_budget.rs
 pub struct RecallBudget {
     pub max_memory_mb:          u32,             // total working set during assembly
     pub max_recall_count:       u32,             // max engrams + layers + experts pulled
@@ -159,7 +159,7 @@ Budget is **set by the substrate (governor + per-persona policy), not by the per
 The compute lease the persona holds while it makes a decision. Issued by `ResourceGovernor`. Auditable.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/lease.rs
+// PROPOSED — core/continuum-core/src/cognition/lease.rs
 pub struct CognitionLease {
     pub lease_id:        LeaseId,
     pub persona:         PersonaId,
@@ -187,7 +187,7 @@ Leases are **mandatory**. A persona cannot do cognition without one — the subs
 The output of cognition. A typed enum, not a string. The decision is what the persona *chose* — not what it generated.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/decision.rs
+// PROPOSED — core/continuum-core/src/cognition/decision.rs
 pub enum PersonaDecision {
     /// Produce an utterance / response / message.
     Speak       { content: Utterance, channel: ResponseChannel },
@@ -234,7 +234,7 @@ Every decision is **typed, audited, replayable**. A persona that produced a `Dec
 The proof. Every turn that ran produces one of these. Sentinel reads them, VDD uses them, audit consumes them, a human or peer can ask the substrate to reproduce a turn.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/replay.rs
+// PROPOSED — core/continuum-core/src/cognition/replay.rs
 pub struct TurnReplayRecord {
     pub turn_id:                 TurnId,
     pub persona:                 PersonaId,

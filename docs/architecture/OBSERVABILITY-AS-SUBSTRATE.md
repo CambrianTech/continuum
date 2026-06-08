@@ -8,7 +8,7 @@
 > their own prompts, how mechanics debug, how replay reproduces.
 
 **Status:** Doctrine (2026-05-31). Reference implementation:
-`RagCaptureSink` family in `src/workers/continuum-core/src/persona/rag_capture.rs`.
+`RagCaptureSink` family in `core/continuum-core/src/persona/rag_capture.rs`.
 
 **Parents:**
 - [`CBAR-SUBSTRATE-ARCHITECTURE.md`](CBAR-SUBSTRATE-ARCHITECTURE.md)
@@ -215,11 +215,11 @@ call commands).
 
 | Reference | File |
 |---|---|
-| `RagCaptureSink` trait + Noop / JSONL / InMemory | `src/workers/continuum-core/src/persona/rag_capture.rs` |
+| `RagCaptureSink` trait + Noop / JSONL / InMemory | `core/continuum-core/src/persona/rag_capture.rs` |
 | `RecordingRagSource` decorator | same file |
-| `ReplayRagSource` (the consumer side) | `src/workers/continuum-core/src/persona/rag_replay.rs` |
-| Capture-aware inspection (deep introspection mode) | `src/workers/continuum-core/src/persona/rag_inspect.rs` |
-| Demo binary that exercises the loop end-to-end | `src/workers/continuum-core/src/bin/airc_rag_demo.rs` |
+| `ReplayRagSource` (the consumer side) | `core/continuum-core/src/persona/rag_replay.rs` |
+| Capture-aware inspection (deep introspection mode) | `core/continuum-core/src/persona/rag_inspect.rs` |
+| Demo binary that exercises the loop end-to-end | `core/continuum-core/src/bin/airc_rag_demo.rs` |
 
 ---
 

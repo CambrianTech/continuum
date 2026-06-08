@@ -21,7 +21,7 @@ works. Divergence = dev ships green and Carl hits an untested wall.
 These are design rules that CANNOT be violated without breaking the model.
 They map one-to-one onto memory rules:
 
-1. **ONE canonical install script.** `src/scripts/install.sh` is it. Both
+1. **ONE canonical install script.** `tools/scripts/install.sh` is it. Both
    paths invoke the same file. No duplication of shared logic.
 2. **Modular sudos.** Each sudo-requiring action is its own self-guarded
    function. Re-runs that are a no-op prompt for NO passwords. Sudo
@@ -114,7 +114,7 @@ Organized by category. `mode` column: **C** = Carl, **D** = Dev, **B** = both.
 
 ## Dispatch
 
-Top of `src/scripts/install.sh`:
+Top of `tools/scripts/install.sh`:
 
 ```bash
 MODE="${CONTINUUM_INSTALL_MODE:-dev}"  # dev | carl | both
@@ -171,11 +171,11 @@ Two entry points, both exec the same canonical script:
 ### Root `install.sh` (Carl's curl target)
 
 Minimal bootstrap. Exists only because Carl can't run
-`src/scripts/install.sh` without first having the repo.
+`tools/scripts/install.sh` without first having the repo.
 
 ```bash
 #!/bin/bash
-# Carl's entry point. Delegates to src/scripts/install.sh after clone.
+# Carl's entry point. Delegates to tools/scripts/install.sh after clone.
 set -e
 
 # Modules that MUST run before the repo clone:
@@ -195,12 +195,12 @@ fi
 cd "$INSTALL_DIR"
 git submodule update --init --recursive
 
-exec env CONTINUUM_INSTALL_MODE=carl bash src/scripts/install.sh
+exec env CONTINUUM_INSTALL_MODE=carl bash tools/scripts/install.sh
 ```
 
 ### `parallel-start.sh` (Dev's `npm start` path)
 
-Already invokes `src/scripts/install.sh`. Sets `CONTINUUM_DEPS_ONLY=1`
+Already invokes `tools/scripts/install.sh`. Sets `CONTINUUM_DEPS_ONLY=1`
 today; switching to `CONTINUUM_INSTALL_MODE=dev` and honoring
 `CONTINUUM_DEPS_ONLY` as a sub-mode that skips `mod_cargo_build` +
 `mod_npm_install` gives us the same behavior without two flags.
@@ -228,7 +228,7 @@ Required additions:
 The install script has three layers of verification:
 
 1. **Unit-level** (each module individually):
-   `CONTINUUM_INSTALL_RUN_MODULE=mod_docker_wsl_integration bash src/scripts/install.sh`
+   `CONTINUUM_INSTALL_RUN_MODULE=mod_docker_wsl_integration bash tools/scripts/install.sh`
    runs a single module against current environment state.
 2. **Integration** (dev path from a clean VM):
    Dev's own re-run on laptop after a working setup. If zero modules do
@@ -292,7 +292,7 @@ modules). Any module that does `sudo <thing>` directly without first
 calling `ensure_sudo_warmed` is broken.
 
 **Assertion for CI / dev-test:** on a machine with warmed sudo (`sudo -v`
-already run), a fresh `src/scripts/install.sh` run that needs sudo for
+already run), a fresh `tools/scripts/install.sh` run that needs sudo for
 N modules must cause zero prompts. Verifiable by capturing stderr and
 asserting absent of any "password" string.
 
@@ -334,7 +334,7 @@ without building it yet:
   Ingress. The install script's Tailscale step is Carl-path-only; K8s
   path has its own TLS workflow.
 - **The single install script does NOT install K8s.** A K8s install is a
-  Helm chart (future), not a bash module. `src/scripts/install.sh` remains
+  Helm chart (future), not a bash module. `tools/scripts/install.sh` remains
   the Carl + Dev path. The Helm chart consumes the same published
   ghcr.io images — that's the unification point.
 
@@ -404,7 +404,7 @@ Already landed on the branch (OK against this architecture):
 
 To do before merge (consolidation):
 - Move WSL fix + submodule init from root `install.sh` to
-  `src/scripts/install.sh` as modular steps.
+  `tools/scripts/install.sh` as modular steps.
 - Collapse root `install.sh` to the bootstrapper pattern above.
 - Add `continuum-core-cuda` CI job.
 - Add PR-gated smoke build in the workflow.

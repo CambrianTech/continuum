@@ -12,12 +12,12 @@
 
 These are non-negotiable across every layer below. They are why the migration EXISTS, not nice-to-haves.
 
-1. **Rust core; Node.js is web only.** Node.js exists for browser UI, config-loading at boot, and human UX. Nothing else. Anything that handles routing, persistence, inference, command dispatch, or persona reasoning lives in Rust (`src/workers/continuum-core/` and sibling crates). The TS layer is the thin web edge — `Commands.execute()` / `Events.emit()` calls into Rust via the existing IPC; rendering reads back.
+1. **Rust core; Node.js is web only.** Node.js exists for browser UI, config-loading at boot, and human UX. Nothing else. Anything that handles routing, persistence, inference, command dispatch, or persona reasoning lives in Rust (`core/continuum-core/` and sibling crates). The TS layer is the thin web edge — `Commands.execute()` / `Events.emit()` calls into Rust via the existing IPC; rendering reads back.
 2. **AI persona under Rust domain.** `system/user/server/PersonaUser.ts` (2312 LOC) and its orchestrators were CPU-killing the box (V8 single-threaded loop blocking on every reasoning step, JSON marshalling per IPC). Migration target is `continuum-core/src/persona/` — much of which is already Rust (`channel_registry`, `inbox`, `evaluator`, `cognition`, `prompt_assembly`, `genome_paging`). What remains in TS is the orchestrator and dispatchers; those move. See **Layer 0** below.
 3. **GPU or fail for inference.** No CPU-only inference path; `llama` crate refuses to build on macOS without `--features metal` by design. Same for training (candle Metal/CUDA). Performant inference cannot exist without GPU acceleration; performant training even more so.
 4. **No `dyn Any` / `as_any` patterns.** Type erasure via `Any` hides the wire shape that ts-rs needs to reflect and obscures Rust performance characteristics. When a current trait requires `as_any`, that's debt — file a card to redesign the trait, don't propagate the pattern.
 5. **ts-rs is the bindings source of truth.** Rust types are canonical; TypeScript bindings are generated via `#[derive(TS)]` + `cargo test` triggering ts-rs into `shared/generated/`. NEVER hand-write a TS type that crosses the Rust↔TS boundary. The Rust struct is the schema; the TS is a projection.
-6. **Inference is llama.cpp through-and-through.** Never ollama, never suggest ollama. Candle stays for training, Orpheus TTS, and legacy backends. Inference flows through the `llama` crate against vendored llama.cpp (`src/workers/vendor/llama.cpp`).
+6. **Inference is llama.cpp through-and-through.** Never ollama, never suggest ollama. Candle stays for training, Orpheus TTS, and legacy backends. Inference flows through the `llama` crate against vendored llama.cpp (`core/vendor/llama.cpp`).
 
 Every roadmap item below is read through these rules. Owner-suggestion text from the original draft (which still said "TS-only" for several Rust-target items) has been updated.
 
@@ -374,7 +374,7 @@ L5 Patch deletion (interleaved with L2-L4 as upstreams complete)
 
 **Why this layer:** the patches that L1-L4 supersede need to be removed, not left lying around. Each deletion gates on its replacement landing first.
 
-- [ ] **L5-1**: Delete `src/scripts/continuum-airc-bridge.mjs`
+- [ ] **L5-1**: Delete `tools/scripts/continuum-airc-bridge.mjs`
   - **Depends:** L1-2 (transport) operational + at least one airc-sourced event flowing through it
   - **Est:** half-day
 
@@ -382,7 +382,7 @@ L5 Patch deletion (interleaved with L2-L4 as upstreams complete)
   - **Depends:** L4 commands using `Events.subscribe('chat:posted')` for everything that used `airc/realtime-replay` historically
   - **Est:** 1 day
 
-- [ ] **L5-3**: Delete `src/workers/continuum-core/src/persona/airc_admission.rs`
+- [ ] **L5-3**: Delete `core/continuum-core/src/persona/airc_admission.rs`
   - **Depends:** L2-1 (replacement `message_admission.rs` is live)
   - **Est:** half-day
 

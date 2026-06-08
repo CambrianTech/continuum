@@ -111,7 +111,7 @@ for both the ux and the personas or you over jtag cliq."
 ### Surface inventory
 
 - **53** top-level command directories under `src/commands/`.
-- **100** generator specs under `src/generator/specs/`. Some specs lack matching command directories (spec-without-impl); some commands lack matching specs (hand-authored before generator existed).
+- **100** generator specs under `tools/generator/specs/`. Some specs lack matching command directories (spec-without-impl); some commands lack matching specs (hand-authored before generator existed).
 - **~15** Rust modules with `command_prefixes` (in `continuum-core/src/modules/*.rs` and `continuum-core/src/runtime/*.rs`): code, avatar, logger, cognition, channel, persona_allocator, embedding, events, health, pressure_broker, persona service_module, plus the runtime layer.
 - **~15** Rust IPC mixins (`continuum-core/bindings/modules/*.ts`): base, sentinel, system_resources, tool_parsing, gpu, search, inference, plasticity, rag, voice, dataset, avatar, runtime, cognition, code.
 
@@ -250,10 +250,10 @@ Patched out of:
 - `src/system/rag/builders/ChatRAGBuilder.ts` — removed import + `new SocialMediaRAGSource()` from the source chain
 - `src/system/rag/sources/index.ts` — removed export
 - `src/daemons/data-daemon/server/EntityRegistry.ts` — removed `SocialCredentialEntity` import, instantiation, and `registerEntity` call
-- `src/generator/generate-collection-constants.ts` — removed `system/social/shared/*Entity.ts` from the entity-discovery globs
+- `tools/generator/generate-collection-constants.ts` — removed `system/social/shared/*Entity.ts` from the entity-discovery globs
 
 Regenerated:
-- `src/server/generated.ts` + `src/browser/generated.ts` via `npx tsx src/generator/generate-structure.ts` — went from 351 to 343 commands
+- `src/server/generated.ts` + `src/browser/generated.ts` via `npx tsx tools/generator/generate-structure.ts` — went from 351 to 343 commands
 
 **Net delete:** ≈ 5,800+ LOC of TS surface across 100+ files. TS still compiles clean (the 6 pre-existing `Cannot find module '../config'` errors remain unchanged).
 
@@ -285,7 +285,7 @@ Server emits a console.log line with a type icon, then delegates to the browser 
 
 **Classification:** #4/#8 hybrid.
 
-Currently reads `src/scripts/generate-command-schemas.ts` output from disk (TS-form filesystem introspection). The CONCEPT is universal (any caller asks "what commands exist?"), but the IMPLEMENTATION reads files specific to the TS form's layout.
+Currently reads `tools/scripts/generate-command-schemas.ts` output from disk (TS-form filesystem introspection). The CONCEPT is universal (any caller asks "what commands exist?"), but the IMPLEMENTATION reads files specific to the TS form's layout.
 
 **Right shape long-term:** the Rust ModuleRegistry exposes introspection. `list` becomes a thin wrapper that queries the registry. Then any form (web UI, jtag CLI, VR persona, headless grid node) gets the same enumeration via the same path.
 

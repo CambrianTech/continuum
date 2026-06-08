@@ -299,7 +299,7 @@ Activity: "Fix #347: Avatar crash" (recipe: bug-fix, scope: src/widgets/live/)
 Activity: "Continuum Self-Development" (recipe: project, scope: src/)
 ├── DM Header Feature (recipe: coding, scope: src/widgets/chat/)
 ├── Activity Convergence Design (recipe: collaborative-writing, scope: src/docs/)
-├── LoRA Training Pipeline (recipe: coding, scope: src/workers/candle/)
+├── LoRA Training Pipeline (recipe: coding, scope: core/candle/)
 └── Each child scopes deeper into the tree, LoRA layers page per module
 ```
 

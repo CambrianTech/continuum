@@ -272,13 +272,13 @@ If you're not sure which side you're on, the answer is the boring one: implement
 
 ## Reading list (in order, for a new contributor to this surface)
 
-1. `src/workers/continuum-core/src/runtime/service_module.rs` — the base trait
-2. `src/workers/continuum-core/src/runtime/registry.rs` — how it gets wired
-3. `src/workers/continuum-core/src/runtime/message_bus.rs` — pub/sub primitive
-4. `src/workers/continuum-core/src/system_resources/memory_pressure.rs` — the canonical monitor pattern
-5. `src/workers/continuum-core/src/paging/pool.rs` — `PagedResourcePool<K, V>` + `ResourcePool` trait
-6. `src/workers/continuum-core/src/paging/broker.rs` — `PressureBroker` + arbitration
-7. `src/workers/continuum-core/src/runtime/brain_region.rs` — cognitive tick contract
+1. `core/continuum-core/src/runtime/service_module.rs` — the base trait
+2. `core/continuum-core/src/runtime/registry.rs` — how it gets wired
+3. `core/continuum-core/src/runtime/message_bus.rs` — pub/sub primitive
+4. `core/continuum-core/src/system_resources/memory_pressure.rs` — the canonical monitor pattern
+5. `core/continuum-core/src/paging/pool.rs` — `PagedResourcePool<K, V>` + `ResourcePool` trait
+6. `core/continuum-core/src/paging/broker.rs` — `PressureBroker` + arbitration
+7. `core/continuum-core/src/runtime/brain_region.rs` — cognitive tick contract
 8. `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` — the engineering philosophy
 9. `docs/architecture/RESOURCE-ARCHITECTURE.md` — the cross-resource picture
 10. `docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md` — capture as half the substrate

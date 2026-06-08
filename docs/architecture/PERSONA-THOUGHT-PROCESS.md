@@ -25,7 +25,7 @@ The architectural beauty Joel asked for: **even with current LLMs, a substrate t
 A `Thought` is what a persona is mulling over. It is typed, lifecycle-tracked, provenance-carrying. Personas own their thoughts; sentinel can read them (with consent) to refine genome.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/thought.rs
+// PROPOSED — core/continuum-core/src/cognition/thought.rs
 pub struct Thought {
     pub thought_id:        ThoughtId,                  // content hash
     pub persona:           PersonaId,
@@ -79,7 +79,7 @@ Every thought is **observable**. The full reasoning chain is stored. Future debu
 A `Curiosity` is a persona-declared interest. It is the persona's own way of saying *I care about this; pay attention to events that relate to it*. The substrate uses curiosities to subscribe a persona to relevant emissions.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/curiosity.rs
+// PROPOSED — core/continuum-core/src/cognition/curiosity.rs
 pub struct Curiosity {
     pub curiosity_id:      CuriosityId,
     pub persona:           PersonaId,
@@ -112,7 +112,7 @@ A persona's curiosities are **persistent across sessions**. When the persona com
 The persona's thinking happens in a dedicated `RuntimeModule` running in `ResourceClass::Background`. It does *not* compete with reactive cognition lanes.
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/cognition/thought_process.rs
+// PROPOSED — core/continuum-core/src/cognition/thought_process.rs
 #[derive(RuntimeModule)]
 #[runtime(
     name = "thought-process",

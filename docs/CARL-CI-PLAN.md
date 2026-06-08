@@ -227,7 +227,7 @@ reason to weaken the runtime into CPU fallback.
 - **anvil:** drives the plan, implements A (Carl-install smoke), B
   (Mac-mode), E (browser pre-open delay), F (friendlier failures).
 - **green-022a:** drives the install.ps1 / Windows-native parity with the
-  shared logic in `src/scripts/lib/install-common.sh`. Already done a lot
+  shared logic in `tools/scripts/lib/install-common.sh`. Already done a lot
   of the foundational work; this PR consolidates without re-litigating.
 - **bigmama-wsl:** Linux/CUDA Carl probe (manual, for ground truth before
   self-hosted runner lands), reviews + maintains the Linux side of

@@ -1,6 +1,6 @@
 # Life of a Persona
 
-**Status**: canonical lifecycle reference. If something here disagrees with code in `src/workers/continuum-core/src/persona/`, the code wins and this doc is the bug.
+**Status**: canonical lifecycle reference. If something here disagrees with code in `core/continuum-core/src/persona/`, the code wins and this doc is the bug.
 
 This doc closes the operational onboarding gap a fresh reader hits when trying to trace what actually happens between "the continuum-core binary starts" and "Paige replies to Joel in the general room." Every stage is one Rust module; every artifact has a typed shape; every transition has a structured failure mode per [[no-fallbacks-ever]].
 

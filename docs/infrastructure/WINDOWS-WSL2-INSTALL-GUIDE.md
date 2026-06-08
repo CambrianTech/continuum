@@ -107,7 +107,7 @@ psql -h 127.0.0.1 -U YOUR_USER -d continuum -c "SELECT 1"
 Some generated type directories were missing their `index.ts` barrel files. Fix:
 
 ```bash
-cd src/shared/generated
+cd protocol/typescript
 for dir in agent ai code dataset inference ipc live logger mcp orm plasticity rag search sentinel system; do
   if [ ! -f "$dir/index.ts" ]; then
     for f in "$dir"/*.ts; do

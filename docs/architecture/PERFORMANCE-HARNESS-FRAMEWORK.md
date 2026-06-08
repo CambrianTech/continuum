@@ -63,7 +63,7 @@ Every field has a value or an explicit `null`-with-reason. No silent gaps.
 A harness is a Rust binary or `cargo test` target with four well-defined parts:
 
 ```rust
-// PROPOSED — src/workers/continuum-core/tests/harness/<harness-name>.rs
+// PROPOSED — core/continuum-core/tests/harness/<harness-name>.rs
 
 // PART 1 — Setup. Bring the substrate up in a known state.
 //                 Use the test-substrate fixtures (no live network unless declared).
@@ -286,7 +286,7 @@ Smoke harness validating the substrate's no-silent-fallback invariants at the au
 The Standard VDD Record covers most needs but some harnesses add typed fields. New fields go in:
 
 ```rust
-// PROPOSED — src/workers/continuum-core/src/vdd/schema_extensions.rs
+// PROPOSED — core/continuum-core/src/vdd/schema_extensions.rs
 pub struct VddRecordExtensions {
     pub tick_metrics:           Option<TickMetrics>,                 // persona-tick-harness
     pub composition_metrics:    Option<CompositionMetrics>,          // rag-composition-harness
@@ -364,7 +364,7 @@ The harness catalog above is the design floor. Specific concerns from the airc r
 The harness framework is "done" when:
 
 - A `cargo continuum-vdd <harness>` binary exists; running it produces all three output artifacts.
-- The framework's own infrastructure (baseline loader, regression detector, JSONL writer, anchor detector) lives in `src/workers/continuum-core/src/vdd/` and is itself test-covered.
+- The framework's own infrastructure (baseline loader, regression detector, JSONL writer, anchor detector) lives in `core/continuum-core/src/vdd/` and is itself test-covered.
 - Two anchor baselines (`air-m-uma-16`, `rtx-5090-32-64`) exist for at least the `per-pr`-cadence harnesses.
 - CI runs `per-pr` harnesses on every Rust-touching PR and posts the result as a PR comment with VDD record + delta highlights.
 - A regression that fails a hard ceiling blocks merge; a regression that exceeds 25% on a baseline-relative field blocks merge.

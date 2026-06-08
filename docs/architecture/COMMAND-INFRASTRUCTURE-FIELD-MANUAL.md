@@ -36,7 +36,7 @@ pub trait ServiceModule: Send + Sync {
 
 `as_any` lets the runtime downcast to the concrete module type when needed (test infra, runtime control queries).
 
-**Reference:** `src/workers/continuum-core/src/runtime/service_module.rs`
+**Reference:** `core/continuum-core/src/runtime/service_module.rs`
 
 ### 2.2 `CommandRequest<P>` / `CommandResponse<T>` — typed envelopes
 
@@ -54,7 +54,7 @@ The envelope carries the command-specific `params` flattened with cross-cutting 
 
 **Why typed envelopes**: handlers stop re-parsing the cross-cutting bits themselves. The cross-cutting fields become free.
 
-**Reference:** `src/workers/continuum-core/src/runtime/command_envelope.rs` (PR #1486)
+**Reference:** `core/continuum-core/src/runtime/command_envelope.rs` (PR #1486)
 
 ### 2.3 `HandleRef` + four cell shapes — long-running state
 
@@ -81,7 +81,7 @@ CommandResponse::ok(StartData { first_token })
 
 **Cross-machine.** A handle minted on machine A is meaningful only on A. If a consumer on B calls a command taking that handle, the grid interceptor routes the call back to A (per `handle.owner`). The handle ID never leaves A's state map.
 
-**Reference:** `src/workers/continuum-core/src/runtime/cell_shapes.rs` (PR #1485)
+**Reference:** `core/continuum-core/src/runtime/cell_shapes.rs` (PR #1485)
 
 ### 2.4 `HandleRef::expect_owned_by` — handle validation
 
@@ -96,7 +96,7 @@ This is the canonical handle-validation entry point. Returns `Result<Uuid, Strin
 
 **Why this matters.** Without owner validation, a handle minted by module A reaching module B's handler would silently miss in B's state map ("not found") instead of surfacing as a routing bug. The fail-loud diagnostic turns a head-scratcher into a one-line fix.
 
-**Reference:** `src/workers/continuum-core/src/runtime/cell_shapes.rs::HandleRef::expect_owned_by` (PR #1491)
+**Reference:** `core/continuum-core/src/runtime/cell_shapes.rs::HandleRef::expect_owned_by` (PR #1491)
 
 ### 2.5 `CommandRequest::handle_id_or_legacy` — dual-shape resolver
 
@@ -114,7 +114,7 @@ let cursor_id = req.handle_id_or_legacy(
 
 Both wire shapes resolve to the same id; the typed envelope wins when both are present. Use this anywhere you're migrating a stringly-typed resource id to a HandleRef while keeping back-compat.
 
-**Reference:** `src/workers/continuum-core/src/runtime/command_envelope.rs::CommandRequest::handle_id_or_legacy` (PR #1491)
+**Reference:** `core/continuum-core/src/runtime/command_envelope.rs::CommandRequest::handle_id_or_legacy` (PR #1491)
 
 ### 2.6 Interceptor chain — transports as composable interceptors
 
@@ -126,7 +126,7 @@ Every command walks the same dispatch chain regardless of which language or mach
 
 The chain is the same primitive for every transport: local Rust, remote Rust over grid, remote Rust over airc, TS over IPC. Adding a transport is adding an interceptor; no kernel changes needed.
 
-**Reference:** `src/workers/continuum-core/src/runtime/command_executor.rs`, `command_interceptor.rs` (PRs #1483/#1484)
+**Reference:** `core/continuum-core/src/runtime/command_executor.rs`, `command_interceptor.rs` (PRs #1483/#1484)
 
 ### 2.7 Cross-module calls
 
@@ -150,7 +150,7 @@ That's it. Chat → data, chat → airc, persona → cognition — every cross-m
 Every ServiceModule follows the same shape. The generator (PR #1487) scaffolds modules in this shape; humans fill in handler bodies. The template:
 
 ```
-src/workers/continuum-core/src/modules/<name>/
+core/continuum-core/src/modules/<name>/
 ├── mod.rs              // ServiceModule impl, command dispatch, public methods
 ├── types.rs            // CommandRequest/Response params + result types, ts-rs exports
 ├── DESIGN.md           // (future) Per-module design pinning the contract
@@ -351,7 +351,7 @@ When a handler calls two cross-module commands in sequence (e.g., `chat/send` ca
 
 The ordering invariant (primary before secondary) must be pinned by a test. The "degraded success" pattern uses a `warning: Option<String>` field on the result type — naming the failing surface, surfacing the underlying error, confirming the primary write isn't lost.
 
-**Reference:** `chat/send` in `src/workers/continuum-core/src/modules/chat/mod.rs` (PR #1489), `send_calls_data_before_airc` + `send_with_airc_failure_returns_warning_and_null_event_id` tests.
+**Reference:** `chat/send` in `core/continuum-core/src/modules/chat/mod.rs` (PR #1489), `send_calls_data_before_airc` + `send_with_airc_failure_returns_warning_and_null_event_id` tests.
 
 ## 5. Migration playbook: rethink, don't port
 
@@ -418,7 +418,7 @@ The GeneratorModule (PR #1487) scaffolds new ServiceModule directories. Eat your
 Produces:
 
 ```
-src/workers/continuum-core/src/modules/chat_analyze/
+core/continuum-core/src/modules/chat_analyze/
 ├── mod.rs          // ServiceModule scaffold with command_prefixes + dispatch arms
 └── README.md       // Author-facing summary + wire-up reminder
 ```

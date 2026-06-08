@@ -47,7 +47,7 @@ If `docker version` hangs for 30s then fails, Docker Desktop isn't running on Wi
 
 | Concern | Git Bash | WSL2 |
 |---------|----------|------|
-| `bash` scripts in `src/scripts/` | mostly run, but path quoting is fragile | run exactly as on Linux |
+| `bash` scripts in `tools/scripts/` | mostly run, but path quoting is fragile | run exactly as on Linux |
 | Unix domain sockets | emulated; `~/.continuum/sockets/*.sock` paths get mangled through `/c/Users/...` translation | real POSIX sockets, paths clean |
 | `cargo build` for Rust workers | requires MSVC or MinGW toolchain, hits the issues documented in the onboarding guide | standard Linux toolchain works |
 | `docker exec` into running containers | works, but TTY detection is unreliable | works cleanly |

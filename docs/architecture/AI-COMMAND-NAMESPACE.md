@@ -238,13 +238,13 @@ prior naive attempts.
 
 | Component | Status | File / task |
 |---|---|---|
-| Adapter trait + registry | Built | `src/workers/continuum-core/src/ai/adapter.rs` |
-| Heuristic / canned adapter | Built | `src/workers/continuum-core/src/ai/heuristic_adapter.rs` (#103) |
-| Anthropic / OpenAI-compatible adapter | Built | `src/workers/continuum-core/src/ai/{anthropic,openai}_adapter.rs` |
-| LlamaCpp adapter | Built | `src/workers/continuum-core/src/inference/llamacpp_adapter.rs` |
-| Inference handle store | Built | `src/workers/continuum-core/src/inference/handle_store.rs` (#107A) |
-| `ai/inference/{open,generate,close,inspect}` commands | Built | `src/workers/continuum-core/src/inference/handle_module.rs` (#107B) |
-| One-shot legacy `inference/llm/request` | Live (back-compat) | `src/workers/continuum-core/src/inference/llm_module_service.rs` |
+| Adapter trait + registry | Built | `core/continuum-core/src/ai/adapter.rs` |
+| Heuristic / canned adapter | Built | `core/continuum-core/src/ai/heuristic_adapter.rs` (#103) |
+| Anthropic / OpenAI-compatible adapter | Built | `core/continuum-core/src/ai/{anthropic,openai}_adapter.rs` |
+| LlamaCpp adapter | Built | `core/continuum-core/src/inference/llamacpp_adapter.rs` |
+| Inference handle store | Built | `core/continuum-core/src/inference/handle_store.rs` (#107A) |
+| `ai/inference/{open,generate,close,inspect}` commands | Built | `core/continuum-core/src/inference/handle_module.rs` (#107B) |
+| One-shot legacy `inference/llm/request` | Live (back-compat) | `core/continuum-core/src/inference/llm_module_service.rs` |
 | Namespace consolidation under `ai/*` | Pending | Task #106 |
 | InferenceScheduler daemon | Designed, not built | Task #109; see scheduling doc below |
 | Vision / audio / classical-ML / alg / game / lowlevel commands | Mostly in TS today | Migrate over time per [`rust-is-the-core-node-is-the-shell`] doctrine |

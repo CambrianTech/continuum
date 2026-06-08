@@ -93,7 +93,7 @@ struct MyStruct {
 
 ### CandleAdapter (Inference)
 
-**File**: `src/workers/continuum-core/src/inference/candle_adapter.rs`
+**File**: `core/continuum-core/src/inference/candle_adapter.rs`
 
 - `model_guard: RwLock<Option<GpuAllocationGuard>>` — tracks base model VRAM
 - `adapter_guards: RwLock<HashMap<String, GpuAllocationGuard>>` — per-LoRA adapter
@@ -104,7 +104,7 @@ struct MyStruct {
 
 ### ModelBackend Trait (VRAM Estimation)
 
-**File**: `src/workers/continuum-core/src/inference/backends/mod.rs`
+**File**: `core/continuum-core/src/inference/backends/mod.rs`
 
 All model backends implement `estimated_vram_bytes()`:
 - `LlamaSafetensorsBackend`: sums file sizes of all `weight_paths` (multiple .safetensors shards)
@@ -115,7 +115,7 @@ File size is a reasonable VRAM proxy — safetensors files are memory-mapped, GG
 
 ### GenomePagingEngine (Inference)
 
-**File**: `src/workers/continuum-core/src/persona/genome_paging.rs`
+**File**: `core/continuum-core/src/persona/genome_paging.rs`
 
 - `allocation_guards: HashMap<String, GpuAllocationGuard>` — per-adapter tracking
 - On `activate_skill()` eviction: `allocation_guards.remove(&victim)` releases VRAM
@@ -125,7 +125,7 @@ File size is a reasonable VRAM proxy — safetensors files are memory-mapped, GG
 
 ### Kokoro TTS
 
-**File**: `src/workers/continuum-core/src/live/audio/tts/kokoro.rs`
+**File**: `core/continuum-core/src/live/audio/tts/kokoro.rs`
 
 - Module-level `TTS_GPU_MANAGER: OnceLock<Arc<GpuMemoryManager>>`
 - `KOKORO_GPU_GUARD: OnceLock<GpuAllocationGuard>` — single ONNX model guard
@@ -134,7 +134,7 @@ File size is a reasonable VRAM proxy — safetensors files are memory-mapped, GG
 
 ### Bevy Renderer
 
-**File**: `src/workers/continuum-core/src/live/video/bevy_renderer.rs`
+**File**: `core/continuum-core/src/live/video/bevy_renderer.rs`
 
 - Module-level `RENDERER_GPU_MANAGER: OnceLock<Arc<GpuMemoryManager>>`
 - `GpuGuards` Bevy Resource:

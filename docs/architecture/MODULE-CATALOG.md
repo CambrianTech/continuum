@@ -4,7 +4,7 @@
 >
 > **Companion to** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) (the substrate floor), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (the artifact economy), [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) (the cognition contract), and [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md) (the module-author field manual).
 >
-> **Status.** Most entries are design proposals targeting per-module Rust files under `src/workers/continuum-core/src/`. **Some are now live in Rust** — see [§0 below](#0-currently-live-in-rust). Implementation lands per ALPHA-GAP lanes.
+> **Status.** Most entries are design proposals targeting per-module Rust files under `core/continuum-core/src/`. **Some are now live in Rust** — see [§0 below](#0-currently-live-in-rust). Implementation lands per ALPHA-GAP lanes.
 
 This document is the **catalog**. Every Continuum concern — RAG, persona, memory, voice, vision, inference, sentinel, foundry, federation, live, AIRC bridge, governor, and the rest — shown as a focused `RuntimeModule`. Each entry names what the module *needs* (subscriptions), what it *provides* (emissions), its resource class + target, its cadence, a screen-or-less handler sketch, and an honest line-count estimate.
 
@@ -94,7 +94,7 @@ The persona's per-turn cognition: read inbox, assemble working memory, decide, e
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/cognition/persona_module.rs` |
+| Path | `core/continuum-core/src/cognition/persona_module.rs` |
 | Lane | `ResourceClass::LocalGeneration` |
 | Target | `TargetSilicon::Gpu` (Cpu when no GPU lease available, with reprojection) |
 | Cadence | `OnReady` (inbox not empty + composition warm) |
@@ -128,7 +128,7 @@ Build a ranked context bundle from sources for one persona turn. Generic over `R
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/cognition/rag/composer.rs` |
+| Path | `core/continuum-core/src/cognition/rag/composer.rs` |
 | Lane | `ResourceClass::LocalGeneration` (sub-second turn-time work) |
 | Target | `TargetSilicon::Cpu` (composition is glue; sources do their own GPU/disk) |
 | Cadence | `OnReady` |
@@ -158,7 +158,7 @@ Background module that runs during the consolidation phase (sleep). Reads recent
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/cognition/hippocampus.rs` |
+| Path | `core/continuum-core/src/cognition/hippocampus.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Cpu` (mmap + sqlite; no GPU) |
 | Cadence | `OnConsolidationPhase` (governor-scheduled, idle/plugged-in by default) |
@@ -172,7 +172,7 @@ Demand-aligned engram fetch for an active persona's working-memory assembly. Rea
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/cognition/engram_recall.rs` |
+| Path | `core/continuum-core/src/cognition/engram_recall.rs` |
 | Lane | `ResourceClass::Memory` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `OnReady` |
@@ -190,7 +190,7 @@ Local LLM generation. One model per instance; the substrate routes turns to it. 
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/inference/llm_module.rs` |
+| Path | `core/continuum-core/src/inference/llm_module.rs` |
 | Lane | `ResourceClass::LocalGeneration` |
 | Target | `TargetSilicon::Gpu` (hard requirement after #1314 fail-closed gate) |
 | Cadence | `OnReady` |
@@ -204,7 +204,7 @@ Bridge from the gRPC inference server (existing `inference-grpc/` crate) into th
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/inference/grpc_bridge.rs` |
+| Path | `core/continuum-core/src/inference/grpc_bridge.rs` |
 | Lane | `ResourceClass::Io` |
 | Target | `TargetSilicon::Network` |
 | Cadence | `OnReady` |
@@ -218,7 +218,7 @@ Coalesce multiple embedding requests across personas into one model invocation. 
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/inference/embedding_batcher.rs` |
+| Path | `core/continuum-core/src/inference/embedding_batcher.rs` |
 | Lane | `ResourceClass::Embedding` |
 | Target | `TargetSilicon::Gpu` (Cpu fallback acceptable for embeddings — short batches) |
 | Cadence | `OnBatchFullOrTimeout` (custom cadence — 8 requests OR 50ms) |
@@ -232,7 +232,7 @@ Build a `CompositionPlan` from a `RankedPool` per the genome doc Part 8. Caches 
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/inference/composer.rs` |
+| Path | `core/continuum-core/src/inference/composer.rs` |
 | Lane | `ResourceClass::LocalGeneration` |
 | Target | `TargetSilicon::Cpu` (composition decisions are glue) |
 | Cadence | `OnReady` |
@@ -246,7 +246,7 @@ Pre-compose likely-next plans + pre-fetch likely-next pages. Governor-tuned aggr
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/inference/speculator.rs` |
+| Path | `core/continuum-core/src/inference/speculator.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Gpu` (when idle slack) |
 | Cadence | `OnTurnStart` (speculative branches fire when a turn begins) |
@@ -264,7 +264,7 @@ Object detection on incoming video frames. Per-frame, GPU.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/sensory/vision_yolo.rs` |
+| Path | `core/continuum-core/src/sensory/vision_yolo.rs` |
 | Lane | `ResourceClass::Vision` |
 | Target | `TargetSilicon::Gpu` |
 | Cadence | `Realtime` |
@@ -278,7 +278,7 @@ Watershed / semantic segmentation. Lower cadence; results feed reprojection tool
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/sensory/vision_segmentation.rs` |
+| Path | `core/continuum-core/src/sensory/vision_segmentation.rs` |
 | Lane | `ResourceClass::Vision` |
 | Target | `TargetSilicon::Gpu` |
 | Cadence | `Delayed { every_n_frames: 4 }` |
@@ -292,7 +292,7 @@ CNN surface normals — slow but reprojected per Joel's CBAR pattern.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/sensory/surface_normals.rs` |
+| Path | `core/continuum-core/src/sensory/surface_normals.rs` |
 | Lane | `ResourceClass::Vision` |
 | Target | `TargetSilicon::Gpu` |
 | Cadence | `OnReady` (waked by 3D-space-shift emission) |
@@ -306,7 +306,7 @@ Streaming speech-to-text. Real-time per audio chunk.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/sensory/voice_stt.rs` |
+| Path | `core/continuum-core/src/sensory/voice_stt.rs` |
 | Lane | `ResourceClass::Media` |
 | Target | `TargetSilicon::Gpu` (Cpu fallback for short utterances) |
 | Cadence | `Realtime` |
@@ -320,7 +320,7 @@ Speech synthesis from text emissions.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/sensory/voice_tts.rs` |
+| Path | `core/continuum-core/src/sensory/voice_tts.rs` |
 | Lane | `ResourceClass::Media` |
 | Target | `TargetSilicon::Gpu` (piper / silero / orpheus) |
 | Cadence | `OnReady` |
@@ -334,7 +334,7 @@ Mix-minus audio routing across participants.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/live/mixer.rs` |
+| Path | `core/continuum-core/src/live/mixer.rs` |
 | Lane | `ResourceClass::Media` |
 | Target | `TargetSilicon::Cpu` (SIMD-accelerated) |
 | Cadence | `Realtime` |
@@ -348,7 +348,7 @@ Two-stage voice activity detection.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/sensory/voice_vad.rs` |
+| Path | `core/continuum-core/src/sensory/voice_vad.rs` |
 | Lane | `ResourceClass::Media` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `Realtime` |
@@ -368,7 +368,7 @@ Pull a SOTA model, extract relevant artifacts, adapt, publish to genome pool.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/foundry/absorber.rs` |
+| Path | `core/continuum-core/src/foundry/absorber.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Gpu` (training-style work; offline) |
 | Cadence | `OnTrigger { trigger: SOTAUpdateAvailable }` |
@@ -382,7 +382,7 @@ Read every cognition trace; build outcome attributions. Cheap, continuous.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/sentinel/observer.rs` |
+| Path | `core/continuum-core/src/sentinel/observer.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `OnReady` (woken by every trace) |
@@ -396,7 +396,7 @@ Run during consolidation phase. Reads attributions, retrains hot LoRA layers, pu
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/sentinel/refiner.rs` |
+| Path | `core/continuum-core/src/sentinel/refiner.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Gpu` (training) |
 | Cadence | `OnConsolidationPhase` |
@@ -410,7 +410,7 @@ One module per tier (`Fast`, `Warm`, `Bench`, `Cold`, `Frozen`). Trait-implement
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/genome/tier/{fast,warm,bench,cold,frozen}.rs` |
+| Path | `core/continuum-core/src/genome/tier/{fast,warm,bench,cold,frozen}.rs` |
 | Lane | per-tier (`Fast`/`Warm` → `ResourceClass::Memory`; `Bench` → `ResourceClass::Memory`; `Cold`/`Frozen` → `ResourceClass::Io`) |
 | Target | per-tier |
 | Cadence | `OnReady` |
@@ -424,7 +424,7 @@ Per-persona working-set bookkeeping. Page faults, MMU-style permission checks.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/genome/working_set.rs` |
+| Path | `core/continuum-core/src/genome/working_set.rs` |
 | Lane | `ResourceClass::Memory` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `OnReady` |
@@ -438,7 +438,7 @@ The central API every persona reaches for. Backed by the layered indexing (worki
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/genome/recall.rs` |
+| Path | `core/continuum-core/src/genome/recall.rs` |
 | Lane | `ResourceClass::Memory` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `OnReady` |
@@ -456,7 +456,7 @@ Publish locally-refined artifacts (sentinel-derived) to the federation. Governor
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/federation/publisher.rs` |
+| Path | `core/continuum-core/src/federation/publisher.rs` |
 | Lane | `ResourceClass::Io` |
 | Target | `TargetSilicon::Network` |
 | Cadence | `OnTrigger { trigger: PublishCadenceTick }` |
@@ -470,7 +470,7 @@ Pull updates from federation peers. Builds the grid catalog from gossip.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/federation/puller.rs` |
+| Path | `core/continuum-core/src/federation/puller.rs` |
 | Lane | `ResourceClass::Io` |
 | Target | `TargetSilicon::Network` |
 | Cadence | `OnTrigger { trigger: PullCadenceTick }` |
@@ -484,7 +484,7 @@ Decide where an inference request runs — local, federated peer, cloud. Cost-aw
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/grid/inference_router.rs` |
+| Path | `core/continuum-core/src/grid/inference_router.rs` |
 | Lane | `ResourceClass::Io` |
 | Target | `TargetSilicon::Network` |
 | Cadence | `OnReady` |
@@ -498,7 +498,7 @@ Announce this instance's inference capabilities to the federation. Already shipp
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/inference_capability/announcer.rs` |
+| Path | `core/continuum-core/src/inference_capability/announcer.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Network` |
 | Cadence | `Delayed { interval: 60s }` |
@@ -516,7 +516,7 @@ WebSocket-based audio call coordinator. Existing `live/call_server.rs`.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/live/call_server.rs` |
+| Path | `core/continuum-core/src/live/call_server.rs` |
 | Lane | `ResourceClass::Media` |
 | Target | `TargetSilicon::Network` |
 | Cadence | `Realtime` |
@@ -530,7 +530,7 @@ WebSocket-based audio call coordinator. Existing `live/call_server.rs`.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/live/avatar_renderer.rs` (post-migration) |
+| Path | `core/continuum-core/src/live/avatar_renderer.rs` (post-migration) |
 | Lane | `ResourceClass::Render` |
 | Target | `TargetSilicon::Gpu` |
 | Cadence | `Realtime` |
@@ -544,7 +544,7 @@ Watch the live audio/video pipeline for backpressure; feed `PressureBroker`.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/live/pressure_monitor.rs` |
+| Path | `core/continuum-core/src/live/pressure_monitor.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `Realtime` |
@@ -562,7 +562,7 @@ Bridge between AIRC room messages and Continuum cognition. Already partly shippe
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/airc/bridge.rs` |
+| Path | `core/continuum-core/src/airc/bridge.rs` |
 | Lane | `ResourceClass::Io` |
 | Target | `TargetSilicon::Network` |
 | Cadence | `OnReady` |
@@ -576,7 +576,7 @@ Bridge between Positron widgets (Lit / web) and Continuum cognition. Handles com
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/widgets/bridge.rs` |
+| Path | `core/continuum-core/src/widgets/bridge.rs` |
 | Lane | `ResourceClass::Io` |
 | Target | `TargetSilicon::Network` |
 | Cadence | `OnReady` |
@@ -590,7 +590,7 @@ Cross-platform `RawFrame` entry from Unity (and similar engines). Pure FFI shim.
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/sensory/unity_frame_receiver.rs` |
+| Path | `core/continuum-core/src/sensory/unity_frame_receiver.rs` |
 | Lane | `ResourceClass::Vision` |
 | Target | `TargetSilicon::Cpu` (zero-overhead borrow; Unity's bytes stay where Unity put them) |
 | Cadence | `Realtime` |
@@ -610,7 +610,7 @@ The DVFS-style governor. Detailed in [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/governor/mod.rs` |
+| Path | `core/continuum-core/src/governor/mod.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `Realtime` (responds to pressure signals immediately) |
@@ -624,7 +624,7 @@ Already shipping per #1307 / #1308 / #1310 / #1313. Resource admission for infer
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/paging/broker.rs` |
+| Path | `core/continuum-core/src/paging/broker.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `OnReady` |
@@ -638,7 +638,7 @@ The substrate-side reprojection toolkit. Called by `Reprojectable` impls; carrie
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/cognition/reprojection.rs` |
+| Path | `core/continuum-core/src/cognition/reprojection.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `OnReady` |
@@ -652,7 +652,7 @@ Detect adversarial input frames; emit `Decline { AdversarialPattern }` cascade. 
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/cognition/threat_detector.rs` |
+| Path | `core/continuum-core/src/cognition/threat_detector.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Cpu` |
 | Cadence | `OnReady` (woken on every frame) |
@@ -666,7 +666,7 @@ Sign and record every typed event that must be auditable (refusals, governor ove
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/cognition/audit.rs` |
+| Path | `core/continuum-core/src/cognition/audit.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Disk` |
 | Cadence | `OnReady` |
@@ -680,7 +680,7 @@ Bind structured `RuntimeMetric` events into a single VDD report. Lane C of ALPHA
 
 | Field | Value |
 |---|---|
-| Path | `src/workers/continuum-core/src/vdd/reporter.rs` |
+| Path | `core/continuum-core/src/vdd/reporter.rs` |
 | Lane | `ResourceClass::Background` |
 | Target | `TargetSilicon::Disk` |
 | Cadence | `OnCommand { command: "vdd report" }` |
@@ -772,7 +772,7 @@ The Implementation Sketches below give the copy-pastable starting point. After `
 The complete module fits in one file. The handler body is small because every concern is inherited from the substrate.
 
 ```rust
-// src/workers/continuum-core/src/cognition/audit/mod.rs
+// core/continuum-core/src/cognition/audit/mod.rs
 //
 // Audit recorder — subscribes to typed events that MUST be auditable;
 // signs and appends each to longterm.db's append-only audit log. Per
@@ -869,7 +869,7 @@ The threat detector consumes every `RuntimeFrame` on the bus and runs registered
 #### File Layout
 
 ```rust
-// src/workers/continuum-core/src/cognition/threat_detector/mod.rs
+// core/continuum-core/src/cognition/threat_detector/mod.rs
 //
 // Threat detector — pluggable trait + module that wakes on every frame,
 // runs each registered detector, emits ThreatDetected on the trace bus
@@ -973,7 +973,7 @@ impl RuntimeModule for ThreatDetectorModule {
 The pattern: ship the module trait + ONE simple detector so the system can be tested end-to-end. Subsequent detectors land as follow-up PRs without changing the module.
 
 ```rust
-// src/workers/continuum-core/src/cognition/threat_detector/prompt_injection.rs
+// core/continuum-core/src/cognition/threat_detector/prompt_injection.rs
 //
 // Detects classic prompt-injection patterns: text inside a frame's
 // `raw_payload` that contains role-override strings, system-prompt
@@ -1039,7 +1039,7 @@ const MAX_USER_MSG_LEN: usize = 8000;
 Four tokio tests cover the trait contract + the first detector:
 
 ```rust
-// src/workers/continuum-core/src/cognition/threat_detector/tests.rs
+// core/continuum-core/src/cognition/threat_detector/tests.rs
 use super::*;
 use continuum_runtime::test_utils::*;
 

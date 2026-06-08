@@ -4,7 +4,7 @@
 >
 > **Status**: store shipped pre-session; concurrency stress tests + moment-of-truth precondition doc shipped in PR #1492.
 >
-> **File**: `src/workers/continuum-core/src/airc/realtime_store.rs`
+> **File**: `core/continuum-core/src/airc/realtime_store.rs`
 >
 > **Canonical reference**: [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md)
 
@@ -136,7 +136,7 @@ The four together guarantee: **chat → airc → persona inbox round-trip works 
 ## References
 
 - PR #1492 — Concurrency stress tests (4 tests pinning moment-of-truth invariants)
-- `src/workers/continuum-core/src/airc/realtime.rs` — Envelope + cursor + presence + manifest type defs
-- `src/workers/continuum-core/src/modules/airc.rs` — `airc/realtime-publish` + `airc/realtime-replay` command handlers
+- `core/continuum-core/src/airc/realtime.rs` — Envelope + cursor + presence + manifest type defs
+- `core/continuum-core/src/modules/airc.rs` — `airc/realtime-publish` + `airc/realtime-replay` command handlers
 - [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md §4](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md) — concurrency doctrine
 - Memory: `headless-rust-must-work-soon`, `three-primitives-commands-events-persona`

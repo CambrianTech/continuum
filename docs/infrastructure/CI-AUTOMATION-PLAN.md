@@ -13,7 +13,7 @@ We're building Continuum + airc as a coordinated multi-agent project. Today's se
 3. **Image-producing automatically.** When a PR touches Docker-relevant code, CI builds the images — no "did anyone remember to push?" question.
 4. **Mesh-observable.** The build farm's state is visible on airc, just like every other peer's state.
 
-Today's blocker (#974): the existing `docker-images.yml` workflow only fires on PRs targeting `main` AND only when `src/workers/**` or `docker/**` paths change. PRs targeting `canary` (the working integration branch) silently never produce the required-status-checks `verify-architectures` and `verify-after-rebuild` that the canary ruleset gates merges on. **Result**: every TS-only or doc-only PR is permanently un-mergeable to canary.
+Today's blocker (#974): the existing `docker-images.yml` workflow only fires on PRs targeting `main` AND only when `core/**` or `docker/**` paths change. PRs targeting `canary` (the working integration branch) silently never produce the required-status-checks `verify-architectures` and `verify-after-rebuild` that the canary ruleset gates merges on. **Result**: every TS-only or doc-only PR is permanently un-mergeable to canary.
 
 ## The architecture this plan delivers
 
@@ -89,7 +89,7 @@ Today's blocker (#974): the existing `docker-images.yml` workflow only fires on 
 
 **Why.** Eliminates manual `push-current-arch.sh` invocation. PRs that touch Rust/Docker just get their images automatically. The verify gate becomes meaningful (it's verifying images that the PR's CI itself produced).
 
-**Done when**: a PR that touches `src/workers/continuum-core/Cargo.toml` opens; `build-amd64` runs on BigMama + pushes the amd64 image; `build-arm64` runs on Mac + pushes the arm64 image; `verify-architectures` finds both + passes; PR mergeable.
+**Done when**: a PR that touches `core/continuum-core/Cargo.toml` opens; `build-amd64` runs on BigMama + pushes the amd64 image; `build-arm64` runs on Mac + pushes the arm64 image; `verify-architectures` finds both + passes; PR mergeable.
 
 ### Phase D — Multi-arch manifest stitching
 
@@ -136,7 +136,7 @@ Optional next layer: when a PR opens that requires Docker builds AND no suitable
 - **Self-hosted runners need to stay online.** Mitigation: airc-side observability (Phase F) surfaces "runner offline" + the existing `airc daemon install` keeps runners up across machine sleep/wake (mirror of the airc#382 work).
 - **Self-hosted runners get attack surface.** Mitigation: GHA's "require approval for first-time contributors" + the runners only run scripts already in the repo + airc-mesh contributors are gh-org members.
 - **ghcr storage grows with every PR.** Mitigation: separate prune workflow that drops `:pr-<N>` tags after merge.
-- **Phase A's auto-skip could mask real Docker bugs in Rust-only PRs.** Mitigation: the path filter is conservative — `src/workers/**/Cargo.{toml,lock}` triggers the full path even for "small" Rust changes. False positives (running real verification when a Rust change actually had no Docker impact) are cheap; false negatives (skipping when a real check was needed) are tracked + the path-filter list is tightened over time as we observe.
+- **Phase A's auto-skip could mask real Docker bugs in Rust-only PRs.** Mitigation: the path filter is conservative — `core/**/Cargo.{toml,lock}` triggers the full path even for "small" Rust changes. False positives (running real verification when a Rust change actually had no Docker impact) are cheap; false negatives (skipping when a real check was needed) are tracked + the path-filter list is tightened over time as we observe.
 
 ## Action item: top-level GitHub issue
 

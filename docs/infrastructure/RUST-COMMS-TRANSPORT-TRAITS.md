@@ -53,7 +53,7 @@ ownership.
 ## Core Types
 
 The first code slice should add these types under a neutral Rust module such as
-`src/workers/continuum-core/src/comms/`.
+`core/continuum-core/src/comms/`.
 
 ```rust
 pub struct TransportEnvelope<T> {

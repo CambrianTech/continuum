@@ -309,8 +309,8 @@ The whole transaction lives on the airc log, lamport-ordered, replayable. **Ever
 
 | File / construct | Why |
 |---|---|
-| `src/scripts/continuum-airc-bridge.mjs` | Shell-out-per-message hack. Replaced by the airc EventBridge transport. |
-| `src/workers/continuum-core/src/persona/airc_admission.rs` | Protocol-named. Replaced by `persona/message_admission.rs` (or fold into existing inbox admission gate) subscribing to `chat:posted` regardless of source. |
+| `tools/scripts/continuum-airc-bridge.mjs` | Shell-out-per-message hack. Replaced by the airc EventBridge transport. |
+| `core/continuum-core/src/persona/airc_admission.rs` | Protocol-named. Replaced by `persona/message_admission.rs` (or fold into existing inbox admission gate) subscribing to `chat:posted` regardless of source. |
 | airc-prefixed IPC commands in `modules/airc.rs` (`airc/queue-scan`, `airc/realtime-publish`, `airc/realtime-replay`) | Bypassed the Events bus. Replaced by `Events.subscribe('chat:posted', ...)`. Debug-only inspection commands move to `debug/airc-*` namespace. |
 | `src/system/data/entities/ChatMessageEntity.ts` + the `chat_messages` ORM collection | ORM is not the chat store. airc is. Reads via `Events.subscribe('chat:posted', ...)` for new messages; backfill via airc cursor tail-N. |
 | The dual-write PR stack (#1432/1433/1435/1436/1437) and `src/system/airc-chat/*` (`AircChatMirrorMapper`, `AircChatDualWriteService`, `AircChatEnvelope`) | Patches the missing event emission by writing to TWO places. Once airc IS the chat store, no dual-write needed. **The whole `src/system/airc-chat/` directory deletes.** |
@@ -397,10 +397,10 @@ For codex + claude-tab-1 review and lane assignment:
 |---|---|---|---|
 | 1 | EventClass declaration system + registry | TS-only | `src/system/events/` |
 | 2 | AircEventTransport adapter | claude-tab-1 (Lane C2 makes this natural) | `src/system/events/transports/` |
-| 3 | `CommandBase.naturalScope` + `CommandParams.scope` extension | TS (CommandBase) + Rust (handle_event path for grid-routed commands) | `src/daemons/command-daemon/` + `src/workers/continuum-core/src/runtime/` |
-| 4 | `presence:peer-manifest` event class + capability index | Rust (canonical state) + TS (read-side bindings) | `src/workers/continuum-core/src/grid/` (new module) + `src/system/grid/` |
+| 3 | `CommandBase.naturalScope` + `CommandParams.scope` extension | TS (CommandBase) + Rust (handle_event path for grid-routed commands) | `src/daemons/command-daemon/` + `core/continuum-core/src/runtime/` |
+| 4 | `presence:peer-manifest` event class + capability index | Rust (canonical state) + TS (read-side bindings) | `core/continuum-core/src/grid/` (new module) + `src/system/grid/` |
 | 5 | `grid-router-daemon` (the BGP-flavored router) | TS daemon + Rust IPC for the routing-table state | `src/daemons/grid-router-daemon/` (new) |
-| 6 | Contract event chain + signatures | TS + Rust signature verification | `src/system/grid/contracts/` + `src/workers/continuum-core/src/grid/contracts.rs` |
+| 6 | Contract event chain + signatures | TS + Rust signature verification | `src/system/grid/contracts/` + `core/continuum-core/src/grid/contracts.rs` |
 | 7 | Migration of existing callers (per §5.4 hot-zone list) | distributed — each caller's owner | various |
 | 8 | Deletion list (per §5.1) | sequential — happens as callers migrate | various |
 
@@ -517,7 +517,7 @@ The proof-contract object has the slots the grid-bus architecture needs: `inputs
 
 ### What's actually drifted (and what fixes it)
 
-The current Continuum-side Rust types in `src/workers/continuum-core/src/forge/{recipe,artifact}.rs` are model-bound:
+The current Continuum-side Rust types in `core/continuum-core/src/forge/{recipe,artifact}.rs` are model-bound:
 - `AlloySource`: `base_model`, `architecture` ("qwen3"/"llama"), `is_moe`, `total_experts`
 - `BenchmarkDef`: ML-evals only (`humaneval`, `mmlu`, `n_shot`)
 - `ForgeArtifact`: `forged_params_b`, `active_params_b`, `quant_tiers`, `tokens_per_sec`, `memory_usage_gb`

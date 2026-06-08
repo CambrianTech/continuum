@@ -111,7 +111,7 @@ all four `standard_persona` capabilities** `{Chat, Vision, AudioInput, AudioOutp
 | qwen2-audio-7b-instruct *(disabled)* |  ✓   |   —    |    ✓    |    —     |
 
 `qwen2-audio-7b-instruct` is commented out at
-`src/workers/continuum-core/config/models.toml` line 309+ — disabled
+`core/continuum-core/config/models.toml` line 309+ — disabled
 2026-04-22 because registering both `qwen2-vl-7b` and `qwen2-audio-7b`
 at boot spawned a second `LlamaCppAdapter` whose eager
 `initialize()` pushed Apple Metal over `kIOGPUCommandBufferCallback​ErrorOutOfMemory`.

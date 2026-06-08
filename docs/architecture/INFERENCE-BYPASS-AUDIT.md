@@ -198,7 +198,7 @@ multi-turn probing (replay-against-multiple-models), revisit.
 ## Audit method
 
 ```bash
-grep -rn "\.generate_text(" /Users/joel/Development/continuum/src/workers/continuum-core/src/ \
+grep -rn "\.generate_text(" /Users/joel/Development/continuum/core/continuum-core/src/ \
   | grep -v "/tests/"
 ```
 
