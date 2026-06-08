@@ -24,6 +24,9 @@ members = [
 
     # client/ — shared client lib (consumed by CLI + mobile SDK FFI)
     "client/continuum-client",
+
+    # apps/ — first-party UI shells / embodiments
+    "apps/cli",
 ]
 # Shared dependencies - workers inherit these versions
 [workspace.dependencies]
