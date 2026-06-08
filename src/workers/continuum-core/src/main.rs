@@ -85,6 +85,34 @@ fn install_shutdown_handlers() {
 /// Short human-readable description of each `BootMode` — surfaces
 /// in the boot banner so the operator can see at a glance what the
 /// substrate is expected to support in this run.
+/// Register a BevyMemoryReporter with the pressure monitor once the
+/// Bevy renderer's ready edge fires. Pulled out of the inline async
+/// task so the subscribe-and-await loop reads as one signal-shaped
+/// block. Called at most once per process lifetime; a Bevy restart
+/// would re-fire the edge but the existing reporter stays valid.
+fn register_bevy_reporter(
+    pressure_monitor: &std::sync::Arc<continuum_core::system_resources::MemoryPressureMonitor>,
+) {
+    let bevy = match continuum_core::live::video::bevy_renderer::try_get() {
+        Some(b) => b,
+        None => {
+            // Ready edge fired but renderer absent — race during shutdown.
+            tracing::warn!(
+                "🧠 Bevy ready edge fired but try_get returned None; skipping reporter"
+            );
+            return;
+        }
+    };
+    let reporter = std::sync::Arc::new(
+        continuum_core::live::video::memory_reporter::BevyMemoryReporter::new(
+            bevy.memory_stats.clone(),
+            bevy.command_sender(),
+        ),
+    );
+    pressure_monitor.add_reporter(reporter);
+    tracing::info!("🧠 Bevy memory reporter registered via ready edge");
+}
+
 fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static str {
     use continuum_core::runtime::BootMode;
     match mode {
@@ -278,30 +306,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Delayed reporter registration: wait for Bevy to finish initializing,
-    // then register its memory reporter. Retries every 2s for up to 30s.
+    // Delayed reporter registration: subscribe to the Bevy renderer's
+    // ready edge and register the memory reporter on the first false→true
+    // transition. Replaces the prior 15-attempt 30s sleep-poll loop with
+    // a real signal — per docs/architecture/CONCURRENCY-STYLE-GUIDE.md.
+    //
+    // If Bevy never starts (headless boot with no avatar consumers), the
+    // task simply parks on `rx.changed()` for the process lifetime — zero
+    // CPU. The 30s give-up window from the old code was misleading anyway:
+    // it never timed out the actual Bevy init, only this task's patience.
     let pm_clone = pressure_monitor.clone();
     tokio::spawn(async move {
-        for attempt in 0..15 {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if let Some(bevy) = continuum_core::live::video::bevy_renderer::try_get() {
-                let reporter = Arc::new(
-                    continuum_core::live::video::memory_reporter::BevyMemoryReporter::new(
-                        bevy.memory_stats.clone(),
-                        bevy.command_sender(),
-                    ),
-                );
-                pm_clone.add_reporter(reporter);
-                info!(
-                    "🧠 Bevy memory reporter registered (attempt {})",
-                    attempt + 1
-                );
+        let mut rx = continuum_core::live::video::bevy_renderer::subscribe_ready();
+        // Fast path: bevy already up before we subscribed.
+        if *rx.borrow_and_update() {
+            register_bevy_reporter(&pm_clone);
+            return;
+        }
+        loop {
+            if rx.changed().await.is_err() {
+                // Sender dropped — bevy module shutdown for process exit.
+                return;
+            }
+            if *rx.borrow_and_update() {
+                register_bevy_reporter(&pm_clone);
                 return;
             }
         }
-        tracing::warn!(
-            "🧠 Bevy memory reporter NOT registered after 30s — Bevy may not be running"
-        );
     });
 
     // Initialize TTS/STT in background (non-blocking - happens after startup)

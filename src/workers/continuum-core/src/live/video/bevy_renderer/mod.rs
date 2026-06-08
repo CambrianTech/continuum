@@ -59,7 +59,9 @@ const HD_HEIGHT: u32 = 720;
 const MAX_HD_SLOTS: usize = MAX_AVATAR_SLOTS as usize;
 
 // Re-export public API
-pub use api::{get_or_init, is_running, set_gpu_manager, shutdown, try_get, BevyAvatarSystem};
+pub use api::{
+    get_or_init, is_running, set_gpu_manager, shutdown, subscribe_ready, try_get, BevyAvatarSystem,
+};
 pub use types::{AvatarCommand, BevyMemoryStats, Emotion, Gesture, SpeechAnimationClip};
 
 // Re-export for metal_gpu_convert (crate-internal)

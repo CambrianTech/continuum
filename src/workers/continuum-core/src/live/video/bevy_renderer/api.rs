@@ -4,6 +4,7 @@ use crossbeam_channel::{Receiver, Sender};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
+use tokio::sync::watch;
 
 use crate::live::avatar::RgbaFrame;
 use crate::{clog_info, clog_warn};
@@ -15,6 +16,34 @@ use super::MAX_AVATAR_SLOTS;
 /// GPU memory manager for render VRAM tracking.
 static RENDERER_GPU_MANAGER: OnceLock<Arc<crate::gpu::memory_manager::GpuMemoryManager>> =
     OnceLock::new();
+
+/// Ready-edge watch — flips `false → true` exactly once when
+/// `get_or_init` constructs `BevyAvatarSystem`. Subscribers (e.g.
+/// `main.rs` for memory-reporter registration) `await rx.changed()`
+/// once instead of polling on a sleep loop.
+///
+/// Same shape as `ServiceModule::ready_edge` — the bevy renderer is
+/// the first non-trait subsystem to publish this signal, paving the
+/// way for it (and the IPC server, and `MemoryPressureMonitor`) to
+/// become full `ServiceModule` implementors in subsequent slices.
+/// See `docs/architecture/CONCURRENCY-STYLE-GUIDE.md`.
+static BEVY_READY: OnceLock<watch::Sender<bool>> = OnceLock::new();
+
+fn ready_tx() -> &'static watch::Sender<bool> {
+    BEVY_READY.get_or_init(|| watch::channel(false).0)
+}
+
+/// Subscribe to the Bevy renderer's "I'm initialized" signal. The watch
+/// starts at `false`; flips to `true` exactly once when `get_or_init`
+/// constructs the `BevyAvatarSystem`. After the flip, callers retrieve
+/// the system via `try_get()`. The `Receiver` is cheap to clone (the
+/// `Sender` holds an `Arc`), so multiple consumers can subscribe.
+///
+/// Replaces the previous 15-attempt 30s poll-loop pattern in `main.rs`.
+/// Per the substrate concurrency doctrine: signals replace races.
+pub fn subscribe_ready() -> watch::Receiver<bool> {
+    ready_tx().subscribe()
+}
 
 /// Provide the GPU memory manager to the renderer subsystem.
 pub fn set_gpu_manager(mgr: Arc<crate::gpu::memory_manager::GpuMemoryManager>) {
@@ -52,6 +81,16 @@ pub fn get_or_init() -> Arc<BevyAvatarSystem> {
     );
     let sys = Arc::new(BevyAvatarSystem::start());
     *guard = Some(Arc::clone(&sys));
+    // Fire the ready edge — subscribers awaiting `subscribe_ready()`
+    // observe the transition false → true exactly once. Send-fail
+    // means no consumers; that's fine, the value is still stored for
+    // future late subscribers via `subscribe_ready`'s borrow.
+    let _ = ready_tx().send(true);
+    crate::probe!(
+        class = "ready.observed",
+        module = "bevy-renderer",
+        slots = MAX_AVATAR_SLOTS
+    );
     sys
 }
 
@@ -73,6 +112,9 @@ pub fn shutdown() {
     if let Some(sys) = sys {
         clog_info!("🎨 Shutting down Bevy renderer to reclaim memory");
         let _ = sys.command_tx.send(AvatarCommand::Shutdown);
+        // Reset the ready edge so a subsequent get_or_init restart
+        // re-fires the transition false → true for new subscribers.
+        let _ = ready_tx().send(false);
     }
 }
 
