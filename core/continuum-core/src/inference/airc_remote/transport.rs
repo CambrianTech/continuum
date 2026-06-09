@@ -24,12 +24,12 @@ use async_trait::async_trait;
 use airc_core::{Body, MentionTarget, PeerId};
 use airc_lib::Airc;
 use continuum_airc_protocol::{
-    AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, DEFAULT_COMMAND_DEADLINE,
-    HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
+    AircCommandRequest, AircCommandResponse, DEFAULT_COMMAND_DEADLINE, KIND_PEER,
 };
 use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
+use crate::routing::airc_transport::AircTransport;
 
 use super::protocol::{RemoteInferenceError, RemoteInferenceRequest, RemoteInferenceResponse};
 
@@ -203,22 +203,6 @@ impl AircLiveTransport {
         })
     }
 
-    /// Build the airc envelope headers for an outbound request.
-    /// Mirrors what `routing::airc_transport::AircTransport::build_headers`
-    /// does for command dispatch — same wire-routing layer per
-    /// `[[airc-headers-are-the-routing-layer]]`. Exposed for tests so
-    /// header drift is catchable without standing up airc-lib.
-    pub fn build_headers(request: &AircCommandRequest) -> airc_core::Headers {
-        let mut headers = airc_core::Headers::new();
-        headers.insert(HEADER_COMMAND_PATH.to_string(), request.path.clone());
-        headers.insert(HEADER_COMMAND_KIND.to_string(), request.kind.clone());
-        headers.insert(
-            HEADER_CONTINUUM_BODY_HINT.to_string(),
-            COMMAND_REQUEST_BODY_HINT.to_string(),
-        );
-        headers
-    }
-
     /// Resolve the wire-side target peer for a given envelope.
     /// Precedence: the inbound `RemoteInferenceRequest.target_peer`
     /// string (when set + parseable as UUID) wins; otherwise the
@@ -275,7 +259,12 @@ impl AircInferenceTransport for AircLiveTransport {
             }
         })?;
         let body = Body::Json(body_value);
-        let headers = Self::build_headers(&envelope);
+        // Reuse the substrate's canonical command-header stamper per
+        // R2-N1 on round 1 review: one logical decision lives in one
+        // place. `AircTransport::build_headers` covers path + kind +
+        // body_hint identically; env is None on our envelopes so the
+        // env-header branch is a no-op.
+        let headers = AircTransport::build_headers(&envelope);
 
         let pending = self
             .airc

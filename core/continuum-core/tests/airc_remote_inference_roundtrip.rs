@@ -43,7 +43,6 @@
 //! (or renames them in only one direction) breaks loudly.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use airc_test_fixtures::TwoAircLoopback;
 use continuum_airc_protocol::{
@@ -76,10 +75,15 @@ async fn spawn_ai_generate_responder(
     handler: Arc<CommandRequestHandler>,
     peer_a: Arc<airc_lib::Airc>,
     canned: TextGenerationResponse,
+    ready: Arc<tokio::sync::Notify>,
 ) -> tokio::task::JoinHandle<()> {
     let self_id = peer_a.peer_id();
     tokio::spawn(async move {
         let mut stream = peer_a.subscribe().await.expect("peer_a subscribe");
+        // R3-N4 barrier: signal the test that subscribe() returned
+        // so the dispatch is guaranteed to land in the broadcast
+        // window. Replaces a 50ms sleep that was flaky on loaded CI.
+        ready.notify_one();
         while let Some(event) = stream.next().await {
             let event = match event {
                 Ok(e) => e,
@@ -88,13 +92,22 @@ async fn spawn_ai_generate_responder(
             if event.peer_id == self_id {
                 continue;
             }
+            // Skip events without ANY body_hint (airc emits control
+            // frames + keepalives that aren't command envelopes).
             let hint = match event.headers.get(HEADER_CONTINUUM_BODY_HINT) {
                 Some(h) => h,
                 None => continue,
             };
-            if hint != COMMAND_REQUEST_BODY_HINT {
-                continue;
-            }
+            // R3-N1: but if a body_hint is set, it MUST be
+            // COMMAND_REQUEST_BODY_HINT — anything else is drift in
+            // AircLiveTransport's stamping. Was silently `continue`
+            // in round 2; drift would have hidden behind a 30s
+            // timeout instead of failing with a named surface.
+            assert_eq!(
+                hint, COMMAND_REQUEST_BODY_HINT,
+                "wire header HEADER_CONTINUUM_BODY_HINT must stamp COMMAND_REQUEST_BODY_HINT \
+                 for ai/generate dispatch; got {hint:?}"
+            );
 
             // R3 header-drift coverage: AircLiveTransport stamps the
             // path + kind on outbound headers per `[[airc-headers-are-
@@ -165,10 +178,15 @@ async fn spawn_ai_generate_responder(
 /// the headers).
 async fn spawn_reply_header_sniffer(
     peer_b: Arc<airc_lib::Airc>,
+    ready: Arc<tokio::sync::Notify>,
 ) -> tokio::task::JoinHandle<(Option<String>, Option<String>)> {
     let self_id = peer_b.peer_id();
     tokio::spawn(async move {
         let mut stream = peer_b.subscribe().await.expect("peer_b subscribe");
+        // R3-N4 barrier — same shape as the responder's, signaled
+        // once subscribe() returns so the test can deterministically
+        // wait for the broadcast window.
+        ready.notify_one();
         while let Some(event) = stream.next().await {
             let event = match event {
                 Ok(e) => e,
@@ -218,22 +236,33 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
         error: None,
     };
 
-    // peer_a = remote substrate.
+    // peer_a = remote substrate. Notify barrier signals when its
+    // subscribe() returns so the test can wait deterministically
+    // instead of guessing a sleep duration (R3-N4 round-2 note).
     let handler = build_handler(Arc::clone(loop_back.peer_a()));
+    let responder_ready = Arc::new(tokio::sync::Notify::new());
     let responder = spawn_ai_generate_responder(
         Arc::clone(&handler),
         Arc::clone(loop_back.peer_a()),
         canned.clone(),
+        Arc::clone(&responder_ready),
     )
     .await;
 
     // R3 coverage: sniff the reply headers on peer_b's inbound stream
     // BEFORE the adapter dispatches, so we don't race with the
     // adapter's own subscribe inside await_reply.
-    let sniffer = spawn_reply_header_sniffer(Arc::clone(loop_back.peer_b())).await;
+    let sniffer_ready = Arc::new(tokio::sync::Notify::new());
+    let sniffer = spawn_reply_header_sniffer(
+        Arc::clone(loop_back.peer_b()),
+        Arc::clone(&sniffer_ready),
+    )
+    .await;
 
-    // Give the responder + sniffer time to install their subscribe filters.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Deterministic barrier — both tasks have called subscribe() and
+    // are sitting on the broadcast receiver before we dispatch.
+    responder_ready.notified().await;
+    sniffer_ready.notified().await;
 
     // peer_b = the persona's host. Build the adapter wrapped around
     // the live airc transport pointed at peer_a.
