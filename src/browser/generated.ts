@@ -250,7 +250,6 @@ import { ProcessRegistryBrowserCommand } from './../commands/process-registry/br
 import { RuntimeMetricsBrowserCommand } from './../commands/runtime/metrics/browser/RuntimeMetricsBrowserCommand';
 import { SentinelApproveBrowserCommand } from './../commands/sentinel/approve/browser/SentinelApproveBrowserCommand';
 import { SentinelCodingAgentBrowserCommand } from './../commands/sentinel/coding-agent/browser/SentinelCodingAgentBrowserCommand';
-import { SentinelEscalateBrowserCommand } from './../commands/sentinel/escalate/browser/SentinelEscalateBrowserCommand';
 import { SentinelExtendBudgetBrowserCommand } from './../commands/sentinel/extend-budget/browser/SentinelExtendBudgetBrowserCommand';
 import { SentinelResumeBrowserCommand } from './../commands/sentinel/resume/browser/SentinelResumeBrowserCommand';
 import { SentinelRunBrowserCommand } from './../commands/sentinel/run/browser/SentinelRunBrowserCommand';
@@ -1568,11 +1567,6 @@ export const BROWSER_COMMANDS: CommandEntry[] = [
     name: 'sentinel/coding-agent',
     className: 'SentinelCodingAgentBrowserCommand',
     commandClass: SentinelCodingAgentBrowserCommand
-  },
-{
-    name: 'sentinel/escalate',
-    className: 'SentinelEscalateBrowserCommand',
-    commandClass: SentinelEscalateBrowserCommand
   },
 {
     name: 'sentinel/extend-budget',

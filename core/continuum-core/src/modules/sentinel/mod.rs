@@ -13,6 +13,7 @@
 //! - **Pipeline Support**: Multi-step pipelines with LLM, conditions, loops
 
 pub mod checkpoint;
+pub mod escalation;
 pub mod executor;
 pub mod interpolation;
 pub mod logs;
@@ -213,14 +214,30 @@ impl SentinelModule {
             logs_dir: logs_dir.to_string_lossy().to_string(),
         };
 
-        // Parse escalation metadata (if caller wants persona inbox routing)
+        // Parse escalation metadata (if caller wants persona inbox routing).
+        // `escalationRules` is now typed `Vec<EscalationRule>` (task #225 —
+        // dropped the `Value` pass-through when the substrate took ownership
+        // of the schema). Malformed rules are dropped with a warning; the
+        // dispatcher falls back to `default_escalation_rules()`.
         let escalation =
             if p.str_opt("parentPersonaId").is_some() || p.str_opt("entityId").is_some() {
+                let parsed_rules = p.json_opt("escalationRules").and_then(|raw| {
+                    serde_json::from_value::<Vec<types::EscalationRule>>(raw).map_or_else(
+                        |e| {
+                            crate::runtime::logger("sentinel").warn(&format!(
+                                "escalationRules param failed typed parse ({e}); \
+                                 dispatcher will use defaults"
+                            ));
+                            None
+                        },
+                        Some,
+                    )
+                });
                 Some(SentinelEscalation {
                     parent_persona_id: p.str_opt("parentPersonaId").map(|s| s.to_string()),
                     entity_id: p.str_opt("entityId").map(|s| s.to_string()),
                     sentinel_name: p.str_or("sentinelName", "unnamed").to_string(),
-                    escalation_rules: p.json_opt("escalationRules"),
+                    escalation_rules: parsed_rules,
                 })
             } else {
                 None
@@ -411,24 +428,28 @@ impl SentinelModule {
                     let _ = tx.send(true);
                 }
 
-                // Push completion to TypeScript for persona escalation.
-                // Rust owns the lifecycle — TS just receives and routes.
+                // Dispatch the substrate-native escalation pipeline
+                // (task #225 — replaces the deleted TS round-trip).
+                // The fire-and-forget contract is preserved: dispatch
+                // logs errors per stage; sentinel cleanup never blocks.
                 if let Some(ref esc) = escalation_clone {
-                    let escalation_payload = json!({
-                        "handle": handle_id_clone,
-                        "status": final_status,
-                        "durationMs": duration_ms,
-                        "error": error_msg,
-                        "parentPersonaId": esc.parent_persona_id,
-                        "entityId": esc.entity_id,
-                        "sentinelName": esc.sentinel_name,
-                        "escalationRules": esc.escalation_rules,
-                    });
-                    // Fire-and-forget — escalation failure shouldn't block sentinel cleanup
                     if let Some(executor) = executor_for_task.as_ref() {
-                        let _ = executor
-                            .execute_ts_json("sentinel/escalate", escalation_payload)
-                            .await;
+                        let terminal = match final_status {
+                            "completed" => escalation::SentinelTerminalStatus::Completed,
+                            "cancelled" => escalation::SentinelTerminalStatus::Cancelled,
+                            _ => escalation::SentinelTerminalStatus::Failed,
+                        };
+                        escalation::dispatch(
+                            executor,
+                            escalation::SentinelEscalationEvent {
+                                handle: handle_id_clone.clone(),
+                                status: terminal,
+                                duration_ms: Some(duration_ms),
+                                error: error_msg.clone(),
+                                escalation: esc.clone(),
+                            },
+                        )
+                        .await;
                     }
                 }
             }
@@ -904,21 +925,29 @@ impl SentinelModule {
                 );
             }
 
-            // Escalation
+            // Substrate-native escalation dispatch (task #225). Resumed
+            // pipelines lose track of duration_ms across the restart
+            // boundary — pass `None` so the dispatcher renders the
+            // memory content as "unknown" duration rather than fabricating
+            // a misleading interval.
             if let Some(ref esc) = escalation_clone {
                 if let Some(executor) = executor_for_task.as_ref() {
-                    let _ = executor
-                        .execute_ts_json(
-                            "sentinel/escalate",
-                            json!({
-                                "handle": handle_id_owned,
-                                "status": if failed { "failed" } else { "completed" },
-                                "parentPersonaId": esc.parent_persona_id,
-                                "entityId": esc.entity_id,
-                                "sentinelName": esc.sentinel_name,
-                            }),
-                        )
-                        .await;
+                    let terminal = if failed {
+                        escalation::SentinelTerminalStatus::Failed
+                    } else {
+                        escalation::SentinelTerminalStatus::Completed
+                    };
+                    escalation::dispatch(
+                        executor,
+                        escalation::SentinelEscalationEvent {
+                            handle: handle_id_owned.clone(),
+                            status: terminal,
+                            duration_ms: None,
+                            error: None,
+                            escalation: esc.clone(),
+                        },
+                    )
+                    .await;
                 }
             }
         });

@@ -309,7 +309,6 @@ import { SentinelApproveServerCommand } from './../commands/sentinel/approve/ser
 import { SentinelCancelServerCommand } from './../commands/sentinel/cancel/server/SentinelCancelServerCommand';
 import { SentinelCleanupServerCommand } from './../commands/sentinel/cleanup/server/SentinelCleanupServerCommand';
 import { SentinelCodingAgentServerCommand } from './../commands/sentinel/coding-agent/server/SentinelCodingAgentServerCommand';
-import { SentinelEscalateServerCommand } from './../commands/sentinel/escalate/server/SentinelEscalateServerCommand';
 import { SentinelExtendBudgetServerCommand } from './../commands/sentinel/extend-budget/server/SentinelExtendBudgetServerCommand';
 import { SentinelListServerCommand } from './../commands/sentinel/list/server/SentinelListServerCommand';
 import { SentinelLoadServerCommand } from './../commands/sentinel/load/server/SentinelLoadServerCommand';
@@ -1890,11 +1889,6 @@ export const SERVER_COMMANDS: CommandEntry[] = [
     name: 'sentinel/coding-agent',
     className: 'SentinelCodingAgentServerCommand',
     commandClass: SentinelCodingAgentServerCommand
-  },
-{
-    name: 'sentinel/escalate',
-    className: 'SentinelEscalateServerCommand',
-    commandClass: SentinelEscalateServerCommand
   },
 {
     name: 'sentinel/extend-budget',

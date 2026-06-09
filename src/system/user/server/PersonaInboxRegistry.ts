@@ -1,8 +1,12 @@
 /**
  * PersonaInboxRegistry — Global lookup of active persona inboxes
  *
- * Enables external services (SentinelEscalationService, etc.) to deliver
- * tasks directly to a persona's inbox without holding a PersonaUser reference.
+ * Enables TS-side services to deliver tasks directly to a persona's
+ * inbox without holding a PersonaUser reference. Sentinel-completion
+ * deliveries no longer go through this registry — Rust's
+ * `core/continuum-core/src/modules/sentinel/escalation.rs` writes
+ * tasks via `data/create` so the channel tick (also in Rust) picks
+ * them up.
  *
  * PersonaUser registers on init, unregisters on shutdown.
  */

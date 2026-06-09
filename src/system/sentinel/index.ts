@@ -47,12 +47,13 @@ export {
   type SentinelStatus,
 } from './entities/SentinelEntity';
 
-// Escalation service (sentinel lifecycle → persona inbox)
-// Rust pushes via sentinel/escalate command — no TS-side polling needed.
-export {
-  handleSentinelEscalation,
-  type SentinelEscalationPayload,
-} from './SentinelEscalationService';
+// Escalation is now substrate-pure: when a sentinel hits a terminal
+// state the Rust SentinelModule calls
+// `core/continuum-core/src/modules/sentinel/escalation.rs::dispatch`
+// directly. The persona's inbox + memory writes happen via data/*
+// commands that already live in Rust. Task #225 removed the TS
+// SentinelEscalationService + the sentinel/escalate command;
+// no TS-side polling or push-receiver remains.
 
 // Trigger service (automatic sentinel execution: event, cron, immediate)
 export {
