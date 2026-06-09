@@ -16,7 +16,9 @@ use crate::persona::{
     ActivityDomain, ChannelEnqueueRequest, ChannelRegistry, InboxMessage, Modality,
     PersonaCognition, PersonaState, SenderType,
 };
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{
+    CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
+};
 use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -110,14 +112,14 @@ impl ChannelState {
 
 pub struct ChannelModule {
     state: Arc<ChannelState>,
-    executor: std::sync::OnceLock<Arc<crate::runtime::CommandExecutor>>,
+    executor: LateBound<crate::runtime::CommandExecutor>,
 }
 
 impl ChannelModule {
     pub fn new(state: Arc<ChannelState>) -> Self {
         Self {
             state,
-            executor: std::sync::OnceLock::new(),
+            executor: LateBound::new("channel::executor"),
         }
     }
 
@@ -126,7 +128,6 @@ impl ChannelModule {
     /// it via `record_db_tick_failure` instead of panicking.
     fn executor_or_err(&self) -> Result<Arc<crate::runtime::CommandExecutor>, String> {
         self.executor
-            .get()
             .cloned()
             .ok_or_else(|| "channel tick: CommandExecutor not yet installed".to_string())
     }
@@ -628,7 +629,7 @@ impl ServiceModule for ChannelModule {
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
-        let _ = self.executor.set(executor);
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

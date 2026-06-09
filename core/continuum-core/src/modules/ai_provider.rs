@@ -25,7 +25,8 @@ use crate::ai::{
 };
 use crate::logging::TimingGuard;
 use crate::runtime::{
-    CommandResult, ModuleConfig, ModuleContext, ModuleLogger, ModulePriority, ServiceModule,
+    CommandResult, LateBound, ModuleConfig, ModuleContext, ModuleLogger, ModulePriority,
+    ServiceModule,
 };
 use crate::secrets::get_secret;
 use crate::utils::params::Params;
@@ -90,7 +91,7 @@ pub struct AIProviderModule {
     /// Substrate-wide command executor — installed by `start_server` after
     /// the executor is built. Used by the TS fallthrough for unmigrated
     /// `ai/*` commands (task #224 replaced the deleted free helper).
-    executor: std::sync::OnceLock<Arc<crate::runtime::CommandExecutor>>,
+    executor: LateBound<crate::runtime::CommandExecutor>,
 }
 
 impl AIProviderModule {
@@ -100,7 +101,7 @@ impl AIProviderModule {
             log: OnceCell::new(),
             gpu_manager: None,
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
-            executor: std::sync::OnceLock::new(),
+            executor: LateBound::new("ai-provider::executor"),
         }
     }
 
@@ -113,7 +114,7 @@ impl AIProviderModule {
             log: OnceCell::new(),
             gpu_manager: Some(gpu_manager),
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
-            executor: std::sync::OnceLock::new(),
+            executor: LateBound::new("ai-provider::executor"),
         }
     }
 
@@ -1087,7 +1088,7 @@ impl ServiceModule for AIProviderModule {
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
-        let _ = self.executor.set(executor);
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

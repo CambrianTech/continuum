@@ -33,7 +33,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::runtime::{
-    message_bus::MessageBus, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
+    message_bus::MessageBus, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
     ModuleRegistry, ServiceModule,
 };
 use crate::utils::params::Params;
@@ -68,7 +68,7 @@ pub struct SentinelModule {
     registry: RwLock<Option<Arc<ModuleRegistry>>>,
     /// Substrate-wide command executor — installed by `start_server`
     /// after the executor is built (task #224).
-    executor: std::sync::OnceLock<Arc<crate::runtime::CommandExecutor>>,
+    executor: LateBound<crate::runtime::CommandExecutor>,
 }
 
 impl SentinelModule {
@@ -86,7 +86,7 @@ impl SentinelModule {
             max_concurrent: 6,
             bus: RwLock::new(None),
             registry: RwLock::new(None),
-            executor: std::sync::OnceLock::new(),
+            executor: LateBound::new("sentinel::executor"),
         }
     }
 
@@ -96,7 +96,6 @@ impl SentinelModule {
     /// explicit at the call site.
     fn executor_or_err(&self) -> Result<Arc<crate::runtime::CommandExecutor>, String> {
         self.executor
-            .get()
             .cloned()
             .ok_or_else(|| "sentinel: CommandExecutor not yet installed".to_string())
     }
@@ -273,7 +272,7 @@ impl SentinelModule {
         let bus = self.bus.read().clone();
         let registry = self.registry.read().clone();
         let escalation_clone = escalation;
-        let executor_for_task = self.executor.get().cloned();
+        let executor_for_task = self.executor.cloned();
 
         tokio::spawn(async move {
             let log = runtime::logger("sentinel");
@@ -587,7 +586,7 @@ impl SentinelModule {
         let logs_base_dir = self.logs_base_dir.read().clone();
         let bus = self.bus.read().clone();
         let registry = self.registry.read().clone();
-        let executor_for_call = self.executor.get().cloned();
+        let executor_for_call = self.executor.cloned();
 
         let result = executor::execute_pipeline_direct(
             &logs_base_dir,
@@ -742,7 +741,7 @@ impl SentinelModule {
 
         let sentinels = Arc::clone(&self.sentinels);
         let escalation_clone = cp.escalation.clone();
-        let executor_for_task = self.executor.get().cloned();
+        let executor_for_task = self.executor.cloned();
 
         tokio::spawn(async move {
             let log = crate::runtime::logger("sentinel");
@@ -1116,7 +1115,7 @@ impl ServiceModule for SentinelModule {
                     let bus_clone = self.bus.read().clone();
                     let logs_dir = self.logs_base_dir.read().clone();
                     let sentinels = Arc::clone(&self.sentinels);
-                    let executor_for_resume = self.executor.get().cloned();
+                    let executor_for_resume = self.executor.cloned();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         let log = crate::runtime::logger("sentinel");
@@ -1259,7 +1258,7 @@ impl ServiceModule for SentinelModule {
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
-        let _ = self.executor.set(executor);
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

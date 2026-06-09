@@ -64,7 +64,9 @@ use crate::persona::{
     agent_name_from_identity, PersonaAircRuntime, PersonaAircRuntimeError,
     PersonaAircRuntimeRegistry,
 };
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{
+    CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
+};
 
 /// Compact info about a registered persona — what the IPC surface
 /// returns for list/get/bootstrap responses.
@@ -146,7 +148,7 @@ pub struct PersonaInstanceManagerModule {
     /// after the executor is built (task #224 replaced the deleted
     /// `GLOBAL_EXECUTOR` panic accessor with this dependency-injected
     /// `OnceLock`).
-    executor: std::sync::OnceLock<std::sync::Arc<crate::runtime::CommandExecutor>>,
+    executor: LateBound<crate::runtime::CommandExecutor>,
 }
 
 impl PersonaInstanceManagerModule {
@@ -173,7 +175,7 @@ impl PersonaInstanceManagerModule {
             default_room,
             default_room_name,
             continuum_root,
-            executor: std::sync::OnceLock::new(),
+            executor: LateBound::new("persona-instance-manager::executor"),
         }
     }
 
@@ -359,7 +361,7 @@ impl ServiceModule for PersonaInstanceManagerModule {
     }
 
     fn install_executor(&self, executor: std::sync::Arc<crate::runtime::CommandExecutor>) {
-        let _ = self.executor.set(executor);
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
