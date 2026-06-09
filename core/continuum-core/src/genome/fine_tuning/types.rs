@@ -1,0 +1,388 @@
+//! Typed surfaces shared across every [`super::FineTuningAdapter`]
+//! impl — cloud providers, local Candle trainer, future cross-grid
+//! airc fine-tuner.
+//!
+//! No `serde_json::Value` pass-through. Every field that crosses an
+//! adapter boundary is typed at compile time. Per the
+//! [[noteworthy-flag-feeds-memory-AND-curriculum]] doctrine the
+//! dataset's origin (teacher-synthesized vs operator-curated vs raw)
+//! is load-bearing — it's a typed enum, not a magic string.
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+use uuid::Uuid;
+
+// ─── Request ─────────────────────────────────────────────────────────
+
+/// One fine-tuning job's full input. Constructed by the caller (the
+/// `genome/job-create` ServiceModule once it lands as Rust, the
+/// `teacher` synthesizer once arc-3 wires up), handed to an
+/// [`super::FineTuningAdapter`].
+///
+/// The `persona_id` is load-bearing — the resulting LoRA artifact is
+/// genome-paged into THAT persona's working set, and the
+/// [[matrix-dojo-layer-loading-as-substrate-primitive]] mesh routes
+/// it by persona identity when other personas request the layer.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingJobRequest.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainingJobRequest {
+    /// Owning persona — the layer is paged into this persona's working
+    /// set when the matching skill activates.
+    #[ts(type = "string")]
+    pub persona_id: Uuid,
+    /// Human-readable persona name for telemetry + alloy
+    /// attribution. Substrate-derived from the persona seed;
+    /// caller-passed for adapters that need it in the job metadata.
+    pub persona_name: String,
+    /// Base model the LoRA layer attaches to. Must match an entry in
+    /// the substrate's model registry; the adapter validates that
+    /// its provider hosts the base.
+    pub base_model: String,
+    /// What this layer is meant to encode — used as the skill key in
+    /// genome paging. e.g. "typescript-expertise", "kc-tech-history",
+    /// or a persona-named trait like "maya-voice".
+    pub trait_kind: String,
+    /// The curated dataset.
+    pub dataset: TrainingDataset,
+    /// LoRA-specific hyperparams (rank, alpha, dropout, target
+    /// modules). `None` lets the adapter pick its provider defaults —
+    /// `Some` overrides them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lora: Option<LoRAHyperparams>,
+    /// Training schedule (epochs, batch size, learning rate, sequence
+    /// length). `None` lets the adapter pick provider defaults.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<ScheduleParams>,
+    /// Where the resulting artifact should land on local disk.
+    /// `None` lets the adapter pick — usually
+    /// `~/.continuum/genome/<persona>/<trait_kind>/<job_uuid>.safetensors`.
+    /// Provider artifacts (OpenAI's `ft:gpt-4o-mini:...`) don't have a
+    /// local path; the field is `None` in their [`TrainingArtifact`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_artifact_dir: Option<PathBuf>,
+}
+
+// ─── Dataset ─────────────────────────────────────────────────────────
+
+/// A curated set of examples + the audit trail of where they came
+/// from. The audit trail is load-bearing for the
+/// [[teacher-synthesizes-in-academy-like-dreaming]] doctrine —
+/// teacher-synthesized datasets carry a different reputation signal
+/// than raw-experience datasets.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingDataset.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainingDataset {
+    pub examples: Vec<TrainingExample>,
+    pub source: TrainingSource,
+    /// Fraction of `examples` reserved for validation
+    /// (default `0.1`, range `[0.0, 0.5]`). Adapters that don't
+    /// support a validation split clamp to `0.0`.
+    pub validation_split: f32,
+}
+
+/// One training pair — the unit of evidence.
+///
+/// `metadata` is `serde_json::Value` because it's audit-trail
+/// pass-through (which engram this came from, what session, what
+/// noteworthy score). The substrate doesn't dispatch on it; it
+/// flows into telemetry + alloy provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingExample.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainingExample {
+    pub prompt: String,
+    pub completion: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "Record<string, unknown> | undefined")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Where this dataset came from. The substrate's reputation signal
+/// for layers trained from teacher-synthesized data is distinct from
+/// layers trained from raw operator-supplied corpora.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingSource.ts"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TrainingSource {
+    /// Teacher persona in the academy synthesized this from noteworthy
+    /// engrams. Substrate's dream phase
+    /// ([[teacher-synthesizes-in-academy-like-dreaming]]).
+    TeacherSynthesized,
+    /// Operator-supplied corpus (a .jsonl file, a curated dataset
+    /// repo). Lower reputation signal because no substrate teacher
+    /// vouched for it.
+    OperatorCurated,
+    /// Raw conversation logs, unfiltered. Lowest reputation signal;
+    /// useful for "this is what literally happened" experiments but
+    /// not the doctrine's preferred input.
+    Raw,
+    /// Another persona's curriculum shared via the
+    /// [[mesh-of-lessons-cross-persona-curricula]] mesh.
+    MeshInherited,
+}
+
+// ─── Hyperparams ─────────────────────────────────────────────────────
+
+/// LoRA-specific knobs. Same field set every cloud provider exposes
+/// (rank + alpha + dropout + target_modules); local Candle adds none
+/// beyond these.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/LoRAHyperparams.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct LoRAHyperparams {
+    /// LoRA rank — the bottleneck dimension. Common: 4, 8, 16, 32, 64.
+    /// Higher rank = more capacity but more weights to train + store.
+    pub rank: u32,
+    /// LoRA alpha — the scaling factor applied during merge
+    /// (`W' = W + (alpha/rank) * B @ A`). Common heuristic: `alpha =
+    /// rank * 2`. Setting `alpha == rank` is a common mistake the
+    /// `genome/job-create` validator warns on.
+    pub alpha: u32,
+    /// Dropout on the LoRA branch during training. Common: 0.0, 0.05,
+    /// 0.1. Defaults to 0.0 for most providers.
+    pub dropout: f32,
+    /// Which transformer projection layers to inject LoRA into.
+    /// Empty `Vec` lets the adapter pick provider defaults
+    /// (usually `q_proj` + `v_proj`).
+    pub target_modules: Vec<String>,
+}
+
+/// Training schedule knobs.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/ScheduleParams.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleParams {
+    pub epochs: u32,
+    pub batch_size: u32,
+    pub sequence_length: u32,
+    pub learning_rate: f64,
+}
+
+// ─── Handle + Status ─────────────────────────────────────────────────
+
+/// What [`super::FineTuningAdapter::create_job`] returns. Acts as a
+/// correlation token across the substrate side (`local_id`) and the
+/// provider side (`provider_job_id`).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/JobHandle.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct JobHandle {
+    /// Which adapter created this — used by the registry to look the
+    /// adapter back up on `poll` / `cancel`.
+    pub provider_id: String,
+    /// Provider-side identifier (OpenAI's `ftjob-abc123`, Mistral's
+    /// `job-xyz`, etc). For [`super::FineTuningAdapter`] impls that
+    /// run in-process (local Candle), this echoes `local_id` as a
+    /// string.
+    pub provider_job_id: String,
+    /// Substrate-side correlation id. Stable; safe to persist; used
+    /// by telemetry / alloy lineage.
+    #[ts(type = "string")]
+    pub local_id: Uuid,
+}
+
+/// Current state of a training job. Returned by
+/// [`super::FineTuningAdapter::poll`].
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingStatus.ts"
+)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum TrainingStatus {
+    /// Job accepted; not yet started running.
+    Queued,
+    /// Running. `progress_pct` is best-effort; some providers report
+    /// nothing and the adapter floors it at the epoch percentage.
+    #[serde(rename_all = "camelCase")]
+    Running {
+        progress_pct: f32,
+        current_epoch: u32,
+    },
+    /// Terminal success. `artifact` is what genome paging /
+    /// forge-alloy consume.
+    Completed {
+        artifact: TrainingArtifact,
+    },
+    /// Terminal failure. `error` is the typed surface; the substrate
+    /// branches on it for retry vs surface-to-operator.
+    Failed {
+        error: String,
+    },
+    /// Terminal — operator-initiated stop, or provider-side abort.
+    Cancelled,
+}
+
+// ─── Artifact ────────────────────────────────────────────────────────
+
+/// What a successful training run produces. Flows directly into
+/// forge / alloy for signing + provenance, and into genome paging
+/// once a persona requests the corresponding skill.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingArtifact.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainingArtifact {
+    /// Provider-side model identifier
+    /// (OpenAI: `ft:gpt-4o-mini-2024-07-18:org:trait:abc`, Mistral:
+    /// `ft:mistral-large-latest:...`, local Candle: substrate-chosen
+    /// safetensors filename).
+    pub model_id: String,
+    /// Local path to the downloaded weights, if any. `None` when the
+    /// artifact lives provider-side and we don't keep a local copy
+    /// (the inference adapter pulls it on demand).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<PathBuf>,
+    pub metrics: JobMetrics,
+}
+
+/// Per-job observed metrics. Substrate-side telemetry +
+/// reputation signal input
+/// ([[forge-alloy-secures-commodity-zero-trust-plus-reputation]]).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/JobMetrics.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct JobMetrics {
+    #[ts(type = "number")]
+    pub trained_tokens: u64,
+    /// Validation loss at the end of training. Lower is better; the
+    /// substrate uses this to decide if the layer is worth shipping
+    /// into the mesh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_loss: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_validation_loss: Option<f64>,
+    #[ts(type = "number")]
+    pub wall_clock_ms: u64,
+    /// Trillion-token-cost USD reported by the provider, if it tells
+    /// us. Helps the substrate's economic dispatcher
+    /// ([[forge-alloy-secures-commodity-zero-trust-plus-reputation]])
+    /// pick the cheapest viable provider per request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: TrainingSource MUST be a typed enum, not a
+    // free-form string. The substrate's reputation system branches on
+    // the source kind; a future caller passing "raw" or "Raw" or
+    // "RAW" would silently miss the routing if this were stringly
+    // typed.
+    #[test]
+    fn training_source_serializes_snake_case() {
+        let s = serde_json::to_string(&TrainingSource::TeacherSynthesized).unwrap();
+        assert_eq!(s, "\"teacher_synthesized\"");
+        let m = serde_json::to_string(&TrainingSource::MeshInherited).unwrap();
+        assert_eq!(m, "\"mesh_inherited\"");
+    }
+
+    // what this catches: TrainingStatus is the typed return of
+    // poll(). A future change to the variant set (e.g. adding
+    // `Paused`) without updating downstream match arms must produce
+    // a compile error, not a runtime mismatch. This test pins the
+    // current variant set + its tagged JSON shape.
+    #[test]
+    fn training_status_serializes_tagged_snake_case() {
+        let q = serde_json::to_value(TrainingStatus::Queued).unwrap();
+        assert_eq!(q["state"], "queued");
+
+        let r = serde_json::to_value(TrainingStatus::Running {
+            progress_pct: 50.0,
+            current_epoch: 2,
+        })
+        .unwrap();
+        assert_eq!(r["state"], "running");
+        assert_eq!(r["progressPct"], 50.0);
+        assert_eq!(r["currentEpoch"], 2);
+
+        let f = serde_json::to_value(TrainingStatus::Failed {
+            error: "oom".into(),
+        })
+        .unwrap();
+        assert_eq!(f["state"], "failed");
+        assert_eq!(f["error"], "oom");
+    }
+
+    // what this catches: JobHandle.local_id must round-trip as a
+    // UUID, not a stringly-typed counter. Substrate-side telemetry
+    // joins on this id; a future caller serializing as `usize` would
+    // break the join silently.
+    #[test]
+    fn job_handle_local_id_is_uuid() {
+        let h = JobHandle {
+            provider_id: "openai".into(),
+            provider_job_id: "ftjob-abc".into(),
+            local_id: Uuid::nil(),
+        };
+        let v = serde_json::to_value(&h).unwrap();
+        // ts-rs camelCases — verify the wire shape downstream tooling
+        // will see.
+        assert_eq!(v["providerId"], "openai");
+        assert_eq!(v["providerJobId"], "ftjob-abc");
+        assert!(v["localId"].is_string());
+        assert_eq!(
+            v["localId"].as_str().unwrap(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+    }
+
+    // what this catches: LoRA alpha-vs-rank invariant. The doctrine
+    // (and the validator) say alpha should NOT equal rank — set
+    // alpha = rank * 2 as the rule of thumb. This test just pins
+    // the field set so a future field rename doesn't silently break
+    // downstream callers; the semantic check lives in the
+    // genome/job-create validator.
+    #[test]
+    fn lora_hyperparams_camelcase() {
+        let h = LoRAHyperparams {
+            rank: 8,
+            alpha: 16,
+            dropout: 0.05,
+            target_modules: vec!["q_proj".into(), "v_proj".into()],
+        };
+        let v = serde_json::to_value(&h).unwrap();
+        assert_eq!(v["rank"], 8);
+        assert_eq!(v["alpha"], 16);
+        // f32 → JSON Number → f64 round-trip drifts by < 1e-6.
+        // Compare with a tolerance instead of bitwise equality.
+        let dropout = v["dropout"].as_f64().expect("dropout serializes as number");
+        assert!(
+            (dropout - 0.05).abs() < 1e-6,
+            "dropout f32→f64 drift exceeded tolerance: {dropout}"
+        );
+        assert_eq!(v["targetModules"][0], "q_proj");
+    }
+}
