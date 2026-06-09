@@ -93,6 +93,15 @@ pub(super) fn default_schedule() -> ScheduleParams {
 /// runtime worker on a ~1 GB sync allocation. This bound is
 /// generous enough for any real LoRA training (8192 is past most
 /// transformer context lengths in use) but short of DoS territory.
+///
+/// FUTURE (R2-LGTM2 re-review): when `SubstrateGovernor` grows a
+/// `training_policy()` accessor with per-hardware-tier caps
+/// (Mac Intel: 2048, MacBook Air M-series: 4096, M5+: 16384,
+/// 5090: 32768), this `pub const` becomes a hardware-aware
+/// `governor.training_policy().max_sequence_length(tier)` call.
+/// DoS protection at the wire IS the right level for v1; tier-aware
+/// caps are the v2 follow-up. See INFERENCE-LANES-REALISTIC.md
+/// AdaptiveThroughputPlanner for the structural shape.
 pub const MAX_SEQUENCE_LENGTH: u32 = 8192;
 
 /// Maximum `batch_size` the actor will accept. Same rationale as
