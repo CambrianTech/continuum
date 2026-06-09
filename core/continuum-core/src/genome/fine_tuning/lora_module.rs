@@ -449,4 +449,200 @@ mod tests {
             values[1]
         );
     }
+
+    /// VDD — validation-driven tests verifying numerical correctness
+    /// against an independent closed-form computation.
+    ///
+    /// Difference vs the TDD tests above: TDD pins CONTRACTS
+    /// (shape, error variants, init invariants). VDD pins NUMERICAL
+    /// ACCURACY — the values produced match the LoRA paper's formula
+    /// for arbitrary inputs, not just the worked-out 2x2 identity
+    /// case. A refactor of the forward path that preserved the
+    /// contract but flipped a transpose would pass TDD silently and
+    /// fail here loudly.
+    mod vdd {
+        use super::*;
+
+        /// Closed-form LoRA forward computed via hand-rolled nested
+        /// loops over `Vec<f32>`. Independent from candle's matmul
+        /// path. Output: `[batch * out_features]` row-major.
+        ///
+        /// `x`: `[batch * in_features]` row-major
+        /// `w`: `[out_features * in_features]` row-major (base)
+        /// `a`: `[rank * in_features]` row-major
+        /// `b`: `[out_features * rank]` row-major
+        fn closed_form_lora_forward(
+            x: &[f32],
+            batch: usize,
+            in_features: usize,
+            w: &[f32],
+            out_features: usize,
+            a: &[f32],
+            rank: usize,
+            b: &[f32],
+            scale: f32,
+        ) -> Vec<f32> {
+            let mut y = vec![0f32; batch * out_features];
+
+            // Base: y_base[b, o] = sum_i x[b, i] * w[o, i]
+            for bi in 0..batch {
+                for o in 0..out_features {
+                    let mut s = 0f32;
+                    for i in 0..in_features {
+                        s += x[bi * in_features + i] * w[o * in_features + i];
+                    }
+                    y[bi * out_features + o] = s;
+                }
+            }
+
+            // Delta path:
+            //   d[b, r] = sum_i x[b, i] * a[r, i]
+            //   z[b, o] = sum_r d[b, r] * b[o, r]
+            //   y[b, o] += scale * z[b, o]
+            let mut d = vec![0f32; batch * rank];
+            for bi in 0..batch {
+                for r in 0..rank {
+                    let mut s = 0f32;
+                    for i in 0..in_features {
+                        s += x[bi * in_features + i] * a[r * in_features + i];
+                    }
+                    d[bi * rank + r] = s;
+                }
+            }
+            for bi in 0..batch {
+                for o in 0..out_features {
+                    let mut s = 0f32;
+                    for r in 0..rank {
+                        s += d[bi * rank + r] * b[o * rank + r];
+                    }
+                    y[bi * out_features + o] += scale * s;
+                }
+            }
+            y
+        }
+
+        // what this VDD catches: forward() output matches the
+        // closed-form LoRA formula
+        //   y = x @ W^T + (alpha/rank) * (x @ A^T) @ B^T
+        // for arbitrary input + non-trivial weight values. A future
+        // refactor that flipped a transpose (e.g. used `A` instead of
+        // `A^T`) would still produce valid shapes — TDD would pass —
+        // but every value would be wrong. This test catches that
+        // class of regression by comparing against an independent
+        // hand-rolled implementation, not against another candle
+        // matmul.
+        #[test]
+        fn forward_matches_closed_form_for_arbitrary_inputs() {
+            let device = Device::Cpu;
+            let in_features = 5;
+            let out_features = 3;
+            let rank = 2;
+            let alpha = 4;
+
+            // Non-trivial base, A, B — pattern values so a transpose
+            // bug shows up as a definite mismatch.
+            let w_vec: Vec<f32> = (0..(out_features * in_features))
+                .map(|i| (i as f32) * 0.1 - 0.7)
+                .collect();
+            let base = Tensor::from_slice(&w_vec, (out_features, in_features), &device).unwrap();
+
+            let module = LoRAModule::new(base, rank, alpha, DType::F32, &device).unwrap();
+
+            // Force A and B to known non-trivial patterns. B at init
+            // is zeros; overriding makes the delta path contribute.
+            let a_vec: Vec<f32> = (0..(rank as usize * in_features))
+                .map(|i| ((i as f32 * 0.13) - 0.4).sin())
+                .collect();
+            let b_vec: Vec<f32> = (0..(out_features * rank as usize))
+                .map(|i| ((i as f32 * 0.27) + 0.1).cos() * 0.5)
+                .collect();
+            let a_t = Tensor::from_slice(&a_vec, (rank as usize, in_features), &device).unwrap();
+            let b_t = Tensor::from_slice(&b_vec, (out_features, rank as usize), &device).unwrap();
+            module.lora_a().set(&a_t).unwrap();
+            module.lora_b().set(&b_t).unwrap();
+
+            // Batch of 3 distinct inputs.
+            let batch = 3;
+            let x_vec: Vec<f32> = (0..(batch * in_features))
+                .map(|i| ((i as f32 * 0.31) - 1.0).cos())
+                .collect();
+            let x = Tensor::from_slice(&x_vec, (batch, in_features), &device).unwrap();
+
+            // Reference: closed-form computation.
+            let scale = alpha as f32 / rank as f32;
+            let expected = closed_form_lora_forward(
+                &x_vec,
+                batch,
+                in_features,
+                &w_vec,
+                out_features,
+                &a_vec,
+                rank as usize,
+                &b_vec,
+                scale,
+            );
+
+            // Actual: candle forward.
+            let y = module.forward(&x).unwrap();
+            let actual: Vec<f32> = y.flatten_all().unwrap().to_vec1().unwrap();
+
+            assert_eq!(actual.len(), expected.len(), "shape contract");
+            for (idx, (a_val, e_val)) in actual.iter().zip(expected.iter()).enumerate() {
+                let diff = (a_val - e_val).abs();
+                let bi = idx / out_features;
+                let oi = idx % out_features;
+                assert!(
+                    diff < 5e-5,
+                    "VDD mismatch at [batch={bi}, out={oi}]: \
+                     actual={a_val:.6}, expected={e_val:.6}, diff={diff:.2e}"
+                );
+            }
+        }
+
+        // what this VDD catches: scale = alpha / rank is applied
+        // exactly ONCE in the delta path, not zero times (LoRA
+        // wouldn't affect output) and not twice (delta would be
+        // scale²-amplified, breaking convergence). The test sets A
+        // and B to specific values where the delta term, without
+        // scale, would equal exactly [1, 1] for every row — then
+        // verifies the candle-computed output is base + scale*[1, 1].
+        // A refactor that double-applied scale would here produce
+        // base + scale² * [1, 1] and the test catches it.
+        #[test]
+        fn scale_is_applied_exactly_once_in_delta() {
+            let device = Device::Cpu;
+            let in_features = 2;
+            let out_features = 2;
+            let rank = 1;
+            let alpha = 8;
+            let scale = alpha as f32 / rank as f32;
+
+            // Zero base — so output equals exactly the scaled delta.
+            let base = Tensor::zeros((out_features, in_features), DType::F32, &device).unwrap();
+            let module = LoRAModule::new(base, rank, alpha, DType::F32, &device).unwrap();
+
+            // A = [[1, 1]] (rank=1, in=2)
+            // B = [[1], [1]] (out=2, rank=1)
+            // For x = [[1, 0]]:
+            //   x · A^T = [1*1 + 0*1] = [1] (batch=1, rank=1)
+            //   (x · A^T) · B^T = [1] · [1, 1] = [1, 1]
+            //   delta = scale * [1, 1] = [scale, scale]
+            let a = Tensor::from_slice(&[1.0f32, 1.0], (rank as usize, in_features), &device).unwrap();
+            let b = Tensor::from_slice(&[1.0f32, 1.0], (out_features, rank as usize), &device).unwrap();
+            module.lora_a().set(&a).unwrap();
+            module.lora_b().set(&b).unwrap();
+
+            let x = Tensor::from_slice(&[1.0f32, 0.0], (1, in_features), &device).unwrap();
+            let y = module.forward(&x).unwrap();
+            let values: Vec<f32> = y.flatten_all().unwrap().to_vec1().unwrap();
+
+            for (idx, v) in values.iter().enumerate() {
+                let diff = (v - scale).abs();
+                assert!(
+                    diff < 1e-5,
+                    "VDD: output [{idx}] = {v}, expected scale = {scale} (alpha={alpha}/rank={rank})"
+                );
+            }
+        }
+    }
 }
