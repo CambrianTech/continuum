@@ -1093,6 +1093,13 @@ pub fn start_server(
     // logs and skips registration so the rest of the server boots;
     // the operator's remedy is the same as for AIRC discovery
     // failures (install airc / run `airc room <name>`).
+    // Set by the persona-supervisor block below when persona hosting
+    // is wired. Fired AFTER `init_executor_with_interceptors` so the
+    // spawned supervisor task can safely dereference `executor()` in
+    // its eventual `bootstrap_one` calls. None in `--mode=inference-only`
+    // where personas are not hosted at all.
+    let mut persona_supervisor_executor_ready_tx: Option<tokio::sync::oneshot::Sender<()>> = None;
+
     if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
@@ -1106,6 +1113,12 @@ pub fn start_server(
                 continuum_root,
             ),
         );
+        // Task #222 + R1/R2 BLOCK on PR #1568: the executor lookup
+        // happens LAZILY inside `bootstrap_one` (in PIM), so no
+        // ordering coupling with `init_executor_with_interceptors`
+        // further down in `start_server`. The pre-fix shape
+        // eagerly fetched the global here and panicked because
+        // `init_executor` hadn't run yet.
         runtime.register(instance_manager.clone());
         log_info!(
             "ipc",
@@ -1228,7 +1241,37 @@ pub fn start_server(
         );
         let continuum_root_for_boot =
             crate::modules::persona_instance_manager::resolve_continuum_root();
+        // Round-2 verifier finding on PR #1568: `spawn_all` calls
+        // `bootstrap_one` which (since task #222) lazily fetches the
+        // process-global CommandExecutor via `executor()`. If the
+        // spawned task reached that call BEFORE the IPC thread runs
+        // `init_executor_with_interceptors` below, production would
+        // panic. The earlier shape only "worked" because
+        // `ResumeOrMintProvider::new` does disk I/O that's slower
+        // than the IPC thread reaching init_executor — a race, not
+        // an ordering guarantee.
+        //
+        // Structural fix: gate the spawned task on a oneshot that
+        // the IPC thread sends AFTER `init_executor_with_interceptors`.
+        // The spawn task literally cannot reach `executor()` before
+        // the global is initialized — the ordering is enforced by
+        // the channel, not by relative I/O latency.
+        let (executor_ready_tx, executor_ready_rx) = tokio::sync::oneshot::channel::<()>();
+        persona_supervisor_executor_ready_tx = Some(executor_ready_tx);
         rt_handle.spawn(async move {
+            // Wait for the IPC thread to signal `init_executor` done.
+            // If the sender is dropped without sending (substrate
+            // shutdown mid-boot), exit cleanly without attempting
+            // to bootstrap personas against an uninitialized
+            // executor.
+            if executor_ready_rx.await.is_err() {
+                tracing::warn!(
+                    "persona supervisor task aborting: executor-ready signal dropped \
+                     before fire (substrate shutdown mid-boot? init_executor never \
+                     reached?). No personas bootstrapped this run."
+                );
+                return;
+            }
             use crate::persona::resume_or_mint_provider::ResumeOrMintProvider;
             let mut provider =
                 match ResumeOrMintProvider::new(&continuum_root_for_boot, 1).await {
@@ -1369,6 +1412,17 @@ pub fn start_server(
         std::sync::Arc::new(crate::runtime::GridInterceptor::new(grid_state)),
     ];
     crate::runtime::init_executor_with_interceptors(runtime.registry_arc(), interceptors);
+
+    // Round-2 verifier fix on PR #1568: now that the executor is
+    // initialized, release the persona-supervisor task (if it was
+    // wired). The spawned task at line ~1239 has been awaiting this
+    // signal; it can now safely call `executor()` in its eventual
+    // `bootstrap_one` path. Send-failure means the receiver was
+    // dropped — substrate shutdown mid-boot — and the supervisor
+    // already exited; ignoring is correct.
+    if let Some(tx) = persona_supervisor_executor_ready_tx.take() {
+        let _ = tx.send(());
+    }
 
     let listener = UnixListener::bind(socket_path)?;
     // Make the socket world-rw so callers running under a different UID

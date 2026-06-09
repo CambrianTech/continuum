@@ -141,6 +141,16 @@ impl PersonaCommandInboundPump {
         // already surfaces panics via its own diagnostic channel.
         let _ = self.handle.await;
     }
+
+    /// Fire-and-forget abort. Used by `PersonaAircRuntime::drop`
+    /// (which is sync and can't await). The tokio runtime reaps the
+    /// aborted task asynchronously; the JoinError on the eventual
+    /// await would be Cancelled, which is the expected shape.
+    /// Callers that want clean shutdown WITH await should use
+    /// [`shutdown`] instead.
+    pub fn abort(&self) {
+        self.handle.abort();
+    }
 }
 
 /// The subscribe loop. Extracted for readability; spawned as a
