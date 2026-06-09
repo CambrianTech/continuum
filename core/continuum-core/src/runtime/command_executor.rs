@@ -1,24 +1,34 @@
-//! CommandExecutor — Universal command execution for ALL continuum-core processes
+//! CommandExecutor — universal command execution for substrate-internal callers
 //!
-//! This is the foundational primitive that allows ANY spawned task (sentinels,
-//! background jobs, etc.) to execute ANY command in the system, regardless of
-//! whether it's implemented in Rust or TypeScript.
+//! Foundational primitive that lets any spawned task (sentinels, persona
+//! loops, background jobs) dispatch any command in the substrate. The
+//! implicit dispatch chain is **Rust-only** per `[[no-fallbacks-ever]]`
+//! (task #219). Commands that have no Rust handler produce a typed
+//! `CommandNotFound` error — there is no silent fallthrough to a TS
+//! host.
 //!
 //! Usage:
 //! ```rust
-//! // Works for Rust modules
+//! // Implicit dispatch — Rust modules + interceptors only.
+//! // Unknown commands return Err("no Rust module handles command: ...").
 //! runtime::execute_command_json("health-check", json!({})).await?;
 //!
-//! // Works for TypeScript commands (via CommandRouterServer)
-//! runtime::execute_command_json("screenshot", json!({"querySelector": "body"})).await?;
-//!
-//! // Sentinel doesn't know or care where command is implemented
+//! // Explicit TS-bridge dispatch — for the ~6 documented TS-only call
+//! // sites that knowingly target a TypeScript handler.
+//! // executor.execute_ts_json("ai/agent", params).await?;
 //! ```
 //!
 //! Architecture:
-//! - Rust modules: Routed directly through ModuleRegistry
-//! - TypeScript commands: Routed via Unix socket to CommandRouterServer
-//!   (socket: /tmp/jtag-command-router.sock)
+//! - Implicit chain: interceptors (airc, grid, ...) → Rust module
+//!   registry → typed `CommandNotFound` error. Substrate-internal.
+//! - Explicit TS bridge: `execute_ts` / `execute_ts_json` public
+//!   methods over Unix socket `/tmp/jtag-command-router.sock`. Used
+//!   only by the documented TS-only call sites (sentinel steps, grid
+//!   connection retry, ai_provider cloud-adapter fallthrough).
+//!
+//! Per `[[rust-is-the-core-node-is-the-shell]]`: substrate dispatch
+//! ends at the Rust registry. TS is an explicit-API destination, not
+//! a silent dependency.
 
 use serde_json::Value;
 use std::sync::Arc;
@@ -822,7 +832,7 @@ mod tests {
     // what this catches: a command not handled by any interceptor and
     // not registered in the Rust module registry returns a typed
     // `CommandNotFound`-shaped error per [[no-fallbacks-ever]]. Pre-
-    // PR #1584 the executor silently routed to the TS bridge on
+    // PR #1585 the executor silently routed to the TS bridge on
     // `/tmp/jtag-command-router.sock`, which in headless mode
     // surfaced as a cryptic "Failed to connect" error and in
     // hybrid-host mode silently delegated to TS — both breaking the

@@ -487,14 +487,16 @@ impl ServiceModule for ChatModule {
 
             // ── Staged migration stubs ──────────────────────────────
             //
-            // The remaining commands still own their TS
-            // implementations until their own follow-up PRs land. The
-            // kernel router currently sees `chat/` claim these names
-            // (per `command_prefixes` above) but the handler returns
-            // a typed error so consumers know to keep using the TS
-            // path until migration completes. The back-compat
-            // `collaboration/chat/*` strings reach the same TS impl
-            // through the existing CommandRouterServer bridge.
+            // The remaining commands still own their TS implementations
+            // until their own follow-up PRs land. The kernel router
+            // currently sees `chat/` claim these names (per
+            // `command_prefixes` above) so the chat module's handler
+            // returns a typed error with the upstream TS command name —
+            // callers that need this surface go through the explicit
+            // `CommandExecutor::execute_ts_json` API per
+            // [[no-fallbacks-ever]] (task #219). The implicit dispatch
+            // chain no longer crosses the bridge silently; the chat
+            // module owns the prefix and emits a deterministic error.
             //
             // When each migration PR lands, swap the stub arm for a
             // real handler using the envelope pattern above.
