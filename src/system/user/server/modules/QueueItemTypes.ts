@@ -122,7 +122,8 @@ export interface InboxTask extends BaseQueueItem {
     suggested_mode?: string;         // Academy mode: 'knowledge' | 'coding' | 'project'
     interaction_count?: number;      // Interactions in this domain before enrollment
     failure_rate?: number;           // Failure rate in this domain
-    // Sentinel lifecycle metadata (from SentinelEscalationService)
+    // Sentinel lifecycle metadata (written by
+    // core/continuum-core/src/modules/sentinel/escalation.rs)
     sentinelName?: string;           // Human-readable sentinel name
     sentinelEntityId?: string;       // Persistent entity ID in 'sentinels' collection
     sentinelHandle?: string;         // Ephemeral Rust-side handle

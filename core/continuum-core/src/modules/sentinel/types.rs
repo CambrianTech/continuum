@@ -482,8 +482,107 @@ pub struct PipelineContext<'a> {
     pub executor: Option<&'a std::sync::Arc<crate::runtime::CommandExecutor>>,
 }
 
-/// Escalation metadata — owned by Rust, pushed to TypeScript on completion.
-/// This is the single source of truth for sentinel → persona routing.
+/// When a sentinel's terminal state should wake up the owning persona's
+/// consciousness. Mirrors the TS `EscalationCondition` union; ts-rs
+/// emits the same string literals.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/sentinel/EscalationCondition.ts"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationCondition {
+    Error,
+    Timeout,
+    Unfamiliar,
+    ApprovalNeeded,
+    Complete,
+}
+
+/// What to do when the escalation condition fires.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/sentinel/EscalationAction.ts"
+)]
+#[serde(rename_all = "lowercase")]
+pub enum EscalationAction {
+    Pause,
+    Notify,
+    Abort,
+}
+
+/// How urgently to alert the persona — maps to numeric inbox priority
+/// in [`EscalationPriority::inbox_priority`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/sentinel/EscalationPriority.ts"
+)]
+#[serde(rename_all = "lowercase")]
+pub enum EscalationPriority {
+    Low,
+    Normal,
+    High,
+    Urgent,
+}
+
+impl EscalationPriority {
+    /// Inbox priority scalar in `[0.0, 1.0]`. Mirrors the TS
+    /// `PRIORITY_MAP` in `SentinelEscalationService.ts`.
+    pub fn inbox_priority(self) -> f64 {
+        match self {
+            Self::Low => 0.3,
+            Self::Normal => 0.5,
+            Self::High => 0.7,
+            Self::Urgent => 0.9,
+        }
+    }
+}
+
+/// One escalation rule. The dispatcher picks the first rule whose
+/// `condition` matches the terminal status and acts on it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/sentinel/EscalationRule.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct EscalationRule {
+    pub condition: EscalationCondition,
+    pub action: EscalationAction,
+    pub priority: EscalationPriority,
+}
+
+/// Default rules applied when the caller doesn't supply any. Mirrors
+/// `DEFAULT_ESCALATION_RULES` in `entities/SentinelEntity.ts`.
+pub fn default_escalation_rules() -> Vec<EscalationRule> {
+    vec![
+        EscalationRule {
+            condition: EscalationCondition::Error,
+            action: EscalationAction::Notify,
+            priority: EscalationPriority::High,
+        },
+        EscalationRule {
+            condition: EscalationCondition::Timeout,
+            action: EscalationAction::Notify,
+            priority: EscalationPriority::Normal,
+        },
+        EscalationRule {
+            condition: EscalationCondition::Complete,
+            action: EscalationAction::Notify,
+            priority: EscalationPriority::Low,
+        },
+    ]
+}
+
+/// Escalation metadata captured at sentinel start. The substrate
+/// dispatcher in [`super::escalation`] reads this on completion to
+/// route the terminal event into the persona's inbox + memory.
+///
+/// Pre-#225 this was the wire payload of the TS `sentinel/escalate`
+/// command. Now everything is in-process Rust; the field set is the
+/// same so existing call sites compile unchanged.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -499,10 +598,11 @@ pub struct SentinelEscalation {
     pub entity_id: Option<String>,
     /// Human-readable name for escalation messages
     pub sentinel_name: String,
-    /// Escalation rules (JSON pass-through — TS owns the schema)
+    /// Caller-supplied escalation rules. `None` -> dispatcher uses
+    /// [`default_escalation_rules`]. The wire shape is typed (not
+    /// `Value` pass-through) now that TS no longer owns the schema.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "Record<string, unknown> | undefined")]
-    pub escalation_rules: Option<Value>,
+    pub escalation_rules: Option<Vec<EscalationRule>>,
 }
 
 /// Internal state for a running sentinel

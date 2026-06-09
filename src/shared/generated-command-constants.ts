@@ -306,7 +306,6 @@ export const COMMANDS = {
   SENTINEL_CANCEL: 'sentinel/cancel',
   SENTINEL_CLEANUP: 'sentinel/cleanup',
   SENTINEL_CODING_AGENT: 'sentinel/coding-agent',
-  SENTINEL_ESCALATE: 'sentinel/escalate',
   SENTINEL_EXTEND_BUDGET: 'sentinel/extend-budget',
   SENTINEL_LIST: 'sentinel/list',
   SENTINEL_LOAD: 'sentinel/load',

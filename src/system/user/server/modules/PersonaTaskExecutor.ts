@@ -1075,7 +1075,9 @@ export class PersonaTaskExecutor {
   }
 
   /**
-   * Handle sentinel lifecycle tasks (escalated from SentinelEscalationService)
+   * Handle sentinel lifecycle tasks (escalated by Rust's
+   * `core/continuum-core/src/modules/sentinel/escalation.rs` via
+   * the `tasks` collection)
    *
    * When a sentinel completes, fails, or needs approval, the persona processes
    * the notification and EVALUATES what to do next. This is the intelligence layer:
