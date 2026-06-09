@@ -72,8 +72,8 @@ use crate::genome::fine_tuning::types::{
     TrainingSource,
 };
 use crate::runtime::{
-    CommandExecutor, CommandResult, ModuleConfig, ModuleContext, ModulePriority, PerKeyGate,
-    ServiceModule,
+    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
+    PerKeyGate, ServiceModule,
 };
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
@@ -189,7 +189,7 @@ pub struct TrainingTriggerModule {
     /// accumulate (closes the [[auto-clean-is-structural-not-operational]]
     /// concern).
     submit_gates: PerKeyGate<BucketKey>,
-    executor: std::sync::OnceLock<Arc<CommandExecutor>>,
+    executor: LateBound<CommandExecutor>,
 }
 
 impl TrainingTriggerModule {
@@ -197,7 +197,7 @@ impl TrainingTriggerModule {
         Self {
             buckets: Arc::new(DashMap::new()),
             submit_gates: PerKeyGate::new(),
-            executor: std::sync::OnceLock::new(),
+            executor: LateBound::new("training-trigger::executor"),
         }
     }
 
@@ -266,7 +266,7 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     fn install_executor(&self, executor: Arc<CommandExecutor>) {
-        let _ = self.executor.set(executor);
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -589,10 +589,7 @@ impl TrainingTriggerModule {
         base_model: &str,
         batch: &PendingBatch,
     ) -> Result<(Value, String), String> {
-        let executor = self
-            .executor
-            .get()
-            .ok_or_else(|| "CommandExecutor not installed yet (boot ordering)".to_string())?;
+        let executor = self.executor.require()?;
 
         let request = TrainingJobRequest {
             persona_id,

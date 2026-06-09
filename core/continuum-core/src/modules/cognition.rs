@@ -51,7 +51,8 @@ use crate::persona::{RecentResponse, SleepMode};
 use crate::rag::RagEngine;
 use crate::runtime;
 use crate::runtime::{
-    CommandResult, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry, ServiceModule,
+    CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry,
+    ServiceModule,
 };
 use crate::utils::params::Params;
 use async_trait::async_trait;
@@ -120,14 +121,14 @@ impl CognitionState {
 
 pub struct CognitionModule {
     state: Arc<CognitionState>,
-    executor: std::sync::OnceLock<Arc<crate::runtime::CommandExecutor>>,
+    executor: LateBound<crate::runtime::CommandExecutor>,
 }
 
 impl CognitionModule {
     pub fn new(state: Arc<CognitionState>) -> Self {
         Self {
             state,
-            executor: std::sync::OnceLock::new(),
+            executor: LateBound::new("cognition::executor"),
         }
     }
 }
@@ -641,9 +642,7 @@ impl ServiceModule for CognitionModule {
                 let request: crate::cognition::vision_describe::VisionDescribeRequest =
                     serde_json::from_value(params)
                         .map_err(|e| format!("invalid vision-describe params: {e}"))?;
-                let executor = self.executor.get().ok_or_else(|| {
-                    "cognition/vision-describe: CommandExecutor not installed".to_string()
-                })?;
+                let executor = self.executor.require()?;
                 let result =
                     crate::cognition::vision_describe::describe_image(request, executor).await?;
                 Ok(CommandResult::Json(serde_json::to_value(result).map_err(
@@ -1771,7 +1770,7 @@ impl ServiceModule for CognitionModule {
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
-        let _ = self.executor.set(executor);
+        self.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
