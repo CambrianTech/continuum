@@ -38,8 +38,9 @@
 //! ## Doctrinal alignment
 //!
 //! - `[[host-the-seemingly-impossible]]` — the Tron-grid frame.
-//!   Intel Mac dispatches at the 5090 and ALL of these are expected
-//!   to compose by construction, not by special-case wiring.
+//!   A constrained-locally host dispatches at a GPU-rich peer and
+//!   ALL of these are expected to compose by construction, not by
+//!   special-case wiring.
 //! - `[[commands-are-kernel-level-and-compose]]` — the harness
 //!   doesn't care WHICH command it dispatches; same `Commands.execute()`
 //!   primitive every other CLI / persona / sentinel uses.
@@ -199,12 +200,12 @@ pub fn default_battery() -> Vec<GridSmokeSpec> {
         },
         // Real inference dispatch — the proof PR #1563 covered for
         // HeuristicInferenceAdapter, now run against whatever adapter
-        // the target peer has. If the target is the 5090 running
-        // Qwen3.5, this row's response IS Qwen3.5. If the target is
-        // an Intel Mac with only the heuristic registered, this
-        // row's response starts with [heuristic:...]. The validator
-        // just confirms the wire-shape; the operator reads the
-        // summary line to see WHO answered.
+        // the target peer has. If the target is a GPU host running
+        // a real LLM, this row's response IS that model. If the
+        // target only has the heuristic registered, the response
+        // starts with [heuristic:...]. The validator just confirms
+        // the wire-shape; the operator reads the summary line to
+        // see WHO answered.
         GridSmokeSpec {
             name: "ai/generate (one-word reply)",
             path: "ai/generate",

@@ -501,9 +501,9 @@ mod tests {
     async fn local_adapter_transport_with_custom_peer_id() {
         let heuristic: Arc<dyn AIProviderAdapter> =
             Arc::new(HeuristicInferenceAdapter::new());
-        let transport = LocalAdapterTransport::with_peer_id(heuristic, "joels-5090");
+        let transport = LocalAdapterTransport::with_peer_id(heuristic, "test-remote-peer");
         let resp = transport.send_request(req("hi")).await.unwrap();
-        assert_eq!(resp.served_by, "joels-5090");
+        assert_eq!(resp.served_by, "test-remote-peer");
         // Suppress the unused Uuid import warning when this test
         // doesn't construct a Uuid itself.
         let _ = Uuid::nil();

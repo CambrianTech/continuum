@@ -3,17 +3,19 @@
 //! `CommandRequestHandler::parse_envelope` + `send_reply` paths
 //! (mirroring `ai/generate` on the remote substrate).
 //!
-//! This is the live wire proof that an Intel Mac persona can dispatch
-//! inference at `airc://<rtx5090>/ai/generate` and get a typed response
-//! back, with the substrate's real parser in the loop on both ends.
+//! This is the live wire proof that a local persona can dispatch
+//! inference at `airc://<remote-peer>/ai/generate` and get a typed
+//! response back, with the substrate's real parser in the loop on
+//! both ends.
 //!
 //! ## Topology
 //!
-//! - peer_a = "the 5090" — substrate, hosts ai/generate. Test stubs the
-//!   responder so we control the canned `TextGenerationResponse` and
-//!   can assert the request's wire shape (path, kind, params, headers)
-//!   that AircLiveTransport emits.
-//! - peer_b = "the Intel Mac" — has an AircRemoteInferenceAdapter
+//! - peer_a = the remote inference host — substrate, hosts ai/generate.
+//!   Test stubs the responder so we control the canned
+//!   `TextGenerationResponse` and can assert the request's wire
+//!   shape (path, kind, params, headers) that AircLiveTransport
+//!   emits.
+//! - peer_b = the local caller — has an AircRemoteInferenceAdapter
 //!   wrapping AircLiveTransport pointed at peer_a. Persona-side code
 //!   (well, the test) calls adapter.generate_text(request).
 //!
@@ -218,10 +220,10 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
         .expect("fixture setup should succeed");
 
     let canned = TextGenerationResponse {
-        text: "pong from the 5090".to_string(),
+        text: "pong from the remote peer".to_string(),
         finish_reason: FinishReason::Stop,
-        model: "qwen3.5-4b-code-forged".to_string(),
-        provider: "llamacpp-on-5090".to_string(),
+        model: "test-model".to_string(),
+        provider: "test-remote-llamacpp".to_string(),
         usage: UsageMetrics {
             input_tokens: 12,
             output_tokens: 7,
