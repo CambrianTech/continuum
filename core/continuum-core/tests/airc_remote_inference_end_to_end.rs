@@ -392,11 +392,24 @@ async fn end_to_end_peer_adapter_failure_surfaces_as_typed_error() {
         .expect_err("AlwaysFailingAdapter must surface as adapter-failure error");
 
     // AircRemoteInferenceAdapter classifies a non-Ok
-    // AircCommandResponse as RemoteInferenceError::PeerAdapterFailed
-    // -> ToString::to_string puts "peer adapter failed:" in the surface.
+    // AircCommandResponse as RemoteInferenceError::PeerAdapterFailed.
+    // The Display impl in protocol.rs is literally
+    //   "remote peer's adapter failed: <inner-error>"
+    // (note: apostrophe-s, NOT "peer adapter failed"). AND-pin BOTH
+    // the variant surface AND the inner message so the test catches:
+    //   a) the wrong variant being returned (would miss "peer's adapter")
+    //   b) the error message being swallowed or rewritten en route
+    //      (would miss "the model exploded")
+    // Per R1 round 1 on PR #1563: an OR-fallback masks variant drift —
+    // the first-passing branch makes the second branch dead.
     assert!(
-        err.contains("peer adapter failed") || err.contains("the model exploded"),
-        "expected PeerAdapterFailed surface or substrate error passthrough; got {err:?}"
+        err.contains("peer's adapter failed"),
+        "expected RemoteInferenceError::PeerAdapterFailed Display surface \
+         ('remote peer's adapter failed: ...'); got {err:?}"
+    );
+    assert!(
+        err.contains("the model exploded"),
+        "expected substrate-side error message to propagate verbatim; got {err:?}"
     );
 
     responder.await.expect("responder task joined");
@@ -439,24 +452,32 @@ async fn end_to_end_missing_module_returns_typed_error() {
     // missing Rust module — it tries the TypeScript bridge at
     // `/tmp/jtag-command-router.sock` (legacy router for unmigrated
     // commands). The bridge isn't running in tests, so the caller
-    // sees the connect failure verbatim. Useful from a debugging
-    // standpoint (the error names a specific socket path) but
-    // architecturally it's a `[[no-fallbacks-ever]]` smell worth a
-    // follow-up: a Rust-only deployment should not silently route to
-    // TS-land for an unhandled path; it should error with the
-    // missing module name immediately. Pin the current behavior so
-    // any future change (good: typed missing-module error; bad:
-    // silent passthrough that 200s on nothing) is loud.
+    // sees the connect failure verbatim.
+    //
+    // Architecturally this is a `[[no-fallbacks-ever]]` violation —
+    // a Rust-only deployment should hard-error with the missing
+    // module name immediately, not silently route to TS-land. Filed
+    // as task #219.
+    //
+    // Per R1 round 1 on PR #1563: pin EXACTLY the current
+    // bridge-passthrough surface — NOT a permissive OR over plausible
+    // future error shapes. When task #219 lands, this test SHOULD
+    // fail loudly with "actual" not matching "commandrouterserver",
+    // forcing the test author to update to the new typed
+    // missing-module error AND verify the substrate fix actually
+    // produces it. A permissive assertion would silently stay green
+    // and let either a good fix (typed error) or a bad regression
+    // (200 on nothing) pass undetected.
     let lower = err.to_lowercase();
     assert!(
         lower.contains("commandrouterserver")
-            || lower.contains("jtag-command-router")
-            || lower.contains("ai/generate")
-            || lower.contains("no handler")
-            || lower.contains("no module"),
-        "expected error naming the missing module/path or the \
-         TS-bridge passthrough surface (current substrate behavior); \
-         got {err:?}"
+            || lower.contains("jtag-command-router"),
+        "expected the TS-bridge connect-failure surface — the substrate \
+         currently falls through to /tmp/jtag-command-router.sock on \
+         missing Rust modules. If THIS assertion fired because task #219 \
+         landed and CommandExecutor now hard-errors on missing modules, \
+         update the assertion to pin the new typed-error surface and \
+         verify the substrate change. Got: {err:?}"
     );
 
     responder.await.expect("responder task joined");
