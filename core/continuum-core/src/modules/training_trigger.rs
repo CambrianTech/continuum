@@ -72,7 +72,8 @@ use crate::genome::fine_tuning::types::{
     TrainingSource,
 };
 use crate::runtime::{
-    CommandExecutor, CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
+    CommandExecutor, CommandResult, ModuleConfig, ModuleContext, ModulePriority, PerKeyGate,
+    ServiceModule,
 };
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
@@ -176,25 +177,18 @@ struct PendingBatch {
 
 // ─── Module ──────────────────────────────────────────────────────────
 
-/// Per-key serialization mutex.
-///
-/// Per Reviewer 3's BLOCK C1 + C2: a `handle_submit` that drains
-/// the bucket, drops the entry guard, awaits `genome/job-create`,
-/// then unconditionally removes (success) or restores (failure) is
-/// racy against a concurrent `handle_submit` to the same key. Two
-/// readers can interleave at the `.await` boundary and lose
-/// curated data either way. The DashMap-of-Mutex pattern serializes
-/// per-key while keeping different keys concurrent — the standard
-/// substrate primitive for this exact shape.
-type SubmitGate = Arc<tokio::sync::Mutex<()>>;
-
 pub struct TrainingTriggerModule {
     buckets: Arc<DashMap<BucketKey, PendingBatch>>,
-    /// Per-bucket-key submit serialization. Lives in its own
-    /// DashMap because the lifetime of a bucket and the lifetime of
-    /// its submit-gate are different — the gate sticks around if
-    /// it has waiters, the bucket comes and goes per dispatch.
-    submit_gates: Arc<DashMap<BucketKey, SubmitGate>>,
+    /// Per-`(persona_id, trait_kind, base_model)` submit
+    /// serialization, backed by the substrate-canonical
+    /// [`PerKeyGate`] primitive (`runtime/per_key_gate.rs`). Per
+    /// Reviewer 3's BLOCK C1+C2 on PR #1580: concurrent submits
+    /// to the same key MUST serialize so the drain→dispatch→remove
+    /// path doesn't race a contending submit's append. The gate
+    /// auto-evicts via `try_evict` on success — cold keys do not
+    /// accumulate (closes the [[auto-clean-is-structural-not-operational]]
+    /// concern).
+    submit_gates: PerKeyGate<BucketKey>,
     executor: std::sync::OnceLock<Arc<CommandExecutor>>,
 }
 
@@ -202,7 +196,7 @@ impl TrainingTriggerModule {
     pub fn new() -> Self {
         Self {
             buckets: Arc::new(DashMap::new()),
-            submit_gates: Arc::new(DashMap::new()),
+            submit_gates: PerKeyGate::new(),
             executor: std::sync::OnceLock::new(),
         }
     }
@@ -232,45 +226,6 @@ impl TrainingTriggerModule {
         self.buckets.get(&key).map(|b| b.examples.len())
     }
 
-    /// Acquire (or create) the per-key submit gate. Holding the
-    /// returned mutex guard serializes concurrent submits to the
-    /// same `(persona_id, trait_kind, base_model)` bucket.
-    fn acquire_gate(&self, key: &BucketKey) -> SubmitGate {
-        if let Some(g) = self.submit_gates.get(key) {
-            return g.clone();
-        }
-        // Race-safe: entry().or_insert_with on DashMap returns the
-        // existing gate if a concurrent caller already inserted one.
-        let gate = self
-            .submit_gates
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
-        gate
-    }
-
-    /// Try to evict a per-key submit gate after a successful
-    /// dispatch. Per Reviewer 2's BLOCK B1: the `submit_gates`
-    /// DashMap is a [`[[auto-clean-is-structural-not-operational]]`]
-    /// surface — every distinct `(persona, trait, base)` triple
-    /// ever submitted leaves a permanent `Arc<Mutex<()>>`. The fix
-    /// is structural: prune the gate after dispatch when no other
-    /// caller holds a reference to it.
-    ///
-    /// `Arc::strong_count == 1` means the only remaining ref is the
-    /// DashMap's own entry — no in-flight submit / flush is waiting
-    /// on this gate, and dropping it loses no serialization
-    /// guarantee. A concurrent caller arriving AFTER eviction sees
-    /// no gate and `acquire_gate` creates a fresh one — semantics
-    /// identical to first-ever submit for that key.
-    ///
-    /// MUST be called AFTER the local lease has been dropped (the
-    /// caller holds one ref by definition; without drop the count
-    /// is `>= 2`).
-    fn try_evict_gate(&self, key: &BucketKey) {
-        self.submit_gates
-            .remove_if(key, |_, gate| Arc::strong_count(gate) == 1);
-    }
 }
 
 impl Default for TrainingTriggerModule {
@@ -353,7 +308,7 @@ impl TrainingTriggerModule {
         // commingle races flagged in Reviewer 3's BLOCK C1 + C2.
         // Holding the guard across the .await is intentional —
         // tokio::sync::Mutex is await-safe.
-        let gate = self.acquire_gate(&key);
+        let gate = self.submit_gates.acquire(&key);
         let _submit_lease = gate.lock().await;
 
         // Append phase. Hold the entry mutably for the minimum window:
@@ -503,7 +458,7 @@ impl TrainingTriggerModule {
                 // cleanup checks `Arc::strong_count == 1` which only
                 // holds when this caller's gate ref has dropped.
                 drop(_submit_lease);
-                self.try_evict_gate(&key);
+                self.submit_gates.try_evict(&key);
                 Ok(CommandResult::Json(json!({
                     "success": true,
                     "outcome": "JobDispatched",
@@ -543,7 +498,7 @@ impl TrainingTriggerModule {
         // submit's drain or restore. The gate ensures whichever
         // arrives first runs to completion before the other touches
         // the key.
-        let gate = self.acquire_gate(&key);
+        let gate = self.submit_gates.acquire(&key);
         let _flush_lease = gate.lock().await;
 
         // Take the bucket out atomically. If it doesn't exist or is
@@ -574,7 +529,7 @@ impl TrainingTriggerModule {
                 // release lease, then try to prune the gate if no
                 // other caller holds a ref.
                 drop(_flush_lease);
-                self.try_evict_gate(&key);
+                self.submit_gates.try_evict(&key);
                 Ok(CommandResult::Json(json!({
                     "success": true,
                     "outcome": "JobDispatched",
