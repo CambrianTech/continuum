@@ -7,8 +7,8 @@ Node middleware, no JTAG-daemon IPC dance.
 
 ## Status
 
-First slice landed. One subcommand (`metrics`) wired end-to-end through
-the substrate. Each future subcommand is a small slice that migrates a
+Two subcommands wired end-to-end through the substrate: `metrics` and
+`generate`. Each future subcommand is a small slice that migrates a
 `./jtag <command>` to a `ctm <command>` call. As subcommands land, the
 Node `./jtag` shrinks; eventually only its install footprint is left.
 
@@ -37,15 +37,20 @@ ctm metrics                      # fetch runtime/metrics/all
 ctm metrics --peer <UUID>        # override env
 ctm --home ~/.airc-alt metrics   # override default $HOME/.airc
 
+ctm generate --prompt "explain HandleRef"
+ctm generate --prompt "..." --model "qwen3.5-4b-code-forged"
+ctm generate --prompt "..." --json   # raw JSON instead of plain text
+
 # Tracing:
 CONTINUUM_CLI_LOG=debug ctm metrics
 ```
 
 ## Commands today
 
-| Command   | Substrate call         | Notes                          |
-|-----------|------------------------|--------------------------------|
-| `metrics` | `runtime/metrics/all`  | Pretty-prints JSON for all modules |
+| Command    | Substrate call         | Notes                                                    |
+|------------|------------------------|----------------------------------------------------------|
+| `metrics`  | `runtime/metrics/all`  | Pretty-prints JSON for all modules                       |
+| `generate` | `ai/generate`          | Dispatches inference; substrate's adapter registry picks the model. With PR #1560 (AircRemoteInferenceAdapter) the inference may transparently run on a remote peer — CLI doesn't know or care. |
 
 ## Architecture
 

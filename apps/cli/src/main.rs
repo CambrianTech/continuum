@@ -140,11 +140,18 @@ async fn run_generate(
     // continuum-core::ai::types::TextGenerationRequest (camelCase). We
     // intentionally build the JSON inline so the CLI doesn't need to
     // dev-depend on continuum-core types — only the wire shape.
+    //
+    // ChatMessage.content is `#[serde(untagged)] enum MessageContent {
+    //   Text(String), Parts(Vec<ContentPart>) }`. Pass the prompt as a
+    //   plain string so it matches the `Text(String)` arm. The
+    //   substrate's parse_request handles either shape; the string
+    //   form is what its own legacy `prompt`-param path produces, so
+    //   it's already exercised end-to-end and the safest wire choice.
     let mut params = serde_json::json!({
         "messages": [
             {
                 "role": "user",
-                "content": { "type": "text", "text": prompt },
+                "content": prompt,
             }
         ],
     });
@@ -163,20 +170,36 @@ async fn run_generate(
     } else {
         // Pretty-print the response text + a sparse footer with
         // model/provider/usage so the operator can see WHO answered.
+        // Per [[no-fallbacks-ever]] + R2 review on PR #1561: every
+        // field below is REQUIRED on TextGenerationResponse (`text:
+        // String`, `model: String`, `provider: String`, `usage:
+        // UsageMetrics` — non-Option in the substrate's typed
+        // definition). A defensive `unwrap_or` here would silently
+        // mask a substrate-side contract violation as a fake string;
+        // surface a typed error instead so substrate bugs get caught
+        // loudly.
         let text = result
             .get("text")
             .and_then(|v| v.as_str())
-            .unwrap_or("<no text field in response>");
+            .ok_or_else(|| anyhow!(
+                "substrate `ai/generate` response missing required `text` field — \
+                 substrate-side contract violation, not a CLI presentation problem"
+            ))?;
         println!("{text}");
-        if let Some(model) = result.get("model").and_then(|v| v.as_str()) {
-            let provider = result.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
-            let total = result
-                .get("usage")
-                .and_then(|u| u.get("totalTokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            eprintln!("\n--- model={model} provider={provider} total_tokens={total} ---");
-        }
+        let model = result.get("model").and_then(|v| v.as_str()).ok_or_else(|| {
+            anyhow!("substrate response missing required `model` field")
+        })?;
+        let provider = result.get("provider").and_then(|v| v.as_str()).ok_or_else(|| {
+            anyhow!("substrate response missing required `provider` field")
+        })?;
+        let total = result
+            .get("usage")
+            .and_then(|u| u.get("totalTokens"))
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| {
+                anyhow!("substrate response missing required `usage.totalTokens` field")
+            })?;
+        eprintln!("\n--- model={model} provider={provider} total_tokens={total} ---");
     }
     Ok(())
 }
