@@ -143,4 +143,134 @@ mod tests {
         write_lora_safetensors(&cpu_module(), &nested).expect("write w/ mkdir");
         assert!(nested.exists());
     }
+
+    /// VDD — validation-driven tests verifying mathematical
+    /// equivalence across the write→load→reconstruct boundary.
+    ///
+    /// Difference vs the TDD round-trip test above: TDD pins that
+    /// tensor values come back bit-exact. VDD pins the next-level
+    /// invariant the matrix-dojo doctrine depends on — a *fresh*
+    /// `LoRAModule` populated from loaded tensors must produce the
+    /// SAME forward output as the original trainer. This is the
+    /// math invariant that makes paged LoRA layers usable across
+    /// process boundaries.
+    mod vdd {
+        use super::*;
+        use candle_core::Var;
+
+        // what this VDD catches: after train → write safetensors →
+        // load → set A/B on a fresh LoRAModule, the new module's
+        // forward(x) equals the original module's forward(x) to f32
+        // bit-exactness. This is the matrix-dojo loop's correctness
+        // invariant — a layer trained on continuum A and paged into
+        // continuum B reproduces continuum A's output exactly.
+        //
+        // A regression that subtly altered the tensor dtype during
+        // write/load (f32 → f16 → f32 conversion losing precision),
+        // swapped axis order during serialization, or changed the
+        // safetensors key naming would slip past the existing
+        // round-trip test (which only checks raw tensor equality)
+        // but would manifest as forward-output divergence here.
+        #[test]
+        fn safetensors_round_trip_reproduces_forward_output() {
+            let device = Device::Cpu;
+            let in_features = 4;
+            let out_features = 6;
+            let rank = 3;
+            let alpha = 6;
+
+            // Same base for both modules.
+            let w_vec: Vec<f32> = (0..(out_features * in_features))
+                .map(|i| ((i as f32) * 0.21 - 0.5).tanh())
+                .collect();
+            let base_original =
+                Tensor::from_slice(&w_vec, (out_features, in_features), &device).unwrap();
+            let base_loaded =
+                Tensor::from_slice(&w_vec, (out_features, in_features), &device).unwrap();
+
+            // Original module with overridden A and B (non-zero
+            // pattern so the delta path is engaged).
+            let original = LoRAModule::new(base_original, rank, alpha, DType::F32, &device).unwrap();
+            let a_vec: Vec<f32> = (0..(rank as usize * in_features))
+                .map(|i| ((i as f32 * 0.17) + 0.3).sin())
+                .collect();
+            let b_vec: Vec<f32> = (0..(out_features * rank as usize))
+                .map(|i| ((i as f32 * 0.29) - 0.2).cos() * 0.4)
+                .collect();
+            let a_t = Tensor::from_slice(&a_vec, (rank as usize, in_features), &device).unwrap();
+            let b_t = Tensor::from_slice(&b_vec, (out_features, rank as usize), &device).unwrap();
+            original.lora_a().set(&a_t).unwrap();
+            original.lora_b().set(&b_t).unwrap();
+
+            // Write + load.
+            let dir = tempdir().expect("tempdir");
+            let path = dir.path().join("layer.safetensors");
+            write_lora_safetensors(&original, &path).expect("write");
+            let loaded = candle_core::safetensors::load(&path, &device).expect("load");
+
+            // Reconstruct a fresh module with the SAME base and the
+            // loaded A/B. The loaded tensors must round-trip into
+            // Vars cleanly.
+            let fresh = LoRAModule::new(base_loaded, rank, alpha, DType::F32, &device).unwrap();
+            fresh.lora_a()
+                .set(loaded.get(LORA_A_KEY).expect("A key present"))
+                .unwrap();
+            fresh.lora_b()
+                .set(loaded.get(LORA_B_KEY).expect("B key present"))
+                .unwrap();
+
+            // Also assert the Vars themselves carry identical
+            // tensor data — sanity ahead of the forward check.
+            assert_var_eq(original.lora_a(), fresh.lora_a(), "A");
+            assert_var_eq(original.lora_b(), fresh.lora_b(), "B");
+
+            // Forward output must match element-for-element.
+            let batch = 2;
+            let x_vec: Vec<f32> = (0..(batch * in_features))
+                .map(|i| ((i as f32 * 0.41) + 0.1).sin())
+                .collect();
+            let x = Tensor::from_slice(&x_vec, (batch, in_features), &device).unwrap();
+
+            let y_original: Vec<f32> = original
+                .forward(&x)
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            let y_fresh: Vec<f32> = fresh
+                .forward(&x)
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+
+            assert_eq!(y_original.len(), y_fresh.len());
+            for (idx, (o, f)) in y_original.iter().zip(y_fresh.iter()).enumerate() {
+                let diff = (o - f).abs();
+                assert!(
+                    diff < 1e-6,
+                    "VDD: round-trip forward divergence at index {idx}: \
+                     original={o:.7}, fresh={f:.7}, diff={diff:.2e}"
+                );
+            }
+        }
+
+        fn assert_var_eq(a: &Var, b: &Var, label: &str) {
+            let a_flat: Vec<f32> = a
+                .as_tensor()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            let b_flat: Vec<f32> = b
+                .as_tensor()
+                .flatten_all()
+                .unwrap()
+                .to_vec1()
+                .unwrap();
+            assert_eq!(a_flat, b_flat, "VDD: {label} tensors must round-trip bit-exact");
+        }
+    }
 }
