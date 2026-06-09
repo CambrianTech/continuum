@@ -99,7 +99,7 @@ pub use adapter::{ArcFineTuningAdapter, FineTuningAdapter, FineTuningCapabilitie
 pub use byte_tokenizer::{ByteTokenizer, BYTE_PAD_ID, BYTE_VOCAB};
 pub use coordinator::{CoordinatorError, FineTuningCoordinator};
 pub use job_actor::{spawn_job, JobActorError, JobController, SpawnJobRequest};
-pub use local_candle_adapter::LocalCandleFineTuner;
+pub use local_candle_adapter::{LocalCandleFineTuner, SYNTHETIC_BASE_PREFIX};
 pub use lora_module::{LoRAError, LoRAModule};
 pub use openai_adapter::OpenAIFineTuningAdapter;
 pub use registry::FineTuningRegistry;

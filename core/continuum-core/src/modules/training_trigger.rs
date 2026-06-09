@@ -117,11 +117,17 @@ struct SubmitParams {
 }
 
 /// `genome/training-trigger/flush` input.
+///
+/// `base_model` is required so the flush targets a specific bucket
+/// (per the BucketKey-includes-base_model fix). A persona may have
+/// multiple (trait_kind, base_model) buckets pending; flush picks
+/// exactly one.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FlushParams {
     persona_id: Uuid,
     trait_kind: String,
+    base_model: String,
 }
 
 /// `genome/training-trigger/status` — no params; returns all
@@ -139,16 +145,25 @@ struct PendingBucketView {
 
 // ─── Bucket key + state ──────────────────────────────────────────────
 
+/// One bucket per `(persona_id, trait_kind, base_model)` triple.
+///
+/// Per Reviewer 2's BLOCK A4: keying on `(persona_id, trait_kind)`
+/// only and rejecting the second submit with a different `base_model`
+/// is the silent-data-loss class the trigger took pains to prevent
+/// everywhere else. A persona legitimately trains the same trait
+/// against multiple bases (local + cloud) for routing flexibility;
+/// each base gets its own bucket and its own dispatched job. The key
+/// IS the coherence guarantee — no runtime check needed.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 struct BucketKey {
     persona_id: Uuid,
     trait_kind: String,
+    base_model: String,
 }
 
 #[derive(Debug, Clone)]
 struct PendingBatch {
     persona_name: String,
-    base_model: String,
     source: TrainingSource,
     examples: Vec<TrainingExample>,
     lora: Option<LoRAHyperparams>,
@@ -161,8 +176,25 @@ struct PendingBatch {
 
 // ─── Module ──────────────────────────────────────────────────────────
 
+/// Per-key serialization mutex.
+///
+/// Per Reviewer 3's BLOCK C1 + C2: a `handle_submit` that drains
+/// the bucket, drops the entry guard, awaits `genome/job-create`,
+/// then unconditionally removes (success) or restores (failure) is
+/// racy against a concurrent `handle_submit` to the same key. Two
+/// readers can interleave at the `.await` boundary and lose
+/// curated data either way. The DashMap-of-Mutex pattern serializes
+/// per-key while keeping different keys concurrent — the standard
+/// substrate primitive for this exact shape.
+type SubmitGate = Arc<tokio::sync::Mutex<()>>;
+
 pub struct TrainingTriggerModule {
     buckets: Arc<DashMap<BucketKey, PendingBatch>>,
+    /// Per-bucket-key submit serialization. Lives in its own
+    /// DashMap because the lifetime of a bucket and the lifetime of
+    /// its submit-gate are different — the gate sticks around if
+    /// it has waiters, the bucket comes and goes per dispatch.
+    submit_gates: Arc<DashMap<BucketKey, SubmitGate>>,
     executor: std::sync::OnceLock<Arc<CommandExecutor>>,
 }
 
@@ -170,6 +202,7 @@ impl TrainingTriggerModule {
     pub fn new() -> Self {
         Self {
             buckets: Arc::new(DashMap::new()),
+            submit_gates: Arc::new(DashMap::new()),
             executor: std::sync::OnceLock::new(),
         }
     }
@@ -185,12 +218,58 @@ impl TrainingTriggerModule {
     /// Test-only: peek the example count for a specific bucket. None
     /// if the bucket doesn't exist (cleared or never created).
     #[cfg(test)]
-    pub(super) fn bucket_example_count(&self, persona_id: Uuid, trait_kind: &str) -> Option<usize> {
+    pub(super) fn bucket_example_count(
+        &self,
+        persona_id: Uuid,
+        trait_kind: &str,
+        base_model: &str,
+    ) -> Option<usize> {
         let key = BucketKey {
             persona_id,
             trait_kind: trait_kind.to_string(),
+            base_model: base_model.to_string(),
         };
         self.buckets.get(&key).map(|b| b.examples.len())
+    }
+
+    /// Acquire (or create) the per-key submit gate. Holding the
+    /// returned mutex guard serializes concurrent submits to the
+    /// same `(persona_id, trait_kind, base_model)` bucket.
+    fn acquire_gate(&self, key: &BucketKey) -> SubmitGate {
+        if let Some(g) = self.submit_gates.get(key) {
+            return g.clone();
+        }
+        // Race-safe: entry().or_insert_with on DashMap returns the
+        // existing gate if a concurrent caller already inserted one.
+        let gate = self
+            .submit_gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        gate
+    }
+
+    /// Try to evict a per-key submit gate after a successful
+    /// dispatch. Per Reviewer 2's BLOCK B1: the `submit_gates`
+    /// DashMap is a [`[[auto-clean-is-structural-not-operational]]`]
+    /// surface — every distinct `(persona, trait, base)` triple
+    /// ever submitted leaves a permanent `Arc<Mutex<()>>`. The fix
+    /// is structural: prune the gate after dispatch when no other
+    /// caller holds a reference to it.
+    ///
+    /// `Arc::strong_count == 1` means the only remaining ref is the
+    /// DashMap's own entry — no in-flight submit / flush is waiting
+    /// on this gate, and dropping it loses no serialization
+    /// guarantee. A concurrent caller arriving AFTER eviction sees
+    /// no gate and `acquire_gate` creates a fresh one — semantics
+    /// identical to first-ever submit for that key.
+    ///
+    /// MUST be called AFTER the local lease has been dropped (the
+    /// caller holds one ref by definition; without drop the count
+    /// is `>= 2`).
+    fn try_evict_gate(&self, key: &BucketKey) {
+        self.submit_gates
+            .remove_if(key, |_, gate| Arc::strong_count(gate) == 1);
     }
 }
 
@@ -265,7 +344,17 @@ impl TrainingTriggerModule {
         let key = BucketKey {
             persona_id: p.persona_id,
             trait_kind: p.trait_kind.clone(),
+            base_model: p.base_model.clone(),
         };
+
+        // Serialize per-key. Concurrent submits to different keys
+        // proceed in parallel; concurrent submits to the same key
+        // queue here. This eliminates the lost-update + restore-
+        // commingle races flagged in Reviewer 3's BLOCK C1 + C2.
+        // Holding the guard across the .await is intentional —
+        // tokio::sync::Mutex is await-safe.
+        let gate = self.acquire_gate(&key);
+        let _submit_lease = gate.lock().await;
 
         // Append phase. Hold the entry mutably for the minimum window:
         // append + read the new len + decide whether to fire. If we
@@ -274,7 +363,6 @@ impl TrainingTriggerModule {
         let snapshot_to_dispatch = {
             let mut entry = self.buckets.entry(key.clone()).or_insert_with(|| PendingBatch {
                 persona_name: p.persona_name.clone(),
-                base_model: p.base_model.clone(),
                 source: p.source,
                 examples: Vec::new(),
                 lora: p.lora.clone(),
@@ -285,26 +373,79 @@ impl TrainingTriggerModule {
                 validation_split,
             });
 
-            // Coherence checks. Once a bucket exists, subsequent
-            // submits must agree on (persona_name, base_model,
-            // source). Conflicting submits would silently mix data
-            // from different training targets — load-bearing wrong.
-            if entry.base_model != p.base_model {
-                return Ok(CommandResult::Json(json!({
-                    "success": false,
-                    "error": format!(
-                        "bucket (persona={}, trait_kind={}) has base_model={:?}; submit gave base_model={:?}",
-                        p.persona_id, p.trait_kind, entry.base_model, p.base_model
-                    ),
-                    "errorKind": "InconsistentBucket",
-                })));
-            }
+            // Coherence checks for hyperparam fields NOT in the
+            // BucketKey. Per Reviewer 2's BLOCK B2 (re-review): the
+            // A4 fix promoted `base_model` into the key but left
+            // `source`, `lora`, `schedule`, `validation_split`,
+            // `local_artifact_dir`, `preferred_provider` as
+            // first-arrival-wins via `or_insert_with`. A second
+            // submit with `lora.rank=16` against a bucket that the
+            // first submit pinned at `lora.rank=8` would silently
+            // dispatch with rank=8 — same silent-data-corruption
+            // class A4 was trying to eliminate.
+            //
+            // Symmetric rejection: any policy field that differs
+            // from the bucket's first-arrival value surfaces as
+            // InconsistentBucket. The caller picks one of: re-submit
+            // with the original policy, flush the bucket and start
+            // fresh, or pick a different (persona, trait, base)
+            // discriminator that splits the policies.
             if entry.source != p.source {
                 return Ok(CommandResult::Json(json!({
                     "success": false,
                     "error": format!(
                         "bucket has source={:?}; submit gave source={:?}",
                         entry.source, p.source
+                    ),
+                    "errorKind": "InconsistentBucket",
+                })));
+            }
+            if entry.lora != p.lora {
+                return Ok(CommandResult::Json(json!({
+                    "success": false,
+                    "error": format!(
+                        "bucket has lora={:?}; submit gave lora={:?}",
+                        entry.lora, p.lora
+                    ),
+                    "errorKind": "InconsistentBucket",
+                })));
+            }
+            if entry.schedule != p.schedule {
+                return Ok(CommandResult::Json(json!({
+                    "success": false,
+                    "error": format!(
+                        "bucket has schedule={:?}; submit gave schedule={:?}",
+                        entry.schedule, p.schedule
+                    ),
+                    "errorKind": "InconsistentBucket",
+                })));
+            }
+            if (entry.validation_split - validation_split).abs() > f32::EPSILON {
+                return Ok(CommandResult::Json(json!({
+                    "success": false,
+                    "error": format!(
+                        "bucket has validation_split={}; submit gave validation_split={}",
+                        entry.validation_split, validation_split
+                    ),
+                    "errorKind": "InconsistentBucket",
+                })));
+            }
+            if entry.local_artifact_dir != p.local_artifact_dir {
+                return Ok(CommandResult::Json(json!({
+                    "success": false,
+                    "error": format!(
+                        "bucket has local_artifact_dir={:?}; submit gave local_artifact_dir={:?}",
+                        entry.local_artifact_dir, p.local_artifact_dir
+                    ),
+                    "errorKind": "InconsistentBucket",
+                })));
+            }
+            if entry.preferred_provider != p.preferred_provider {
+                return Ok(CommandResult::Json(json!({
+                    "success": false,
+                    "error": format!(
+                        "bucket has preferred_provider={:?}; submit gave preferred_provider={:?}",
+                        entry.preferred_provider, p.preferred_provider
                     ),
                     "errorKind": "InconsistentBucket",
                 })));
@@ -336,7 +477,6 @@ impl TrainingTriggerModule {
             let drained_examples = std::mem::take(&mut entry.examples);
             PendingBatch {
                 persona_name: entry.persona_name.clone(),
-                base_model: entry.base_model.clone(),
                 source: entry.source,
                 examples: drained_examples,
                 lora: entry.lora.clone(),
@@ -348,12 +488,10 @@ impl TrainingTriggerModule {
             }
         };
 
-        // Dispatch outside the entry guard. If it fails, restore the
-        // drained examples to the bucket so the next submit can
-        // re-trigger — per `[[no-fallbacks-ever]]` we never silently
-        // lose curated data.
+        // Dispatch under the per-key gate — no other submit to this
+        // key can race the success-clear or failure-restore paths.
         let dispatch_result = self
-            .dispatch_job_create(p.persona_id, &p.trait_kind, &snapshot_to_dispatch)
+            .dispatch_job_create(p.persona_id, &key.trait_kind, &key.base_model, &snapshot_to_dispatch)
             .await;
 
         match dispatch_result {
@@ -361,6 +499,11 @@ impl TrainingTriggerModule {
                 // Remove the now-empty bucket so status() doesn't
                 // report a phantom zero-count entry.
                 self.buckets.remove(&key);
+                // Release the lease BEFORE attempting gate cleanup —
+                // cleanup checks `Arc::strong_count == 1` which only
+                // holds when this caller's gate ref has dropped.
+                drop(_submit_lease);
+                self.try_evict_gate(&key);
                 Ok(CommandResult::Json(json!({
                     "success": true,
                     "outcome": "JobDispatched",
@@ -392,7 +535,16 @@ impl TrainingTriggerModule {
         let key = BucketKey {
             persona_id: p.persona_id,
             trait_kind: p.trait_kind.clone(),
+            base_model: p.base_model.clone(),
         };
+
+        // Same per-key gate as submit. Flush and submit BOTH mutate
+        // the bucket — without serialization, a flush could race a
+        // submit's drain or restore. The gate ensures whichever
+        // arrives first runs to completion before the other touches
+        // the key.
+        let gate = self.acquire_gate(&key);
+        let _flush_lease = gate.lock().await;
 
         // Take the bucket out atomically. If it doesn't exist or is
         // empty, return a clean "nothing to flush" outcome — flush
@@ -414,19 +566,29 @@ impl TrainingTriggerModule {
         };
 
         match self
-            .dispatch_job_create(p.persona_id, &p.trait_kind, &snapshot)
+            .dispatch_job_create(p.persona_id, &key.trait_kind, &key.base_model, &snapshot)
             .await
         {
-            Ok((job_handle_value, selected_provider)) => Ok(CommandResult::Json(json!({
-                "success": true,
-                "outcome": "JobDispatched",
-                "examplesUsed": snapshot.examples.len() as u32,
-                "selectedProvider": selected_provider,
-                "jobHandle": job_handle_value,
-            }))),
+            Ok((job_handle_value, selected_provider)) => {
+                // Same gate cleanup as submit's success path —
+                // release lease, then try to prune the gate if no
+                // other caller holds a ref.
+                drop(_flush_lease);
+                self.try_evict_gate(&key);
+                Ok(CommandResult::Json(json!({
+                    "success": true,
+                    "outcome": "JobDispatched",
+                    "examplesUsed": snapshot.examples.len() as u32,
+                    "selectedProvider": selected_provider,
+                    "jobHandle": job_handle_value,
+                })))
+            }
             Err(err) => {
                 // Restore on failure — flush must not lose data
-                // either.
+                // either. Under the gate, no concurrent submit /
+                // flush can have populated the key between our
+                // remove() and this insert(), so the reinsert is
+                // safe and the snapshot is the complete state.
                 self.buckets.insert(key, snapshot);
                 Ok(CommandResult::Json(json!({
                     "success": false,
@@ -444,16 +606,18 @@ impl TrainingTriggerModule {
                 persona_id: entry.key().persona_id,
                 persona_name: entry.value().persona_name.clone(),
                 trait_kind: entry.key().trait_kind.clone(),
-                base_model: entry.value().base_model.clone(),
+                base_model: entry.key().base_model.clone(),
                 examples_pending: entry.value().examples.len() as u32,
                 min_examples: entry.value().min_examples,
             });
         }
-        // Deterministic order — sort by (persona_id, trait_kind) so
-        // operator-tooling tests don't flake on DashMap iteration
-        // order.
+        // Deterministic order — sort by (persona_id, trait_kind,
+        // base_model) so operator-tooling tests don't flake on
+        // DashMap iteration order, and so the new (persona, trait,
+        // base) triple is fully reflected in the surface contract.
         buckets.sort_by(|a, b| {
-            (a.persona_id, &a.trait_kind).cmp(&(b.persona_id, &b.trait_kind))
+            (a.persona_id, &a.trait_kind, &a.base_model)
+                .cmp(&(b.persona_id, &b.trait_kind, &b.base_model))
         });
 
         Ok(CommandResult::Json(json!({
@@ -470,6 +634,7 @@ impl TrainingTriggerModule {
         &self,
         persona_id: Uuid,
         trait_kind: &str,
+        base_model: &str,
         batch: &PendingBatch,
     ) -> Result<(Value, String), String> {
         let executor = self
@@ -480,7 +645,7 @@ impl TrainingTriggerModule {
         let request = TrainingJobRequest {
             persona_id,
             persona_name: batch.persona_name.clone(),
-            base_model: batch.base_model.clone(),
+            base_model: base_model.to_string(),
             trait_kind: trait_kind.to_string(),
             dataset: TrainingDataset {
                 examples: batch.examples.clone(),
@@ -611,7 +776,7 @@ mod tests {
         assert_eq!(json["outcome"], "BatchAppended");
         assert_eq!(json["currentCount"], 1);
         assert_eq!(json["threshold"], 5);
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(1));
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), Some(1));
     }
 
     // what this catches: hitting threshold dispatches and clears the
@@ -635,7 +800,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(4));
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), Some(4));
 
         // Second submit: 1 more example → 5 → fires.
         let result = trigger
@@ -656,38 +821,165 @@ mod tests {
         assert!(json["jobHandle"]["localId"].is_string());
 
         // Bucket must be cleared.
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), None);
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), None);
         assert_eq!(trigger.pending_bucket_count(), 0);
     }
 
-    // what this catches: inconsistent base_model across submits to
-    // same bucket is rejected with an InconsistentBucket error.
-    // Without this guard, two consumers mixing data for different
-    // target models into one bucket would silently train against
-    // the WRONG base model — the worst kind of "looks correct,
-    // wrong answer" bug.
+    // what this catches: same persona + same trait_kind submitted
+    // with DIFFERENT base_model values gets DIFFERENT buckets. Per
+    // Reviewer 2's BLOCK A4: a persona legitimately trains the same
+    // trait (e.g. "kc-tech-history") against multiple bases (local
+    // synthetic + cloud gpt-4o-mini) for routing flexibility. The
+    // pre-fix behavior rejected the second submit with
+    // InconsistentBucket and silently dropped its data. The fix
+    // promotes base_model into the bucket key so the two submits
+    // accumulate independently.
     #[tokio::test]
-    async fn inconsistent_base_model_in_same_bucket_is_rejected() {
+    async fn different_base_models_create_separate_buckets() {
         let (trigger, _executor) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
-        // First submit fixes base_model = "synthetic".
+        // First submit: base_model = "synthetic".
         let _ = trigger
             .handle_command(
                 "genome/training-trigger/submit",
-                submit_params(persona, "test-trait", vec![ex("a", "b")], Some(5)),
+                submit_params(persona, "test-trait", vec![ex("a", "b")], Some(100)),
             )
             .await
             .unwrap();
 
-        // Second submit tries a different base_model.
-        let mut conflicting = submit_params(persona, "test-trait", vec![ex("c", "d")], Some(5));
-        conflicting.as_object_mut().unwrap().insert(
+        // Second submit: SAME persona, SAME trait, DIFFERENT base.
+        let mut other_base =
+            submit_params(persona, "test-trait", vec![ex("c", "d")], Some(100));
+        other_base.as_object_mut().unwrap().insert(
             "baseModel".into(),
-            Value::String("DIFFERENT-BASE".into()),
+            Value::String("synthetic-tiny".into()),
         );
         let result = trigger
-            .handle_command("genome/training-trigger/submit", conflicting)
+            .handle_command("genome/training-trigger/submit", other_base)
+            .await
+            .unwrap();
+        let json = match result {
+            CommandResult::Json(v) => v,
+            other => panic!("expected Json, got {other:?}"),
+        };
+        // No more InconsistentBucket — the second submit succeeds
+        // because it lives in its own bucket.
+        assert_eq!(json["success"], true, "second-base submit must succeed: {json}");
+        assert_eq!(json["outcome"], "BatchAppended");
+
+        // Two distinct buckets pending, one example each.
+        assert_eq!(
+            trigger.bucket_example_count(persona, "test-trait", "synthetic"),
+            Some(1)
+        );
+        assert_eq!(
+            trigger.bucket_example_count(persona, "test-trait", "synthetic-tiny"),
+            Some(1)
+        );
+        assert_eq!(trigger.pending_bucket_count(), 2);
+    }
+
+    // what this catches: coherence check now also covers `lora`
+    // hyperparameters. Per Reviewer 2's re-review BLOCK B2: A4's
+    // "the key IS coherence" only held for fields IN the key.
+    // `lora.rank`, `lora.alpha`, etc. were silently first-arrival-
+    // wins via `or_insert_with`. A second submit with different
+    // lora params now gets InconsistentBucket so the caller learns
+    // their config was rejected instead of silently overridden.
+    #[tokio::test]
+    async fn inconsistent_lora_in_same_bucket_is_rejected() {
+        use crate::genome::fine_tuning::types::LoRAHyperparams;
+        let (trigger, _executor) = build_runtime_with_trigger_and_genome().await;
+        let persona = Uuid::new_v4();
+
+        let mut first =
+            submit_params(persona, "test-trait", vec![ex("a", "b")], Some(100));
+        first.as_object_mut().unwrap().insert(
+            "lora".into(),
+            serde_json::to_value(LoRAHyperparams {
+                rank: 8,
+                alpha: 16,
+                dropout: 0.0,
+                target_modules: vec![],
+            })
+            .unwrap(),
+        );
+        let _ = trigger
+            .handle_command("genome/training-trigger/submit", first)
+            .await
+            .unwrap();
+
+        let mut wrong_lora =
+            submit_params(persona, "test-trait", vec![ex("c", "d")], Some(100));
+        wrong_lora.as_object_mut().unwrap().insert(
+            "lora".into(),
+            serde_json::to_value(LoRAHyperparams {
+                rank: 16, // different
+                alpha: 32,
+                dropout: 0.0,
+                target_modules: vec![],
+            })
+            .unwrap(),
+        );
+        let result = trigger
+            .handle_command("genome/training-trigger/submit", wrong_lora)
+            .await
+            .unwrap();
+        let json = match result {
+            CommandResult::Json(v) => v,
+            other => panic!("expected Json, got {other:?}"),
+        };
+        assert_eq!(json["success"], false, "got: {json}");
+        assert_eq!(json["errorKind"], "InconsistentBucket");
+        // First-arrival's bucket survives intact.
+        assert_eq!(
+            trigger.bucket_example_count(persona, "test-trait", "synthetic"),
+            Some(1)
+        );
+    }
+
+    // what this catches: same coherence guarantee for ScheduleParams.
+    // A submit with different `epochs` or `learning_rate` is
+    // rejected with InconsistentBucket rather than silently using
+    // the first-arrival's schedule.
+    #[tokio::test]
+    async fn inconsistent_schedule_in_same_bucket_is_rejected() {
+        use crate::genome::fine_tuning::types::ScheduleParams;
+        let (trigger, _executor) = build_runtime_with_trigger_and_genome().await;
+        let persona = Uuid::new_v4();
+
+        let mut first =
+            submit_params(persona, "test-trait", vec![ex("a", "b")], Some(100));
+        first.as_object_mut().unwrap().insert(
+            "schedule".into(),
+            serde_json::to_value(ScheduleParams {
+                epochs: 3,
+                batch_size: 4,
+                sequence_length: 32,
+                learning_rate: 1e-4,
+            })
+            .unwrap(),
+        );
+        let _ = trigger
+            .handle_command("genome/training-trigger/submit", first)
+            .await
+            .unwrap();
+
+        let mut wrong_schedule =
+            submit_params(persona, "test-trait", vec![ex("c", "d")], Some(100));
+        wrong_schedule.as_object_mut().unwrap().insert(
+            "schedule".into(),
+            serde_json::to_value(ScheduleParams {
+                epochs: 5, // different
+                batch_size: 4,
+                sequence_length: 32,
+                learning_rate: 1e-4,
+            })
+            .unwrap(),
+        );
+        let result = trigger
+            .handle_command("genome/training-trigger/submit", wrong_schedule)
             .await
             .unwrap();
         let json = match result {
@@ -696,8 +988,48 @@ mod tests {
         };
         assert_eq!(json["success"], false);
         assert_eq!(json["errorKind"], "InconsistentBucket");
-        // The bucket's first base_model survives.
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(1));
+    }
+
+    // what this catches: source coherence is still enforced even
+    // after base_model moved out of the coherence check into the
+    // key. A submit with `source: "operator_curated"` to a bucket
+    // that already exists from a `source: "teacher_synthesized"`
+    // submit must be rejected — the alloy provenance contract
+    // distinguishes those origins.
+    #[tokio::test]
+    async fn inconsistent_source_in_same_bucket_is_rejected() {
+        let (trigger, _executor) = build_runtime_with_trigger_and_genome().await;
+        let persona = Uuid::new_v4();
+
+        let _ = trigger
+            .handle_command(
+                "genome/training-trigger/submit",
+                submit_params(persona, "test-trait", vec![ex("a", "b")], Some(100)),
+            )
+            .await
+            .unwrap();
+
+        let mut wrong_source =
+            submit_params(persona, "test-trait", vec![ex("c", "d")], Some(100));
+        wrong_source
+            .as_object_mut()
+            .unwrap()
+            .insert("source".into(), Value::String("teacher_synthesized".into()));
+        let result = trigger
+            .handle_command("genome/training-trigger/submit", wrong_source)
+            .await
+            .unwrap();
+        let json = match result {
+            CommandResult::Json(v) => v,
+            other => panic!("expected Json, got {other:?}"),
+        };
+        assert_eq!(json["success"], false);
+        assert_eq!(json["errorKind"], "InconsistentBucket");
+        // First-arrival's source survives intact.
+        assert_eq!(
+            trigger.bucket_example_count(persona, "test-trait", "synthetic"),
+            Some(1)
+        );
     }
 
     // what this catches: flush dispatches a bucket below threshold
@@ -727,11 +1059,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(5));
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), Some(5));
 
         let flush_params = json!({
             "personaId": persona,
             "traitKind": "test-trait",
+            "baseModel": "synthetic",
         });
         let result = trigger
             .handle_command("genome/training-trigger/flush", flush_params)
@@ -744,7 +1077,7 @@ mod tests {
         assert_eq!(json["success"], true, "got: {json}");
         assert_eq!(json["outcome"], "JobDispatched");
         assert_eq!(json["examplesUsed"], 5);
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), None);
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), None);
     }
 
     // what this catches: flush on an empty bucket is a no-op success,
@@ -758,7 +1091,7 @@ mod tests {
         let result = trigger
             .handle_command(
                 "genome/training-trigger/flush",
-                json!({"personaId": persona, "traitKind": "nope"}),
+                json!({"personaId": persona, "traitKind": "nope", "baseModel": "synthetic"}),
             )
             .await
             .unwrap();
@@ -796,7 +1129,7 @@ mod tests {
         assert_eq!(json["success"], false);
         assert_eq!(json["errorKind"], "DispatchFailed");
         // The two examples must STILL be in the bucket.
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(2));
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), Some(2));
     }
 
     // what this catches: different personas have isolated buckets.
@@ -823,10 +1156,24 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(trigger.bucket_example_count(a, "shared-trait"), Some(1));
-        assert_eq!(trigger.bucket_example_count(b, "shared-trait"), Some(2));
+        assert_eq!(trigger.bucket_example_count(a, "shared-trait", "synthetic"), Some(1));
+        assert_eq!(trigger.bucket_example_count(b, "shared-trait", "synthetic"), Some(2));
         assert_eq!(trigger.pending_bucket_count(), 2);
     }
+
+    // Note: the load-bearing concurrent-submit-safety test lives
+    // behind `#[cfg(feature = "stress-tests")]` in `mod stress` at
+    // the bottom of this test mod. Per Reviewer 3's BLOCK
+    // (re-review): a default `#[tokio::test]` runs on the
+    // current_thread runtime, and the dispatch chain through
+    // GenomeModule + LocalCandleFineTuner contains zero yielding
+    // `.await`s — so spawned tasks never actually interleave, and
+    // the test passes even if the gate is removed. The stress
+    // variant uses a multi-thread runtime + a yielding stub
+    // adapter that injects a real `tokio::task::yield_now().await`
+    // in the dispatch path, forcing the race window to open. This
+    // is the doctrinal home for stress / multi-thread tests
+    // (CLAUDE.md test-discipline section).
 
     // what this catches: status command lists all pending buckets in
     // a deterministic order. Operator tooling relies on this for
@@ -933,7 +1280,7 @@ mod tests {
             // Bucket cleared exactly once — zero leftover, no
             // duplicate retained.
             assert_eq!(
-                trigger.bucket_example_count(persona, "vdd-trait"),
+                trigger.bucket_example_count(persona, "vdd-trait", "synthetic"),
                 None,
                 "VDD: bucket must be fully drained, no leftover"
             );
@@ -983,6 +1330,296 @@ mod tests {
                 trained_tokens > 0,
                 "VDD: dispatched job must have non-zero trainedTokens, got {trained_tokens}"
             );
+        }
+    }
+
+    /// Stress / concurrency tests — gated behind the `stress-tests`
+    /// feature per CLAUDE.md's test-discipline doctrine. Default
+    /// `cargo test` does NOT compile these; periodic CI runs them
+    /// via `--features stress-tests`. Multi-thread tokio runtime
+    /// plus a yielding stub adapter actually exercise the race
+    /// windows the gate is supposed to protect against.
+    ///
+    /// Per Reviewer 3's re-review BLOCK: the earlier inline
+    /// concurrency test ran on the current_thread runtime and the
+    /// dispatch chain contained zero yielding `.await` points, so
+    /// spawned tasks never interleaved — the test passed regardless
+    /// of whether the gate was present. This `mod stress` is the
+    /// doctrinal home for tests that need to genuinely exercise
+    /// concurrent paths.
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
+        use crate::genome::fine_tuning::adapter::{
+            FineTuningAdapter, FineTuningCapabilities, FineTuningError,
+        };
+        use crate::genome::fine_tuning::types::{
+            JobHandle, JobMetrics, TrainingArtifact, TrainingJobRequest, TrainingStatus,
+        };
+        use crate::genome::fine_tuning::FineTuningRegistry;
+        use crate::modules::genome::GenomeModule;
+        use async_trait::async_trait;
+        use std::sync::Mutex as StdMutex;
+        use std::time::Duration;
+
+        /// Test-only adapter that:
+        /// 1. captures the dispatched `TrainingJobRequest`s in a
+        ///    `Mutex<Vec<_>>` so the test can later sum the
+        ///    examples that actually flowed through dispatch
+        ///    (vs the ones the trigger held back as pending);
+        /// 2. yields cooperatively via `tokio::task::yield_now()`
+        ///    AND sleeps for a microsecond before returning, so
+        ///    that under a multi-thread runtime concurrent
+        ///    submit tasks WILL interleave at the gate's
+        ///    `.await` boundary. Without this, the dispatch
+        ///    chain contains no yielding awaits and current_thread
+        ///    runs tasks serially.
+        struct YieldingRecordingAdapter {
+            captured_requests: Arc<StdMutex<Vec<TrainingJobRequest>>>,
+        }
+
+        impl YieldingRecordingAdapter {
+            fn new() -> Self {
+                Self {
+                    captured_requests: Arc::new(StdMutex::new(Vec::new())),
+                }
+            }
+            fn captures(&self) -> Arc<StdMutex<Vec<TrainingJobRequest>>> {
+                self.captured_requests.clone()
+            }
+        }
+
+        #[async_trait]
+        impl FineTuningAdapter for YieldingRecordingAdapter {
+            fn capabilities(&self) -> FineTuningCapabilities {
+                FineTuningCapabilities {
+                    provider_id: "stress-yielding-recorder".to_string(),
+                    supports_lora: true,
+                    supports_validation: false,
+                    produces_local_artifact: true,
+                    supported_base_model_prefixes: vec!["stress".to_string()],
+                }
+            }
+
+            async fn create_job(
+                &self,
+                request: TrainingJobRequest,
+            ) -> Result<JobHandle, FineTuningError> {
+                // WIDE race window. The C1 / C2 races live
+                // between (a) the trigger's entry exit on the
+                // dispatching task and (b) the success/failure
+                // resolution after this `create_job.await`
+                // returns. Multiple yields + a long-enough sleep
+                // open the window wide enough for contending
+                // submits to interleave reliably across runs.
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                self.captured_requests
+                    .lock()
+                    .unwrap()
+                    .push(request.clone());
+                Ok(JobHandle {
+                    provider_id: "stress-yielding-recorder".into(),
+                    provider_job_id: format!("stress-{}", uuid::Uuid::new_v4()),
+                    local_id: uuid::Uuid::new_v4(),
+                })
+            }
+
+            async fn poll(&self, handle: &JobHandle) -> Result<TrainingStatus, FineTuningError> {
+                Ok(TrainingStatus::Completed {
+                    artifact: TrainingArtifact {
+                        model_id: handle.provider_job_id.clone(),
+                        local_path: None,
+                        metrics: JobMetrics::default(),
+                    },
+                })
+            }
+
+            async fn cancel(&self, _handle: &JobHandle) -> Result<(), FineTuningError> {
+                Ok(())
+            }
+        }
+
+        /// Build a runtime where genome/job-create routes to the
+        /// yielding recorder. The trigger module sees a real
+        /// CommandExecutor + GenomeModule chain — same code path
+        /// production uses — but the recorder substitutes the
+        /// adapter so we can observe dispatched datasets.
+        async fn build_stress_runtime() -> (
+            Arc<TrainingTriggerModule>,
+            Arc<CommandExecutor>,
+            Arc<StdMutex<Vec<TrainingJobRequest>>>,
+        ) {
+            let registry = Arc::new(ModuleRegistry::new());
+            let trigger = Arc::new(TrainingTriggerModule::new());
+            registry.register(trigger.clone());
+
+            let ft_registry = Arc::new(FineTuningRegistry::new());
+            let recorder = Arc::new(YieldingRecordingAdapter::new());
+            let captures = recorder.captures();
+            ft_registry.register(recorder);
+            registry.register(Arc::new(GenomeModule::new(ft_registry)));
+
+            let executor = Arc::new(CommandExecutor::new(registry.clone()));
+            registry.install_executor_on_all(executor.clone());
+            (trigger, executor, captures)
+        }
+
+        fn stress_submit_params(
+            persona_id: Uuid,
+            trait_kind: &str,
+            examples: Vec<TrainingExample>,
+            min_examples: u32,
+        ) -> Value {
+            json!({
+                "personaId": persona_id,
+                "personaName": "stress-p",
+                "baseModel": "stress-test",
+                "traitKind": trait_kind,
+                "examples": examples,
+                "source": "operator_curated",
+                "minExamples": min_examples,
+            })
+        }
+
+        // what this catches: a SMOKE-LEVEL conservation check
+        // under multi-thread concurrent submits. The
+        // YieldingRecordingAdapter captures dispatched datasets so
+        // we can sum-vs-submitted (true conservation, not the
+        // tautological `trained_tokens > 0` of the unit-test VDD).
+        //
+        // HONESTY NOTE: this test exercises the multi-thread runtime
+        // and the dispatch chain WITH yields, but it does NOT
+        // deterministically force the C1/C2 race window. The race
+        // requires an accumulator submit to land in the bucket
+        // BETWEEN a fire-load's drain and its success-remove —
+        // a 5ms timing window. In practice, fire-loads keep
+        // absorbing accumulators in a steady-state cycle (drain →
+        // accums fill bucket → next fire absorbs them), so even
+        // with the gate removed this test reports conservation
+        // holds. A truly deterministic race-exercise test needs a
+        // `tokio::sync::Notify` barrier inside the stub adapter to
+        // pause the dispatch.await while a contending submit
+        // explicitly lands an accumulator, then assert that
+        // accumulator survives the fire-load's remove. That barrier-
+        // based test lands in Fix-3 (defense PR) alongside the
+        // RecordingFineTuningAdapter promotion to system fixture.
+        // Per CLAUDE.md test discipline: a test must justify
+        // itself — this one's justification is "smoke-tests the
+        // multi-thread dispatch path; doesn't pin C1/C2 alone."
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_submits_to_same_key_serialize_without_loss_stress() {
+            let (trigger, _executor, captures) = build_stress_runtime().await;
+            let persona = Uuid::new_v4();
+
+            // Per R3's prescription: mix FIRE-LOAD submits (threshold=5,
+            // immediately fires) with ACCUMULATOR submits (threshold=100,
+            // accumulates 1 example at a time). Fire-loads enter
+            // dispatch.await holding nothing; accumulators target the
+            // same bucket during that await window. WITHOUT the gate,
+            // the fire-load's `buckets.remove(&key)` on success deletes
+            // the accumulator's appended examples — conservation
+            // breaks. WITH the gate, accumulators block behind the
+            // fire-load and land in a fresh bucket after the remove.
+            //
+            // 10 fire-loads × 5 examples (each fires alone) + 50
+            // accumulators × 1 example. Total = 100. Fire-loads need
+            // 5 examples to cross their threshold, so each fires once.
+            // Accumulators have min_examples=100, never fire on their
+            // own.
+            const N_FIRE: usize = 10;
+            const FIRE_EXAMPLES: usize = 5;
+            const N_ACCUM: usize = 50;
+            let total_examples = N_FIRE * FIRE_EXAMPLES + N_ACCUM;
+
+            let mut handles = Vec::with_capacity(N_FIRE + N_ACCUM);
+            // Spawn accumulators first so they're queued and ready
+            // to race with fire-loads.
+            for accum in 0..N_ACCUM {
+                let trig = trigger.clone();
+                handles.push(tokio::spawn(async move {
+                    trig.handle_command(
+                        "genome/training-trigger/submit",
+                        stress_submit_params(
+                            persona,
+                            "race-trait",
+                            vec![ex(&format!("acc{accum}-p"), &format!("acc{accum}-c"))],
+                            100, // never fires alone
+                        ),
+                    )
+                    .await
+                }));
+            }
+            // Spawn fire-loads interleaved with accumulator scheduling.
+            for fire in 0..N_FIRE {
+                let trig = trigger.clone();
+                handles.push(tokio::spawn(async move {
+                    trig.handle_command(
+                        "genome/training-trigger/submit",
+                        stress_submit_params(
+                            persona,
+                            "race-trait",
+                            (0..FIRE_EXAMPLES)
+                                .map(|i| {
+                                    ex(
+                                        &format!("fire{fire}-p{i}"),
+                                        &format!("fire{fire}-c{i}"),
+                                    )
+                                })
+                                .collect(),
+                            5,
+                        ),
+                    )
+                    .await
+                }));
+            }
+            for h in handles {
+                let r = h.await.unwrap().expect("submit");
+                let json = match r {
+                    CommandResult::Json(v) => v,
+                    other => panic!("expected Json, got {other:?}"),
+                };
+                assert_eq!(
+                    json["success"], true,
+                    "stress: every submit must succeed; got {json}"
+                );
+            }
+
+            // Sum examples in dispatched datasets.
+            let dispatched: usize = captures
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|req| req.dataset.examples.len())
+                .sum();
+            let pending = trigger
+                .bucket_example_count(persona, "race-trait", "stress-test")
+                .unwrap_or(0);
+            let total = dispatched + pending;
+            let expected = total_examples;
+            assert_eq!(
+                total, expected,
+                "STRESS conservation: dispatched={dispatched} + pending={pending} = {total}, \
+                 expected {expected}. A drop or duplicate means the gate failed under concurrency."
+            );
+
+            // Also assert no duplicate prompts in the dispatched
+            // datasets. Each prompt is unique by construction
+            // (s{submitter}-p{i}); duplication would indicate a
+            // restore-on-failure path commingling.
+            let mut seen_prompts = std::collections::HashSet::new();
+            for req in captures.lock().unwrap().iter() {
+                for ex in &req.dataset.examples {
+                    assert!(
+                        seen_prompts.insert(ex.prompt.clone()),
+                        "STRESS: duplicate prompt {:?} in dispatched datasets — \
+                         gate failed to prevent double-drain",
+                        ex.prompt
+                    );
+                }
+            }
         }
     }
 }

@@ -53,6 +53,21 @@ use super::types::{JobHandle, TrainingJobRequest, TrainingStatus};
 
 const PROVIDER_ID: &str = "local-candle";
 
+/// Base-model prefix the substrate-side stand-in trainer advertises
+/// — and the ONLY prefix it advertises. The trainer's forward path
+/// runs against a `Tensor::rand` synthetic base, not a loaded model,
+/// so any request whose `base_model` doesn't start with this prefix
+/// must NOT route here. Per `[[no-fallbacks-ever]]`, the coordinator
+/// silently substituting a stand-in for a real-base request is the
+/// exact dishonest shape the doctrine refuses.
+///
+/// When the real-base-loading slice lands (replaces the synthetic
+/// `Tensor::rand` in `job_actor::spawn_job`), this list narrows to
+/// the actual model prefixes the local cache can serve (e.g.
+/// `qwen3.5-`, `llama-3-`, `mistral-`), and the synthetic prefix
+/// can stay alongside as the substrate's deterministic test path.
+pub const SYNTHETIC_BASE_PREFIX: &str = "synthetic";
+
 /// In-process LoRA trainer. Holds a concurrent table of in-flight +
 /// terminal job controllers keyed by substrate-side `local_id`.
 ///
@@ -104,15 +119,29 @@ impl FineTuningAdapter for LocalCandleFineTuner {
         FineTuningCapabilities {
             provider_id: PROVIDER_ID.to_string(),
             supports_lora: true,
-            supports_validation: true,
-            // produces_local_artifact stays true — locality is the
-            // coordinator's tie-break signal that makes the substrate
-            // pick this adapter ahead of cloud when both are viable.
+            // supports_validation is FALSE until the actor grows a
+            // real validation pass. Per Reviewer 2's BLOCK A2: today
+            // `final_validation_loss` is hardcoded `None` and
+            // `request.dataset.validation_split` is never read.
+            // Advertising a capability we don't honor is the silent
+            // data-loss class `[[no-fallbacks-ever]]` refuses.
+            // Flip back to true alongside the train_epoch validation
+            // pass + final_validation_loss population.
+            supports_validation: false,
+            // produces_local_artifact stays true — when a request
+            // genuinely targets a synthetic base, locality is still
+            // the right routing signal.
             produces_local_artifact: true,
-            // Wildcard: caller responsibility. Base-model validation
-            // (does the local model cache have it?) lands with the
-            // real-model-loading slice.
-            supported_base_model_prefixes: vec![],
+            // Explicit synthetic-only prefix. Per Reviewer 2's BLOCK
+            // A1: an empty list combined with `produces_local_artifact: true`
+            // made the coordinator silently route EVERY request
+            // (including `base_model: "gpt-4o-mini"`) to this
+            // synthetic-base trainer. The substrate's local-candle
+            // slot has to advertise what it can actually train, not
+            // what it might one day train. When real base-model
+            // loading lands, this list narrows to the cache's actual
+            // entries (e.g. `qwen3.5-`, `llama-3-`).
+            supported_base_model_prefixes: vec![SYNTHETIC_BASE_PREFIX.to_string()],
         }
     }
 
@@ -289,18 +318,51 @@ mod tests {
         panic!("adapter never reached terminal status within timeout")
     }
 
-    // what this catches: capabilities are stable + locality marker
-    // intact. The coordinator's tie-break rank prefers
-    // produces_local_artifact=true; flipping it would silently
-    // demote the substrate-native slot below cloud providers.
+    // what this catches: capabilities advertise EXACTLY what the
+    // synthetic-base stand-in can train — no more, no less. The
+    // pre-fix shape (`prefixes: vec![]` wildcard +
+    // `supports_validation: true`) made the coordinator silently
+    // route every request, including ones for real cloud base
+    // models, into the `Tensor::rand` synthetic-base path. Pin the
+    // post-fix shape so a future regression can't re-introduce
+    // the silent substitution.
     #[test]
-    fn capabilities_advertise_locality_and_wildcard_base() {
+    fn capabilities_advertise_only_synthetic_base() {
         let caps = LocalCandleFineTuner::new().capabilities();
         assert_eq!(caps.provider_id, "local-candle");
         assert!(caps.produces_local_artifact);
         assert!(caps.supports_lora);
-        assert!(caps.supports_validation);
-        assert!(caps.supported_base_model_prefixes.is_empty());
+        assert!(
+            !caps.supports_validation,
+            "supports_validation MUST be false until train_epoch grows a validation pass"
+        );
+        assert_eq!(
+            caps.supported_base_model_prefixes,
+            vec![SYNTHETIC_BASE_PREFIX.to_string()],
+            "supported prefixes MUST be the explicit synthetic list — empty/wildcard would silently win real-base requests"
+        );
+    }
+
+    // what this catches: a request for a real-cloud base_model
+    // (e.g. `gpt-4o-mini`) MUST NOT route to LocalCandleFineTuner.
+    // This is the load-bearing test for Reviewer 2's BLOCK A1 —
+    // without it, the synthetic-base stand-in could silently win
+    // selection for any provider's base.
+    #[test]
+    fn capabilities_reject_non_synthetic_base_via_prefix_match() {
+        let caps = LocalCandleFineTuner::new().capabilities();
+        // Direct check on the capability shape — the coordinator's
+        // caps_match uses `prefixes.iter().any(|p| base.starts_with(p))`.
+        let matches = |base: &str| {
+            caps.supported_base_model_prefixes
+                .iter()
+                .any(|p| base.starts_with(p))
+        };
+        assert!(matches("synthetic"), "synthetic-only stand-in must accept its own prefix");
+        assert!(matches("synthetic-tiny"), "longer synthetic-prefixed variants accepted");
+        assert!(!matches("gpt-4o-mini"), "cloud base must NOT match local-candle");
+        assert!(!matches("qwen3.5-4b"), "real model name must NOT match local-candle");
+        assert!(!matches("mistral-large-latest"), "Mistral base must NOT match");
     }
 
     // what this catches: create_job spawns an actor + returns a

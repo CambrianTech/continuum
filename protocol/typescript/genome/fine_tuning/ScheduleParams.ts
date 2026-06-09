@@ -2,5 +2,9 @@
 
 /**
  * Training schedule knobs.
+ *
+ * `PartialEq` (not `Eq`) because of `learning_rate: f64`. Same
+ * motivation as `LoRAHyperparams` — the trigger module's bucket
+ * coherence check needs to compare two `ScheduleParams` values.
  */
 export type ScheduleParams = { epochs: number, batchSize: number, sequenceLength: number, learningRate: number, };

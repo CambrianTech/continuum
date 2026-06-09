@@ -84,6 +84,33 @@ pub(super) fn default_schedule() -> ScheduleParams {
     }
 }
 
+/// Maximum `sequence_length` the actor will accept from the wire.
+///
+/// Per Reviewer 3's BLOCK C5: `schedule.sequence_length: u32` flows
+/// untouched from the wire to a synchronous `Tensor::rand(BYTE_VOCAB,
+/// seq_len)` allocation on the foreground tokio worker. With no
+/// cap, a caller sending `sequence_length: 1_000_000` would stall a
+/// runtime worker on a ~1 GB sync allocation. This bound is
+/// generous enough for any real LoRA training (8192 is past most
+/// transformer context lengths in use) but short of DoS territory.
+///
+/// FUTURE (R2-LGTM2 re-review): when `SubstrateGovernor` grows a
+/// `training_policy()` accessor with per-hardware-tier caps
+/// (Mac Intel: 2048, MacBook Air M-series: 4096, M5+: 16384,
+/// 5090: 32768), this `pub const` becomes a hardware-aware
+/// `governor.training_policy().max_sequence_length(tier)` call.
+/// DoS protection at the wire IS the right level for v1; tier-aware
+/// caps are the v2 follow-up. See INFERENCE-LANES-REALISTIC.md
+/// AdaptiveThroughputPlanner for the structural shape.
+pub const MAX_SEQUENCE_LENGTH: u32 = 8192;
+
+/// Maximum `batch_size` the actor will accept. Same rationale as
+/// `MAX_SEQUENCE_LENGTH` — combined with seq_len, `batch * seq *
+/// vocab * 4` is the per-batch allocation. 256 × 8192 × 257 × 4 ≈
+/// 2 GB which is still beyond Mac Intel viability but well below
+/// the wire-controlled-DoS threshold the cap is meant to prevent.
+pub const MAX_BATCH_SIZE: u32 = 256;
+
 // ─── Errors ──────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
@@ -93,6 +120,12 @@ pub enum JobActorError {
 
     #[error("schedule epochs must be > 0")]
     InvalidEpochs,
+
+    #[error("schedule sequence_length must be in (0, {MAX_SEQUENCE_LENGTH}], got {0}")]
+    InvalidSequenceLength(u32),
+
+    #[error("schedule batch_size must be in (0, {MAX_BATCH_SIZE}], got {0}")]
+    InvalidBatchSize(u32),
 
     #[error("output path is required for local-candle jobs")]
     MissingOutputPath,
@@ -181,6 +214,16 @@ pub fn spawn_job(req: SpawnJobRequest) -> Result<JobController, JobActorError> {
     let schedule = req.schedule.unwrap_or_else(default_schedule);
     if schedule.epochs == 0 {
         return Err(JobActorError::InvalidEpochs);
+    }
+    // Cap caller-controlled schedule dims BEFORE allocating the
+    // synthetic base weight. Per Reviewer 3's BLOCK C5, an uncapped
+    // sequence_length would let a wire caller stall a tokio worker
+    // on a multi-GB synchronous Tensor::rand alloc.
+    if schedule.sequence_length == 0 || schedule.sequence_length > MAX_SEQUENCE_LENGTH {
+        return Err(JobActorError::InvalidSequenceLength(schedule.sequence_length));
+    }
+    if schedule.batch_size == 0 || schedule.batch_size > MAX_BATCH_SIZE {
+        return Err(JobActorError::InvalidBatchSize(schedule.batch_size));
     }
     let lora = req.lora.unwrap_or_else(default_lora);
 
@@ -428,6 +471,127 @@ mod tests {
         });
         let err = spawn_job(req).err().expect("must reject");
         assert!(matches!(err, JobActorError::InvalidEpochs));
+    }
+
+    // what this catches: caller-controlled `sequence_length` is
+    // capped before it reaches the synchronous `Tensor::rand` alloc.
+    // Per Reviewer 3's BLOCK C5: an uncapped `u32` would let a wire
+    // caller stall a tokio worker on a multi-GB sync allocation.
+    // 0 and `MAX_SEQUENCE_LENGTH + 1` both reject; values up to the
+    // cap pass.
+    #[test]
+    fn sequence_length_above_cap_rejected_synchronously() {
+        let dir = tempdir().unwrap();
+        let mut req = small_request(dir.path().join("layer.safetensors"));
+        req.schedule = Some(ScheduleParams {
+            epochs: 1,
+            batch_size: 2,
+            sequence_length: MAX_SEQUENCE_LENGTH + 1,
+            learning_rate: 1e-3,
+        });
+        let err = spawn_job(req).err().expect("must reject");
+        assert!(matches!(err, JobActorError::InvalidSequenceLength(_)));
+    }
+
+    #[test]
+    fn sequence_length_zero_rejected_synchronously() {
+        let dir = tempdir().unwrap();
+        let mut req = small_request(dir.path().join("layer.safetensors"));
+        req.schedule = Some(ScheduleParams {
+            epochs: 1,
+            batch_size: 2,
+            sequence_length: 0,
+            learning_rate: 1e-3,
+        });
+        let err = spawn_job(req).err().expect("must reject");
+        assert!(matches!(err, JobActorError::InvalidSequenceLength(0)));
+    }
+
+    // what this catches: caller-controlled `batch_size` is capped
+    // for the same DoS-protection reason as `sequence_length`. With
+    // `batch_size = u32::MAX` and a small `sequence_length`, the
+    // batch grouping in the data loader would attempt to materialize
+    // a single batch larger than the dataset, but the per-batch
+    // tensor allocation in candle uses batch_size as a dimension —
+    // an unbounded value would corrupt downstream sizing logic.
+    #[test]
+    fn batch_size_above_cap_rejected_synchronously() {
+        let dir = tempdir().unwrap();
+        let mut req = small_request(dir.path().join("layer.safetensors"));
+        req.schedule = Some(ScheduleParams {
+            epochs: 1,
+            batch_size: MAX_BATCH_SIZE + 1,
+            sequence_length: 8,
+            learning_rate: 1e-3,
+        });
+        let err = spawn_job(req).err().expect("must reject");
+        assert!(matches!(err, JobActorError::InvalidBatchSize(_)));
+    }
+
+    // what this catches: parallel to sequence_length_zero — a
+    // regression dropping `batch_size == 0` from the guard would
+    // let a wire caller submit batch_size: 0, which would panic
+    // downstream in candle's tensor dim allocation. Reviewer R1's
+    // BLOCK on the asymmetric coverage: sequence_length had a
+    // zero-rejected test but batch_size didn't.
+    #[test]
+    fn batch_size_zero_rejected_synchronously() {
+        let dir = tempdir().unwrap();
+        let mut req = small_request(dir.path().join("layer.safetensors"));
+        req.schedule = Some(ScheduleParams {
+            epochs: 1,
+            batch_size: 0,
+            sequence_length: 8,
+            learning_rate: 1e-3,
+        });
+        let err = spawn_job(req).err().expect("must reject");
+        assert!(matches!(err, JobActorError::InvalidBatchSize(0)));
+    }
+
+    // what this catches: BOUNDARY pin. The cap guards use `>` (the
+    // value MAX_SEQUENCE_LENGTH itself is ACCEPTED, MAX+1 rejected).
+    // A regression flipping `>` to `>=` would silently break callers
+    // submitting exactly 8192 — and the existing
+    // `_above_cap_rejected` test would still pass because MAX+1 is
+    // rejected under either semantic. Pin both sides per Reviewer R1's
+    // BLOCK on cap boundary asymmetry.
+    //
+    // These tests are `#[tokio::test]` (not `#[test]`) because
+    // spawn_job internally calls `tokio::task::spawn_blocking`,
+    // which requires a tokio runtime context. The synchronous-rejection
+    // tests don't reach that call site (they error before spawn).
+    #[tokio::test]
+    async fn sequence_length_at_cap_accepted() {
+        let dir = tempdir().unwrap();
+        let mut req = small_request(dir.path().join("layer.safetensors"));
+        // Need >= batch_size examples for DataLoader to form a batch
+        // (partial last batch is dropped).
+        req.dataset.examples = (0..4)
+            .map(|i| example(&format!("p-{i}"), &format!("c-{i}")))
+            .collect();
+        req.schedule = Some(ScheduleParams {
+            epochs: 1,
+            batch_size: 2,
+            sequence_length: MAX_SEQUENCE_LENGTH,
+            learning_rate: 1e-3,
+        });
+        spawn_job(req).expect("spawn_job must accept sequence_length == MAX_SEQUENCE_LENGTH");
+    }
+
+    #[tokio::test]
+    async fn batch_size_at_cap_accepted() {
+        let dir = tempdir().unwrap();
+        let mut req = small_request(dir.path().join("layer.safetensors"));
+        req.dataset.examples = (0..(MAX_BATCH_SIZE as usize))
+            .map(|i| example(&format!("p-{i}"), &format!("c-{i}")))
+            .collect();
+        req.schedule = Some(ScheduleParams {
+            epochs: 1,
+            batch_size: MAX_BATCH_SIZE,
+            sequence_length: 8,
+            learning_rate: 1e-3,
+        });
+        spawn_job(req).expect("spawn_job must accept batch_size == MAX_BATCH_SIZE");
     }
 
     // what this catches: happy-path lifecycle — actor reaches
