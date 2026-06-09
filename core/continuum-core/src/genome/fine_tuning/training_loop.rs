@@ -274,6 +274,17 @@ impl DataLoader {
 pub struct TrainingMetrics {
     pub steps_completed: u64,
     pub epochs_completed: u32,
+    /// Honest count of gradient-bearing target positions consumed
+    /// across all `train_step` calls so far. Replaces the inflated
+    /// `steps × batch × seq_len` formula that the job actor's
+    /// `trained_tokens` metric used previously (Reviewer 1's BLOCK
+    /// M1). In the standin path this is `steps × batch × 1` (one
+    /// target per sample); in the real-model-loading path it
+    /// becomes `sum of attention_mask` across all batches. Either
+    /// way the count reflects what actually flowed through the
+    /// gradient, not a schedule-derived guess. The actor reads this
+    /// straight into [`super::types::JobMetrics::trained_tokens`].
+    pub gradient_tokens_consumed: u64,
     /// Loss on the most recent training step.
     pub last_train_loss: Option<f32>,
     /// Average loss across the most recent epoch.
@@ -317,28 +328,52 @@ impl LoRATrainer {
     }
 
     /// One forward + cross-entropy + backward + optimizer step.
-    /// Returns the loss value for this step (also stored in
-    /// `metrics.last_train_loss`).
+    /// Returns `(loss, tokens_used)` — the loss value and the count
+    /// of gradient-bearing target positions THIS STEP actually
+    /// trained against. Per Reviewer 1's BLOCK M1: the previous
+    /// version returned only loss, and the actor's `trained_tokens`
+    /// metric was computed as `steps × batch × seq_len` after the
+    /// fact — inflated by `seq_len`× in the stand-in path because
+    /// the stand-in trains on ONE target per sample. The honest
+    /// count flows out of THIS function and accumulates into
+    /// [`TrainingMetrics::gradient_tokens_consumed`].
     ///
     /// ## Stand-in vs production
     ///
     /// This is the substrate-side stand-in path that exercises the
     /// gradient flow through `LoRAModule`'s A + B Vars end-to-end.
-    /// Production wiring (#233) replaces:
-    ///   - the U32→F32 cast with an embedding-table lookup
-    ///   - the single-class-per-sample target with the full
-    ///     [batch * seq] flattened token-prediction targets
-    ///   - the standin's [batch, out_features] logits with a
-    ///     transformer's [batch, seq, vocab] logits flattened to
-    ///     [batch * seq, vocab]
+    /// Production wiring (replaces the synthetic base when real
+    /// model loading lands):
+    ///   - the U32→F32 cast becomes an embedding-table lookup
+    ///   - the single-class-per-sample target becomes the full
+    ///     [batch * seq] flattened token-prediction targets, masked
+    ///     by `attention_mask`
+    ///   - `tokens_used` becomes `attention_mask.sum()` — the count
+    ///     of non-pad positions that received gradient signal
     /// The optimizer + cross-entropy + backward shape stays
     /// identical across both — the swap is local to forward + target
     /// shaping.
-    pub fn train_step(&mut self, batch: &TokenizedBatch) -> Result<f32, TrainingError> {
+    ///
+    /// ## Pad-as-target note (Reviewer 1's LGTM M3)
+    ///
+    /// The stand-in pulls `target_ids.narrow(1, 0, 1)` — the FIRST
+    /// target id per sample. For samples whose first target IS the
+    /// pad id (very short examples that fit entirely in the pad
+    /// region of the seq dim), gradient flows for "predict pad."
+    /// The honest mitigation in the stand-in: `tokens_used` is
+    /// computed from `attention_mask.first_column.sum()` — the
+    /// count of samples whose first target is NON-pad. The metric
+    /// thus reports gradient-bearing tokens accurately; cross_entropy
+    /// still computes loss over all samples (including pad targets)
+    /// but the count surfaces the corruption to operators. The full
+    /// fix — masking pad targets out of cross_entropy via per-sample
+    /// loss scaling — lands in the real-model-loading slice
+    /// alongside the embedding-table swap.
+    pub fn train_step(&mut self, batch: &TokenizedBatch) -> Result<(f32, u64), TrainingError> {
         // Stand-in forward: cast token ids to F32 and run through
-        // the LoRA-wrapped linear. The actual transformer (#233)
-        // embeds ids first; this stand-in exercises the gradient
-        // path through A + B without needing the embedding table.
+        // the LoRA-wrapped linear. The actual transformer embeds
+        // ids first; this stand-in exercises the gradient path
+        // through A + B without needing the embedding table.
         let inputs_f32 = batch.input_ids.to_dtype(DType::F32)?;
         let logits = self.module.forward(&inputs_f32)?;
 
@@ -360,22 +395,47 @@ impl LoRATrainer {
         };
         let targets_u32 = targets_per_sample.to_dtype(DType::U32)?;
 
+        // Honest tokens_used: count of samples whose first target
+        // is non-pad. The attention_mask is 1 for real tokens, 0
+        // for pad. We narrow to the first column (matching the
+        // first-target-per-sample selection) and sum.
+        let tokens_used: u64 = if batch.attention_mask.dims().len() >= 2
+            && batch.attention_mask.dims()[1] >= 1
+        {
+            let first_col = batch
+                .attention_mask
+                .narrow(1, 0, 1)?
+                .squeeze(1)?
+                .contiguous()?;
+            first_col.sum_all()?.to_scalar::<f32>()? as u64
+        } else {
+            // No attention_mask shape we can reason about — fall
+            // back to batch dim. Real path always has the [batch,
+            // seq] shape via DataLoader.
+            batch.input_ids.dim(0)? as u64
+        };
+
         let loss = cross_entropy(&logits, &targets_u32)?;
         self.optimizer.backward_step(&loss)?;
 
         let loss_scalar = loss.to_scalar::<f32>()?;
         self.metrics.steps_completed += 1;
+        self.metrics.gradient_tokens_consumed += tokens_used;
         self.metrics.last_train_loss = Some(loss_scalar);
-        Ok(loss_scalar)
+        Ok((loss_scalar, tokens_used))
     }
 
     /// One epoch — iterate every batch the loader produces, sum
     /// losses, update metrics.
     pub fn train_epoch(&mut self, loader: &DataLoader) -> Result<f32, TrainingError> {
+        // Per-batch train_step now returns (loss, tokens_used);
+        // tokens_used accumulates inside train_step into
+        // metrics.gradient_tokens_consumed, so we only need loss
+        // here for the averaging.
         let mut sum_loss = 0.0_f32;
         let mut count = 0_u32;
         for batch in loader.batches() {
-            let loss = self.train_step(batch)?;
+            let (loss, _tokens_used) = self.train_step(batch)?;
             sum_loss += loss;
             count += 1;
         }
@@ -721,11 +781,11 @@ mod tests {
                 attention_mask: mask,
             };
 
-            let loss_0 = trainer.train_step(&batch).unwrap();
+            let (loss_0, _) = trainer.train_step(&batch).unwrap();
             for _ in 0..40 {
                 trainer.train_step(&batch).unwrap();
             }
-            let loss_final = trainer.train_step(&batch).unwrap();
+            let (loss_final, _) = trainer.train_step(&batch).unwrap();
 
             // Convergence threshold: loss must drop to at most half
             // its initial value. Single-example overfitting on a
@@ -746,6 +806,95 @@ mod tests {
             assert!(
                 loss_final < loss_0,
                 "VDD: monotonicity — final loss {loss_final} must beat initial {loss_0}"
+            );
+        }
+
+        // what this VDD catches: `gradient_tokens_consumed` counts
+        // batch_size per step when ALL first-targets are non-pad
+        // (the all-ones-mask common case). This is the honest
+        // standin count. A regression flipping the mask polarity
+        // or returning batch_size × seq_len from train_step would
+        // here fail by a multiplicative factor.
+        //
+        // Per Reviewer 1's BLOCK M1: the load-bearing assertion is
+        // "the count must equal what actually trained, not a
+        // schedule-derived guess." With batch_size=2, all-ones
+        // mask, 5 train_step calls → gradient_tokens_consumed = 10.
+        #[test]
+        fn gradient_tokens_consumed_counts_non_pad_first_targets() {
+            let device = Device::Cpu;
+            let base = Tensor::full(0.1f32, (4, 4), &device).unwrap();
+            let module = LoRAModule::new(base, 2, 4, DType::F32, &device).unwrap();
+            let mut trainer = LoRATrainer::new(module, 0.001).unwrap();
+
+            // batch_size=2, seq_len=4, all-ones mask → both
+            // samples' first targets are non-pad → tokens_used=2
+            // per step.
+            let input_ids =
+                Tensor::from_slice(&[1u32, 2, 3, 0, 1, 2, 3, 0], (2, 4), &device).unwrap();
+            let target_ids =
+                Tensor::from_slice(&[2u32, 3, 0, 0, 2, 3, 0, 0], (2, 4), &device).unwrap();
+            let mask = Tensor::full(1.0f32, (2, 4), &device).unwrap();
+            let batch = TokenizedBatch {
+                input_ids,
+                target_ids,
+                attention_mask: mask,
+            };
+
+            for _ in 0..5 {
+                let (_, tokens_used) = trainer.train_step(&batch).unwrap();
+                assert_eq!(
+                    tokens_used, 2,
+                    "VDD: each step trains batch_size=2 non-pad targets"
+                );
+            }
+            assert_eq!(
+                trainer.metrics().gradient_tokens_consumed,
+                10,
+                "VDD: accumulated honestly across 5 steps × batch=2"
+            );
+            // CRUCIALLY: NOT batch × seq × steps = 2 × 4 × 5 = 40.
+            // The pre-fix formula was that inflation.
+            assert_ne!(
+                trainer.metrics().gradient_tokens_consumed,
+                40,
+                "VDD: the count must NOT be the inflated schedule-derived guess (2×4×5=40)"
+            );
+        }
+
+        // what this VDD catches: when first-target IS pad,
+        // tokens_used drops accordingly. Per Reviewer 1's LGTM M3
+        // — the standin can't filter out pad targets from
+        // cross_entropy itself, but it MUST not lie about token
+        // count. A sample whose first target is pad (id 0,
+        // matched via attention_mask.first_col == 0) contributes
+        // 0 to tokens_used.
+        #[test]
+        fn pad_first_target_contributes_zero_to_tokens_used() {
+            let device = Device::Cpu;
+            let base = Tensor::full(0.1f32, (4, 4), &device).unwrap();
+            let module = LoRAModule::new(base, 2, 4, DType::F32, &device).unwrap();
+            let mut trainer = LoRATrainer::new(module, 0.001).unwrap();
+
+            // batch_size=2; sample 0 has mask[0]=1 (real first
+            // target), sample 1 has mask[0]=0 (pad first target).
+            // → tokens_used = 1 per step.
+            let input_ids =
+                Tensor::from_slice(&[1u32, 2, 3, 0, 0, 0, 0, 0], (2, 4), &device).unwrap();
+            let target_ids =
+                Tensor::from_slice(&[2u32, 3, 0, 0, 0, 0, 0, 0], (2, 4), &device).unwrap();
+            let mask =
+                Tensor::from_slice(&[1f32, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], (2, 4), &device)
+                    .unwrap();
+            let batch = TokenizedBatch {
+                input_ids,
+                target_ids,
+                attention_mask: mask,
+            };
+            let (_, tokens_used) = trainer.train_step(&batch).unwrap();
+            assert_eq!(
+                tokens_used, 1,
+                "VDD: only the non-pad-first-target sample counts; pad sample contributes 0"
             );
         }
 
@@ -774,11 +923,11 @@ mod tests {
                 attention_mask: mask_all_ones,
             };
 
-            let loss_masked = trainer.train_step(&batch_masked).unwrap();
+            let (loss_masked, _) = trainer.train_step(&batch_masked).unwrap();
             // The standin doesn't apply mask, so this is a tautology
-            // *today*. The assertion is a pin for #233's real
-            // wiring: when mask multiplication lands, this test
-            // becomes load-bearing.
+            // *today*. The assertion is a pin for the real wiring:
+            // when mask multiplication lands, this test becomes
+            // load-bearing.
             assert!(
                 loss_masked.is_finite() && loss_masked > 0.0,
                 "VDD: loss must be finite and positive on a meaningful target; got {loss_masked}"

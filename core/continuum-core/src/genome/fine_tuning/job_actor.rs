@@ -345,8 +345,18 @@ fn run_actor(
 
     let metrics = trainer.metrics();
     let wall_clock_ms = started.elapsed().as_millis() as u64;
-    let trained_tokens: u64 =
-        (metrics.steps_completed as u64) * (schedule.batch_size as u64) * (schedule.sequence_length as u64);
+    // Honest count of gradient-bearing tokens consumed. Per
+    // Reviewer 1's BLOCK M1: the previous `steps × batch × seq_len`
+    // formula inflated this by ~seq_len× in the stand-in path
+    // because the stand-in trains on one target per sample, not
+    // seq_len. The actor now reads the count accumulated inside
+    // `LoRATrainer::train_step` (which counts non-pad first-targets
+    // in the standin; will become attention_mask.sum() in
+    // production wiring). The metric thus reflects what actually
+    // flowed through gradient, not a schedule-derived guess. This
+    // feeds the alloy provenance unmodified — honest provenance
+    // per [[forge-alloy-secures-commodity-zero-trust-plus-reputation]].
+    let trained_tokens: u64 = metrics.gradient_tokens_consumed;
 
     let artifact = TrainingArtifact {
         model_id: format!(

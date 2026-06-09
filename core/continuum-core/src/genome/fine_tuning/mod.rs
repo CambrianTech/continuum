@@ -91,6 +91,8 @@ pub mod local_candle_adapter;
 pub mod lora_module;
 pub mod openai_adapter;
 pub mod registry;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod recording_adapter;
 pub mod safetensors_io;
 pub mod training_loop;
 pub mod types;
@@ -103,6 +105,10 @@ pub use local_candle_adapter::{LocalCandleFineTuner, SYNTHETIC_BASE_PREFIX};
 pub use lora_module::{LoRAError, LoRAModule};
 pub use openai_adapter::OpenAIFineTuningAdapter;
 pub use registry::FineTuningRegistry;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use recording_adapter::{
+    RecordingFineTuningAdapter, RECORDING_BASE_PREFIX, RECORDING_PROVIDER_ID,
+};
 pub use safetensors_io::{write_lora_safetensors, SafetensorsIoError, LORA_A_KEY, LORA_B_KEY};
 pub use training_loop::{
     DataLoader, LoRATrainer, TokenizedBatch, TokenizedExample, Tokenizer, TrainingError,
