@@ -245,6 +245,42 @@ pub fn models() -> Vec<Model> {
             ..ModelSpec::default()
         }),
         model(ModelSpec {
+            id: "mistral-large-latest",
+            name: "Mistral Large",
+            provider: "mistral",
+            arch: Arch::Mistral,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.002,
+            cost_output_per_1k: 0.006,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "codestral-latest",
+            name: "Codestral",
+            provider: "mistral",
+            arch: Arch::Mistral,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 60.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.001,
+            cost_output_per_1k: 0.003,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
             id: "docker.io/ai/qwen2.5:7B-Q4_K_M",
             name: "Qwen2.5 7B Q4_K_M (DMR)",
             provider: "docker-model-runner",
@@ -466,6 +502,16 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["gemini"],
+        }),
+        provider(ProviderSpec {
+            id: "mistral",
+            name: "Mistral AI",
+            base_url: "https://api.mistral.ai",
+            api_key_env: Some("MISTRAL_API_KEY"),
+            default_model: Some("mistral-large-latest"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["mistral", "mixtral", "codestral", "open-mistral", "open-mixtral"],
         }),
         provider(ProviderSpec {
             id: "docker-model-runner",
