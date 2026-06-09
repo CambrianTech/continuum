@@ -117,11 +117,17 @@ struct SubmitParams {
 }
 
 /// `genome/training-trigger/flush` input.
+///
+/// `base_model` is required so the flush targets a specific bucket
+/// (per the BucketKey-includes-base_model fix). A persona may have
+/// multiple (trait_kind, base_model) buckets pending; flush picks
+/// exactly one.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FlushParams {
     persona_id: Uuid,
     trait_kind: String,
+    base_model: String,
 }
 
 /// `genome/training-trigger/status` — no params; returns all
@@ -139,16 +145,25 @@ struct PendingBucketView {
 
 // ─── Bucket key + state ──────────────────────────────────────────────
 
+/// One bucket per `(persona_id, trait_kind, base_model)` triple.
+///
+/// Per Reviewer 2's BLOCK A4: keying on `(persona_id, trait_kind)`
+/// only and rejecting the second submit with a different `base_model`
+/// is the silent-data-loss class the trigger took pains to prevent
+/// everywhere else. A persona legitimately trains the same trait
+/// against multiple bases (local + cloud) for routing flexibility;
+/// each base gets its own bucket and its own dispatched job. The key
+/// IS the coherence guarantee — no runtime check needed.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 struct BucketKey {
     persona_id: Uuid,
     trait_kind: String,
+    base_model: String,
 }
 
 #[derive(Debug, Clone)]
 struct PendingBatch {
     persona_name: String,
-    base_model: String,
     source: TrainingSource,
     examples: Vec<TrainingExample>,
     lora: Option<LoRAHyperparams>,
@@ -161,8 +176,25 @@ struct PendingBatch {
 
 // ─── Module ──────────────────────────────────────────────────────────
 
+/// Per-key serialization mutex.
+///
+/// Per Reviewer 3's BLOCK C1 + C2: a `handle_submit` that drains
+/// the bucket, drops the entry guard, awaits `genome/job-create`,
+/// then unconditionally removes (success) or restores (failure) is
+/// racy against a concurrent `handle_submit` to the same key. Two
+/// readers can interleave at the `.await` boundary and lose
+/// curated data either way. The DashMap-of-Mutex pattern serializes
+/// per-key while keeping different keys concurrent — the standard
+/// substrate primitive for this exact shape.
+type SubmitGate = Arc<tokio::sync::Mutex<()>>;
+
 pub struct TrainingTriggerModule {
     buckets: Arc<DashMap<BucketKey, PendingBatch>>,
+    /// Per-bucket-key submit serialization. Lives in its own
+    /// DashMap because the lifetime of a bucket and the lifetime of
+    /// its submit-gate are different — the gate sticks around if
+    /// it has waiters, the bucket comes and goes per dispatch.
+    submit_gates: Arc<DashMap<BucketKey, SubmitGate>>,
     executor: std::sync::OnceLock<Arc<CommandExecutor>>,
 }
 
@@ -170,6 +202,7 @@ impl TrainingTriggerModule {
     pub fn new() -> Self {
         Self {
             buckets: Arc::new(DashMap::new()),
+            submit_gates: Arc::new(DashMap::new()),
             executor: std::sync::OnceLock::new(),
         }
     }
@@ -185,12 +218,35 @@ impl TrainingTriggerModule {
     /// Test-only: peek the example count for a specific bucket. None
     /// if the bucket doesn't exist (cleared or never created).
     #[cfg(test)]
-    pub(super) fn bucket_example_count(&self, persona_id: Uuid, trait_kind: &str) -> Option<usize> {
+    pub(super) fn bucket_example_count(
+        &self,
+        persona_id: Uuid,
+        trait_kind: &str,
+        base_model: &str,
+    ) -> Option<usize> {
         let key = BucketKey {
             persona_id,
             trait_kind: trait_kind.to_string(),
+            base_model: base_model.to_string(),
         };
         self.buckets.get(&key).map(|b| b.examples.len())
+    }
+
+    /// Acquire (or create) the per-key submit gate. Holding the
+    /// returned mutex guard serializes concurrent submits to the
+    /// same `(persona_id, trait_kind, base_model)` bucket.
+    fn acquire_gate(&self, key: &BucketKey) -> SubmitGate {
+        if let Some(g) = self.submit_gates.get(key) {
+            return g.clone();
+        }
+        // Race-safe: entry().or_insert_with on DashMap returns the
+        // existing gate if a concurrent caller already inserted one.
+        let gate = self
+            .submit_gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        gate
     }
 }
 
@@ -265,7 +321,17 @@ impl TrainingTriggerModule {
         let key = BucketKey {
             persona_id: p.persona_id,
             trait_kind: p.trait_kind.clone(),
+            base_model: p.base_model.clone(),
         };
+
+        // Serialize per-key. Concurrent submits to different keys
+        // proceed in parallel; concurrent submits to the same key
+        // queue here. This eliminates the lost-update + restore-
+        // commingle races flagged in Reviewer 3's BLOCK C1 + C2.
+        // Holding the guard across the .await is intentional —
+        // tokio::sync::Mutex is await-safe.
+        let gate = self.acquire_gate(&key);
+        let _submit_lease = gate.lock().await;
 
         // Append phase. Hold the entry mutably for the minimum window:
         // append + read the new len + decide whether to fire. If we
@@ -274,7 +340,6 @@ impl TrainingTriggerModule {
         let snapshot_to_dispatch = {
             let mut entry = self.buckets.entry(key.clone()).or_insert_with(|| PendingBatch {
                 persona_name: p.persona_name.clone(),
-                base_model: p.base_model.clone(),
                 source: p.source,
                 examples: Vec::new(),
                 lora: p.lora.clone(),
@@ -285,20 +350,12 @@ impl TrainingTriggerModule {
                 validation_split,
             });
 
-            // Coherence checks. Once a bucket exists, subsequent
-            // submits must agree on (persona_name, base_model,
-            // source). Conflicting submits would silently mix data
-            // from different training targets — load-bearing wrong.
-            if entry.base_model != p.base_model {
-                return Ok(CommandResult::Json(json!({
-                    "success": false,
-                    "error": format!(
-                        "bucket (persona={}, trait_kind={}) has base_model={:?}; submit gave base_model={:?}",
-                        p.persona_id, p.trait_kind, entry.base_model, p.base_model
-                    ),
-                    "errorKind": "InconsistentBucket",
-                })));
-            }
+            // Source coherence still applies — two submits to the
+            // same (persona, trait, base) with mismatched provenance
+            // (teacher-synth vs raw) shouldn't commingle. base_model
+            // is no longer a coherence check because the key IS the
+            // coherence (per Reviewer 2's BLOCK A4 fix: same persona
+            // + trait against different bases gets DIFFERENT buckets).
             if entry.source != p.source {
                 return Ok(CommandResult::Json(json!({
                     "success": false,
@@ -336,7 +393,6 @@ impl TrainingTriggerModule {
             let drained_examples = std::mem::take(&mut entry.examples);
             PendingBatch {
                 persona_name: entry.persona_name.clone(),
-                base_model: entry.base_model.clone(),
                 source: entry.source,
                 examples: drained_examples,
                 lora: entry.lora.clone(),
@@ -348,12 +404,10 @@ impl TrainingTriggerModule {
             }
         };
 
-        // Dispatch outside the entry guard. If it fails, restore the
-        // drained examples to the bucket so the next submit can
-        // re-trigger — per `[[no-fallbacks-ever]]` we never silently
-        // lose curated data.
+        // Dispatch under the per-key gate — no other submit to this
+        // key can race the success-clear or failure-restore paths.
         let dispatch_result = self
-            .dispatch_job_create(p.persona_id, &p.trait_kind, &snapshot_to_dispatch)
+            .dispatch_job_create(p.persona_id, &key.trait_kind, &key.base_model, &snapshot_to_dispatch)
             .await;
 
         match dispatch_result {
@@ -392,7 +446,16 @@ impl TrainingTriggerModule {
         let key = BucketKey {
             persona_id: p.persona_id,
             trait_kind: p.trait_kind.clone(),
+            base_model: p.base_model.clone(),
         };
+
+        // Same per-key gate as submit. Flush and submit BOTH mutate
+        // the bucket — without serialization, a flush could race a
+        // submit's drain or restore. The gate ensures whichever
+        // arrives first runs to completion before the other touches
+        // the key.
+        let gate = self.acquire_gate(&key);
+        let _flush_lease = gate.lock().await;
 
         // Take the bucket out atomically. If it doesn't exist or is
         // empty, return a clean "nothing to flush" outcome — flush
@@ -414,7 +477,7 @@ impl TrainingTriggerModule {
         };
 
         match self
-            .dispatch_job_create(p.persona_id, &p.trait_kind, &snapshot)
+            .dispatch_job_create(p.persona_id, &key.trait_kind, &key.base_model, &snapshot)
             .await
         {
             Ok((job_handle_value, selected_provider)) => Ok(CommandResult::Json(json!({
@@ -426,7 +489,10 @@ impl TrainingTriggerModule {
             }))),
             Err(err) => {
                 // Restore on failure — flush must not lose data
-                // either.
+                // either. Under the gate, no concurrent submit /
+                // flush can have populated the key between our
+                // remove() and this insert(), so the reinsert is
+                // safe and the snapshot is the complete state.
                 self.buckets.insert(key, snapshot);
                 Ok(CommandResult::Json(json!({
                     "success": false,
@@ -444,16 +510,18 @@ impl TrainingTriggerModule {
                 persona_id: entry.key().persona_id,
                 persona_name: entry.value().persona_name.clone(),
                 trait_kind: entry.key().trait_kind.clone(),
-                base_model: entry.value().base_model.clone(),
+                base_model: entry.key().base_model.clone(),
                 examples_pending: entry.value().examples.len() as u32,
                 min_examples: entry.value().min_examples,
             });
         }
-        // Deterministic order — sort by (persona_id, trait_kind) so
-        // operator-tooling tests don't flake on DashMap iteration
-        // order.
+        // Deterministic order — sort by (persona_id, trait_kind,
+        // base_model) so operator-tooling tests don't flake on
+        // DashMap iteration order, and so the new (persona, trait,
+        // base) triple is fully reflected in the surface contract.
         buckets.sort_by(|a, b| {
-            (a.persona_id, &a.trait_kind).cmp(&(b.persona_id, &b.trait_kind))
+            (a.persona_id, &a.trait_kind, &a.base_model)
+                .cmp(&(b.persona_id, &b.trait_kind, &b.base_model))
         });
 
         Ok(CommandResult::Json(json!({
@@ -470,6 +538,7 @@ impl TrainingTriggerModule {
         &self,
         persona_id: Uuid,
         trait_kind: &str,
+        base_model: &str,
         batch: &PendingBatch,
     ) -> Result<(Value, String), String> {
         let executor = self
@@ -480,7 +549,7 @@ impl TrainingTriggerModule {
         let request = TrainingJobRequest {
             persona_id,
             persona_name: batch.persona_name.clone(),
-            base_model: batch.base_model.clone(),
+            base_model: base_model.to_string(),
             trait_kind: trait_kind.to_string(),
             dataset: TrainingDataset {
                 examples: batch.examples.clone(),
@@ -611,7 +680,7 @@ mod tests {
         assert_eq!(json["outcome"], "BatchAppended");
         assert_eq!(json["currentCount"], 1);
         assert_eq!(json["threshold"], 5);
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(1));
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), Some(1));
     }
 
     // what this catches: hitting threshold dispatches and clears the
@@ -635,7 +704,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(4));
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), Some(4));
 
         // Second submit: 1 more example → 5 → fires.
         let result = trigger
@@ -656,38 +725,92 @@ mod tests {
         assert!(json["jobHandle"]["localId"].is_string());
 
         // Bucket must be cleared.
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), None);
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), None);
         assert_eq!(trigger.pending_bucket_count(), 0);
     }
 
-    // what this catches: inconsistent base_model across submits to
-    // same bucket is rejected with an InconsistentBucket error.
-    // Without this guard, two consumers mixing data for different
-    // target models into one bucket would silently train against
-    // the WRONG base model — the worst kind of "looks correct,
-    // wrong answer" bug.
+    // what this catches: same persona + same trait_kind submitted
+    // with DIFFERENT base_model values gets DIFFERENT buckets. Per
+    // Reviewer 2's BLOCK A4: a persona legitimately trains the same
+    // trait (e.g. "kc-tech-history") against multiple bases (local
+    // synthetic + cloud gpt-4o-mini) for routing flexibility. The
+    // pre-fix behavior rejected the second submit with
+    // InconsistentBucket and silently dropped its data. The fix
+    // promotes base_model into the bucket key so the two submits
+    // accumulate independently.
     #[tokio::test]
-    async fn inconsistent_base_model_in_same_bucket_is_rejected() {
+    async fn different_base_models_create_separate_buckets() {
         let (trigger, _executor) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
 
-        // First submit fixes base_model = "synthetic".
+        // First submit: base_model = "synthetic".
         let _ = trigger
             .handle_command(
                 "genome/training-trigger/submit",
-                submit_params(persona, "test-trait", vec![ex("a", "b")], Some(5)),
+                submit_params(persona, "test-trait", vec![ex("a", "b")], Some(100)),
             )
             .await
             .unwrap();
 
-        // Second submit tries a different base_model.
-        let mut conflicting = submit_params(persona, "test-trait", vec![ex("c", "d")], Some(5));
-        conflicting.as_object_mut().unwrap().insert(
+        // Second submit: SAME persona, SAME trait, DIFFERENT base.
+        let mut other_base =
+            submit_params(persona, "test-trait", vec![ex("c", "d")], Some(100));
+        other_base.as_object_mut().unwrap().insert(
             "baseModel".into(),
-            Value::String("DIFFERENT-BASE".into()),
+            Value::String("synthetic-tiny".into()),
         );
         let result = trigger
-            .handle_command("genome/training-trigger/submit", conflicting)
+            .handle_command("genome/training-trigger/submit", other_base)
+            .await
+            .unwrap();
+        let json = match result {
+            CommandResult::Json(v) => v,
+            other => panic!("expected Json, got {other:?}"),
+        };
+        // No more InconsistentBucket — the second submit succeeds
+        // because it lives in its own bucket.
+        assert_eq!(json["success"], true, "second-base submit must succeed: {json}");
+        assert_eq!(json["outcome"], "BatchAppended");
+
+        // Two distinct buckets pending, one example each.
+        assert_eq!(
+            trigger.bucket_example_count(persona, "test-trait", "synthetic"),
+            Some(1)
+        );
+        assert_eq!(
+            trigger.bucket_example_count(persona, "test-trait", "synthetic-tiny"),
+            Some(1)
+        );
+        assert_eq!(trigger.pending_bucket_count(), 2);
+    }
+
+    // what this catches: source coherence is still enforced even
+    // after base_model moved out of the coherence check into the
+    // key. A submit with `source: "operator_curated"` to a bucket
+    // that already exists from a `source: "teacher_synthesized"`
+    // submit must be rejected — the alloy provenance contract
+    // distinguishes those origins.
+    #[tokio::test]
+    async fn inconsistent_source_in_same_bucket_is_rejected() {
+        let (trigger, _executor) = build_runtime_with_trigger_and_genome().await;
+        let persona = Uuid::new_v4();
+
+        let _ = trigger
+            .handle_command(
+                "genome/training-trigger/submit",
+                submit_params(persona, "test-trait", vec![ex("a", "b")], Some(100)),
+            )
+            .await
+            .unwrap();
+
+        let mut wrong_source =
+            submit_params(persona, "test-trait", vec![ex("c", "d")], Some(100));
+        wrong_source
+            .as_object_mut()
+            .unwrap()
+            .insert("source".into(), Value::String("teacher_synthesized".into()));
+        let result = trigger
+            .handle_command("genome/training-trigger/submit", wrong_source)
             .await
             .unwrap();
         let json = match result {
@@ -696,8 +819,11 @@ mod tests {
         };
         assert_eq!(json["success"], false);
         assert_eq!(json["errorKind"], "InconsistentBucket");
-        // The bucket's first base_model survives.
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(1));
+        // First-arrival's source survives intact.
+        assert_eq!(
+            trigger.bucket_example_count(persona, "test-trait", "synthetic"),
+            Some(1)
+        );
     }
 
     // what this catches: flush dispatches a bucket below threshold
@@ -727,11 +853,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(5));
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), Some(5));
 
         let flush_params = json!({
             "personaId": persona,
             "traitKind": "test-trait",
+            "baseModel": "synthetic",
         });
         let result = trigger
             .handle_command("genome/training-trigger/flush", flush_params)
@@ -744,7 +871,7 @@ mod tests {
         assert_eq!(json["success"], true, "got: {json}");
         assert_eq!(json["outcome"], "JobDispatched");
         assert_eq!(json["examplesUsed"], 5);
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), None);
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), None);
     }
 
     // what this catches: flush on an empty bucket is a no-op success,
@@ -758,7 +885,7 @@ mod tests {
         let result = trigger
             .handle_command(
                 "genome/training-trigger/flush",
-                json!({"personaId": persona, "traitKind": "nope"}),
+                json!({"personaId": persona, "traitKind": "nope", "baseModel": "synthetic"}),
             )
             .await
             .unwrap();
@@ -796,7 +923,7 @@ mod tests {
         assert_eq!(json["success"], false);
         assert_eq!(json["errorKind"], "DispatchFailed");
         // The two examples must STILL be in the bucket.
-        assert_eq!(trigger.bucket_example_count(persona, "test-trait"), Some(2));
+        assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), Some(2));
     }
 
     // what this catches: different personas have isolated buckets.
@@ -823,9 +950,122 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(trigger.bucket_example_count(a, "shared-trait"), Some(1));
-        assert_eq!(trigger.bucket_example_count(b, "shared-trait"), Some(2));
+        assert_eq!(trigger.bucket_example_count(a, "shared-trait", "synthetic"), Some(1));
+        assert_eq!(trigger.bucket_example_count(b, "shared-trait", "synthetic"), Some(2));
         assert_eq!(trigger.pending_bucket_count(), 2);
+    }
+
+    // what this catches: concurrent submits to the SAME bucket key
+    // serialize through the per-key gate — no lost-update, no
+    // commingle, no drops. Pre-fix (without the gate), the success
+    // path's unconditional `self.buckets.remove(&key)` after the
+    // .await could delete a concurrent submit's accumulated
+    // examples. Per Reviewer 3's BLOCK C1 + C2 — the module's
+    // headline contract ("batch state is NEVER lost") was false
+    // under concurrency. This test exercises a two-submitter race
+    // and asserts every example reaches a dispatched job.
+    //
+    // Pattern: Submitter A pushes enough examples to fire (drains
+    // the bucket, awaits dispatch). Submitter B races a second
+    // submit to the SAME key during A's await window. With the
+    // gate, B serializes BEHIND A: A finishes (success or failure),
+    // then B runs against a clean / restored bucket. Both submits'
+    // examples must end up either dispatched or pending — never
+    // silently dropped.
+    #[tokio::test]
+    async fn concurrent_submits_to_same_key_serialize_without_loss() {
+        let (trigger, _executor) = build_runtime_with_trigger_and_genome().await;
+        let persona = Uuid::new_v4();
+
+        // Both submitters target the SAME (persona, trait, base) key.
+        // Submitter A fires immediately (5 examples, threshold 5).
+        let trigger_a = trigger.clone();
+        let task_a = tokio::spawn(async move {
+            trigger_a
+                .handle_command(
+                    "genome/training-trigger/submit",
+                    submit_params(
+                        persona,
+                        "race-trait",
+                        (0..5)
+                            .map(|i| ex(&format!("a-p-{i}"), &format!("a-c-{i}")))
+                            .collect(),
+                        Some(5),
+                    ),
+                )
+                .await
+        });
+
+        // Submitter B pushes 3 examples below threshold — accumulates.
+        let trigger_b = trigger.clone();
+        let task_b = tokio::spawn(async move {
+            trigger_b
+                .handle_command(
+                    "genome/training-trigger/submit",
+                    submit_params(
+                        persona,
+                        "race-trait",
+                        (0..3)
+                            .map(|i| ex(&format!("b-p-{i}"), &format!("b-c-{i}")))
+                            .collect(),
+                        Some(100), // high threshold so B alone doesn't fire
+                    ),
+                )
+                .await
+        });
+
+        let r_a = task_a.await.unwrap().expect("task A submit");
+        let r_b = task_b.await.unwrap().expect("task B submit");
+
+        let json_a = match r_a {
+            CommandResult::Json(v) => v,
+            other => panic!("expected Json from A, got {other:?}"),
+        };
+        let json_b = match r_b {
+            CommandResult::Json(v) => v,
+            other => panic!("expected Json from B, got {other:?}"),
+        };
+
+        // Both must succeed.
+        assert_eq!(json_a["success"], true, "A submit success: {json_a}");
+        assert_eq!(json_b["success"], true, "B submit success: {json_b}");
+
+        // Whichever fired must have exactly 5 examples used (its own
+        // submission). Whichever batched must show currentCount >= 3
+        // (its own submission, possibly accumulated with leftover).
+        let a_outcome = json_a["outcome"].as_str().unwrap();
+        let b_outcome = json_b["outcome"].as_str().unwrap();
+
+        // Account: total examples submitted across A and B = 5 + 3 = 8.
+        // After the race, the sum of (dispatched + pending) must equal 8.
+        let mut accounted: u64 = 0;
+        for (outcome, json) in [(a_outcome, &json_a), (b_outcome, &json_b)] {
+            match outcome {
+                "JobDispatched" => {
+                    accounted += json["examplesUsed"].as_u64().unwrap();
+                }
+                "BatchAppended" => {
+                    // currentCount is the bucket's NEW total after
+                    // this submit's append — not just THIS submit's
+                    // contribution. The pre-gate race could
+                    // double-count or drop. We'll cross-check via
+                    // pending bucket count below.
+                }
+                other => panic!("unexpected outcome {other}"),
+            }
+        }
+
+        let pending = trigger
+            .bucket_example_count(persona, "race-trait", "synthetic")
+            .unwrap_or(0) as u64;
+        accounted += pending;
+
+        assert_eq!(
+            accounted, 8,
+            "VDD: conservation under concurrency — {} examples submitted, {} accounted; \
+             A={} B={} pending={}",
+            8, accounted, a_outcome, b_outcome, pending
+        );
     }
 
     // what this catches: status command lists all pending buckets in
@@ -933,7 +1173,7 @@ mod tests {
             // Bucket cleared exactly once — zero leftover, no
             // duplicate retained.
             assert_eq!(
-                trigger.bucket_example_count(persona, "vdd-trait"),
+                trigger.bucket_example_count(persona, "vdd-trait", "synthetic"),
                 None,
                 "VDD: bucket must be fully drained, no leftover"
             );
