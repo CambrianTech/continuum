@@ -306,10 +306,13 @@ impl TrainingTriggerModule {
         // proceed in parallel; concurrent submits to the same key
         // queue here. This eliminates the lost-update + restore-
         // commingle races flagged in Reviewer 3's BLOCK C1 + C2.
-        // Holding the guard across the .await is intentional —
-        // tokio::sync::Mutex is await-safe.
-        let gate = self.submit_gates.acquire(&key);
-        let _submit_lease = gate.lock().await;
+        // Holding the lease across the .await is intentional —
+        // PerKeyGate uses tokio::sync::Mutex internally. The lease
+        // is RAII: on Drop it releases the lock AND attempts
+        // structural eviction of the gate (no separate try_evict
+        // call needed — v1's try_evict footgun was that a stale
+        // local Arc binding made eviction silently no-op).
+        let _submit_lease = self.submit_gates.acquire(&key).await;
 
         // Append phase. Hold the entry mutably for the minimum window:
         // append + read the new len + decide whether to fire. If we
@@ -452,13 +455,10 @@ impl TrainingTriggerModule {
         match dispatch_result {
             Ok((job_handle_value, selected_provider)) => {
                 // Remove the now-empty bucket so status() doesn't
-                // report a phantom zero-count entry.
+                // report a phantom zero-count entry. The lease drops
+                // at scope end → lock released, gate structurally
+                // evicted if no other caller holds it.
                 self.buckets.remove(&key);
-                // Release the lease BEFORE attempting gate cleanup —
-                // cleanup checks `Arc::strong_count == 1` which only
-                // holds when this caller's gate ref has dropped.
-                drop(_submit_lease);
-                self.submit_gates.try_evict(&key);
                 Ok(CommandResult::Json(json!({
                     "success": true,
                     "outcome": "JobDispatched",
@@ -497,9 +497,9 @@ impl TrainingTriggerModule {
         // the bucket — without serialization, a flush could race a
         // submit's drain or restore. The gate ensures whichever
         // arrives first runs to completion before the other touches
-        // the key.
-        let gate = self.submit_gates.acquire(&key);
-        let _flush_lease = gate.lock().await;
+        // the key. RAII lease: on Drop at scope end the lock
+        // releases AND structural eviction runs.
+        let _flush_lease = self.submit_gates.acquire(&key).await;
 
         // Take the bucket out atomically. If it doesn't exist or is
         // empty, return a clean "nothing to flush" outcome — flush
@@ -525,11 +525,8 @@ impl TrainingTriggerModule {
             .await
         {
             Ok((job_handle_value, selected_provider)) => {
-                // Same gate cleanup as submit's success path —
-                // release lease, then try to prune the gate if no
-                // other caller holds a ref.
-                drop(_flush_lease);
-                self.submit_gates.try_evict(&key);
+                // Lease drops at scope end → lock released, gate
+                // structurally evicted if no other caller holds it.
                 Ok(CommandResult::Json(json!({
                     "success": true,
                     "outcome": "JobDispatched",
@@ -778,6 +775,24 @@ mod tests {
         // Bucket must be cleared.
         assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), None);
         assert_eq!(trigger.pending_bucket_count(), 0);
+
+        // Regression for PR #1582 reviewer-2 BLOCK: the per-key gate
+        // map MUST also be empty after a successful dispatch. v1 of
+        // PerKeyGate had a paired try_evict() the caller had to
+        // remember to call AFTER dropping their local Arc binding;
+        // it silently no-op'd in production because the caller's
+        // gate binding was still in scope. v2 uses an RAII Lease
+        // that evicts structurally on drop. This assertion pins the
+        // structural invariant in a production-shaped test (full
+        // submit → dispatch → success path), not just in the
+        // primitive's own unit tests.
+        assert_eq!(
+            trigger.submit_gates.len(),
+            0,
+            "submit_gates MUST be empty after successful dispatch — \
+             a non-zero count indicates the structural-eviction-on-drop \
+             invariant is broken"
+        );
     }
 
     // what this catches: same persona + same trait_kind submitted
@@ -1033,6 +1048,18 @@ mod tests {
         assert_eq!(json["outcome"], "JobDispatched");
         assert_eq!(json["examplesUsed"], 5);
         assert_eq!(trigger.bucket_example_count(persona, "test-trait", "synthetic"), None);
+
+        // Regression for PR #1582 reviewer-2 BLOCK: same structural-
+        // eviction pin as in submit_at_threshold_dispatches_and_clears
+        // — flush is the other lease site, so it gets its own
+        // production-shaped regression test.
+        assert_eq!(
+            trigger.submit_gates.len(),
+            0,
+            "submit_gates MUST be empty after successful flush — \
+             a non-zero count indicates the structural-eviction-on-drop \
+             invariant is broken"
+        );
     }
 
     // what this catches: flush on an empty bucket is a no-op success,
