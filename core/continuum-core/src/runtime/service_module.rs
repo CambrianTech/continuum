@@ -402,9 +402,11 @@ pub trait ServiceModule: Send + Sync + Any {
     /// Install the substrate-wide `CommandExecutor` into this module.
     ///
     /// Modules that need to dispatch commands (channel sends a chat message;
-    /// PIM bootstraps a persona; sentinel runs nested steps) store an
-    /// `OnceLock<Arc<CommandExecutor>>` and override this method to populate
-    /// it. Default: no-op (most modules don't dispatch commands).
+    /// PIM bootstraps a persona; sentinel runs nested steps) store a
+    /// `runtime::LateBound<CommandExecutor>` and override this method to
+    /// populate it via `self.executor.install(executor)`. Default: no-op
+    /// (most modules don't dispatch commands). See `runtime::late_bound`
+    /// for the canonical injection slot.
     ///
     /// Called by `start_server` AFTER the executor is built and BEFORE any
     /// dispatch can reach this module — `Runtime::install_executor_on_all`

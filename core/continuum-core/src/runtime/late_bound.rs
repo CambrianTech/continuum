@@ -120,6 +120,21 @@ impl<T> LateBound<T> {
     }
 }
 
+/// Compile-time pin: `LateBound<T>` is `Send + Sync` whenever the
+/// underlying `OnceLock<Arc<T>>` is. Substrate modules are shared
+/// across the dispatch tasks, so a regression that broke this would
+/// surface as cryptic trait-bound errors at every call site. Pinning
+/// it here makes the contract explicit and defends against future
+/// refactors (e.g. swapping the OnceLock for a non-Sync cell).
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<LateBound<()>>();
+    // Send-but-not-Sync inner T is OK because we only ever expose
+    // `&Arc<T>` to callers — Arc<T>: Sync requires T: Send + Sync
+    // already, so this is conservative.
+    assert_send_sync::<LateBound<crate::runtime::CommandExecutor>>();
+};
+
 impl<T> std::fmt::Debug for LateBound<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LateBound")
