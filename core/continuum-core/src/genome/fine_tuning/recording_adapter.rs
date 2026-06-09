@@ -85,6 +85,18 @@ impl RecordingFineTuningAdapter {
 
     /// Shared handle to the captures vector. Use this on the test
     /// body to read what was dispatched.
+    ///
+    /// ## Concurrency note
+    ///
+    /// `create_job` pushes via `Arc<StdMutex<Vec<_>>>::lock().push()`.
+    /// Under concurrent dispatches the push order reflects mutex-
+    /// acquisition order, NOT caller spawn order. Serial tests can
+    /// rely on order; concurrent tests should use set-membership
+    /// assertions (HashSet of prompts) or have the caller embed a
+    /// sequence number in the submitted request. The
+    /// `concurrent_submits_to_same_key_serialize_without_loss_stress`
+    /// test in training_trigger.rs::stress demonstrates the
+    /// set-membership pattern.
     pub fn captures(&self) -> Arc<StdMutex<Vec<TrainingJobRequest>>> {
         self.captures.clone()
     }
