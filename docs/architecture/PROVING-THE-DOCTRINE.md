@@ -141,7 +141,7 @@ needed)  `🔴` not yet proven, work item
 
 | Doctrine clause | Shape 1 (unit) | Shape 2 (property) | Shape 3 (bench) | Shape 4 (adversarial) | Shape 5 (build) | Status |
 |---|---|---|---|---|---|---|
-| No silent TS fallthrough | `command_executor::tests::unknown_command_returns_typed_no_fallback_error_not_ts_attempt` | — | — | — | (could add: forbidden import of TS socket from non-bridge modules) | ✅ |
+| No silent TS fallthrough | `command_executor::tests::unknown_command_returns_typed_no_fallback_error_not_ts_attempt` + `tests/architecture_no_fallbacks.rs` (3 fns: single-command, structural-across-shapes, positive-path-preserved) | — | — | — | (could add: forbidden import of TS socket from non-bridge modules) | ✅ |
 | Engine-OS layering (cognition doesn't depend on runtime internals) | — | — | — | — | TODO: custom check or compile_fail test | 🔴 |
 | Localized state per citizen (no singleton substrate state) | per-module field type check | — | — | — | TODO: grep-style check banning `OnceLock<Arc<*>>` outside `runtime::late_bound` | 🟡 |
 | `PerKeyGate` structural eviction (no leak) | `training_trigger::tests::submit_at_threshold_dispatches_and_clears` (asserts `submit_gates.len() == 0`) | `per_key_gate::tests::stress::concurrent_acquire_drop_cycles_actually_serialize_critical_sections` | — | — | — | ✅ |
