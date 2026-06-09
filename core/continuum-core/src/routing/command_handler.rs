@@ -660,9 +660,10 @@ mod tests {
         };
 
         // The path doesn't resolve to a module, so execute_with_caller
-        // returns an error from the TS-bridge fallthrough. We don't
-        // care about that — the gate ran FIRST, recorded the caller,
-        // and that's the property under test.
+        // returns a typed CommandNotFound error per [[no-fallbacks-ever]]
+        // (task #219 removed the silent TS fallthrough). We don't care
+        // about that error here — the gate ran FIRST, recorded the
+        // caller, and that's the property under test.
         let _ = CommandRequestHandler::process_request_via(&executor, &parsed).await;
 
         let observed = captured.lock().unwrap().clone();

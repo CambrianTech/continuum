@@ -57,14 +57,23 @@ const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
 ///    `command_prefixes` include this command. If found, the module's
 ///    `handle_command` runs locally.
 ///
-/// 3. **TypeScript via Unix socket**. If no Rust module owns the
-///    command, fall through to the existing `CommandRouterServer` IPC
-///    bridge. This preserves backwards compatibility with every
-///    TS-implemented command in `src/commands/`.
+/// 3. **No silent TS fallthrough.** If no Rust module owns the command,
+///    `execute_inner` returns a typed `Err` naming the missing command.
+///    Per `[[no-fallbacks-ever]]` + `[[rust-is-the-core-node-is-the-shell]]`:
+///    a substrate that silently routes unmigrated commands to a TS
+///    bridge appears "broken in headless mode" the day someone forgets
+///    to bring up `CommandRouterServer`, when the real bug was the
+///    silent dependency. Callers that EXPLICITLY want the TS bridge
+///    use [`Self::execute_ts`] / [`Self::execute_ts_json`] — those
+///    public methods stay live for the handful of remaining TS-only
+///    call sites (sentinel steps, grid retry, ai_provider TS
+///    fallthrough for unmigrated cloud adapters). The implicit chain
+///    is Rust-only.
 ///
 /// The chain is the same primitive for every transport: local Rust,
-/// remote Rust over grid, remote Rust over airc, TS over IPC. Adding a
-/// transport is adding an interceptor; no kernel changes needed.
+/// remote Rust over grid, remote Rust over airc. Adding a transport is
+/// adding an interceptor; no kernel changes needed. Adding a "fallback
+/// to other transports" is forbidden.
 pub struct CommandExecutor {
     /// Rust module registry (for Rust-implemented commands).
     registry: Arc<ModuleRegistry>,
@@ -364,13 +373,32 @@ impl CommandExecutor {
                 .await;
         }
 
-        // 3. Fall through to TypeScript via Unix socket.
-        log.debug(&format!(
-            "Routing '{}' to TypeScript via CommandRouterServer",
-            command
+        // 3. No Rust module owns this command. Refuse to silently
+        //    route to the TS bridge — that path was the
+        //    [[no-fallbacks-ever]] violation flagged as task #219. A
+        //    substrate that silently routes unmigrated commands to
+        //    `CommandRouterServer` appears "broken in headless mode"
+        //    the day the operator forgets to bring up the TS host,
+        //    when the real bug was the silent dependency. Surface a
+        //    typed `CommandNotFound` error naming the command + the
+        //    explicit escape hatch.
+        //
+        //    Callers that KNOW their command is TS-only use
+        //    `execute_ts_json` (or `execute_ts`) directly — those
+        //    public methods stay live for the documented TS-only
+        //    call sites.
+        log.warn(&format!(
+            "no Rust module handles command '{command}' — refusing silent TS fallthrough"
         ));
-        let json = self.execute_ts_command(command, params).await?;
-        Ok(CommandResult::Json(json))
+        Err(format!(
+            "no Rust module handles command: '{command}'. \
+             The implicit TS-bridge fallthrough is disabled per \
+             [[no-fallbacks-ever]]. If this command is intentionally \
+             implemented in TypeScript, the caller must invoke \
+             `CommandExecutor::execute_ts_json` (or `execute_ts`) \
+             explicitly. If this command should be in Rust, register a \
+             `ServiceModule` whose `command_prefixes` covers it."
+        ))
     }
 
     /// Publish a `command:completed` event on the bus (when wired).
@@ -716,16 +744,17 @@ mod tests {
     #[tokio::test]
     async fn airc_interceptor_declines_when_no_airc_target_params() {
         // The airc interceptor at the head of the chain must NOT block
-        // existing local-Rust or TS commands that don't carry airc
-        // routing params. This is the back-compat guarantee that lets
-        // the airc interceptor be safely installed at init_executor.
+        // existing local-Rust commands that don't carry airc routing
+        // params. This is the back-compat guarantee that lets the airc
+        // interceptor be safely installed at init_executor.
         //
         // Without a registered Rust module for "test/cmd", the executor
-        // will fall through past the airc interceptor (Decline) past the
-        // registry (no match) and try to connect to the TS bridge,
-        // which fails in tests because the socket doesn't exist. That
-        // failure is expected: the test is asserting the airc
-        // interceptor did NOT short-circuit, NOT that TS dispatch works.
+        // walks the interceptor chain (airc Declines because no
+        // aircPeer in params), then the registry (no match), then
+        // returns CommandNotFound per [[no-fallbacks-ever]] (task #219).
+        // The test is asserting the airc interceptor did NOT
+        // short-circuit — the failure source MUST be the registry miss,
+        // NOT the airc interceptor.
         let registry = Arc::new(ModuleRegistry::new());
         let executor =
             CommandExecutor::new(registry).with_interceptor(Arc::new(AircInterceptor::new()));
@@ -737,16 +766,21 @@ mod tests {
             )
             .await;
 
-        // We expect the TS bridge connection to fail (no socket in tests).
-        // The IMPORTANT assertion is that the failure came from the TS
-        // bridge, NOT from the airc interceptor — proving the airc
-        // interceptor declined cleanly and the chain fell through.
-        let err = result.expect_err("TS bridge will fail in tests; that's OK");
+        // Failure must be the CommandNotFound shape (no Rust module),
+        // not the airc interceptor short-circuiting. The substring
+        // "no Rust module handles command" is the contract we depend on
+        // — if the airc interceptor had wrongly intercepted, the error
+        // would mention "airc" instead.
+        let err = result.expect_err("command has no Rust handler; expect typed error");
         assert!(
-            !err.contains("airc"),
-            "error must come from TS bridge fallthrough, not from airc \
-             interceptor — otherwise the airc interceptor incorrectly \
-             intercepted a non-airc command. err: {err}"
+            err.contains("no Rust module handles command"),
+            "error must come from registry miss (the no-fallbacks surface), \
+             not from airc interceptor. err: {err}"
+        );
+        assert!(
+            !err.contains("aircPeer") && !err.contains("airc interceptor"),
+            "error must NOT mention airc routing — proves the airc \
+             interceptor declined cleanly. err: {err}"
         );
     }
 
@@ -778,6 +812,57 @@ mod tests {
         assert!(
             err.contains("peer-id"),
             "error must echo the target so the caller can correlate logs: {err}"
+        );
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // No-fallbacks contract (task #219)
+    // ════════════════════════════════════════════════════════════════
+
+    // what this catches: a command not handled by any interceptor and
+    // not registered in the Rust module registry returns a typed
+    // `CommandNotFound`-shaped error per [[no-fallbacks-ever]]. Pre-
+    // PR #1584 the executor silently routed to the TS bridge on
+    // `/tmp/jtag-command-router.sock`, which in headless mode
+    // surfaced as a cryptic "Failed to connect" error and in
+    // hybrid-host mode silently delegated to TS — both breaking the
+    // mental model. The fix: refuse the implicit fallthrough,
+    // surface a typed error that names the missing command and the
+    // explicit escape hatch (`execute_ts_json`).
+    #[tokio::test]
+    async fn unknown_command_returns_typed_no_fallback_error_not_ts_attempt() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let executor = CommandExecutor::new(registry);
+
+        let err = executor
+            .execute("totally/made-up/command", Value::Null)
+            .await
+            .expect_err("unknown command must produce a typed error");
+
+        // Must NOT mention the TS socket or "CommandRouterServer" —
+        // those strings would prove the implicit fallthrough was
+        // still alive. Substring assertions over exact-string
+        // matches so we don't pin too tightly on phrasing.
+        assert!(
+            !err.contains("CommandRouterServer"),
+            "error must NOT attempt the TS fallthrough: {err}"
+        );
+        assert!(
+            !err.contains("/tmp/jtag-command-router.sock"),
+            "error must NOT mention the TS socket path: {err}"
+        );
+
+        // MUST name the missing command so operators know what to
+        // migrate or remove.
+        assert!(
+            err.contains("totally/made-up/command"),
+            "error must name the missing command: {err}"
+        );
+        // MUST point at the explicit escape hatch so a caller that
+        // genuinely meant to hit TS knows what method to call.
+        assert!(
+            err.contains("execute_ts_json") || err.contains("execute_ts"),
+            "error must point at the explicit TS-bridge API: {err}"
         );
     }
 
@@ -942,12 +1027,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ts_bridge_failure_still_emits_completed_event() {
-        // When all 3 dispatch tiers fail (no interceptor handled,
-        // no Rust module registered, TS socket missing in tests) —
-        // the event should still emit with success=false + the TS
-        // connection error. Telemetry must cover every dispatch
-        // path's terminal state.
+    async fn no_rust_module_failure_still_emits_completed_event() {
+        // When all dispatch tiers fail (no interceptor handled, no
+        // Rust module registered, no implicit fallthrough per task
+        // #219) — the event should still emit with success=false +
+        // the typed CommandNotFound error. Telemetry must cover
+        // every dispatch path's terminal state, including the new
+        // no-fallback surface.
         let registry = Arc::new(ModuleRegistry::new());
         let bus = Arc::new(MessageBus::new());
         let mut rx = bus.receiver();
@@ -956,8 +1042,10 @@ mod tests {
         let err = executor
             .execute("nonexistent/command", serde_json::json!({}))
             .await
-            .expect_err("TS socket missing in tests");
-        // Don't assert specific TS error text; just confirm it's an Err.
+            .expect_err("unknown command produces typed error");
+        // Don't pin specific error text here; just confirm it's an
+        // Err. The dedicated `unknown_command_returns_typed_no_fallback_error_not_ts_attempt`
+        // test pins the exact contract.
         let _ = err;
 
         let event = next_command_completed(&mut rx).await;
@@ -965,7 +1053,7 @@ mod tests {
         assert!(!event.success);
         assert!(
             event.error.is_some(),
-            "TS bridge failure path must populate error: {event:?}"
+            "no-fallback failure path must populate error: {event:?}"
         );
     }
 
