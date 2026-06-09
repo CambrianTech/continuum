@@ -55,4 +55,6 @@ pub mod transport;
 
 pub use adapter::{AircRemoteInferenceAdapter, AIRC_REMOTE_PROVIDER_ID};
 pub use protocol::{RemoteInferenceError, RemoteInferenceRequest, RemoteInferenceResponse};
-pub use transport::{AircInferenceTransport, StubInferenceTransport};
+pub use transport::{
+    AircInferenceTransport, AircLiveTransport, LocalAdapterTransport, StubInferenceTransport,
+};

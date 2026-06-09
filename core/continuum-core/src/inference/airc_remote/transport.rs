@@ -1,10 +1,14 @@
 //! `AircInferenceTransport` — the trait the adapter calls to send a
 //! request envelope to a remote peer and await the response.
 //!
-//! Production impl (TBD, task #108 follow-up) speaks to the live
-//! airc daemon. This module ships:
-//! - The trait shape (stable; production impl plugs in without
-//!   touching adapter or wire types).
+//! Three impls ship today:
+//! - `AircLiveTransport` — the production transport. Wraps an
+//!   `Arc<airc_lib::Airc>` + a target `PeerId` and dispatches via
+//!   `Airc::request` / `await_reply`, framing the inner
+//!   `TextGenerationRequest` as an `AircCommandRequest{path="ai/generate",
+//!   kind=KIND_PEER}` per `continuum-airc-protocol`. The substrate's
+//!   `CommandRequestHandler::parse_envelope` on the peer side accepts
+//!   this wire shape unchanged.
 //! - `StubInferenceTransport` — closure-driven stub for unit tests.
 //! - `LocalAdapterTransport` — a "round-trip via local adapter"
 //!   variant that lets a single-process test prove the
@@ -13,12 +17,28 @@
 //!   local one. This IS the "same command across the wire" proof.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+
+use airc_core::{Body, MentionTarget, PeerId};
+use airc_lib::Airc;
+use continuum_airc_protocol::{
+    AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, DEFAULT_COMMAND_DEADLINE,
+    HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
+};
+use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 
 use super::protocol::{RemoteInferenceError, RemoteInferenceRequest, RemoteInferenceResponse};
+
+/// Substrate command path the live transport dispatches at. Pinned
+/// here (not a constructor arg) — every `AircLiveTransport` targets
+/// `ai/generate` because that's the substrate's universal inference
+/// entrypoint. A future streaming transport (`ai/generate/stream`) is
+/// a separate type, not a config knob on this one.
+const REMOTE_GENERATE_PATH: &str = "ai/generate";
 
 /// The transport contract: take a typed envelope, return a typed
 /// envelope or a typed error. All routing / correlation / framing /
@@ -130,6 +150,190 @@ impl AircInferenceTransport for LocalAdapterTransport {
         Ok(RemoteInferenceResponse {
             correlation_id: request.correlation_id,
             served_by: self.fake_peer_id.clone(),
+            text_response,
+        })
+    }
+}
+
+/// Live production transport. Holds an `Arc<airc_lib::Airc>` + a
+/// default target peer + a deadline, and dispatches every
+/// `send_request` through airc's request/await_reply primitive using
+/// the same `AircCommandRequest` wire shape the substrate's
+/// `CommandRequestHandler::parse_envelope` expects.
+///
+/// The transport is the ONLY place that knows about airc framing.
+/// The adapter above stays oblivious to wire mechanics.
+pub struct AircLiveTransport {
+    airc: Arc<Airc>,
+    default_target_peer: PeerId,
+    deadline: Duration,
+}
+
+impl std::fmt::Debug for AircLiveTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AircLiveTransport")
+            .field("default_target_peer", &self.default_target_peer)
+            .field("deadline", &self.deadline)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AircLiveTransport {
+    /// Build the live transport. `default_target_peer` is the peer
+    /// every request flows to unless the inbound
+    /// `RemoteInferenceRequest.target_peer` overrides it (which
+    /// today's adapter never does — `with_target_peer` on the
+    /// adapter only stamps a string-hint into the envelope; future
+    /// adapter slices can resolve it via airc's whois store).
+    pub fn new(airc: Arc<Airc>, default_target_peer: Uuid) -> Arc<Self> {
+        Arc::new(Self {
+            airc,
+            default_target_peer: PeerId(default_target_peer),
+            deadline: DEFAULT_COMMAND_DEADLINE,
+        })
+    }
+
+    /// Override the round-trip deadline. Builder-style; consume the
+    /// inner value before re-Arc'ing.
+    pub fn with_deadline(self, deadline: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            airc: self.airc,
+            default_target_peer: self.default_target_peer,
+            deadline,
+        })
+    }
+
+    /// Build the airc envelope headers for an outbound request.
+    /// Mirrors what `routing::airc_transport::AircTransport::build_headers`
+    /// does for command dispatch — same wire-routing layer per
+    /// `[[airc-headers-are-the-routing-layer]]`. Exposed for tests so
+    /// header drift is catchable without standing up airc-lib.
+    pub fn build_headers(request: &AircCommandRequest) -> airc_core::Headers {
+        let mut headers = airc_core::Headers::new();
+        headers.insert(HEADER_COMMAND_PATH.to_string(), request.path.clone());
+        headers.insert(HEADER_COMMAND_KIND.to_string(), request.kind.clone());
+        headers.insert(
+            HEADER_CONTINUUM_BODY_HINT.to_string(),
+            COMMAND_REQUEST_BODY_HINT.to_string(),
+        );
+        headers
+    }
+
+    /// Resolve the wire-side target peer for a given envelope.
+    /// Precedence: the inbound `RemoteInferenceRequest.target_peer`
+    /// string (when set + parseable as UUID) wins; otherwise the
+    /// transport's `default_target_peer`. An unparseable string is a
+    /// loud transport error per `[[no-fallbacks-ever]]` — silently
+    /// falling back to the default would mask a miswired caller.
+    fn resolve_target(
+        &self,
+        request: &RemoteInferenceRequest,
+    ) -> Result<PeerId, RemoteInferenceError> {
+        match &request.target_peer {
+            None => Ok(self.default_target_peer),
+            Some(s) => Uuid::parse_str(s)
+                .map(PeerId)
+                .map_err(|e| RemoteInferenceError::Transport {
+                    message: format!(
+                        "AircLiveTransport: RemoteInferenceRequest.target_peer \
+                         must be a peer UUID, got {s:?}: {e}"
+                    ),
+                }),
+        }
+    }
+}
+
+#[async_trait]
+impl AircInferenceTransport for AircLiveTransport {
+    async fn send_request(
+        &self,
+        request: RemoteInferenceRequest,
+    ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
+        let target = self.resolve_target(&request)?;
+        let correlation_id = request.correlation_id;
+
+        // Wire envelope: substrate's `ai/generate` handler reads
+        // `params` as a `TextGenerationRequest`. RemoteInferenceRequest
+        // is the transport-internal envelope; only its `text_request`
+        // crosses the wire.
+        let params = serde_json::to_value(&request.text_request).map_err(|e| {
+            RemoteInferenceError::Transport {
+                message: format!("serialize TextGenerationRequest: {e}"),
+            }
+        })?;
+
+        let envelope = AircCommandRequest::new(
+            REMOTE_GENERATE_PATH.to_string(),
+            KIND_PEER.to_string(),
+            None,
+            params,
+        );
+
+        let body_value = serde_json::to_value(&envelope).map_err(|e| {
+            RemoteInferenceError::Transport {
+                message: format!("serialize AircCommandRequest: {e}"),
+            }
+        })?;
+        let body = Body::Json(body_value);
+        let headers = Self::build_headers(&envelope);
+
+        let pending = self
+            .airc
+            .request(MentionTarget::Peer(target), headers, body, self.deadline)
+            .await
+            .map_err(|e| RemoteInferenceError::Transport {
+                message: format!("airc.request to {target:?}: {e}"),
+            })?;
+
+        let reply = self.airc.await_reply(pending).await.map_err(|e| {
+            // airc-lib surfaces a single error type for timeout +
+            // transport break + correlation drop. Classify by
+            // substring rather than swallow the variant — the
+            // distinction matters for the coordinator's retry policy.
+            let message = format!("{e}");
+            if message.contains("timeout") || message.contains("timed out") {
+                RemoteInferenceError::Timeout {
+                    elapsed_ms: self.deadline.as_millis() as u64,
+                }
+            } else {
+                RemoteInferenceError::Transport { message }
+            }
+        })?;
+
+        let reply_body = reply
+            .body
+            .ok_or_else(|| RemoteInferenceError::Transport {
+                message: "remote replied with no body".to_string(),
+            })?;
+        let reply_value = match reply_body {
+            Body::Json(v) => v,
+            Body::Binary(_) => {
+                return Err(RemoteInferenceError::Transport {
+                    message: "remote replied with Binary; expected Json".to_string(),
+                });
+            }
+        };
+
+        let response: AircCommandResponse = serde_json::from_value(reply_value).map_err(|e| {
+            RemoteInferenceError::Transport {
+                message: format!("decode AircCommandResponse: {e}"),
+            }
+        })?;
+
+        let result_value =
+            response
+                .into_result()
+                .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;
+
+        let text_response = serde_json::from_value(result_value).map_err(|e| {
+            RemoteInferenceError::Transport {
+                message: format!("decode TextGenerationResponse: {e}"),
+            }
+        })?;
+
+        Ok(RemoteInferenceResponse {
+            correlation_id,
+            served_by: target.0.to_string(),
             text_response,
         })
     }

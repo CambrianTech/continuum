@@ -11,6 +11,7 @@
 //! interesting (correlation, framing, peer discovery, retries,
 //! timeouts) lives in the transport.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -47,6 +48,15 @@ pub struct AircRemoteInferenceAdapter {
     /// Useful when a caller explicitly wants this adapter routing
     /// to one specific peer; None = let the transport decide.
     default_target_peer: Option<String>,
+    /// Flipped to true the first time a `generate_text` round-trip
+    /// succeeds. `health_check` returns `Unknown` while this is
+    /// false (no observation yet) and `Healthy` once it's true.
+    /// Per R1 BLOCK on PR #1560: a remote adapter that reports
+    /// `Healthy` by construction lies to the AdapterRegistry's
+    /// selector, which then routes traffic to a dead peer. The
+    /// fix is no fallback to a false-positive default — admit
+    /// "no signal" until traffic proves the peer is reachable.
+    has_observed_success: AtomicBool,
 }
 
 impl AircRemoteInferenceAdapter {
@@ -54,6 +64,7 @@ impl AircRemoteInferenceAdapter {
         Self {
             transport,
             default_target_peer: None,
+            has_observed_success: AtomicBool::new(false),
         }
     }
 
@@ -144,6 +155,11 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
             .send_request(envelope)
             .await
             .map_err(|e| e.to_string())?;
+        // First successful round-trip flips the health observation
+        // bit so subsequent health_check calls can report Healthy.
+        // Relaxed is fine: a stale Unknown -> Healthy transition is
+        // a one-way edge; readers tolerate either value.
+        self.has_observed_success.store(true, Ordering::Relaxed);
         // Surface the peer that served the request as routing
         // info on the response so the caller can audit which
         // peer's local adapter produced the output.
@@ -155,19 +171,45 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     }
 
     async fn health_check(&self) -> HealthStatus {
-        // The transport doesn't yet expose a health surface;
-        // future slice adds a ping/pong handshake. For now report
-        // healthy — the actual transport failure surfaces on
-        // generate_text.
+        // No active probe today — a future slice can add a
+        // periodic ping. For now report based on whether any
+        // generate_text round-trip has succeeded:
+        //   - No observation yet → Unhealthy. HealthState has no
+        //     Unknown variant today and adding one is its own slice
+        //     (wire change). Per [[no-fallbacks-ever]] the worse lie
+        //     is reporting Healthy on an unproven peer (sends real
+        //     traffic to a dead remote); reporting Unhealthy until
+        //     proven is pessimistic-but-safe — the registry's
+        //     selector won't pick this adapter, which is the right
+        //     default for "we don't know yet."
+        //   - ≥1 round-trip succeeded → Healthy. Stays Healthy
+        //     until process restart; a future slice adds decay on
+        //     subsequent failures.
+        let observed = self.has_observed_success.load(Ordering::Relaxed);
+        let (state, available, message) = if observed {
+            (
+                HealthState::Healthy,
+                true,
+                Some("airc-remote: ≥1 successful round-trip observed".to_string()),
+            )
+        } else {
+            (
+                HealthState::Unhealthy,
+                false,
+                Some(
+                    "airc-remote: no observed round-trip yet — pessimistic until proven \
+                     (better to refuse than to route traffic to a possibly-dead peer)"
+                        .to_string(),
+                ),
+            )
+        };
         HealthStatus {
-            status: HealthState::Healthy,
-            api_available: true,
+            status: state,
+            api_available: available,
             response_time_ms: 0,
             error_rate: 0.0,
             last_checked: 0,
-            message: Some(
-                "airc-remote: transport health surface pending follow-up slice".to_string(),
-            ),
+            message,
         }
     }
 
@@ -438,7 +480,10 @@ mod tests {
     // ── health ────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn health_check_reports_healthy_with_pending_message() {
+    async fn health_check_reports_unhealthy_until_first_successful_round_trip() {
+        // R1 BLOCK on PR #1560: a remote adapter that reports
+        // Healthy by construction lies to the AdapterRegistry's
+        // selector. Pre-observation: pessimistic Unhealthy.
         let transport = StubInferenceTransport::always_failing(
             RemoteInferenceError::Transport {
                 message: "not used".to_string(),
@@ -446,14 +491,33 @@ mod tests {
         );
         let adapter = AircRemoteInferenceAdapter::new(transport);
         let h = adapter.health_check().await;
-        assert!(matches!(h.status, HealthState::Healthy));
-        // Documents that the transport health surface is a
-        // follow-up.
+        assert!(matches!(h.status, HealthState::Unhealthy));
+        assert!(!h.api_available);
+        assert!(h.message.as_deref().unwrap_or("").contains("no observed round-trip"));
+    }
+
+    #[tokio::test]
+    async fn health_check_flips_to_healthy_after_first_successful_round_trip() {
+        // Use the heuristic adapter as the peer; one round-trip
+        // should flip the observation flag.
+        let heuristic: Arc<dyn AIProviderAdapter> =
+            Arc::new(HeuristicInferenceAdapter::new());
+        let transport = LocalAdapterTransport::new(heuristic);
+        let adapter = AircRemoteInferenceAdapter::new(transport);
+
+        // Pre-roundtrip: Unhealthy.
+        let h_before = adapter.health_check().await;
+        assert!(matches!(h_before.status, HealthState::Unhealthy));
+
+        // One real round-trip.
+        let _ = adapter.generate_text(req("anything")).await.unwrap();
+
+        // Post-roundtrip: Healthy.
+        let h_after = adapter.health_check().await;
+        assert!(matches!(h_after.status, HealthState::Healthy));
+        assert!(h_after.api_available);
         assert!(
-            h.message
-                .as_deref()
-                .unwrap_or("")
-                .contains("pending follow-up")
+            h_after.message.as_deref().unwrap_or("").contains("successful round-trip"),
         );
     }
 }
