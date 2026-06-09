@@ -9,4 +9,4 @@
  * for ("code should NEVER know the model" — code knows the ARCHETYPES
  * via this enum, models are data).
  */
-export type Arch = "qwen2" | "qwen3" | "qwen35" | "llama" | "claude" | "gpt" | "gemini" | "grok" | "deepseek" | "unknown";
+export type Arch = "qwen2" | "qwen3" | "qwen35" | "llama" | "claude" | "gpt" | "gemini" | "grok" | "deepseek" | "mistral" | "unknown";

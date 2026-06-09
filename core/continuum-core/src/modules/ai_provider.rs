@@ -354,6 +354,15 @@ impl AIProviderModule {
             }
         }
 
+        if get_secret("MISTRAL_API_KEY").is_some() {
+            self.log().info("Registering Mistral adapter");
+            let mut a = OpenAICompatibleAdapter::from_registry("mistral");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 8),
+                Err(e) => self.log().warn(&format!("Mistral initialize failed: {e} — not registered")),
+            }
+        }
+
         // In-process llama.cpp adapter — bypasses DMR's container Metal toolchain,
         // which on M5 Pro fails to compile the tensor-API source (`has tensor=false`)
         // and falls back to a degraded path running at 22 tok/s. Our host-built

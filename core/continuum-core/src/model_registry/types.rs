@@ -31,6 +31,10 @@ pub enum Arch {
     Gemini,
     Grok,
     Deepseek,
+    /// Mistral's own dense + MoE architecture line: Mistral 7B,
+    /// Mixtral 8x7B / 8x22B, Codestral, Mistral Large. Distinct from
+    /// Llama because of MoE routing semantics + tokenizer differences.
+    Mistral,
     /// Escape hatch for architectures we haven't enumerated yet. Models
     /// tagged `Unknown` cannot be dispatched by arch — callers MUST fall
     /// through to capability checks. Used sparingly.
