@@ -1,5 +1,8 @@
 # apps/cli — `ctm` rust CLI binary
 
+`ctm` = "continuum" with the vowels removed (c[on]t[inuu]m). Three
+characters, types fast, doesn't collide with anything on PATH.
+
 Successor to `./jtag` (per task #143). Links `client/continuum-client`
 directly — every command goes through the same `Connection` /
 `CommandClient` seam the substrate's integration tests exercise. No
