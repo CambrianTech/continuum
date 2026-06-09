@@ -28,9 +28,17 @@
 //!   `RemoteInferenceResponse`, `RemoteInferenceError`). Pure data
 //!   + serde + ts-rs.
 //! - [`transport`] — `AircInferenceTransport` trait (one method:
-//!   `send_request`) + a stub for tests. Production impl that
-//!   speaks to a live airc daemon is its own slice (task #108
-//!   follow-up); the trait shape is stable.
+//!   `send_request`) + three impls:
+//!     * `AircLiveTransport` — production. Wraps `Arc<airc_lib::Airc>`
+//!       + target `PeerId` + deadline; dispatches via airc's
+//!       `request`/`await_reply` using the `continuum-airc-protocol`
+//!       `AircCommandRequest{path="ai/generate", kind=KIND_PEER}` shape.
+//!     * `LocalAdapterTransport` — in-process passthrough. Wraps an
+//!       `Arc<dyn AIProviderAdapter>` and round-trips through it.
+//!       Used for tests + single-process configurations that want to
+//!       drive the remote-adapter code path against a local model.
+//!     * `StubInferenceTransport` — closure-driven stub for unit
+//!       tests of error / correlation branches.
 //! - [`adapter`] — `AircRemoteInferenceAdapter` implementing
 //!   `AIProviderAdapter`. Wraps any `AircInferenceTransport` Arc.
 //!
