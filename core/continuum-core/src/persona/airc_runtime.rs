@@ -107,6 +107,15 @@ pub enum PersonaAircRuntimeError {
         #[source]
         source: AircError,
     },
+    #[error(
+        "PersonaInstanceManagerModule::bootstrap_one for {agent_name:?} ran before \
+         the substrate `CommandExecutor` was installed — boot ordering bug. \
+         `start_server` must call `install_executor_on_all` BEFORE accepting any \
+         `persona/instances/bootstrap` dispatch. Per [[no-fallbacks-ever]]: surfaces \
+         as a typed bootstrap failure rather than a panic in the deleted \
+         `executor()` global accessor (task #224)."
+    )]
+    ExecutorNotInstalled { agent_name: String },
 }
 
 /// One persona's live airc connection.

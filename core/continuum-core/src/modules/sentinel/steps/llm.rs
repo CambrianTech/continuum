@@ -314,9 +314,19 @@ async fn execute_agent_mode(
     // Route to TypeScript ai/agent directly via Unix socket (bypasses Rust registry).
     // MUST use execute_ts_json — the ai/ prefix is claimed by Rust's ai_provider module,
     // so execute_json would route back to Rust and never reach TypeScript.
-    let json = runtime::command_executor::execute_ts_json("ai/agent", agent_params)
-        .await
-        .map_err(|e| step_err(pipeline_ctx.handle_id, "LLM agent step", e))?;
+    let json = match pipeline_ctx.executor {
+        Some(exec) => exec
+            .execute_ts_json("ai/agent", agent_params)
+            .await
+            .map_err(|e| step_err(pipeline_ctx.handle_id, "LLM agent step", e))?,
+        None => {
+            return Err(step_err(
+                pipeline_ctx.handle_id,
+                "LLM agent step",
+                "no CommandExecutor in pipeline context".to_string(),
+            ));
+        }
+    };
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

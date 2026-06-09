@@ -142,6 +142,11 @@ pub struct PersonaInstanceManagerModule {
     /// integration test confirmed this empirically.
     default_room_name: Option<String>,
     continuum_root: PathBuf,
+    /// Substrate-wide command executor — installed by `start_server`
+    /// after the executor is built (task #224 replaced the deleted
+    /// `GLOBAL_EXECUTOR` panic accessor with this dependency-injected
+    /// `OnceLock`).
+    executor: std::sync::OnceLock<std::sync::Arc<crate::runtime::CommandExecutor>>,
 }
 
 impl PersonaInstanceManagerModule {
@@ -168,6 +173,7 @@ impl PersonaInstanceManagerModule {
             default_room,
             default_room_name,
             continuum_root,
+            executor: std::sync::OnceLock::new(),
         }
     }
 
@@ -201,16 +207,19 @@ impl PersonaInstanceManagerModule {
         &self,
         intent: &PersonaIdentityIntent,
     ) -> Result<PersonaInstanceInfo, PersonaAircRuntimeError> {
-        // Task #222 + R1/R2 BLOCK on PR #1568: resolve the substrate's
-        // process-global CommandExecutor LAZILY at bootstrap time, not
-        // at PIM construction. `bootstrap_one` is reachable only via
-        // a dispatched command (`persona/instances/bootstrap`), and
-        // commands dispatch THROUGH the executor — so by the time we
-        // hit this line, `init_executor` is GUARANTEED to have run.
-        // The earlier shape (eager lookup at PIM::new) panicked at
-        // `start_server` because PIM was constructed BEFORE
-        // init_executor in the boot sequence.
-        let executor = crate::runtime::command_executor::executor();
+        // Task #224: the substrate-wide `CommandExecutor` is installed
+        // on PIM by `start_server` after the executor is built. Per
+        // [[no-fallbacks-ever]]: if `bootstrap_one` runs before the
+        // installer (impossible today — the only call path is through a
+        // dispatched command, which means the executor exists), surface
+        // a typed error instead of panicking.
+        let executor = self
+            .executor
+            .get()
+            .ok_or_else(|| PersonaAircRuntimeError::ExecutorNotInstalled {
+                agent_name: intent.agent_name.clone(),
+            })?
+            .clone();
         let runtime = PersonaAircRuntime::bootstrap(
             intent.persona_id,
             intent.agent_name.clone(),
@@ -347,6 +356,10 @@ impl ServiceModule for PersonaInstanceManagerModule {
 
             _ => Err(format!("unknown persona/instances command: {command}")),
         }
+    }
+
+    fn install_executor(&self, executor: std::sync::Arc<crate::runtime::CommandExecutor>) {
+        let _ = self.executor.set(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

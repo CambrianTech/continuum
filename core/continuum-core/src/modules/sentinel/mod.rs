@@ -65,6 +65,9 @@ pub struct SentinelModule {
     bus: RwLock<Option<Arc<MessageBus>>>,
     /// Module registry for inter-module calls (set during initialize)
     registry: RwLock<Option<Arc<ModuleRegistry>>>,
+    /// Substrate-wide command executor — installed by `start_server`
+    /// after the executor is built (task #224).
+    executor: std::sync::OnceLock<Arc<crate::runtime::CommandExecutor>>,
 }
 
 impl SentinelModule {
@@ -82,7 +85,19 @@ impl SentinelModule {
             max_concurrent: 6,
             bus: RwLock::new(None),
             registry: RwLock::new(None),
+            executor: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Borrow the installed executor or return an error string. Sentinel
+    /// call sites generally tolerate a `None` executor (the memory check
+    /// is a guard, not load-bearing); this helper makes the intent
+    /// explicit at the call site.
+    fn executor_or_err(&self) -> Result<Arc<crate::runtime::CommandExecutor>, String> {
+        self.executor
+            .get()
+            .cloned()
+            .ok_or_else(|| "sentinel: CommandExecutor not yet installed".to_string())
     }
 
     /// Generate a unique handle ID
@@ -121,22 +136,22 @@ impl SentinelModule {
 
         // Check system memory pressure before starting a new sentinel.
         // Candle model loads + LoRA training can easily exhaust RAM if unchecked.
-        if let Ok(mem) =
-            crate::runtime::command_executor::execute_json("system/memory", Value::Null).await
-        {
-            let available = mem
-                .get("available_bytes")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(u64::MAX);
-            if available < Self::MIN_AVAILABLE_MEMORY_BYTES {
-                let available_gb = available as f64 / (1024.0 * 1024.0 * 1024.0);
-                let threshold_gb =
-                    Self::MIN_AVAILABLE_MEMORY_BYTES as f64 / (1024.0 * 1024.0 * 1024.0);
-                return Err(format!(
-                    "Insufficient system memory: {:.1}GB available, {:.1}GB required. \
-                     Cancel existing sentinels or wait for completion.",
-                    available_gb, threshold_gb
-                ));
+        if let Ok(executor) = self.executor_or_err() {
+            if let Ok(mem) = executor.execute_json("system/memory", Value::Null).await {
+                let available = mem
+                    .get("available_bytes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(u64::MAX);
+                if available < Self::MIN_AVAILABLE_MEMORY_BYTES {
+                    let available_gb = available as f64 / (1024.0 * 1024.0 * 1024.0);
+                    let threshold_gb =
+                        Self::MIN_AVAILABLE_MEMORY_BYTES as f64 / (1024.0 * 1024.0 * 1024.0);
+                    return Err(format!(
+                        "Insufficient system memory: {:.1}GB available, {:.1}GB required. \
+                         Cancel existing sentinels or wait for completion.",
+                        available_gb, threshold_gb
+                    ));
+                }
             }
         }
 
@@ -241,6 +256,7 @@ impl SentinelModule {
         let bus = self.bus.read().clone();
         let registry = self.registry.read().clone();
         let escalation_clone = escalation;
+        let executor_for_task = self.executor.get().cloned();
 
         tokio::spawn(async move {
             let log = runtime::logger("sentinel");
@@ -279,6 +295,7 @@ impl SentinelModule {
                     working_dir_clone.clone(),
                     bus.clone(),
                     registry.clone(),
+                    executor_for_task.clone(),
                 );
 
                 if timeout_secs == 0 {
@@ -408,11 +425,11 @@ impl SentinelModule {
                         "escalationRules": esc.escalation_rules,
                     });
                     // Fire-and-forget — escalation failure shouldn't block sentinel cleanup
-                    let _ = crate::runtime::command_executor::execute_ts_json(
-                        "sentinel/escalate",
-                        escalation_payload,
-                    )
-                    .await;
+                    if let Some(executor) = executor_for_task.as_ref() {
+                        let _ = executor
+                            .execute_ts_json("sentinel/escalate", escalation_payload)
+                            .await;
+                    }
                 }
             }
         });
@@ -549,6 +566,7 @@ impl SentinelModule {
         let logs_base_dir = self.logs_base_dir.read().clone();
         let bus = self.bus.read().clone();
         let registry = self.registry.read().clone();
+        let executor_for_call = self.executor.get().cloned();
 
         let result = executor::execute_pipeline_direct(
             &logs_base_dir,
@@ -556,6 +574,7 @@ impl SentinelModule {
             pipeline,
             bus.as_ref(),
             registry.as_ref(),
+            executor_for_call.as_ref(),
         )
         .await;
 
@@ -702,6 +721,7 @@ impl SentinelModule {
 
         let sentinels = Arc::clone(&self.sentinels);
         let escalation_clone = cp.escalation.clone();
+        let executor_for_task = self.executor.get().cloned();
 
         tokio::spawn(async move {
             let log = crate::runtime::logger("sentinel");
@@ -719,6 +739,7 @@ impl SentinelModule {
                 registry: &registry,
                 bus: bus.as_ref(),
                 steps_log_path: Some(&steps_log_path),
+                executor: executor_for_task.as_ref(),
             };
 
             let mut ctx = ExecutionContext {
@@ -885,17 +906,20 @@ impl SentinelModule {
 
             // Escalation
             if let Some(ref esc) = escalation_clone {
-                let _ = crate::runtime::command_executor::execute_ts_json(
-                    "sentinel/escalate",
-                    json!({
-                        "handle": handle_id_owned,
-                        "status": if failed { "failed" } else { "completed" },
-                        "parentPersonaId": esc.parent_persona_id,
-                        "entityId": esc.entity_id,
-                        "sentinelName": esc.sentinel_name,
-                    }),
-                )
-                .await;
+                if let Some(executor) = executor_for_task.as_ref() {
+                    let _ = executor
+                        .execute_ts_json(
+                            "sentinel/escalate",
+                            json!({
+                                "handle": handle_id_owned,
+                                "status": if failed { "failed" } else { "completed" },
+                                "parentPersonaId": esc.parent_persona_id,
+                                "entityId": esc.entity_id,
+                                "sentinelName": esc.sentinel_name,
+                            }),
+                        )
+                        .await;
+                }
             }
         });
 
@@ -1063,6 +1087,7 @@ impl ServiceModule for SentinelModule {
                     let bus_clone = self.bus.read().clone();
                     let logs_dir = self.logs_base_dir.read().clone();
                     let sentinels = Arc::clone(&self.sentinels);
+                    let executor_for_resume = self.executor.get().cloned();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         let log = crate::runtime::logger("sentinel");
@@ -1122,6 +1147,7 @@ impl ServiceModule for SentinelModule {
                                         working_dir,
                                         bus_clone.clone(),
                                         registry_clone.clone(),
+                                        executor_for_resume.clone(),
                                     )
                                     .await;
 
@@ -1201,6 +1227,10 @@ impl ServiceModule for SentinelModule {
 
             _ => Err(format!("Unknown sentinel command: {command}")),
         }
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        let _ = self.executor.set(executor);
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

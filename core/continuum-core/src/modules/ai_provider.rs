@@ -87,6 +87,10 @@ pub struct AIProviderModule {
     /// 30-second threshold. Atomic so the tick (`&self`) updates it
     /// without taking a write lock on the module.
     dmr_consecutive_down_ticks: Arc<AtomicU64>,
+    /// Substrate-wide command executor — installed by `start_server` after
+    /// the executor is built. Used by the TS fallthrough for unmigrated
+    /// `ai/*` commands (task #224 replaced the deleted free helper).
+    executor: std::sync::OnceLock<Arc<crate::runtime::CommandExecutor>>,
 }
 
 impl AIProviderModule {
@@ -96,6 +100,7 @@ impl AIProviderModule {
             log: OnceCell::new(),
             gpu_manager: None,
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
+            executor: std::sync::OnceLock::new(),
         }
     }
 
@@ -108,6 +113,7 @@ impl AIProviderModule {
             log: OnceCell::new(),
             gpu_manager: Some(gpu_manager),
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
+            executor: std::sync::OnceLock::new(),
         }
     }
 
@@ -1055,15 +1061,24 @@ impl ServiceModule for AIProviderModule {
                 // Forward unknown ai/* commands directly to TypeScript via Unix socket.
                 // MUST use execute_ts (not execute) to bypass Rust registry — otherwise
                 // the registry matches "ai/" prefix back to this module → infinite recursion.
-                use crate::runtime::command_executor;
                 let log = crate::runtime::logger("ai_provider");
                 log.info(&format!(
                     "Forwarding '{}' to TypeScript via Unix socket (bypassing registry)",
                     command
                 ));
-                command_executor::execute_ts(command, params).await
+                match self.executor.get() {
+                    Some(exec) => exec.execute_ts(command, params).await,
+                    None => Err(
+                        "AIProviderModule: CommandExecutor not installed; cannot forward to TS"
+                            .to_string(),
+                    ),
+                }
             }
         }
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        let _ = self.executor.set(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

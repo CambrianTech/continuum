@@ -29,6 +29,7 @@ pub async fn execute_pipeline(
     working_dir: PathBuf,
     bus: Option<Arc<MessageBus>>,
     registry: Option<Arc<ModuleRegistry>>,
+    executor: Option<Arc<crate::runtime::CommandExecutor>>,
 ) -> Result<(i32, String), String> {
     let log = runtime::logger("sentinel");
 
@@ -119,6 +120,7 @@ pub async fn execute_pipeline(
             registry: &registry,
             bus: bus.as_ref(),
             steps_log_path: Some(&steps_log_path),
+            executor: executor.as_ref(),
         };
 
         match steps::execute_step(step, i, &mut ctx, &pipeline_ctx).await {
@@ -784,6 +786,7 @@ pub async fn execute_pipeline_direct(
     pipeline: Pipeline,
     bus: Option<&Arc<MessageBus>>,
     registry: Option<&Arc<ModuleRegistry>>,
+    executor: Option<&Arc<crate::runtime::CommandExecutor>>,
 ) -> PipelineResult {
     let log = runtime::logger("sentinel");
     let start_time = Instant::now();
@@ -850,6 +853,7 @@ pub async fn execute_pipeline_direct(
             registry: &registry,
             bus,
             steps_log_path: None,
+            executor,
         };
 
         match steps::execute_step(step, i, &mut ctx, &pipeline_ctx).await {
@@ -977,6 +981,7 @@ mod tests {
             pipeline,
             Some(&bus),
             Some(&registry),
+            None,
         )
         .await;
 
@@ -1035,6 +1040,7 @@ mod tests {
             pipeline,
             Some(&bus),
             Some(&registry),
+            None,
         )
         .await;
 
@@ -1104,6 +1110,7 @@ mod tests {
             pipeline,
             Some(&bus),
             Some(&registry),
+            None,
         )
         .await;
 
@@ -1148,6 +1155,7 @@ mod tests {
             pipeline,
             Some(&bus),
             Some(&registry),
+            None,
         )
         .await;
 
@@ -1208,7 +1216,7 @@ mod tests {
         };
 
         let result =
-            execute_pipeline_direct(&logs_dir, "test-par", pipeline, Some(&bus), Some(&registry))
+            execute_pipeline_direct(&logs_dir, "test-par", pipeline, Some(&bus), Some(&registry), None)
                 .await;
 
         assert!(result.success);
@@ -1256,7 +1264,7 @@ mod tests {
         };
 
         let result =
-            execute_pipeline_direct(&logs_dir, "test-ew", pipeline, Some(&bus), Some(&registry))
+            execute_pipeline_direct(&logs_dir, "test-ew", pipeline, Some(&bus), Some(&registry), None)
                 .await;
 
         assert!(result.success);
@@ -1326,6 +1334,7 @@ mod tests {
             pipeline,
             Some(&bus),
             Some(&registry),
+            None,
         )
         .await;
 
@@ -1368,7 +1377,7 @@ mod tests {
         };
 
         let result =
-            execute_pipeline_direct(&logs_dir, "test-fwd", pipeline, Some(&bus), Some(&registry))
+            execute_pipeline_direct(&logs_dir, "test-fwd", pipeline, Some(&bus), Some(&registry), None)
                 .await;
 
         assert!(result.success);
@@ -1402,6 +1411,7 @@ mod tests {
             pipeline,
             Some(&bus),
             Some(&registry),
+            None,
         )
         .await;
 
@@ -1432,7 +1442,7 @@ mod tests {
         };
 
         let result =
-            execute_pipeline_direct(&logs_dir, "test-noreg", pipeline, Some(&bus), None).await;
+            execute_pipeline_direct(&logs_dir, "test-noreg", pipeline, Some(&bus), None, None).await;
 
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("registry"));

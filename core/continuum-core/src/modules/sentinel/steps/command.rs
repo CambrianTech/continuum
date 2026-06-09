@@ -37,8 +37,9 @@ pub async fn execute(
         pipeline_ctx.handle_id, interpolated_command
     ));
 
-    let json =
-        runtime::command_executor::execute_ts_json(&interpolated_command, interpolated_params)
+    let json = match pipeline_ctx.executor {
+        Some(exec) => exec
+            .execute_ts_json(&interpolated_command, interpolated_params)
             .await
             .map_err(|e| {
                 step_err(
@@ -46,7 +47,15 @@ pub async fn execute(
                     &format!("Command '{interpolated_command}' failed"),
                     e,
                 )
-            })?;
+            })?,
+        None => {
+            return Err(step_err(
+                pipeline_ctx.handle_id,
+                &format!("Command '{interpolated_command}' failed"),
+                "no CommandExecutor in pipeline context".to_string(),
+            ));
+        }
+    };
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

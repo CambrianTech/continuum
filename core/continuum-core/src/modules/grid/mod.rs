@@ -70,6 +70,11 @@ pub struct GridState {
     pub(crate) grid_dir: PathBuf,
     pub(crate) runtime_registry: Mutex<Option<Arc<crate::runtime::ModuleRegistry>>>,
     pub(crate) bus: Mutex<Option<Arc<crate::runtime::MessageBus>>>,
+    /// Substrate-wide command executor — installed by `start_server`
+    /// after the executor is built. Inbound grid requests for commands
+    /// that no Rust module owns fall through to `executor.execute_ts_json`
+    /// (task #224 replaced the deleted free-function helper).
+    pub(crate) executor: Mutex<Option<Arc<crate::runtime::CommandExecutor>>>,
     /// This node's capabilities (GPU, storage, inference, training).
     /// Populated at init from constructor params, enriched after GpuModule responds.
     pub(crate) local_capabilities: RwLock<Vec<NodeCapability>>,
@@ -112,6 +117,7 @@ impl GridModule {
                 grid_dir,
                 runtime_registry: Mutex::new(None),
                 bus: Mutex::new(None),
+                executor: Mutex::new(None),
                 local_capabilities: RwLock::new(caps),
             }),
         }
@@ -374,6 +380,18 @@ impl ServiceModule for GridModule {
     fn command_schemas(&self) -> Vec<CommandSchema> {
         // Schemas defined in commands.rs alongside the constants — single source of truth.
         commands::schemas()
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        // Mutex::lock blocks briefly; called once at boot, never on hot path.
+        if let Ok(mut guard) = self.state.executor.try_lock() {
+            *guard = Some(executor);
+        } else {
+            // Should not happen — install_executor is called exactly once during start_server
+            // before any inbound command lands. If we ever contend here, surface the lost
+            // executor install loudly.
+            tracing::error!("GridModule::install_executor lost mutex contention at boot");
+        }
     }
 
     fn as_any(&self) -> &dyn Any {
