@@ -142,7 +142,11 @@ pub enum TrainingSource {
 /// LoRA-specific knobs. Same field set every cloud provider exposes
 /// (rank + alpha + dropout + target_modules); local Candle adds none
 /// beyond these.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+///
+/// `PartialEq` (not `Eq`) because of the `dropout: f32` field. The
+/// training-trigger bucket-coherence check compares two
+/// `LoRAHyperparams` via `!=`, which requires the trait.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/LoRAHyperparams.ts"
@@ -167,7 +171,11 @@ pub struct LoRAHyperparams {
 }
 
 /// Training schedule knobs.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+///
+/// `PartialEq` (not `Eq`) because of `learning_rate: f64`. Same
+/// motivation as `LoRAHyperparams` — the trigger module's bucket
+/// coherence check needs to compare two `ScheduleParams` values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/ScheduleParams.ts"

@@ -519,6 +519,72 @@ mod tests {
         assert!(matches!(err, JobActorError::InvalidBatchSize(_)));
     }
 
+    // what this catches: parallel to sequence_length_zero — a
+    // regression dropping `batch_size == 0` from the guard would
+    // let a wire caller submit batch_size: 0, which would panic
+    // downstream in candle's tensor dim allocation. Reviewer R1's
+    // BLOCK on the asymmetric coverage: sequence_length had a
+    // zero-rejected test but batch_size didn't.
+    #[test]
+    fn batch_size_zero_rejected_synchronously() {
+        let dir = tempdir().unwrap();
+        let mut req = small_request(dir.path().join("layer.safetensors"));
+        req.schedule = Some(ScheduleParams {
+            epochs: 1,
+            batch_size: 0,
+            sequence_length: 8,
+            learning_rate: 1e-3,
+        });
+        let err = spawn_job(req).err().expect("must reject");
+        assert!(matches!(err, JobActorError::InvalidBatchSize(0)));
+    }
+
+    // what this catches: BOUNDARY pin. The cap guards use `>` (the
+    // value MAX_SEQUENCE_LENGTH itself is ACCEPTED, MAX+1 rejected).
+    // A regression flipping `>` to `>=` would silently break callers
+    // submitting exactly 8192 — and the existing
+    // `_above_cap_rejected` test would still pass because MAX+1 is
+    // rejected under either semantic. Pin both sides per Reviewer R1's
+    // BLOCK on cap boundary asymmetry.
+    //
+    // These tests are `#[tokio::test]` (not `#[test]`) because
+    // spawn_job internally calls `tokio::task::spawn_blocking`,
+    // which requires a tokio runtime context. The synchronous-rejection
+    // tests don't reach that call site (they error before spawn).
+    #[tokio::test]
+    async fn sequence_length_at_cap_accepted() {
+        let dir = tempdir().unwrap();
+        let mut req = small_request(dir.path().join("layer.safetensors"));
+        // Need >= batch_size examples for DataLoader to form a batch
+        // (partial last batch is dropped).
+        req.dataset.examples = (0..4)
+            .map(|i| example(&format!("p-{i}"), &format!("c-{i}")))
+            .collect();
+        req.schedule = Some(ScheduleParams {
+            epochs: 1,
+            batch_size: 2,
+            sequence_length: MAX_SEQUENCE_LENGTH,
+            learning_rate: 1e-3,
+        });
+        spawn_job(req).expect("spawn_job must accept sequence_length == MAX_SEQUENCE_LENGTH");
+    }
+
+    #[tokio::test]
+    async fn batch_size_at_cap_accepted() {
+        let dir = tempdir().unwrap();
+        let mut req = small_request(dir.path().join("layer.safetensors"));
+        req.dataset.examples = (0..(MAX_BATCH_SIZE as usize))
+            .map(|i| example(&format!("p-{i}"), &format!("c-{i}")))
+            .collect();
+        req.schedule = Some(ScheduleParams {
+            epochs: 1,
+            batch_size: MAX_BATCH_SIZE,
+            sequence_length: 8,
+            learning_rate: 1e-3,
+        });
+        spawn_job(req).expect("spawn_job must accept batch_size == MAX_BATCH_SIZE");
+    }
+
     // what this catches: happy-path lifecycle — actor reaches
     // Completed, writes the file, the artifact carries a non-None
     // local_path matching the requested location. A regression that

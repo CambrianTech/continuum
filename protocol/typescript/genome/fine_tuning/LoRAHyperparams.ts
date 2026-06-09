@@ -4,6 +4,10 @@
  * LoRA-specific knobs. Same field set every cloud provider exposes
  * (rank + alpha + dropout + target_modules); local Candle adds none
  * beyond these.
+ *
+ * `PartialEq` (not `Eq`) because of the `dropout: f32` field. The
+ * training-trigger bucket-coherence check compares two
+ * `LoRAHyperparams` via `!=`, which requires the trait.
  */
 export type LoRAHyperparams = { 
 /**

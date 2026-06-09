@@ -58,11 +58,18 @@ pub enum CoordinatorError {
     /// Candle isn't online.
     #[error(
         "no fine-tuning adapter advertises capability for base_model={base_model:?} \
-         (registered providers: {registered:?})"
+         (registered providers: {registered:?}; supported base prefixes by provider: {supported_prefixes:?})"
     )]
     NoCapableAdapter {
         base_model: String,
         registered: Vec<String>,
+        /// Per-provider list of `supported_base_model_prefixes`. Lets
+        /// the caller see *exactly* which prefix string would have
+        /// routed to which adapter — surfaces wire literals like
+        /// `SYNTHETIC_BASE_PREFIX` that callers otherwise have to
+        /// discover by reading Rust source. Per Reviewer 2 BLOCK B3:
+        /// load-bearing prefix strings need a discoverable contract.
+        supported_prefixes: Vec<(String, Vec<String>)>,
     },
 
     /// The caller specified `preferred_provider` but that adapter
@@ -137,10 +144,25 @@ impl FineTuningCoordinator {
 
         match ranked.into_iter().next() {
             Some((id, adapter, _)) => Ok((id, adapter)),
-            None => Err(CoordinatorError::NoCapableAdapter {
-                base_model: request.base_model.clone(),
-                registered: all_ids,
-            }),
+            None => {
+                // Build the supported_prefixes diagnostic — same
+                // adapter walk as the capability scan above, but
+                // surfaced into the error so the caller learns
+                // exactly which prefix string would have routed.
+                let supported_prefixes: Vec<(String, Vec<String>)> = all_ids
+                    .iter()
+                    .filter_map(|id| {
+                        self.registry
+                            .get(id)
+                            .map(|a| (id.clone(), a.capabilities().supported_base_model_prefixes))
+                    })
+                    .collect();
+                Err(CoordinatorError::NoCapableAdapter {
+                    base_model: request.base_model.clone(),
+                    registered: all_ids,
+                    supported_prefixes,
+                })
+            }
         }
     }
 
