@@ -14,7 +14,7 @@
 //!
 //! - `policy` — ConcurrencyPolicy trait + TokioConcurrencyPolicy impl,
 //!   single-flight per-key coordination, refcount guards (#1235).
-//!   Used by `cognition::shared_analysis` and `live::transport::livekit_agent`.
+//!   Used by `cognition::shared_analysis`.
 //! - `message_processor` — Reusable `MessageProcessor` trait for
 //!   processing messages concurrently. Generic over message type.
 //! - `priority_queue` — Generic priority-based message queue.
