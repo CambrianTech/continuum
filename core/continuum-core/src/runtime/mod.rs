@@ -68,7 +68,7 @@ pub use message_bus::MessageBus;
 pub use module_context::ModuleContext;
 pub use module_logger::ModuleLogger;
 pub use module_metrics::{CommandTiming, ModuleMetrics, ModuleStats};
-pub use per_key_gate::PerKeyGate;
+pub use per_key_gate::{Lease, PerKeyGate};
 pub use ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
 pub use region_telemetry::RegionTelemetry;
 pub use registry::ModuleRegistry;

@@ -155,10 +155,17 @@ impl<K: Eq + Hash + Clone> PerKeyGate<K> {
     }
 
     /// Number of gates currently tracked. Includes both contested
-    /// and idle gates (idle gates would have been evicted on the
-    /// last lease drop, so a non-zero `len()` between calls implies
-    /// there ARE active leases). Useful for substrate-side
-    /// leak-detection assertions in tests.
+    /// and idle gates. In steady state (no Lease mid-Drop on another
+    /// thread), idle gates would have been evicted on the last lease
+    /// drop, so a non-zero `len()` implies there ARE active leases.
+    /// Useful for substrate-side leak-detection assertions in tests.
+    ///
+    /// Caveat: during the narrow window between a Lease's
+    /// `gate.take()` and the `remove_if` running on another thread,
+    /// `len()` can briefly observe an entry with no active lease.
+    /// Tests asserting `len() == 0` should run after all leases have
+    /// dropped synchronously (the typical case — Drop runs on the
+    /// owning task).
     pub fn len(&self) -> usize {
         self.gates.len()
     }
