@@ -96,6 +96,11 @@ fn scan_for_violations(src_root: &Path) -> Vec<Violation> {
         };
         for (idx, raw_line) in content.lines().enumerate() {
             let trimmed = raw_line.trim_start();
+            // Strip a leading `pub ` so `pub use crate::runtime::<sub>::*`
+            // (re-export from an intermediate module) is also caught — that
+            // shape leaks the same engine-internal path through the consumer's
+            // public surface.
+            let trimmed = trimmed.trim_start_matches("pub ");
             // Match both `use crate::runtime::<sub>::*` and
             // `use super::runtime::<sub>::*` (the latter is unusual
             // but possible from intermediate modules).
@@ -238,4 +243,53 @@ fn runtime_internal_submodule_use_is_allowed() {
             "FORBIDDEN_RUNTIME_SUBMODULES is stale: '{sub}' not declared in runtime/mod.rs"
         );
     }
+}
+
+// proves: engine-OS layering (symmetric closure — every submodule declared
+// in runtime/mod.rs is tracked in FORBIDDEN_RUNTIME_SUBMODULES, so a NEW
+// submodule added without updating this list doesn't open a silent gap)
+#[test]
+fn every_runtime_submodule_is_tracked() {
+    let root = src_root();
+    let mod_rs = root.join("runtime").join("mod.rs");
+    let mod_content = fs::read_to_string(&mod_rs).expect("read runtime/mod.rs");
+
+    let mut declared: Vec<String> = Vec::new();
+    for raw_line in mod_content.lines() {
+        let line = raw_line.trim_start();
+        // `pub(crate) mod` is internal-only; the layering rule applies to
+        // submodules consumers could reach for (i.e. `pub mod`).
+        let Some(rest) = line.strip_prefix("pub mod ") else {
+            continue;
+        };
+        let Some(name) = rest.split(';').next() else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        declared.push(name.to_string());
+    }
+
+    assert!(
+        !declared.is_empty(),
+        "parser failed: no `pub mod X;` lines found in runtime/mod.rs"
+    );
+
+    let tracked: std::collections::HashSet<&str> =
+        FORBIDDEN_RUNTIME_SUBMODULES.iter().copied().collect();
+
+    let untracked: Vec<&String> = declared.iter().filter(|d| !tracked.contains(d.as_str())).collect();
+
+    assert!(
+        untracked.is_empty(),
+        "Engine-OS layering gap: runtime submodules declared in \
+         runtime/mod.rs but NOT tracked in FORBIDDEN_RUNTIME_SUBMODULES: \
+         {untracked:?}. A new submodule was added without extending the \
+         ratchet list — consumers could `use crate::runtime::<new>::Item` \
+         and the ratchet wouldn't catch it. Add each name to \
+         FORBIDDEN_RUNTIME_SUBMODULES and rebaseline GRANDFATHERED_VIOLATIONS \
+         if any callers already reach in."
+    );
 }
