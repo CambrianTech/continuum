@@ -26,7 +26,6 @@
 //! ```
 
 pub mod adapter;
-pub mod airc_remote_adapter;
 pub mod anthropic_adapter;
 // HeuristicInferenceAdapter is gated behind `cfg(any(test, feature =
 // "test-fixtures"))`. Production binaries built without the feature
