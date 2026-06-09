@@ -64,8 +64,9 @@ enum Command {
     /// (or the full JSON via --json).
     ///
     /// If the substrate has an AircRemoteInferenceAdapter registered,
-    /// the inference will transparently run on a remote peer (e.g., the
-    /// operator's 5090); the CLI doesn't know or care.
+    /// the inference will transparently run on a remote peer (the
+    /// operator's GPU-rich grid host, for example); the CLI doesn't
+    /// know or care.
     Generate {
         /// User-side prompt. Becomes a single user message in the
         /// TextGenerationRequest.

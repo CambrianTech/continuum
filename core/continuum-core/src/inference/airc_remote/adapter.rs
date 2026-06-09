@@ -70,7 +70,8 @@ impl AircRemoteInferenceAdapter {
 
     /// Pin every request to a specific peer. Use when the
     /// substrate's higher layer has decided this adapter
-    /// instance is the "route to Joel's 5090" channel.
+    /// instance is the dedicated route to one remote inference peer
+    /// (e.g. the operator's GPU-rich grid host).
     pub fn with_target_peer(mut self, peer: impl Into<String>) -> Self {
         self.default_target_peer = Some(peer.into());
         self
@@ -437,7 +438,7 @@ mod tests {
             })
         });
         let adapter = AircRemoteInferenceAdapter::new(transport)
-            .with_target_peer("joels-5090");
+            .with_target_peer("test-remote-peer");
         let _ = adapter.generate_text(req("anything")).await.unwrap();
         // The test verifies via the stub's served_by echo; the
         // adapter overwrites response.provider to airc-remote, so
