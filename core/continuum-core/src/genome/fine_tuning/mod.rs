@@ -86,6 +86,7 @@
 pub mod adapter;
 pub mod coordinator;
 pub mod local_candle_adapter;
+pub mod lora_module;
 pub mod openai_adapter;
 pub mod registry;
 pub mod types;
@@ -93,6 +94,7 @@ pub mod types;
 pub use adapter::{ArcFineTuningAdapter, FineTuningAdapter, FineTuningCapabilities, FineTuningError};
 pub use coordinator::{CoordinatorError, FineTuningCoordinator};
 pub use local_candle_adapter::LocalCandleFineTuner;
+pub use lora_module::{LoRAError, LoRAModule};
 pub use openai_adapter::OpenAIFineTuningAdapter;
 pub use registry::FineTuningRegistry;
 pub use types::{
