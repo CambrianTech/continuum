@@ -84,20 +84,26 @@
 //!   cloud, and cross-grid impls are peers, not a hierarchy.
 
 pub mod adapter;
+pub mod byte_tokenizer;
 pub mod coordinator;
+pub mod job_actor;
 pub mod local_candle_adapter;
 pub mod lora_module;
 pub mod openai_adapter;
 pub mod registry;
+pub mod safetensors_io;
 pub mod training_loop;
 pub mod types;
 
 pub use adapter::{ArcFineTuningAdapter, FineTuningAdapter, FineTuningCapabilities, FineTuningError};
+pub use byte_tokenizer::{ByteTokenizer, BYTE_PAD_ID, BYTE_VOCAB};
 pub use coordinator::{CoordinatorError, FineTuningCoordinator};
+pub use job_actor::{spawn_job, JobActorError, JobController, SpawnJobRequest};
 pub use local_candle_adapter::LocalCandleFineTuner;
 pub use lora_module::{LoRAError, LoRAModule};
 pub use openai_adapter::OpenAIFineTuningAdapter;
 pub use registry::FineTuningRegistry;
+pub use safetensors_io::{write_lora_safetensors, SafetensorsIoError, LORA_A_KEY, LORA_B_KEY};
 pub use training_loop::{
     DataLoader, LoRATrainer, TokenizedBatch, TokenizedExample, Tokenizer, TrainingError,
     TrainingMetrics,
