@@ -48,11 +48,6 @@ pub struct ChannelTickConfig {
     pub task_poll_enabled: bool,
     /// Whether to generate self-tasks (memory consolidation, skill audit, etc).
     pub self_task_enabled: bool,
-    /// Whether to check training data readiness each tick.
-    pub training_check_enabled: bool,
-    /// Training data threshold before triggering genome/job-create (default: 50).
-    #[ts(type = "number")]
-    pub training_threshold: u64,
 }
 
 impl Default for ChannelTickConfig {
@@ -61,8 +56,6 @@ impl Default for ChannelTickConfig {
             tick_interval_ms: 60_000,
             task_poll_enabled: true,
             self_task_enabled: true,
-            training_check_enabled: true,
-            training_threshold: 50,
         }
     }
 }
@@ -397,9 +390,7 @@ impl ServiceModule for ChannelModule {
                 // If params include config fields, update the tick config
                 let has_updates = params.get("tick_interval_ms").is_some()
                     || params.get("task_poll_enabled").is_some()
-                    || params.get("self_task_enabled").is_some()
-                    || params.get("training_check_enabled").is_some()
-                    || params.get("training_threshold").is_some();
+                    || params.get("self_task_enabled").is_some();
 
                 if has_updates {
                     if let Ok(mut config) = self.state.tick_config.write() {
@@ -411,15 +402,6 @@ impl ServiceModule for ChannelModule {
                         }
                         if let Some(v) = params.get("self_task_enabled").and_then(|v| v.as_bool()) {
                             config.self_task_enabled = v;
-                        }
-                        if let Some(v) = params
-                            .get("training_check_enabled")
-                            .and_then(|v| v.as_bool())
-                        {
-                            config.training_check_enabled = v;
-                        }
-                        if let Some(v) = params.get("training_threshold").and_then(|v| v.as_u64()) {
-                            config.training_threshold = v;
                         }
                         log_info!("module", "channel", "Tick config updated: {:?}", *config);
                     }
@@ -477,9 +459,7 @@ impl ServiceModule for ChannelModule {
             return Ok(());
         }
 
-        if (config.task_poll_enabled || config.self_task_enabled || config.training_check_enabled)
-            && self.should_skip_db_tick()
-        {
+        if (config.task_poll_enabled || config.self_task_enabled) && self.should_skip_db_tick() {
             return Ok(());
         }
 
@@ -611,45 +591,26 @@ impl ServiceModule for ChannelModule {
                 }
             }
 
-            // ── 3. Training readiness check ────────────────────────────────
-            if config.training_check_enabled {
-                let training_result = executor
-                    .execute_json(
-                        "data/count",
-                        serde_json::json!({
-                            "dbPath": db_path,
-                            "collection": "training_data",
-                            "filter": {
-                                "personaId": { "$eq": persona_id.to_string() },
-                                "consumed": { "$eq": false }
-                            }
-                        }),
-                    )
-                    .await;
-
-                match training_result {
-                    Ok(count_json) => {
-                        let count = count_json.get("data").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                        if count >= config.training_threshold {
-                            log.info(&format!("Training threshold met for {} ({} examples), triggering genome/job-create", persona_id, count));
-                            let _ = executor
-                                .execute_ts_json(
-                                    "genome/job-create",
-                                    serde_json::json!({
-                                        "personaId": persona_id.to_string(),
-                                        "trainingExamples": count,
-                                    }),
-                                )
-                                .await;
-                        }
-                    }
-                    Err(e) => {
-                        self.record_db_tick_failure(&format!("training check failed: {e}"));
-                        return Ok(());
-                    }
-                }
-            }
+            // Training readiness check used to live here. Removed in
+            // task #227 — the trigger was structurally dead:
+            //
+            // - It sent `{personaId, trainingExamples}` to the TS
+            //   `genome/job-create` validator, which requires
+            //   `provider` + `configuration`. Every fire-and-forget
+            //   call silently rejected. The log line lied that it
+            //   "triggered" training; nothing started.
+            // - The TS path itself is cloud-provider-only (OpenAI /
+            //   Fireworks / DeepSeek / Mistral / Together). The
+            //   substrate's actual training story is local Candle +
+            //   teacher-synthesized curricula + matrix-dojo layer
+            //   paging — a fundamentally different shape that needs
+            //   its own ServiceModule, not this fire-and-forget hop.
+            //
+            // When the substrate-native local training trigger
+            // crystallizes (per the LoRA paging + matrix-dojo
+            // doctrines) it lands as a typed `genome/*` ServiceModule
+            // and the channel tick fires into THAT, not into a TS
+            // command.
         }
 
         self.record_db_tick_success();
