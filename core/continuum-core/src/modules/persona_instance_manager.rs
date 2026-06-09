@@ -201,6 +201,16 @@ impl PersonaInstanceManagerModule {
         &self,
         intent: &PersonaIdentityIntent,
     ) -> Result<PersonaInstanceInfo, PersonaAircRuntimeError> {
+        // Task #222 + R1/R2 BLOCK on PR #1568: resolve the substrate's
+        // process-global CommandExecutor LAZILY at bootstrap time, not
+        // at PIM construction. `bootstrap_one` is reachable only via
+        // a dispatched command (`persona/instances/bootstrap`), and
+        // commands dispatch THROUGH the executor — so by the time we
+        // hit this line, `init_executor` is GUARANTEED to have run.
+        // The earlier shape (eager lookup at PIM::new) panicked at
+        // `start_server` because PIM was constructed BEFORE
+        // init_executor in the boot sequence.
+        let executor = crate::runtime::command_executor::executor();
         let runtime = PersonaAircRuntime::bootstrap(
             intent.persona_id,
             intent.agent_name.clone(),
@@ -209,6 +219,7 @@ impl PersonaInstanceManagerModule {
             self.default_room,
             self.default_room_name.clone(),
             intent.source,
+            executor,
         )
         .await?;
 

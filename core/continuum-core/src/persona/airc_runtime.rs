@@ -96,6 +96,17 @@ pub enum PersonaAircRuntimeError {
         #[source]
         source: AircError,
     },
+    #[error(
+        "failed to install command inbound pump for persona {agent_name:?}: {source} — \
+         the persona's airc handle subscribe failed, so the persona would be \
+         silently unaddressable for cross-grid commands. Per [[no-fallbacks-ever]] \
+         the substrate refuses to declare the persona ready in this state."
+    )]
+    CommandPumpInstall {
+        agent_name: String,
+        #[source]
+        source: AircError,
+    },
 }
 
 /// One persona's live airc connection.
@@ -111,6 +122,17 @@ pub struct PersonaAircRuntime {
     airc: Arc<Airc>,
     default_room: RoomId,
     inbound_handle: Option<JoinHandle<()>>,
+    /// Per-persona command inbound pump (task #222). When `Some`,
+    /// this persona's airc handle is wired to receive cross-grid
+    /// `AircCommandRequest` envelopes — peer_b can dispatch
+    /// `airc://<this-persona-uuid>/ai/generate` and the substrate
+    /// answers via the substrate's CommandExecutor. `None` only on
+    /// `from_attached` paths where the caller opted out of the pump
+    /// (test/demo fixtures); production `bootstrap` always installs
+    /// it — if subscribe fails we hard-error per
+    /// `[[no-fallbacks-ever]]`, never declaring a silently-
+    /// unaddressable persona ready.
+    command_pump: Option<crate::persona::command_inbound_pump::PersonaCommandInboundPump>,
     /// Where this citizen's identity came from — resumed from disk
     /// vs freshly minted. Carried for the lifetime of the runtime so
     /// telemetry surfaces (list/get IPC, future status panels) can
@@ -135,8 +157,20 @@ impl PersonaAircRuntime {
     /// 3. Resolve the room by its UUID via `default_room.as_uuid()`
     ///    and call `Airc::join(...)`. This makes the persona appear
     ///    on `airc peers` as an enrolled participant of the room.
-    /// 4. (Inbound pump is wired in a follow-up; this bootstrap
-    ///    returns the handle ready for that wiring.)
+    /// 4. Install the per-persona command inbound pump
+    ///    ([`PersonaCommandInboundPump`](crate::persona::command_inbound_pump))
+    ///    so this persona's airc handle starts receiving cross-grid
+    ///    `AircCommandRequest` envelopes. The pump dispatches each
+    ///    envelope through the supplied `executor`, which is
+    ///    typically the substrate's process-global
+    ///    [`runtime::command_executor::executor()`](crate::runtime::command_executor::executor).
+    ///    Per `[[no-fallbacks-ever]]`: if `subscribe()` fails inside
+    ///    pump install, bootstrap returns
+    ///    [`PersonaAircRuntimeError::CommandPumpInstall`] — the
+    ///    substrate refuses to declare a silently-unaddressable
+    ///    persona ready. Task #222 lands this; before that, a
+    ///    persona's bootstrap returned Ok even though peer_b's
+    ///    cross-grid dispatches would have timed out.
     ///
     /// Returns the runtime handle. On any failure surfaces a typed
     /// `PersonaAircRuntimeError` with an actionable remedy in the
@@ -149,6 +183,7 @@ impl PersonaAircRuntime {
         default_room: RoomId,
         default_room_name: Option<String>,
         source: crate::persona::identity_provider::PersonaIdentitySource,
+        executor: Arc<crate::runtime::command_executor::CommandExecutor>,
     ) -> Result<Self, PersonaAircRuntimeError> {
         let agent_name = agent_name.into();
         // Slice 4 of #142: symmetric citizens/<kind>/<label>/airc/
@@ -287,13 +322,39 @@ impl PersonaAircRuntime {
             "PersonaAircRuntime bootstrap: joined room"
         );
 
+        // Task #222: install the command inbound pump so this
+        // persona becomes a real command-callable peer on the grid.
+        // Per [[no-fallbacks-ever]]: subscribe failure is bootstrap
+        // failure — we refuse to declare the persona ready while it
+        // would silently ignore cross-grid command envelopes.
+        let airc_arc = Arc::new(airc);
+        let command_pump =
+            crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
+                persona_id,
+                Arc::clone(&airc_arc),
+                executor,
+            )
+            .await
+            .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {
+                agent_name: agent_name.clone(),
+                source,
+            })?;
+
+        info!(
+            persona_id = %persona_id,
+            agent_name = %agent_name,
+            "PersonaAircRuntime bootstrap: command inbound pump installed — \
+             persona is now addressable for cross-grid commands"
+        );
+
         Ok(Self {
             persona_id,
             agent_name,
             home,
-            airc: Arc::new(airc),
+            airc: airc_arc,
             default_room,
             inbound_handle: None,
+            command_pump: Some(command_pump),
             source,
         })
     }
@@ -341,8 +402,54 @@ impl PersonaAircRuntime {
             airc,
             default_room,
             inbound_handle: None,
+            // from_attached is sync + the pump install is async, so
+            // we don't install at construction. Callers that want the
+            // persona addressable for cross-grid commands invoke
+            // `install_command_pump` separately. Bootstrap installs
+            // automatically; this seam is for tests + demo binaries
+            // that want fine-grained control.
+            command_pump: None,
             source,
         }
+    }
+
+    /// Install the command inbound pump on this runtime (task #222).
+    /// `bootstrap` calls this automatically; `from_attached` callers
+    /// invoke it explicitly when they want the persona to become
+    /// addressable for cross-grid commands.
+    ///
+    /// Idempotency: if a pump is already installed, this aborts the
+    /// existing one before installing the new — per
+    /// `[[no-fallbacks-ever]]` the alternative (silently keep two
+    /// pumps fighting over the broadcast receiver) is the wrong
+    /// shape.
+    pub async fn install_command_pump(
+        &mut self,
+        executor: Arc<crate::runtime::command_executor::CommandExecutor>,
+    ) -> Result<(), PersonaAircRuntimeError> {
+        if let Some(existing) = self.command_pump.take() {
+            existing.abort();
+        }
+        let pump = crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
+            self.persona_id,
+            Arc::clone(&self.airc),
+            executor,
+        )
+        .await
+        .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {
+            agent_name: self.agent_name.clone(),
+            source,
+        })?;
+        self.command_pump = Some(pump);
+        Ok(())
+    }
+
+    /// Whether this runtime currently has the command inbound pump
+    /// installed. `true` after `bootstrap` (always) or after a
+    /// successful `install_command_pump` call. Useful for tests +
+    /// telemetry to confirm the persona is addressable.
+    pub fn has_command_pump(&self) -> bool {
+        self.command_pump.is_some()
     }
 
     /// The persona's stable continuum identifier.
@@ -425,6 +532,13 @@ impl Drop for PersonaAircRuntime {
         if let Some(handle) = self.inbound_handle.take() {
             handle.abort();
         }
+        if let Some(pump) = self.command_pump.take() {
+            // Fire-and-forget abort. Drop is sync; the pump's async
+            // `shutdown` (which awaits the JoinHandle) is what
+            // explicit-shutdown callers use. Tokio reaps the
+            // aborted task.
+            pump.abort();
+        }
         // Arc<Airc> drops alongside the runtime; airc-lib handles
         // its own cleanup (daemon connection close, identity state
         // flush).
@@ -494,6 +608,14 @@ mod tests {
         // Bootstrap a persona named "maya". The legacy detection
         // fires BEFORE airc-lib attach, so the test doesn't need a
         // running daemon.
+        // Dummy executor — bootstrap fires the legacy-path detection
+        // BEFORE pump install, so the executor is never touched.
+        let dummy_registry =
+            std::sync::Arc::new(crate::runtime::ModuleRegistry::new());
+        let dummy_executor = std::sync::Arc::new(
+            crate::runtime::command_executor::CommandExecutor::new(dummy_registry),
+        );
+
         let result = PersonaAircRuntime::bootstrap(
             Uuid::new_v4(),
             "maya",
@@ -502,6 +624,7 @@ mod tests {
             RoomId::from_uuid(Uuid::new_v4()),
             None,
             crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
+            dummy_executor,
         )
         .await;
 
