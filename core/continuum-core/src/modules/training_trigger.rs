@@ -1230,41 +1230,85 @@ mod tests {
     /// every produced LoRA layer's training data.
     mod vdd {
         use super::*;
+        use crate::genome::fine_tuning::{
+            FineTuningRegistry, RecordingFineTuningAdapter, RECORDING_BASE_PREFIX,
+        };
+        use crate::modules::genome::GenomeModule;
+
+        /// Build a runtime where genome/job-create routes to a
+        /// RecordingFineTuningAdapter (substrate's canonical test
+        /// fixture for capturing dispatched TrainingJobRequests).
+        /// Returns the trigger + the shared captures handle so the
+        /// test body can compare dispatched-vs-submitted at exact
+        /// example granularity.
+        ///
+        /// Per Reviewer 1's BLOCK M2 (re-review): the previous
+        /// `trained_tokens > 0` smoke check could not actually
+        /// detect a drop/duplicate in the dispatch path because
+        /// `trained_tokens` is a function of schedule, not example
+        /// count. The recording fixture is the proper "did every
+        /// submitted example flow through" check.
+        async fn build_recording_runtime() -> (
+            Arc<TrainingTriggerModule>,
+            Arc<RecordingFineTuningAdapter>,
+        ) {
+            let registry = Arc::new(ModuleRegistry::new());
+            let trigger = Arc::new(TrainingTriggerModule::new());
+            registry.register(trigger.clone());
+
+            let ft_registry = Arc::new(FineTuningRegistry::new());
+            let recorder = Arc::new(RecordingFineTuningAdapter::new());
+            ft_registry.register(recorder.clone());
+            registry.register(Arc::new(GenomeModule::new(ft_registry)));
+
+            let executor = Arc::new(CommandExecutor::new(registry.clone()));
+            registry.install_executor_on_all(executor.clone());
+            (trigger, recorder)
+        }
 
         // what this VDD catches: every example submitted across N
-        // submits must appear EXACTLY ONCE in the dispatched
-        // dataset, in the order it was submitted. This is the
-        // matrix-dojo loop's data-conservation invariant. We
-        // intercept the dispatched dataset by registering a stub
-        // GenomeModule replacement... but here we take a simpler
-        // path: query the LocalCandleFineTuner's job status after
-        // dispatch to verify it was given a non-empty dataset, and
-        // we count the trained_tokens in the artifact to verify
-        // examples × seq_len matches what we submitted.
+        // submits appears EXACTLY ONCE in a dispatched job — no
+        // duplicates, no drops, in submission order. The
+        // RecordingFineTuningAdapter captures the dispatched
+        // TrainingDataset so we can compare prompt-by-prompt against
+        // what was submitted. This is real conservation accounting,
+        // not the tautological `trained_tokens > 0` the previous
+        // version asserted.
         //
-        // Stronger conservation check: we use the `trained_tokens`
-        // metric the job actor reports in its TrainingArtifact.
-        // The actor computes trained_tokens = steps × batch ×
-        // seq_len, and steps = batches × epochs. With known
-        // schedule defaults, this gives a closed-form expected
-        // count we can verify.
+        // A regression that double-counted or dropped on the
+        // drain-and-dispatch path would here surface as either a
+        // count mismatch OR a missing/duplicated prompt — both
+        // distinct, both failure-class-specific.
         #[tokio::test]
         async fn submitted_examples_flow_through_dispatch_intact() {
-            let (trigger, executor) = build_runtime_with_trigger_and_genome().await;
+            let (trigger, recorder) = build_recording_runtime().await;
             let persona = Uuid::new_v4();
             let n = 8;
 
-            // Submit n examples with unique prompt/completion text
-            // so a duplication or drop bug would be visible in the
-            // example count.
+            // Submit n examples with unique prompt text so a
+            // duplication or drop would be visible at the
+            // prompt-string level, not just in counts.
             let examples: Vec<TrainingExample> = (0..n)
                 .map(|i| ex(&format!("prompt-{i}"), &format!("completion-{i}")))
                 .collect();
+            let mut params = submit_params(
+                persona,
+                "vdd-trait",
+                examples.clone(),
+                Some(n as u32),
+            );
+            // The recording fixture matches base_model prefix
+            // "recording-test" — submit_params helper defaults to
+            // "synthetic" which would route to LocalCandleFineTuner.
+            // Override so dispatch deterministically lands at the
+            // recorder.
+            params.as_object_mut().unwrap().insert(
+                "baseModel".into(),
+                Value::String(format!("{RECORDING_BASE_PREFIX}-vdd")),
+            );
+
             let result = trigger
-                .handle_command(
-                    "genome/training-trigger/submit",
-                    submit_params(persona, "vdd-trait", examples.clone(), Some(n as u32)),
-                )
+                .handle_command("genome/training-trigger/submit", params)
                 .await
                 .unwrap();
             let json = match result {
@@ -1277,59 +1321,100 @@ mod tests {
                 "VDD: every submitted example must be in the dispatched job"
             );
 
-            // Bucket cleared exactly once — zero leftover, no
-            // duplicate retained.
+            // Bucket cleared exactly once — zero leftover.
             assert_eq!(
-                trigger.bucket_example_count(persona, "vdd-trait", "synthetic"),
+                trigger.bucket_example_count(persona, "vdd-trait", &format!("{RECORDING_BASE_PREFIX}-vdd")),
                 None,
                 "VDD: bucket must be fully drained, no leftover"
             );
+            assert_eq!(trigger.pending_bucket_count(), 0);
+
+            // CONSERVATION CHECK — the load-bearing assertion this
+            // test exists for. Exactly one job dispatched, exactly
+            // n examples captured, examples match submitted set in
+            // ORDER (the trigger preserves submission order on
+            // append + drain).
             assert_eq!(
-                trigger.pending_bucket_count(),
-                0,
-                "VDD: no phantom empty buckets after dispatch"
+                recorder.captured_job_count(),
+                1,
+                "VDD: exactly one job dispatched"
+            );
+            assert_eq!(
+                recorder.captured_example_count(),
+                n,
+                "VDD: dispatched dataset must carry exactly the {n} examples submitted"
             );
 
-            // Poll the dispatched job to terminal — its
-            // trained_tokens count gives us a closed-form check
-            // that the actor saw a non-empty dataset.
-            let handle_value = &json["jobHandle"];
-            let mut terminal: Option<Value> = None;
-            for _ in 0..200 {
-                let status_v = executor
-                    .execute_json(
-                        "genome/job-status",
-                        json!({ "handle": handle_value }),
-                    )
-                    .await
-                    .expect("job-status");
-                let status = status_v["status"].clone();
-                if status["state"] == "completed"
-                    || status["state"] == "failed"
-                    || status["state"] == "cancelled"
-                {
-                    terminal = Some(status);
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            let captures = recorder.captures();
+            let guard = captures.lock().unwrap();
+            let dispatched_examples = &guard[0].dataset.examples;
+            assert_eq!(dispatched_examples.len(), examples.len());
+            for (i, (sub, disp)) in examples.iter().zip(dispatched_examples.iter()).enumerate() {
+                assert_eq!(
+                    sub.prompt, disp.prompt,
+                    "VDD: example {i} prompt mismatch — submission order violated or example replaced"
+                );
+                assert_eq!(sub.completion, disp.completion);
             }
-            let terminal = terminal.expect("VDD: job must reach terminal status");
-            assert_eq!(
-                terminal["state"], "completed",
-                "VDD: dispatched job must complete on a synthetic base, got {terminal:?}"
-            );
+        }
 
-            // The artifact's metrics.trainedTokens must be > 0 —
-            // the actor only emits this when examples actually
-            // flowed through the data loader. Zero would prove the
-            // examples got lost between trigger and actor.
-            let trained_tokens = terminal["artifact"]["metrics"]["trainedTokens"]
-                .as_u64()
-                .expect("trainedTokens present");
-            assert!(
-                trained_tokens > 0,
-                "VDD: dispatched job must have non-zero trainedTokens, got {trained_tokens}"
+        // what this VDD catches: conservation across MULTIPLE
+        // submits to the same bucket. Pre-fix the previous tests
+        // verified single-submit flows; this verifies that
+        // accumulated submits, when finally drained-and-dispatched,
+        // carry every example in INSERTION ORDER. A bug in
+        // `entry.examples.extend(...)` (e.g. accidentally calling
+        // `replace_with` or prepending instead of appending) would
+        // here surface as a reordering or count mismatch.
+        #[tokio::test]
+        async fn multi_submit_accumulation_preserves_order_through_dispatch() {
+            let (trigger, recorder) = build_recording_runtime().await;
+            let persona = Uuid::new_v4();
+            let trait_kind = "multi-submit-vdd";
+            let base_model = format!("{RECORDING_BASE_PREFIX}-multi");
+
+            // 4 submits × 3 examples = 12. Threshold 12 → fires
+            // only at the last submit.
+            let mut all_submitted: Vec<TrainingExample> = Vec::new();
+            for batch in 0..4 {
+                let exs: Vec<TrainingExample> = (0..3)
+                    .map(|i| {
+                        ex(
+                            &format!("b{batch}-p{i}"),
+                            &format!("b{batch}-c{i}"),
+                        )
+                    })
+                    .collect();
+                all_submitted.extend(exs.clone());
+                let mut params = submit_params(persona, trait_kind, exs, Some(12));
+                params
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("baseModel".into(), Value::String(base_model.clone()));
+                let _ = trigger
+                    .handle_command("genome/training-trigger/submit", params)
+                    .await
+                    .unwrap();
+            }
+
+            // Exactly one job dispatched (only the 4th submit
+            // crossed threshold).
+            assert_eq!(recorder.captured_job_count(), 1);
+
+            let captures = recorder.captures();
+            let guard = captures.lock().unwrap();
+            let dispatched = &guard[0].dataset.examples;
+            assert_eq!(
+                dispatched.len(),
+                12,
+                "VDD: dispatched dataset must carry all 12 accumulated examples"
             );
+            for (i, (sub, disp)) in all_submitted.iter().zip(dispatched.iter()).enumerate() {
+                assert_eq!(
+                    sub.prompt, disp.prompt,
+                    "VDD: position {i} reordering — accumulator violated submission order"
+                );
+            }
         }
     }
 

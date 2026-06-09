@@ -116,14 +116,39 @@ pub struct TokenizedExample {
 /// One batch of tokenized examples, padded to the same length.
 /// Tensors live on the configured [`Device`]. Used as the input to
 /// [`LoRATrainer::train_step`].
+///
+/// ## Two distinct mask fields
+///
+/// The split between `attention_mask` and `target_mask` matters and
+/// they are NOT interchangeable. Reviewer-caught semantic-drift bug
+/// (PR #1581 round 1) shipped a metric that used `attention_mask`
+/// when it should have used `target_mask` — because `target_ids` are
+/// `input_ids` shifted left by 1, the two masks differ by one
+/// position. A 1-byte ByteTokenizer example whose first INPUT is
+/// non-pad but whose first TARGET IS pad was being counted as
+/// gradient-bearing. The two fields enforce the distinction
+/// structurally.
 #[derive(Debug, Clone)]
 pub struct TokenizedBatch {
-    /// `[batch_size, sequence_length]` token ids.
+    /// `[batch_size, sequence_length]` token ids fed into the
+    /// (eventual) embedding lookup. Pad positions hold the
+    /// tokenizer's pad id (typically 0).
     pub input_ids: Tensor,
-    /// `[batch_size, sequence_length]` target ids (input_ids shifted left).
+    /// `[batch_size, sequence_length]` target ids (input_ids shifted
+    /// left by 1 — standard causal LM target shape).
     pub target_ids: Tensor,
-    /// `[batch_size, sequence_length]` 1/0 mask; 1 for real, 0 for pad.
+    /// `[batch_size, sequence_length]` 1/0 mask aligned to INPUT
+    /// positions: 1 for real input, 0 for pad. Use this for
+    /// transformer attention masking (when real wiring lands).
     pub attention_mask: Tensor,
+    /// `[batch_size, sequence_length]` 1/0 mask aligned to TARGET
+    /// positions: 1 for real target, 0 for pad target. Use this for
+    /// loss/metric masking. Distinct from `attention_mask` because
+    /// targets are input_ids shifted by 1: a sample whose last real
+    /// input is at position k has its last real TARGET at position
+    /// k-1. The training loop uses `target_mask.narrow(1, 0, 1)` to
+    /// honestly count gradient-bearing first-target samples.
+    pub target_mask: Tensor,
 }
 
 // ─── Data loader ────────────────────────────────────────────────────
@@ -215,21 +240,36 @@ impl DataLoader {
 
             let mut all_inputs: Vec<u32> = Vec::with_capacity(batch_size * seq_len);
             let mut all_targets: Vec<u32> = Vec::with_capacity(batch_size * seq_len);
-            let mut all_masks: Vec<u8> = Vec::with_capacity(batch_size * seq_len);
+            let mut all_attn_masks: Vec<u8> = Vec::with_capacity(batch_size * seq_len);
+            // Target mask is computed from target_ids vs pad_id —
+            // structurally distinct from attention_mask (which
+            // reflects INPUT pad status). Per reviewer-caught
+            // semantic-drift: target[i] is input[i+1] (causal LM
+            // shift), so a sample's last real INPUT can be at
+            // position k while its last real TARGET is at k-1.
+            let mut all_target_masks: Vec<u8> = Vec::with_capacity(batch_size * seq_len);
             for ex in chunk {
                 all_inputs.extend_from_slice(&ex.input_ids);
                 all_targets.extend_from_slice(&ex.target_ids);
-                all_masks.extend_from_slice(&ex.attention_mask);
+                all_attn_masks.extend_from_slice(&ex.attention_mask);
+                for &t in &ex.target_ids {
+                    all_target_masks.push(if t == pad_id { 0 } else { 1 });
+                }
             }
 
             let input_ids =
                 Tensor::from_vec(all_inputs, (batch_size, seq_len), device)?.to_dtype(DType::U32)?;
             let target_ids =
                 Tensor::from_vec(all_targets, (batch_size, seq_len), device)?.to_dtype(DType::U32)?;
-            // attention_mask as F32 (for multiplying loss; U8 would
-            // need a cast anyway).
+            // attention_mask + target_mask both as F32 for
+            // loss-scaling math (U8 would need a cast anyway).
             let attention_mask = Tensor::from_vec(
-                all_masks.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+                all_attn_masks.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+                (batch_size, seq_len),
+                device,
+            )?;
+            let target_mask = Tensor::from_vec(
+                all_target_masks.iter().map(|&v| v as f32).collect::<Vec<_>>(),
                 (batch_size, seq_len),
                 device,
             )?;
@@ -238,6 +278,7 @@ impl DataLoader {
                 input_ids,
                 target_ids,
                 attention_mask,
+                target_mask,
             });
         }
 
@@ -274,6 +315,17 @@ impl DataLoader {
 pub struct TrainingMetrics {
     pub steps_completed: u64,
     pub epochs_completed: u32,
+    /// Honest count of gradient-bearing target positions consumed
+    /// across all `train_step` calls so far. Replaces the inflated
+    /// `steps × batch × seq_len` formula that the job actor's
+    /// `trained_tokens` metric used previously (Reviewer 1's BLOCK
+    /// M1). In the standin path this is `steps × batch × 1` (one
+    /// target per sample); in the real-model-loading path it
+    /// becomes `sum of attention_mask` across all batches. Either
+    /// way the count reflects what actually flowed through the
+    /// gradient, not a schedule-derived guess. The actor reads this
+    /// straight into [`super::types::JobMetrics::trained_tokens`].
+    pub gradient_tokens_consumed: u64,
     /// Loss on the most recent training step.
     pub last_train_loss: Option<f32>,
     /// Average loss across the most recent epoch.
@@ -317,28 +369,52 @@ impl LoRATrainer {
     }
 
     /// One forward + cross-entropy + backward + optimizer step.
-    /// Returns the loss value for this step (also stored in
-    /// `metrics.last_train_loss`).
+    /// Returns `(loss, tokens_used)` — the loss value and the count
+    /// of gradient-bearing target positions THIS STEP actually
+    /// trained against. Per Reviewer 1's BLOCK M1: the previous
+    /// version returned only loss, and the actor's `trained_tokens`
+    /// metric was computed as `steps × batch × seq_len` after the
+    /// fact — inflated by `seq_len`× in the stand-in path because
+    /// the stand-in trains on ONE target per sample. The honest
+    /// count flows out of THIS function and accumulates into
+    /// [`TrainingMetrics::gradient_tokens_consumed`].
     ///
     /// ## Stand-in vs production
     ///
     /// This is the substrate-side stand-in path that exercises the
     /// gradient flow through `LoRAModule`'s A + B Vars end-to-end.
-    /// Production wiring (#233) replaces:
-    ///   - the U32→F32 cast with an embedding-table lookup
-    ///   - the single-class-per-sample target with the full
-    ///     [batch * seq] flattened token-prediction targets
-    ///   - the standin's [batch, out_features] logits with a
-    ///     transformer's [batch, seq, vocab] logits flattened to
-    ///     [batch * seq, vocab]
+    /// Production wiring (replaces the synthetic base when real
+    /// model loading lands):
+    ///   - the U32→F32 cast becomes an embedding-table lookup
+    ///   - the single-class-per-sample target becomes the full
+    ///     [batch * seq] flattened token-prediction targets, masked
+    ///     by `attention_mask`
+    ///   - `tokens_used` becomes `attention_mask.sum()` — the count
+    ///     of non-pad positions that received gradient signal
     /// The optimizer + cross-entropy + backward shape stays
     /// identical across both — the swap is local to forward + target
     /// shaping.
-    pub fn train_step(&mut self, batch: &TokenizedBatch) -> Result<f32, TrainingError> {
+    ///
+    /// ## Pad-as-target note (Reviewer 1's LGTM M3)
+    ///
+    /// The stand-in pulls `target_ids.narrow(1, 0, 1)` — the FIRST
+    /// target id per sample. For samples whose first target IS the
+    /// pad id (very short examples that fit entirely in the pad
+    /// region of the seq dim), gradient flows for "predict pad."
+    /// The honest mitigation in the stand-in: `tokens_used` is
+    /// computed from `attention_mask.first_column.sum()` — the
+    /// count of samples whose first target is NON-pad. The metric
+    /// thus reports gradient-bearing tokens accurately; cross_entropy
+    /// still computes loss over all samples (including pad targets)
+    /// but the count surfaces the corruption to operators. The full
+    /// fix — masking pad targets out of cross_entropy via per-sample
+    /// loss scaling — lands in the real-model-loading slice
+    /// alongside the embedding-table swap.
+    pub fn train_step(&mut self, batch: &TokenizedBatch) -> Result<(f32, u64), TrainingError> {
         // Stand-in forward: cast token ids to F32 and run through
-        // the LoRA-wrapped linear. The actual transformer (#233)
-        // embeds ids first; this stand-in exercises the gradient
-        // path through A + B without needing the embedding table.
+        // the LoRA-wrapped linear. The actual transformer embeds
+        // ids first; this stand-in exercises the gradient path
+        // through A + B without needing the embedding table.
         let inputs_f32 = batch.input_ids.to_dtype(DType::F32)?;
         let logits = self.module.forward(&inputs_f32)?;
 
@@ -360,22 +436,65 @@ impl LoRATrainer {
         };
         let targets_u32 = targets_per_sample.to_dtype(DType::U32)?;
 
+        // Honest tokens_used: count of samples whose first TARGET
+        // is non-pad. Use `target_mask`, NOT `attention_mask` —
+        // they differ by one position because target_ids are
+        // input_ids shifted left. This is the load-bearing fix for
+        // the round-1 reviewer's BLOCK on M1 semantic drift: a
+        // 1-byte ByteTokenizer example's first INPUT is non-pad
+        // (mask_attn[0]=1) but its first TARGET IS pad
+        // (mask_target[0]=0). Using attention_mask here re-inflates
+        // the metric by counting pad-targeted samples as
+        // gradient-bearing — the exact bug M1 was filed to kill.
+        let tokens_used: u64 = if batch.target_mask.dims().len() >= 2
+            && batch.target_mask.dims()[1] >= 1
+        {
+            let first_col = batch
+                .target_mask
+                .narrow(1, 0, 1)?
+                .squeeze(1)?
+                .contiguous()?;
+            first_col.sum_all()?.to_scalar::<f32>()? as u64
+        } else {
+            batch.input_ids.dim(0)? as u64
+        };
+
+        // Per `[[no-fallbacks-ever]]`: if the whole batch is
+        // pad-targeted (tokens_used == 0), skip the backward step
+        // entirely. Letting AdamW step on a loss derived ENTIRELY
+        // from pad-target predictions would corrupt the LoRA
+        // parameters with garbage gradient signal. This is the
+        // partial-pad mitigation flagged by reviewer round-1 LGTM
+        // M3 — the full per-sample masking inside cross_entropy
+        // lands with real-model loading, but the all-pad-batch case
+        // we CAN catch now.
+        if tokens_used == 0 {
+            self.metrics.steps_completed += 1;
+            // last_train_loss stays None (no real loss computed)
+            return Ok((0.0, 0));
+        }
+
         let loss = cross_entropy(&logits, &targets_u32)?;
         self.optimizer.backward_step(&loss)?;
 
         let loss_scalar = loss.to_scalar::<f32>()?;
         self.metrics.steps_completed += 1;
+        self.metrics.gradient_tokens_consumed += tokens_used;
         self.metrics.last_train_loss = Some(loss_scalar);
-        Ok(loss_scalar)
+        Ok((loss_scalar, tokens_used))
     }
 
     /// One epoch — iterate every batch the loader produces, sum
     /// losses, update metrics.
     pub fn train_epoch(&mut self, loader: &DataLoader) -> Result<f32, TrainingError> {
+        // Per-batch train_step now returns (loss, tokens_used);
+        // tokens_used accumulates inside train_step into
+        // metrics.gradient_tokens_consumed, so we only need loss
+        // here for the averaging.
         let mut sum_loss = 0.0_f32;
         let mut count = 0_u32;
         for batch in loader.batches() {
-            let loss = self.train_step(batch)?;
+            let (loss, _tokens_used) = self.train_step(batch)?;
             sum_loss += loss;
             count += 1;
         }
@@ -568,11 +687,17 @@ mod tests {
         )
         .unwrap();
         let target_ids = Tensor::from_vec(vec![2u32, 3, 0, 0], (1, 4), &device).unwrap();
-        let mask = Tensor::full(1.0f32, (1, 4), &device).unwrap();
+        let attn_mask = Tensor::full(1.0f32, (1, 4), &device).unwrap();
+        // target_mask reflects target_ids pad status: [2, 3] non-pad
+        // (1.0), [0, 0] pad (0.0). First-target IS non-pad here, so
+        // train_step gets a gradient-bearing step.
+        let target_mask =
+            Tensor::from_slice(&[1.0f32, 1.0, 0.0, 0.0], (1, 4), &device).unwrap();
         let batch = TokenizedBatch {
             input_ids,
             target_ids,
-            attention_mask: mask,
+            attention_mask: attn_mask,
+            target_mask,
         };
 
         trainer.train_step(&batch).unwrap();
@@ -711,21 +836,26 @@ mod tests {
             // movement in a small step budget so the test stays fast.
             let mut trainer = LoRATrainer::new(module, 0.5).unwrap();
 
-            // Single batch held constant across all steps.
+            // Single batch held constant across all steps. Both
+            // masks set the SAME way (first target non-pad) so the
+            // standin trains every step.
             let input_ids = Tensor::from_slice(&[1u32, 2, 3, 0], (1, 4), &device).unwrap();
             let target_ids = Tensor::from_slice(&[2u32, 3, 0, 0], (1, 4), &device).unwrap();
-            let mask = Tensor::full(1.0f32, (1, 4), &device).unwrap();
+            let attn_mask = Tensor::full(1.0f32, (1, 4), &device).unwrap();
+            let target_mask =
+                Tensor::from_slice(&[1.0f32, 1.0, 0.0, 0.0], (1, 4), &device).unwrap();
             let batch = TokenizedBatch {
                 input_ids,
                 target_ids,
-                attention_mask: mask,
+                attention_mask: attn_mask,
+                target_mask,
             };
 
-            let loss_0 = trainer.train_step(&batch).unwrap();
+            let (loss_0, _) = trainer.train_step(&batch).unwrap();
             for _ in 0..40 {
                 trainer.train_step(&batch).unwrap();
             }
-            let loss_final = trainer.train_step(&batch).unwrap();
+            let (loss_final, _) = trainer.train_step(&batch).unwrap();
 
             // Convergence threshold: loss must drop to at most half
             // its initial value. Single-example overfitting on a
@@ -749,6 +879,171 @@ mod tests {
             );
         }
 
+        // what this VDD catches: `gradient_tokens_consumed` counts
+        // batch_size per step when ALL first-targets are non-pad
+        // (the all-ones-mask common case). This is the honest
+        // standin count. A regression flipping the mask polarity
+        // or returning batch_size × seq_len from train_step would
+        // here fail by a multiplicative factor.
+        //
+        // Per Reviewer 1's BLOCK M1: the load-bearing assertion is
+        // "the count must equal what actually trained, not a
+        // schedule-derived guess." With batch_size=2, all-ones
+        // mask, 5 train_step calls → gradient_tokens_consumed = 10.
+        //
+        // Hand-built batch is fine HERE because both targets are
+        // explicitly non-pad in target_ids. The drift-catching
+        // version uses DataLoader; see `pad_first_target_via_dataloader`.
+        #[test]
+        fn gradient_tokens_consumed_counts_non_pad_first_targets() {
+            let device = Device::Cpu;
+            let base = Tensor::full(0.1f32, (4, 4), &device).unwrap();
+            let module = LoRAModule::new(base, 2, 4, DType::F32, &device).unwrap();
+            let mut trainer = LoRATrainer::new(module, 0.001).unwrap();
+
+            // batch_size=2, seq_len=4, both samples' first target
+            // non-pad → tokens_used=2 per step.
+            let input_ids =
+                Tensor::from_slice(&[1u32, 2, 3, 0, 1, 2, 3, 0], (2, 4), &device).unwrap();
+            let target_ids =
+                Tensor::from_slice(&[2u32, 3, 0, 0, 2, 3, 0, 0], (2, 4), &device).unwrap();
+            let attn_mask = Tensor::full(1.0f32, (2, 4), &device).unwrap();
+            // target_mask matches target_ids: 1 where != 0, 0 where == 0.
+            let target_mask = Tensor::from_slice(
+                &[1.0f32, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0],
+                (2, 4),
+                &device,
+            )
+            .unwrap();
+            let batch = TokenizedBatch {
+                input_ids,
+                target_ids,
+                attention_mask: attn_mask,
+                target_mask,
+            };
+
+            for _ in 0..5 {
+                let (_, tokens_used) = trainer.train_step(&batch).unwrap();
+                assert_eq!(
+                    tokens_used, 2,
+                    "VDD: each step trains batch_size=2 non-pad targets"
+                );
+            }
+            assert_eq!(
+                trainer.metrics().gradient_tokens_consumed,
+                10,
+                "VDD: accumulated honestly across 5 steps × batch=2"
+            );
+            // CRUCIALLY: NOT batch × seq × steps = 2 × 4 × 5 = 40.
+            // The pre-fix formula was that inflation.
+            assert_ne!(
+                trainer.metrics().gradient_tokens_consumed,
+                40,
+                "VDD: the count must NOT be the inflated schedule-derived guess (2×4×5=40)"
+            );
+        }
+
+        // what this VDD catches: short examples whose FIRST TARGET
+        // is pad must NOT be counted as gradient-bearing. Per the
+        // round-2 reviewer's BLOCK on the M1 semantic-drift bug:
+        // the previous test hand-crafted a TokenizedBatch with mask
+        // aligned to the implementation's BUG (first-INPUT pad
+        // status), so the test passed but the bug shipped. The fix
+        // is to build the batch VIA `DataLoader` — same path
+        // production uses — so the test exercises real DataLoader
+        // output. With a 1-byte example (prompt="X", completion="")
+        // ByteTokenizer produces:
+        //   inputs = [X+1, 0, 0, ...]
+        //   target_ids = [0, 0, 0, ...]  (input shifted left)
+        //   attention_mask = [1, 0, 0, ...]  (INPUT pad status)
+        //   target_mask = [0, 0, 0, ...]  (TARGET pad status)
+        // First INPUT is non-pad but first TARGET IS pad → the
+        // metric MUST report 0 gradient-bearing tokens.
+        //
+        // Pre-fix this assertion would fire because the metric used
+        // attention_mask[0]=1 → tokens_used=1, miscounting the
+        // pad-targeted sample as gradient-bearing.
+        #[test]
+        fn pad_first_target_via_dataloader_contributes_zero_to_tokens_used() {
+            use crate::genome::fine_tuning::byte_tokenizer::ByteTokenizer;
+            let device = Device::Cpu;
+            let base = Tensor::full(0.1f32, (257, 4), &device).unwrap();
+            let module = LoRAModule::new(base, 2, 4, DType::F32, &device).unwrap();
+            let mut trainer = LoRATrainer::new(module, 0.001).unwrap();
+
+            // Single 1-byte example. After encode + shift-left for
+            // target_ids, every target position is pad.
+            let examples = vec![TrainingExample {
+                prompt: "X".into(),
+                completion: "".into(),
+                metadata: None,
+            }];
+            let loader =
+                DataLoader::new(&examples, &ByteTokenizer::new(), 1, 4, &device).unwrap();
+            let batch = loader.batches().next().expect("one batch");
+
+            let (_loss, tokens_used) = trainer.train_step(batch).unwrap();
+            assert_eq!(
+                tokens_used, 0,
+                "VDD drift-pin: a 1-byte example produces an all-pad target_ids \
+                 row → tokens_used MUST be 0. Pre-fix this returned 1 (counting \
+                 input[0] pad status instead of target[0] pad status)."
+            );
+            // And `gradient_tokens_consumed` MUST NOT have moved.
+            assert_eq!(
+                trainer.metrics().gradient_tokens_consumed,
+                0,
+                "VDD: metric stays at 0 when every train_step's target_mask is empty"
+            );
+            // Step counter advances — train_step was called — but
+            // the no-gradient branch was taken (no backward).
+            assert_eq!(trainer.metrics().steps_completed, 1);
+        }
+
+        // what this VDD catches: a hand-built batch where ONE
+        // sample's first target is non-pad and ANOTHER sample's
+        // first target IS pad → tokens_used = 1 (only the non-pad).
+        // This pins the per-sample counting math; the
+        // DataLoader-based test above pins the DRIFT class.
+        #[test]
+        fn mixed_pad_and_real_first_targets_count_only_real() {
+            let device = Device::Cpu;
+            let base = Tensor::full(0.1f32, (4, 4), &device).unwrap();
+            let module = LoRAModule::new(base, 2, 4, DType::F32, &device).unwrap();
+            let mut trainer = LoRATrainer::new(module, 0.001).unwrap();
+
+            // batch_size=2; sample 0 first target=2 (non-pad),
+            // sample 1 first target=0 (pad). target_mask reflects
+            // that: [1, ..., 0, ...].
+            let input_ids =
+                Tensor::from_slice(&[1u32, 2, 3, 0, 0, 0, 0, 0], (2, 4), &device).unwrap();
+            let target_ids =
+                Tensor::from_slice(&[2u32, 3, 0, 0, 0, 0, 0, 0], (2, 4), &device).unwrap();
+            let attn_mask = Tensor::from_slice(
+                &[1.0f32, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                (2, 4),
+                &device,
+            )
+            .unwrap();
+            let target_mask = Tensor::from_slice(
+                &[1.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                (2, 4),
+                &device,
+            )
+            .unwrap();
+            let batch = TokenizedBatch {
+                input_ids,
+                target_ids,
+                attention_mask: attn_mask,
+                target_mask,
+            };
+            let (_, tokens_used) = trainer.train_step(&batch).unwrap();
+            assert_eq!(
+                tokens_used, 1,
+                "VDD: only the non-pad-first-target sample counts; pad sample contributes 0"
+            );
+        }
+
         // what this VDD catches: applying the masked-loss attention
         // mask is a no-op when the mask is all-1s (real positions
         // only). The stand-in trainer doesn't apply the mask at all
@@ -767,18 +1062,21 @@ mod tests {
 
             let input_ids = Tensor::from_slice(&[1u32, 2, 3, 0], (1, 4), &device).unwrap();
             let target_ids = Tensor::from_slice(&[2u32, 3, 0, 0], (1, 4), &device).unwrap();
-            let mask_all_ones = Tensor::full(1.0f32, (1, 4), &device).unwrap();
+            let attn_all_ones = Tensor::full(1.0f32, (1, 4), &device).unwrap();
+            let target_mask =
+                Tensor::from_slice(&[1.0f32, 1.0, 0.0, 0.0], (1, 4), &device).unwrap();
             let batch_masked = TokenizedBatch {
                 input_ids: input_ids.clone(),
                 target_ids: target_ids.clone(),
-                attention_mask: mask_all_ones,
+                attention_mask: attn_all_ones,
+                target_mask,
             };
 
-            let loss_masked = trainer.train_step(&batch_masked).unwrap();
+            let (loss_masked, _) = trainer.train_step(&batch_masked).unwrap();
             // The standin doesn't apply mask, so this is a tautology
-            // *today*. The assertion is a pin for #233's real
-            // wiring: when mask multiplication lands, this test
-            // becomes load-bearing.
+            // *today*. The assertion is a pin for the real wiring:
+            // when mask multiplication lands, this test becomes
+            // load-bearing.
             assert!(
                 loss_masked.is_finite() && loss_masked > 0.0,
                 "VDD: loss must be finite and positive on a meaningful target; got {loss_masked}"
