@@ -128,26 +128,23 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
 
     // Register adapters CONCURRENTLY for faster startup
     // Each adapter registration is independent - no need to wait for others
-    this.log.info('🤖 AIProviderDaemonServer: Registering AI provider adapters (parallel)...');
+    this.log.info('🤖 AIProviderDaemonServer: Registering AI provider adapters...');
 
-    // STEP 1: Load all secrets in parallel (fast)
-    const [sentinelPath, deepseekKey, groqKey, xaiKey, openaiKey, anthropicKey, togetherKey, fireworksKey, googleKey] = await Promise.all([
-      getSecret('SENTINEL_PATH'),
-      getSecret('DEEPSEEK_API_KEY'),
-      getSecret('GROQ_API_KEY'),
-      getSecret('XAI_API_KEY'),
-      getSecret('OPENAI_API_KEY'),
-      getSecret('ANTHROPIC_API_KEY'),
-      getSecret('TOGETHER_API_KEY'),
-      getSecret('FIREWORKS_API_KEY'),
-      getSecret('GOOGLE_API_KEY'),
-    ]);
+    // Per task #219 + #229 (headless Rust doctrine, no-fallbacks): the
+    // 9 cloud-inference TS adapter classes (DeepSeek/Groq/XAI/OpenAI/
+    // Anthropic/Together/Fireworks/Google/Mistral) have been deleted.
+    // Cloud inference is owned by continuum-core's Rust catalog
+    // (model_registry/catalog.rs); the substrate dispatches via
+    // ai_provider.rs which the inference routing campaign (#112/#113/
+    // #114) is finishing to route every cognition call through.
+    // This daemon now ONLY registers the Sentinel adapter (separate
+    // provider, awaiting its own migration card).
+    //
+    // Background: see docs/architecture/SUBSTRATE-DOCTRINE-ORGANIC-FLOW.md
+    // forbidden-moves clause 7 ("no new TS daemon owning runtime behavior")
+    // and docs/planning/CANARY-ALPHA-EXECUTION-ROADMAP.md Group A.
 
-    // Candle is NOT registered in the inference adapter registry.
-    // Candle is a training framework (LoRA, autodiff). Local INFERENCE goes
-    // through Docker Model Runner via Rust IPC (AIProviderDaemon.generateText → ai/generate).
-    // Training callers access Candle through the training/plasticity module directly.
-    const candlePromise = Promise.resolve(); // No-op — Candle not registered for inference
+    const sentinelPath = await getSecret('SENTINEL_PATH');
 
     // Sentinel adapter (if configured)
     const sentinelPromise = sentinelPath ? (async () => {
@@ -156,53 +153,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       this.log.info('✅ Sentinel adapter registered');
     })() : Promise.resolve();
 
-    // STEP 3: Register CLOUD adapters in parallel (independent of each other)
-    const cloudAdapters = [
-      deepseekKey && (async () => {
-        const { DeepSeekAdapter } = await import('../adapters/deepseek/shared/DeepSeekAdapter');
-        await this.registerAdapter(new DeepSeekAdapter(deepseekKey), { priority: 90, enabled: true });
-        this.log.info('✅ DeepSeek adapter registered');
-      })(),
-      groqKey && (async () => {
-        const { GroqAdapter } = await import('../adapters/groq/shared/GroqAdapter');
-        await this.registerAdapter(new GroqAdapter(groqKey), { priority: 85, enabled: true });
-        this.log.info('✅ Groq adapter registered');
-      })(),
-      xaiKey && (async () => {
-        const { XAIAdapter } = await import('../adapters/xai/shared/XAIAdapter');
-        await this.registerAdapter(new XAIAdapter(xaiKey), { priority: 83, enabled: true });
-        this.log.info('✅ X.AI (Grok) adapter registered');
-      })(),
-      openaiKey && (async () => {
-        const { OpenAIAdapter } = await import('../adapters/openai/shared/OpenAIAdapter');
-        await this.registerAdapter(new OpenAIAdapter(openaiKey), { priority: 80, enabled: true });
-        this.log.info('✅ OpenAI adapter registered');
-      })(),
-      anthropicKey && (async () => {
-        const { AnthropicAdapter } = await import('../adapters/anthropic/shared/AnthropicAdapter');
-        await this.registerAdapter(new AnthropicAdapter(anthropicKey), { priority: 80, enabled: true });
-        this.log.info('✅ Anthropic adapter registered');
-      })(),
-      togetherKey && (async () => {
-        const { TogetherAIAdapter } = await import('../adapters/together/shared/TogetherAIAdapter');
-        await this.registerAdapter(new TogetherAIAdapter(togetherKey), { priority: 70, enabled: true });
-        this.log.info('✅ Together.ai adapter registered');
-      })(),
-      fireworksKey && (async () => {
-        const { FireworksAdapter } = await import('../adapters/fireworks/shared/FireworksAdapter');
-        await this.registerAdapter(new FireworksAdapter(fireworksKey), { priority: 70, enabled: true });
-        this.log.info('✅ Fireworks adapter registered');
-      })(),
-      googleKey && (async () => {
-        const { GoogleAdapter } = await import('../adapters/google/shared/GoogleAdapter');
-        await this.registerAdapter(new GoogleAdapter(googleKey), { priority: 75, enabled: true });
-        this.log.info('✅ Google Gemini adapter registered');
-      })(),
-    ].filter(Boolean) as Promise<void>[];
-
-    // Wait for ALL adapters to register (Candle + Sentinel + cloud in parallel)
-    // Candle is the only local inference path
-    await Promise.allSettled([candlePromise, sentinelPromise, ...cloudAdapters]);
+    await Promise.allSettled([sentinelPromise]);
 
     // Call base initialization
     await super['initialize']();
