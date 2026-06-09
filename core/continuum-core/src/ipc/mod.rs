@@ -1361,6 +1361,22 @@ pub fn start_server(
         runtime.register(Arc::new(crate::modules::genome::GenomeModule::new(
             ft_registry,
         )));
+
+        // TrainingTriggerModule: substrate-native batching coordinator
+        // sitting between curriculum producers (teacher persona's
+        // synthesis, hippocampus's noteworthy drain, operator submits)
+        // and `genome/job-create`. Accumulates per-(persona, trait)
+        // and auto-dispatches when the threshold is reached. Per
+        // `[[no-fallbacks-ever]]`, dispatch failure preserves bucket
+        // contents — curated examples never silently disappear.
+        runtime.register(Arc::new(
+            crate::modules::training_trigger::TrainingTriggerModule::new(),
+        ));
+        log_info!(
+            "ipc",
+            "server",
+            "TrainingTriggerModule: registered (genome/training-trigger/*)"
+        );
     }
 
     // SentinelModule: Concurrent, fault-tolerant build/task execution
